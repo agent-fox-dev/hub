@@ -881,7 +881,7 @@
             "01-REQ-9.1",
             "01-REQ-9.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -899,7 +899,7 @@
           "requirement_refs": [
             "01-REQ-9.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

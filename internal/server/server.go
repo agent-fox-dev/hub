@@ -10,6 +10,7 @@ import (
 	"github.com/agent-fox/af-hub/internal/auth"
 	"github.com/agent-fox/af-hub/internal/config"
 	"github.com/agent-fox/af-hub/internal/handler"
+	afmiddleware "github.com/agent-fox/af-hub/internal/middleware"
 	"github.com/agent-fox/af-hub/internal/store"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
@@ -19,6 +20,9 @@ import (
 // and middleware. Returns the configured Echo instance.
 func NewServer(cfg *config.Config, db *sql.DB) *echo.Echo {
 	e := echo.New()
+
+	// Register request logging middleware before route registration.
+	e.Use(afmiddleware.RequestLoggerMiddleware())
 
 	// Register health probe endpoints.
 	e.GET("/healthz", healthzHandler)

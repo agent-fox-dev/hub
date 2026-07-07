@@ -8,6 +8,7 @@ import (
 	"github.com/agent-fox/af-hub/internal/bootstrap"
 	"github.com/agent-fox/af-hub/internal/config"
 	"github.com/agent-fox/af-hub/internal/db"
+	"github.com/agent-fox/af-hub/internal/logging"
 	"github.com/agent-fox/af-hub/internal/server"
 	"github.com/agent-fox/af-hub/internal/store"
 	"github.com/sirupsen/logrus"
@@ -30,27 +31,32 @@ func main() {
 		logrus.WithError(err).Fatal("invalid configuration")
 	}
 
-	// Step 3: Ensure the database directory exists.
+	// Step 3: Configure structured JSON logging with the configured level.
+	if err := logging.ConfigureLogging(cfg.Logging.Level); err != nil {
+		logrus.WithError(err).Fatal("failed to configure logging")
+	}
+
+	// Step 4: Ensure the database directory exists.
 	if err := config.EnsureDataDir(cfg.Database.Path); err != nil {
 		logrus.WithError(err).Fatal("failed to create data directory")
 	}
 
-	// Step 4: Open the SQLite database and enable WAL mode.
+	// Step 5: Open the SQLite database and enable WAL mode.
 	database, err := db.OpenDatabase(cfg.Database.Path)
 	if err != nil {
 		logrus.WithError(err).Fatal("failed to open database")
 	}
 	defer database.Close()
 
-	// Step 5: Initialize the database schema.
+	// Step 6: Initialize the database schema.
 	if err := db.InitSchema(database); err != nil {
 		logrus.WithError(err).Fatal("failed to initialize database schema")
 	}
 
-	// Step 6: Create the store layer.
+	// Step 7: Create the store layer.
 	s := store.NewStore(database)
 
-	// Step 7: Admin bootstrap, token validation, or token rotation.
+	// Step 8: Admin bootstrap, token validation, or token rotation.
 	firstBoot, err := bootstrap.IsFirstBoot(s)
 	if err != nil {
 		logrus.WithError(err).Fatal("failed to check first boot status")
@@ -73,7 +79,7 @@ func main() {
 		}
 	}
 
-	// Step 8: Create and start the HTTP server.
+	// Step 9: Create and start the HTTP server.
 	e := server.NewServer(cfg, database)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.Port)
 	logrus.WithField("address", addr).Info("starting HTTP server")
