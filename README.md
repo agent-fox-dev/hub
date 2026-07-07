@@ -107,6 +107,8 @@ make check    # run lint + tests
 
 ## Documentation
 
+- [REST API Reference](docs/api.md) — complete endpoint documentation with
+  auth requirements, request/response examples, and error format.
 - [Architecture overview](docs/architecture.md) — two-binary design,
   internal package layout, storage, config flow, request lifecycle.
 - [Configuration reference](docs/configuration.md) — complete config.toml
