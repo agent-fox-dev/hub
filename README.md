@@ -11,5 +11,6 @@ rebuilt on a structured spec package that freezes on approval, and all
 grounding unified under a single Context abstraction.
 
 Start with the **[Architecture overview](docs/README.md)** for the
-three-layer system design, or the **[Spec Format overview](docs/specs/README.md)**
-for the specification package that drives every unit of work.
+three-layer system design, the **[Spec Format overview](docs/specs/README.md)**
+for the specification package that drives every unit of work, or the
+**[CLI Reference](docs/cli.md)** for the `afc` command-line client.
