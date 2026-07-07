@@ -12,5 +12,18 @@ grounding unified under a single Context abstraction.
 
 Start with the **[Architecture overview](docs/README.md)** for the
 three-layer system design, the **[Spec Format overview](docs/specs/README.md)**
-for the specification package that drives every unit of work, or the
-**[CLI Reference](docs/cli.md)** for the `afc` command-line client.
+for the specification package that drives every unit of work, the
+**[CLI Reference](docs/cli.md)** for the `afc` command-line client, or the
+**[Frontend Guide](docs/web-ui.md)** for the React web UI.
+
+## Frontend
+
+The `web/` directory contains a React + TypeScript frontend built with Vite.
+From the repo root:
+
+- `make web-dev` — start the Vite dev server with hot reload (auto-installs
+  dependencies if needed).
+- `make web-build` — compile the production build into `web/dist/`.
+
+See [docs/web-ui.md](docs/web-ui.md) for full setup, project structure, and
+component conventions.
