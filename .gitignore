@@ -12,3 +12,6 @@ web/dist/
 !.agent-fox/profiles/
 !.agent-fox/profiles/*
 .claude/worktrees/
+
+# Go build output
+bin/
