@@ -486,7 +486,7 @@
           "requirement_refs": [
             "03-REQ-1.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -508,7 +508,7 @@
             "03-REQ-1.E1",
             "03-PROP-5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -532,7 +532,7 @@
             "03-PROP-3",
             "03-PROP-4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -552,7 +552,7 @@
             "03-REQ-7.1",
             "03-REQ-7.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
