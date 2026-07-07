@@ -5,7 +5,10 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Sentinel errors returned by store operations.
@@ -142,140 +145,24 @@ func NewStore(db *sql.DB) *sqliteStore {
 	return &sqliteStore{db: db}
 }
 
-// --- Stub implementations (to be completed in task group 6) ---
-
-func (s *sqliteStore) CreateUser(u *User) (*User, error) {
-	return nil, errors.New("store: create user: not implemented")
+// newID generates a new UUID string for use as an entity primary key.
+func newID() string {
+	return uuid.New().String()
 }
 
-func (s *sqliteStore) GetUserByID(id string) (*User, error) {
-	return nil, ErrNotFound
+// nowRFC3339 returns the current UTC time formatted as an RFC 3339 string.
+func nowRFC3339() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
-func (s *sqliteStore) GetUserByUsername(username string) (*User, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) GetUserByProviderID(provider, providerID string) (*User, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) UpdateUser(u *User) (*User, error) {
-	return nil, errors.New("store: update user: not implemented")
-}
-
-func (s *sqliteStore) DeleteUser(id string) error {
-	return errors.New("store: delete user: not implemented")
-}
-
-func (s *sqliteStore) ListUsers() ([]*User, error) {
-	return nil, errors.New("store: list users: not implemented")
-}
-
-func (s *sqliteStore) CountUsers() (int, error) {
-	return 0, errors.New("store: count users: not implemented")
-}
-
-func (s *sqliteStore) CreateWorkspace(w *Workspace) (*Workspace, error) {
-	return nil, errors.New("store: create workspace: not implemented")
-}
-
-func (s *sqliteStore) GetWorkspaceByID(id string) (*Workspace, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) GetWorkspaceBySlug(slug string) (*Workspace, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) UpdateWorkspace(w *Workspace) (*Workspace, error) {
-	return nil, errors.New("store: update workspace: not implemented")
-}
-
-func (s *sqliteStore) DeleteWorkspace(id string) error {
-	return errors.New("store: delete workspace: not implemented")
-}
-
-func (s *sqliteStore) ListWorkspaces(includeArchived bool) ([]*Workspace, error) {
-	return nil, errors.New("store: list workspaces: not implemented")
-}
-
-func (s *sqliteStore) DeleteWorkspaceWithCascade(id string) error {
-	return errors.New("store: delete workspace cascade: not implemented")
-}
-
-func (s *sqliteStore) CreateWorkspaceMember(m *WorkspaceMember) (*WorkspaceMember, error) {
-	return nil, errors.New("store: create workspace member: not implemented")
-}
-
-func (s *sqliteStore) GetWorkspaceMember(userID, workspaceID string) (*WorkspaceMember, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) ListWorkspaceMembers(workspaceID string) ([]*WorkspaceMember, error) {
-	return nil, errors.New("store: list workspace members: not implemented")
-}
-
-func (s *sqliteStore) DeleteWorkspaceMember(userID, workspaceID string) error {
-	return errors.New("store: delete workspace member: not implemented")
-}
-
-func (s *sqliteStore) UpsertWorkspaceMember(m *WorkspaceMember) (*WorkspaceMember, error) {
-	return nil, errors.New("store: upsert workspace member: not implemented")
-}
-
-func (s *sqliteStore) CreateAPIKey(k *APIKey) (*APIKey, error) {
-	return nil, errors.New("store: create api key: not implemented")
-}
-
-func (s *sqliteStore) GetAPIKeyByID(id string) (*APIKey, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) GetAPIKeyByKeyID(keyID string) (*APIKey, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) RevokeAPIKey(id string) error {
-	return errors.New("store: revoke api key: not implemented")
-}
-
-func (s *sqliteStore) DeleteAPIKey(id string) error {
-	return errors.New("store: delete api key: not implemented")
-}
-
-func (s *sqliteStore) ListAPIKeys() ([]*APIKey, error) {
-	return nil, errors.New("store: list api keys: not implemented")
-}
-
-func (s *sqliteStore) ListAPIKeysByUserID(userID string) ([]*APIKey, error) {
-	return nil, errors.New("store: list api keys by user: not implemented")
-}
-
-func (s *sqliteStore) CountAPIKeysByWorkspaceID(workspaceID string) (int, error) {
-	return 0, errors.New("store: count api keys by workspace: not implemented")
-}
-
-func (s *sqliteStore) UpdateAPIKeyHash(keyID string, newHash string) error {
-	return errors.New("store: update api key hash: not implemented")
-}
-
-func (s *sqliteStore) CreateAdminToken(t *AdminToken) (*AdminToken, error) {
-	return nil, errors.New("store: create admin token: not implemented")
-}
-
-func (s *sqliteStore) GetAdminToken() (*AdminToken, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) GetAdminTokenByHash(hash string) (*AdminToken, error) {
-	return nil, ErrNotFound
-}
-
-func (s *sqliteStore) UpdateAdminToken(t *AdminToken) (*AdminToken, error) {
-	return nil, errors.New("store: update admin token: not implemented")
-}
-
-func (s *sqliteStore) DeleteAdminToken(id string) error {
-	return errors.New("store: delete admin token: not implemented")
+// isConstraintError checks whether the given error is a SQLite UNIQUE or
+// other constraint violation.
+func isConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint failed") ||
+		strings.Contains(msg, "constraint failed") ||
+		strings.Contains(msg, "primary key constraint")
 }

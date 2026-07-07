@@ -644,6 +644,7 @@ func setupBootstrapTest(t *testing.T) (store.Store, string) {
 			key_hash TEXT,
 			user_id TEXT REFERENCES users(id),
 			workspace_id TEXT REFERENCES workspaces(id),
+			role TEXT,
 			label TEXT,
 			expires_at TEXT,
 			revoked_at TEXT,

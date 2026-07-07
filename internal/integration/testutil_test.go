@@ -1,10 +1,12 @@
 package integration_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/agent-fox/af-hub/internal/handler"
 	"github.com/agent-fox/af-hub/internal/store"
 	"github.com/labstack/echo/v4"
+	_ "modernc.org/sqlite"
 )
 
 // testEnv holds the test infrastructure for integration tests.
@@ -64,13 +67,78 @@ func setupTestEnv(t *testing.T, oauthCfg []config.OAuthProviderConfig) *testEnv 
 	}
 }
 
-// createTestStore creates an in-memory test store.
-// This will use an in-memory SQLite database once the store is implemented.
+// createTestStore creates a test store backed by a temporary SQLite database
+// with all tables initialized.
 func createTestStore(t *testing.T) store.Store {
 	t.Helper()
-	// The store implementation from spec 01 will provide this.
-	// For now, we rely on the stub NewStore or a mock implementation.
-	return store.NewStore(nil)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("createTestStore: open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("createTestStore: enable WAL: %v", err)
+	}
+
+	schema := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			username TEXT UNIQUE NOT NULL,
+			email TEXT,
+			full_name TEXT,
+			provider TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			status TEXT DEFAULT 'active',
+			created_at TEXT,
+			updated_at TEXT,
+			UNIQUE(provider, provider_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS workspaces (
+			id TEXT PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL,
+			slug TEXT UNIQUE NOT NULL,
+			url TEXT UNIQUE NOT NULL,
+			status TEXT DEFAULT 'active',
+			created_at TEXT,
+			created_by TEXT REFERENCES users(id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS workspace_members (
+			user_id TEXT REFERENCES users(id),
+			workspace_id TEXT REFERENCES workspaces(id),
+			role TEXT NOT NULL,
+			created_at TEXT,
+			granted_by TEXT REFERENCES users(id),
+			PRIMARY KEY (user_id, workspace_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			id TEXT PRIMARY KEY,
+			key_id TEXT UNIQUE,
+			key_hash TEXT,
+			user_id TEXT REFERENCES users(id),
+			workspace_id TEXT REFERENCES workspaces(id),
+			role TEXT,
+			label TEXT,
+			expires_at TEXT,
+			revoked_at TEXT,
+			created_at TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_tokens (
+			id TEXT PRIMARY KEY,
+			token_hash TEXT,
+			created_at TEXT
+		)`,
+	}
+	for _, stmt := range schema {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("createTestStore: schema: %v", err)
+		}
+	}
+
+	return store.NewStore(db)
 }
 
 // doRequest performs an HTTP request against the test Echo server
