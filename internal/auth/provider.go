@@ -2,7 +2,22 @@
 // and RBAC enforcement for af-hub.
 package auth
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// Sentinel errors for OAuth provider operations.
+var (
+	// ErrProviderTimeout indicates the identity provider did not respond in time.
+	ErrProviderTimeout = errors.New("identity provider timeout")
+
+	// ErrCodeExchangeFailed indicates the authorization code was rejected by the provider.
+	ErrCodeExchangeFailed = errors.New("authorization code exchange failed")
+
+	// ErrUnsupportedProvider indicates the provider name is not registered.
+	ErrUnsupportedProvider = errors.New("unsupported provider")
+)
 
 // TokenResponse represents the response from an OAuth token exchange.
 type TokenResponse struct {
