@@ -40,7 +40,7 @@
             "03-REQ-1.1",
             "03-REQ-1.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -61,7 +61,7 @@
             "03-REQ-1.2",
             "03-PROP-5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -81,7 +81,7 @@
             "03-REQ-1.3",
             "03-PROP-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -101,7 +101,7 @@
             "03-REQ-1.4",
             "03-PROP-4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -119,7 +119,7 @@
           "requirement_refs": [
             "03-REQ-1.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
