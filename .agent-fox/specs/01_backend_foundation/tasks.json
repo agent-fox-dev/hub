@@ -769,7 +769,7 @@
             "01-REQ-6.2",
             "01-REQ-6.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -790,7 +790,7 @@
             "01-REQ-7.1",
             "01-REQ-7.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
