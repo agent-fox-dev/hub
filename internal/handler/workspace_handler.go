@@ -13,7 +13,7 @@ type WorkspaceHandler struct {
 
 // NewWorkspaceHandler creates a new WorkspaceHandler.
 func NewWorkspaceHandler(s store.Store) *WorkspaceHandler {
-	panic("not implemented")
+	return &WorkspaceHandler{store: s}
 }
 
 // CreateWorkspace handles POST /api/v1/workspaces.

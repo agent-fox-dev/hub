@@ -687,7 +687,7 @@
           "requirement_refs": [
             "02-REQ-2.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -709,7 +709,7 @@
             "02-REQ-2.2",
             "02-REQ-2.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -733,7 +733,7 @@
             "02-REQ-8.2",
             "02-REQ-8.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

@@ -15,6 +15,7 @@ import (
 	"github.com/agent-fox/af-hub/internal/handler"
 	"github.com/agent-fox/af-hub/internal/store"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	_ "modernc.org/sqlite"
 )
 
@@ -48,6 +49,7 @@ func setupTestEnv(t *testing.T, oauthCfg []config.OAuthProviderConfig) *testEnv 
 
 	e := echo.New()
 	e.HTTPErrorHandler = handler.CustomHTTPErrorHandler
+	e.Use(middleware.BodyLimit("1M"))
 
 	// Register auth routes (public, no auth middleware).
 	authGroup := e.Group("/api/v1/auth")
@@ -242,6 +244,7 @@ func setupFullTestEnv(t *testing.T) *testEnv {
 
 	e := echo.New()
 	e.HTTPErrorHandler = handler.CustomHTTPErrorHandler
+	e.Use(middleware.BodyLimit("1M"))
 
 	// Public auth routes (no middleware).
 	authGroup := e.Group("/api/v1/auth")

@@ -12,7 +12,7 @@ type APIKeyHandler struct {
 
 // NewAPIKeyHandler creates a new APIKeyHandler with the given store.
 func NewAPIKeyHandler(s store.Store) *APIKeyHandler {
-	panic("not implemented")
+	return &APIKeyHandler{store: s}
 }
 
 // CreateAPIKey handles POST /api/v1/keys.

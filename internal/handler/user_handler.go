@@ -13,7 +13,7 @@ type UserHandler struct {
 
 // NewUserHandler creates a new UserHandler.
 func NewUserHandler(s store.Store) *UserHandler {
-	panic("not implemented")
+	return &UserHandler{store: s}
 }
 
 // CreateUser handles POST /api/v1/users.
