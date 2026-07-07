@@ -2,8 +2,15 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"flag"
 	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/agent-fox/af-hub/internal/bootstrap"
 	"github.com/agent-fox/af-hub/internal/config"
@@ -15,6 +22,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	// Parse command-line flags.
 	resetAdminToken := flag.Bool("reset-admin-token", false,
 		"Generate a new admin token, update the database, and overwrite the admin_token file")
@@ -46,7 +57,6 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("failed to open database")
 	}
-	defer database.Close()
 
 	// Step 6: Initialize the database schema.
 	if err := db.InitSchema(database); err != nil {
@@ -84,7 +94,66 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.Port)
 	logrus.WithField("address", addr).Info("starting HTTP server")
 
-	if err := e.Start(addr); err != nil {
-		logrus.WithError(err).Info("server stopped")
+	// Start the Echo server in a goroutine so we can handle signals.
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := e.Start(addr); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	// Step 10: Listen for SIGTERM/SIGINT for graceful shutdown.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case sig := <-quit:
+		logrus.WithField("signal", sig.String()).Info("received shutdown signal")
+	case err := <-serverErr:
+		if err != nil {
+			logrus.WithError(err).Error("server error")
+			closeDBWithTimeout(database, 5*time.Second)
+			return 1
+		}
+	}
+
+	// Step 11: Initiate graceful shutdown with a 15-second drain timeout.
+	const drainTimeout = 15 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+
+	logrus.Info("shutting down server, waiting for in-flight requests to drain")
+	shutdownErr := e.Shutdown(ctx)
+
+	// Step 12: Close the database connection with a 5-second timeout.
+	const dbCloseTimeout = 5 * time.Second
+	closeDBWithTimeout(database, dbCloseTimeout)
+
+	if shutdownErr != nil {
+		logrus.WithError(shutdownErr).Warn("graceful shutdown timed out, forcing exit")
+		return 1
+	}
+
+	logrus.Info("server shut down gracefully")
+	return 0
+}
+
+// closeDBWithTimeout attempts to close the database connection within the given
+// timeout. If db.Close() does not return within the timeout, it logs an error
+// and returns without blocking indefinitely.
+func closeDBWithTimeout(database *sql.DB, timeout time.Duration) {
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- database.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			logrus.WithError(err).Error("error closing database")
+		}
+	case <-time.After(timeout):
+		logrus.Error("database close timed out")
 	}
 }

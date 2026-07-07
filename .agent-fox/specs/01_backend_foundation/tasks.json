@@ -937,7 +937,7 @@
             "01-REQ-10.2",
             "01-REQ-10.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -956,7 +956,7 @@
             "01-REQ-10.2",
             "01-REQ-10.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
