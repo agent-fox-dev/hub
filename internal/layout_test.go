@@ -98,8 +98,14 @@ func TestStoreLayerExclusivity(t *testing.T) {
 		}
 		content := string(data)
 
-		// Check for direct SQL calls.
-		sqlCalls := []string{"db.Query(", "db.Exec(", "db.QueryRow(", ".Query(", ".Exec(", ".QueryRow("}
+		// Check for direct SQL calls per spec TS-01-16 / TS-01-P3 pseudocode.
+		// Only match explicit "db.<method>(" patterns — generic ".Query(" is
+		// too broad and false-positives on url.Query(), http query-param
+		// helpers, etc. The db package is also allowed (schema init).
+		sqlCalls := []string{
+			"db.Query(", "db.QueryRow(", "db.Exec(",
+			"db.QueryContext(", "db.QueryRowContext(", "db.ExecContext(",
+		}
 		for _, call := range sqlCalls {
 			if strings.Contains(content, call) {
 				// Allow the db package to use these for schema init.

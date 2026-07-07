@@ -2,13 +2,17 @@ package auth_test
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/agent-fox/af-hub/internal/auth"
 	"github.com/agent-fox/af-hub/internal/config"
@@ -25,10 +29,78 @@ func propSha256Hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// propCreateTestStore creates a test store instance.
+// propCreateTestStore creates a test store backed by a temporary SQLite
+// database with all tables initialized.
 func propCreateTestStore(t *testing.T) store.Store {
 	t.Helper()
-	return store.NewStore(nil)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("propCreateTestStore: open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("propCreateTestStore: enable WAL: %v", err)
+	}
+
+	schema := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			username TEXT UNIQUE NOT NULL,
+			email TEXT,
+			full_name TEXT,
+			provider TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			status TEXT DEFAULT 'active',
+			created_at TEXT,
+			updated_at TEXT,
+			UNIQUE(provider, provider_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS workspaces (
+			id TEXT PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL,
+			slug TEXT UNIQUE NOT NULL,
+			url TEXT UNIQUE NOT NULL,
+			status TEXT DEFAULT 'active',
+			created_at TEXT,
+			created_by TEXT REFERENCES users(id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS workspace_members (
+			user_id TEXT REFERENCES users(id),
+			workspace_id TEXT REFERENCES workspaces(id),
+			role TEXT NOT NULL,
+			created_at TEXT,
+			granted_by TEXT REFERENCES users(id),
+			PRIMARY KEY (user_id, workspace_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			id TEXT PRIMARY KEY,
+			key_id TEXT UNIQUE,
+			key_hash TEXT,
+			user_id TEXT REFERENCES users(id),
+			workspace_id TEXT REFERENCES workspaces(id),
+			role TEXT,
+			label TEXT,
+			expires_at TEXT,
+			revoked_at TEXT,
+			created_at TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_tokens (
+			id TEXT PRIMARY KEY,
+			token_hash TEXT,
+			created_at TEXT
+		)`,
+	}
+	for _, stmt := range schema {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("propCreateTestStore: schema: %v", err)
+		}
+	}
+
+	return store.NewStore(db)
 }
 
 // propErrorResponse is the standard error envelope for property test assertions.
