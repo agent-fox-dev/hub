@@ -959,7 +959,7 @@
             "02-REQ-6.E1",
             "02-REQ-6.E2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -991,7 +991,7 @@
             "02-REQ-6.E6",
             "02-REQ-6.E8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1012,7 +1012,7 @@
             "02-REQ-6.7",
             "02-REQ-6.E7"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
