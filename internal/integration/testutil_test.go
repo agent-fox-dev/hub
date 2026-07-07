@@ -17,10 +17,12 @@ import (
 
 // testEnv holds the test infrastructure for integration tests.
 type testEnv struct {
-	Echo        *echo.Echo
-	Store       store.Store
-	Registry    *auth.Registry
-	AuthHandler *handler.AuthHandler
+	Echo             *echo.Echo
+	Store            store.Store
+	Registry         *auth.Registry
+	AuthHandler      *handler.AuthHandler
+	UserHandler      *handler.UserHandler
+	WorkspaceHandler *handler.WorkspaceHandler
 }
 
 // setupTestEnv creates a fully wired test environment with Echo server,
@@ -122,6 +124,118 @@ type userResponse struct {
 	Provider   string `json:"provider"`
 	ProviderID string `json:"provider_id"`
 	Status     string `json:"status"`
+}
+
+// setupFullTestEnv creates a fully wired test environment with auth middleware,
+// RBAC enforcement, and all handler routes (auth, user, workspace).
+// This is used by user and workspace handler integration tests.
+func setupFullTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+
+	cfg := &config.AuthConfig{
+		OAuth: []config.OAuthProviderConfig{
+			{
+				Provider:     "github",
+				ClientID:     "test_client_id",
+				ClientSecret: "test_client_secret",
+			},
+		},
+		Timeout: 5,
+	}
+
+	registry := auth.NewRegistry(cfg)
+	s := createTestStore(t)
+	authHandler := handler.NewAuthHandler(registry, s)
+	userHandler := handler.NewUserHandler(s)
+	workspaceHandler := handler.NewWorkspaceHandler(s)
+
+	e := echo.New()
+	e.HTTPErrorHandler = handler.CustomHTTPErrorHandler
+
+	// Public auth routes (no middleware).
+	authGroup := e.Group("/api/v1/auth")
+	authGroup.GET("/providers", authHandler.ListProviders)
+	authGroup.POST("/callback", authHandler.OAuthCallback)
+
+	// Protected routes with auth middleware.
+	apiGroup := e.Group("/api/v1", auth.AuthMiddleware(s))
+
+	// User routes — admin only, except PUT which uses RequireAdminOrSelf.
+	adminUserGroup := apiGroup.Group("", auth.RequireRole(auth.RoleAdmin))
+	adminUserGroup.POST("/users", userHandler.CreateUser)
+	adminUserGroup.GET("/users", userHandler.ListUsers)
+	adminUserGroup.GET("/users/:id", userHandler.GetUser)
+
+	// PUT /users/:id — admin or self (for full_name only).
+	apiGroup.PUT("/users/:id", userHandler.UpdateUser, auth.RequireAdminOrSelf())
+
+	// Workspace routes — admin only.
+	adminWsGroup := apiGroup.Group("", auth.RequireRole(auth.RoleAdmin))
+	adminWsGroup.POST("/workspaces", workspaceHandler.CreateWorkspace)
+	adminWsGroup.GET("/workspaces", workspaceHandler.ListWorkspaces)
+	adminWsGroup.POST("/workspaces/:id/archive", workspaceHandler.ArchiveWorkspace)
+	adminWsGroup.POST("/workspaces/:id/reactivate", workspaceHandler.ReactivateWorkspace)
+	adminWsGroup.DELETE("/workspaces/:id", workspaceHandler.DeleteWorkspace)
+	adminWsGroup.POST("/workspaces/:id/members", workspaceHandler.AddOrUpdateMember)
+	adminWsGroup.GET("/workspaces/:id/members", workspaceHandler.ListMembers)
+
+	// Health probe (no middleware).
+	e.GET("/health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	return &testEnv{
+		Echo:             e,
+		Store:            s,
+		Registry:         registry,
+		AuthHandler:      authHandler,
+		UserHandler:      userHandler,
+		WorkspaceHandler: workspaceHandler,
+	}
+}
+
+// seedAdminTokenFull creates an admin token in the store and returns
+// the plaintext token string for use in Authorization headers.
+func seedAdminTokenFull(t *testing.T, s store.Store, plaintextToken string) {
+	t.Helper()
+	hash := sha256HexString(plaintextToken)
+	_, err := s.CreateAdminToken(&store.AdminToken{
+		TokenHash: hash,
+	})
+	if err != nil {
+		t.Fatalf("failed to seed admin token: %v", err)
+	}
+}
+
+// adminHeaders returns standard headers for admin-authenticated requests.
+func adminHeaders(token string) map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer " + token,
+	}
+}
+
+// workspaceResponse represents a workspace object in API responses.
+type workspaceResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Slug      string `json:"slug"`
+	URL       string `json:"url"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+	CreatedBy string `json:"created_by,omitempty"`
+}
+
+// userWithMembershipsResponse represents a user with memberships in API responses.
+type userWithMembershipsResponse struct {
+	userResponse
+	Memberships []membershipResponse `json:"memberships,omitempty"`
+}
+
+// membershipResponse represents a membership object in API responses.
+type membershipResponse struct {
+	UserID      string `json:"user_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Role        string `json:"role"`
 }
 
 // setupMockGitHubServer creates a mock HTTP server that simulates GitHub's
