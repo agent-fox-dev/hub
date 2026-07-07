@@ -3,6 +3,7 @@ module github.com/agent-fox/af-hub
 go 1.26.4
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/sirupsen/logrus v1.9.4
