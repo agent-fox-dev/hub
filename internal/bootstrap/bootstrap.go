@@ -9,13 +9,13 @@ import (
 )
 
 // IsFirstBoot returns true when the users table has zero records.
-func IsFirstBoot(s *store.Store) (bool, error) {
+func IsFirstBoot(s store.Store) (bool, error) {
 	// Stub — implementation in a later task group.
 	return false, nil
 }
 
 // CreateAdminUser creates the bootstrap admin user record.
-func CreateAdminUser(s *store.Store) (*store.User, error) {
+func CreateAdminUser(s store.Store) (*store.User, error) {
 	// Stub — implementation in a later task group.
 	return nil, nil
 }
@@ -30,14 +30,14 @@ func GenerateAdminToken(randReader io.Reader) (string, error) {
 
 // PersistAdminTokenHash computes the SHA-256 hash of the plaintext token
 // and stores it in the admin_tokens table.
-func PersistAdminTokenHash(s *store.Store, plaintext string) error {
+func PersistAdminTokenHash(s store.Store, plaintext string) error {
 	// Stub — implementation in a later task group.
 	return nil
 }
 
 // UpdateAdminTokenHash replaces the existing admin token hash (used for
 // rotation).
-func UpdateAdminTokenHash(s *store.Store, plaintext string) error {
+func UpdateAdminTokenHash(s store.Store, plaintext string) error {
 	// Stub — implementation in a later task group.
 	return nil
 }
@@ -51,7 +51,7 @@ func WriteAdminTokenFile(plaintext, configDir string) error {
 
 // RunAdminBootstrap orchestrates the full first-boot admin bootstrap:
 // create admin user, generate token, persist hash, write file, log path.
-func RunAdminBootstrap(s *store.Store, configDir string) error {
+func RunAdminBootstrap(s store.Store, configDir string) error {
 	// Stub — implementation in a later task group.
 	return nil
 }
@@ -59,14 +59,14 @@ func RunAdminBootstrap(s *store.Store, configDir string) error {
 // ValidateAdminToken reads AF_HUB_ADMIN_TOKEN from the environment,
 // hashes it, and compares against the stored hash. Returns nil on
 // success and a descriptive error on any failure.
-func ValidateAdminToken(s *store.Store) error {
+func ValidateAdminToken(s store.Store) error {
 	// Stub — implementation in a later task group.
 	return nil
 }
 
 // RotateAdminToken generates a new admin token, writes it to the file,
 // and updates the stored hash. Used by --reset-admin-token.
-func RotateAdminToken(s *store.Store, configDir string) error {
+func RotateAdminToken(s store.Store, configDir string) error {
 	// Stub — implementation in a later task group.
 	return nil
 }

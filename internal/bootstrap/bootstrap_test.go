@@ -588,7 +588,7 @@ func TestProperty_BootstrapExactlyOnce(t *testing.T) {
 
 // setupBootstrapTest creates a fresh database with schema and a temp config
 // directory suitable for bootstrap testing.
-func setupBootstrapTest(t *testing.T) (*store.Store, string) {
+func setupBootstrapTest(t *testing.T) (store.Store, string) {
 	t.Helper()
 
 	dir := t.TempDir()

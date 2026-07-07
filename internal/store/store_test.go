@@ -559,7 +559,7 @@ func assertRFC3339(t *testing.T, field, value string) {
 
 // newTestStore creates a fresh in-memory database with schema initialized
 // and returns a Store backed by it.
-func newTestStore(t *testing.T) *Store {
+func newTestStore(t *testing.T) *sqliteStore {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
