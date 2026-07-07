@@ -8,6 +8,7 @@ import (
 	"github.com/agent-fox/af-hub/internal/bootstrap"
 	"github.com/agent-fox/af-hub/internal/config"
 	"github.com/agent-fox/af-hub/internal/db"
+	"github.com/agent-fox/af-hub/internal/server"
 	"github.com/agent-fox/af-hub/internal/store"
 	"github.com/sirupsen/logrus"
 )
@@ -72,8 +73,12 @@ func main() {
 		}
 	}
 
-	// Stub — remaining startup steps (server bind, signal handling) will be
-	// implemented in later task groups (10-12).
-	fmt.Printf("af-hub: ready (port=%d, bind=%s)\n",
-		cfg.Server.Port, cfg.Server.BindAddress)
+	// Step 8: Create and start the HTTP server.
+	e := server.NewServer(cfg, database)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.Port)
+	logrus.WithField("address", addr).Info("starting HTTP server")
+
+	if err := e.Start(addr); err != nil {
+		logrus.WithError(err).Info("server stopped")
+	}
 }
