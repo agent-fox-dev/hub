@@ -1,0 +1,1010 @@
+{
+  "$schema": null,
+  "spec_id": "01",
+  "spec_name": "backend_foundation",
+  "schema_version": 1,
+  "introduction": "This spec defines the foundational backend infrastructure for af-hub \u2014 the coordination hub of the agent-fox platform \u2014 covering project layout, TOML configuration loading, SQLite schema initialization, store layer CRUD operations, admin bootstrap and token rotation, health probes, structured JSON logging, and graceful shutdown. Note: requirements referencing external library APIs (github.com/labstack/echo/v4, github.com/BurntSushi/toml, modernc.org/sqlite, github.com/sirupsen/logrus, github.com/google/uuid) are based on PRD descriptions without a Verified External API section and should be cross-checked against installed library versions before implementation.",
+  "glossary": {
+    "--reset-admin-token": "Server startup flag that triggers admin token rotation, generating and persisting a new admin token.",
+    "/healthz": "The liveness probe HTTP endpoint that always returns 200 if the server process is alive.",
+    "/readyz": "The readiness probe HTTP endpoint that checks database connectivity before returning 200.",
+    "AF_HUB_ADMIN_TOKEN": "Environment variable holding the plaintext admin token, required on all non-first boots to validate the admin credential.",
+    "WAL mode": "SQLite Write-Ahead Logging mode, enabled on database open for concurrent read/write safety.",
+    "admin bootstrap": "The automatic process on first boot that creates the admin user, generates an admin token, and writes it to disk.",
+    "admin_token": "The plaintext file (mode 0600) written next to config.toml containing the generated admin token.",
+    "admin_tokens": "SQLite table that stores the SHA-256 hash of the current admin token.",
+    "af-hub": "The server binary that acts as the coordination hub for the agent-fox platform.",
+    "afc": "The CLI client binary for the agent-fox platform, stubbed in this spec.",
+    "api_keys": "SQLite table storing API key records for users and workspaces.",
+    "config.toml": "The TOML configuration file that the server loads from the current working directory on startup.",
+    "drain timeout": "The 15-second window after SIGTERM/SIGINT during which the server waits for in-flight HTTP connections to complete before force-closing.",
+    "first boot": "The initial server startup when zero user records exist in the `users` table, triggering admin bootstrap.",
+    "key_hash": "The stored hash of an API key in the `api_keys` table.",
+    "key_id": "The public identifier portion of an API key stored in the `api_keys` table.",
+    "provider": "The authentication provider name (e.g. 'local', 'github') stored on a user record.",
+    "provider_id": "The provider-scoped unique identifier for a user, stored alongside `provider`.",
+    "slug": "A URL-safe lowercase identifier derived from a workspace name, stored in the `workspaces` table.",
+    "token_hash": "The SHA-256 hash of the plaintext admin token stored in the `admin_tokens` table.",
+    "users": "SQLite table storing all user records including the bootstrap admin user.",
+    "workspace_members": "SQLite table storing membership associations between users and workspaces.",
+    "workspaces": "SQLite table storing workspace records.",
+    "CREATE TABLE IF NOT EXISTS": "SQL statement to create a table only if it does not already exist.",
+    "GET /healthz": "HTTP liveness probe endpoint.",
+    "GET /readyz": "HTTP readiness probe endpoint.",
+    "PRAGMA journal_mode=WAL": "SQLite pragma enabling Write-Ahead Logging for concurrency.",
+    "README.md": "Project root documentation file with quickstart guide.",
+    "[[auth.oauth]]": "TOML array-of-tables section for OAuth provider configuration.",
+    "[database] path": "TOML config field: filesystem path to the SQLite database.",
+    "[logging] level": "TOML config field: minimum log level for output.",
+    "[server] bind_address": "TOML config field: network address the server binds to.",
+    "[server] external_url": "TOML config field: public-facing URL for OAuth redirect derivation.",
+    "[server] port": "TOML config field: TCP port the server listens on.",
+    "af_admin_": "Token prefix identifying an admin bootstrap token.",
+    "bin/": "Output directory for compiled Go binaries.",
+    "bin/af-hub": "Compiled af-hub server binary output path.",
+    "bin/afc": "Compiled afc CLI binary output path.",
+    "client_id": "OAuth provider client identifier.",
+    "client_secret": "OAuth provider client secret credential.",
+    "cmd/af-hub/": "Go entry point directory for the af-hub server binary.",
+    "cmd/afc/": "Go entry point directory for the afc CLI binary.",
+    "crypto/rand": "Go stdlib package for cryptographically secure random number generation.",
+    "docs/architecture.md": "Documentation file covering system architecture.",
+    "docs/configuration.md": "Documentation file covering config.toml reference.",
+    "github.com/BurntSushi/toml": "Go library for TOML configuration file parsing.",
+    "github.com/sirupsen/logrus": "Go library for structured JSON logging.",
+    "go test ./...": "Go command to run all tests recursively.",
+    "go vet ./...": "Go command to run static analysis checks.",
+    "internal/": "Go private package directory; not importable outside the module.",
+    "make build": "Makefile target that compiles both Go binaries.",
+    "make lint": "Makefile target that runs go vet.",
+    "make test": "Makefile target that runs all tests.",
+    "os.MkdirAll": "Go stdlib function to create a directory path recursively.",
+    "time.Parse(time.RFC3339, v)": "Go expression to parse an RFC 3339 timestamp string.",
+    "username": "Unique string identifier for a user account.",
+    "warn": "Log level for important but non-critical messages.",
+    "{\"status\": \"not ready\"}": "JSON response body when the readiness probe fails.",
+    "{\"status\": \"ok\"}": "JSON response body for a successful liveness probe.",
+    "{\"status\": \"ready\"}": "JSON response body for a successful readiness probe.",
+    "modernc.org/sqlite": "Pure-Go SQLite driver; no CGo dependency.",
+    "(provider, provider_id)": "Composite unique constraint on user records.",
+    "name": "Display name field for a workspace.",
+    "(user_id, workspace_id)": "Composite primary key for workspace membership.",
+    "url": "Workspace URL field storing the external reference.",
+    "time.RFC3339": "Go time format constant for RFC 3339 timestamps.",
+    "github.com/google/uuid": "Go library for UUID generation.",
+    "status": "User account status field (active or blocked).",
+    "email": "User email address field."
+  },
+  "requirements": [
+    {
+      "id": "01-REQ-1",
+      "title": "Go project layout and build targets",
+      "user_story": {
+        "role": "platform engineer",
+        "goal": "build both server and CLI binaries with a single make command",
+        "benefit": "I can reliably produce deployable artifacts and run tests from the repository root"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "repository",
+          "action": "contains entry points at `cmd/af-hub/` for the server binary and `cmd/afc/` for the CLI binary, with all private packages under `internal/`",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "Makefile `build` target",
+          "action": "compiles both `af-hub` and `afc` binaries and places them at `bin/af-hub` and `bin/afc` respectively",
+          "return_contract": "exits with code 0 on success; exits with non-zero on compilation error",
+          "trigger": "when `make build` is invoked"
+        },
+        {
+          "id": "01-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "Makefile `test` target",
+          "action": "executes `go test ./...` across all packages",
+          "return_contract": "exits with code 0 when all tests pass; exits with non-zero on any test failure",
+          "trigger": "when `make test` is invoked"
+        },
+        {
+          "id": "01-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "Makefile `lint` target",
+          "action": "executes `go vet ./...` across all packages",
+          "return_contract": "exits with code 0 when no vet errors are found; exits with non-zero otherwise",
+          "trigger": "when `make lint` is invoked"
+        },
+        {
+          "id": "01-REQ-1.5",
+          "ears_pattern": "ubiquitous",
+          "system": "`afc` binary",
+          "action": "is a valid Go binary stub that compiles and exits cleanly, deferring all CLI functionality to a later spec",
+          "return_contract": "exits with code 0"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "Makefile `build` target",
+          "action": "emits compiler error output to stderr and exits with a non-zero code without producing partial binaries in `bin/`",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "a source file contains a compilation error"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-2",
+      "title": "TOML configuration loading and validation",
+      "user_story": {
+        "role": "operator",
+        "goal": "configure the server via a TOML file with validated fields and sensible defaults",
+        "benefit": "I can tune server behavior without silent misconfiguration causing runtime failures"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "loads `config.toml` from the current working directory using `github.com/BurntSushi/toml` and applies defaults: `[server] port` = 8080, `[server] bind_address` = \"0.0.0.0\", `[database] path` = \"./data/af-hub.db\", `[logging] level` = \"info\"",
+          "return_contract": null,
+          "trigger": "when it starts"
+        },
+        {
+          "id": "01-REQ-2.2",
+          "ears_pattern": "ubiquitous",
+          "system": "configuration loader",
+          "action": "validates that `[server] port` is an integer in the range 1\u201365535, `[logging] level` is one of trace/debug/info/warn/error/fatal/panic, and all required fields in each `[[auth.oauth]]` entry (`provider`, `client_id`, `client_secret`) are non-empty strings",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "creates the directory tree automatically with `os.MkdirAll` before opening the database",
+          "return_contract": null,
+          "trigger": "when the parent directory of the configured `[database] path` does not exist"
+        },
+        {
+          "id": "01-REQ-2.4",
+          "ears_pattern": "optional",
+          "system": "configuration",
+          "action": "makes the value available to other subsystems for OAuth redirect URI derivation; no validation is applied beyond being a non-empty string when present",
+          "return_contract": null,
+          "feature": "`[server] external_url` is set"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error message and refuses to start",
+          "return_contract": "exits with non-zero code before binding any port",
+          "error_condition": "`config.toml` is absent from the current working directory"
+        },
+        {
+          "id": "01-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a descriptive fatal error identifying the invalid field and refuses to start",
+          "return_contract": "exits with non-zero code before binding any port",
+          "error_condition": "`config.toml` contains an invalid value (e.g. port out of range, unknown log level, missing required OAuth field)"
+        },
+        {
+          "id": "01-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error with the underlying OS error and refuses to start",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "the data directory cannot be created due to a filesystem permission error"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-3",
+      "title": "SQLite database initialization with WAL mode",
+      "user_story": {
+        "role": "platform engineer",
+        "goal": "have the database schema created automatically on server startup",
+        "benefit": "I can deploy the server without running separate migration commands"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "enables WAL mode by executing `PRAGMA journal_mode=WAL` immediately after opening the connection using the pure-Go `modernc.org/sqlite` driver",
+          "return_contract": null,
+          "trigger": "when it opens the SQLite database"
+        },
+        {
+          "id": "01-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "executes `CREATE TABLE IF NOT EXISTS` statements for all five tables \u2014 `users`, `workspaces`, `workspace_members`, `api_keys`, and `admin_tokens` \u2014 with the exact column definitions and constraints specified in the PRD",
+          "return_contract": null,
+          "trigger": "after enabling WAL mode"
+        },
+        {
+          "id": "01-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "database schema",
+          "action": "enforces a UNIQUE constraint on `(provider, provider_id)` in the `users` table, a composite primary key `(user_id, workspace_id)` in `workspace_members`, and UNIQUE constraints on `name`, `slug`, and `url` in `workspaces`",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-3.4",
+          "ears_pattern": "ubiquitous",
+          "system": "database schema",
+          "action": "stores all timestamps as RFC 3339 TEXT strings and all primary keys as UUID TEXT values",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error with the underlying OS error and refuses to start; no partial state is left open",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "the SQLite database file cannot be opened or created (e.g. directory not writable)"
+        },
+        {
+          "id": "01-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error identifying the failing table and refuses to start; closes the database connection before exiting",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "a `CREATE TABLE IF NOT EXISTS` statement fails (e.g. schema conflict with existing incompatible table)"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-4",
+      "title": "Store layer CRUD operations",
+      "user_story": {
+        "role": "backend developer",
+        "goal": "interact with all database entities through typed Go functions",
+        "benefit": "I can build higher-level features without writing raw SQL outside the store layer"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "store layer",
+          "action": "provides typed Go functions for create, read (by ID and by relevant unique fields), update, and delete operations on each of the five tables: `users`, `workspaces`, `workspace_members`, `api_keys`, and `admin_tokens`",
+          "return_contract": "each function returns a typed value and an error (Go `(*T, error)` pattern); returns a sentinel not-found error when a record does not exist"
+        },
+        {
+          "id": "01-REQ-4.2",
+          "ears_pattern": "ubiquitous",
+          "system": "store layer",
+          "action": "generates all new entity IDs as UUIDs using `github.com/google/uuid` and formats all timestamps as RFC 3339 strings using `time.RFC3339` before persisting",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-4.3",
+          "ears_pattern": "ubiquitous",
+          "system": "store layer",
+          "action": "is the only package in the codebase that executes SQL statements directly against the database; all other packages interact with data exclusively through store layer function calls",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-4.4",
+          "ears_pattern": "ubiquitous",
+          "system": "store layer",
+          "action": "wraps all database errors with contextual information (operation name and entity type) before returning them to callers",
+          "return_contract": "returns a non-nil error value; never panics or calls os.Exit"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "store layer",
+          "action": "returns a typed constraint-violation error that callers can distinguish from other database errors",
+          "return_contract": "returns a non-nil error; does not panic",
+          "error_condition": "a create operation violates a UNIQUE constraint (e.g. duplicate `username` in `users`)"
+        },
+        {
+          "id": "01-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "store layer",
+          "action": "returns a wrapped error to the caller with the operation context; does not retry internally; does not call os.Exit",
+          "return_contract": "returns a non-nil error",
+          "error_condition": "a database operation times out or the connection is lost mid-query"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-5",
+      "title": "Admin bootstrap on first boot",
+      "user_story": {
+        "role": "operator",
+        "goal": "have an admin user and token created automatically on the first server start",
+        "benefit": "I can access the system immediately after deployment without manual credential setup"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-5.1",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "creates an admin user record with `username` = \"admin\", `email` = \"admin@localhost\", `provider` = \"local\", `provider_id` = \"admin\", and `status` = \"active\" in the `users` table via the store layer",
+          "return_contract": null,
+          "trigger": "when startup schema initialization completes",
+          "condition": "zero records exist in the `users` table"
+        },
+        {
+          "id": "01-REQ-5.2",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "generates a cryptographically random 32-byte token using `crypto/rand`, hex-encodes it to produce a 64-character string, and prepends `af_admin_` to form the full admin token",
+          "return_contract": null,
+          "trigger": "after the admin user record is created",
+          "condition": "admin bootstrap is in progress (first boot detected)"
+        },
+        {
+          "id": "01-REQ-5.3",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "computes the SHA-256 hash of the plaintext token and inserts a record into `admin_tokens` with the resulting `token_hash` via the store layer",
+          "return_contract": null,
+          "trigger": "after the plaintext admin token is generated",
+          "condition": "admin bootstrap is in progress"
+        },
+        {
+          "id": "01-REQ-5.4",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "writes the plaintext admin token to a file named `admin_token` in the same directory as `config.toml`, with file permissions 0600",
+          "return_contract": null,
+          "trigger": "after the token hash is persisted",
+          "condition": "admin bootstrap is in progress"
+        },
+        {
+          "id": "01-REQ-5.5",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "logs the absolute path of the `admin_token` file at the `warn` log level",
+          "return_contract": null,
+          "trigger": "after the `admin_token` file is written",
+          "condition": "admin bootstrap is in progress"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error, removes any partially written file, and refuses to start; the admin user record created in this bootstrap attempt is also removed to leave the database in a clean state",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "the `admin_token` file cannot be written during admin bootstrap (e.g. directory not writable)"
+        },
+        {
+          "id": "01-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "returns an error to the startup routine, which logs it as fatal and refuses to start; no partial token or file is left on disk",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "crypto/rand fails to generate random bytes during admin token generation"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-6",
+      "title": "Admin token validation on subsequent boots",
+      "user_story": {
+        "role": "operator",
+        "goal": "have the server validate the admin token from the environment on every non-first startup",
+        "benefit": "accidental or unauthorized starts without the correct token are rejected before the server accepts traffic"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-6.1",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "reads the `AF_HUB_ADMIN_TOKEN` environment variable, computes its SHA-256 hash, and compares it against the `token_hash` stored in the `admin_tokens` table",
+          "return_contract": null,
+          "trigger": "when startup completes schema initialization",
+          "condition": "at least one record exists in the `users` table (not first boot)"
+        },
+        {
+          "id": "01-REQ-6.2",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "logs a fatal error indicating the missing environment variable and refuses to start",
+          "return_contract": "exits with non-zero code before binding any port",
+          "trigger": "when the server performs admin token validation on a non-first boot",
+          "condition": "`AF_HUB_ADMIN_TOKEN` is absent or empty"
+        },
+        {
+          "id": "01-REQ-6.3",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "logs a fatal error indicating token mismatch and refuses to start",
+          "return_contract": "exits with non-zero code before binding any port",
+          "trigger": "when the server performs admin token validation on a non-first boot",
+          "condition": "`AF_HUB_ADMIN_TOKEN` is present but its SHA-256 hash does not match the stored `token_hash`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error indicating a corrupted token state and refuses to start",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "the `admin_tokens` table is empty on a non-first boot (users exist but no token record)"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-7",
+      "title": "Admin token rotation via --reset-admin-token flag",
+      "user_story": {
+        "role": "operator",
+        "goal": "rotate the admin token by passing a flag at server startup",
+        "benefit": "I can invalidate a compromised or lost admin token without manual database intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-7.1",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "generates a new cryptographically random admin token using the same algorithm as admin bootstrap, updates the `admin_tokens` table with the new `token_hash`, overwrites the `admin_token` file (mode 0600), logs the file path at warn level, then continues normal startup",
+          "return_contract": null,
+          "trigger": "when the server starts",
+          "condition": "`--reset-admin-token` flag is provided"
+        },
+        {
+          "id": "01-REQ-7.2",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "skips the `AF_HUB_ADMIN_TOKEN` environment variable validation step that would otherwise occur on a non-first boot",
+          "return_contract": null,
+          "trigger": "after the new token is persisted",
+          "condition": "`--reset-admin-token` flag is provided"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "logs a fatal error, does not update the `admin_tokens` table (or rolls back any update already made), and refuses to start, leaving the old token intact",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "the `admin_token` file cannot be overwritten during token rotation"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-8",
+      "title": "Health probe endpoints",
+      "user_story": {
+        "role": "Kubernetes operator",
+        "goal": "query liveness and readiness endpoints on the running server",
+        "benefit": "the orchestrator can automatically restart unhealthy pods and route traffic only to ready instances"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "responds with HTTP 200 and JSON body `{\"status\": \"ok\"}` unconditionally, without touching the database",
+          "return_contract": "HTTP 200, Content-Type: application/json, body: {\"status\": \"ok\"}",
+          "trigger": "when it receives `GET /healthz`"
+        },
+        {
+          "id": "01-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "responds with HTTP 200 and JSON body `{\"status\": \"ready\"}`",
+          "return_contract": "HTTP 200, Content-Type: application/json, body: {\"status\": \"ready\"}",
+          "trigger": "when it receives `GET /readyz` and the database ping succeeds"
+        },
+        {
+          "id": "01-REQ-8.3",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "responds with HTTP 503 and JSON body `{\"status\": \"not ready\"}`",
+          "return_contract": "HTTP 503, Content-Type: application/json, body: {\"status\": \"not ready\"}",
+          "trigger": "when it receives `GET /readyz`",
+          "condition": "the database ping fails"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "applies a context deadline (maximum 2 seconds) to the ping operation; if the deadline is exceeded, returns HTTP 503 with body `{\"status\": \"not ready\"}` and logs the timeout at warn level",
+          "return_contract": "HTTP 503, body: {\"status\": \"not ready\"}",
+          "error_condition": "the database ping for `/readyz` hangs indefinitely"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-9",
+      "title": "Structured JSON request logging",
+      "user_story": {
+        "role": "operator",
+        "goal": "have every HTTP request logged as a structured JSON line",
+        "benefit": "I can query and aggregate request logs in log aggregation systems without custom parsers"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-9.1",
+          "ears_pattern": "ubiquitous",
+          "system": "server",
+          "action": "uses `github.com/sirupsen/logrus` configured in JSON formatter mode as the sole logging backend",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "request logger middleware",
+          "action": "emits a structured JSON log entry containing at minimum: HTTP method, request path, response status code, and request duration in milliseconds",
+          "return_contract": null,
+          "trigger": "when an HTTP request completes"
+        },
+        {
+          "id": "01-REQ-9.3",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "sets the logrus global log level to the configured value before the HTTP server begins accepting connections",
+          "return_contract": null,
+          "trigger": "when the log level configured in `config.toml` is applied"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-10",
+      "title": "Graceful shutdown on SIGTERM/SIGINT",
+      "user_story": {
+        "role": "operator",
+        "goal": "have the server drain in-flight requests before exiting on a stop signal",
+        "benefit": "deployments and restarts do not abruptly terminate active connections"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "server",
+          "action": "stops accepting new connections and initiates graceful shutdown with a `drain timeout` of 15 seconds using the Echo framework's Shutdown method",
+          "return_contract": null,
+          "trigger": "when it receives SIGTERM or SIGINT"
+        },
+        {
+          "id": "01-REQ-10.2",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "closes the database connection, flushes log buffers, and exits with code 0",
+          "return_contract": "exits with code 0",
+          "trigger": "after receiving SIGTERM or SIGINT",
+          "condition": "all in-flight connections drain within the `drain timeout`"
+        },
+        {
+          "id": "01-REQ-10.3",
+          "ears_pattern": "complex_event",
+          "system": "server",
+          "action": "force-closes all remaining connections, closes the database connection, logs a warning indicating forced shutdown, and exits",
+          "return_contract": "exits with a non-zero code",
+          "trigger": "after receiving SIGTERM or SIGINT",
+          "condition": "in-flight connections do not drain within the `drain timeout`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "server",
+          "action": "applies a maximum 5-second timeout to the database close operation; if exceeded, logs the error and exits without blocking indefinitely",
+          "return_contract": "exits with non-zero code",
+          "error_condition": "the database connection close call hangs after the drain phase completes"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-11",
+      "title": "Documentation files",
+      "user_story": {
+        "role": "new contributor",
+        "goal": "find clear documentation for the project structure, configuration, and architecture",
+        "benefit": "I can get the server running and understand its design without reading source code"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-11.1",
+          "ears_pattern": "ubiquitous",
+          "system": "repository",
+          "action": "contains `README.md` at the project root covering: project overview, prerequisites (Go 1.22+), quickstart steps (build, configure, run, first boot), project structure overview, and links to `docs/architecture.md` and `docs/configuration.md`",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-11.2",
+          "ears_pattern": "ubiquitous",
+          "system": "repository",
+          "action": "contains `docs/architecture.md` covering: two-binary design (`af-hub` and `afc`), `internal/` package layout, SQLite storage rationale, config loading flow, and request lifecycle",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-11.3",
+          "ears_pattern": "ubiquitous",
+          "system": "repository",
+          "action": "contains `docs/configuration.md` with a complete `config.toml` reference listing every field, its type, default value, validation rules, and any environment variable override",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "01-PROP-1",
+      "title": "Admin token hash consistency",
+      "for_any": "plaintext admin token written to the `admin_token` file",
+      "invariant": "the SHA-256 hash of that token equals the `token_hash` stored in the `admin_tokens` table at the time of generation or rotation",
+      "validates": [
+        "01-REQ-5.3",
+        "01-REQ-7.1"
+      ]
+    },
+    {
+      "id": "01-PROP-2",
+      "title": "Admin bootstrap exactly once",
+      "for_any": "server startup sequence",
+      "invariant": "admin bootstrap (user creation, token generation, file write) executes if and only if zero records exist in the `users` table at the time of the check; it never executes more than once per first-boot event",
+      "validates": [
+        "01-REQ-5.1",
+        "01-REQ-6.1"
+      ]
+    },
+    {
+      "id": "01-PROP-3",
+      "title": "Store layer exclusivity",
+      "for_any": "SQL statement executed against the database",
+      "invariant": "the statement originates from within the store layer package; no other package executes SQL directly",
+      "validates": [
+        "01-REQ-4.3"
+      ]
+    },
+    {
+      "id": "01-PROP-4",
+      "title": "RFC 3339 timestamp consistency",
+      "for_any": "timestamp value written to any table column",
+      "invariant": "the value is a valid RFC 3339 string parseable by `time.Parse(time.RFC3339, v)`",
+      "validates": [
+        "01-REQ-3.4",
+        "01-REQ-4.2"
+      ]
+    },
+    {
+      "id": "01-PROP-5",
+      "title": "No port binding before successful validation",
+      "for_any": "server startup sequence that fails configuration, schema, or token validation",
+      "invariant": "the server never binds to a TCP port before all startup validations pass",
+      "validates": [
+        "01-REQ-2.E1",
+        "01-REQ-2.E2",
+        "01-REQ-6.2",
+        "01-REQ-6.3"
+      ]
+    },
+    {
+      "id": "01-PROP-6",
+      "title": "WAL mode always enabled before schema initialization",
+      "for_any": "database open sequence",
+      "invariant": "`PRAGMA journal_mode=WAL` is executed before any `CREATE TABLE IF NOT EXISTS` statement",
+      "validates": [
+        "01-REQ-3.1",
+        "01-REQ-3.2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "01-PATH-1",
+      "title": "First boot: admin bootstrap and server ready",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "Invokes `bin/af-hub` with `config.toml` present in the working directory and no `AF_HUB_ADMIN_TOKEN` set"
+        },
+        {
+          "actor": "Configuration loader",
+          "action": "Reads and validates `config.toml`; applies defaults for missing optional fields"
+        },
+        {
+          "actor": "Database initializer",
+          "action": "Opens the SQLite file at the configured `[database] path`, enables WAL mode, and executes all `CREATE TABLE IF NOT EXISTS` statements"
+        },
+        {
+          "actor": "Admin bootstrap routine",
+          "action": "Detects zero records in `users` table, creates the admin user record via the store layer"
+        },
+        {
+          "actor": "Admin bootstrap routine",
+          "action": "Generates a 64-hex-char random token prefixed with `af_admin_`, stores its SHA-256 `token_hash` in `admin_tokens` via the store layer"
+        },
+        {
+          "actor": "Admin bootstrap routine",
+          "action": "Writes the plaintext token to the `admin_token` file (mode 0600) next to `config.toml` and logs the file path at warn level"
+        },
+        {
+          "actor": "HTTP server",
+          "action": "Binds to the configured address and port; registers `/healthz` and `/readyz` routes with request logging middleware"
+        },
+        {
+          "actor": "Operator",
+          "action": "Observes the server accepting connections and reads the plaintext token from the `admin_token` file"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-2",
+      "title": "Subsequent boot: admin token validation and server ready",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "Sets `AF_HUB_ADMIN_TOKEN` to the plaintext token from the `admin_token` file and invokes `bin/af-hub`"
+        },
+        {
+          "actor": "Configuration loader",
+          "action": "Reads and validates `config.toml`"
+        },
+        {
+          "actor": "Database initializer",
+          "action": "Opens SQLite, enables WAL mode, runs `CREATE TABLE IF NOT EXISTS` (no-ops on existing tables)"
+        },
+        {
+          "actor": "Admin token validator",
+          "action": "Reads `AF_HUB_ADMIN_TOKEN`, computes its SHA-256 hash, fetches `token_hash` from `admin_tokens`, and confirms they match"
+        },
+        {
+          "actor": "HTTP server",
+          "action": "Binds to the configured address and port and begins accepting requests"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-3",
+      "title": "Admin token rotation",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "Invokes `bin/af-hub --reset-admin-token`"
+        },
+        {
+          "actor": "Configuration loader",
+          "action": "Reads and validates `config.toml`"
+        },
+        {
+          "actor": "Database initializer",
+          "action": "Opens SQLite, enables WAL mode, runs `CREATE TABLE IF NOT EXISTS`"
+        },
+        {
+          "actor": "Token rotation routine",
+          "action": "Generates a new random admin token, updates `admin_tokens` with the new `token_hash`, overwrites the `admin_token` file (mode 0600), and logs the file path at warn level"
+        },
+        {
+          "actor": "HTTP server",
+          "action": "Skips environment token validation and starts normally, binding to the configured address"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-4",
+      "title": "Graceful shutdown on SIGTERM",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "Sends SIGTERM to the running `af-hub` process"
+        },
+        {
+          "actor": "Signal handler",
+          "action": "Catches SIGTERM and triggers the Echo Shutdown method with a 15-second context deadline"
+        },
+        {
+          "actor": "HTTP server",
+          "action": "Stops accepting new connections and waits for in-flight requests to complete"
+        },
+        {
+          "actor": "HTTP server",
+          "action": "On drain completion (or timeout expiry), closes the database connection and exits"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-5",
+      "title": "Readiness probe with database failure",
+      "steps": [
+        {
+          "actor": "Kubernetes kubelet",
+          "action": "Sends `GET /readyz` to the server"
+        },
+        {
+          "actor": "Readiness handler",
+          "action": "Attempts a database ping with a 2-second context deadline"
+        },
+        {
+          "actor": "Readiness handler",
+          "action": "Ping times out or returns an error; responds with HTTP 503 and body `{\"status\": \"not ready\"}`"
+        },
+        {
+          "actor": "Kubernetes kubelet",
+          "action": "Marks the pod as not ready and stops routing traffic to it"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "01-ERR-1",
+      "condition": "`config.toml` is missing from the working directory at startup",
+      "behavior": "Server logs a fatal error and exits with non-zero code before binding any port",
+      "requirement_id": "01-REQ-2.E1"
+    },
+    {
+      "id": "01-ERR-2",
+      "condition": "`config.toml` contains an invalid field value (port out of range, unknown log level, missing required OAuth field)",
+      "behavior": "Server logs a descriptive fatal error identifying the invalid field and exits with non-zero code before binding any port",
+      "requirement_id": "01-REQ-2.E2"
+    },
+    {
+      "id": "01-ERR-3",
+      "condition": "Data directory cannot be created due to filesystem permission error",
+      "behavior": "Server logs a fatal error with the OS error detail and exits with non-zero code",
+      "requirement_id": "01-REQ-2.E3"
+    },
+    {
+      "id": "01-ERR-4",
+      "condition": "SQLite database file cannot be opened or created",
+      "behavior": "Server logs a fatal error with the OS error, ensures no connection is left open, and exits with non-zero code",
+      "requirement_id": "01-REQ-3.E1"
+    },
+    {
+      "id": "01-ERR-5",
+      "condition": "A `CREATE TABLE IF NOT EXISTS` statement fails due to a schema conflict",
+      "behavior": "Server logs a fatal error identifying the failing table, closes the database connection, and exits with non-zero code",
+      "requirement_id": "01-REQ-3.E2"
+    },
+    {
+      "id": "01-ERR-6",
+      "condition": "Store layer create operation violates a UNIQUE constraint",
+      "behavior": "Store layer returns a typed constraint-violation error to the caller; does not panic",
+      "requirement_id": "01-REQ-4.E1"
+    },
+    {
+      "id": "01-ERR-7",
+      "condition": "Database operation times out or connection is lost mid-query in the store layer",
+      "behavior": "Store layer returns a wrapped error with operation context to the caller; does not retry internally; does not call os.Exit",
+      "requirement_id": "01-REQ-4.E2"
+    },
+    {
+      "id": "01-ERR-8",
+      "condition": "`admin_token` file cannot be written during admin bootstrap",
+      "behavior": "Server removes any partially written file, removes the admin user record created in this bootstrap attempt, logs a fatal error, and exits with non-zero code",
+      "requirement_id": "01-REQ-5.E1"
+    },
+    {
+      "id": "01-ERR-9",
+      "condition": "crypto/rand fails to generate random bytes during admin token generation",
+      "behavior": "Server propagates the error to the startup routine, which logs it as fatal and exits without leaving partial token state on disk",
+      "requirement_id": "01-REQ-5.E2"
+    },
+    {
+      "id": "01-ERR-10",
+      "condition": "`AF_HUB_ADMIN_TOKEN` is absent or empty on a non-first boot",
+      "behavior": "Server logs a fatal error indicating the missing variable and exits with non-zero code before binding any port",
+      "requirement_id": "01-REQ-6.2"
+    },
+    {
+      "id": "01-ERR-11",
+      "condition": "`AF_HUB_ADMIN_TOKEN` hash does not match the stored `token_hash` on a non-first boot",
+      "behavior": "Server logs a fatal error indicating token mismatch and exits with non-zero code before binding any port",
+      "requirement_id": "01-REQ-6.3"
+    },
+    {
+      "id": "01-ERR-12",
+      "condition": "`admin_tokens` table is empty on a non-first boot",
+      "behavior": "Server logs a fatal error indicating corrupted token state and exits with non-zero code",
+      "requirement_id": "01-REQ-6.E1"
+    },
+    {
+      "id": "01-ERR-13",
+      "condition": "`admin_token` file cannot be overwritten during `--reset-admin-token` rotation",
+      "behavior": "Server does not update `admin_tokens` table (or rolls back any update), logs a fatal error, leaves the old token intact, and exits with non-zero code",
+      "requirement_id": "01-REQ-7.E1"
+    },
+    {
+      "id": "01-ERR-14",
+      "condition": "Database ping for `/readyz` exceeds 2-second deadline",
+      "behavior": "Handler returns HTTP 503 with body `{\"status\": \"not ready\"}` and logs the timeout at warn level",
+      "requirement_id": "01-REQ-8.E1"
+    },
+    {
+      "id": "01-ERR-15",
+      "condition": "Database connection close hangs after the graceful shutdown drain phase",
+      "behavior": "Server applies a 5-second timeout to the close operation; if exceeded, logs the error and exits without blocking indefinitely",
+      "requirement_id": "01-REQ-10.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/labstack/echo/v4",
+      "version": "v4.x",
+      "symbols": [
+        {
+          "name": "New",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "func New() *Echo",
+          "notes": "Creates a new Echo instance. Verify exact signature against installed version."
+        },
+        {
+          "name": "Echo.Shutdown",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "func (e *Echo) Shutdown(ctx context.Context) error",
+          "notes": "Gracefully shuts down the server without interrupting active connections. Used for 15-second drain."
+        }
+      ]
+    },
+    {
+      "package": "github.com/BurntSushi/toml",
+      "version": "v1.x",
+      "symbols": [
+        {
+          "name": "DecodeFile",
+          "import_path": "github.com/BurntSushi/toml",
+          "signature": "func DecodeFile(fpath string, v interface{}) (MetaData, error)",
+          "notes": "Decodes a TOML file into v. Verify exact signature against installed version."
+        }
+      ]
+    },
+    {
+      "package": "modernc.org/sqlite",
+      "version": "v1.x",
+      "symbols": [
+        {
+          "name": "Driver registration",
+          "import_path": "modernc.org/sqlite",
+          "signature": "import _ \"modernc.org/sqlite\"",
+          "notes": "Pure-Go SQLite driver; registers the 'sqlite' driver name for use with database/sql. No CGo required."
+        }
+      ]
+    },
+    {
+      "package": "github.com/sirupsen/logrus",
+      "version": "v1.x",
+      "symbols": [
+        {
+          "name": "SetFormatter",
+          "import_path": "github.com/sirupsen/logrus",
+          "signature": "func SetFormatter(formatter Formatter)",
+          "notes": "Sets the global logrus formatter. Use with &logrus.JSONFormatter{} for structured JSON output."
+        },
+        {
+          "name": "SetLevel",
+          "import_path": "github.com/sirupsen/logrus",
+          "signature": "func SetLevel(level Level)",
+          "notes": "Sets the global logrus log level."
+        }
+      ]
+    },
+    {
+      "package": "github.com/google/uuid",
+      "version": "v1.x",
+      "symbols": [
+        {
+          "name": "New",
+          "import_path": "github.com/google/uuid",
+          "signature": "func New() UUID",
+          "notes": "Generates a new random UUID (v4). Returns UUID type; call .String() for the text representation."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `auth_rbac_api` PRD is exceptionally well-structured and comprehensive. All four required spec sections \u2014 Intent, Goals, Non-Goals, and Background (implicitly covered via Dependencies and Design Decisions) \u2014 are present and of high quality. The Intent clearly articulates the feature's purpose and the post-completion state of the system. Goals are concrete and implementation-oriented. Non-Goals explicitly draw crisp scope boundaries. Functional requirements are detailed with precise endpoint contracts, status codes, validation rules, and permission matrices. Technical boundaries, dependencies, and design rationale are all documented. This PRD is ready to proceed to artifact generation with only minor clarifications worth noting.",
+      "gaps": [
+        "Background section is absent as a formal named section. Context is inferred from Intent and Dependencies, but there is no explicit narrative covering prior art, the motivation for this specific auth/RBAC approach, or the problem it solves for operators \u2014 which could aid future maintainers.",
+        "Goals are implementation tasks rather than measurable outcomes (e.g., no success metrics such as 'auth latency < Xms' or 'zero unauthenticated endpoint exposure verified by integration tests'). This is a minor concern for a backend infrastructure spec but worth noting.",
+        "The `owner` field is empty in the metadata, meaning there is no designated accountable person for this spec.",
+        "The RBAC permission matrix lists 'self' for PUT /api/v1/users/:id for Editor and Reader, but the narrative clarifies only `full_name` is self-editable. The matrix column header 'Editor' and 'Reader' showing 'self' could be misread as full update access \u2014 a brief inline note in the matrix would prevent ambiguity.",
+        "Token refresh behavior (POST /api/v1/keys/:key_id/refresh) does not specify whether the expiry timestamp resets on refresh or remains unchanged from the original creation time.",
+        "The error envelope uses `code` as an HTTP status integer/string (e.g. '400'), but it is unclear whether `code` is a numeric integer or a string in the JSON response \u2014 the example shows a quoted string ('<HTTP_STATUS>') which should be clarified.",
+        "No explicit mention of request body size limits that would trigger HTTP 413, despite 413 appearing in the error table."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should a key's expiry timestamp reset to a new N-day window upon a successful POST /api/v1/keys/:key_id/refresh, or does the original expires_at remain unchanged?",
+          "context": "The refresh endpoint generates a new secret for an existing key but the PRD does not specify whether the expiry clock restarts. This affects security posture and client expectations.",
+          "options": [
+            "Reset expiry to a new N-day window from the time of refresh",
+            "Keep the original expires_at unchanged",
+            "Make it configurable per-request (accept optional `expires` in the refresh body)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Is the `code` field in the error response envelope a JSON string or a JSON integer?",
+          "context": "The error format example shows `\"code\": \"<HTTP_STATUS>\"` with quotes implying a string, but HTTP status codes are conventionally integers. Implementers and API consumers need a consistent contract.",
+          "options": [
+            "String (e.g. \"400\")",
+            "Integer (e.g. 400)",
+            "Both \u2014 mirror the HTTP status as an integer and add a separate string `message` field"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "What is the request body size limit that triggers an HTTP 413 response, and should it be enforced globally or per-endpoint?",
+          "context": "HTTP 413 appears in the error envelope table but no body size limit is specified anywhere in the PRD. Without a defined threshold, implementers must guess or leave it unconfigured.",
+          "options": [
+            "1 MB globally",
+            "Configurable via config.toml",
+            "Per-endpoint limits (e.g. smaller for auth callbacks)",
+            "No hard limit \u2014 remove 413 from the error table"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Can you add a formal Background section that explains the motivation for this auth/RBAC design and any prior art or rejected alternatives (e.g. why token-based over session-based auth was chosen for the API)?",
+          "context": "The PRD lacks an explicit Background section. While Intent and Design Decisions partially fill this gap, a dedicated Background aids future contributors and reviewers in understanding the 'why' behind key architectural choices.",
+          "options": [
+            "Yes, I will add a Background section",
+            "The Intent + Design Decisions are sufficient \u2014 skip this section"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Who is the owner of this spec? The `owner` metadata field is currently empty.",
+          "context": "An empty owner field means there is no designated accountable person for decisions, reviews, and sign-off on this spec.",
+          "options": [],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

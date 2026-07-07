@@ -1,0 +1,778 @@
+{
+  "$schema": null,
+  "spec_id": "03",
+  "spec_name": "cli",
+  "schema_version": 1,
+  "introduction": "This spec defines `afc`, the command-line client for af-hub, covering the full OAuth login flow and API key management subcommands. Note: requirements referencing Cobra and net/http APIs are based on unverified PRD assumptions and should be cross-checked against the installed library versions before implementation.",
+  "glossary": {
+    "--api-key": "CLI flag that supplies an API key for authentication, overrides AF_HUB_API_KEY",
+    "--hub-url": "CLI flag that specifies the hub server base URL, overrides AF_HUB_URL",
+    "--provider": "CLI flag on afc login specifying the OAuth provider name (defaults to github)",
+    "AF_HUB_API_KEY": "Environment variable supplying an API key for authentication on key management commands",
+    "AF_HUB_URL": "Environment variable specifying the hub server base URL",
+    "Cobra": "The Go CLI framework (github.com/spf13/cobra) used to build the afc binary",
+    "GET /api/v1/auth/providers": "Hub endpoint that returns the list of available OAuth providers",
+    "POST /api/v1/auth/callback": "Hub endpoint that accepts the OAuth authorization code and returns a user object",
+    "af-hub": "The hub server that owns all state and exposes the API consumed by the CLI",
+    "afc": "The CLI binary name for the af-hub command-line client",
+    "afc keys create": "Subcommand that creates a new API key scoped to a workspace",
+    "afc keys list": "Subcommand that lists all API keys for the authenticated user",
+    "afc keys refresh": "Subcommand that generates a new secret for an existing API key",
+    "afc keys revoke": "Subcommand that permanently revokes an existing API key",
+    "afc login": "Subcommand that runs the OAuth authorization code flow",
+    "authorization code flow": "OAuth 2.0 authorization code grant: redirect user to provider, receive code at callback, exchange code for tokens on the server",
+    "callback server": "A short-lived local HTTP server started by afc to receive the OAuth redirect containing the authorization code",
+    "docs/cli.md": "The CLI reference documentation file shipped with the project",
+    "error envelope": "Standard JSON error response shape returned by the hub on HTTP errors, containing a machine-readable error and human-readable message",
+    "expires_at": "Timestamp field on a key object indicating when the key expires",
+    "key_id": "Unique identifier for an API key resource on the hub",
+    "redirect_uri": "The OAuth parameter specifying the local callback URL including the randomly chosen port",
+    "revoked status": "Boolean field on a key object indicating whether the key has been permanently revoked",
+    "workspace_id": "Unique identifier for a workspace resource on the hub",
+    "login": "CLI subcommand for OAuth authentication.",
+    "keys": "CLI subcommand group for API key management.",
+    "--provider <provider>": "CLI flag specifying the OAuth provider name.",
+    "--expires": "CLI flag specifying key expiry in days.",
+    "--workspace <workspace-id>": "CLI flag specifying the target workspace ID.",
+    "--expires 0|30|60|90": "CLI flag with allowed expiry values in days.",
+    "--label <label>": "CLI flag specifying a human-readable label for an API key.",
+    "--workspace": "CLI flag specifying the target workspace."
+  },
+  "requirements": [
+    {
+      "id": "03-REQ-1",
+      "title": "CLI binary structure with Cobra",
+      "user_story": {
+        "role": "operator",
+        "goal": "run a structured CLI binary called afc with clear subcommands",
+        "benefit": "I can discover and use hub operations from the terminal without reading source code"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc",
+          "action": "is built as a Go binary named `afc` using `Cobra`, with top-level subcommands `login` and `keys`",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc",
+          "action": "accepts `--hub-url` flag on every command, falling back to the `AF_HUB_URL` environment variable when the flag is absent",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "afc",
+          "action": "prints all JSON results to stdout and all human-readable status or error messages to stderr",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "afc",
+          "action": "exits with a non-zero exit code",
+          "return_contract": "exit code != 0; human-readable error message on stderr",
+          "trigger": "a command fails for any reason"
+        },
+        {
+          "id": "03-REQ-1.5",
+          "ears_pattern": "event_driven",
+          "system": "afc",
+          "action": "prints usage information including available subcommands and global flags",
+          "return_contract": "exit code 0; usage text on stdout or stderr per Cobra default behavior",
+          "trigger": "invoked without a subcommand or with --help"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc",
+          "action": "prints an error message to stderr describing the missing configuration and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; descriptive error on stderr",
+          "error_condition": "neither `--hub-url` flag nor `AF_HUB_URL` env var is set when a command requiring the hub URL is executed"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-2",
+      "title": "OAuth login command",
+      "user_story": {
+        "role": "operator",
+        "goal": "authenticate with the hub via OAuth using afc login",
+        "benefit": "I can obtain credentials without manually navigating browser flows or crafting HTTP requests"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "afc login",
+          "action": "fetches the provider list from `GET /api/v1/auth/providers` on the hub and validates that the requested provider exists in the list",
+          "return_contract": "proceeds to step 3 on success; exits non-zero with error listing available providers if provider not found",
+          "trigger": "invoked with `--provider <provider>` (defaulting to github when omitted)"
+        },
+        {
+          "id": "03-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "afc login",
+          "action": "starts a local HTTP `callback server` on a random available port, constructs the `redirect_uri` from the local address, and opens the provider's authorization URL in the user's default browser using os/exec with platform-appropriate commands (open on macOS, xdg-open on Linux)",
+          "return_contract": "browser opens to authorization URL; local callback server is listening",
+          "trigger": "the requested provider is validated"
+        },
+        {
+          "id": "03-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "afc login",
+          "action": "sends the authorization code to `POST /api/v1/auth/callback` on the hub and prints the returned user object as JSON to stdout",
+          "return_contract": "JSON user object on stdout; exit code 0",
+          "trigger": "the OAuth provider redirects back to the local `callback server` with an authorization code"
+        },
+        {
+          "id": "03-REQ-2.4",
+          "ears_pattern": "event_driven",
+          "system": "afc login",
+          "action": "shuts down the local `callback server` and releases the port",
+          "return_contract": null,
+          "trigger": "the login flow completes or fails"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc login",
+          "action": "prints an error message to stderr that includes the attempted hub URL and connection failure details, then exits with a non-zero exit code",
+          "return_contract": "exit code != 0; connection error details on stderr",
+          "error_condition": "the hub is unreachable when fetching `GET /api/v1/auth/providers`"
+        },
+        {
+          "id": "03-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc login",
+          "action": "times out, shuts down the `callback server`, prints an error to stderr with a retry suggestion, and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; timeout error with retry suggestion on stderr",
+          "error_condition": "the OAuth `callback server` does not receive a callback within 5 minutes"
+        },
+        {
+          "id": "03-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc login",
+          "action": "shuts down the `callback server`, prints the provider's error description to stderr, and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; provider error description on stderr",
+          "error_condition": "the OAuth provider redirects to the `callback server` with an error parameter instead of an authorization code"
+        },
+        {
+          "id": "03-REQ-2.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc login",
+          "action": "parses the `error envelope` from the response, prints a human-readable message to stderr, and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; parsed error message on stderr",
+          "error_condition": "the hub returns an HTTP error from `POST /api/v1/auth/callback`"
+        },
+        {
+          "id": "03-REQ-2.E5",
+          "ears_pattern": "unwanted",
+          "system": "afc login",
+          "action": "shuts down the `callback server`, releases the port, and exits cleanly with a non-zero exit code",
+          "return_contract": "exit code != 0; no orphaned listener processes or open ports",
+          "error_condition": "the process is interrupted (SIGINT/SIGTERM) while the `callback server` is waiting for the OAuth redirect"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-3",
+      "title": "API key create subcommand",
+      "user_story": {
+        "role": "operator",
+        "goal": "create a new API key scoped to a workspace",
+        "benefit": "I can grant programmatic access to a specific workspace without using my personal credentials"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "afc keys create",
+          "action": "sends a create-key request to the hub using the `--api-key` or `AF_HUB_API_KEY` credential, defaulting expiry to 30 days when `--expires` is omitted",
+          "return_contract": "on success: full key object including plaintext secret on stdout as JSON; exit code 0",
+          "trigger": "invoked with `--workspace <workspace-id>` and optional `--label <label>` and `--expires 0|30|60|90`"
+        },
+        {
+          "id": "03-REQ-3.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc keys create",
+          "action": "prints the plaintext key secret to stdout exactly once and never logs or re-displays it",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc keys create",
+          "action": "prints an error to stderr indicating the user lacks membership in the workspace and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; membership error on stderr",
+          "error_condition": "the authenticated user is not a member of the specified workspace"
+        },
+        {
+          "id": "03-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc keys create",
+          "action": "prints a usage error to stderr indicating the flag is required and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; usage error on stderr",
+          "error_condition": "`--workspace` flag is missing"
+        },
+        {
+          "id": "03-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc keys create",
+          "action": "prints an error to stderr indicating that authentication credentials are required and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; missing credential error on stderr",
+          "error_condition": "neither `--api-key` nor `AF_HUB_API_KEY` is provided"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-4",
+      "title": "API key list subcommand",
+      "user_story": {
+        "role": "operator",
+        "goal": "list all my API keys across workspaces",
+        "benefit": "I can audit and manage programmatic access from the terminal"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "afc keys list",
+          "action": "fetches all API keys for the authenticated user from the hub and prints them to stdout as a JSON array",
+          "return_contract": "JSON array of key objects each containing key_id, label, workspace_id, expires_at, created_at, and revoked status fields; exit code 0",
+          "trigger": "invoked with a valid `--api-key` or `AF_HUB_API_KEY` credential"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc keys list",
+          "action": "parses the `error envelope` and prints a human-readable message to stderr, then exits with a non-zero exit code",
+          "return_contract": "exit code != 0; parsed error message on stderr",
+          "error_condition": "the hub returns an HTTP error (e.g. 401 unauthorized)"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-5",
+      "title": "API key refresh subcommand",
+      "user_story": {
+        "role": "operator",
+        "goal": "rotate the secret of an existing API key by key ID",
+        "benefit": "I can invalidate a potentially compromised secret without revoking the key's identity and workspace association"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "afc keys refresh",
+          "action": "sends a refresh request to the hub for the specified `key_id` and prints the new full key object including the new plaintext secret to stdout as JSON",
+          "return_contract": "JSON key object with new plaintext secret on stdout; exit code 0",
+          "trigger": "invoked with a `key_id` argument and a valid `--api-key` or `AF_HUB_API_KEY` credential"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc keys refresh",
+          "action": "parses the hub `error envelope` and prints a human-readable error to stderr, then exits with a non-zero exit code",
+          "return_contract": "exit code != 0; error message on stderr",
+          "error_condition": "the specified `key_id` does not exist or the authenticated user does not own it"
+        },
+        {
+          "id": "03-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc keys refresh",
+          "action": "prints a usage error to stderr indicating a key ID is required and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; usage error on stderr",
+          "error_condition": "no `key_id` argument is provided"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-6",
+      "title": "API key revoke subcommand",
+      "user_story": {
+        "role": "operator",
+        "goal": "permanently revoke an API key by key ID",
+        "benefit": "I can immediately cut off programmatic access associated with a specific key"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "afc keys revoke",
+          "action": "sends a revoke request to the hub for the specified `key_id` and prints a confirmation message to stderr",
+          "return_contract": "confirmation message on stderr; exit code 0",
+          "trigger": "invoked with a `key_id` argument and a valid `--api-key` or `AF_HUB_API_KEY` credential"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc keys revoke",
+          "action": "parses the hub `error envelope` and prints a human-readable error to stderr, then exits with a non-zero exit code",
+          "return_contract": "exit code != 0; error message on stderr",
+          "error_condition": "the specified `key_id` does not exist or the authenticated user does not own it"
+        },
+        {
+          "id": "03-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc keys revoke",
+          "action": "prints a usage error to stderr indicating a key ID is required and exits with a non-zero exit code",
+          "return_contract": "exit code != 0; usage error on stderr",
+          "error_condition": "no `key_id` argument is provided"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-7",
+      "title": "HTTP error envelope parsing",
+      "user_story": {
+        "role": "operator",
+        "goal": "receive clear error messages when hub API calls fail",
+        "benefit": "I can diagnose and fix issues without inspecting raw HTTP responses"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "afc",
+          "action": "parses the `error envelope` from the response body and prints a human-readable message derived from the envelope to stderr",
+          "return_contract": "human-readable error message on stderr; exit code != 0",
+          "trigger": "any hub HTTP call returns a non-2xx status code"
+        },
+        {
+          "id": "03-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "afc",
+          "action": "falls back to printing the raw HTTP status code and response body to stderr",
+          "return_contract": "HTTP status code and raw body on stderr; exit code != 0",
+          "error_condition": "the hub returns a non-2xx response with a body that cannot be parsed as the standard `error envelope`"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-8",
+      "title": "CLI documentation",
+      "user_story": {
+        "role": "operator",
+        "goal": "read comprehensive CLI reference documentation",
+        "benefit": "I can learn all commands, flags, and environment variables without reading source code"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-8.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc documentation",
+          "action": "ships a `docs/cli.md` file that documents all commands and subcommands, all flags, all environment variables (`AF_HUB_URL`, `AF_HUB_API_KEY`), and includes at least one usage example per command",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-8.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc documentation",
+          "action": "updates README.md to include a link to `docs/cli.md`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "03-PROP-1",
+      "title": "Callback server is always shut down after login",
+      "for_any": "execution of `afc login` regardless of outcome (success, timeout, error, or interrupt)",
+      "invariant": "the local HTTP `callback server` is shut down and the port is released before the process exits",
+      "validates": [
+        "03-REQ-2.2",
+        "03-REQ-2.4",
+        "03-REQ-2.E2",
+        "03-REQ-2.E3",
+        "03-REQ-2.E5"
+      ]
+    },
+    {
+      "id": "03-PROP-2",
+      "title": "Plaintext key secret printed exactly once",
+      "for_any": "successful execution of `afc keys create` or `afc keys refresh`",
+      "invariant": "the plaintext key secret appears on stdout exactly once and is never written to stderr, log output, or any other output stream",
+      "validates": [
+        "03-REQ-3.1",
+        "03-REQ-3.2",
+        "03-REQ-5.1"
+      ]
+    },
+    {
+      "id": "03-PROP-3",
+      "title": "JSON always goes to stdout, messages always go to stderr",
+      "for_any": "any command invocation",
+      "invariant": "machine-readable JSON output is written exclusively to stdout and human-readable messages (including errors and confirmations) are written exclusively to stderr",
+      "validates": [
+        "03-REQ-1.3",
+        "03-REQ-2.3",
+        "03-REQ-4.1",
+        "03-REQ-5.1",
+        "03-REQ-6.1",
+        "03-REQ-7.1"
+      ]
+    },
+    {
+      "id": "03-PROP-4",
+      "title": "Non-zero exit code on any failure",
+      "for_any": "any command that encounters an error condition",
+      "invariant": "the process exits with a non-zero exit code and emits at least one error message to stderr",
+      "validates": [
+        "03-REQ-1.4",
+        "03-REQ-2.E1",
+        "03-REQ-2.E2",
+        "03-REQ-2.E3",
+        "03-REQ-2.E4",
+        "03-REQ-3.E1",
+        "03-REQ-4.E1",
+        "03-REQ-5.E1",
+        "03-REQ-6.E1",
+        "03-REQ-7.1"
+      ]
+    },
+    {
+      "id": "03-PROP-5",
+      "title": "Hub URL resolution precedence",
+      "for_any": "any command invocation where both `--hub-url` flag and `AF_HUB_URL` env var are set",
+      "invariant": "the value from `--hub-url` takes precedence over `AF_HUB_URL`",
+      "validates": [
+        "03-REQ-1.2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "03-PATH-1",
+      "title": "Successful OAuth login flow end-to-end",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs `afc login --provider github --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc",
+          "action": "sends GET /api/v1/auth/providers to the hub and receives the provider list"
+        },
+        {
+          "actor": "afc",
+          "action": "validates github is in the provider list, starts local callback server on a random port, constructs redirect_uri"
+        },
+        {
+          "actor": "afc",
+          "action": "opens the GitHub authorization URL in the default browser via os/exec"
+        },
+        {
+          "actor": "Operator",
+          "action": "authenticates in the browser and approves the OAuth application"
+        },
+        {
+          "actor": "GitHub OAuth",
+          "action": "redirects the browser to the local callback server with the authorization code"
+        },
+        {
+          "actor": "afc callback server",
+          "action": "receives the authorization code from the redirect request"
+        },
+        {
+          "actor": "afc",
+          "action": "sends POST /api/v1/auth/callback with the authorization code to the hub"
+        },
+        {
+          "actor": "af-hub",
+          "action": "exchanges the code for tokens with GitHub, creates or updates the user record, and returns the user object"
+        },
+        {
+          "actor": "afc",
+          "action": "shuts down the callback server, prints the user object as JSON to stdout, and exits with code 0"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-2",
+      "title": "Create API key and use it to list keys",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs `afc keys create --workspace ws-123 --label ci-bot --expires 30 --api-key <key> --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc",
+          "action": "sends a create-key HTTP request to the hub authenticated with the provided --api-key"
+        },
+        {
+          "actor": "af-hub",
+          "action": "validates workspace membership, creates the API key, and returns the full key object including the plaintext secret"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the full key object including plaintext secret as JSON to stdout and exits with code 0"
+        },
+        {
+          "actor": "Operator",
+          "action": "runs `afc keys list --api-key <key> --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc",
+          "action": "sends a list-keys HTTP request to the hub authenticated with the provided --api-key"
+        },
+        {
+          "actor": "af-hub",
+          "action": "returns a list of all API keys owned by the authenticated user"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the JSON array of key objects to stdout and exits with code 0"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-3",
+      "title": "Revoke API key after refreshing it",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs `afc keys refresh <key-id> --api-key <key> --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc",
+          "action": "sends a refresh-key HTTP request to the hub for the specified key_id"
+        },
+        {
+          "actor": "af-hub",
+          "action": "generates a new secret for the key and returns the updated key object with the new plaintext secret"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the updated key object including the new plaintext secret to stdout and exits with code 0"
+        },
+        {
+          "actor": "Operator",
+          "action": "runs `afc keys revoke <key-id> --api-key <key> --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc",
+          "action": "sends a revoke-key HTTP request to the hub for the specified key_id"
+        },
+        {
+          "actor": "af-hub",
+          "action": "permanently marks the key as revoked and returns success"
+        },
+        {
+          "actor": "afc",
+          "action": "prints a confirmation message to stderr and exits with code 0"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-4",
+      "title": "Login fails due to OAuth callback timeout",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs `afc login --provider github --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc",
+          "action": "fetches and validates the provider list, starts the callback server, opens the browser"
+        },
+        {
+          "actor": "Operator",
+          "action": "does not complete the browser authorization within 5 minutes"
+        },
+        {
+          "actor": "afc",
+          "action": "callback server times out, shuts down and releases the port"
+        },
+        {
+          "actor": "afc",
+          "action": "prints a timeout error with a retry suggestion to stderr and exits with a non-zero exit code"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "03-ERR-1",
+      "condition": "Hub is unreachable when fetching GET /api/v1/auth/providers during login",
+      "behavior": "Print error to stderr with the attempted hub URL and connection failure details; exit non-zero",
+      "requirement_id": "03-REQ-2.E1"
+    },
+    {
+      "id": "03-ERR-2",
+      "condition": "OAuth callback server does not receive a redirect within 5 minutes",
+      "behavior": "Shut down callback server, print timeout error with retry suggestion to stderr; exit non-zero",
+      "requirement_id": "03-REQ-2.E2"
+    },
+    {
+      "id": "03-ERR-3",
+      "condition": "OAuth provider redirects to callback server with an error parameter",
+      "behavior": "Shut down callback server, print provider error description to stderr; exit non-zero",
+      "requirement_id": "03-REQ-2.E3"
+    },
+    {
+      "id": "03-ERR-4",
+      "condition": "Hub returns HTTP error from POST /api/v1/auth/callback",
+      "behavior": "Parse error envelope, print human-readable message to stderr; exit non-zero",
+      "requirement_id": "03-REQ-2.E4"
+    },
+    {
+      "id": "03-ERR-5",
+      "condition": "Process receives SIGINT/SIGTERM while callback server is waiting for OAuth redirect",
+      "behavior": "Shut down callback server, release port, exit cleanly with non-zero exit code; no orphaned processes or ports",
+      "requirement_id": "03-REQ-2.E5"
+    },
+    {
+      "id": "03-ERR-6",
+      "condition": "Authenticated user is not a member of the specified workspace on afc keys create",
+      "behavior": "Print membership error to stderr; exit non-zero",
+      "requirement_id": "03-REQ-3.E1"
+    },
+    {
+      "id": "03-ERR-7",
+      "condition": "--workspace flag missing on afc keys create",
+      "behavior": "Print usage error indicating required flag is missing to stderr; exit non-zero",
+      "requirement_id": "03-REQ-3.E2"
+    },
+    {
+      "id": "03-ERR-8",
+      "condition": "Neither --api-key nor AF_HUB_API_KEY is provided for a key management command",
+      "behavior": "Print missing credential error to stderr; exit non-zero",
+      "requirement_id": "03-REQ-3.E3"
+    },
+    {
+      "id": "03-ERR-9",
+      "condition": "Hub returns HTTP error on afc keys list",
+      "behavior": "Parse error envelope and print human-readable message to stderr; exit non-zero",
+      "requirement_id": "03-REQ-4.E1"
+    },
+    {
+      "id": "03-ERR-10",
+      "condition": "key_id does not exist or user does not own it on afc keys refresh",
+      "behavior": "Parse hub error envelope, print human-readable error to stderr; exit non-zero",
+      "requirement_id": "03-REQ-5.E1"
+    },
+    {
+      "id": "03-ERR-11",
+      "condition": "No key_id argument provided to afc keys refresh",
+      "behavior": "Print usage error indicating key ID is required to stderr; exit non-zero",
+      "requirement_id": "03-REQ-5.E2"
+    },
+    {
+      "id": "03-ERR-12",
+      "condition": "key_id does not exist or user does not own it on afc keys revoke",
+      "behavior": "Parse hub error envelope, print human-readable error to stderr; exit non-zero",
+      "requirement_id": "03-REQ-6.E1"
+    },
+    {
+      "id": "03-ERR-13",
+      "condition": "No key_id argument provided to afc keys revoke",
+      "behavior": "Print usage error indicating key ID is required to stderr; exit non-zero",
+      "requirement_id": "03-REQ-6.E2"
+    },
+    {
+      "id": "03-ERR-14",
+      "condition": "Hub returns non-2xx response with unparseable error body",
+      "behavior": "Fall back to printing raw HTTP status code and response body to stderr; exit non-zero",
+      "requirement_id": "03-REQ-7.2"
+    },
+    {
+      "id": "03-ERR-15",
+      "condition": "Neither --hub-url flag nor AF_HUB_URL env var is set for a command that requires the hub URL",
+      "behavior": "Print descriptive configuration error to stderr; exit non-zero",
+      "requirement_id": "03-REQ-1.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/spf13/cobra",
+      "version": "unverified \u2014 check installed version",
+      "symbols": [
+        {
+          "name": "Command",
+          "import_path": "github.com/spf13/cobra",
+          "signature": "type Command struct { Use string; Short string; Long string; RunE func(cmd *Command, args []string) error; ... }",
+          "notes": "Core Cobra command struct. Signature unverified \u2014 cross-check against installed version before implementation."
+        },
+        {
+          "name": "Command.PersistentFlags",
+          "import_path": "github.com/spf13/cobra",
+          "signature": "func (c *Command) PersistentFlags() *pflag.FlagSet",
+          "notes": "Returns the persistent flag set that is inherited by all subcommands. Unverified."
+        },
+        {
+          "name": "Command.Execute",
+          "import_path": "github.com/spf13/cobra",
+          "signature": "func (c *Command) Execute() error",
+          "notes": "Entry point to run the CLI. Unverified."
+        }
+      ]
+    },
+    {
+      "package": "net/http",
+      "version": "Go 1.22+ standard library",
+      "symbols": [
+        {
+          "name": "http.Get",
+          "import_path": "net/http",
+          "signature": "func Get(url string) (resp *Response, err error)",
+          "notes": "Used to fetch provider list from hub."
+        },
+        {
+          "name": "http.Post",
+          "import_path": "net/http",
+          "signature": "func Post(url, contentType string, body io.Reader) (resp *Response, err error)",
+          "notes": "Used to send authorization code to hub callback endpoint."
+        },
+        {
+          "name": "http.Server",
+          "import_path": "net/http",
+          "signature": "type Server struct { Addr string; Handler Handler; ... }",
+          "notes": "Used to implement the local OAuth callback server."
+        },
+        {
+          "name": "http.ListenAndServe",
+          "import_path": "net/http",
+          "signature": "func (srv *Server) ListenAndServe() error",
+          "notes": "Starts the local callback server on the configured address."
+        }
+      ]
+    },
+    {
+      "package": "os/exec",
+      "version": "Go 1.22+ standard library",
+      "symbols": [
+        {
+          "name": "exec.Command",
+          "import_path": "os/exec",
+          "signature": "func Command(name string, arg ...string) *Cmd",
+          "notes": "Used to invoke 'open' (macOS) or 'xdg-open' (Linux) to open the authorization URL in the default browser."
+        },
+        {
+          "name": "Cmd.Start",
+          "import_path": "os/exec",
+          "signature": "func (c *Cmd) Start() error",
+          "notes": "Starts the browser-open command without waiting for it to return."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1334 @@
+{
+  "$schema": null,
+  "spec_id": "03",
+  "spec_name": "cli",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/cli/... ./cmd/afc/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "02",
+      "from_group": 1,
+      "to_group": 3,
+      "relationship": "Requires all auth and API key endpoints to be functional",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: CLI structure and global flags (REQ-1)",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write test: binary structure exposes login and keys subcommands",
+          "details": [
+            "Write Go test in `cmd/afc/main_test.go` or `internal/cli/root_test.go`.",
+            "Execute `afc --help` via `exec.Command` and assert exit code 0 and that output contains 'login' and 'keys'.",
+            "Run `afc` without subcommand and assert exit code 0 and usage text present.",
+            "Assert binary name appears as 'afc' in usage output."
+          ],
+          "test_spec_refs": [
+            "TS-03-1",
+            "TS-03-5"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.1",
+            "03-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write test: --hub-url overrides AF_HUB_URL env var",
+          "details": [
+            "Write a test that starts a request-capturing stub HTTP server on port 9001.",
+            "Set AF_HUB_URL to a different URL (e.g. http://env-hub.example.com).",
+            "Run `afc keys list --hub-url http://localhost:9001 --api-key test-key`.",
+            "Assert the stub at localhost:9001 received the request.",
+            "Assert no request was sent to the env-hub address."
+          ],
+          "test_spec_refs": [
+            "TS-03-2",
+            "TS-03-P5"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.2",
+            "03-PROP-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write test: JSON to stdout, messages to stderr",
+          "details": [
+            "Write a test that captures stdout and stderr separately for `afc keys list`.",
+            "Stub hub returns a valid JSON array from the list-keys endpoint.",
+            "Assert stdout is valid JSON; assert stderr contains no JSON object/array.",
+            "Repeat assertion pattern for `afc keys create` and `afc keys refresh` success paths."
+          ],
+          "test_spec_refs": [
+            "TS-03-3",
+            "TS-03-P3"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.3",
+            "03-PROP-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write test: non-zero exit code on failure",
+          "details": [
+            "Write a test where the stub hub returns HTTP 500 for all requests.",
+            "Run `afc keys list --api-key test-key`.",
+            "Assert exit code != 0 and stderr is non-empty.",
+            "Verify command terminates within 10 seconds."
+          ],
+          "test_spec_refs": [
+            "TS-03-4",
+            "TS-03-P4"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.4",
+            "03-PROP-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write edge-case test: missing hub URL configuration",
+          "details": [
+            "Write a test that unsets both AF_HUB_URL and omits --hub-url flag.",
+            "Run `afc keys list --api-key myapikey`.",
+            "Assert exit code != 0.",
+            "Assert stderr contains 'hub', 'url', or 'AF_HUB_URL' (case-insensitive)."
+          ],
+          "test_spec_refs": [
+            "TS-03-E1"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All tests in this group compile: `go build ./cmd/afc/... ./internal/cli/...`",
+          "Tests are runnable (may fail until implementation): `go test ./internal/cli/... -count=1 -run 'TestBinaryStructure|TestHubURLPrecedence|TestOutputStreams|TestExitCodes|TestMissingHubURL' -v`",
+          "No linter errors introduced: `go vet ./...`",
+          "Test file references correct package and imports Cobra (`github.com/spf13/cobra`) where applicable"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: OAuth login flow (REQ-2)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write test: login fetches provider list and validates provider",
+          "details": [
+            "Write test in `internal/cli/login_test.go`.",
+            "Stub GET /api/v1/auth/providers to return ['github'].",
+            "Run `afc login --provider github` async; assert stub received request for that endpoint.",
+            "For TS-03-E7: run `afc login --provider gitlab`; assert exit code != 0; assert stderr contains 'gitlab' and 'github'."
+          ],
+          "test_spec_refs": [
+            "TS-03-6",
+            "TS-03-E7"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write test: login starts callback server on random port with redirect_uri",
+          "details": [
+            "Mock `os/exec` browser open call to capture the authorization URL argument.",
+            "Assert the URL contains a `redirect_uri` query parameter.",
+            "Parse the redirect_uri and assert it starts with 'http://localhost:'.",
+            "Assert the port extracted from redirect_uri is in range 1–65535 and is listening."
+          ],
+          "test_spec_refs": [
+            "TS-03-7"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write test: login sends code to POST callback and prints user JSON to stdout",
+          "details": [
+            "Stub POST /api/v1/auth/callback to return a user object {id:'u1', email:'op@example.com'}.",
+            "Simulate OAuth redirect to local callback server with ?code=test-code-123.",
+            "Assert exit code 0.",
+            "Assert stdout is valid JSON and contains expected user fields."
+          ],
+          "test_spec_refs": [
+            "TS-03-8"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write test: callback server is shut down after login completes",
+          "details": [
+            "Run full login flow (success path).",
+            "Record the callback port before flow completes.",
+            "After process exits, assert the port is no longer listening.",
+            "Repeat for failure paths (timeout, provider error, hub error, SIGINT)."
+          ],
+          "test_spec_refs": [
+            "TS-03-9",
+            "TS-03-P1"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.4",
+            "03-PROP-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write edge-case tests: login error conditions",
+          "details": [
+            "TS-03-E2: hub unreachable → assert exit !=0, stderr contains hub URL and connection details.",
+            "TS-03-E3: no OAuth redirect within short timeout → assert exit !=0, stderr contains 'timeout'/'timed out' and 'retry'/'again', port released.",
+            "TS-03-E4: callback arrives with ?error=access_denied → assert exit !=0, stderr contains provider error description, port released.",
+            "TS-03-E5: POST /api/v1/auth/callback returns 400 with error envelope → assert exit !=0, stderr contains 'Authorization code has expired'.",
+            "TS-03-E6: SIGINT sent during callback wait → assert exit !=0, port released, no orphaned processes."
+          ],
+          "test_spec_refs": [
+            "TS-03-E2",
+            "TS-03-E3",
+            "TS-03-E4",
+            "TS-03-E5",
+            "TS-03-E6"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.E1",
+            "03-REQ-2.E2",
+            "03-REQ-2.E3",
+            "03-REQ-2.E4",
+            "03-REQ-2.E5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All login test files compile: `go build ./internal/cli/...`",
+          "Tests runnable: `go test ./internal/cli/... -count=1 -run 'TestLogin' -v`",
+          "No linter errors: `go vet ./...`",
+          "Edge-case tests for all 5 error conditions in 03-REQ-2 are present and compile"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: API key subcommands (REQ-3 through REQ-6)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests: keys create — happy path and secret output",
+          "details": [
+            "Write tests in `internal/cli/keys_test.go`.",
+            "TS-03-10: stub returns key object with secret; assert authenticated POST sent with workspace_id, label, expires_days=30; assert stdout JSON contains secret.",
+            "TS-03-11: assert secret 'super-secret-xyz' appears exactly once in stdout and not in stderr.",
+            "TS-03-P2: parameterize over different workspace_id/label/expiry combos to verify invariant holds."
+          ],
+          "test_spec_refs": [
+            "TS-03-10",
+            "TS-03-11",
+            "TS-03-P2"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.1",
+            "03-REQ-3.2",
+            "03-PROP-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write edge-case tests: keys create error conditions",
+          "details": [
+            "TS-03-E8: hub returns 403 for non-member → assert exit !=0, stderr contains 'member' or workspace ID.",
+            "TS-03-E9: missing --workspace flag → assert exit !=0, stderr contains 'workspace'.",
+            "TS-03-E10: neither --api-key nor AF_HUB_API_KEY set → assert exit !=0, stderr mentions api-key/credential/auth."
+          ],
+          "test_spec_refs": [
+            "TS-03-E8",
+            "TS-03-E9",
+            "TS-03-E10"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.E1",
+            "03-REQ-3.E2",
+            "03-REQ-3.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests: keys list — happy path and HTTP error",
+          "details": [
+            "TS-03-12: stub returns two key objects; assert stdout is valid JSON array; assert each element has key_id, label, workspace_id, expires_at, created_at, revoked fields; assert exit 0.",
+            "TS-03-E11: stub returns 401 with error envelope → assert exit !=0, stderr contains 'Invalid API key'."
+          ],
+          "test_spec_refs": [
+            "TS-03-12",
+            "TS-03-E11"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write tests: keys refresh — happy path and error conditions",
+          "details": [
+            "TS-03-13: stub returns updated key with 'refreshed-secret-abc'; assert authenticated request sent to refresh endpoint; assert stdout JSON contains new secret; assert exit 0.",
+            "TS-03-E12: stub returns 404 → assert exit !=0, stderr contains 'Key not found'.",
+            "TS-03-E13: no key_id argument → assert exit !=0, stderr references key/argument/required."
+          ],
+          "test_spec_refs": [
+            "TS-03-13",
+            "TS-03-E12",
+            "TS-03-E13"
+          ],
+          "requirement_refs": [
+            "03-REQ-5.1",
+            "03-REQ-5.E1",
+            "03-REQ-5.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests: keys revoke — happy path and error conditions",
+          "details": [
+            "TS-03-14: stub returns 200; assert revoke request sent; assert stderr contains confirmation ('revok'/'success'/key-id); assert stdout empty; exit 0.",
+            "TS-03-E14: stub returns 404 → assert exit !=0, stderr contains 'Key not found'.",
+            "TS-03-E15: no key_id argument → assert exit !=0, stderr references key/argument/required."
+          ],
+          "test_spec_refs": [
+            "TS-03-14",
+            "TS-03-E14",
+            "TS-03-E15"
+          ],
+          "requirement_refs": [
+            "03-REQ-6.1",
+            "03-REQ-6.E1",
+            "03-REQ-6.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.6",
+          "title": "Write tests: HTTP error envelope parsing (REQ-7)",
+          "details": [
+            "TS-03-15: stub returns 403 with {error:'forbidden', message:'You do not have access'} → assert exit !=0, stderr contains the message, stdout empty.",
+            "TS-03-16: stub returns 502 with plain-text 'Bad Gateway' → assert exit !=0, stderr contains '502' and 'Bad Gateway'.",
+            "Write a reusable `parseErrorEnvelope(*http.Response) error` helper test to validate parsing logic independently."
+          ],
+          "test_spec_refs": [
+            "TS-03-15",
+            "TS-03-16"
+          ],
+          "requirement_refs": [
+            "03-REQ-7.1",
+            "03-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All key subcommand test files compile: `go build ./internal/cli/...`",
+          "Tests runnable: `go test ./internal/cli/... -count=1 -run 'TestKeys' -v`",
+          "No linter errors: `go vet ./...`",
+          "Tests for REQ-3, REQ-4, REQ-5, REQ-6, REQ-7 are all present and cover both happy paths and each error condition"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: documentation and smoke tests (REQ-8 and SMOKE)",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write test: docs/cli.md exists and covers all commands, flags, and env vars",
+          "details": [
+            "Write a Go test in `internal/cli/docs_test.go` that reads `docs/cli.md`.",
+            "Assert file is non-empty.",
+            "Assert file contains all command names: login, 'keys create', 'keys list', 'keys refresh', 'keys revoke'.",
+            "Assert file contains all flags and env vars: --hub-url, AF_HUB_URL, --api-key, AF_HUB_API_KEY.",
+            "Assert file contains at least one code block (```) per command section."
+          ],
+          "test_spec_refs": [
+            "TS-03-17"
+          ],
+          "requirement_refs": [
+            "03-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write test: README.md links to docs/cli.md",
+          "details": [
+            "Read README.md contents in the test.",
+            "Assert the string 'docs/cli.md' appears at least once.",
+            "Assert the file is non-empty."
+          ],
+          "test_spec_refs": [
+            "TS-03-18"
+          ],
+          "requirement_refs": [
+            "03-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write smoke test helpers and scaffolding",
+          "details": [
+            "Create `internal/integration/smoke_test.go` with build tag `//go:build integration`.",
+            "Implement stub hub server helper that supports registering routes and capturing requests.",
+            "Implement `execCapture(t, cmd string, env []string) (stdout, stderr string, exitCode int)` helper.",
+            "Implement `getCallbackPort(proc *exec.Cmd) int` and `isPortListening(port int) bool` helpers.",
+            "Implement browser-open mock that records the called URL instead of opening a real browser."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2",
+            "TS-03-SMOKE-3",
+            "TS-03-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "03-PATH-1",
+            "03-PATH-2",
+            "03-PATH-3",
+            "03-PATH-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All test/doc test files compile: `go build ./internal/cli/... ./internal/integration/...`",
+          "Documentation tests runnable: `go test ./internal/cli/... -count=1 -run 'TestDocs' -v`",
+          "Smoke test scaffolding compiles with build tag: `go build -tags integration ./internal/integration/...`",
+          "No linter errors: `go vet ./...`"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement CLI root command and global flag resolution",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Scaffold cmd/afc/main.go with Cobra root command",
+          "details": [
+            "Create `cmd/afc/main.go` with `package main`.",
+            "Instantiate a Cobra `rootCmd` with `Use: \"afc\"`, `Short` description, and `SilenceUsage: true`.",
+            "Register `login` and `keys` subcommands on rootCmd (stubs returning `panic(\"not implemented\")` for now).",
+            "Call `rootCmd.Execute()` in `main()`; exit with code 1 on error."
+          ],
+          "test_spec_refs": [
+            "TS-03-1"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement --hub-url persistent flag and AF_HUB_URL env var resolution",
+          "details": [
+            "Add `--hub-url` as a persistent flag on rootCmd via `rootCmd.PersistentFlags().StringVar`.",
+            "Implement `resolveHubURL(flagVal string) (string, error)` that: returns flagVal if non-empty, else reads AF_HUB_URL env var, else returns error.",
+            "Call resolveHubURL in each subcommand's RunE; on error write descriptive message to cmd.ErrOrStderr() and return err.",
+            "Ensure flag takes precedence over env var."
+          ],
+          "test_spec_refs": [
+            "TS-03-2",
+            "TS-03-E1",
+            "TS-03-P5"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.2",
+            "03-REQ-1.E1",
+            "03-PROP-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement stdout/stderr output routing and non-zero exit code handling",
+          "details": [
+            "Create `internal/cli/output.go` with `PrintJSON(w io.Writer, v any) error` using `encoding/json`.",
+            "Create `PrintError(w io.Writer, msg string)` that writes to stderr with a newline.",
+            "All commands use `cmd.OutOrStdout()` for JSON and `cmd.ErrOrStderr()` for messages.",
+            "In main.go, if rootCmd.Execute() returns non-nil error, os.Exit(1)."
+          ],
+          "test_spec_refs": [
+            "TS-03-3",
+            "TS-03-4",
+            "TS-03-P3",
+            "TS-03-P4"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.3",
+            "03-REQ-1.4",
+            "03-PROP-3",
+            "03-PROP-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement HTTP error envelope parser",
+          "details": [
+            "Create `internal/cli/httperr.go`.",
+            "Define `type ErrorEnvelope struct { Error string `json:\"error\"`; Message string `json:\"message\"` }`.",
+            "Implement `parseHTTPError(resp *http.Response) error` that: reads body, attempts JSON unmarshal into ErrorEnvelope, returns fmt.Errorf with Message if successful, else returns fmt.Errorf with status code and raw body as fallback.",
+            "All subcommands call parseHTTPError on non-2xx responses."
+          ],
+          "test_spec_refs": [
+            "TS-03-15",
+            "TS-03-16"
+          ],
+          "requirement_refs": [
+            "03-REQ-7.1",
+            "03-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Binary compiles: `go build ./cmd/afc`",
+          "CLI structure tests pass: `go test ./internal/cli/... -count=1 -run 'TestBinaryStructure|TestHubURLPrecedence|TestOutputStreams|TestExitCodes|TestMissingHubURL|TestHTTPError' -v`",
+          "No linter errors: `go vet ./...`",
+          "03-REQ-1.1, 03-REQ-1.2, 03-REQ-1.3, 03-REQ-1.4, 03-REQ-1.E1, 03-REQ-7.1, 03-REQ-7.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement OAuth login command",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement provider list fetch and validation",
+          "details": [
+            "Create `internal/cli/login.go` with Cobra `loginCmd`.",
+            "Add `--provider` flag defaulting to 'github'.",
+            "Implement `fetchProviders(hubURL string) ([]string, error)` using `net/http` GET to `/api/v1/auth/providers`.",
+            "On network error, return error including hubURL and connection details.",
+            "Validate requested provider is in list; if not, return error listing available providers."
+          ],
+          "test_spec_refs": [
+            "TS-03-6",
+            "TS-03-E2",
+            "TS-03-E7"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement local callback server on random port with redirect_uri construction",
+          "details": [
+            "Implement `startCallbackServer() (server *http.Server, port int, codeCh <-chan string, errCh <-chan error)` using `net.Listen(\"tcp\", \":0\")` for random port.",
+            "Handler reads `?code` or `?error` query params and sends result to channel.",
+            "Construct redirect_uri as `fmt.Sprintf(\"http://localhost:%d/callback\", port)`.",
+            "Open authorization URL in default browser using `os/exec` with `open` (macOS) or `xdg-open` (Linux) via `exec.Command(...).Start()`.",
+            "Use `defer server.Shutdown(ctx)` pattern to ensure cleanup."
+          ],
+          "test_spec_refs": [
+            "TS-03-7",
+            "TS-03-9"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.2",
+            "03-PROP-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement OAuth code exchange and user object output",
+          "details": [
+            "Wait for code from callback channel with 5-minute timeout using `time.After`.",
+            "Send code to POST /api/v1/auth/callback on hub; handle HTTP errors via parseHTTPError.",
+            "On success, marshal and print user object JSON to stdout via PrintJSON.",
+            "In all exit paths (success, error, timeout), call server.Shutdown to release port."
+          ],
+          "test_spec_refs": [
+            "TS-03-8",
+            "TS-03-9"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.3",
+            "03-REQ-2.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Implement login timeout, provider error, and SIGINT handling",
+          "details": [
+            "On timeout (5-minute select case): shut down callback server, print timeout error with retry suggestion to stderr, return non-zero error.",
+            "On provider error (?error param): shut down callback server, print provider's error_description to stderr, return non-zero error.",
+            "Handle SIGINT/SIGTERM with `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)`; cancel context triggers server shutdown, exit non-zero.",
+            "Ensure no orphaned goroutines or open ports in all cases."
+          ],
+          "test_spec_refs": [
+            "TS-03-E3",
+            "TS-03-E4",
+            "TS-03-E6",
+            "TS-03-P1"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.E2",
+            "03-REQ-2.E3",
+            "03-REQ-2.E5",
+            "03-PROP-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Binary compiles: `go build ./cmd/afc`",
+          "Login tests pass: `go test ./internal/cli/... -count=1 -run 'TestLogin' -v`",
+          "No linter errors: `go vet ./...`",
+          "03-REQ-2.1 through 03-REQ-2.E5 acceptance criteria met; 03-PROP-1 invariant (callback server always shut down) verified"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement API key subcommands: create and list",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement --api-key persistent flag and AF_HUB_API_KEY resolution",
+          "details": [
+            "Create `internal/cli/keys.go` with Cobra `keysCmd` parent command.",
+            "Add `--api-key` as a persistent flag on keysCmd.",
+            "Implement `resolveAPIKey(flagVal string) (string, error)` that checks flagVal then AF_HUB_API_KEY env var; returns error if both empty.",
+            "All key subcommands call resolveAPIKey in RunE; add Authorization header to all hub requests."
+          ],
+          "test_spec_refs": [
+            "TS-03-E10"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement afc keys create subcommand",
+          "details": [
+            "Add `createCmd` under keysCmd with flags: --workspace (required), --label (optional), --expires (0|30|60|90, default 30).",
+            "Validate --workspace is provided; if missing print usage error to stderr and return non-zero.",
+            "Build JSON request body; POST to hub keys endpoint authenticated with API key.",
+            "On success, print full key object JSON (including plaintext secret) to stdout exactly once via PrintJSON.",
+            "On error, call parseHTTPError and print to stderr."
+          ],
+          "test_spec_refs": [
+            "TS-03-10",
+            "TS-03-11",
+            "TS-03-P2"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.1",
+            "03-REQ-3.2",
+            "03-PROP-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement afc keys list subcommand",
+          "details": [
+            "Add `listCmd` under keysCmd.",
+            "GET hub keys endpoint authenticated with API key.",
+            "On success, print JSON array of key objects to stdout via PrintJSON; assert each object has key_id, label, workspace_id, expires_at, created_at, revoked fields.",
+            "On non-2xx, call parseHTTPError and print to stderr; exit non-zero."
+          ],
+          "test_spec_refs": [
+            "TS-03-12",
+            "TS-03-E11"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Binary compiles: `go build ./cmd/afc`",
+          "Keys create and list tests pass: `go test ./internal/cli/... -count=1 -run 'TestKeysCreate|TestKeysList' -v`",
+          "No linter errors: `go vet ./...`",
+          "03-REQ-3.1, 03-REQ-3.2, 03-REQ-4.1 and their edge cases acceptance criteria met; 03-PROP-2 invariant (secret printed exactly once) verified"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement API key subcommands: refresh and revoke",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement afc keys refresh subcommand",
+          "details": [
+            "Add `refreshCmd` under keysCmd accepting one positional argument (key_id).",
+            "If no key_id argument provided, print usage error to stderr and return non-zero.",
+            "POST to hub refresh endpoint (e.g. /api/v1/keys/{key_id}/refresh) authenticated with API key.",
+            "On success, print updated key object JSON (including new plaintext secret) to stdout via PrintJSON.",
+            "On non-2xx, call parseHTTPError; print error to stderr; exit non-zero."
+          ],
+          "test_spec_refs": [
+            "TS-03-13",
+            "TS-03-E12",
+            "TS-03-E13"
+          ],
+          "requirement_refs": [
+            "03-REQ-5.1",
+            "03-REQ-5.E1",
+            "03-REQ-5.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement afc keys revoke subcommand",
+          "details": [
+            "Add `revokeCmd` under keysCmd accepting one positional argument (key_id).",
+            "If no key_id argument provided, print usage error to stderr and return non-zero.",
+            "DELETE to hub revoke endpoint authenticated with API key.",
+            "On success, print confirmation message to stderr (not stdout); exit 0.",
+            "On non-2xx, call parseHTTPError; print error to stderr; exit non-zero."
+          ],
+          "test_spec_refs": [
+            "TS-03-14",
+            "TS-03-E14",
+            "TS-03-E15"
+          ],
+          "requirement_refs": [
+            "03-REQ-6.1",
+            "03-REQ-6.E1",
+            "03-REQ-6.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Wire all key subcommands under keysCmd and register on rootCmd",
+          "details": [
+            "In `internal/cli/keys.go`, add createCmd, listCmd, refreshCmd, revokeCmd as children of keysCmd.",
+            "In root command setup, add keysCmd as child of rootCmd.",
+            "Confirm `afc keys --help` lists all four subcommands.",
+            "Ensure --api-key and --hub-url flags are properly inherited from parent commands."
+          ],
+          "test_spec_refs": [
+            "TS-03-1"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Binary compiles: `go build ./cmd/afc`",
+          "All key subcommand tests pass: `go test ./internal/cli/... -count=1 -run 'TestKeysRefresh|TestKeysRevoke' -v`",
+          "Full CLI test suite passes: `go test ./internal/cli/... -count=1 -v`",
+          "No linter errors: `go vet ./...`",
+          "03-REQ-5, 03-REQ-6 acceptance criteria and edge cases met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Write CLI documentation and update README",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Create docs/cli.md with complete CLI reference",
+          "details": [
+            "Create `docs/cli.md` at repository root.",
+            "Document global flags: --hub-url (and AF_HUB_URL), --api-key (and AF_HUB_API_KEY).",
+            "Document each command with a dedicated section: afc login, afc keys create, afc keys list, afc keys refresh, afc keys revoke.",
+            "Each section must include: description, flags, environment variables, and at least one usage example in a code block.",
+            "Include error behavior notes per command."
+          ],
+          "test_spec_refs": [
+            "TS-03-17"
+          ],
+          "requirement_refs": [
+            "03-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Update README.md to link to docs/cli.md",
+          "details": [
+            "Add a 'CLI Reference' section or link in README.md pointing to `docs/cli.md`.",
+            "Ensure the text 'docs/cli.md' appears verbatim in README.md.",
+            "Verify documentation tests pass after the file is written."
+          ],
+          "test_spec_refs": [
+            "TS-03-18"
+          ],
+          "requirement_refs": [
+            "03-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Documentation tests pass: `go test ./internal/cli/... -count=1 -run 'TestDocs' -v`",
+          "docs/cli.md exists and is non-empty: `test -s docs/cli.md`",
+          "README.md contains 'docs/cli.md': `grep -q 'docs/cli.md' README.md`",
+          "03-REQ-8.1 and 03-REQ-8.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "checkpoint",
+      "title": "Integration checkpoint: all unit tests pass",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Run full unit test suite and confirm all tests pass",
+          "details": [
+            "Run `go test ./... -count=1` and confirm zero failures.",
+            "Confirm no test skips due to missing stubs or unimplemented functions.",
+            "Confirm binary builds cleanly with `go build ./cmd/afc`.",
+            "Check for and remove any remaining `panic(\"not implemented\")` stubs."
+          ],
+          "test_spec_refs": [
+            "TS-03-1",
+            "TS-03-2",
+            "TS-03-3",
+            "TS-03-4",
+            "TS-03-5",
+            "TS-03-6",
+            "TS-03-7",
+            "TS-03-8",
+            "TS-03-9",
+            "TS-03-10",
+            "TS-03-11",
+            "TS-03-12",
+            "TS-03-13",
+            "TS-03-14",
+            "TS-03-15"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.1",
+            "03-REQ-1.2",
+            "03-REQ-1.3",
+            "03-REQ-1.4",
+            "03-REQ-2.1",
+            "03-REQ-3.1",
+            "03-REQ-4.1",
+            "03-REQ-5.1",
+            "03-REQ-6.1",
+            "03-REQ-7.1",
+            "03-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Run edge-case and property tests and confirm all pass",
+          "details": [
+            "Run all edge-case tests: `go test ./internal/cli/... -count=1 -run 'TestEdge|TestError' -v`.",
+            "Run property tests: `go test ./internal/cli/... -count=1 -run 'TestProp' -v`.",
+            "Confirm 03-PROP-1 (callback server always shut down) invariant passes for all 5 login outcome variants.",
+            "Confirm 03-PROP-2 (secret printed exactly once) invariant passes for create and refresh.",
+            "Confirm 03-PROP-3 (JSON to stdout, messages to stderr) invariant passes for all commands."
+          ],
+          "test_spec_refs": [
+            "TS-03-16",
+            "TS-03-17",
+            "TS-03-18",
+            "TS-03-E1",
+            "TS-03-E2",
+            "TS-03-E3",
+            "TS-03-E4",
+            "TS-03-E5",
+            "TS-03-E6",
+            "TS-03-E7",
+            "TS-03-E8",
+            "TS-03-E9",
+            "TS-03-E10",
+            "TS-03-E11",
+            "TS-03-E12"
+          ],
+          "requirement_refs": [
+            "03-PROP-1",
+            "03-PROP-2",
+            "03-PROP-3",
+            "03-PROP-4",
+            "03-PROP-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Run linter and confirm no new warnings",
+          "details": [
+            "Run `go vet ./...` and confirm zero warnings.",
+            "Run `go build ./...` with `-race` flag to catch race conditions.",
+            "Confirm no `// TODO` or `panic(\"not implemented\")` markers remain in production code paths."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Full test suite passes: `go test ./... -count=1`",
+          "Binary builds without errors: `go build ./cmd/afc`",
+          "No linter warnings: `go vet ./...`",
+          "No race conditions detected: `go test ./... -count=1 -race`",
+          "All edge-case tests pass: `go test ./internal/cli/... -count=1 -run 'TestEdge|TestError|TestProp' -v`"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and smoke tests",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Trace execution paths and verify no stubs remain in production code",
+          "details": [
+            "Audit `cmd/afc/main.go` and `internal/cli/*.go` for any `panic(\"not implemented\")`, bare `return nil` in non-trivial paths, or `// TODO` markers.",
+            "Trace 03-PATH-1: verify rootCmd → loginCmd.RunE → fetchProviders → startCallbackServer → openBrowser → wait → POST /api/v1/auth/callback → PrintJSON chain with no stubs.",
+            "Trace 03-PATH-2: verify rootCmd → keysCmd → createCmd.RunE → resolveAPIKey → POST hub → PrintJSON; then listCmd.RunE → GET hub → PrintJSON.",
+            "Trace 03-PATH-3: verify refreshCmd.RunE → POST hub → PrintJSON; revokeCmd.RunE → DELETE hub → PrintError to stderr.",
+            "Trace 03-PATH-4: verify loginCmd timeout branch → server.Shutdown → error to stderr → os.Exit(1)."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2",
+            "TS-03-SMOKE-3",
+            "TS-03-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "03-PATH-1",
+            "03-PATH-2",
+            "03-PATH-3",
+            "03-PATH-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Verify return value propagation across the call chain",
+          "details": [
+            "Confirm parseHTTPError return value is checked by every caller (createCmd, listCmd, refreshCmd, revokeCmd, loginCmd).",
+            "Confirm resolveHubURL error is propagated to cmd.ErrOrStderr() and causes non-zero exit.",
+            "Confirm resolveAPIKey error is propagated and causes non-zero exit on key commands.",
+            "Confirm server.Shutdown error is logged (not swallowed) in the login flow.",
+            "Confirm PrintJSON errors are handled and do not silently swallow output failures."
+          ],
+          "test_spec_refs": [
+            "TS-03-P4"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.4",
+            "03-PROP-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Run all smoke tests with real components",
+          "details": [
+            "Run TS-03-SMOKE-1: full OAuth login flow against stub hub; assert user JSON on stdout, port released, exit 0.",
+            "Run TS-03-SMOKE-2: keys create then list against stub hub; assert plaintext secret in create output, JSON array from list, both exit 0.",
+            "Run TS-03-SMOKE-3: keys refresh then revoke against stub hub; assert new secret on stdout from refresh, confirmation on stderr from revoke, both exit 0.",
+            "Run TS-03-SMOKE-4: login timeout path; assert timeout error and retry suggestion on stderr, port released, exit non-zero.",
+            "Execute: `go test -tags integration ./internal/integration/... -count=1 -v`"
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2",
+            "TS-03-SMOKE-3",
+            "TS-03-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "03-PATH-1",
+            "03-PATH-2",
+            "03-PATH-3",
+            "03-PATH-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.4",
+          "title": "Verify cross-spec entry point: spec-02 auth/key endpoints called from production code",
+          "details": [
+            "Verify `GET /api/v1/auth/providers` is called from production loginCmd.RunE (not only in tests).",
+            "Verify `POST /api/v1/auth/callback` is called from production loginCmd.RunE after receiving auth code.",
+            "Verify all key endpoints (POST, GET, POST refresh, DELETE) are called from production key subcommand RunE functions.",
+            "Confirm stub hub in smoke tests receives all expected requests matching spec-02 endpoint definitions.",
+            "Confirm no hardcoded URLs exist — all use resolveHubURL output."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.1",
+            "03-REQ-2.3",
+            "03-REQ-3.1",
+            "03-REQ-4.1",
+            "03-REQ-5.1",
+            "03-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "All smoke tests pass: `go test -tags integration ./internal/integration/... -count=1 -v`",
+          "Full unit test suite still passes: `go test ./... -count=1`",
+          "No stub markers in production code: `grep -rn 'panic(\"not implemented\")\\|// TODO' cmd/ internal/cli/ | grep -v _test.go` returns empty",
+          "No linter warnings: `go vet ./...`",
+          "Race detector passes: `go test ./... -count=1 -race`",
+          "Binary built from clean state runs `afc --help` with exit code 0: `go build -o /tmp/afc ./cmd/afc && /tmp/afc --help`"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "03-REQ-1.1",
+      "test_spec_id": "TS-03-1",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.2",
+      "test_spec_id": "TS-03-2",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.2",
+      "test_spec_id": "TS-03-P5",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.3",
+      "test_spec_id": "TS-03-3",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.3",
+      "test_spec_id": "TS-03-P3",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.4",
+      "test_spec_id": "TS-03-4",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.4",
+      "test_spec_id": "TS-03-P4",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.5",
+      "test_spec_id": "TS-03-5",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.E1",
+      "test_spec_id": "TS-03-E1",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.1",
+      "test_spec_id": "TS-03-6",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.1",
+      "test_spec_id": "TS-03-E7",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.2",
+      "test_spec_id": "TS-03-7",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.3",
+      "test_spec_id": "TS-03-8",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.4",
+      "test_spec_id": "TS-03-9",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.4",
+      "test_spec_id": "TS-03-P1",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.E1",
+      "test_spec_id": "TS-03-E2",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.E2",
+      "test_spec_id": "TS-03-E3",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.E3",
+      "test_spec_id": "TS-03-E4",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.E4",
+      "test_spec_id": "TS-03-E5",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.E5",
+      "test_spec_id": "TS-03-E6",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.1",
+      "test_spec_id": "TS-03-10",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.1",
+      "test_spec_id": "TS-03-P2",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.2",
+      "test_spec_id": "TS-03-11",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.E1",
+      "test_spec_id": "TS-03-E8",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.E2",
+      "test_spec_id": "TS-03-E9",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.E3",
+      "test_spec_id": "TS-03-E10",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.1",
+      "test_spec_id": "TS-03-12",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E1",
+      "test_spec_id": "TS-03-E11",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-5.1",
+      "test_spec_id": "TS-03-13",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-5.E1",
+      "test_spec_id": "TS-03-E12",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-5.E2",
+      "test_spec_id": "TS-03-E13",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-6.1",
+      "test_spec_id": "TS-03-14",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-6.E1",
+      "test_spec_id": "TS-03-E14",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-6.E2",
+      "test_spec_id": "TS-03-E15",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.1",
+      "test_spec_id": "TS-03-15",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.2",
+      "test_spec_id": "TS-03-16",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-8.1",
+      "test_spec_id": "TS-03-17",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-8.2",
+      "test_spec_id": "TS-03-18",
+      "task_id": "9.2",
+      "test_path": null
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"cli\" PRD is thorough, well-structured, and covers all four required spec sections with good depth. The Intent is crisp and actionable, Goals are concrete and implementation-oriented, Non-Goals clearly bound the scope, and the Background/Design Decisions section explains the key architectural choices. Functional requirements are detailed with explicit command signatures, flag names, env vars, error cases, and output conventions. A few minor gaps exist around security, cross-platform support, and testability, but none are blocking \u2014 the document is ready to proceed to artifact generation.",
+      "gaps": [
+        "No Background section is formally present \u2014 context about why 'afc' is needed, what problem it solves for operators, and any prior art or alternatives considered is only partially inferred from the Intent. A brief Background section would improve traceability.",
+        "Goals are implementation tasks (e.g., 'Implement Cobra subcommand structure') rather than measurable outcomes (e.g., 'Operators can authenticate in under 60 seconds without manual token handling'). Mixing delivery tasks with outcome-oriented goals reduces their usefulness as acceptance criteria.",
+        "No mention of Windows support for browser opening \u2014 only macOS (`open`) and Linux (`xdg-open`) are listed. It is unclear whether Windows is out of scope or an oversight.",
+        "OAuth callback security is not addressed \u2014 there is no mention of PKCE, state parameter validation, or protection against authorization code interception attacks.",
+        "No testing or quality requirements specified \u2014 unit tests, integration tests, or CI expectations are absent.",
+        "The OAuth callback timeout value is not specified, leaving an ambiguity for implementers.",
+        "The `afc keys revoke` command prints confirmation to stderr only \u2014 it is unclear whether it also emits any JSON to stdout (e.g., a revoked key object or empty response), which is inconsistent with the 'JSON to stdout' convention stated elsewhere.",
+        "No versioning or `afc version` command is mentioned, which is a common CLI requirement.",
+        "The owner field is empty, leaving accountability undefined."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should Windows be a supported platform for the `afc` CLI? If yes, what command should be used to open the browser (e.g., `start` via `cmd /c start`)?",
+          "context": "The Technical Boundaries section only lists macOS and Linux browser-opening commands. Omitting Windows could block operators on that platform.",
+          "options": [
+            "Yes \u2014 support Windows with `cmd /c start`",
+            "Yes \u2014 support Windows with `rundll32 url.dll,FileProtocolHandler`",
+            "No \u2014 Windows is explicitly out of scope for this iteration"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should the OAuth authorization code flow implement PKCE and/or state parameter validation to prevent interception and CSRF attacks?",
+          "context": "Without PKCE or a state parameter, the local callback flow is vulnerable to authorization code interception and CSRF. This is especially relevant for a CLI tool used by operators with privileged access.",
+          "options": [
+            "Yes \u2014 implement PKCE and state parameter validation",
+            "Yes \u2014 implement state parameter only",
+            "No \u2014 defer security hardening to a later iteration"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "What should the OAuth callback timeout be (i.e., how long does the CLI wait for the browser flow to complete before giving up)?",
+          "context": "The spec mentions a timeout for the OAuth callback but does not specify the duration, leaving an ambiguity for implementers.",
+          "options": [
+            "30 seconds",
+            "60 seconds",
+            "120 seconds",
+            "Configurable via a flag (e.g., `--timeout`)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should `afc keys revoke` print any JSON to stdout upon success, or only a human-readable confirmation to stderr?",
+          "context": "The general convention in this spec is 'JSON to stdout, messages to stderr.' The revoke command currently only specifies a stderr confirmation, which is inconsistent and could break scripts that rely on stdout for structured output.",
+          "options": [
+            "Print a JSON object with revoked key metadata to stdout (e.g., `{\"key_id\": \"...\", \"revoked\": true}`)",
+            "Print nothing to stdout; stderr confirmation only is intentional",
+            "Print an empty JSON object `{}` to stdout for consistency"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the CLI include an `afc version` command or `--version` flag to report the binary version?",
+          "context": "A version command is a standard CLI feature that aids in debugging, support, and CI pipelines. It is not mentioned in the current spec.",
+          "options": [
+            "Yes \u2014 add `afc version` command and/or `--version` flag",
+            "No \u2014 not needed for this iteration"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "Are there any testing requirements for the CLI (e.g., unit tests for command logic, integration tests against a live or mocked hub)?",
+          "context": "The spec has no quality or testing requirements. Defining a minimum bar (e.g., unit tests for all command handlers, mocked HTTP client tests) ensures the implementation is verifiable.",
+          "options": [
+            "Unit tests for all command handlers with a mocked HTTP client",
+            "Integration tests against a test hub instance",
+            "Both unit and integration tests",
+            "No formal testing requirements for this iteration"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

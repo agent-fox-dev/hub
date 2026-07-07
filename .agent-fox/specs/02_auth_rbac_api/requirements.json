@@ -1,0 +1,1116 @@
+{
+  "$schema": null,
+  "spec_id": "02",
+  "spec_name": "auth_rbac_api",
+  "schema_version": 1,
+  "introduction": "This spec defines the authentication, authorization, and complete REST API surface for af-hub, including OAuth provider integration, auth middleware, RBAC enforcement, and all HTTP handlers for user, workspace, membership, and API key management. Note: requirements referencing Echo middleware and external OAuth HTTP exchange are based on PRD descriptions and should be cross-checked against installed library versions before implementation.",
+  "glossary": {
+    "DELETE /api/v1/keys/:key_id": "Authenticated endpoint to permanently revoke an API key.",
+    "DELETE /api/v1/workspaces/:id": "Admin endpoint to permanently delete an archived workspace with cascade.",
+    "GET /api/v1/auth/providers": "Endpoint that lists configured OAuth providers without exposing secrets.",
+    "GET /api/v1/keys": "Authenticated endpoint to list API keys; scope depends on authentication method.",
+    "GET /api/v1/users": "Admin endpoint to list all user records.",
+    "GET /api/v1/users/:id": "Admin endpoint to retrieve a user by ID including memberships and roles.",
+    "GET /api/v1/workspaces": "Admin endpoint to list workspaces, optionally including archived ones.",
+    "GET /api/v1/workspaces/:id/members": "Admin endpoint to list workspace members.",
+    "POST /api/v1/auth/callback": "OAuth callback endpoint that exchanges an authorization code for a user record.",
+    "POST /api/v1/keys": "Authenticated endpoint to create a new API key scoped to a workspace.",
+    "POST /api/v1/keys/:key_id/refresh": "Authenticated endpoint to generate a new secret for an existing API key.",
+    "POST /api/v1/users": "Admin endpoint to create a new user record.",
+    "POST /api/v1/workspaces": "Admin endpoint to create a new workspace.",
+    "POST /api/v1/workspaces/:id/archive": "Admin endpoint to archive a workspace.",
+    "POST /api/v1/workspaces/:id/members": "Admin endpoint to add or update a workspace membership.",
+    "POST /api/v1/workspaces/:id/reactivate": "Admin endpoint to reactivate an archived workspace.",
+    "PUT /api/v1/users/:id": "Endpoint to update a user's full_name or status; only admins can change status.",
+    "active": "A user `status` value indicating the user is permitted to authenticate and use the system.",
+    "admin_tokens": "Database table storing SHA-256 hashes of admin bearer tokens.",
+    "af-hub": "The hub server application being built by this spec family.",
+    "af_<key_id>_<secret>": "API key token format: a composite string containing a key identifier and a secret, separated by underscores, generated at key creation.",
+    "af_admin_...": "Token format prefix indicating an admin token; the full token is hashed with SHA-256 and compared against the `admin_tokens` table.",
+    "api_keys": "Database table storing API key records including key_id, key_hash, workspace_id, user_id, role, revoked_at, and expires_at.",
+    "archived": "A workspace state where the workspace is inactive; it must be archived before it can be deleted.",
+    "authorize_url": "The OAuth provider's authorization endpoint URL, used to redirect users for login.",
+    "blocked": "A user `status` value that prevents authentication even with valid tokens; checked at middleware level on every request.",
+    "config.toml": "The application configuration file where OAuth providers, admin tokens, and other settings are defined.",
+    "docs/api.md": "The generated REST API documentation file shipped with the af-hub repository.",
+    "expires": "The expiry duration in days requested at API key creation (0, 30, 60, or 90); 0 means no expiry.",
+    "expires_at": "Timestamp column in `api_keys`; when set and in the past, the key is expired and cannot authenticate.",
+    "full_name": "An optional display name field on user records that any authenticated user may update for themselves.",
+    "include_archived": "Query parameter on workspace list endpoint; when `true`, includes archived workspaces in the response.",
+    "key_hash": "The SHA-256 hash of an API key's secret portion, stored in the `api_keys` table for comparison during authentication.",
+    "key_id": "The unique identifier portion of an API key token, used to look up the key record in the `api_keys` table.",
+    "label": "A human-readable name for an API key, stored for identification purposes.",
+    "membership": "A record associating a user with a workspace and assigning them a role.",
+    "provider": "An OAuth identity provider (e.g. GitHub) configured in the system registry.",
+    "provider_id": "The unique user identifier returned by an OAuth provider, used together with `provider` to match user records.",
+    "provider_registry": "The pluggable registry mapping provider names to their configuration, URLs, and field mappings.",
+    "redirect_uri": "The OAuth callback URI sent to the provider during the authorization code exchange.",
+    "revoked_at": "Timestamp column in `api_keys`; when set, the key is permanently revoked and cannot authenticate.",
+    "role": "A per-workspace authorization level assigned to a user: `admin`, `editor`, or `reader`.",
+    "slug": "A workspace identifier consisting of lowercase alphanumeric characters and hyphens, 3\u201364 characters, starting with a letter and not ending with a hyphen.",
+    "status": "A field on user records indicating whether the user is `active` or `blocked`.",
+    "token_url": "The OAuth provider's token exchange endpoint URL, used to exchange an authorization code for an access token.",
+    "upsert": "A database operation that creates a record if it does not exist or updates it if it does, matched by a unique key.",
+    "userinfo_url": "The OAuth provider's user info endpoint URL, used to retrieve authenticated user details.",
+    "workspace_id": "The unique identifier of a workspace record, used to scope API keys and memberships.",
+    "(provider, provider_id)": "Composite unique constraint on user records.",
+    "/api/v1/auth/*": "Public auth endpoint path prefix, exempt from auth middleware.",
+    "/api/v1/*": "Protected API endpoint path prefix requiring Bearer token authentication.",
+    "Authorization": "HTTP header carrying the Bearer token for authentication.",
+    "include_archived=true": "Query parameter to include archived workspaces in list results.",
+    "user_id": "Foreign key referencing a user record.",
+    "24h \u00d7 expires": "Expiry calculation formula: 24 hours multiplied by the expires value in days."
+  },
+  "requirements": [
+    {
+      "id": "02-REQ-1",
+      "title": "OAuth provider registry",
+      "user_story": {
+        "role": "operator",
+        "goal": "configure OAuth providers in config.toml and have the system use them for authentication",
+        "benefit": "so that I can plug in additional identity providers without changing auth middleware or handlers"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "provider registry",
+          "action": "defines a common provider interface with three methods: authorize URL construction, authorization code exchange for tokens, and user info extraction",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "provider registry",
+          "action": "ships GitHub as the default provider with built-in values for `authorize_url`, `token_url`, and `userinfo_url`; overrides from `config.toml` take precedence",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "provider registry",
+          "action": "allows new providers to be registered with their URLs and field mappings without modifying auth middleware or handlers",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "provider registry",
+          "action": "retains existing user records and `api_keys` for that provider; those users cannot re-authenticate via OAuth until linked to another provider",
+          "return_contract": null,
+          "trigger": "a provider is removed from `config.toml`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "provider registry",
+          "action": "returns HTTP 400 with error envelope describing the unsupported provider",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"unsupported provider\"}}",
+          "error_condition": "an unknown provider name is referenced during an OAuth callback"
+        },
+        {
+          "id": "02-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "provider registry",
+          "action": "aborts the OAuth exchange, cleans up no partial state (no user record written), and returns HTTP 500 with error envelope",
+          "return_contract": "HTTP 500, {\"error\": {\"code\": \"500\", \"message\": \"identity provider timeout\"}}",
+          "error_condition": "the external identity provider's `token_url` or `userinfo_url` does not respond within a configurable timeout"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-2",
+      "title": "OAuth endpoints",
+      "user_story": {
+        "role": "client application",
+        "goal": "list available OAuth providers and exchange an authorization code for a user record",
+        "benefit": "so that users can authenticate via OAuth and be represented in the system"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "auth handler",
+          "action": "returns an array of configured provider objects containing name and `authorize_url`, with no secrets or credentials exposed",
+          "return_contract": "HTTP 200, [{\"name\": \"github\", \"authorize_url\": \"https://github.com/login/oauth/authorize\"}]",
+          "trigger": "a GET request is received on `GET /api/v1/auth/providers`"
+        },
+        {
+          "id": "02-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "auth handler",
+          "action": "exchanges the code with the identity provider via `token_url`, retrieves user info via `userinfo_url`, and upserts the user by `(provider, provider_id)`: creates with `status` active if new, updates `full_name` and email if existing",
+          "return_contract": "HTTP 200, user object",
+          "trigger": "a POST request is received on `POST /api/v1/auth/callback` with valid provider, code, and `redirect_uri`"
+        },
+        {
+          "id": "02-REQ-2.3",
+          "ears_pattern": "state_driven",
+          "system": "auth handler",
+          "action": "returns the user object on OAuth callback success but does NOT change the user's `status` to `active`",
+          "return_contract": "HTTP 200, user object with status: blocked",
+          "state": "user record exists with `status` `blocked`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "auth handler",
+          "action": "returns HTTP 400 with error envelope",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"missing required fields\"}}",
+          "error_condition": "the POST body to `POST /api/v1/auth/callback` is missing required fields (provider, code, or `redirect_uri`)"
+        },
+        {
+          "id": "02-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "auth handler",
+          "action": "returns HTTP 400 with error envelope describing the exchange failure",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"authorization code exchange failed\"}}",
+          "error_condition": "the identity provider rejects the authorization code during exchange (e.g. expired or already used code)"
+        },
+        {
+          "id": "02-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "auth handler",
+          "action": "returns HTTP 413 with error envelope",
+          "return_contract": "HTTP 413, {\"error\": {\"code\": \"413\", \"message\": \"payload too large\"}}",
+          "error_condition": "the request body to `POST /api/v1/auth/callback` exceeds the body size limit"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-3",
+      "title": "Auth middleware \u2014 token validation",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "have every protected endpoint validate my bearer token before processing my request",
+        "benefit": "so that unauthenticated or unauthorized requests are always rejected"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-3.1",
+          "ears_pattern": "ubiquitous",
+          "system": "auth middleware",
+          "action": "applies to all `/api/v1/*` routes except `/api/v1/auth/*` and health probe routes",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "auth middleware",
+          "action": "hashes the token with SHA-256, compares it against the `admin_tokens` table, and on match populates the request context with user ID, `status` active, and authentication method admin",
+          "return_contract": null,
+          "trigger": "a request arrives with an `Authorization` header bearing a token prefixed `af_admin_...`"
+        },
+        {
+          "id": "02-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "auth middleware",
+          "action": "extracts `key_id`, looks up the record in `api_keys`, hashes the secret portion with SHA-256, compares against `key_hash`, and on match populates the request context with user ID, user `status`, authentication method api_key, `workspace_id`, and `role`",
+          "return_contract": null,
+          "trigger": "a request arrives with an `Authorization` header bearing a token matching format `af_<key_id>_<secret>`"
+        },
+        {
+          "id": "02-REQ-3.4",
+          "ears_pattern": "event_driven",
+          "system": "auth middleware",
+          "action": "rejects the request with HTTP 403 and error envelope regardless of token validity",
+          "return_contract": "HTTP 403, {\"error\": {\"code\": \"403\", \"message\": \"user is blocked\"}}",
+          "trigger": "a valid token is verified and the user's `status` is `blocked`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "auth middleware",
+          "action": "returns HTTP 401 with error envelope",
+          "return_contract": "HTTP 401, {\"error\": {\"code\": \"401\", \"message\": \"missing or malformed token\"}}",
+          "error_condition": "the `Authorization` header is missing or the token format is not recognized"
+        },
+        {
+          "id": "02-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "auth middleware",
+          "action": "returns HTTP 401 with error envelope",
+          "return_contract": "HTTP 401, {\"error\": {\"code\": \"401\", \"message\": \"invalid token\"}}",
+          "error_condition": "an admin token's SHA-256 hash does not match any record in `admin_tokens`"
+        },
+        {
+          "id": "02-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "auth middleware",
+          "action": "returns HTTP 401 with error envelope",
+          "return_contract": "HTTP 401, {\"error\": {\"code\": \"401\", \"message\": \"invalid, revoked, or expired API key\"}}",
+          "error_condition": "an API key's `key_id` is not found in `api_keys`, its `key_hash` does not match, its `revoked_at` is set, or its `expires_at` is in the past"
+        },
+        {
+          "id": "02-REQ-3.E4",
+          "ears_pattern": "unwanted",
+          "system": "auth middleware",
+          "action": "returns HTTP 500 with error envelope; does not leak internal error details to the caller",
+          "return_contract": "HTTP 500, {\"error\": {\"code\": \"500\", \"message\": \"internal server error\"}}",
+          "error_condition": "a database error occurs during token lookup"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-4",
+      "title": "RBAC enforcement",
+      "user_story": {
+        "role": "system operator",
+        "goal": "have each endpoint enforce the correct role permissions before executing any business logic",
+        "benefit": "so that editors and readers cannot perform admin-only operations and workspace isolation is maintained"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "RBAC layer",
+          "action": "enforces three roles: admin (global full access), editor (read/write within assigned workspace), and reader (read-only within assigned workspace)",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "RBAC layer",
+          "action": "rejects the request with HTTP 403 and error envelope before the handler executes",
+          "return_contract": "HTTP 403, {\"error\": {\"code\": \"403\", \"message\": \"insufficient permissions\"}}",
+          "trigger": "a non-admin user attempts to access an endpoint listed as admin-only in the permission matrix"
+        },
+        {
+          "id": "02-REQ-4.3",
+          "ears_pattern": "complex_event",
+          "system": "RBAC layer",
+          "action": "permits the update of `full_name` only; rejects any attempt to change `status` with HTTP 403",
+          "return_contract": "HTTP 200 for full_name update; HTTP 403 for status change attempt",
+          "trigger": "a PUT request is received on `PUT /api/v1/users/:id` where :id matches the authenticated user's own ID",
+          "condition": "the authenticated user is not an admin"
+        },
+        {
+          "id": "02-REQ-4.4",
+          "ears_pattern": "ubiquitous",
+          "system": "RBAC layer",
+          "action": "permits admin-authenticated requests to access all endpoints across all workspaces regardless of workspace scoping",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-4.5",
+          "ears_pattern": "event_driven",
+          "system": "RBAC layer",
+          "action": "permits editor keys and rejects reader keys with HTTP 403",
+          "return_contract": "HTTP 403 for reader, pass-through for editor",
+          "trigger": "an editor or reader API key is used on a write endpoint (POST, DELETE) that requires editor or higher"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "RBAC layer",
+          "action": "treats it as an authorization failure and returns HTTP 403 with error envelope",
+          "return_contract": "HTTP 403, {\"error\": {\"code\": \"403\", \"message\": \"unknown role\"}}",
+          "error_condition": "a `role` value in the request context is not one of admin, editor, reader"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-5",
+      "title": "User management endpoints",
+      "user_story": {
+        "role": "admin",
+        "goal": "create, list, retrieve, and update user records via REST API",
+        "benefit": "so that I can manage the user population without direct database access"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "user handler",
+          "action": "creates a new user record with `status` active and returns the created user object",
+          "return_contract": "HTTP 201, user object",
+          "trigger": "a POST request is received on `POST /api/v1/users` with valid username, email, `provider`, and `provider_id`"
+        },
+        {
+          "id": "02-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "user handler",
+          "action": "returns an array of all user records",
+          "return_contract": "HTTP 200, array of user objects",
+          "trigger": "a GET request is received on `GET /api/v1/users`"
+        },
+        {
+          "id": "02-REQ-5.3",
+          "ears_pattern": "event_driven",
+          "system": "user handler",
+          "action": "returns the user object including workspace memberships and roles",
+          "return_contract": "HTTP 200, user object with memberships array",
+          "trigger": "a GET request is received on `GET /api/v1/users/:id` for an existing user"
+        },
+        {
+          "id": "02-REQ-5.4",
+          "ears_pattern": "event_driven",
+          "system": "user handler",
+          "action": "updates `full_name` and/or `status` (active or `blocked`) on the user record and returns the updated user object",
+          "return_contract": "HTTP 200, updated user object",
+          "trigger": "a PUT request is received on `PUT /api/v1/users/:id` with admin credentials"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "user handler",
+          "action": "returns HTTP 409 with error envelope describing the conflict",
+          "return_contract": "HTTP 409, {\"error\": {\"code\": \"409\", \"message\": \"duplicate username or provider identity\"}}",
+          "error_condition": "a POST to `POST /api/v1/users` supplies a username or `(provider, provider_id)` pair that already exists"
+        },
+        {
+          "id": "02-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "user handler",
+          "action": "returns HTTP 404 with error envelope",
+          "return_contract": "HTTP 404, {\"error\": {\"code\": \"404\", \"message\": \"user not found\"}}",
+          "error_condition": "a GET or PUT request references a user ID that does not exist"
+        },
+        {
+          "id": "02-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "user handler",
+          "action": "returns HTTP 400 with error envelope",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"missing required fields\"}}",
+          "error_condition": "a POST to `POST /api/v1/users` is missing required fields (username, email, `provider`, or `provider_id`)"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-6",
+      "title": "Workspace management endpoints",
+      "user_story": {
+        "role": "admin",
+        "goal": "create, list, archive, reactivate, and delete workspaces via REST API",
+        "benefit": "so that I can manage workspace lifecycle without direct database access"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "validates `slug` format (lowercase alphanumeric and hyphens, 3\u201364 characters, starts with letter, does not end with hyphen) and URL format (http or https scheme with host), creates the workspace, and returns the workspace object",
+          "return_contract": "HTTP 201, workspace object",
+          "trigger": "a POST request is received on `POST /api/v1/workspaces` with valid name, `slug`, and URL"
+        },
+        {
+          "id": "02-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "returns all non-archived workspaces by default; includes `archived` workspaces when `include_archived=true` query parameter is present",
+          "return_contract": "HTTP 200, array of workspace objects",
+          "trigger": "a GET request is received on `GET /api/v1/workspaces`"
+        },
+        {
+          "id": "02-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "marks the workspace as `archived` and returns the updated workspace object",
+          "return_contract": "HTTP 200, updated workspace object",
+          "trigger": "a POST request is received on `POST /api/v1/workspaces/:id/archive` for an active workspace"
+        },
+        {
+          "id": "02-REQ-6.4",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "marks the workspace as active and returns the updated workspace object",
+          "return_contract": "HTTP 200, updated workspace object",
+          "trigger": "a POST request is received on `POST /api/v1/workspaces/:id/reactivate` for an `archived` workspace"
+        },
+        {
+          "id": "02-REQ-6.5",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "deletes the workspace record and cascades deletion to all memberships and `api_keys` scoped to that `workspace_id`; returns success confirmation",
+          "return_contract": "HTTP 200, {\"message\": \"workspace deleted\"}",
+          "trigger": "a DELETE request is received on `DELETE /api/v1/workspaces/:id` for an `archived` workspace"
+        },
+        {
+          "id": "02-REQ-6.6",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "adds or updates the membership record associating the user to the workspace with the given `role`",
+          "return_contract": "HTTP 200, membership object",
+          "trigger": "a POST request is received on `POST /api/v1/workspaces/:id/members` with valid `user_id` and `role`"
+        },
+        {
+          "id": "02-REQ-6.7",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "returns all member records for the workspace including user IDs and roles",
+          "return_contract": "HTTP 200, array of membership objects",
+          "trigger": "a GET request is received on `GET /api/v1/workspaces/:id/members`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 409 with error envelope",
+          "return_contract": "HTTP 409, {\"error\": {\"code\": \"409\", \"message\": \"workspace name or slug already exists\"}}",
+          "error_condition": "a POST to `POST /api/v1/workspaces` supplies a name or `slug` that already exists"
+        },
+        {
+          "id": "02-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 400 with error envelope describing the validation failure",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"invalid slug or URL format\"}}",
+          "error_condition": "a POST to `POST /api/v1/workspaces` supplies an invalid `slug` (wrong format) or invalid URL (missing scheme or non-http/https scheme)"
+        },
+        {
+          "id": "02-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 400 with error envelope",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"workspace is already archived\"}}",
+          "error_condition": "a POST to `POST /api/v1/workspaces/:id/archive` targets a workspace that is already `archived`"
+        },
+        {
+          "id": "02-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 400 with error envelope",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"workspace is not archived\"}}",
+          "error_condition": "a POST to `POST /api/v1/workspaces/:id/reactivate` targets a workspace that is not `archived`"
+        },
+        {
+          "id": "02-REQ-6.E5",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 400 with error envelope",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"workspace must be archived before deletion\"}}",
+          "error_condition": "a DELETE to `DELETE /api/v1/workspaces/:id` targets a workspace that is not `archived`"
+        },
+        {
+          "id": "02-REQ-6.E6",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 404 with error envelope",
+          "return_contract": "HTTP 404, {\"error\": {\"code\": \"404\", \"message\": \"workspace not found\"}}",
+          "error_condition": "any workspace endpoint references a workspace ID that does not exist"
+        },
+        {
+          "id": "02-REQ-6.E7",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "returns HTTP 404 with error envelope",
+          "return_contract": "HTTP 404, {\"error\": {\"code\": \"404\", \"message\": \"user not found\"}}",
+          "error_condition": "a POST to `POST /api/v1/workspaces/:id/members` references a `user_id` that does not exist"
+        },
+        {
+          "id": "02-REQ-6.E8",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "rolls back the entire deletion transaction; workspace, memberships, and `api_keys` remain unchanged; returns HTTP 500 with error envelope",
+          "return_contract": "HTTP 500, {\"error\": {\"code\": \"500\", \"message\": \"internal server error\"}}",
+          "error_condition": "the cascade deletion during `DELETE /api/v1/workspaces/:id` fails partway through (e.g. database error after memberships deleted but before `api_keys` deleted)"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-7",
+      "title": "API key management endpoints",
+      "user_story": {
+        "role": "authenticated user",
+        "goal": "create, list, refresh, and revoke API keys scoped to workspaces",
+        "benefit": "so that I can issue programmatic credentials with controlled expiry and scope"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "API key handler",
+          "action": "verifies the user is a member of the workspace, generates a key in format `af_<key_id>_<secret>`, stores the SHA-256 hash of the secret as `key_hash` with `expires_at` set to `24h \u00d7 expires` from creation (null if `expires` is 0), inherits the user's `role` in the workspace, and returns the full plaintext key exactly once",
+          "return_contract": "HTTP 201, {\"key\": \"af_<key_id>_<secret>\", \"key_id\": \"...\", \"expires_at\": \"...\", \"role\": \"...\"}",
+          "trigger": "a POST request is received on `POST /api/v1/keys` with valid `workspace_id`, `label`, and `expires` (0, 30, 60, or 90)"
+        },
+        {
+          "id": "02-REQ-7.2",
+          "ears_pattern": "event_driven",
+          "system": "API key handler",
+          "action": "returns all API keys across all users including expired keys",
+          "return_contract": "HTTP 200, array of API key objects (no plaintext secrets)",
+          "trigger": "a GET request is received on `GET /api/v1/keys` with an admin token"
+        },
+        {
+          "id": "02-REQ-7.3",
+          "ears_pattern": "event_driven",
+          "system": "API key handler",
+          "action": "returns only the authenticated user's own API keys including expired keys",
+          "return_contract": "HTTP 200, array of API key objects for the authenticated user (no plaintext secrets)",
+          "trigger": "a GET request is received on `GET /api/v1/keys` with an API key token"
+        },
+        {
+          "id": "02-REQ-7.4",
+          "ears_pattern": "event_driven",
+          "system": "API key handler",
+          "action": "generates a new secret for the existing `key_id`, updates `key_hash` in `api_keys`, and returns the new full key once",
+          "return_contract": "HTTP 200, {\"key\": \"af_<key_id>_<new_secret>\", \"key_id\": \"...\"}",
+          "trigger": "a POST request is received on `POST /api/v1/keys/:key_id/refresh` for a valid key the user owns"
+        },
+        {
+          "id": "02-REQ-7.5",
+          "ears_pattern": "event_driven",
+          "system": "API key handler",
+          "action": "sets `revoked_at` on the `api_keys` record to the current timestamp, permanently revoking the key",
+          "return_contract": "HTTP 200, {\"message\": \"key revoked\"}",
+          "trigger": "a DELETE request is received on `DELETE /api/v1/keys/:key_id` for a key the user owns"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "02-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "API key handler",
+          "action": "returns HTTP 403 with error envelope",
+          "return_contract": "HTTP 403, {\"error\": {\"code\": \"403\", \"message\": \"not a member of this workspace\"}}",
+          "error_condition": "a POST to `POST /api/v1/keys` references a `workspace_id` for which the authenticated user has no membership"
+        },
+        {
+          "id": "02-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "API key handler",
+          "action": "returns HTTP 400 with error envelope",
+          "return_contract": "HTTP 400, {\"error\": {\"code\": \"400\", \"message\": \"expires must be 0, 30, 60, or 90\"}}",
+          "error_condition": "a POST to `POST /api/v1/keys` supplies an `expires` value other than 0, 30, 60, or 90"
+        },
+        {
+          "id": "02-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "API key handler",
+          "action": "returns HTTP 404 with error envelope",
+          "return_contract": "HTTP 404, {\"error\": {\"code\": \"404\", \"message\": \"workspace not found\"}}",
+          "error_condition": "a POST to `POST /api/v1/keys` references a `workspace_id` that does not exist"
+        },
+        {
+          "id": "02-REQ-7.E4",
+          "ears_pattern": "unwanted",
+          "system": "API key handler",
+          "action": "returns HTTP 404 with error envelope",
+          "return_contract": "HTTP 404, {\"error\": {\"code\": \"404\", \"message\": \"API key not found\"}}",
+          "error_condition": "a POST or DELETE on a key endpoint references a `key_id` that does not exist or belongs to a different user"
+        },
+        {
+          "id": "02-REQ-7.E5",
+          "ears_pattern": "unwanted",
+          "system": "API key handler",
+          "action": "returns HTTP 403 with error envelope",
+          "return_contract": "HTTP 403, {\"error\": {\"code\": \"403\", \"message\": \"insufficient permissions\"}}",
+          "error_condition": "a reader-role user attempts to create or revoke a key via `POST /api/v1/keys` or `DELETE /api/v1/keys/:key_id`"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-8",
+      "title": "Standardized error response envelope",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "receive consistently structured error responses from every endpoint",
+        "benefit": "so that my client code can handle errors uniformly without parsing varied formats"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-8.1",
+          "ears_pattern": "ubiquitous",
+          "system": "error handler",
+          "action": "formats all API error responses as {\"error\": {\"code\": \"<HTTP_STATUS>\", \"message\": \"<human-readable description>\"}} with the correct HTTP status code",
+          "return_contract": "{\"error\": {\"code\": \"<HTTP_STATUS>\", \"message\": \"<description>\"}}"
+        },
+        {
+          "id": "02-REQ-8.2",
+          "ears_pattern": "ubiquitous",
+          "system": "error handler",
+          "action": "maps status codes to meanings: 400 bad request, 401 unauthorized, 403 forbidden, 404 not found, 409 conflict, 413 payload too large, 500 internal server error",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-8.3",
+          "ears_pattern": "ubiquitous",
+          "system": "error handler",
+          "action": "never exposes internal error details, stack traces, or database error messages in the response body for 500-level errors",
+          "return_contract": "HTTP 500, {\"error\": {\"code\": \"500\", \"message\": \"internal server error\"}}"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "02-REQ-9",
+      "title": "API documentation",
+      "user_story": {
+        "role": "developer",
+        "goal": "find complete REST API documentation in docs/api.md",
+        "benefit": "so that I can integrate with af-hub without reading source code"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "02-REQ-9.1",
+          "ears_pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "ships `docs/api.md` containing every endpoint with method, path, auth requirements, request and response body JSON examples, status codes, and error format",
+          "return_contract": null
+        },
+        {
+          "id": "02-REQ-9.2",
+          "ears_pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "updates README.md to include a link to `docs/api.md`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "02-PROP-1",
+      "title": "Admin tokens never expose plaintext in responses",
+      "for_any": "admin token verification attempt",
+      "invariant": "the system only compares SHA-256 hashes of tokens against `admin_tokens`; plaintext token values are never stored or logged",
+      "validates": [
+        "02-REQ-3.2",
+        "02-REQ-3.E2"
+      ]
+    },
+    {
+      "id": "02-PROP-2",
+      "title": "API key secrets returned exactly once",
+      "for_any": "API key creation or refresh operation",
+      "invariant": "the plaintext `af_<key_id>_<secret>` value is included in the response exactly once and never retrievable again; only `key_hash` persists in `api_keys`",
+      "validates": [
+        "02-REQ-7.1",
+        "02-REQ-7.4"
+      ]
+    },
+    {
+      "id": "02-PROP-3",
+      "title": "Blocked users cannot authenticate via any token type",
+      "for_any": "request from a user with `status` `blocked`",
+      "invariant": "the auth middleware always returns HTTP 403 regardless of token type (admin or API key) and regardless of token validity",
+      "validates": [
+        "02-REQ-3.4",
+        "02-REQ-2.3"
+      ]
+    },
+    {
+      "id": "02-PROP-4",
+      "title": "Workspace deletion is atomic",
+      "for_any": "DELETE request on `DELETE /api/v1/workspaces/:id`",
+      "invariant": "either all cascade deletions (memberships and `api_keys`) succeed together with the workspace record, or none are committed; there is no partial state",
+      "validates": [
+        "02-REQ-6.5",
+        "02-REQ-6.E8"
+      ]
+    },
+    {
+      "id": "02-PROP-5",
+      "title": "OAuth callback never re-activates blocked users",
+      "for_any": "OAuth callback for a user whose `status` is `blocked`",
+      "invariant": "the `upsert` operation on the user record never changes `status` from `blocked` to `active`",
+      "validates": [
+        "02-REQ-2.3"
+      ]
+    },
+    {
+      "id": "02-PROP-6",
+      "title": "Slug uniqueness enforced on workspace creation",
+      "for_any": "workspace creation request",
+      "invariant": "both name and `slug` must be unique across all workspaces; a conflict on either field causes HTTP 409 and no record is created",
+      "validates": [
+        "02-REQ-6.1",
+        "02-REQ-6.E1"
+      ]
+    },
+    {
+      "id": "02-PROP-7",
+      "title": "Error responses never leak internal details",
+      "for_any": "any 5xx error response",
+      "invariant": "the response body contains only the standard error envelope with message 'internal server error'; no stack traces, query text, or database error strings are included",
+      "validates": [
+        "02-REQ-8.3",
+        "02-REQ-3.E4"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "02-PATH-1",
+      "title": "OAuth login for new user",
+      "steps": [
+        {
+          "actor": "client",
+          "action": "sends GET to `GET /api/v1/auth/providers` to discover available providers"
+        },
+        {
+          "actor": "auth handler",
+          "action": "returns array of provider names and `authorize_url` values"
+        },
+        {
+          "actor": "client",
+          "action": "redirects user to GitHub `authorize_url`; receives authorization code in callback"
+        },
+        {
+          "actor": "client",
+          "action": "sends POST to `POST /api/v1/auth/callback` with provider=github, code, and `redirect_uri`"
+        },
+        {
+          "actor": "auth handler",
+          "action": "exchanges code with GitHub `token_url` via HTTP client"
+        },
+        {
+          "actor": "auth handler",
+          "action": "retrieves user info from GitHub `userinfo_url`"
+        },
+        {
+          "actor": "auth handler",
+          "action": "upserts user by `(provider, provider_id)`: creates new record with `status` active"
+        },
+        {
+          "actor": "auth handler",
+          "action": "returns HTTP 200 with user object to client"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-2",
+      "title": "Admin creates workspace and assigns member",
+      "steps": [
+        {
+          "actor": "admin client",
+          "action": "sends POST to `POST /api/v1/workspaces` with name, `slug`, and URL, bearing admin bearer token"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "hashes token with SHA-256, matches against `admin_tokens` table, populates request context with admin role"
+        },
+        {
+          "actor": "RBAC layer",
+          "action": "confirms admin role; permits the request"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "validates `slug` format and URL format, creates workspace record, returns HTTP 201 with workspace object"
+        },
+        {
+          "actor": "admin client",
+          "action": "sends POST to `POST /api/v1/workspaces/:id/members` with `user_id` and `role`"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "re-validates admin token from `Authorization` header"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "upserts membership record for the user in the workspace with given `role`, returns HTTP 200 with membership object"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-3",
+      "title": "Editor creates API key and uses it",
+      "steps": [
+        {
+          "actor": "editor client",
+          "action": "sends POST to `POST /api/v1/keys` with `workspace_id`, `label`, and `expires`=30, bearing editor API key token"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "parses `af_<key_id>_<secret>` token, looks up `key_id` in `api_keys`, verifies `key_hash` matches SHA-256 of secret, confirms `expires_at` and `revoked_at` are valid, populates context with `workspace_id`, `role` editor"
+        },
+        {
+          "actor": "RBAC layer",
+          "action": "confirms editor role is permitted to create keys"
+        },
+        {
+          "actor": "API key handler",
+          "action": "verifies user membership in target `workspace_id`, generates new `af_<key_id>_<secret>` token, stores `key_hash`, sets `expires_at` to 30 \u00d7 24h from now"
+        },
+        {
+          "actor": "API key handler",
+          "action": "returns HTTP 201 with plaintext key (only time it is returned)"
+        },
+        {
+          "actor": "editor client",
+          "action": "sends subsequent request to a protected endpoint using the new key in `Authorization` header"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "validates new key, confirms user `status` is `active`, populates context"
+        },
+        {
+          "actor": "handler",
+          "action": "processes request and returns response"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-4",
+      "title": "Blocked user is rejected at middleware",
+      "steps": [
+        {
+          "actor": "client",
+          "action": "sends request to any protected endpoint with a valid API key token"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "validates `key_id` and `key_hash` against `api_keys` table, finds the key valid"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "looks up the user's `status`; finds it is `blocked`"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "returns HTTP 403 with error envelope {\"error\": {\"code\": \"403\", \"message\": \"user is blocked\"}}; handler is never invoked"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-5",
+      "title": "Admin archives and then deletes a workspace (full end-to-end)",
+      "steps": [
+        {
+          "actor": "admin client",
+          "action": "sends POST to `POST /api/v1/workspaces/:id/archive` with admin token in `Authorization` header"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "hashes admin token, matches `admin_tokens` table, populates context"
+        },
+        {
+          "actor": "RBAC layer",
+          "action": "confirms admin role; permits archive operation"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "marks workspace as `archived`, returns HTTP 200 with updated workspace object"
+        },
+        {
+          "actor": "admin client",
+          "action": "sends DELETE to `DELETE /api/v1/workspaces/:id` with admin token"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "re-validates admin token"
+        },
+        {
+          "actor": "RBAC layer",
+          "action": "confirms admin role; permits delete operation"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "opens database transaction, deletes memberships, deletes `api_keys` scoped to `workspace_id`, deletes workspace record, commits transaction"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "returns HTTP 200 with {\"message\": \"workspace deleted\"}"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-6",
+      "title": "Non-admin user updates own full_name",
+      "steps": [
+        {
+          "actor": "user client",
+          "action": "sends PUT to `PUT /api/v1/users/:id` (own ID) with `full_name` field, bearing reader API key token"
+        },
+        {
+          "actor": "auth middleware",
+          "action": "validates API key token, confirms user `status` active, populates context with user ID"
+        },
+        {
+          "actor": "RBAC layer",
+          "action": "detects the :id matches the authenticated user's own ID; permits `full_name` update only"
+        },
+        {
+          "actor": "user handler",
+          "action": "updates `full_name` on the user record, returns HTTP 200 with updated user object"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "02-ERR-1",
+      "condition": "Authorization header is missing or token format is unrecognized",
+      "behavior": "Auth middleware returns HTTP 401 with standard error envelope; request processing stops",
+      "requirement_id": "02-REQ-3.E1"
+    },
+    {
+      "id": "02-ERR-2",
+      "condition": "Admin token SHA-256 hash does not match any record in admin_tokens table",
+      "behavior": "Auth middleware returns HTTP 401 with standard error envelope",
+      "requirement_id": "02-REQ-3.E2"
+    },
+    {
+      "id": "02-ERR-3",
+      "condition": "API key is not found, hash mismatch, revoked_at is set, or expires_at is in the past",
+      "behavior": "Auth middleware returns HTTP 401 with standard error envelope",
+      "requirement_id": "02-REQ-3.E3"
+    },
+    {
+      "id": "02-ERR-4",
+      "condition": "Valid token but user status is blocked",
+      "behavior": "Auth middleware returns HTTP 403 with standard error envelope; handler is not invoked",
+      "requirement_id": "02-REQ-3.4"
+    },
+    {
+      "id": "02-ERR-5",
+      "condition": "Authenticated user's role is insufficient for the requested endpoint",
+      "behavior": "RBAC layer returns HTTP 403 with standard error envelope before handler executes",
+      "requirement_id": "02-REQ-4.2"
+    },
+    {
+      "id": "02-ERR-6",
+      "condition": "POST /api/v1/users supplies a duplicate username or (provider, provider_id) pair",
+      "behavior": "User handler returns HTTP 409 with standard error envelope; no user record is created",
+      "requirement_id": "02-REQ-5.E1"
+    },
+    {
+      "id": "02-ERR-7",
+      "condition": "GET or PUT on /api/v1/users/:id references a non-existent user ID",
+      "behavior": "User handler returns HTTP 404 with standard error envelope",
+      "requirement_id": "02-REQ-5.E2"
+    },
+    {
+      "id": "02-ERR-8",
+      "condition": "POST /api/v1/workspaces supplies a duplicate name or slug",
+      "behavior": "Workspace handler returns HTTP 409 with standard error envelope; no workspace is created",
+      "requirement_id": "02-REQ-6.E1"
+    },
+    {
+      "id": "02-ERR-9",
+      "condition": "POST /api/v1/workspaces supplies invalid slug format or non-http/https URL",
+      "behavior": "Workspace handler returns HTTP 400 with standard error envelope; no workspace is created",
+      "requirement_id": "02-REQ-6.E2"
+    },
+    {
+      "id": "02-ERR-10",
+      "condition": "Archive requested on an already-archived workspace",
+      "behavior": "Workspace handler returns HTTP 400 with standard error envelope",
+      "requirement_id": "02-REQ-6.E3"
+    },
+    {
+      "id": "02-ERR-11",
+      "condition": "Reactivate requested on a workspace that is not archived",
+      "behavior": "Workspace handler returns HTTP 400 with standard error envelope",
+      "requirement_id": "02-REQ-6.E4"
+    },
+    {
+      "id": "02-ERR-12",
+      "condition": "Delete requested on a workspace that is not archived",
+      "behavior": "Workspace handler returns HTTP 400 with standard error envelope; workspace is not deleted",
+      "requirement_id": "02-REQ-6.E5"
+    },
+    {
+      "id": "02-ERR-13",
+      "condition": "Any workspace endpoint references a workspace ID that does not exist",
+      "behavior": "Workspace handler returns HTTP 404 with standard error envelope",
+      "requirement_id": "02-REQ-6.E6"
+    },
+    {
+      "id": "02-ERR-14",
+      "condition": "Cascade deletion transaction fails partway through workspace deletion",
+      "behavior": "Entire transaction is rolled back; workspace, memberships, and api_keys remain unchanged; HTTP 500 returned",
+      "requirement_id": "02-REQ-6.E8"
+    },
+    {
+      "id": "02-ERR-15",
+      "condition": "POST /api/v1/keys user is not a member of the referenced workspace_id",
+      "behavior": "API key handler returns HTTP 403 with standard error envelope; no key is created",
+      "requirement_id": "02-REQ-7.E1"
+    },
+    {
+      "id": "02-ERR-16",
+      "condition": "POST /api/v1/keys supplies an expires value other than 0, 30, 60, or 90",
+      "behavior": "API key handler returns HTTP 400 with standard error envelope; no key is created",
+      "requirement_id": "02-REQ-7.E2"
+    },
+    {
+      "id": "02-ERR-17",
+      "condition": "Key endpoint references a key_id that does not exist or belongs to another user",
+      "behavior": "API key handler returns HTTP 404 with standard error envelope",
+      "requirement_id": "02-REQ-7.E4"
+    },
+    {
+      "id": "02-ERR-18",
+      "condition": "OAuth callback request body is missing provider, code, or redirect_uri fields",
+      "behavior": "Auth handler returns HTTP 400 with standard error envelope",
+      "requirement_id": "02-REQ-2.E1"
+    },
+    {
+      "id": "02-ERR-19",
+      "condition": "Identity provider rejects the authorization code during token exchange",
+      "behavior": "Auth handler returns HTTP 400 with standard error envelope; no user record is written",
+      "requirement_id": "02-REQ-2.E2"
+    },
+    {
+      "id": "02-ERR-20",
+      "condition": "Identity provider token_url or userinfo_url does not respond within configured timeout",
+      "behavior": "Auth handler aborts the exchange, writes no user record, and returns HTTP 500 with standard error envelope",
+      "requirement_id": "02-REQ-1.E2"
+    },
+    {
+      "id": "02-ERR-21",
+      "condition": "Database error occurs during any token lookup in auth middleware",
+      "behavior": "Auth middleware returns HTTP 500 with standard error envelope without leaking internal details",
+      "requirement_id": "02-REQ-3.E4"
+    },
+    {
+      "id": "02-ERR-22",
+      "condition": "Request body exceeds the configured body size limit on any endpoint",
+      "behavior": "Handler returns HTTP 413 with standard error envelope",
+      "requirement_id": "02-REQ-2.E3"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/labstack/echo/v4",
+      "version": "v4.x",
+      "symbols": [
+        {
+          "name": "Echo",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "type Echo struct",
+          "notes": "Main Echo server instance; used to register middleware and route groups"
+        },
+        {
+          "name": "Group",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "func (e *Echo) Group(prefix string, m ...MiddlewareFunc) *Group",
+          "notes": "Creates a route group; used to apply auth middleware to /api/v1/* while excluding /api/v1/auth/*"
+        },
+        {
+          "name": "MiddlewareFunc",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "type MiddlewareFunc func(HandlerFunc) HandlerFunc",
+          "notes": "Middleware function type for auth and RBAC middleware"
+        },
+        {
+          "name": "Context",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "type Context interface",
+          "notes": "Request context interface; used to store authenticated user ID, role, workspace_id, and auth method"
+        },
+        {
+          "name": "HandlerFunc",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "type HandlerFunc func(c Context) error",
+          "notes": "Handler function type for all route handlers"
+        }
+      ]
+    }
+  ]
+}

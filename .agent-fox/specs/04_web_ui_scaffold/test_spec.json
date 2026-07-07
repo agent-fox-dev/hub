@@ -1,0 +1,465 @@
+{
+  "$schema": null,
+  "spec_id": "04",
+  "spec_name": "web_ui_scaffold",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-04-1",
+      "requirement_id": "04-REQ-1.1",
+      "kind": "acceptance",
+      "description": "Verifies that the web/ directory exists at the repo root and contains its own package.json and tsconfig.json, with no shared config files with the Go backend.",
+      "preconditions": [
+        "Repository has been initialized with the web UI scaffold",
+        "The Go backend exists at the repo root"
+      ],
+      "input": "Repository file system after scaffold setup",
+      "expected": "Directory `web/` exists at repo root; `web/package.json` and `web/tsconfig.json` are present; no shared tsconfig or package.json exists between `web/` and the Go backend root",
+      "assertion_pseudocode": "assert path_exists('web/')\nassert path_exists('web/package.json')\nassert path_exists('web/tsconfig.json')\nassert NOT path_exists('tsconfig.json') OR tsconfig_at_root_is_not_shared_with_web()\nassert read_json('web/package.json')['name'] is not null"
+    },
+    {
+      "id": "TS-04-2",
+      "requirement_id": "04-REQ-1.2",
+      "kind": "acceptance",
+      "description": "Verifies that package.json declares Vite, React, TypeScript, Tailwind CSS, React Router, and TanStack Query as dependencies or devDependencies.",
+      "preconditions": [
+        "`web/package.json` exists and is valid JSON"
+      ],
+      "input": "Contents of `web/package.json`",
+      "expected": "package.json lists vite, react, react-dom, typescript, tailwindcss, react-router-dom (or react-router v6+), and @tanstack/react-query in dependencies or devDependencies",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nall_deps = merge(pkg.get('dependencies', {}), pkg.get('devDependencies', {}))\nassert 'vite' in all_deps\nassert 'react' in all_deps\nassert 'react-dom' in all_deps\nassert 'typescript' in all_deps\nassert 'tailwindcss' in all_deps\nassert any(k in all_deps for k in ['react-router-dom', 'react-router'])\nassert '@tanstack/react-query' in all_deps"
+    },
+    {
+      "id": "TS-04-3",
+      "requirement_id": "04-REQ-1.3",
+      "kind": "acceptance",
+      "description": "Verifies that shadcn/ui components are copied into the project tree and are NOT listed as an npm dependency in package.json.",
+      "preconditions": [
+        "`web/` directory has been scaffolded with `npx shadcn-ui@latest init`"
+      ],
+      "input": "Contents of `web/package.json` and `web/` directory tree",
+      "expected": "shadcn/ui is not present in dependencies or devDependencies; shadcn/ui component source files (e.g., `web/src/components/ui/`) exist in the project tree",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nall_deps = merge(pkg.get('dependencies', {}), pkg.get('devDependencies', {}))\nassert 'shadcn-ui' NOT in all_deps\nassert '@shadcn/ui' NOT in all_deps\nassert directory_exists('web/src/components/ui') OR any(glob('web/src/components/ui/*.tsx'))"
+    },
+    {
+      "id": "TS-04-4",
+      "requirement_id": "04-REQ-1.4",
+      "kind": "acceptance",
+      "description": "Verifies that the project enforces or documents a minimum Node.js version of 18 or later.",
+      "preconditions": [
+        "`web/package.json` exists"
+      ],
+      "input": "Contents of `web/package.json` and `docs/web-ui.md`",
+      "expected": "Either `engines.node` in package.json specifies `>=18` or `docs/web-ui.md` explicitly states the Node 18+ requirement",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nengines_ok = pkg.get('engines', {}).get('node', '').contains('18') OR pkg.get('engines', {}).get('node', '').contains('>=')\ndocs_content = read_file('docs/web-ui.md')\ndocs_ok = 'Node 18' in docs_content OR 'Node.js 18' in docs_content OR '>=18' in docs_content\nassert engines_ok OR docs_ok"
+    },
+    {
+      "id": "TS-04-5",
+      "requirement_id": "04-REQ-1.5",
+      "kind": "acceptance",
+      "description": "Verifies that QueryClientProvider from TanStack Query wraps the root React application component tree.",
+      "preconditions": [
+        "`web/src/main.tsx` or equivalent entry point exists",
+        "Dependencies have been installed"
+      ],
+      "input": "Source file of the React application entry point (e.g., `web/src/main.tsx`)",
+      "expected": "The entry point imports QueryClientProvider and QueryClient from @tanstack/react-query and wraps the App (or root component) with <QueryClientProvider client={queryClient}>",
+      "assertion_pseudocode": "src = read_file('web/src/main.tsx')\nassert 'QueryClientProvider' in src\nassert 'QueryClient' in src\nassert '@tanstack/react-query' in src\nassert src contains pattern '<QueryClientProvider' before or wrapping '<App' or root router component"
+    },
+    {
+      "id": "TS-04-6",
+      "requirement_id": "04-REQ-2.1",
+      "kind": "acceptance",
+      "description": "Verifies that the Vite dev proxy configuration forwards /api/* requests to http://localhost:8080 preserving the path.",
+      "preconditions": [
+        "`web/vite.config.ts` exists"
+      ],
+      "input": "Contents of `web/vite.config.ts`",
+      "expected": "vite.config.ts contains a proxy entry for `/api` (or `/api/`) targeting `http://localhost:8080` with changeOrigin enabled and no path rewriting that would drop the `/api` prefix",
+      "assertion_pseudocode": "config = read_file('web/vite.config.ts')\nassert 'localhost:8080' in config\nassert '/api' in config\nproxy_section = extract_proxy_config(config)\napi_rule = proxy_section['/api']\nassert api_rule.target == 'http://localhost:8080'\nassert api_rule does NOT strip '/api' prefix (no rewrite to remove '/api')"
+    },
+    {
+      "id": "TS-04-7",
+      "requirement_id": "04-REQ-2.2",
+      "kind": "acceptance",
+      "description": "Verifies that the Vite dev proxy configuration forwards /healthz requests to http://localhost:8080/healthz.",
+      "preconditions": [
+        "`web/vite.config.ts` exists"
+      ],
+      "input": "Contents of `web/vite.config.ts`",
+      "expected": "vite.config.ts contains a proxy entry for `/healthz` targeting `http://localhost:8080`",
+      "assertion_pseudocode": "config = read_file('web/vite.config.ts')\nproxy_section = extract_proxy_config(config)\nhealthz_rule = proxy_section['/healthz']\nassert healthz_rule.target == 'http://localhost:8080'"
+    },
+    {
+      "id": "TS-04-8",
+      "requirement_id": "04-REQ-2.3",
+      "kind": "acceptance",
+      "description": "Verifies that the Vite dev proxy configuration forwards /readyz requests to http://localhost:8080/readyz.",
+      "preconditions": [
+        "`web/vite.config.ts` exists"
+      ],
+      "input": "Contents of `web/vite.config.ts`",
+      "expected": "vite.config.ts contains a proxy entry for `/readyz` targeting `http://localhost:8080`",
+      "assertion_pseudocode": "config = read_file('web/vite.config.ts')\nproxy_section = extract_proxy_config(config)\nreadyz_rule = proxy_section['/readyz']\nassert readyz_rule.target == 'http://localhost:8080'"
+    },
+    {
+      "id": "TS-04-9",
+      "requirement_id": "04-REQ-2.4",
+      "kind": "acceptance",
+      "description": "Verifies that vite.config.ts defines all three proxy rules (/api/*, /healthz, /readyz) targeting port 8080.",
+      "preconditions": [
+        "`web/vite.config.ts` exists"
+      ],
+      "input": "Contents of `web/vite.config.ts`",
+      "expected": "Proxy section contains entries for `/api` (or `/api/*`), `/healthz`, and `/readyz`, all pointing to `http://localhost:8080`",
+      "assertion_pseudocode": "config = read_file('web/vite.config.ts')\nproxy_section = extract_proxy_config(config)\nassert '/api' in proxy_section OR any key starting with '/api' in proxy_section\nassert '/healthz' in proxy_section\nassert '/readyz' in proxy_section\nfor each rule in [proxy_section['/api'], proxy_section['/healthz'], proxy_section['/readyz']]:\n  assert rule.target == 'http://localhost:8080'"
+    },
+    {
+      "id": "TS-04-10",
+      "requirement_id": "04-REQ-3.1",
+      "kind": "acceptance",
+      "description": "Verifies that the make web-dev target installs dependencies when node_modules/ is absent and then starts the Vite dev server.",
+      "preconditions": [
+        "Makefile exists at repo root with a `web-dev` target",
+        "`web/` directory exists with package.json",
+        "`web/node_modules/` does NOT exist"
+      ],
+      "input": "Running `make web-dev` from the repo root",
+      "expected": "`npm install` is executed in `web/` first, then `npm run dev` is executed in `web/`; Vite dev server starts and prints a local URL to stdout",
+      "assertion_pseudocode": "makefile_content = read_file('Makefile')\nweb_dev_target = extract_target(makefile_content, 'web-dev')\nassert 'npm install' in web_dev_target OR 'node_modules' check present triggering install\nassert 'npm run dev' in web_dev_target\nassert install_step appears before dev_step in target"
+    },
+    {
+      "id": "TS-04-11",
+      "requirement_id": "04-REQ-3.2",
+      "kind": "acceptance",
+      "description": "Verifies that the make web-build target installs dependencies when node_modules/ is absent and then runs the production build outputting to web/dist/.",
+      "preconditions": [
+        "Makefile exists at repo root with a `web-build` target",
+        "`web/` directory exists with package.json",
+        "`web/node_modules/` does NOT exist"
+      ],
+      "input": "Running `make web-build` from the repo root",
+      "expected": "`npm install` runs first in `web/`, then `npm run build` runs in `web/`; static assets are emitted to `web/dist/` on success; make exits with code 0",
+      "assertion_pseudocode": "makefile_content = read_file('Makefile')\nweb_build_target = extract_target(makefile_content, 'web-build')\nassert 'npm install' in web_build_target OR 'node_modules' check present triggering install\nassert 'npm run build' in web_build_target\nassert install_step appears before build_step in target"
+    },
+    {
+      "id": "TS-04-12",
+      "requirement_id": "04-REQ-4.1",
+      "kind": "acceptance",
+      "description": "Verifies that npm run dev starts the Vite dev server with hot module replacement enabled.",
+      "preconditions": [
+        "`web/package.json` exists with a `dev` script",
+        "`web/node_modules/` is populated"
+      ],
+      "input": "Contents of `web/package.json` scripts section",
+      "expected": "The `dev` script invokes `vite` (e.g., `\"dev\": \"vite\"`); Vite starts a dev server with HMR when executed",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nassert 'dev' in pkg['scripts']\ndev_cmd = pkg['scripts']['dev']\nassert 'vite' in dev_cmd\nassert dev_cmd does not include '--no-hmr' or similar HMR-disabling flags"
+    },
+    {
+      "id": "TS-04-13",
+      "requirement_id": "04-REQ-4.2",
+      "kind": "acceptance",
+      "description": "Verifies that npm run build runs the Vite production build and emits compiled assets to web/dist/.",
+      "preconditions": [
+        "`web/package.json` exists with a `build` script",
+        "`web/node_modules/` is populated"
+      ],
+      "input": "Contents of `web/package.json` scripts section",
+      "expected": "The `build` script invokes `vite build`; on success, compiled assets appear in `web/dist/`",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nassert 'build' in pkg['scripts']\nbuild_cmd = pkg['scripts']['build']\nassert 'vite build' in build_cmd OR ('tsc' in build_cmd AND 'vite build' in build_cmd)\nassert outDir is 'dist' (from vite.config.ts or default)"
+    },
+    {
+      "id": "TS-04-14",
+      "requirement_id": "04-REQ-4.3",
+      "kind": "acceptance",
+      "description": "Verifies that npm run lint runs ESLint and TypeScript type checking via tsc --noEmit.",
+      "preconditions": [
+        "`web/package.json` exists with a `lint` script",
+        "`web/node_modules/` is populated"
+      ],
+      "input": "Contents of `web/package.json` scripts section",
+      "expected": "The `lint` script contains both an ESLint invocation and a TypeScript type check (`tsc --noEmit`); running it on valid code exits with code 0",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nassert 'lint' in pkg['scripts']\nlint_cmd = pkg['scripts']['lint']\nassert 'eslint' in lint_cmd\nassert 'tsc' in lint_cmd AND '--noEmit' in lint_cmd"
+    },
+    {
+      "id": "TS-04-15",
+      "requirement_id": "04-REQ-4.4",
+      "kind": "acceptance",
+      "description": "Verifies that npm run preview starts a local static server serving the web/dist/ output.",
+      "preconditions": [
+        "`web/package.json` exists with a `preview` script",
+        "`web/node_modules/` is populated"
+      ],
+      "input": "Contents of `web/package.json` scripts section",
+      "expected": "The `preview` script invokes `vite preview`; it serves the built assets from `web/dist/`",
+      "assertion_pseudocode": "pkg = read_json('web/package.json')\nassert 'preview' in pkg['scripts']\npreview_cmd = pkg['scripts']['preview']\nassert 'vite preview' in preview_cmd"
+    },
+    {
+      "id": "TS-04-16",
+      "requirement_id": "04-REQ-5.1",
+      "kind": "acceptance",
+      "description": "Verifies that navigating to / renders a page displaying 'af-hub' text and a placeholder message with minimal layout.",
+      "preconditions": [
+        "`web/` project is built or dev server is running",
+        "React Router is configured with a route at `/`"
+      ],
+      "input": "Browser or test renderer navigates to `/`",
+      "expected": "The rendered HTML contains the text 'af-hub' and at least one placeholder message string; no navigation bar, sidebar, or complex layout components are present",
+      "assertion_pseudocode": "rendered = render_component(App, route='/')\nassert text_content_contains(rendered, 'af-hub')\nassert text_content_contains(rendered, placeholder_message)  // any non-empty placeholder string\nassert NOT rendered_contains_nav_or_sidebar(rendered)"
+    },
+    {
+      "id": "TS-04-17",
+      "requirement_id": "04-REQ-5.2",
+      "kind": "acceptance",
+      "description": "Verifies that React Router is configured with exactly one route mapping '/' to the Hello World page component.",
+      "preconditions": [
+        "Router configuration file or App component source exists in `web/src/`"
+      ],
+      "input": "Router configuration source in `web/src/`",
+      "expected": "The router definition contains a route with path '/' pointing to the Hello World (or equivalent index) component; no other routes are defined in this scaffold",
+      "assertion_pseudocode": "router_source = find_router_config('web/src/')\nassert route_exists(router_source, path='/')\nroute = get_route(router_source, path='/')\nassert route.component is not null\nassert route.component renders 'af-hub' text"
+    },
+    {
+      "id": "TS-04-18",
+      "requirement_id": "04-REQ-6.1",
+      "kind": "acceptance",
+      "description": "Verifies that docs/web-ui.md covers all required topics: Node 18+ prerequisites, npm install, dev server, production build, project structure, and shadcn/ui conventions.",
+      "preconditions": [
+        "`docs/web-ui.md` exists"
+      ],
+      "input": "Contents of `docs/web-ui.md`",
+      "expected": "The file contains sections or mentions of: Node.js 18+ requirement, `npm install`, `npm run dev`, `npm run build`, the `web/` directory structure, and shadcn/ui component conventions (copy-into-tree model)",
+      "assertion_pseudocode": "doc = read_file('docs/web-ui.md')\nassert 'Node' in doc AND ('18' in doc OR '>=18' in doc)\nassert 'npm install' in doc\nassert 'npm run dev' in doc\nassert 'npm run build' in doc\nassert 'web/' in doc\nassert 'shadcn' in doc\nassert any phrase like 'copied' OR 'copy' OR 'npx shadcn' in doc"
+    },
+    {
+      "id": "TS-04-19",
+      "requirement_id": "04-REQ-6.2",
+      "kind": "acceptance",
+      "description": "Verifies that README.md links to docs/web-ui.md and mentions the make web-dev and make web-build targets.",
+      "preconditions": [
+        "`README.md` exists at repo root",
+        "`docs/web-ui.md` exists"
+      ],
+      "input": "Contents of `README.md`",
+      "expected": "README.md contains a link or reference to `docs/web-ui.md`, and mentions `make web-dev` and `make web-build`",
+      "assertion_pseudocode": "readme = read_file('README.md')\nassert 'docs/web-ui.md' in readme OR 'web-ui' in readme\nassert 'make web-dev' in readme OR 'web-dev' in readme\nassert 'make web-build' in readme OR 'web-build' in readme"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-04-P1",
+      "property_id": "04-PROP-1",
+      "validates": [
+        "04-REQ-2.1",
+        "04-REQ-2.2",
+        "04-REQ-2.3",
+        "04-REQ-2.4"
+      ],
+      "description": "For any request path starting with /api/, or exactly /healthz or /readyz, vite.config.ts must have a matching proxy rule targeting http://localhost:8080.",
+      "for_any_strategy": "Sample paths from the set: ['/api/anything', '/api/users', '/api/v1/resource', '/healthz', '/readyz']",
+      "invariant_check": "config = read_file('web/vite.config.ts')\nproxy = extract_proxy_config(config)\nfor path in ['/api/anything', '/api/users', '/api/v1/resource', '/healthz', '/readyz']:\n  matching_rule = find_matching_proxy_rule(proxy, path)\n  assert matching_rule is not null, f'No proxy rule for {path}'\n  assert matching_rule.target == 'http://localhost:8080'"
+    },
+    {
+      "id": "TS-04-P2",
+      "property_id": "04-PROP-2",
+      "validates": [
+        "04-REQ-3.1",
+        "04-REQ-3.2"
+      ],
+      "description": "For any invocation of make web-dev or make web-build where node_modules/ is absent, npm install always runs before any Vite command, ensuring no unbounded retry or skipped install.",
+      "for_any_strategy": "Two scenarios: (1) node_modules/ absent, (2) node_modules/ present — for both make web-dev and make web-build",
+      "invariant_check": "makefile = read_file('Makefile')\nfor target in ['web-dev', 'web-build']:\n  body = extract_target(makefile, target)\n  // Verify bounded: install check executes at most once (no retry loop)\n  install_occurrences = count_occurrences(body, 'npm install')\n  assert install_occurrences <= 1, 'npm install must not be retried in a loop'\n  // Verify ordering: install always precedes run\n  assert position_of(body, 'npm install') < position_of(body, 'npm run')\n  // Verify conditional: node_modules check gates the install\n  assert 'node_modules' in body"
+    },
+    {
+      "id": "TS-04-P3",
+      "property_id": "04-PROP-3",
+      "validates": [
+        "04-REQ-4.2",
+        "04-REQ-4.3",
+        "04-REQ-3.E1",
+        "04-REQ-3.E2"
+      ],
+      "description": "For any npm script that exits with a non-zero code, the exit code is propagated to the calling process without being masked or swallowed.",
+      "for_any_strategy": "Simulate non-zero exits for npm run dev, npm run build, and npm run lint by injecting exit-code-returning stubs",
+      "invariant_check": "makefile = read_file('Makefile')\nfor target in ['web-dev', 'web-build']:\n  body = extract_target(makefile, target)\n  // Ensure no '- ' prefix (which tells make to ignore errors)\n  assert NOT any_line_starts_with_dash_space(body)\n  assert NOT 'exit 0' forced after npm commands\n// Behavioral: simulate failures\nfor script in ['build', 'lint']:\n  result = run_npm_script_with_forced_exit_code(script, exit_code=1)\n  assert result.exit_code == 1\n  assert result.exit_code != 0"
+    },
+    {
+      "id": "TS-04-P4",
+      "property_id": "04-PROP-4",
+      "validates": [
+        "04-REQ-5.1",
+        "04-REQ-5.2"
+      ],
+      "description": "For any browser navigation to '/', the Hello World page always renders 'af-hub' text and a placeholder message with no uncaught JavaScript exceptions.",
+      "for_any_strategy": "Render the App component with route '/' using a test renderer; repeat across build (production) and dev modes",
+      "invariant_check": "for mode in ['dev', 'production']:\n  rendered = render_app_at_route('/', mode=mode)\n  assert text_content_contains(rendered, 'af-hub')\n  assert has_placeholder_message(rendered)\n  assert no_uncaught_exceptions()\n  assert rendered.html() != ''"
+    },
+    {
+      "id": "TS-04-P5",
+      "property_id": "04-PROP-5",
+      "validates": [
+        "04-REQ-1.5"
+      ],
+      "description": "For any React component rendered within the application, it is always a descendant of QueryClientProvider, ensuring TanStack Query hooks are universally available.",
+      "for_any_strategy": "Inspect the React component tree rendered from the application entry point; check ancestry of any arbitrarily nested component",
+      "invariant_check": "entry = read_file('web/src/main.tsx')\n// Static analysis: QueryClientProvider appears as an ancestor before App or Router\nassert 'QueryClientProvider' in entry\nassert 'QueryClient' in entry\n// Verify wrapping order in source\nqcp_pos = index_of(entry, 'QueryClientProvider')\napp_pos = index_of(entry, '<App') OR index_of(entry, '<RouterProvider') OR index_of(entry, '<BrowserRouter')\nassert qcp_pos < app_pos  // QueryClientProvider opens before App\n// Runtime check\ntree = render_app()\nassert find_ancestor(tree, component_type='QueryClientProvider') is not null"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-04-E1",
+      "requirement_id": "04-REQ-1.E1",
+      "kind": "edge_case",
+      "description": "Verifies that when Node.js older than version 18 is used, npm or Vite emits a clear incompatibility error, and that docs/web-ui.md documents the Node 18+ prerequisite.",
+      "preconditions": [
+        "A Node.js version older than 18 (e.g., Node 16) is active in the environment",
+        "`web/package.json` exists"
+      ],
+      "input": "Run `npm install` or `npm run dev` in `web/` with Node.js < 18",
+      "expected": "npm or Vite exits with a non-zero code and prints a message indicating the Node.js version is incompatible; `docs/web-ui.md` contains explicit Node 18+ prerequisite documentation",
+      "assertion_pseudocode": "// Static check\ndoc = read_file('docs/web-ui.md')\nassert 'Node' in doc AND '18' in doc\n// Dynamic check (requires environment with old Node)\nresult = run_command('npm install', cwd='web/', node_version='16')\nassert result.exit_code != 0 OR result.stderr contains version error\n// OR engines field check\npkg = read_json('web/package.json')\nassert pkg.get('engines', {}).get('node') specifies '>=18'"
+    },
+    {
+      "id": "TS-04-E2",
+      "requirement_id": "04-REQ-2.E1",
+      "kind": "edge_case",
+      "description": "Verifies that when the Go backend is not running, the Vite dev server returns a 502/connection-refused error to the browser without crashing.",
+      "preconditions": [
+        "Vite dev server is running with proxy configured",
+        "Go backend at http://localhost:8080 is NOT running"
+      ],
+      "input": "HTTP GET request to `http://localhost:5173/api/test-endpoint`",
+      "expected": "The browser receives an HTTP 502 or connection-refused error response; the Vite dev server process continues running and responds to subsequent requests",
+      "assertion_pseudocode": "// Vite proxy error behavior check\nconfig = read_file('web/vite.config.ts')\nproxy_config = extract_proxy_config(config)\napi_rule = proxy_config['/api']\nassert api_rule.target == 'http://localhost:8080'\n// Behavioral check\nvite_server = start_vite_dev_server(backend_running=False)\nresponse = http_get(vite_server.url + '/api/test')\nassert response.status_code in [502, 503, 504] OR response.is_connection_error\nassert vite_server.is_running()\nassert vite_server.responds_to_non_proxy_requests()"
+    },
+    {
+      "id": "TS-04-E3",
+      "requirement_id": "04-REQ-3.E1",
+      "kind": "edge_case",
+      "description": "Verifies that make web-build propagates a non-zero exit code when npm run build fails due to TypeScript or bundling errors.",
+      "preconditions": [
+        "Makefile has a `web-build` target",
+        "`web/node_modules/` is populated",
+        "A TypeScript error exists in the source that will cause `npm run build` to fail"
+      ],
+      "input": "Running `make web-build` when `npm run build` exits non-zero",
+      "expected": "make exits with the same non-zero exit code as npm; error output from npm/Vite is visible on stderr; `web/dist/` is either absent or incomplete",
+      "assertion_pseudocode": "makefile = read_file('Makefile')\nweb_build = extract_target(makefile, 'web-build')\n// Check the target does not swallow exit codes\nassert NOT uses_dash_prefix_to_ignore_errors(web_build)\nassert NOT 'exit 0' forced after npm command\n// Behavioral simulation\nresult = run_make('web-build', with_build_error=True)\nassert result.exit_code != 0\nassert result.stderr contains error output"
+    },
+    {
+      "id": "TS-04-E4",
+      "requirement_id": "04-REQ-3.E2",
+      "kind": "edge_case",
+      "description": "Verifies that when npm install fails, make web-dev and make web-build propagate the non-zero exit code and do not proceed to the dev or build step.",
+      "preconditions": [
+        "Makefile has `web-dev` and `web-build` targets",
+        "`web/node_modules/` does NOT exist",
+        "npm install is simulated to fail (e.g., mock npm registry unavailable)"
+      ],
+      "input": "Running `make web-dev` or `make web-build` when `npm install` exits non-zero",
+      "expected": "make exits with a non-zero code; npm error output is visible on stderr; neither `npm run dev` nor `npm run build` is executed after the failed install",
+      "assertion_pseudocode": "makefile = read_file('Makefile')\nfor target in ['web-dev', 'web-build']:\n  target_body = extract_target(makefile, target)\n  assert install_step_comes_before_run_step(target_body)\n  assert NOT ignores_install_exit_code(target_body)\n// Behavioral simulation\nresult = run_make('web-dev', npm_install_fails=True)\nassert result.exit_code != 0\nassert 'npm run dev' NOT in result.commands_executed\nresult2 = run_make('web-build', npm_install_fails=True)\nassert result2.exit_code != 0\nassert 'npm run build' NOT in result2.commands_executed"
+    },
+    {
+      "id": "TS-04-E5",
+      "requirement_id": "04-REQ-4.E1",
+      "kind": "edge_case",
+      "description": "Verifies that npm run lint prints all errors with file names and line numbers and exits with a non-zero code when TypeScript or ESLint errors exist.",
+      "preconditions": [
+        "`web/node_modules/` is populated",
+        "A TypeScript source file in `web/src/` contains a deliberate type error or ESLint violation"
+      ],
+      "input": "Running `npm run lint` in `web/` with source errors present",
+      "expected": "Command exits with a non-zero exit code; output includes file names and line numbers for each error; no errors are silently swallowed",
+      "assertion_pseudocode": "// Introduce a deliberate error\nwrite_file('web/src/__test_error__.tsx', 'const x: number = \"not a number\";')\nresult = run_command('npm run lint', cwd='web/')\ndelete_file('web/src/__test_error__.tsx')\nassert result.exit_code != 0\nassert '__test_error__' in result.output\nassert line_number_present_in_output(result.output)\nassert 'number' in result.output OR 'string' in result.output"
+    },
+    {
+      "id": "TS-04-E6",
+      "requirement_id": "04-REQ-5.E1",
+      "kind": "edge_case",
+      "description": "Verifies that navigating to an unknown route (e.g., /unknown) does not crash the React application and renders a non-blank page.",
+      "preconditions": [
+        "React app is running with React Router configured",
+        "Only the '/' route is defined"
+      ],
+      "input": "Browser navigates to `/unknown`",
+      "expected": "The application renders a non-blank page (either a fallback/404 indicator or graceful redirect); no unhandled JavaScript exceptions are thrown in the browser console",
+      "assertion_pseudocode": "rendered = render_component(App, route='/unknown')\nassert rendered is not null\nassert rendered.html() != ''\nassert no_uncaught_exceptions_thrown()\nassert NOT react_error_boundary_triggered(rendered)"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-04-SMOKE-1",
+      "execution_path_id": "04-PATH-1",
+      "description": "End-to-end smoke test verifying that a developer can run make web-dev from the repo root, have dependencies auto-installed, and see the Hello World page rendered in a browser.",
+      "trigger": "Developer runs `make web-dev` from the repository root with `web/node_modules/` absent",
+      "real_components": [
+        "Makefile (web-dev target)",
+        "web/package.json",
+        "web/vite.config.ts",
+        "web/src/main.tsx",
+        "web/src/ React app and Hello World route component"
+      ],
+      "mockable": [
+        "Go backend at http://localhost:8080 (not required for this smoke test; proxy rules exist but backend need not respond)"
+      ],
+      "expected_effects": [
+        "`npm install` executes in `web/` and populates `web/node_modules/`",
+        "Vite dev server starts and prints a local URL (e.g., http://localhost:5173) to stdout",
+        "HTTP GET to the printed URL returns HTTP 200",
+        "Response body contains the text 'af-hub'",
+        "No JavaScript console errors on initial page load"
+      ]
+    },
+    {
+      "id": "TS-04-SMOKE-2",
+      "execution_path_id": "04-PATH-2",
+      "description": "End-to-end smoke test verifying that make web-build produces a successful production build with static assets in web/dist/.",
+      "trigger": "Developer runs `make web-build` from the repository root with `web/node_modules/` absent",
+      "real_components": [
+        "Makefile (web-build target)",
+        "web/package.json",
+        "web/vite.config.ts",
+        "web/src/ React app source files",
+        "web/tsconfig.json"
+      ],
+      "mockable": [
+        "Go backend (not needed for build step)"
+      ],
+      "expected_effects": [
+        "`npm install` executes in `web/` and populates `web/node_modules/`",
+        "`npm run build` executes in `web/`",
+        "Vite compiles TypeScript and bundles assets with no errors",
+        "`web/dist/` directory is created and contains `index.html` and bundled JS/CSS assets",
+        "make exits with code 0"
+      ]
+    },
+    {
+      "id": "TS-04-SMOKE-3",
+      "execution_path_id": "04-PATH-3",
+      "description": "End-to-end smoke test verifying that the Vite dev proxy correctly forwards /api/* requests to the Go backend and returns the response to the browser.",
+      "trigger": "Developer issues a browser request to http://localhost:5173/api/some-endpoint while both the Vite dev server and Go backend are running",
+      "real_components": [
+        "web/vite.config.ts (proxy configuration)",
+        "Vite dev server",
+        "Go backend server (spec 01) running at http://localhost:8080"
+      ],
+      "mockable": [
+        "Specific API endpoint handler on the Go backend (can use /healthz as a simple proxy verification target)"
+      ],
+      "expected_effects": [
+        "Vite dev server matches the /api/* proxy rule from vite.config.ts",
+        "Request is forwarded to http://localhost:8080/api/some-endpoint",
+        "Go backend receives the request and returns an HTTP response",
+        "Browser receives the response with no CORS errors",
+        "Response status code and body match what the Go backend returned"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

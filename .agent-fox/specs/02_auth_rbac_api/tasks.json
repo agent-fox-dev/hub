@@ -1,0 +1,1647 @@
+{
+  "$schema": null,
+  "spec_id": "02",
+  "spec_name": "auth_rbac_api",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/integration/... ./internal/auth/... ./internal/handler/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 6,
+      "to_group": 3,
+      "relationship": "Uses store layer, config, database schema, Echo server, and health probe infrastructure from spec 01",
+      "sentinel": true
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: OAuth provider registry and OAuth endpoints",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for provider interface and GitHub provider defaults",
+          "details": [
+            "Create internal/auth/provider_test.go",
+            "Test that the Provider interface declares AuthorizeURL, ExchangeCode, and GetUserInfo methods",
+            "Test GitHub provider built-in defaults: authorize_url, token_url, userinfo_url",
+            "Test that config.toml overrides take precedence over built-in defaults",
+            "Test that a mock provider implementing the interface can be registered and retrieved without changes to middleware or handlers"
+          ],
+          "test_spec_refs": [
+            "TS-02-1",
+            "TS-02-2",
+            "TS-02-3"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-1.2",
+            "02-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write integration tests for provider removal and OAuth callback provider listing",
+          "details": [
+            "Create internal/integration/oauth_provider_test.go",
+            "Test that removing a provider from config retains existing user records and API keys in DB",
+            "Test that POST /api/v1/auth/callback with removed provider returns HTTP 400 with unsupported provider envelope",
+            "Test GET /api/v1/auth/providers returns HTTP 200 array with name and authorize_url fields, no secrets or credentials"
+          ],
+          "test_spec_refs": [
+            "TS-02-4",
+            "TS-02-5"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.4",
+            "02-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write integration tests for OAuth callback user upsert and blocked user handling",
+          "details": [
+            "Create internal/integration/oauth_callback_test.go",
+            "Set up mock HTTP server for GitHub token_url and userinfo_url",
+            "Test POST /api/v1/auth/callback creates new user with status=active and returns user object",
+            "Test POST /api/v1/auth/callback for existing blocked user returns HTTP 200 but does not change status to active",
+            "Verify DB state after each call"
+          ],
+          "test_spec_refs": [
+            "TS-02-6",
+            "TS-02-7"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.2",
+            "02-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write edge case tests for OAuth callback error conditions",
+          "details": [
+            "Test unknown provider name returns HTTP 400 with unsupported provider error envelope",
+            "Test identity provider timeout (mock token_url to time out) returns HTTP 500 with no user record written",
+            "Test missing required fields in POST body returns HTTP 400",
+            "Test expired/rejected authorization code returns HTTP 400, no user record created",
+            "Test oversized request body returns HTTP 413"
+          ],
+          "test_spec_refs": [
+            "TS-02-E1",
+            "TS-02-E2",
+            "TS-02-E3",
+            "TS-02-E4",
+            "TS-02-E5"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.E1",
+            "02-REQ-1.E2",
+            "02-REQ-2.E1",
+            "02-REQ-2.E2",
+            "02-REQ-2.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files in internal/auth/ and internal/integration/ compile without errors: go build ./...",
+          "Spec tests for this group pass (currently expected to fail — stubs not yet implemented): go test ./internal/auth/... ./internal/integration/... -count=1 -v -run 'Provider|OAuth|Callback'",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 02-REQ-1.1, 02-REQ-1.2, 02-REQ-1.3, 02-REQ-1.4, 02-REQ-2.1, 02-REQ-2.2, 02-REQ-2.3 test cases are present"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: Auth middleware and RBAC enforcement",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write integration tests for auth middleware token validation",
+          "details": [
+            "Create internal/integration/middleware_test.go",
+            "Test middleware applies to /api/v1/* but not /api/v1/auth/* or health routes",
+            "Test admin token (af_admin_...) SHA-256 hash is matched against admin_tokens; context populated with admin auth method",
+            "Test API key token (af_<key_id>_<secret>) parsed and verified; context populated with workspace_id and role",
+            "Test blocked user with valid token returns HTTP 403 with 'user is blocked' envelope; handler never invoked"
+          ],
+          "test_spec_refs": [
+            "TS-02-8",
+            "TS-02-9",
+            "TS-02-10",
+            "TS-02-11"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.1",
+            "02-REQ-3.2",
+            "02-REQ-3.3",
+            "02-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write edge case tests for auth middleware rejection conditions",
+          "details": [
+            "Test missing/malformed Authorization header returns HTTP 401 with 'missing or malformed token'",
+            "Test admin token hash mismatch returns HTTP 401 with 'invalid token'",
+            "Test API key not found, hash mismatch, revoked, and expired all return HTTP 401",
+            "Test DB error during token lookup returns HTTP 500 without leaking internal error details"
+          ],
+          "test_spec_refs": [
+            "TS-02-E6",
+            "TS-02-E7",
+            "TS-02-E8",
+            "TS-02-E9"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.E1",
+            "02-REQ-3.E2",
+            "02-REQ-3.E3",
+            "02-REQ-3.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write unit and integration tests for RBAC role enforcement",
+          "details": [
+            "Create internal/auth/rbac_test.go",
+            "Test admin, editor, reader role constants are defined",
+            "Test non-admin attempting admin-only endpoint receives HTTP 403 before handler executes",
+            "Test non-admin user can update own full_name but receives HTTP 403 when attempting to change status",
+            "Test admin token bypasses all workspace scoping and can access all endpoints",
+            "Test editor API key permitted on write endpoints; reader API key rejected with HTTP 403"
+          ],
+          "test_spec_refs": [
+            "TS-02-12",
+            "TS-02-13",
+            "TS-02-14",
+            "TS-02-15",
+            "TS-02-16"
+          ],
+          "requirement_refs": [
+            "02-REQ-4.1",
+            "02-REQ-4.2",
+            "02-REQ-4.3",
+            "02-REQ-4.4",
+            "02-REQ-4.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write edge case test for unknown role in request context",
+          "details": [
+            "Create unit test in internal/auth/rbac_test.go for unknown role scenario",
+            "Manually populate request context with role='superuser'",
+            "Assert RBAC layer returns HTTP 403 with 'unknown role' error envelope"
+          ],
+          "test_spec_refs": [
+            "TS-02-E10"
+          ],
+          "requirement_refs": [
+            "02-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files in internal/auth/ and internal/integration/ compile without errors: go build ./...",
+          "Spec tests for this group compile and are runnable (stubs expected): go test ./internal/auth/... ./internal/integration/... -count=1 -v -run 'Middleware|RBAC|Role'",
+          "No linter warnings: go vet ./...",
+          "Requirements 02-REQ-3.1 through 02-REQ-3.4, 02-REQ-4.1 through 02-REQ-4.5 test cases are present and organized"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: User management, workspace management (part 1)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write integration tests for user management endpoints",
+          "details": [
+            "Create internal/integration/user_handler_test.go",
+            "Test POST /api/v1/users creates user with status=active and returns HTTP 201",
+            "Test GET /api/v1/users returns all users as array with HTTP 200",
+            "Test GET /api/v1/users/:id returns user object with memberships array",
+            "Test PUT /api/v1/users/:id with admin credentials updates full_name and status, returns HTTP 200"
+          ],
+          "test_spec_refs": [
+            "TS-02-17",
+            "TS-02-18",
+            "TS-02-19",
+            "TS-02-20"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.1",
+            "02-REQ-5.2",
+            "02-REQ-5.3",
+            "02-REQ-5.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write edge case tests for user management endpoints",
+          "details": [
+            "Test POST /api/v1/users with duplicate username or (provider, provider_id) returns HTTP 409, no user created",
+            "Test GET and PUT on non-existent user ID return HTTP 404 with 'user not found'",
+            "Test POST /api/v1/users missing required fields returns HTTP 400"
+          ],
+          "test_spec_refs": [
+            "TS-02-E11",
+            "TS-02-E12",
+            "TS-02-E13"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.E1",
+            "02-REQ-5.E2",
+            "02-REQ-5.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration tests for workspace creation and listing",
+          "details": [
+            "Create internal/integration/workspace_handler_test.go",
+            "Test POST /api/v1/workspaces validates slug and URL, creates workspace, returns HTTP 201",
+            "Test GET /api/v1/workspaces excludes archived by default; includes archived when ?include_archived=true"
+          ],
+          "test_spec_refs": [
+            "TS-02-21",
+            "TS-02-22"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.1",
+            "02-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write integration tests for workspace archive, reactivate, and delete",
+          "details": [
+            "Test POST /api/v1/workspaces/:id/archive marks active workspace as archived, returns HTTP 200",
+            "Test POST /api/v1/workspaces/:id/reactivate marks archived workspace as active, returns HTTP 200",
+            "Test DELETE /api/v1/workspaces/:id on archived workspace cascades deletion of memberships and API keys, returns HTTP 200"
+          ],
+          "test_spec_refs": [
+            "TS-02-23",
+            "TS-02-24",
+            "TS-02-25"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.3",
+            "02-REQ-6.4",
+            "02-REQ-6.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write integration tests for workspace member management",
+          "details": [
+            "Test POST /api/v1/workspaces/:id/members adds or updates membership with given role, returns HTTP 200",
+            "Test GET /api/v1/workspaces/:id/members returns array of all member records with user_id and role"
+          ],
+          "test_spec_refs": [
+            "TS-02-26",
+            "TS-02-27"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.6",
+            "02-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "Test files compile without errors: go build ./...",
+          "User and workspace handler test files are present and runnable: go test ./internal/integration/... -count=1 -v -run 'User|Workspace'",
+          "No linter warnings: go vet ./...",
+          "Requirements 02-REQ-5.1 through 02-REQ-5.4, 02-REQ-6.1 through 02-REQ-6.7 test cases are covered"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: Workspace edge cases, API key management, error envelope, and documentation",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write edge case tests for workspace management endpoints",
+          "details": [
+            "Test duplicate name or slug returns HTTP 409 with workspace conflict envelope",
+            "Test invalid slug format or non-http/https URL returns HTTP 400",
+            "Test archiving already-archived workspace returns HTTP 400",
+            "Test reactivating non-archived workspace returns HTTP 400",
+            "Test deleting non-archived workspace returns HTTP 400, workspace intact",
+            "Test non-existent workspace ID on any endpoint returns HTTP 404",
+            "Test adding non-existent user_id as member returns HTTP 404",
+            "Test partial DB failure during cascade delete rolls back entire transaction; verify workspace/memberships/api_keys remain"
+          ],
+          "test_spec_refs": [
+            "TS-02-E14",
+            "TS-02-E15",
+            "TS-02-E16",
+            "TS-02-E17",
+            "TS-02-E18",
+            "TS-02-E19",
+            "TS-02-E20",
+            "TS-02-E21"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.E1",
+            "02-REQ-6.E2",
+            "02-REQ-6.E3",
+            "02-REQ-6.E4",
+            "02-REQ-6.E5",
+            "02-REQ-6.E6",
+            "02-REQ-6.E7",
+            "02-REQ-6.E8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write integration tests for API key management endpoints",
+          "details": [
+            "Create internal/integration/apikey_handler_test.go",
+            "Test POST /api/v1/keys creates key in af_<key_id>_<secret> format, stores key_hash, sets expires_at=30d, returns plaintext once",
+            "Test GET /api/v1/keys with admin token returns all keys including expired; no plaintext secrets",
+            "Test GET /api/v1/keys with API key token returns only the authenticated user's keys",
+            "Test POST /api/v1/keys/:key_id/refresh generates new secret, updates key_hash, returns new key once",
+            "Test DELETE /api/v1/keys/:key_id sets revoked_at, returns HTTP 200 with revoked message"
+          ],
+          "test_spec_refs": [
+            "TS-02-28",
+            "TS-02-29",
+            "TS-02-30",
+            "TS-02-31",
+            "TS-02-32"
+          ],
+          "requirement_refs": [
+            "02-REQ-7.1",
+            "02-REQ-7.2",
+            "02-REQ-7.3",
+            "02-REQ-7.4",
+            "02-REQ-7.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write edge case tests for API key management endpoints",
+          "details": [
+            "Test creating key for workspace without membership returns HTTP 403 with 'not a member' envelope",
+            "Test invalid expires value (not 0/30/60/90) returns HTTP 400",
+            "Test non-existent workspace_id returns HTTP 404 when creating key",
+            "Test refresh or revoke on non-existent or other-user key returns HTTP 404",
+            "Test reader-role user attempting POST /api/v1/keys or DELETE /api/v1/keys/:key_id returns HTTP 403"
+          ],
+          "test_spec_refs": [
+            "TS-02-E22",
+            "TS-02-E23",
+            "TS-02-E24",
+            "TS-02-E25",
+            "TS-02-E26"
+          ],
+          "requirement_refs": [
+            "02-REQ-7.E1",
+            "02-REQ-7.E2",
+            "02-REQ-7.E3",
+            "02-REQ-7.E4",
+            "02-REQ-7.E5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write unit tests for standardized error response envelope and documentation",
+          "details": [
+            "Create internal/handler/error_handler_test.go",
+            "Test all API error responses use {\"error\": {\"code\": \"<STATUS>\", \"message\": \"...\"}} format with correct HTTP status",
+            "Test all seven status codes (400, 401, 403, 404, 409, 413, 500) are mapped correctly",
+            "Test 500-level responses never expose internal error details, stack traces, or DB error strings",
+            "Test that docs/api.md exists and contains all endpoint methods, paths, auth requirements, examples, and error format",
+            "Test that README.md contains a link to docs/api.md"
+          ],
+          "test_spec_refs": [
+            "TS-02-33",
+            "TS-02-34",
+            "TS-02-35",
+            "TS-02-36",
+            "TS-02-37"
+          ],
+          "requirement_refs": [
+            "02-REQ-8.1",
+            "02-REQ-8.2",
+            "02-REQ-8.3",
+            "02-REQ-9.1",
+            "02-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All new test files compile: go build ./...",
+          "Workspace edge case, API key, error envelope, and doc tests are runnable: go test ./internal/integration/... ./internal/handler/... -count=1 -v -run 'Workspace|APIKey|Error|Doc'",
+          "No linter warnings: go vet ./...",
+          "Requirements 02-REQ-6.E1 through 02-REQ-6.E8, 02-REQ-7.1 through 02-REQ-7.E5, 02-REQ-8.1 through 02-REQ-9.2 test cases all present"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write property-based and smoke tests",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write property tests for security invariants (admin token, API key secret, blocked user)",
+          "details": [
+            "Create internal/auth/properties_test.go",
+            "TS-02-P1: For arbitrary admin tokens, assert SHA-256 hashes only stored; plaintext never in DB or responses",
+            "TS-02-P2: For any key create/refresh, assert plaintext returned exactly once; key_hash = sha256(secret) in DB; subsequent GETs show no plaintext",
+            "TS-02-P3: For any request from blocked user with valid admin or API key token, assert HTTP 403 always returned; handler never invoked"
+          ],
+          "test_spec_refs": [
+            "TS-02-P1",
+            "TS-02-P2",
+            "TS-02-P3"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.2",
+            "02-REQ-3.E2",
+            "02-REQ-7.1",
+            "02-REQ-7.4",
+            "02-REQ-3.4",
+            "02-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write property tests for workspace atomicity, blocked-user upsert, slug uniqueness, and error envelope",
+          "details": [
+            "TS-02-P4: For DELETE /api/v1/workspaces/:id with simulated partial DB failure, assert either full success (all gone) or full rollback (all intact)",
+            "TS-02-P5: For OAuth callback with blocked user, assert status never changes from blocked to active in DB",
+            "TS-02-P6: For workspace creation with conflicting name or slug, assert HTTP 409 and no record created; unique creation returns HTTP 201",
+            "TS-02-P7: For any 5xx error, assert response body only contains standard envelope with 'internal server error'; no internal details leaked"
+          ],
+          "test_spec_refs": [
+            "TS-02-P4",
+            "TS-02-P5",
+            "TS-02-P6",
+            "TS-02-P7"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.5",
+            "02-REQ-6.E8",
+            "02-REQ-2.3",
+            "02-REQ-6.1",
+            "02-REQ-6.E1",
+            "02-REQ-8.3",
+            "02-REQ-3.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write smoke tests covering all six execution paths",
+          "details": [
+            "Create internal/integration/smoke_test.go",
+            "SMOKE-1: OAuth login for new user — discover providers, exchange code, verify DB user record",
+            "SMOKE-2: Admin creates workspace and assigns member — verify DB workspace and membership",
+            "SMOKE-3: Editor creates API key and uses it — verify plaintext returned once, DB key_hash correct, subsequent auth works",
+            "SMOKE-4: Blocked user with valid key rejected at middleware — verify HTTP 403, handler never invoked",
+            "SMOKE-5: Admin archives then deletes workspace — verify atomic cascade deletion of memberships and API keys",
+            "SMOKE-6: Non-admin updates own full_name — verify HTTP 200, status unchanged"
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-1",
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-3",
+            "TS-02-SMOKE-4",
+            "TS-02-SMOKE-5",
+            "TS-02-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.1",
+            "02-REQ-2.2",
+            "02-REQ-6.1",
+            "02-REQ-6.6",
+            "02-REQ-7.1",
+            "02-REQ-3.4",
+            "02-REQ-6.3",
+            "02-REQ-6.5",
+            "02-REQ-5.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Property test and smoke test files compile: go build ./...",
+          "Test file structure is correct: go test ./internal/auth/... ./internal/integration/... -count=1 -v -run 'Property|Smoke'",
+          "No linter warnings: go vet ./...",
+          "All property IDs (02-PROP-1 through 02-PROP-7) and execution paths (02-PATH-1 through 02-PATH-6) have corresponding test coverage"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement OAuth provider registry and GitHub provider",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Define Provider interface and registry type",
+          "details": [
+            "Create internal/auth/provider.go",
+            "Define Provider interface with methods: AuthorizeURL(redirectURI string) string, ExchangeCode(ctx context.Context, code string, redirectURI string) (*TokenResponse, error), GetUserInfo(ctx context.Context, accessToken string) (*UserInfo, error)",
+            "Define Registry struct with Register(name string, p Provider) and GetProvider(name string) (Provider, error) methods",
+            "Define TokenResponse and UserInfo struct types"
+          ],
+          "test_spec_refs": [
+            "TS-02-1",
+            "TS-02-3"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement GitHub OAuth provider with config override support",
+          "details": [
+            "Create internal/auth/github_provider.go",
+            "Implement Provider interface for GitHub with built-in defaults: authorize_url='https://github.com/login/oauth/authorize', token_url='https://github.com/login/oauth/access_token', userinfo_url='https://api.github.com/user'",
+            "Accept config overrides for all three URLs",
+            "Use standard net/http client for token exchange and user info retrieval",
+            "Parse GitHub userinfo response to extract username, email, and provider_id fields"
+          ],
+          "test_spec_refs": [
+            "TS-02-2"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Initialize registry from config and wire into application startup",
+          "details": [
+            "Create internal/auth/registry.go with NewRegistry(cfg Config) (*Registry, error)",
+            "Read provider list from config.toml; register only configured providers",
+            "Configure HTTP client with timeout from config (default 10s) for identity provider calls",
+            "Wire Registry into main application startup via dependency injection",
+            "Existing user records and API keys are unaffected when provider removed from config"
+          ],
+          "test_spec_refs": [
+            "TS-02-4"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.2",
+            "02-REQ-1.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Provider interface and GitHub implementation compile: go build ./internal/auth/...",
+          "Unit tests for provider interface and GitHub defaults pass: go test ./internal/auth/... -count=1 -v -run 'Provider|GitHub|Registry'",
+          "No linter warnings: go vet ./internal/auth/...",
+          "Requirements 02-REQ-1.1, 02-REQ-1.2, 02-REQ-1.3, 02-REQ-1.4 acceptance criteria met per TS-02-1, TS-02-2, TS-02-3"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement OAuth endpoints and auth handlers",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement GET /api/v1/auth/providers handler",
+          "details": [
+            "Create internal/handler/auth_handler.go",
+            "Implement ListProviders(c echo.Context) error handler",
+            "Return array of {name, authorize_url} objects from registry; never expose client_secret, token_url, or credentials",
+            "Register route: GET /api/v1/auth/providers (excluded from auth middleware)"
+          ],
+          "test_spec_refs": [
+            "TS-02-5"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement POST /api/v1/auth/callback handler with user upsert",
+          "details": [
+            "Implement OAuthCallback(c echo.Context) error handler",
+            "Parse and validate request body: provider, code, redirect_uri are required",
+            "Look up provider in registry; return HTTP 400 if not found",
+            "Exchange code via provider.ExchangeCode; retrieve user info via provider.GetUserInfo",
+            "Upsert user by (provider, provider_id): create with status=active if new; update username and email if existing; never change status from blocked to active",
+            "Return HTTP 200 with user object on success"
+          ],
+          "test_spec_refs": [
+            "TS-02-6",
+            "TS-02-7"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.2",
+            "02-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement standardized error response envelope and error handler",
+          "details": [
+            "Create internal/handler/errors.go",
+            "Define ErrorResponse struct: {error: {code: string, message: string}}",
+            "Implement newErrorResponse(status int, message string) helper",
+            "Register Echo custom error handler that maps all errors to the standard envelope",
+            "For 5xx errors, always return generic 'internal server error' message; never expose stack traces, SQL text, or Go error strings",
+            "Set Content-Type: application/json on all error responses"
+          ],
+          "test_spec_refs": [
+            "TS-02-33",
+            "TS-02-34",
+            "TS-02-35"
+          ],
+          "requirement_refs": [
+            "02-REQ-8.1",
+            "02-REQ-8.2",
+            "02-REQ-8.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Auth handler and error handler compile: go build ./internal/handler/...",
+          "OAuth and error envelope integration tests pass: go test ./internal/integration/... -count=1 -v -run 'OAuth|Callback|ErrorEnvelope'",
+          "No linter warnings: go vet ./internal/handler/...",
+          "Requirements 02-REQ-2.1, 02-REQ-2.2, 02-REQ-2.3, 02-REQ-8.1, 02-REQ-8.2, 02-REQ-8.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement auth middleware and RBAC enforcement",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement auth middleware for admin tokens and API keys",
+          "details": [
+            "Create internal/auth/middleware.go",
+            "Implement AuthMiddleware() echo.MiddlewareFunc",
+            "Apply to /api/v1 group; exclude /api/v1/auth/* routes",
+            "Parse Authorization header: detect af_admin_... prefix vs af_<key_id>_<secret> format",
+            "For admin tokens: SHA-256 hash the token, query admin_tokens table, populate context with auth_method=admin, status=active",
+            "For API keys: extract key_id, query api_keys table, SHA-256 hash secret, compare key_hash; populate context with user_id, user_status, auth_method=api_key, workspace_id, role",
+            "Use context keys constants for user_id, role, workspace_id, auth_method, user_status"
+          ],
+          "test_spec_refs": [
+            "TS-02-8",
+            "TS-02-9",
+            "TS-02-10"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.1",
+            "02-REQ-3.2",
+            "02-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement blocked user rejection and token error handling in middleware",
+          "details": [
+            "After successful token verification, look up user status from DB",
+            "If status=blocked, return HTTP 403 with 'user is blocked' error envelope; do not call next handler",
+            "Return HTTP 401 for missing/malformed token, admin hash mismatch, API key not found, hash mismatch, revoked (revoked_at set), or expired (expires_at in past)",
+            "Return HTTP 500 without leaking error details when DB error occurs during token lookup",
+            "Ensure all error paths use the standard error envelope format"
+          ],
+          "test_spec_refs": [
+            "TS-02-11",
+            "TS-02-E6",
+            "TS-02-E7",
+            "TS-02-E8",
+            "TS-02-E9"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.4",
+            "02-REQ-3.E1",
+            "02-REQ-3.E2",
+            "02-REQ-3.E3",
+            "02-REQ-3.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement RBAC enforcement layer",
+          "details": [
+            "Create internal/auth/rbac.go",
+            "Define role constants: RoleAdmin, RoleEditor, RoleReader",
+            "Implement RequireRole(roles ...string) echo.MiddlewareFunc for endpoint-level enforcement",
+            "Admin role bypasses all workspace scoping; apply globally",
+            "For PUT /api/v1/users/:id: allow non-admin to update own full_name only; reject status changes with HTTP 403",
+            "Reject unknown role values from context with HTTP 403 and 'unknown role' envelope",
+            "Editor permitted on write endpoints (POST /api/v1/keys, DELETE /api/v1/keys/:key_id); reader rejected with HTTP 403"
+          ],
+          "test_spec_refs": [
+            "TS-02-12",
+            "TS-02-13",
+            "TS-02-14",
+            "TS-02-15",
+            "TS-02-16",
+            "TS-02-E10"
+          ],
+          "requirement_refs": [
+            "02-REQ-4.1",
+            "02-REQ-4.2",
+            "02-REQ-4.3",
+            "02-REQ-4.4",
+            "02-REQ-4.5",
+            "02-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Auth middleware and RBAC compile: go build ./internal/auth/...",
+          "Middleware and RBAC integration tests pass: go test ./internal/integration/... ./internal/auth/... -count=1 -v -run 'Middleware|RBAC|Auth'",
+          "No linter warnings: go vet ./internal/auth/...",
+          "Requirements 02-REQ-3.1 through 02-REQ-3.4, 02-REQ-4.1 through 02-REQ-4.5 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement user management handlers",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement POST /api/v1/users and GET /api/v1/users handlers",
+          "details": [
+            "Create internal/handler/user_handler.go",
+            "Implement CreateUser(c echo.Context) error: parse body (username, email, provider, provider_id required), create user with status=active, return HTTP 201",
+            "Return HTTP 400 on missing required fields; HTTP 409 on duplicate username or (provider, provider_id)",
+            "Implement ListUsers(c echo.Context) error: return HTTP 200 with array of all user objects"
+          ],
+          "test_spec_refs": [
+            "TS-02-17",
+            "TS-02-18",
+            "TS-02-E11",
+            "TS-02-E13"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.1",
+            "02-REQ-5.2",
+            "02-REQ-5.E1",
+            "02-REQ-5.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement GET /api/v1/users/:id and PUT /api/v1/users/:id handlers",
+          "details": [
+            "Implement GetUser(c echo.Context) error: fetch user by ID including workspace memberships and roles; return HTTP 200 with user+memberships object or HTTP 404",
+            "Implement UpdateUser(c echo.Context) error: update full_name and/or status (active|blocked) with admin credentials; return HTTP 200 or HTTP 404",
+            "RBAC guard for status change: only admins may change status field; non-admin updating own record may only change full_name"
+          ],
+          "test_spec_refs": [
+            "TS-02-19",
+            "TS-02-20",
+            "TS-02-E12"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.3",
+            "02-REQ-5.4",
+            "02-REQ-5.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Register user management routes on the Echo group",
+          "details": [
+            "Register routes in internal/handler/routes.go or equivalent wiring file",
+            "POST /api/v1/users → CreateUser (admin only via RBAC middleware)",
+            "GET /api/v1/users → ListUsers (admin only)",
+            "GET /api/v1/users/:id → GetUser (admin only)",
+            "PUT /api/v1/users/:id → UpdateUser (admin or self for full_name via RBAC)",
+            "Apply auth middleware and appropriate RBAC middleware to each route"
+          ],
+          "test_spec_refs": [
+            "TS-02-17",
+            "TS-02-18",
+            "TS-02-19",
+            "TS-02-20"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.1",
+            "02-REQ-5.2",
+            "02-REQ-5.3",
+            "02-REQ-5.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "User handlers compile: go build ./internal/handler/...",
+          "User management integration tests pass: go test ./internal/integration/... -count=1 -v -run 'User'",
+          "No linter warnings: go vet ./internal/handler/...",
+          "Requirements 02-REQ-5.1 through 02-REQ-5.4 and edge cases 02-REQ-5.E1 through 02-REQ-5.E3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement workspace management handlers",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement workspace creation and listing handlers",
+          "details": [
+            "Create internal/handler/workspace_handler.go",
+            "Implement CreateWorkspace(c echo.Context) error: validate slug (regex: ^[a-z][a-z0-9-]{1,62}[a-z0-9]$ or equivalent, 3-64 chars, starts with letter, no trailing hyphen) and URL (http/https scheme + host required)",
+            "Return HTTP 201 with workspace object on success; HTTP 400 for invalid slug/URL; HTTP 409 for duplicate name or slug",
+            "Implement ListWorkspaces(c echo.Context) error: exclude archived by default; include when ?include_archived=true is present; return HTTP 200"
+          ],
+          "test_spec_refs": [
+            "TS-02-21",
+            "TS-02-22",
+            "TS-02-E14",
+            "TS-02-E15"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.1",
+            "02-REQ-6.2",
+            "02-REQ-6.E1",
+            "02-REQ-6.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement workspace archive, reactivate, and delete handlers",
+          "details": [
+            "Implement ArchiveWorkspace(c echo.Context) error: mark as archived; HTTP 400 if already archived; HTTP 404 if not found",
+            "Implement ReactivateWorkspace(c echo.Context) error: mark as active; HTTP 400 if not archived; HTTP 404 if not found",
+            "Implement DeleteWorkspace(c echo.Context) error: require archived state (HTTP 400 if not archived); open DB transaction; delete memberships, delete api_keys, delete workspace; commit; return HTTP 200 with {\"message\": \"workspace deleted\"}",
+            "Roll back entire transaction on any DB error during cascade; return HTTP 500 without leaking details"
+          ],
+          "test_spec_refs": [
+            "TS-02-23",
+            "TS-02-24",
+            "TS-02-25",
+            "TS-02-E16",
+            "TS-02-E17",
+            "TS-02-E18",
+            "TS-02-E19",
+            "TS-02-E21"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.3",
+            "02-REQ-6.4",
+            "02-REQ-6.5",
+            "02-REQ-6.E3",
+            "02-REQ-6.E4",
+            "02-REQ-6.E5",
+            "02-REQ-6.E6",
+            "02-REQ-6.E8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement workspace member management handlers and register all workspace routes",
+          "details": [
+            "Implement AddOrUpdateMember(c echo.Context) error: upsert membership by (workspace_id, user_id); HTTP 404 if workspace or user not found; return HTTP 200 with membership object",
+            "Implement ListMembers(c echo.Context) error: return HTTP 200 with array of member objects; HTTP 404 if workspace not found",
+            "Register all workspace routes on admin-only group: POST, GET /api/v1/workspaces; POST /api/v1/workspaces/:id/archive; POST /api/v1/workspaces/:id/reactivate; DELETE /api/v1/workspaces/:id; POST, GET /api/v1/workspaces/:id/members"
+          ],
+          "test_spec_refs": [
+            "TS-02-26",
+            "TS-02-27",
+            "TS-02-E20"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.6",
+            "02-REQ-6.7",
+            "02-REQ-6.E7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Workspace handlers compile: go build ./internal/handler/...",
+          "Workspace integration tests pass: go test ./internal/integration/... -count=1 -v -run 'Workspace'",
+          "No linter warnings: go vet ./internal/handler/...",
+          "Requirements 02-REQ-6.1 through 02-REQ-6.7 and all edge cases met; atomicity property 02-PROP-4 verified by TS-02-P4 and TS-02-E21"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement API key management handlers",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Implement POST /api/v1/keys handler for API key creation",
+          "details": [
+            "Create internal/handler/apikey_handler.go",
+            "Implement CreateAPIKey(c echo.Context) error: validate workspace_id, label, expires (must be 0, 30, 60, or 90)",
+            "Verify user is a member of the workspace; return HTTP 403 if not; HTTP 404 if workspace not found",
+            "Generate key_id (UUID or random), secret (random bytes); construct af_<key_id>_<secret> token",
+            "Store SHA-256 hash of secret as key_hash; set expires_at = now + 24h×expires (null if expires=0); inherit user's role in workspace",
+            "Return HTTP 201 with plaintext key in response exactly once"
+          ],
+          "test_spec_refs": [
+            "TS-02-28",
+            "TS-02-E22",
+            "TS-02-E23",
+            "TS-02-E24"
+          ],
+          "requirement_refs": [
+            "02-REQ-7.1",
+            "02-REQ-7.E1",
+            "02-REQ-7.E2",
+            "02-REQ-7.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement GET /api/v1/keys, POST /api/v1/keys/:key_id/refresh, and DELETE /api/v1/keys/:key_id handlers",
+          "details": [
+            "Implement ListAPIKeys(c echo.Context) error: admin token → return all keys across all users including expired; API key token → return only authenticated user's own keys; never include plaintext secrets in list",
+            "Implement RefreshAPIKey(c echo.Context) error: generate new secret for existing key_id; update key_hash; return new plaintext key once; HTTP 404 if key_id not found or belongs to another user",
+            "Implement RevokeAPIKey(c echo.Context) error: set revoked_at to current timestamp; return HTTP 200 with {\"message\": \"key revoked\"}; HTTP 404 if not found or belongs to another user",
+            "RBAC: reader role returns HTTP 403 on POST and DELETE key endpoints"
+          ],
+          "test_spec_refs": [
+            "TS-02-29",
+            "TS-02-30",
+            "TS-02-31",
+            "TS-02-32",
+            "TS-02-E25",
+            "TS-02-E26"
+          ],
+          "requirement_refs": [
+            "02-REQ-7.2",
+            "02-REQ-7.3",
+            "02-REQ-7.4",
+            "02-REQ-7.5",
+            "02-REQ-7.E4",
+            "02-REQ-7.E5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Register API key routes on the Echo group",
+          "details": [
+            "Register routes on authenticated group: POST /api/v1/keys → CreateAPIKey (editor or admin via RBAC)",
+            "GET /api/v1/keys → ListAPIKeys (any authenticated user)",
+            "POST /api/v1/keys/:key_id/refresh → RefreshAPIKey (editor or admin via RBAC)",
+            "DELETE /api/v1/keys/:key_id → RevokeAPIKey (editor or admin via RBAC)",
+            "Apply auth middleware and RBAC role guards to each route per the permission matrix"
+          ],
+          "test_spec_refs": [
+            "TS-02-28",
+            "TS-02-29",
+            "TS-02-30",
+            "TS-02-31",
+            "TS-02-32"
+          ],
+          "requirement_refs": [
+            "02-REQ-7.1",
+            "02-REQ-7.2",
+            "02-REQ-7.3",
+            "02-REQ-7.4",
+            "02-REQ-7.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "API key handlers compile: go build ./internal/handler/...",
+          "API key management integration tests pass: go test ./internal/integration/... -count=1 -v -run 'APIKey|Key'",
+          "No linter warnings: go vet ./internal/handler/...",
+          "Requirements 02-REQ-7.1 through 02-REQ-7.5 and edge cases 02-REQ-7.E1 through 02-REQ-7.E5 acceptance criteria met",
+          "Property TS-02-P2 (key secret returned exactly once) verified"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "checkpoint",
+      "title": "Full test suite checkpoint — all requirements implemented",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Run full test suite and fix all failing tests",
+          "details": [
+            "Run: go test ./... -count=1 and resolve all failures",
+            "Ensure no test is skipped due to missing implementation stubs",
+            "Fix any integration between auth middleware, RBAC, and handlers that causes unexpected failures"
+          ],
+          "test_spec_refs": [
+            "TS-02-1",
+            "TS-02-5",
+            "TS-02-8",
+            "TS-02-12",
+            "TS-02-17",
+            "TS-02-21",
+            "TS-02-28",
+            "TS-02-33"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-2.1",
+            "02-REQ-3.1",
+            "02-REQ-4.1",
+            "02-REQ-5.1",
+            "02-REQ-6.1",
+            "02-REQ-7.1",
+            "02-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Run property-based tests and fix invariant violations",
+          "details": [
+            "Run property tests for all 7 correctness properties",
+            "Fix any admin token plaintext exposure, API key secret leakage, or blocked-user bypass discovered",
+            "Fix any atomicity violations in workspace cascade deletion",
+            "Fix any error responses leaking internal details"
+          ],
+          "test_spec_refs": [
+            "TS-02-P1",
+            "TS-02-P2",
+            "TS-02-P3",
+            "TS-02-P4",
+            "TS-02-P5",
+            "TS-02-P6",
+            "TS-02-P7"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.2",
+            "02-REQ-7.1",
+            "02-REQ-3.4",
+            "02-REQ-6.5",
+            "02-REQ-2.3",
+            "02-REQ-6.1",
+            "02-REQ-8.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Audit error handling coverage across all handlers",
+          "details": [
+            "Verify all 22 error conditions (02-ERR-1 through 02-ERR-22) are handled with correct HTTP status codes",
+            "Ensure all error responses use the standard {\"error\": {\"code\": \"...\", \"message\": \"...\"}} envelope",
+            "Confirm 500-level responses never expose internal error details"
+          ],
+          "test_spec_refs": [
+            "TS-02-33",
+            "TS-02-34",
+            "TS-02-35"
+          ],
+          "requirement_refs": [
+            "02-REQ-8.1",
+            "02-REQ-8.2",
+            "02-REQ-8.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "Full test suite passes with zero failures: go test ./... -count=1",
+          "No linter warnings across all packages: go vet ./...",
+          "All 37 regular test cases (TS-02-1 through TS-02-37), 7 property tests (TS-02-P1 through TS-02-P7), and 26 edge case tests (TS-02-E1 through TS-02-E26) pass",
+          "Zero skipped tests in the output"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "standard",
+      "title": "Write API documentation",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Write docs/api.md with complete REST API documentation",
+          "details": [
+            "Create docs/api.md",
+            "Document every endpoint: GET /api/v1/auth/providers, POST /api/v1/auth/callback, POST /api/v1/users, GET /api/v1/users, GET /api/v1/users/:id, PUT /api/v1/users/:id, POST /api/v1/workspaces, GET /api/v1/workspaces, POST /api/v1/workspaces/:id/archive, POST /api/v1/workspaces/:id/reactivate, DELETE /api/v1/workspaces/:id, POST /api/v1/workspaces/:id/members, GET /api/v1/workspaces/:id/members, POST /api/v1/keys, GET /api/v1/keys, POST /api/v1/keys/:key_id/refresh, DELETE /api/v1/keys/:key_id",
+            "For each endpoint: method, path, auth requirements (Bearer token type), JSON request body example, JSON response body example(s), all status codes, and error envelope format examples"
+          ],
+          "test_spec_refs": [
+            "TS-02-36"
+          ],
+          "requirement_refs": [
+            "02-REQ-9.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Update README.md with link to docs/api.md",
+          "details": [
+            "Add a section to README.md: '## API Documentation' with a markdown link: [REST API Reference](docs/api.md)",
+            "Ensure the link is a relative path that works when browsing the repository on GitHub"
+          ],
+          "test_spec_refs": [
+            "TS-02-37"
+          ],
+          "requirement_refs": [
+            "02-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "docs/api.md exists and is non-empty",
+          "Documentation tests pass: go test ./... -count=1 -v -run 'Doc|API'",
+          "README.md contains the string 'docs/api.md'",
+          "Requirements 02-REQ-9.1 and 02-REQ-9.2 acceptance criteria met per TS-02-36 and TS-02-37"
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "kind": "wiring_verification",
+      "title": "Wiring verification — end-to-end integration and stub audit",
+      "subtasks": [
+        {
+          "id": "14.1",
+          "title": "Trace all six execution paths through production code",
+          "details": [
+            "02-PATH-1: Verify GET /api/v1/auth/providers → ListProviders → Registry.GetProvider chain is fully connected",
+            "02-PATH-2: Verify admin token → AuthMiddleware → RBAC → CreateWorkspace → DB store chain; POST /api/v1/workspaces/:id/members → AddOrUpdateMember chain",
+            "02-PATH-3: Verify API key token → AuthMiddleware → RBAC editor check → CreateAPIKey → key_hash stored in DB → new key usable for subsequent auth",
+            "02-PATH-4: Verify valid API key → AuthMiddleware → user status check → HTTP 403 returned before handler invoked",
+            "02-PATH-5: Verify ArchiveWorkspace → DB update; DeleteWorkspace → transaction wrapping memberships + api_keys + workspace deletion → DB commit",
+            "02-PATH-6: Verify reader API key → AuthMiddleware → RBAC self-update check → UpdateUser full_name only path"
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-1",
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-3",
+            "TS-02-SMOKE-4",
+            "TS-02-SMOKE-5",
+            "TS-02-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.1",
+            "02-REQ-2.2",
+            "02-REQ-3.2",
+            "02-REQ-4.2",
+            "02-REQ-6.1",
+            "02-REQ-6.5",
+            "02-REQ-7.1",
+            "02-REQ-5.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.2",
+          "title": "Verify return value propagation across all handler → store → response chains",
+          "details": [
+            "Confirm that (*User, error) from store.CreateUser is returned in HTTP 201 response body",
+            "Confirm that plaintext API key returned by CreateAPIKey handler matches af_<key_id>_<secret> format and is not retrievable via GET /api/v1/keys",
+            "Confirm that transaction error from DeleteWorkspace propagates to HTTP 500 with rollback; no partial state left in DB",
+            "Confirm that key_hash updated after RefreshAPIKey is actually persisted to DB and the old secret no longer authenticates"
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-3",
+            "TS-02-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.1",
+            "02-REQ-6.5",
+            "02-REQ-7.1",
+            "02-REQ-7.4",
+            "02-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.3",
+          "title": "Run all six smoke tests with real components",
+          "details": [
+            "Execute all SMOKE tests against real Echo server + real DB (SQLite in test mode); only GitHub HTTP endpoints are mocked",
+            "Confirm TS-02-SMOKE-1: providers endpoint returns github; callback creates user in DB",
+            "Confirm TS-02-SMOKE-2: workspace created and membership record present in DB after both API calls",
+            "Confirm TS-02-SMOKE-3: new key key_hash = sha256(secret) in DB; subsequent request with new key returns HTTP 200",
+            "Confirm TS-02-SMOKE-4: blocked user's valid key returns HTTP 403; handler not invoked",
+            "Confirm TS-02-SMOKE-5: workspace, memberships, api_keys all deleted after archive + delete sequence",
+            "Confirm TS-02-SMOKE-6: full_name updated in DB; status unchanged after reader self-update"
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-1",
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-3",
+            "TS-02-SMOKE-4",
+            "TS-02-SMOKE-5",
+            "TS-02-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.2",
+            "02-REQ-3.4",
+            "02-REQ-6.3",
+            "02-REQ-6.5",
+            "02-REQ-7.1",
+            "02-REQ-5.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.4",
+          "title": "Stub and dead-code audit across all auth and handler packages",
+          "details": [
+            "Search for panic(\"not implemented\") in all Go files: grep -r 'panic(\"not implemented\")' internal/",
+            "Search for bare 'return nil' in non-trivial functions that should return (*Type, error): grep -n 'return nil$' internal/",
+            "Search for // TODO and // FIXME markers: grep -rn 'TODO\\|FIXME' internal/",
+            "Confirm zero stub markers remain in production code paths",
+            "Verify all Provider interface methods are fully implemented in GitHubProvider struct (no method stubs)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-2.2",
+            "02-REQ-3.2",
+            "02-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.5",
+          "title": "Cross-spec entry point verification — confirm store layer calls are wired to spec 01 implementations",
+          "details": [
+            "Confirm auth middleware calls store.GetAdminTokenByHash and store.GetAPIKeyByKeyID from spec 01 store layer (not stubs)",
+            "Confirm workspace handler calls store.CreateWorkspace, store.ArchiveWorkspace, store.DeleteWorkspaceTx from spec 01 store",
+            "Confirm user handler calls store.CreateUser, store.GetUserByID, store.UpdateUser from spec 01 store",
+            "Confirm API key handler calls store.CreateAPIKey, store.GetAPIKeyByKeyID, store.UpdateAPIKeyHash, store.RevokeAPIKey from spec 01 store",
+            "Verify that Echo server group registration from spec 01 (e.g. e.Group('/api/v1')) is what spec 02 middleware attaches to"
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.2",
+            "02-REQ-5.1",
+            "02-REQ-6.5",
+            "02-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "14.V",
+        "checks": [
+          "All smoke tests pass with real Echo server and DB: go test ./internal/integration/... -count=1 -v -run 'Smoke'",
+          "Full test suite passes with zero failures: go test ./... -count=1",
+          "No stub markers found: grep -r 'panic(\"not implemented\")' internal/ returns no output",
+          "No linter warnings across all packages: go vet ./...",
+          "All 6 execution paths (02-PATH-1 through 02-PATH-6) confirmed wired end-to-end in production code",
+          "Cross-spec store layer calls verified to use spec 01 implementations (no local stubs)"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "02-REQ-1.1",
+      "test_spec_id": "TS-02-1",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-1.2",
+      "test_spec_id": "TS-02-2",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-1.3",
+      "test_spec_id": "TS-02-3",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-1.4",
+      "test_spec_id": "TS-02-4",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.1",
+      "test_spec_id": "TS-02-5",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.2",
+      "test_spec_id": "TS-02-6",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.3",
+      "test_spec_id": "TS-02-7",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-3.1",
+      "test_spec_id": "TS-02-8",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-3.2",
+      "test_spec_id": "TS-02-9",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-3.3",
+      "test_spec_id": "TS-02-10",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-3.4",
+      "test_spec_id": "TS-02-11",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.1",
+      "test_spec_id": "TS-02-12",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.2",
+      "test_spec_id": "TS-02-13",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.3",
+      "test_spec_id": "TS-02-14",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.4",
+      "test_spec_id": "TS-02-15",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.5",
+      "test_spec_id": "TS-02-16",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.1",
+      "test_spec_id": "TS-02-17",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.2",
+      "test_spec_id": "TS-02-18",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.3",
+      "test_spec_id": "TS-02-19",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.4",
+      "test_spec_id": "TS-02-20",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.1",
+      "test_spec_id": "TS-02-21",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.2",
+      "test_spec_id": "TS-02-22",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.3",
+      "test_spec_id": "TS-02-23",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.4",
+      "test_spec_id": "TS-02-24",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.5",
+      "test_spec_id": "TS-02-25",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.6",
+      "test_spec_id": "TS-02-26",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.7",
+      "test_spec_id": "TS-02-27",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-7.1",
+      "test_spec_id": "TS-02-28",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-7.2",
+      "test_spec_id": "TS-02-29",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-7.3",
+      "test_spec_id": "TS-02-30",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-7.4",
+      "test_spec_id": "TS-02-31",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-7.5",
+      "test_spec_id": "TS-02-32",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-8.1",
+      "test_spec_id": "TS-02-33",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-8.2",
+      "test_spec_id": "TS-02-34",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-8.3",
+      "test_spec_id": "TS-02-35",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-9.1",
+      "test_spec_id": "TS-02-36",
+      "task_id": "13.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-9.2",
+      "test_spec_id": "TS-02-37",
+      "task_id": "13.2",
+      "test_path": null
+    }
+  ]
+}
