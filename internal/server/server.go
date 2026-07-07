@@ -11,11 +11,12 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// NewServer is a placeholder stub. It will create and configure the Echo
-// server instance with health routes and middleware.
-func NewServer(_ *config.Config, _ *sql.DB) error {
+// NewServer creates and configures an Echo server with health routes
+// and middleware. Returns the configured Echo instance.
+func NewServer(cfg *config.Config, db *sql.DB) *echo.Echo {
 	// Stub — implementation in a later task group.
-	return nil
+	e := echo.New()
+	return e
 }
 
 // SetupServer creates and configures the Echo server with all routes, middleware,
