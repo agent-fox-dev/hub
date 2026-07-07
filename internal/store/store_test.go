@@ -345,8 +345,8 @@ func TestAPIKeyCRUD(t *testing.T) {
 		t.Errorf("expected ID %q, got %q", k.ID, got.ID)
 	}
 
-	// Revoke.
-	if err := s.RevokeAPIKey(k.ID); err != nil {
+	// Revoke (by key_id, not primary key).
+	if err := s.RevokeAPIKey(k.KeyID); err != nil {
 		t.Fatalf("RevokeAPIKey failed: %v", err)
 	}
 

@@ -53,12 +53,12 @@ func (s *sqliteStore) GetAPIKeyByKeyID(keyID string) (*APIKey, error) {
 	))
 }
 
-// RevokeAPIKey sets the revoked_at timestamp on an API key. Returns
-// ErrNotFound if the key does not exist.
-func (s *sqliteStore) RevokeAPIKey(id string) error {
+// RevokeAPIKey sets the revoked_at timestamp on an API key identified by its
+// public key_id. Returns ErrNotFound if the key does not exist.
+func (s *sqliteStore) RevokeAPIKey(keyID string) error {
 	now := nowRFC3339()
 	result, err := s.db.Exec(
-		`UPDATE api_keys SET revoked_at = ? WHERE id = ?`, now, id,
+		`UPDATE api_keys SET revoked_at = ? WHERE key_id = ?`, now, keyID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: revoke api key: %w", err)
