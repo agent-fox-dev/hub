@@ -23,6 +23,7 @@ type testEnv struct {
 	AuthHandler      *handler.AuthHandler
 	UserHandler      *handler.UserHandler
 	WorkspaceHandler *handler.WorkspaceHandler
+	APIKeyHandler    *handler.APIKeyHandler
 }
 
 // setupTestEnv creates a fully wired test environment with Echo server,
@@ -126,9 +127,30 @@ type userResponse struct {
 	Status     string `json:"status"`
 }
 
+// apiKeyResponse represents an API key object in list responses (no plaintext).
+type apiKeyResponse struct {
+	ID          string  `json:"id"`
+	KeyID       string  `json:"key_id"`
+	UserID      string  `json:"user_id"`
+	WorkspaceID string  `json:"workspace_id"`
+	Role        string  `json:"role"`
+	Label       string  `json:"label"`
+	ExpiresAt   *string `json:"expires_at,omitempty"`
+	RevokedAt   *string `json:"revoked_at,omitempty"`
+	Key         string  `json:"key,omitempty"`
+}
+
+// apiKeyCreateResponse represents the response from creating or refreshing a key.
+type apiKeyCreateResponse struct {
+	Key       string  `json:"key"`
+	KeyID     string  `json:"key_id"`
+	Role      string  `json:"role"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
 // setupFullTestEnv creates a fully wired test environment with auth middleware,
-// RBAC enforcement, and all handler routes (auth, user, workspace).
-// This is used by user and workspace handler integration tests.
+// RBAC enforcement, and all handler routes (auth, user, workspace, API keys).
+// This is used by user, workspace, and API key handler integration tests.
 func setupFullTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
@@ -148,6 +170,7 @@ func setupFullTestEnv(t *testing.T) *testEnv {
 	authHandler := handler.NewAuthHandler(registry, s)
 	userHandler := handler.NewUserHandler(s)
 	workspaceHandler := handler.NewWorkspaceHandler(s)
+	apiKeyHandler := handler.NewAPIKeyHandler(s)
 
 	e := echo.New()
 	e.HTTPErrorHandler = handler.CustomHTTPErrorHandler
@@ -179,6 +202,13 @@ func setupFullTestEnv(t *testing.T) *testEnv {
 	adminWsGroup.POST("/workspaces/:id/members", workspaceHandler.AddOrUpdateMember)
 	adminWsGroup.GET("/workspaces/:id/members", workspaceHandler.ListMembers)
 
+	// API key routes — editor or admin for create/refresh/revoke, any auth for list.
+	editorKeyGroup := apiGroup.Group("", auth.RequireRole(auth.RoleAdmin, auth.RoleEditor))
+	editorKeyGroup.POST("/keys", apiKeyHandler.CreateAPIKey)
+	editorKeyGroup.POST("/keys/:key_id/refresh", apiKeyHandler.RefreshAPIKey)
+	editorKeyGroup.DELETE("/keys/:key_id", apiKeyHandler.RevokeAPIKey)
+	apiGroup.GET("/keys", apiKeyHandler.ListAPIKeys)
+
 	// Health probe (no middleware).
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -191,6 +221,7 @@ func setupFullTestEnv(t *testing.T) *testEnv {
 		AuthHandler:      authHandler,
 		UserHandler:      userHandler,
 		WorkspaceHandler: workspaceHandler,
+		APIKeyHandler:    apiKeyHandler,
 	}
 }
 
