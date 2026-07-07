@@ -543,7 +543,7 @@
           "requirement_refs": [
             "04-REQ-3.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -570,7 +570,7 @@
             "04-REQ-3.E1",
             "04-REQ-3.E2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
