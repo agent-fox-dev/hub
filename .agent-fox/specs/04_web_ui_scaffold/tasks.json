@@ -479,7 +479,7 @@
             "04-REQ-2.3",
             "04-REQ-2.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -505,7 +505,7 @@
             "04-REQ-4.3",
             "04-REQ-4.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
