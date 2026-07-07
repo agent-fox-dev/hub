@@ -107,13 +107,18 @@ make check    # run lint + tests
 
 ## Documentation
 
+### System architecture
+
+- [System architecture](architecture/README.md) — three-layer system design.
+
+### Implementation
+
 - [REST API Reference](docs/api.md) — complete endpoint documentation with
   auth requirements, request/response examples, and error format.
 - [Architecture overview](docs/architecture.md) — two-binary design,
   internal package layout, storage, config flow, request lifecycle.
 - [Configuration reference](docs/configuration.md) — complete config.toml
   field reference with types, defaults, and validation rules.
-- [System architecture](docs/README.md) — three-layer system design.
 - [CLI reference](docs/cli.md) — `afc` command-line client.
 - [Frontend guide](docs/web-ui.md) — React web UI.
 
