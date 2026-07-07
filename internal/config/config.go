@@ -28,7 +28,8 @@ type LoggingConfig struct {
 
 // AuthConfig holds authentication configuration.
 type AuthConfig struct {
-	OAuth []OAuthProviderConfig `toml:"oauth"`
+	OAuth   []OAuthProviderConfig `toml:"oauth"`
+	Timeout int                   `toml:"timeout"` // HTTP timeout in seconds for identity provider calls
 }
 
 // OAuthProviderConfig holds configuration for a single OAuth provider.

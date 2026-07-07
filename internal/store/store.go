@@ -5,6 +5,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // Sentinel errors returned by store operations.
@@ -14,235 +15,118 @@ var (
 
 	// ErrConstraintViolation is returned when a write violates a UNIQUE or
 	// other database constraint.
-	ErrConstraintViolation = errors.New("constraint violation")
+	ErrConstraintViolation = errors.New("unique or database constraint violation")
 )
 
-// User represents a row in the users table.
+// User represents a user record in the system.
 type User struct {
-	ID         string
-	Username   string
-	Email      string
-	FullName   string
-	Provider   string
-	ProviderID string
-	Status     string
-	CreatedAt  string
-	UpdatedAt  string
+	ID         string     `json:"id"`
+	Username   string     `json:"username"`
+	Email      string     `json:"email"`
+	FullName   string     `json:"full_name,omitempty"`
+	Provider   string     `json:"provider"`
+	ProviderID string     `json:"provider_id"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
-// Workspace represents a row in the workspaces table.
+// UserWithMemberships represents a user with their workspace memberships.
+type UserWithMemberships struct {
+	User
+	Memberships []*WorkspaceMember `json:"memberships,omitempty"`
+}
+
+// Workspace represents a workspace record.
 type Workspace struct {
-	ID        string
-	Name      string
-	Slug      string
-	URL       string
-	Status    string
-	CreatedAt string
-	CreatedBy string
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	URL       string    `json:"url"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy string    `json:"created_by,omitempty"`
 }
 
-// WorkspaceMember represents a row in the workspace_members table.
+// WorkspaceMember represents a membership record.
 type WorkspaceMember struct {
-	UserID      string
-	WorkspaceID string
-	Role        string
-	CreatedAt   string
-	GrantedBy   string
+	UserID      string    `json:"user_id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Role        string    `json:"role"`
+	CreatedAt   time.Time `json:"created_at"`
+	GrantedBy   string    `json:"granted_by,omitempty"`
 }
 
-// APIKey represents a row in the api_keys table.
+// APIKey represents an API key record.
 type APIKey struct {
-	ID          string
-	KeyID       string
-	KeyHash     string
-	UserID      string
-	WorkspaceID string
-	Label       string
-	ExpiresAt   string
-	RevokedAt   string
-	CreatedAt   string
+	ID          string     `json:"id"`
+	KeyID       string     `json:"key_id"`
+	KeyHash     string     `json:"-"`
+	UserID      string     `json:"user_id"`
+	WorkspaceID string     `json:"workspace_id"`
+	Role        string     `json:"role"`
+	Label       string     `json:"label"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
-// AdminToken represents a row in the admin_tokens table.
+// AdminToken represents an admin token record.
 type AdminToken struct {
-	ID        string
-	TokenHash string
-	CreatedAt string
+	ID        string    `json:"id"`
+	TokenHash string    `json:"-"`
+	UserID    string    `json:"user_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// Store provides CRUD operations for all database entities.
-type Store struct {
-	db *sql.DB
+// Store defines the data access interface for af-hub.
+type Store interface {
+	// Users
+	CreateUser(u *User) (*User, error)
+	GetUserByID(id string) (*User, error)
+	GetUserByUsername(username string) (*User, error)
+	GetUserByProviderID(provider, providerID string) (*User, error)
+	UpdateUser(u *User) (*User, error)
+	DeleteUser(id string) error
+	ListUsers() ([]*User, error)
+	CountUsers() (int, error)
+
+	// Workspaces
+	CreateWorkspace(w *Workspace) (*Workspace, error)
+	GetWorkspaceByID(id string) (*Workspace, error)
+	GetWorkspaceBySlug(slug string) (*Workspace, error)
+	UpdateWorkspace(w *Workspace) (*Workspace, error)
+	DeleteWorkspace(id string) error
+	ListWorkspaces(includeArchived bool) ([]*Workspace, error)
+	DeleteWorkspaceWithCascade(id string) error
+
+	// Workspace Members
+	CreateWorkspaceMember(m *WorkspaceMember) (*WorkspaceMember, error)
+	GetWorkspaceMember(userID, workspaceID string) (*WorkspaceMember, error)
+	ListWorkspaceMembers(workspaceID string) ([]*WorkspaceMember, error)
+	DeleteWorkspaceMember(userID, workspaceID string) error
+	UpsertWorkspaceMember(m *WorkspaceMember) (*WorkspaceMember, error)
+
+	// API Keys
+	CreateAPIKey(k *APIKey) (*APIKey, error)
+	GetAPIKeyByID(id string) (*APIKey, error)
+	GetAPIKeyByKeyID(keyID string) (*APIKey, error)
+	RevokeAPIKey(id string) error
+	DeleteAPIKey(id string) error
+	ListAPIKeys() ([]*APIKey, error)
+	ListAPIKeysByUserID(userID string) ([]*APIKey, error)
+	CountAPIKeysByWorkspaceID(workspaceID string) (int, error)
+	UpdateAPIKeyHash(keyID string, newHash string) error
+
+	// Admin Tokens
+	CreateAdminToken(t *AdminToken) (*AdminToken, error)
+	GetAdminToken() (*AdminToken, error)
+	GetAdminTokenByHash(hash string) (*AdminToken, error)
+	UpdateAdminToken(t *AdminToken) (*AdminToken, error)
+	DeleteAdminToken(id string) error
 }
 
-// NewStore creates a new Store backed by the given database connection.
-func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
-}
-
-// DB returns the underlying *sql.DB for health checks and other
-// infrastructure needs. Callers must NOT execute SQL directly.
-func (s *Store) DB() *sql.DB {
-	return s.db
-}
-
-// --- Users ---
-
-// CreateUser inserts a new user record. The ID and timestamps are
-// generated automatically.
-func (s *Store) CreateUser(u *User) (*User, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetUserByID retrieves a user by primary key.
-func (s *Store) GetUserByID(id string) (*User, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetUserByUsername retrieves a user by username.
-func (s *Store) GetUserByUsername(username string) (*User, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetUserByProviderID retrieves a user by (provider, provider_id).
-func (s *Store) GetUserByProviderID(provider, providerID string) (*User, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// UpdateUser persists changes to an existing user record.
-func (s *Store) UpdateUser(u *User) (*User, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// DeleteUser removes a user by ID.
-func (s *Store) DeleteUser(id string) error {
-	// Stub — implementation in a later task group.
-	return nil
-}
-
-// CountUsers returns the number of rows in the users table.
-func (s *Store) CountUsers() (int, error) {
-	// Stub — implementation in a later task group.
-	return 0, nil
-}
-
-// --- Workspaces ---
-
-// CreateWorkspace inserts a new workspace record.
-func (s *Store) CreateWorkspace(w *Workspace) (*Workspace, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetWorkspaceByID retrieves a workspace by primary key.
-func (s *Store) GetWorkspaceByID(id string) (*Workspace, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetWorkspaceBySlug retrieves a workspace by slug.
-func (s *Store) GetWorkspaceBySlug(slug string) (*Workspace, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// UpdateWorkspace persists changes to an existing workspace.
-func (s *Store) UpdateWorkspace(w *Workspace) (*Workspace, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// DeleteWorkspace removes a workspace by ID.
-func (s *Store) DeleteWorkspace(id string) error {
-	// Stub — implementation in a later task group.
-	return nil
-}
-
-// --- Workspace Members ---
-
-// CreateWorkspaceMember inserts a new membership record.
-func (s *Store) CreateWorkspaceMember(m *WorkspaceMember) (*WorkspaceMember, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetWorkspaceMember retrieves a membership by (user_id, workspace_id).
-func (s *Store) GetWorkspaceMember(userID, workspaceID string) (*WorkspaceMember, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// ListWorkspaceMembers lists all members of a workspace.
-func (s *Store) ListWorkspaceMembers(workspaceID string) ([]*WorkspaceMember, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// DeleteWorkspaceMember removes a membership.
-func (s *Store) DeleteWorkspaceMember(userID, workspaceID string) error {
-	// Stub — implementation in a later task group.
-	return nil
-}
-
-// --- API Keys ---
-
-// CreateAPIKey inserts a new API key record.
-func (s *Store) CreateAPIKey(k *APIKey) (*APIKey, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetAPIKeyByID retrieves an API key by primary key.
-func (s *Store) GetAPIKeyByID(id string) (*APIKey, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetAPIKeyByKeyID retrieves an API key by key_id.
-func (s *Store) GetAPIKeyByKeyID(keyID string) (*APIKey, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// RevokeAPIKey sets the revoked_at timestamp on an API key.
-func (s *Store) RevokeAPIKey(id string) error {
-	// Stub — implementation in a later task group.
-	return nil
-}
-
-// DeleteAPIKey removes an API key by ID.
-func (s *Store) DeleteAPIKey(id string) error {
-	// Stub — implementation in a later task group.
-	return nil
-}
-
-// --- Admin Tokens ---
-
-// CreateAdminToken inserts a new admin token record.
-func (s *Store) CreateAdminToken(t *AdminToken) (*AdminToken, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// GetAdminToken retrieves the current admin token record.
-func (s *Store) GetAdminToken() (*AdminToken, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// UpdateAdminToken replaces the admin token hash.
-func (s *Store) UpdateAdminToken(t *AdminToken) (*AdminToken, error) {
-	// Stub — implementation in a later task group.
-	return nil, nil
-}
-
-// DeleteAdminToken removes an admin token by ID.
-func (s *Store) DeleteAdminToken(id string) error {
-	// Stub — implementation in a later task group.
-	return nil
+// NewStore creates a new Store backed by the given database.
+func NewStore(db *sql.DB) Store {
+	panic("not implemented")
 }

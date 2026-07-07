@@ -1,5 +1,6 @@
+// Package main is the entrypoint for the af-hub server.
 package main
 
 func main() {
-	// Implementation will be added in later task groups.
+	panic("not implemented")
 }
