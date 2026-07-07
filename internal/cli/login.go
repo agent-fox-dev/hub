@@ -135,7 +135,9 @@ func runLogin(cmd *cobra.Command, hubURL, provider string) error {
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintf(stderr, "Warning: callback server shutdown error: %v\n", err)
+		}
 	}()
 
 	// Step 3: Open the authorization URL in the default browser.
