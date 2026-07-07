@@ -58,7 +58,7 @@ func readyzHandler(db *sql.DB) echo.HandlerFunc {
 
 // SetupServer creates and configures the Echo server with all routes, middleware,
 // and handlers. Returns the configured Echo instance.
-func SetupServer(cfg *config.Config, s store.Store, registry *auth.Registry) *echo.Echo {
+func SetupServer(cfg *config.Config, s store.Store, registry *auth.Registry, db *sql.DB) *echo.Echo {
 	e := echo.New()
 
 	// Set the custom error handler for standardized error envelopes.
@@ -72,7 +72,7 @@ func SetupServer(cfg *config.Config, s store.Store, registry *auth.Registry) *ec
 
 	// Register health probe endpoints.
 	e.GET("/healthz", healthzHandler)
-	e.GET("/readyz", readyzHandler(nil)) // DB not available through this path yet.
+	e.GET("/readyz", readyzHandler(db))
 
 	// Create handlers.
 	authHandler := handler.NewAuthHandler(registry, s)

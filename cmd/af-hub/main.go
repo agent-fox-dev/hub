@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agent-fox/af-hub/internal/auth"
 	"github.com/agent-fox/af-hub/internal/bootstrap"
 	"github.com/agent-fox/af-hub/internal/config"
 	"github.com/agent-fox/af-hub/internal/db"
@@ -89,8 +90,11 @@ func run() int {
 		}
 	}
 
-	// Step 9: Create and start the HTTP server.
-	e := server.NewServer(cfg, database)
+	// Step 9: Initialize the OAuth provider registry from config.
+	registry := auth.NewRegistry(&cfg.Auth)
+
+	// Step 10: Create and start the HTTP server with full API surface.
+	e := server.SetupServer(cfg, s, registry, database)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.Port)
 	logrus.WithField("address", addr).Info("starting HTTP server")
 
@@ -103,7 +107,7 @@ func run() int {
 		close(serverErr)
 	}()
 
-	// Step 10: Listen for SIGTERM/SIGINT for graceful shutdown.
+	// Step 11: Listen for SIGTERM/SIGINT for graceful shutdown.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
@@ -118,7 +122,7 @@ func run() int {
 		}
 	}
 
-	// Step 11: Initiate graceful shutdown with a 15-second drain timeout.
+	// Step 12: Initiate graceful shutdown with a 15-second drain timeout.
 	const drainTimeout = 15 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
@@ -126,7 +130,7 @@ func run() int {
 	logrus.Info("shutting down server, waiting for in-flight requests to drain")
 	shutdownErr := e.Shutdown(ctx)
 
-	// Step 12: Close the database connection with a 5-second timeout.
+	// Step 13: Close the database connection with a 5-second timeout.
 	const dbCloseTimeout = 5 * time.Second
 	closeDBWithTimeout(database, dbCloseTimeout)
 
