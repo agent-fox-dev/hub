@@ -391,7 +391,7 @@ func TestCLISmoke_OAuthLoginFlow(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execCaptureAsync(t, binary, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -649,7 +649,7 @@ func TestCLISmoke_OAuthLoginTimeout(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execCaptureAsync(t, binary, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {

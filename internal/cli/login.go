@@ -233,7 +233,11 @@ func buildAuthURL(authorizeURL, redirectURI string) string {
 }
 
 // openBrowser opens a URL in the default browser using platform-appropriate commands.
+// Set AFC_SKIP_BROWSER=1 to suppress (used by tests).
 func openBrowser(url string) {
+	if os.Getenv("AFC_SKIP_BROWSER") == "1" {
+		return
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -241,10 +245,8 @@ func openBrowser(url string) {
 	case "linux":
 		cmd = exec.Command("xdg-open", url)
 	default:
-		// Unsupported platform — silently skip browser open.
 		return
 	}
-	// Start without waiting — if it fails, the user can manually navigate.
 	cmd.Start()
 }
 

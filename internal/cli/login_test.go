@@ -153,7 +153,7 @@ func TestLogin_FetchesProviderList(t *testing.T) {
 	// We use a short callback timeout to prevent hanging.
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=3")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=3", "AFC_SKIP_BROWSER=1")
 
 	// Give the process a moment to make the providers request, then check.
 	// We'll wait up to 5s for the process to finish (it may time out or error).
@@ -181,7 +181,7 @@ func TestLogin_ValidatesProviderExists(t *testing.T) {
 	// a callback server. We use a short timeout to let the test finish.
 	_, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2", "AFC_SKIP_BROWSER=1")
 
 	_, _, _ = waitForDone(t, stdoutPipe, stderrPipe, done, 15*time.Second)
 
@@ -236,7 +236,7 @@ func TestLogin_CallbackServerRandomPort(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=5")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=5", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -317,7 +317,7 @@ func TestLogin_SendsCodeAndPrintsUserJSON(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -450,7 +450,7 @@ func TestLogin_CallbackServerShutdownOnSuccess(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -515,7 +515,7 @@ func TestLogin_CallbackServerShutdownOnTimeout(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -573,7 +573,7 @@ func TestLogin_CallbackServerShutdownOnProviderError(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -636,7 +636,7 @@ func TestLogin_CallbackServerShutdownOnHubPostError(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -700,7 +700,7 @@ func TestLogin_CallbackServerShutdownOnSIGINT(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=30")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=30", "AFC_SKIP_BROWSER=1")
 
 	// Find callback port.
 	var callbackPort int
@@ -792,7 +792,7 @@ func TestLogin_CallbackTimeout(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=2", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -864,7 +864,7 @@ func TestLogin_ProviderErrorRedirect(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -948,7 +948,7 @@ func TestLogin_HubCallbackError(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=10", "AFC_SKIP_BROWSER=1")
 
 	defer func() {
 		if cmd.Process != nil {
@@ -1023,7 +1023,7 @@ func TestLogin_SIGINTCleanShutdown(t *testing.T) {
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
-	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=30")
+	}, "AF_HUB_URL="+stub.Server.URL, "AFC_CALLBACK_TIMEOUT=30", "AFC_SKIP_BROWSER=1")
 
 	// Find callback port — wait for the server to start.
 	var callbackPort int
