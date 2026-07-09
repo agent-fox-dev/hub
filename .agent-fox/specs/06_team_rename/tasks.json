@@ -305,7 +305,7 @@
             "06-REQ-4.2",
             "06-REQ-4.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -326,7 +326,7 @@
             "06-REQ-5.2",
             "06-REQ-5.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -350,7 +350,7 @@
             "06-REQ-6.3",
             "06-REQ-6.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -377,7 +377,7 @@
             "06-REQ-8.1",
             "06-REQ-7.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

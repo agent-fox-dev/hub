@@ -333,7 +333,10 @@ func TestNoWorkspacePrefixedIdentifiers(t *testing.T) {
 		// reference workspace names in assertion strings).
 		base := filepath.Base(path)
 		if base == "team_rename_test.go" || base == "schema_rename_test.go" ||
-			base == "team_handler_rename_test.go" || base == "team_context_rename_test.go" {
+			base == "team_handler_rename_test.go" || base == "team_context_rename_test.go" ||
+			base == "team_endpoint_rename_test.go" || base == "team_file_rename_test.go" ||
+			base == "team_docs_rename_test.go" || base == "team_behavioral_test.go" ||
+			base == "team_flag_rename_test.go" {
 			return nil
 		}
 
