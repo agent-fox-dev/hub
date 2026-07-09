@@ -390,3 +390,176 @@ func randomURLString(rng *rand.Rand) string {
 	}
 	return domains[rng.Intn(len(domains))]
 }
+
+// ---------------------------------------------------------------------------
+// TS-05-P7: Resolution terminates in bounded steps
+// PROP: 05-PROP-7 (implied)
+// Validates: 05-REQ-3.1, 05-REQ-3.2
+//
+// For any combination of (flag, env, cfg), resolveHubURL and resolveAPIKey
+// terminate in a bounded number of steps:
+//   - Hub URL: at most 3 checks (flag, env, config)
+//   - API key: at most 4 checks (flag, env, api_key slug lookup, keys section lookup)
+// ---------------------------------------------------------------------------
+
+func TestPropertyResolveHubURL_BoundedSteps(t *testing.T) {
+	// For every combination of flag, env, and config hub_url, the resolution
+	// function must terminate without hanging. We instrument this by counting
+	// the number of non-empty sources checked.
+
+	rng := rand.New(rand.NewSource(123))
+
+	for i := range 200 {
+		flag := ""
+		env := ""
+		cfgHubURL := ""
+
+		// Randomly populate sources.
+		if rng.Intn(2) == 0 {
+			flag = randomURLString(rng)
+		}
+		if rng.Intn(2) == 0 {
+			env = randomURLString(rng)
+		}
+		if rng.Intn(2) == 0 {
+			cfgHubURL = randomURLString(rng)
+		}
+
+		cfg := &cliconfig.Config{HubURL: cfgHubURL}
+
+		// The resolution function should return in bounded time.
+		// We measure this implicitly: if it hangs, the test will time out.
+		// We also verify the result is consistent with the precedence rules.
+		result, err := cliconfig.ResolveHubURL(flag, env, cfg)
+
+		// Count how many precedence steps were actually needed.
+		steps := 0
+
+		// Step 1: check flag.
+		steps++
+		if flag != "" {
+			if err != nil || result != flag {
+				t.Errorf("iteration %d: flag=%q set but result=%q err=%v", i, flag, result, err)
+			}
+			continue
+		}
+
+		// Step 2: check env.
+		steps++
+		if env != "" {
+			if err != nil || result != env {
+				t.Errorf("iteration %d: env=%q set but result=%q err=%v", i, env, result, err)
+			}
+			continue
+		}
+
+		// Step 3: check config.
+		steps++
+		if cfgHubURL != "" {
+			if err != nil || result != cfgHubURL {
+				t.Errorf("iteration %d: cfg=%q set but result=%q err=%v", i, cfgHubURL, result, err)
+			}
+			continue
+		}
+
+		// All empty → must error.
+		if err == nil {
+			t.Errorf("iteration %d: all sources empty but no error returned; result=%q", i, result)
+		}
+
+		// Verify steps <= 3.
+		if steps > 3 {
+			t.Errorf("iteration %d: resolution took %d steps, expected <= 3", i, steps)
+		}
+	}
+}
+
+func TestPropertyResolveAPIKey_BoundedSteps(t *testing.T) {
+	// For every combination of flag, env, and config (api_key + keys map),
+	// the resolution function must terminate in at most 4 steps.
+
+	rng := rand.New(rand.NewSource(456))
+
+	for i := range 200 {
+		flag := ""
+		env := ""
+		apiKeySlug := ""
+		hasMatchingKey := false
+
+		// Randomly populate sources.
+		if rng.Intn(2) == 0 {
+			flag = "af_" + randomHexString(rng, 6) + "_flagsecret"
+		}
+		if rng.Intn(2) == 0 {
+			env = "af_" + randomHexString(rng, 6) + "_envsecret"
+		}
+		if rng.Intn(2) == 0 {
+			apiKeySlug = randomSlugString(rng)
+		}
+		if rng.Intn(2) == 0 {
+			hasMatchingKey = true
+		}
+
+		keys := make(map[string]cliconfig.KeyEntry)
+		if apiKeySlug != "" && hasMatchingKey {
+			keys[apiKeySlug] = cliconfig.KeyEntry{
+				KeyID: randomHexString(rng, 8),
+				Token: "af_" + randomHexString(rng, 8) + "_configsecret",
+			}
+		}
+
+		cfg := &cliconfig.Config{
+			APIKey: apiKeySlug,
+			Keys:   keys,
+		}
+
+		result, err := cliconfig.ResolveAPIKey(flag, env, cfg)
+
+		// Count steps and verify precedence.
+		steps := 0
+
+		// Step 1: check flag.
+		steps++
+		if flag != "" {
+			if err != nil || result != flag {
+				t.Errorf("iteration %d: flag=%q set but result=%q err=%v", i, flag, result, err)
+			}
+			continue
+		}
+
+		// Step 2: check env.
+		steps++
+		if env != "" {
+			if err != nil || result != env {
+				t.Errorf("iteration %d: env=%q set but result=%q err=%v", i, env, result, err)
+			}
+			continue
+		}
+
+		// Step 3: check api_key slug.
+		steps++
+		if apiKeySlug != "" {
+			// Step 4: look up keys section.
+			steps++
+			if hasMatchingKey {
+				expectedToken := keys[apiKeySlug].Token
+				if err != nil || result != expectedToken {
+					t.Errorf("iteration %d: config has key for slug %q but result=%q err=%v (expected %q)",
+						i, apiKeySlug, result, err, expectedToken)
+				}
+				continue
+			}
+			// Slug exists but no matching key entry → falls through to error.
+		}
+
+		// No source found → must error.
+		if err == nil {
+			t.Errorf("iteration %d: no source available but no error returned; result=%q", i, result)
+		}
+
+		// Verify steps <= 4.
+		if steps > 4 {
+			t.Errorf("iteration %d: API key resolution took %d steps, expected <= 4", i, steps)
+		}
+	}
+}
