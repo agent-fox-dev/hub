@@ -598,7 +598,7 @@
             "05-REQ-5.3",
             "05-REQ-5.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -616,7 +616,7 @@
           "requirement_refs": [
             "05-REQ-6.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -637,7 +637,7 @@
             "05-REQ-7.1",
             "05-REQ-7.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -662,7 +662,7 @@
             "05-REQ-8.2",
             "05-REQ-8.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
