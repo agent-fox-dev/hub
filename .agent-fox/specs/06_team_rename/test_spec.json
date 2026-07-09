@@ -1,0 +1,628 @@
+{
+  "$schema": null,
+  "spec_id": "06",
+  "spec_name": "team_rename",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-06-1",
+      "requirement_id": "06-REQ-1.1",
+      "kind": "unit",
+      "description": "Verifies that internal/db/db.go defines a `teams` table and `team_members` table with a `team_id` FK column, matching the previously defined schema structure.",
+      "preconditions": [
+        "internal/db/db.go source file is present",
+        "Go toolchain is available"
+      ],
+      "input": "Parse the DDL strings from internal/db/db.go",
+      "expected": "DDL contains `CREATE TABLE teams`, `CREATE TABLE team_members`, and `team_id` FK references on both `team_members` and `api_keys` tables",
+      "assertion_pseudocode": "ddl = read_file('internal/db/db.go')\nassert contains(ddl, 'CREATE TABLE teams')\nassert contains(ddl, 'CREATE TABLE team_members')\nassert contains(ddl, 'team_id') in team_members DDL\nassert contains(ddl, 'team_id') in api_keys DDL\nassert NOT contains(ddl, 'CREATE TABLE workspaces')\nassert NOT contains(ddl, 'CREATE TABLE workspace_members')\nassert NOT contains(ddl, 'workspace_id')"
+    },
+    {
+      "id": "TS-06-2",
+      "requirement_id": "06-REQ-1.2",
+      "kind": "unit",
+      "description": "Verifies that internal/db/db.go contains no references to legacy table or column names: `workspaces`, `workspace_members`, or `workspace_id`.",
+      "preconditions": [
+        "internal/db/db.go source file is present"
+      ],
+      "input": "Read the full content of internal/db/db.go",
+      "expected": "No matches for `workspaces`, `workspace_members`, or `workspace_id` in any DDL string",
+      "assertion_pseudocode": "content = read_file('internal/db/db.go')\nassert NOT regex_match(content, r'\\bworkspaces\\b')\nassert NOT regex_match(content, r'\\bworkspace_members\\b')\nassert NOT regex_match(content, r'\\bworkspace_id\\b')"
+    },
+    {
+      "id": "TS-06-3",
+      "requirement_id": "06-REQ-1.3",
+      "kind": "integration",
+      "description": "Verifies that the schema initialisation function successfully creates the `teams` and `team_members` tables in a fresh SQLite database without returning an error.",
+      "preconditions": [
+        "In-memory or temp-file SQLite database is available",
+        "internal/db/db.go is compiled and the schema init function is accessible"
+      ],
+      "input": "Call the schema initialisation function with a fresh SQLite connection",
+      "expected": "No error returned; SQLite PRAGMA table_info shows `teams` and `team_members` tables exist with expected columns",
+      "assertion_pseudocode": "db = open_sqlite(':memory:')\nerr = db.InitSchema()\nassert err == nil\ntables = db.query('SELECT name FROM sqlite_master WHERE type=\"table\"')\nassert 'teams' in tables\nassert 'team_members' in tables\nassert 'api_keys' in tables\nteam_cols = db.query('PRAGMA table_info(teams)')\nassert column_names(team_cols) includes expected columns\nteam_member_cols = db.query('PRAGMA table_info(team_members)')\nassert 'team_id' in column_names(team_member_cols)\napi_key_cols = db.query('PRAGMA table_info(api_keys)')\nassert 'team_id' in column_names(api_key_cols)"
+    },
+    {
+      "id": "TS-06-4",
+      "requirement_id": "06-REQ-2.1",
+      "kind": "unit",
+      "description": "Verifies that the store package exports `store.Team` and `store.TeamMember` structs with correct fields, and that `APIKey.TeamID` replaces the old `WorkspaceID` field.",
+      "preconditions": [
+        "Go source files internal/store/teams.go and internal/store/team_members.go are present and compiled"
+      ],
+      "input": "Inspect exported struct fields of store.Team, store.TeamMember, and store.APIKey via reflection or compilation check",
+      "expected": "`store.Team` exports all required organizational-boundary fields; `store.TeamMember` exports membership fields; `store.APIKey` has `TeamID` field and no `WorkspaceID` field",
+      "assertion_pseudocode": "team = store.Team{}\nassert struct_has_field(team, 'TeamID') OR has_id_field(team)\nassert NOT struct_has_field(team, 'WorkspaceID')\nmember = store.TeamMember{}\nassert struct_has_field(member, 'TeamID')\nassert NOT struct_has_field(member, 'WorkspaceID')\nkey = store.APIKey{}\nassert struct_has_field(key, 'TeamID')\nassert NOT struct_has_field(key, 'WorkspaceID')"
+    },
+    {
+      "id": "TS-06-5",
+      "requirement_id": "06-REQ-2.2",
+      "kind": "unit",
+      "description": "Verifies that the store package exports all required CRUD methods with Team-prefixed names and identical behaviour to their Workspace-prefixed predecessors.",
+      "preconditions": [
+        "Go source files internal/store/teams.go and internal/store/team_members.go are compiled",
+        "In-memory SQLite database initialised with `teams` and `team_members` tables"
+      ],
+      "input": "Call each store method: CreateTeam, GetTeamByID, ListTeams, ArchiveTeam, ReactivateTeam, DeleteTeam, AddTeamMember, RemoveTeamMember",
+      "expected": "Each method exists and executes without compilation error; basic CRUD operations return expected results",
+      "assertion_pseudocode": "db = open_test_db()\nteam, err = store.CreateTeam(db, {Name: 'Acme'})\nassert err == nil AND team.ID != ''\nfetched, err = store.GetTeamByID(db, team.ID)\nassert err == nil AND fetched.Name == 'Acme'\nteams, err = store.ListTeams(db)\nassert err == nil AND len(teams) >= 1\nerr = store.ArchiveTeam(db, team.ID)\nassert err == nil\nerr = store.ReactivateTeam(db, team.ID)\nassert err == nil\nerr = store.AddTeamMember(db, team.ID, user_id)\nassert err == nil\nerr = store.RemoveTeamMember(db, team.ID, user_id)\nassert err == nil\nerr = store.DeleteTeam(db, team.ID)\nassert err == nil"
+    },
+    {
+      "id": "TS-06-6",
+      "requirement_id": "06-REQ-2.3",
+      "kind": "static",
+      "description": "Verifies that the Go codebase contains no exported or unexported identifiers using the `Workspace` or `workspace` prefix for the organizational-boundary concept.",
+      "preconditions": [
+        "Full Go source tree is available excluding spec packages 01-04"
+      ],
+      "input": "Grep or AST scan of all .go files under the project root",
+      "expected": "Zero matches for `Workspace`-prefixed identifiers or `workspace`-prefixed identifiers used for the organizational-boundary concept",
+      "assertion_pseudocode": "files = glob('**/*.go', exclude=['specs/01', 'specs/02', 'specs/03', 'specs/04'])\nfor file in files:\n    content = read_file(file)\n    assert NOT regex_match(content, r'\\bWorkspace[A-Z]')\n    assert NOT regex_match(content, r'\\bworkspace[A-Z_]') // catches workspace_id, workspaceID etc.\nassert exit_code(run('go build ./...')) == 0"
+    },
+    {
+      "id": "TS-06-7",
+      "requirement_id": "06-REQ-2.4",
+      "kind": "unit",
+      "description": "Verifies that team_handler.go defines a `TeamHandler` struct with all required handler methods.",
+      "preconditions": [
+        "team_handler.go is present at its package path and compiled"
+      ],
+      "input": "Inspect the Go source file team_handler.go for exported struct and method names",
+      "expected": "`TeamHandler` struct is defined; methods `CreateTeam`, `ListTeams`, `GetTeam`, `ArchiveTeam`, `ReactivateTeam`, `DeleteTeam`, `AddTeamMember`, `RemoveTeamMember` are defined on it",
+      "assertion_pseudocode": "source = read_file('team_handler.go')\nassert contains(source, 'type TeamHandler struct')\nfor method in ['CreateTeam','ListTeams','GetTeam','ArchiveTeam','ReactivateTeam','DeleteTeam','AddTeamMember','RemoveTeamMember']:\n    assert regex_match(source, r'func.*TeamHandler.*' + method)\nassert NOT contains(source, 'WorkspaceHandler')"
+    },
+    {
+      "id": "TS-06-8",
+      "requirement_id": "06-REQ-2.5",
+      "kind": "unit",
+      "description": "Verifies that the auth middleware uses `ContextKeyTeamID` to store and retrieve the authenticated team ID from the Echo request context.",
+      "preconditions": [
+        "Auth middleware source file is compiled",
+        "Echo framework is available"
+      ],
+      "input": "Inspect auth middleware source for context key usage",
+      "expected": "`ContextKeyTeamID` is defined and used; `ContextKeyWorkspaceID` is absent from all middleware files",
+      "assertion_pseudocode": "files = glob('internal/**/*.go')\ncombined = concat(read_file(f) for f in files)\nassert contains(combined, 'ContextKeyTeamID')\nassert NOT contains(combined, 'ContextKeyWorkspaceID')\n// Integration check: simulate middleware sets context key\nctx = create_echo_context()\nmiddleware.SetTeamID(ctx, 'team-123')\nassert get_context_value(ctx, ContextKeyTeamID) == 'team-123'"
+    },
+    {
+      "id": "TS-06-9",
+      "requirement_id": "06-REQ-3.1",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams creates a new team and returns HTTP 201 with a JSON body containing `team_id`.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "SQLite database is initialised with `teams` table"
+      ],
+      "input": "HTTP POST request to /api/v1/teams with JSON body {\"name\": \"Alpha\"}",
+      "expected": "HTTP 201 response; JSON body contains `team_id` field with a non-empty value; team row inserted in `teams` table",
+      "assertion_pseudocode": "resp = http_post('/api/v1/teams', body={\"name\": \"Alpha\"})\nassert resp.status_code == 201\nbody = parse_json(resp.body)\nassert 'team_id' in body OR body['id'] != ''\nassert NOT 'workspace_id' in body\nteam = db.query('SELECT * FROM teams WHERE name = \"Alpha\"')\nassert team != None"
+    },
+    {
+      "id": "TS-06-10",
+      "requirement_id": "06-REQ-3.2",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams returns HTTP 200 with a JSON array of team objects.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "At least one team record exists in the `teams` table"
+      ],
+      "input": "HTTP GET request to /api/v1/teams",
+      "expected": "HTTP 200 response; JSON array containing at least one team object; no `workspace_id` fields in the array elements",
+      "assertion_pseudocode": "resp = http_get('/api/v1/teams')\nassert resp.status_code == 200\nbody = parse_json(resp.body)\nassert is_array(body)\nassert len(body) >= 1\nfor item in body:\n    assert NOT 'workspace_id' in item"
+    },
+    {
+      "id": "TS-06-11",
+      "requirement_id": "06-REQ-3.3",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id returns HTTP 200 with the matching team JSON object, or HTTP 404 if not found.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "A team with a known ID exists in the `teams` table"
+      ],
+      "input": "HTTP GET request to /api/v1/teams/{existing_id} and /api/v1/teams/nonexistent-id",
+      "expected": "HTTP 200 with team JSON for existing ID; HTTP 404 for nonexistent ID",
+      "assertion_pseudocode": "resp = http_get('/api/v1/teams/' + existing_id)\nassert resp.status_code == 200\nbody = parse_json(resp.body)\nassert body['id'] == existing_id OR body['team_id'] == existing_id\nresp404 = http_get('/api/v1/teams/nonexistent-id')\nassert resp404.status_code == 404"
+    },
+    {
+      "id": "TS-06-12",
+      "requirement_id": "06-REQ-3.4",
+      "kind": "integration",
+      "description": "Verifies that PUT /api/v1/teams/:id/archive archives the team and returns HTTP 200.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "An active team with a known ID exists in the `teams` table"
+      ],
+      "input": "HTTP PUT request to /api/v1/teams/{existing_id}/archive",
+      "expected": "HTTP 200 response; team's lifecycle state is archived in the `teams` table",
+      "assertion_pseudocode": "resp = http_put('/api/v1/teams/' + existing_id + '/archive')\nassert resp.status_code == 200\nteam = db.query('SELECT status FROM teams WHERE id = ?', existing_id)\nassert team.status == 'archived'"
+    },
+    {
+      "id": "TS-06-13",
+      "requirement_id": "06-REQ-3.5",
+      "kind": "integration",
+      "description": "Verifies that PUT /api/v1/teams/:id/reactivate reactivates an archived team and returns HTTP 200.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "An archived team with a known ID exists in the `teams` table"
+      ],
+      "input": "HTTP PUT request to /api/v1/teams/{archived_id}/reactivate",
+      "expected": "HTTP 200 response; team's lifecycle state is active in the `teams` table",
+      "assertion_pseudocode": "resp = http_put('/api/v1/teams/' + archived_id + '/reactivate')\nassert resp.status_code == 200\nteam = db.query('SELECT status FROM teams WHERE id = ?', archived_id)\nassert team.status == 'active'"
+    },
+    {
+      "id": "TS-06-14",
+      "requirement_id": "06-REQ-3.6",
+      "kind": "integration",
+      "description": "Verifies that DELETE /api/v1/teams/:id deletes the team and returns HTTP 204.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "A team with a known ID exists in the `teams` table"
+      ],
+      "input": "HTTP DELETE request to /api/v1/teams/{existing_id}",
+      "expected": "HTTP 204 response; team row is removed from the `teams` table",
+      "assertion_pseudocode": "resp = http_delete('/api/v1/teams/' + existing_id)\nassert resp.status_code == 204\nteam = db.query('SELECT * FROM teams WHERE id = ?', existing_id)\nassert team == None"
+    },
+    {
+      "id": "TS-06-15",
+      "requirement_id": "06-REQ-3.7",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members adds a member to the team and returns HTTP 201.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "A team and a user both exist in the database"
+      ],
+      "input": "HTTP POST request to /api/v1/teams/{team_id}/members with JSON body {\"user_id\": \"user-123\"}",
+      "expected": "HTTP 201 response; a row is inserted in `team_members` with the correct `team_id` and `user_id`",
+      "assertion_pseudocode": "resp = http_post('/api/v1/teams/' + team_id + '/members', body={\"user_id\": \"user-123\"})\nassert resp.status_code == 201\nmember = db.query('SELECT * FROM team_members WHERE team_id = ? AND user_id = ?', team_id, 'user-123')\nassert member != None"
+    },
+    {
+      "id": "TS-06-16",
+      "requirement_id": "06-REQ-3.8",
+      "kind": "integration",
+      "description": "Verifies that DELETE /api/v1/teams/:id/members/:user_id removes a member from the team and returns HTTP 204.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "A team membership record exists for team_id and user_id in `team_members`"
+      ],
+      "input": "HTTP DELETE request to /api/v1/teams/{team_id}/members/{user_id}",
+      "expected": "HTTP 204 response; membership row is removed from `team_members`",
+      "assertion_pseudocode": "resp = http_delete('/api/v1/teams/' + team_id + '/members/' + user_id)\nassert resp.status_code == 204\nmember = db.query('SELECT * FROM team_members WHERE team_id = ? AND user_id = ?', team_id, user_id)\nassert member == None"
+    },
+    {
+      "id": "TS-06-17",
+      "requirement_id": "06-REQ-3.9",
+      "kind": "integration",
+      "description": "Verifies that all API JSON responses and request bodies use `team_id` and never `workspace_id` for the organizational-boundary identifier.",
+      "preconditions": [
+        "Echo HTTP server is running with team routes registered",
+        "SQLite database is initialised"
+      ],
+      "input": "POST /api/v1/teams (create team), POST /api/v1/keys (create API key scoped to team)",
+      "expected": "All JSON response bodies contain `team_id` key; none contain `workspace_id`",
+      "assertion_pseudocode": "create_resp = http_post('/api/v1/teams', body={\"name\": \"Beta\"})\nteam_body = parse_json(create_resp.body)\nassert 'workspace_id' NOT in team_body\nkey_resp = http_post('/api/v1/keys', body={\"team_id\": team_body['id']})\nkey_body = parse_json(key_resp.body)\nassert 'team_id' in key_body\nassert 'workspace_id' NOT in key_body"
+    },
+    {
+      "id": "TS-06-18",
+      "requirement_id": "06-REQ-3.10",
+      "kind": "static",
+      "description": "Verifies that no routes are registered under the `/api/v1/workspaces` path prefix in the Echo router setup.",
+      "preconditions": [
+        "Echo router setup code is compiled and accessible"
+      ],
+      "input": "Inspect router registration source code and/or query registered routes at runtime",
+      "expected": "No route entries with path containing `/workspaces` are registered",
+      "assertion_pseudocode": "router_source = read_file('main.go') + read_file('team_handler.go')\nassert NOT regex_match(router_source, r'/api/v1/workspaces')\n// Runtime check:\nroutes = echo_app.Routes()\nfor route in routes:\n    assert NOT contains(route.Path, '/workspaces')"
+    },
+    {
+      "id": "TS-06-19",
+      "requirement_id": "06-REQ-4.1",
+      "kind": "integration",
+      "description": "Verifies that `afc keys create --team <slug>` creates an API key scoped to the specified team, exits 0, and prints output including `team_id`.",
+      "preconditions": [
+        "afc binary is built",
+        "A team with the given slug exists in the running server"
+      ],
+      "input": "Shell command: `afc keys create --team my-team`",
+      "expected": "Process exits with code 0; stdout contains `team_id`; a new API key row with the correct `team_id` is inserted in `api_keys`",
+      "assertion_pseudocode": "result = run_command('afc keys create --team my-team')\nassert result.exit_code == 0\nassert contains(result.stdout, 'team_id')\nassert NOT contains(result.stdout, 'workspace_id')\nkey = db.query('SELECT team_id FROM api_keys ORDER BY created_at DESC LIMIT 1')\nassert key.team_id == resolve_team_id('my-team')"
+    },
+    {
+      "id": "TS-06-20",
+      "requirement_id": "06-REQ-4.2",
+      "kind": "static",
+      "description": "Verifies that the `afc` CLI binary exposes no `--workspace` flag on any subcommand.",
+      "preconditions": [
+        "afc binary is built"
+      ],
+      "input": "Run `afc --help`, `afc keys --help`, `afc keys create --help` and inspect all flag listings",
+      "expected": "None of the help outputs list a `--workspace` flag",
+      "assertion_pseudocode": "for cmd in ['afc --help', 'afc keys --help', 'afc keys create --help']:\n    result = run_command(cmd)\n    assert NOT contains(result.stdout, '--workspace')\n    assert NOT contains(result.stderr, '--workspace')"
+    },
+    {
+      "id": "TS-06-21",
+      "requirement_id": "06-REQ-5.1",
+      "kind": "static",
+      "description": "Verifies that the Go source tree contains the renamed files: team_handler.go, teams.go, and team_members.go at their expected package paths.",
+      "preconditions": [
+        "Go source tree is checked out"
+      ],
+      "input": "File system check for expected file names",
+      "expected": "All three renamed files exist at their package paths",
+      "assertion_pseudocode": "assert file_exists('internal/api/team_handler.go') OR file_exists(find_file('team_handler.go'))\nassert file_exists('internal/store/teams.go') OR file_exists(find_file('teams.go'))\nassert file_exists('internal/store/team_members.go') OR file_exists(find_file('team_members.go'))"
+    },
+    {
+      "id": "TS-06-22",
+      "requirement_id": "06-REQ-5.2",
+      "kind": "static",
+      "description": "Verifies that the Go source tree contains no files named workspace_handler.go, workspaces.go, or workspace_members.go.",
+      "preconditions": [
+        "Go source tree is checked out"
+      ],
+      "input": "File system glob search for legacy file names",
+      "expected": "None of the legacy workspace-prefixed source files exist",
+      "assertion_pseudocode": "assert NOT file_exists(find_file('workspace_handler.go'))\nassert NOT file_exists(find_file('workspaces.go'))\nassert NOT file_exists(find_file('workspace_members.go'))"
+    },
+    {
+      "id": "TS-06-23",
+      "requirement_id": "06-REQ-5.3",
+      "kind": "static",
+      "description": "Verifies that the integration test directory contains team_handler_test.go and team_edge_test.go, and that all test assertions within reference team types and endpoints.",
+      "preconditions": [
+        "Go source tree is checked out"
+      ],
+      "input": "File system check and grep of integration test directory",
+      "expected": "Both renamed test files exist; neither file references `/api/v1/workspaces` or workspace-prefixed types",
+      "assertion_pseudocode": "assert file_exists('internal/integration/team_handler_test.go')\nassert file_exists('internal/integration/team_edge_test.go')\nfor f in ['internal/integration/team_handler_test.go', 'internal/integration/team_edge_test.go']:\n    content = read_file(f)\n    assert NOT contains(content, '/api/v1/workspaces')\n    assert NOT regex_match(content, r'\\bWorkspace[A-Z]')\nassert NOT file_exists('internal/integration/workspace_handler_test.go')\nassert NOT file_exists('internal/integration/workspace_edge_test.go')"
+    },
+    {
+      "id": "TS-06-24",
+      "requirement_id": "06-REQ-6.1",
+      "kind": "static",
+      "description": "Verifies that docs/api.md reflects all renamed endpoint paths and uses `team_id` in all request/response examples.",
+      "preconditions": [
+        "docs/api.md exists in the repository"
+      ],
+      "input": "Read and inspect the content of docs/api.md",
+      "expected": "All endpoint paths use /api/v1/teams; all JSON examples use `team_id`; no `/api/v1/workspaces` or `workspace_id` present",
+      "assertion_pseudocode": "content = read_file('docs/api.md')\nassert contains(content, '/api/v1/teams')\nassert contains(content, 'team_id')\nassert NOT contains(content, '/api/v1/workspaces')\nassert NOT contains(content, 'workspace_id')"
+    },
+    {
+      "id": "TS-06-25",
+      "requirement_id": "06-REQ-6.2",
+      "kind": "static",
+      "description": "Verifies that docs/cli.md documents the `--team` flag for `afc keys create` and contains no references to `--workspace`.",
+      "preconditions": [
+        "docs/cli.md exists in the repository"
+      ],
+      "input": "Read and inspect the content of docs/cli.md",
+      "expected": "`--team` flag is documented; no `--workspace` flag reference exists",
+      "assertion_pseudocode": "content = read_file('docs/cli.md')\nassert contains(content, '--team')\nassert NOT contains(content, '--workspace')"
+    },
+    {
+      "id": "TS-06-26",
+      "requirement_id": "06-REQ-6.3",
+      "kind": "static",
+      "description": "Verifies that docs/architecture.md uses 'team' for the organizational-boundary entity and contains no occurrences of 'workspace' referring to that concept.",
+      "preconditions": [
+        "docs/architecture.md exists in the repository"
+      ],
+      "input": "Read and inspect the content of docs/architecture.md",
+      "expected": "Organizational entity is consistently referred to as 'team'; no occurrences of 'workspace' in the organizational-boundary sense",
+      "assertion_pseudocode": "content = read_file('docs/architecture.md')\nassert contains(content, 'team')\n// Allow 'workspace' only if it refers to the upcoming workspace_entity concept with explicit context\nworkspace_count = count_occurrences(content, 'workspace')\nassert workspace_count == 0 OR all_occurrences_are_scoped_to_workspace_entity(content)"
+    },
+    {
+      "id": "TS-06-27",
+      "requirement_id": "06-REQ-6.4",
+      "kind": "static",
+      "description": "Verifies that docs/configuration.md, docs/errata/*.md, and README.md replace all organizational 'workspace' occurrences with 'team'.",
+      "preconditions": [
+        "docs/configuration.md, README.md exist; docs/errata/ directory is present if non-empty"
+      ],
+      "input": "Read and inspect docs/configuration.md, README.md, and all files matching docs/errata/*.md",
+      "expected": "No occurrences of 'workspace' in the organizational-boundary sense in any of those files",
+      "assertion_pseudocode": "files = ['docs/configuration.md', 'README.md'] + glob('docs/errata/*.md')\nfor f in files:\n    if file_exists(f):\n        content = read_file(f)\n        // 'workspace' may appear as forward-reference to workspace_entity but not as org-boundary label\n        org_workspace_count = count_org_boundary_workspace_references(content)\n        assert org_workspace_count == 0"
+    },
+    {
+      "id": "TS-06-28",
+      "requirement_id": "06-REQ-7.1",
+      "kind": "integration",
+      "description": "Verifies that the full test suite passes with zero failures after the rename by running `go test ./...`.",
+      "preconditions": [
+        "All source files have been renamed and updated",
+        "SQLite database initialisation uses `teams` schema",
+        "Go toolchain is available"
+      ],
+      "input": "Run `go test ./...` from the project root",
+      "expected": "Exit code 0; no test failures or compilation errors reported",
+      "assertion_pseudocode": "result = run_command('go test ./...')\nassert result.exit_code == 0\nassert NOT contains(result.stdout, 'FAIL')\nassert NOT contains(result.stderr, 'FAIL')"
+    },
+    {
+      "id": "TS-06-29",
+      "requirement_id": "06-REQ-7.2",
+      "kind": "integration",
+      "description": "Verifies that RBAC enforcement, team lifecycle states, and API key scoping logic are behaviourally identical to the pre-rename implementation.",
+      "preconditions": [
+        "Echo HTTP server is running with renamed routes",
+        "SQLite database is initialised with renamed schema"
+      ],
+      "input": "Execute RBAC-protected operations, lifecycle state transitions (active→archived→active), and API key scoping scenarios",
+      "expected": "RBAC denies unauthorised access; lifecycle transitions succeed in correct order; API keys are scoped to the correct team_id — all behaviour identical to pre-rename",
+      "assertion_pseudocode": "// RBAC check\nunauth_resp = http_get('/api/v1/teams', headers={})\nassert unauth_resp.status_code == 401 OR 403\n// Lifecycle\nteam = create_team('LifecycleTest')\nerr = archive_team(team.id)\nassert err == nil\nerr = reactivate_team(team.id)\nassert err == nil\n// API key scoping\nkey = create_api_key(team_id=team.id)\nassert key.TeamID == team.id\n// Use key for another team's resource\nbad_resp = http_get('/api/v1/teams/' + other_team.id, headers={'Authorization': key.value})\nassert bad_resp.status_code in [401, 403]"
+    },
+    {
+      "id": "TS-06-30",
+      "requirement_id": "06-REQ-7.3",
+      "kind": "static",
+      "description": "Verifies that the renamed codebase produces a clean build with exit code 0 from both `go build ./...` and `go vet ./...`.",
+      "preconditions": [
+        "All source files have been renamed and updated",
+        "Go toolchain is available"
+      ],
+      "input": "Run `go build ./...` and `go vet ./...` from the project root",
+      "expected": "Both commands exit with code 0; no errors or warnings",
+      "assertion_pseudocode": "build_result = run_command('go build ./...')\nassert build_result.exit_code == 0\nassert build_result.stderr == ''\nvet_result = run_command('go vet ./...')\nassert vet_result.exit_code == 0\nassert vet_result.stderr == ''"
+    },
+    {
+      "id": "TS-06-31",
+      "requirement_id": "06-REQ-8.1",
+      "kind": "static",
+      "description": "Verifies that spec packages 01–04 and their associated artifacts are unmodified by this rename.",
+      "preconditions": [
+        "Git history is available",
+        "Spec packages 01-04 artifacts are present"
+      ],
+      "input": "Run `git diff HEAD~1 -- specs/01 specs/02 specs/03 specs/04` (or equivalent path check)",
+      "expected": "No changes to any files in spec packages 01, 02, 03, or 04",
+      "assertion_pseudocode": "diff = run_command('git diff HEAD -- specs/01 specs/02 specs/03 specs/04')\nassert diff.stdout == ''\n// Alternatively check file modification timestamps have not changed since before spec 06 work"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-06-P1",
+      "property_id": "06-PROP-1",
+      "validates": [
+        "06-REQ-2.3",
+        "06-REQ-2.E2"
+      ],
+      "description": "For any Go source file in the repository (excluding spec packages 01-04), the file contains no exported or unexported identifiers using the `Workspace` or `workspace` prefix for the organizational-boundary concept.",
+      "for_any_strategy": "Each .go file path returned by glob('**/*.go') excluding paths under specs/01, specs/02, specs/03, specs/04",
+      "invariant_check": "content = read_file(file_path)\nassert NOT regex_match(content, r'\\bWorkspace[A-Z]') // exported Workspace-prefixed identifiers\nassert NOT regex_match(content, r'\\bworkspace_id\\b') // snake_case field name\nassert NOT regex_match(content, r'\\bworkspace[A-Z]') // camelCase unexported identifiers like workspaceCount\n// Allow the string literal 'workspace' only in comments explaining the rename rationale"
+    },
+    {
+      "id": "TS-06-P2",
+      "property_id": "06-PROP-2",
+      "validates": [
+        "06-REQ-1.1",
+        "06-REQ-1.2",
+        "06-REQ-1.E1"
+      ],
+      "description": "For any DDL string in internal/db/db.go, the string contains no references to legacy table or column names `workspaces`, `workspace_members`, or `workspace_id`.",
+      "for_any_strategy": "Each SQL DDL string literal extracted from internal/db/db.go",
+      "invariant_check": "for each ddl_string in extract_string_literals('internal/db/db.go'):\n    assert NOT regex_match(ddl_string, r'\\bworkspaces\\b')\n    assert NOT regex_match(ddl_string, r'\\bworkspace_members\\b')\n    assert NOT regex_match(ddl_string, r'\\bworkspace_id\\b')\n    // Positive assertion: check renamed names are present\nassert regex_match(all_ddl, r'\\bteams\\b')\nassert regex_match(all_ddl, r'\\bteam_members\\b')\nassert regex_match(all_ddl, r'\\bteam_id\\b')"
+    },
+    {
+      "id": "TS-06-P3",
+      "property_id": "06-PROP-3",
+      "validates": [
+        "06-REQ-3.10",
+        "06-REQ-3.E1"
+      ],
+      "description": "For any route registration call in the Echo HTTP router setup, no route path contains `/workspaces` — all organizational-boundary routes are under `/api/v1/teams`.",
+      "for_any_strategy": "Each route object returned by echo_app.Routes() after full router initialisation",
+      "invariant_check": "routes = echo_app.Routes()\nfor route in routes:\n    assert NOT contains(route.Path, '/workspaces')\n// Positive assertion: all team routes are present\nteam_routes = [r for r in routes if contains(r.Path, '/api/v1/teams')]\nassert len(team_routes) >= 8 // at minimum the 8 required team endpoints"
+    },
+    {
+      "id": "TS-06-P4",
+      "property_id": "06-PROP-4",
+      "validates": [
+        "06-REQ-3.9"
+      ],
+      "description": "For any JSON response or request body produced or consumed by the server that carries the organizational-boundary identifier, the field is serialised as `team_id` and never as `workspace_id`.",
+      "for_any_strategy": "Each HTTP response body collected by calling all /api/v1/teams endpoints (create, list, get, archive, reactivate, add member, create API key)",
+      "invariant_check": "for each (method, path, body) in team_endpoint_calls:\n    resp = http_request(method, path, body)\n    if resp.status_code in [200, 201]:\n        json_body = parse_json(resp.body)\n        all_keys = flatten_json_keys(json_body)\n        assert 'workspace_id' NOT in all_keys\n        if carries_org_id(json_body):\n            assert 'team_id' in all_keys"
+    },
+    {
+      "id": "TS-06-P5",
+      "property_id": "06-PROP-5",
+      "validates": [
+        "06-REQ-7.1",
+        "06-REQ-7.3"
+      ],
+      "description": "For any execution of `go test ./...` on the renamed codebase, every test case passes and the command exits with code 0, confirming zero behavioral regression from the rename.",
+      "for_any_strategy": "Each run of `go test ./...` (including with -count=1 to disable caching, and with -race to detect race conditions)",
+      "invariant_check": "for each run_flags in ['', '-count=1', '-race', '-count=1 -race']:\n    result = run_command('go test ' + run_flags + ' ./...')\n    assert result.exit_code == 0\n    assert NOT regex_match(result.stdout, r'^--- FAIL')\n    assert NOT regex_match(result.stdout, r'^FAIL\\s')\n    assert result.stderr == '' OR result.stderr contains only race detector summary with 0 races"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-06-E1",
+      "requirement_id": "06-REQ-1.E1",
+      "kind": "static",
+      "description": "Verifies that a grep/AST scan of internal/db/db.go for legacy names (`workspaces`, `workspace_members`, `workspace_id`) returns a non-zero exit code if any residual reference exists.",
+      "preconditions": [
+        "internal/db/db.go is present",
+        "grep or equivalent tool is available in CI environment"
+      ],
+      "input": "Run grep for legacy names in internal/db/db.go",
+      "expected": "Exit code 1 (no match found) when the file is correctly renamed; if any legacy name exists, the grep exits 0 (match found) indicating CI failure",
+      "assertion_pseudocode": "// The CI step inverts grep exit codes: grep succeeds (exits 0) if it FINDS a match → CI step FAILS\nresult = run_command('grep -E \"workspaces|workspace_members|workspace_id\" internal/db/db.go')\nassert result.exit_code != 0 // grep finds NO matches → exit code 1 → CI passes\n// Negative test (simulating broken state):\nbad_ddl = 'CREATE TABLE workspaces (id TEXT)'\nassert grep(bad_ddl, r'workspaces') exits 0 // would trigger CI failure"
+    },
+    {
+      "id": "TS-06-E2",
+      "requirement_id": "06-REQ-2.E1",
+      "kind": "static",
+      "description": "Verifies that introducing a reference to a deleted Workspace-prefixed type causes `go build ./...` to fail with a non-zero exit code.",
+      "preconditions": [
+        "Go toolchain is available",
+        "Renamed codebase is present"
+      ],
+      "input": "Temporarily inject `var _ = store.Workspace{}` into a Go file and run `go build ./...`",
+      "expected": "Non-zero exit code from `go build ./...` with an error referencing the undefined `store.Workspace` symbol",
+      "assertion_pseudocode": "// Inject stale reference\noriginal = read_file('internal/store/teams.go')\nwrite_file('internal/store/teams.go', original + '\\nvar _ = Workspace{}')\nbuild_result = run_command('go build ./...')\nassert build_result.exit_code != 0\nassert contains(build_result.stderr, 'undefined') OR contains(build_result.stderr, 'Workspace')\n// Restore\nwrite_file('internal/store/teams.go', original)"
+    },
+    {
+      "id": "TS-06-E3",
+      "requirement_id": "06-REQ-2.E2",
+      "kind": "static",
+      "description": "Verifies that a grep-based or AST-based CI check reports a violation when any residual workspace-prefixed identifier exists in the codebase.",
+      "preconditions": [
+        "Full Go source tree is accessible",
+        "CI lint script is available"
+      ],
+      "input": "Run the CI grep/AST check against the renamed codebase; then run against a version with an injected `workspaceCount` variable",
+      "expected": "Clean codebase: check exits non-zero (no matches); injected violation: check exits 0 (match found), causing CI failure",
+      "assertion_pseudocode": "// Clean check\nclean_result = run_command('grep -rn --include=\"*.go\" -E \"\\bWorkspace[A-Z]|\\bworkspace[A-Z_]\" . --exclude-dir=specs')\nassert clean_result.exit_code != 0 // no matches found\n// Violation check\noriginal = read_file('internal/store/teams.go')\nwrite_file('internal/store/teams.go', original + '\\nvar workspaceCount = 0')\nviolation_result = run_command('grep -rn --include=\"*.go\" -E \"\\bworkspace[A-Z_]\" . --exclude-dir=specs')\nassert violation_result.exit_code == 0 // match found → CI failure\nwrite_file('internal/store/teams.go', original)"
+    },
+    {
+      "id": "TS-06-E4",
+      "requirement_id": "06-REQ-3.E1",
+      "kind": "integration",
+      "description": "Verifies that any request to a legacy /api/v1/workspaces path returns HTTP 404 with no redirect.",
+      "preconditions": [
+        "Echo HTTP server is running with only /api/v1/teams routes registered"
+      ],
+      "input": "HTTP GET/POST requests to /api/v1/workspaces, /api/v1/workspaces/some-id, /api/v1/workspaces/some-id/archive",
+      "expected": "HTTP 404 Not Found for all legacy paths; no HTTP 301/302 redirect response; no workspace handler invoked",
+      "assertion_pseudocode": "legacy_paths = ['/api/v1/workspaces', '/api/v1/workspaces/abc', '/api/v1/workspaces/abc/archive', '/api/v1/workspaces/abc/members']\nfor path in legacy_paths:\n    resp = http_get(path)\n    assert resp.status_code == 404\n    assert resp.status_code NOT in [301, 302, 307, 308]"
+    },
+    {
+      "id": "TS-06-E5",
+      "requirement_id": "06-REQ-4.E1",
+      "kind": "integration",
+      "description": "Verifies that passing `--workspace` flag to `afc keys create` returns an unknown flag error, exits non-zero, and performs no API call.",
+      "preconditions": [
+        "afc binary is built",
+        "No API server is required (error should occur before any network call)"
+      ],
+      "input": "Shell command: `afc keys create --workspace my-workspace`",
+      "expected": "Process exits with non-zero exit code; stderr or stdout contains 'unknown flag' or 'unknown flag: --workspace'; no API key is created",
+      "assertion_pseudocode": "result = run_command('afc keys create --workspace my-workspace')\nassert result.exit_code != 0\nassert contains(result.stderr, 'unknown flag') OR contains(result.stderr, '--workspace')\n// Confirm no API call was made (e.g. mock server received no requests)\nassert api_server_request_count == 0"
+    },
+    {
+      "id": "TS-06-E6",
+      "requirement_id": "06-REQ-7.E1",
+      "kind": "static",
+      "description": "Verifies that a test referencing a deleted workspace-prefixed type causes `go test ./...` to fail at the compilation stage.",
+      "preconditions": [
+        "Go toolchain is available",
+        "Renamed codebase is present"
+      ],
+      "input": "Temporarily inject `var _ = store.WorkspaceMember{}` into a test file and run `go test ./...`",
+      "expected": "Non-zero exit from `go test ./...` with a compilation error referencing the undefined `store.WorkspaceMember` symbol",
+      "assertion_pseudocode": "test_file = 'internal/integration/team_handler_test.go'\noriginal = read_file(test_file)\nwrite_file(test_file, original + '\\nvar _ = store.WorkspaceMember{}')\ntest_result = run_command('go test ./...')\nassert test_result.exit_code != 0\nassert contains(test_result.stderr, 'undefined') OR contains(test_result.stderr, 'WorkspaceMember')\nwrite_file(test_file, original)"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-06-SMOKE-1",
+      "execution_path_id": "06-PATH-1",
+      "description": "End-to-end smoke test for creating a team via the renamed POST /api/v1/teams endpoint, verifying the full path from HTTP request through Echo router, TeamHandler, store CreateTeam, teams table insert, and HTTP 201 JSON response with team_id.",
+      "trigger": "Send HTTP POST /api/v1/teams with JSON body {\"name\": \"Smoke Test Team\"}",
+      "real_components": [
+        "Echo HTTP router with /api/v1/teams routes registered",
+        "TeamHandler (team_handler.go)",
+        "store.CreateTeam (teams.go)",
+        "SQLite database with `teams` table"
+      ],
+      "mockable": [
+        "Authentication middleware (can use a test API key or bypass for smoke test)"
+      ],
+      "expected_effects": [
+        "HTTP 201 response received",
+        "Response JSON body contains `team_id` field with a non-empty UUID",
+        "Response JSON body does NOT contain `workspace_id`",
+        "A new row exists in the `teams` SQLite table matching the submitted name",
+        "`go test ./... -run TestCreateTeam` exits with code 0"
+      ]
+    },
+    {
+      "id": "TS-06-SMOKE-2",
+      "execution_path_id": "06-PATH-2",
+      "description": "End-to-end smoke test for creating an API key scoped to a team via the renamed `afc keys create --team` CLI flag, verifying the full path from CLI invocation through the --team flag, team_id payload, API server, api_keys table insert, and stdout output.",
+      "trigger": "Run shell command: `afc keys create --team smoke-team` with a running API server and a pre-created team with slug 'smoke-team'",
+      "real_components": [
+        "afc CLI binary (Cobra command with --team flag)",
+        "API server endpoint for key creation",
+        "SQLite database with `api_keys` table (team_id column)"
+      ],
+      "mockable": [
+        "API server HTTP layer (can use httptest.Server for isolation)"
+      ],
+      "expected_effects": [
+        "Process exits with code 0",
+        "stdout contains `team_id` with the correct team's ID",
+        "stdout does NOT contain `workspace_id`",
+        "A new row is inserted in `api_keys` with `team_id` matching the smoke-team's ID",
+        "No `--workspace` flag appears in `afc keys create --help` output"
+      ]
+    },
+    {
+      "id": "TS-06-SMOKE-3",
+      "execution_path_id": "06-PATH-3",
+      "description": "End-to-end smoke test for archiving a team via the renamed PUT /api/v1/teams/:id/archive endpoint, verifying the full path from HTTP request through Echo router, TeamHandler.ArchiveTeam, store ArchiveTeam, and teams table state update.",
+      "trigger": "Send HTTP PUT /api/v1/teams/{team_id}/archive for a pre-existing active team",
+      "real_components": [
+        "Echo HTTP router with PUT /api/v1/teams/:id/archive route",
+        "TeamHandler.ArchiveTeam (team_handler.go)",
+        "store.ArchiveTeam (teams.go)",
+        "SQLite database with `teams` table"
+      ],
+      "mockable": [
+        "Authentication middleware (use test API key scoped to the target team)"
+      ],
+      "expected_effects": [
+        "HTTP 200 response received",
+        "The team's status/lifecycle field in the `teams` SQLite table is updated to 'archived'",
+        "Subsequent GET /api/v1/teams/{team_id} returns the team with archived status",
+        "`go test ./... -run TestArchiveTeam` exits with code 0"
+      ]
+    },
+    {
+      "id": "TS-06-SMOKE-4",
+      "execution_path_id": "06-PATH-4",
+      "description": "End-to-end smoke test for adding a member to a team via the renamed POST /api/v1/teams/:id/members endpoint, verifying the full path from HTTP request through Echo router, TeamHandler.AddTeamMember, store.AddTeamMember, and team_members table insert with team_id.",
+      "trigger": "Send HTTP POST /api/v1/teams/{team_id}/members with JSON body {\"user_id\": \"user-smoke-456\"}",
+      "real_components": [
+        "Echo HTTP router with POST /api/v1/teams/:id/members route",
+        "TeamHandler.AddTeamMember (team_handler.go)",
+        "store.AddTeamMember (team_members.go)",
+        "SQLite database with `team_members` table"
+      ],
+      "mockable": [
+        "Authentication middleware (use test API key scoped to the target team)"
+      ],
+      "expected_effects": [
+        "HTTP 201 response received",
+        "A new row is inserted in the `team_members` SQLite table with `team_id` matching the target team and `user_id` = 'user-smoke-456'",
+        "The row has no `workspace_id` column",
+        "`go test ./... -run TestAddTeamMember` exits with code 0"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

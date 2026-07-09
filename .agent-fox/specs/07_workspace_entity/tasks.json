@@ -1,0 +1,1473 @@
+{
+  "$schema": null,
+  "spec_id": "07",
+  "spec_name": "workspace_entity",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/... ./cmd/... -count=1 -v -run 'Workspace|workspace'",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "06",
+      "from_group": 0,
+      "to_group": 1,
+      "relationship": "The workspaces table name must be freed (renamed to teams) by spec 06 team_rename before this spec can create the new workspaces table.",
+      "sentinel": true
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: slug and git_url validators",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for slug validator — valid inputs",
+          "details": [
+            "Create test file (e.g. internal/validator/slug_test.go).",
+            "Table-driven test with valid slugs: 'abc', 'my-api', 'a12', 'a-b-c', 'my-workspace-123', 64-char string starting with letter.",
+            "Assert validateSlug returns true for each. Tests must fail until implementation exists."
+          ],
+          "test_spec_refs": [
+            "TS-07-27"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write unit tests for slug validator — invalid inputs",
+          "details": [
+            "Table-driven test with invalid slugs: '1abc', '-abc', 'MyApi', 'my--api', 'my-api-', 'ab' (2 chars), '' (empty), 65-char string.",
+            "Assert validateSlug returns false for each without panic.",
+            "Include empty string edge case (TS-07-E11)."
+          ],
+          "test_spec_refs": [
+            "TS-07-28",
+            "TS-07-E11"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.2",
+            "07-REQ-6.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write unit tests for git_url validator — valid inputs",
+          "details": [
+            "Create test file (e.g. internal/validator/giturl_test.go).",
+            "Table-driven test with valid URLs: 'https://github.com/org/repo.git', 'https://gitlab.com/user/project', 'git@github.com:org/repo.git', 'git@bitbucket.org:user/repo.git'.",
+            "Assert validateGitURL returns true for each."
+          ],
+          "test_spec_refs": [
+            "TS-07-29"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write unit tests for git_url validator — invalid inputs and no-network guarantee",
+          "details": [
+            "Table-driven test with invalid URLs: '/local/path/repo', 'http://...', 'git://...', 'ssh://...', 'ftp://...', '' (empty).",
+            "Assert validateGitURL returns false for each without panic.",
+            "Test TS-07-31: call validateGitURL with an unreachable URL and assert it completes in < 1ms (use time.Since check); no net calls.",
+            "Empty string edge case (TS-07-E12): validateGitURL('') returns false without panic."
+          ],
+          "test_spec_refs": [
+            "TS-07-30",
+            "TS-07-31",
+            "TS-07-E12"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.2",
+            "07-REQ-7.3",
+            "07-REQ-7.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All new validator tests compile and run: go test ./internal/validator/... -count=1 -v",
+          "All tests in group 1 fail with 'undefined: validateSlug' or similar (red-green confirmation that stubs are absent).",
+          "No linter warnings introduced: go vet ./internal/validator/..."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: workspaces database schema and store",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write unit tests for workspaces table DDL — column definitions and defaults",
+          "details": [
+            "Create test file internal/db/workspace_schema_test.go.",
+            "TS-07-1: Open in-memory SQLite, run DDL, execute PRAGMA table_info('workspaces'), assert all required columns with correct types and NOT NULL flags.",
+            "TS-07-2: Insert duplicate slug, assert UNIQUE constraint error; row count remains 1.",
+            "TS-07-3: Insert row without status/created_at; assert status='active' and created_at non-null."
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-2",
+            "TS-07-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-1.2",
+            "07-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write unit tests for workspaces DDL foreign key dependency edge case",
+          "details": [
+            "TS-07-E1: Attempt duplicate slug raw INSERT; assert 'UNIQUE constraint failed' in error; existing row unchanged.",
+            "TS-07-E2: Use a fresh empty in-memory DB (no teams table), enable PRAGMA foreign_keys=ON, attempt workspaces DDL; assert non-nil error or document PRAGMA requirement in code."
+          ],
+          "test_spec_refs": [
+            "TS-07-E1",
+            "TS-07-E2"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.E1",
+            "07-REQ-1.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write unit tests for CreateWorkspace store — success path",
+          "details": [
+            "Create test file internal/store/workspace_store_test.go.",
+            "TS-07-4: Call CreateWorkspace with valid inputs; assert returned *Workspace has valid UUID, status='active', non-zero created_at, matching slug and git_url, nil branch and nil team_id.",
+            "TS-07-6: Use a read-only DB; call CreateWorkspace; assert returns (nil, non-nil error); process still running (no os.Exit/log.Fatal calls — verified by static analysis in separate subtask)."
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-6"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1",
+            "07-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write unit tests for CreateWorkspace store — error paths",
+          "details": [
+            "TS-07-5: Call CreateWorkspace with existing slug; assert returns (nil, ErrDuplicateSlug); sentinel error distinguishable from generic errors; row count for slug remains 1.",
+            "TS-07-E3: Simulate locked DB; assert (nil, error) with 'locked' in message; write_call_count == 1.",
+            "TS-07-E4: Enable PRAGMA foreign_keys=ON; call CreateWorkspace with nonexistent team_id; assert (nil, error) with FK violation; no row inserted."
+          ],
+          "test_spec_refs": [
+            "TS-07-5",
+            "TS-07-E3",
+            "TS-07-E4"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.2",
+            "07-REQ-2.E1",
+            "07-REQ-2.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All schema and store tests compile: go test ./internal/db/... ./internal/store/... -count=1 -v",
+          "Tests fail with 'undefined' or similar until implementation is in place (red-green verification).",
+          "No linter warnings: go vet ./internal/db/... ./internal/store/..."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: POST /api/v1/workspaces handler — success and 4xx error cases",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write integration tests for POST /api/v1/workspaces — happy path and optional fields",
+          "details": [
+            "Create test file internal/handler/workspace_handler_test.go using Echo's httptest utilities.",
+            "TS-07-7: Valid API key + slug + git_url; assert HTTP 201, response JSON has all fields, id is UUID, status='active'.",
+            "TS-07-15: Include owner_id in request body as attacker-uuid; assert response owner_id == authenticated user's ID, not attacker-uuid.",
+            "TS-07-16: Omit branch and team_id; assert HTTP 201, response branch=null, team_id=null, DB row columns are NULL."
+          ],
+          "test_spec_refs": [
+            "TS-07-7",
+            "TS-07-15",
+            "TS-07-16"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-3.9",
+            "07-REQ-3.10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write integration tests for POST /api/v1/workspaces — 400 validation errors",
+          "details": [
+            "TS-07-8: Missing slug → HTTP 400, message='missing required fields'. Also test missing git_url.",
+            "TS-07-9: Invalid slug format (e.g. '1-bad-slug') → HTTP 400, message='invalid slug format'.",
+            "TS-07-10: Invalid git_url (e.g. '/local/path/repo') → HTTP 400, message='invalid git_url format'.",
+            "Assert standard error envelope shape for all: {\"error\": {\"code\": \"400\", \"message\": \"...\"}}."
+          ],
+          "test_spec_refs": [
+            "TS-07-8",
+            "TS-07-9",
+            "TS-07-10"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.2",
+            "07-REQ-3.3",
+            "07-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration tests for POST /api/v1/workspaces — 409 conflict and 404 team not found",
+          "details": [
+            "TS-07-11: Pre-insert workspace with slug='existing-ws'; POST with same slug; assert HTTP 409, message='workspace slug already exists'.",
+            "TS-07-12: POST with team_id='nonexistent-team-uuid' (not in teams table); assert HTTP 404, message='team not found'."
+          ],
+          "test_spec_refs": [
+            "TS-07-11",
+            "TS-07-12"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.5",
+            "07-REQ-3.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write integration tests for POST /api/v1/workspaces — 403 membership and admin token",
+          "details": [
+            "TS-07-13: User not a member of the specified team; assert HTTP 403, message='not a member of this team'.",
+            "TS-07-14: Authenticate with admin token; assert HTTP 403, message='workspace creation requires user authentication'."
+          ],
+          "test_spec_refs": [
+            "TS-07-13",
+            "TS-07-14"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.7",
+            "07-REQ-3.8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write integration tests for POST /api/v1/workspaces — edge cases (malformed body, timeout, no auth)",
+          "details": [
+            "TS-07-E5: POST with malformed JSON body; assert HTTP 400, message='missing required fields'; db write_call_count == 0.",
+            "TS-07-E6: Configure server with short timeout (100ms), DB blocks writes for 1s; assert HTTP 500, standard error envelope; verify no goroutine leak via runtime.NumGoroutine().",
+            "TS-07-E7: POST with no Authorization header; assert HTTP 401 from middleware; workspace handler never reached; db write_call_count == 0."
+          ],
+          "test_spec_refs": [
+            "TS-07-E5",
+            "TS-07-E6",
+            "TS-07-E7"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.E1",
+            "07-REQ-3.E2",
+            "07-REQ-3.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All handler tests compile: go test ./internal/handler/... -count=1 -v",
+          "Tests fail (red) until handler implementation exists.",
+          "No linter warnings: go vet ./internal/handler/..."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: afc workspace create CLI command",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write unit tests for CLI command registration and flag validation",
+          "details": [
+            "TS-07-17: Traverse the Cobra command tree; assert 'workspace create' subcommand exists with --git-url (required), --slug (required), --branch (optional), --team (optional).",
+            "TS-07-22: Run CLI without --slug; assert exit code != 0; stderr contains 'required' or 'slug'; no HTTP calls made.",
+            "TS-07-23: Static grep of cmd/ source files for 'os.Exit' and 'log.Fatal'; assert zero matches in workspace command handler files."
+          ],
+          "test_spec_refs": [
+            "TS-07-17",
+            "TS-07-22",
+            "TS-07-23"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.1",
+            "07-REQ-4.6",
+            "07-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write integration tests for CLI team slug resolution and success output",
+          "details": [
+            "Use httptest.NewServer to mock API responses.",
+            "TS-07-18: Mock GET /api/v1/teams returning team with id='team-uuid-1'; mock POST /api/v1/workspaces capturing request; assert GET called first with slug=my-team; POST body contains team_id='team-uuid-1'.",
+            "TS-07-19: Mock POST /api/v1/workspaces returning 201 with valid workspace JSON; run CLI; assert stdout is parseable JSON with expected fields; exit code == 0."
+          ],
+          "test_spec_refs": [
+            "TS-07-18",
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.2",
+            "07-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write integration tests for CLI error handling paths",
+          "details": [
+            "TS-07-20: Mock GET /api/v1/teams returning empty list; run CLI with --team unknown-team; assert exit code != 0; stderr contains 'unknown-team'; POST /api/v1/workspaces never called.",
+            "TS-07-21: Mock POST /api/v1/workspaces returning HTTP 409 with error envelope; assert stderr contains 'workspace slug already exists'; exit code != 0."
+          ],
+          "test_spec_refs": [
+            "TS-07-20",
+            "TS-07-21"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.4",
+            "07-REQ-4.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write integration tests for CLI network failure edge cases and invalid JSON response",
+          "details": [
+            "TS-07-E8: Mock GET /api/v1/teams with 10s delay; CLI configured with 1s timeout; assert exit code != 0; stderr non-empty; POST never called.",
+            "TS-07-E9: Mock POST /api/v1/workspaces with 10s delay; CLI configured with 1s timeout; assert exit code != 0; stderr describes POST failure.",
+            "TS-07-E10: Mock POST /api/v1/workspaces returning HTTP 200 with body 'not-json-at-all'; assert exit code != 0; stderr contains 'parse', 'invalid', 'unexpected', or 'json'."
+          ],
+          "test_spec_refs": [
+            "TS-07-E8",
+            "TS-07-E9",
+            "TS-07-E10"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.E1",
+            "07-REQ-4.E2",
+            "07-REQ-4.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All CLI tests compile: go test ./cmd/... -count=1 -v",
+          "Tests fail (red) until CLI implementation exists.",
+          "No linter warnings: go vet ./cmd/..."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write tests: architecture doc updates and property/smoke test stubs",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write doc-check tests for architecture/services-architecture.md correctness",
+          "details": [
+            "Create test file internal/docs/arch_doc_test.go (or a script-based check).",
+            "TS-07-24: Scan .md files in architecture/ and docs/; assert no remaining organizational-context 'workspace' references using regex patterns.",
+            "TS-07-25: Read architecture/services-architecture.md; assert content contains 'git', 'repository', 'owner_id', 'team_id', 'branch', 'active', 'archived'.",
+            "TS-07-26: Assert content contains both 'teams' and 'workspaces' table schemas; assert all 8 workspaces columns appear: id, slug, git_url, branch, owner_id, team_id, status, created_at."
+          ],
+          "test_spec_refs": [
+            "TS-07-24",
+            "TS-07-25",
+            "TS-07-26"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.1",
+            "07-REQ-5.2",
+            "07-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write property test stubs for slug uniqueness and status default invariants",
+          "details": [
+            "TS-07-P1: Property test generating 2–50 slug strings (with duplicates); call CreateWorkspace for each; query SELECT slug, count(*) FROM workspaces GROUP BY slug HAVING count(*) > 1; assert empty result.",
+            "TS-07-P3: Property test generating arbitrary valid CreateWorkspace inputs; assert ws.status == 'active' and NOT NULL for each returned record."
+          ],
+          "test_spec_refs": [
+            "TS-07-P1",
+            "TS-07-P3"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.2",
+            "07-REQ-1.3",
+            "07-REQ-2.1",
+            "07-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write property test stubs for owner, team membership, git_url, slug, and store invariants",
+          "details": [
+            "TS-07-P2: Property test asserting owner_id always references a real users row for any successfully created workspace.",
+            "TS-07-P4: Property test over (user, team) membership pairs; assert non-member attempts produce no row; member attempts succeed.",
+            "TS-07-P5: Property test asserting every stored workspace git_url matches HTTPS or SSH regex, never null/empty.",
+            "TS-07-P6: Property test asserting every stored workspace slug matches the valid pattern, never null.",
+            "TS-07-P7: Property test asserting CreateWorkspace always returns within 5s, never panics, never calls os.Exit/log.Fatal."
+          ],
+          "test_spec_refs": [
+            "TS-07-P2",
+            "TS-07-P4",
+            "TS-07-P5",
+            "TS-07-P6",
+            "TS-07-P7"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.7",
+            "07-REQ-3.8",
+            "07-REQ-3.9",
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-6.1",
+            "07-REQ-6.2",
+            "07-REQ-2.3",
+            "07-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All doc-check and property tests compile: go test ./internal/docs/... -count=1 -v",
+          "Doc-check tests fail (red) until architecture documents are updated.",
+          "No linter warnings: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement slug and git_url validators",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement validateSlug function",
+          "details": [
+            "Create internal/validator/slug.go.",
+            "Export func validateSlug(slug string) bool.",
+            "Regex: ^[a-z][a-z0-9-]{1,62}[a-z0-9]$ for length 3–64; also accept exactly 3-char slugs matching ^[a-z][a-z0-9-][a-z0-9]$.",
+            "Reject: starts with digit/hyphen, uppercase, consecutive hyphens (--), trailing hyphen, len < 3 or > 64, empty string.",
+            "Return false without panic for empty string input."
+          ],
+          "test_spec_refs": [
+            "TS-07-27",
+            "TS-07-28",
+            "TS-07-E11"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2",
+            "07-REQ-6.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement validateGitURL function",
+          "details": [
+            "Create internal/validator/giturl.go.",
+            "Export func validateGitURL(url string) bool.",
+            "Accept: strings starting with 'https://' OR matching regex ^git@[^:]+:[^/].+.",
+            "Reject: empty string, 'http://', 'git://', 'ssh://', 'ftp://', local paths.",
+            "No network calls — purely syntactic regex/prefix check.",
+            "Return false without panic for empty string."
+          ],
+          "test_spec_refs": [
+            "TS-07-29",
+            "TS-07-30",
+            "TS-07-31",
+            "TS-07-E12"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-7.3",
+            "07-REQ-7.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Validator unit tests pass: go test ./internal/validator/... -count=1 -v",
+          "TS-07-27, TS-07-28, TS-07-E11 pass for slug validator.",
+          "TS-07-29, TS-07-30, TS-07-31, TS-07-E12 pass for git_url validator.",
+          "No linter warnings: go vet ./internal/validator/..."
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement workspaces database schema DDL",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Add workspaces table DDL to internal/db/db.go",
+          "details": [
+            "In internal/db/db.go, append the CREATE TABLE IF NOT EXISTS workspaces DDL after the teams table DDL.",
+            "Columns: id TEXT PRIMARY KEY, slug TEXT UNIQUE NOT NULL, git_url TEXT NOT NULL, branch TEXT, owner_id TEXT NOT NULL REFERENCES users(id), team_id TEXT REFERENCES teams(id), status TEXT NOT NULL DEFAULT 'active', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP.",
+            "Ensure PRAGMA foreign_keys=ON is set during DB initialization.",
+            "Run existing migration/init logic to pick up new table."
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-2",
+            "TS-07-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-1.2",
+            "07-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Verify schema DDL satisfies UNIQUE, NOT NULL, and default constraints",
+          "details": [
+            "Confirm PRAGMA foreign_keys=ON is always set before workspaces DDL runs.",
+            "Verify that the teams table creation precedes workspaces DDL in the migration order.",
+            "Document in code that workspaces DDL depends on teams table (06 spec must have run)."
+          ],
+          "test_spec_refs": [
+            "TS-07-E1",
+            "TS-07-E2"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.E1",
+            "07-REQ-1.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Schema tests pass: go test ./internal/db/... -count=1 -v",
+          "TS-07-1, TS-07-2, TS-07-3, TS-07-E1, TS-07-E2 pass.",
+          "No linter warnings: go vet ./internal/db/..."
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement workspace store — CreateWorkspace",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Define Workspace struct and ErrDuplicateSlug sentinel error",
+          "details": [
+            "Create internal/store/workspace.go.",
+            "Define type Workspace struct with fields: ID, Slug, GitURL, Branch (*string), OwnerID, TeamID (*string), Status, CreatedAt.",
+            "Define var ErrDuplicateSlug = errors.New(\"workspace slug already exists\") as a sentinel error.",
+            "Define WorkspaceStore interface or struct with CreateWorkspace method signature: CreateWorkspace(ctx context.Context, params CreateWorkspaceParams) (*Workspace, error)."
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-5"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1",
+            "07-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement CreateWorkspace — insert logic with UUID generation and error handling",
+          "details": [
+            "In CreateWorkspace: generate UUID for id using a UUID library (e.g. github.com/google/uuid).",
+            "Set status='active' and created_at=time.Now().UTC() if not provided.",
+            "INSERT INTO workspaces using prepared statement.",
+            "On UNIQUE constraint error (SQLite error code 1555 or 2067): return (nil, ErrDuplicateSlug).",
+            "On FK violation: return (nil, wrapped error).",
+            "On DB locked/unavailable: return (nil, wrapped error) immediately, no retry.",
+            "Never call os.Exit or log.Fatal; all errors returned as Go error values."
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-5",
+            "TS-07-6",
+            "TS-07-E3",
+            "TS-07-E4"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1",
+            "07-REQ-2.2",
+            "07-REQ-2.3",
+            "07-REQ-2.E1",
+            "07-REQ-2.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Store tests pass: go test ./internal/store/... -count=1 -v",
+          "TS-07-4, TS-07-5, TS-07-6, TS-07-E3, TS-07-E4 pass.",
+          "No linter warnings: go vet ./internal/store/..."
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Checkpoint: validators and store foundation verified",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run all unit tests for validators, schema, and store",
+          "details": [
+            "Run: go test ./internal/validator/... ./internal/db/... ./internal/store/... -count=1 -v",
+            "All tests must pass green before proceeding to handler implementation.",
+            "Check for data races: go test -race ./internal/... -count=1"
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-2",
+            "TS-07-3",
+            "TS-07-4",
+            "TS-07-5",
+            "TS-07-27",
+            "TS-07-28",
+            "TS-07-29",
+            "TS-07-30"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2",
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-1.1",
+            "07-REQ-2.1",
+            "07-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Static analysis — confirm no os.Exit/log.Fatal in store or validator code",
+          "details": [
+            "Run grep or go/analysis pass over internal/store/ and internal/validator/ for 'os.Exit' and 'log.Fatal'.",
+            "Assert zero matches; any match is a blocking failure.",
+            "Document result in code review checklist."
+          ],
+          "test_spec_refs": [
+            "TS-07-6",
+            "TS-07-23"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.3",
+            "07-REQ-PROP-7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All unit tests pass: go test ./internal/... -count=1",
+          "Race detector clean: go test -race ./internal/... -count=1",
+          "No os.Exit or log.Fatal in internal/store/ or internal/validator/: grep -r 'os\\.Exit\\|log\\.Fatal' internal/store internal/validator returns empty",
+          "No linter warnings: go vet ./internal/..."
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement POST /api/v1/workspaces Echo handler",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement handler — authentication checks and request parsing",
+          "details": [
+            "Create internal/handler/workspace_handler.go.",
+            "Register POST /api/v1/workspaces on the Echo router (behind existing API key middleware).",
+            "At handler entry: check if caller is admin token → return 403 with message 'workspace creation requires user authentication'.",
+            "Extract owner_id from authenticated user context (never from request body).",
+            "Bind and validate JSON body; on parse failure or missing slug/git_url → return 400 'missing required fields' without DB access."
+          ],
+          "test_spec_refs": [
+            "TS-07-14",
+            "TS-07-15",
+            "TS-07-8",
+            "TS-07-E5",
+            "TS-07-E7"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.8",
+            "07-REQ-3.9",
+            "07-REQ-3.2",
+            "07-REQ-3.E1",
+            "07-REQ-3.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement handler — input validation (slug and git_url formats)",
+          "details": [
+            "Call validateSlug on the slug field; if invalid → return 400 'invalid slug format'.",
+            "Call validateGitURL on the git_url field; if invalid → return 400 'invalid git_url format'.",
+            "Accept branch and team_id as optional; store nil pointers when omitted or null.",
+            "All validation errors use standard error envelope: {\"error\": {\"code\": \"400\", \"message\": \"...\"}}"
+          ],
+          "test_spec_refs": [
+            "TS-07-9",
+            "TS-07-10",
+            "TS-07-16"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.3",
+            "07-REQ-3.4",
+            "07-REQ-3.10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement handler — team existence and membership checks",
+          "details": [
+            "If team_id is provided: query teams table for existence; if not found → return 404 'team not found'.",
+            "If team exists: query team_memberships (or equivalent) for (user_id, team_id); if no membership row → return 403 'not a member of this team'.",
+            "Any role (reader, editor, admin) is sufficient for membership check."
+          ],
+          "test_spec_refs": [
+            "TS-07-12",
+            "TS-07-13"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.6",
+            "07-REQ-3.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Implement handler — call CreateWorkspace and return response",
+          "details": [
+            "Call store.CreateWorkspace with validated fields.",
+            "On ErrDuplicateSlug → return 409 'workspace slug already exists'.",
+            "On context deadline exceeded / timeout → return 500 with standard error envelope; no goroutine leak.",
+            "On success → return HTTP 201 with workspace JSON: {id, slug, git_url, branch, owner_id, team_id, status, created_at}."
+          ],
+          "test_spec_refs": [
+            "TS-07-7",
+            "TS-07-11",
+            "TS-07-E6"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-3.5",
+            "07-REQ-3.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All handler integration tests pass: go test ./internal/handler/... -count=1 -v",
+          "TS-07-7 through TS-07-16, TS-07-E5, TS-07-E6, TS-07-E7 pass.",
+          "No linter warnings: go vet ./internal/handler/..."
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement afc workspace create CLI command",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Register workspace and workspace create Cobra commands with flags",
+          "details": [
+            "Create cmd/afc/workspace.go (or equivalent Cobra command file).",
+            "Add 'workspace' parent command under root; add 'create' subcommand.",
+            "Mark --git-url and --slug as required flags (cobra.MarkFlagRequired).",
+            "Add --branch and --team as optional flags.",
+            "Never call os.Exit directly in handler or library code; delegate to Cobra's Execute()."
+          ],
+          "test_spec_refs": [
+            "TS-07-17",
+            "TS-07-22",
+            "TS-07-23"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.1",
+            "07-REQ-4.6",
+            "07-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement team slug resolution via GET /api/v1/teams",
+          "details": [
+            "If --team flag is set: call GET /api/v1/teams?slug=<team-slug> with the user's API key.",
+            "Parse response; if no matching team found → print error to stderr identifying the slug, exit code 1; do not call POST.",
+            "If GET times out or server unreachable → print network error to stderr, exit code 1; do not call POST.",
+            "Respect configured HTTP client timeout (e.g. 30s default, overridable for tests)."
+          ],
+          "test_spec_refs": [
+            "TS-07-18",
+            "TS-07-20",
+            "TS-07-E8"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.2",
+            "07-REQ-4.4",
+            "07-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Implement POST /api/v1/workspaces call and output handling",
+          "details": [
+            "Construct POST /api/v1/workspaces request body with slug, git_url, optional branch, optional team_id (resolved UUID).",
+            "On HTTP 2xx: parse response JSON, print workspace object to stdout, exit code 0.",
+            "On HTTP error: extract message from error envelope, print to stderr, exit code 1.",
+            "On POST timeout/network error: print human-readable error to stderr, exit code 1.",
+            "On unparseable JSON response: print 'unexpected server response' / parse failure to stderr, exit code 1."
+          ],
+          "test_spec_refs": [
+            "TS-07-19",
+            "TS-07-21",
+            "TS-07-E9",
+            "TS-07-E10"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.3",
+            "07-REQ-4.5",
+            "07-REQ-4.E2",
+            "07-REQ-4.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "All CLI tests pass: go test ./cmd/... -count=1 -v",
+          "TS-07-17 through TS-07-23, TS-07-E8, TS-07-E9, TS-07-E10 pass.",
+          "No direct os.Exit in cmd/ workspace handler: grep -r 'os\\.Exit' cmd/ returns empty or only in main().",
+          "No linter warnings: go vet ./cmd/..."
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "standard",
+      "title": "Update architecture documentation",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Replace organizational 'workspace' references with 'team' in all docs",
+          "details": [
+            "Scan architecture/ and docs/ .md files for 'workspace' used in organizational/group context.",
+            "Replace all such references with 'team' consistently.",
+            "Do not replace references that correctly describe the new workspace entity (git-repo-mapped context).",
+            "Commit doc changes as a separate, reviewable diff."
+          ],
+          "test_spec_refs": [
+            "TS-07-24"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Update workspace definition and schema in architecture/services-architecture.md",
+          "details": [
+            "In the workspace definition section: describe workspace as mapping to a git repo + optional branch, owned by a user (owner_id), optionally belonging to a team (team_id), with status active/archived.",
+            "In the operational store schema section: add both the renamed 'teams' table schema and the new 'workspaces' table schema with all 8 columns: id, slug, git_url, branch, owner_id, team_id, status, created_at.",
+            "Ensure the teams table entry reflects the rename from the old workspaces table (spec 06 change)."
+          ],
+          "test_spec_refs": [
+            "TS-07-25",
+            "TS-07-26"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.2",
+            "07-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "Doc-check tests pass: go test ./internal/docs/... -count=1 -v",
+          "TS-07-24, TS-07-25, TS-07-26 pass.",
+          "Manual review: architecture/services-architecture.md contains both 'teams' and 'workspaces' table schemas.",
+          "No remaining organizational-context 'workspace' references in architecture/ or docs/ .md files."
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "checkpoint",
+      "title": "Checkpoint: full implementation verified before wiring",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Run full test suite and race detector",
+          "details": [
+            "Run: go test ./... -count=1 -v",
+            "Run: go test -race ./... -count=1",
+            "All tests must pass; zero race conditions.",
+            "Record failing tests if any; block progression until all pass."
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-4",
+            "TS-07-7",
+            "TS-07-17",
+            "TS-07-24"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-2.1",
+            "07-REQ-3.1",
+            "07-REQ-4.1",
+            "07-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Run property tests and validate invariants",
+          "details": [
+            "Execute all property tests (TS-07-P1 through TS-07-P7).",
+            "Assert slug uniqueness invariant (P1), owner invariant (P2), status default (P3), team membership (P4), git_url format (P5), slug format (P6), store no-exit (P7) all pass.",
+            "If any property test fails, trace back to the responsible unit and fix before wiring."
+          ],
+          "test_spec_refs": [
+            "TS-07-P1",
+            "TS-07-P2",
+            "TS-07-P3",
+            "TS-07-P4",
+            "TS-07-P5",
+            "TS-07-P6",
+            "TS-07-P7"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.2",
+            "07-REQ-1.3",
+            "07-REQ-2.1",
+            "07-REQ-2.2",
+            "07-REQ-3.7",
+            "07-REQ-3.8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Final linter and static analysis pass",
+          "details": [
+            "Run: go vet ./...",
+            "Grep for panic(\"not implemented\") and TODO stub markers across all new files.",
+            "Grep for os.Exit in internal/ and cmd/afc/workspace.go; assert zero matches outside main().",
+            "Grep for log.Fatal in internal/store/ and internal/handler/; assert zero matches."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "07-REQ-2.3",
+            "07-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "go test ./... -count=1 passes with zero failures.",
+          "go test -race ./... -count=1 shows no race conditions.",
+          "go vet ./... reports no warnings.",
+          "All property tests (TS-07-P1 through TS-07-P7) pass.",
+          "No panic(\"not implemented\"), os.Exit (outside main), or log.Fatal found in implementation files."
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and smoke tests",
+      "subtasks": [
+        {
+          "id": "14.1",
+          "title": "Trace execution paths — verify call chain has no stubs",
+          "details": [
+            "07-PATH-1: Confirm POST /api/v1/workspaces route is registered in the Echo router; middleware calls the handler; handler calls validateSlug, validateGitURL, team lookup, store.CreateWorkspace in sequence.",
+            "07-PATH-2: Confirm CLI 'workspace create' RunE is wired to team slug resolution (GET /api/v1/teams) and then POST /api/v1/workspaces; no panic(\"not implemented\") or bare 'return nil' in non-trivial paths.",
+            "07-PATH-3: Confirm ErrDuplicateSlug propagates from store → handler → HTTP 409 response.",
+            "07-PATH-4: Confirm admin token check in handler returns 403 before any store call.",
+            "Search for: grep -r 'panic(\"not implemented\")\\|// TODO' internal/ cmd/ and assert zero matches in workspace-related files."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-1",
+            "TS-07-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-4.2",
+            "07-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.2",
+          "title": "Verify return value propagation across the stack",
+          "details": [
+            "Confirm CreateWorkspace return value (*Workspace, error) is consumed by the handler (not discarded).",
+            "Confirm handler writes all workspace fields from the returned struct into the HTTP 201 response JSON.",
+            "Confirm CLI reads the HTTP response body and outputs it to stdout (not a hard-coded string).",
+            "Confirm ErrDuplicateSlug sentinel is checked with errors.Is() in the handler, not string matching."
+          ],
+          "test_spec_refs": [
+            "TS-07-7",
+            "TS-07-11",
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1",
+            "07-REQ-2.2",
+            "07-REQ-3.5",
+            "07-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.3",
+          "title": "Run smoke tests — all four execution paths with real components",
+          "details": [
+            "TS-07-SMOKE-1: POST /api/v1/workspaces with valid user API key, slug, git_url, branch, team_id (user is team member); assert HTTP 201, workspace row in DB, all fields correct.",
+            "TS-07-SMOKE-2: Run afc CLI end-to-end: resolve team slug → POST workspace; assert GET /api/v1/teams called first, POST body has resolved team_id, stdout is workspace JSON, exit 0, DB row exists.",
+            "TS-07-SMOKE-3: POST with duplicate slug; assert HTTP 409 'workspace slug already exists'; no new DB row.",
+            "TS-07-SMOKE-4: POST with admin token; assert HTTP 403 'workspace creation requires user authentication'; workspace store never invoked."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-1",
+            "TS-07-SMOKE-2",
+            "TS-07-SMOKE-3",
+            "TS-07-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-3.5",
+            "07-REQ-3.8",
+            "07-REQ-4.2",
+            "07-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.4",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Run: grep -rn 'panic(\"not implemented\")' internal/ cmd/ — assert zero matches in workspace files.",
+            "Run: grep -rn '// TODO' internal/store/workspace.go internal/handler/workspace_handler.go cmd/afc/workspace.go — assert zero unresolved TODOs.",
+            "Run: grep -rn 'log\\.Fatal\\|os\\.Exit' internal/store internal/handler cmd/afc/workspace.go — assert zero matches.",
+            "Confirm all error return paths in CreateWorkspace and the handler return meaningful, wrapped errors (not bare 'return nil, nil')."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "07-REQ-2.3",
+            "07-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.5",
+          "title": "Cross-spec entry point verification — spec 06 team_rename dependency",
+          "details": [
+            "Confirm the teams table (created/renamed by spec 06) is present in the production DB migration order before workspaces DDL runs.",
+            "Confirm PRAGMA foreign_keys=ON is set in db.go initialization before workspaces DDL.",
+            "Run TS-07-E2 with a DB that lacks the teams table to confirm startup fails gracefully (non-nil error returned, no panic).",
+            "In the application startup sequence, confirm the workspaces DDL migration is ordered after the spec-06 teams migration."
+          ],
+          "test_spec_refs": [
+            "TS-07-E2"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-1.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "14.V",
+        "checks": [
+          "All smoke tests pass with real components: go test ./... -run 'Smoke|smoke' -count=1 -v",
+          "go test ./... -count=1 passes (all tests green).",
+          "go test -race ./... -count=1 shows no data races.",
+          "go vet ./... reports zero warnings.",
+          "Zero grep matches for panic(\"not implemented\"), unresolved // TODO, os.Exit (outside main), log.Fatal in workspace-related files.",
+          "DB migration order confirmed: teams table DDL precedes workspaces table DDL.",
+          "TS-07-SMOKE-1, TS-07-SMOKE-2, TS-07-SMOKE-3, TS-07-SMOKE-4 all pass."
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "07-REQ-1.1",
+      "test_spec_id": "TS-07-1",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.2",
+      "test_spec_id": "TS-07-2",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.3",
+      "test_spec_id": "TS-07-3",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.E1",
+      "test_spec_id": "TS-07-E1",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.E2",
+      "test_spec_id": "TS-07-E2",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.1",
+      "test_spec_id": "TS-07-4",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.2",
+      "test_spec_id": "TS-07-5",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.3",
+      "test_spec_id": "TS-07-6",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.E1",
+      "test_spec_id": "TS-07-E3",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.E2",
+      "test_spec_id": "TS-07-E4",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.1",
+      "test_spec_id": "TS-07-7",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.2",
+      "test_spec_id": "TS-07-8",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.3",
+      "test_spec_id": "TS-07-9",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.4",
+      "test_spec_id": "TS-07-10",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.5",
+      "test_spec_id": "TS-07-11",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.6",
+      "test_spec_id": "TS-07-12",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.7",
+      "test_spec_id": "TS-07-13",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.8",
+      "test_spec_id": "TS-07-14",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.9",
+      "test_spec_id": "TS-07-15",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.10",
+      "test_spec_id": "TS-07-16",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.E1",
+      "test_spec_id": "TS-07-E5",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.E2",
+      "test_spec_id": "TS-07-E6",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.E3",
+      "test_spec_id": "TS-07-E7",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.1",
+      "test_spec_id": "TS-07-17",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.2",
+      "test_spec_id": "TS-07-18",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.3",
+      "test_spec_id": "TS-07-19",
+      "task_id": "11.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.4",
+      "test_spec_id": "TS-07-20",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.5",
+      "test_spec_id": "TS-07-21",
+      "task_id": "11.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.6",
+      "test_spec_id": "TS-07-22",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.7",
+      "test_spec_id": "TS-07-23",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.E1",
+      "test_spec_id": "TS-07-E8",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.E2",
+      "test_spec_id": "TS-07-E9",
+      "task_id": "11.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.E3",
+      "test_spec_id": "TS-07-E10",
+      "task_id": "11.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.1",
+      "test_spec_id": "TS-07-24",
+      "task_id": "12.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.2",
+      "test_spec_id": "TS-07-25",
+      "task_id": "12.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.3",
+      "test_spec_id": "TS-07-26",
+      "task_id": "12.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.1",
+      "test_spec_id": "TS-07-27",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.2",
+      "test_spec_id": "TS-07-28",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.E1",
+      "test_spec_id": "TS-07-E11",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.1",
+      "test_spec_id": "TS-07-29",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.2",
+      "test_spec_id": "TS-07-30",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.3",
+      "test_spec_id": "TS-07-31",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.E1",
+      "test_spec_id": "TS-07-E12",
+      "task_id": "6.2",
+      "test_path": null
+    }
+  ]
+}
