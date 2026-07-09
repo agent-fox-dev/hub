@@ -763,10 +763,15 @@ Configuration and data are stored in separate directory trees.
 The operational store tables map directly to the entities in
 [coordination-layer.md §9.3](coordination-layer.md#93-operational-store):
 
-- `workspaces` — id, name, status, owner, origin, branch, base_branch,
-  remote, campaign_id, created_at, updated_at
-- `workspace_configs` — workspace_id, setup_scripts (JSON), default_provider,
-  default_model
+- `teams` — id, name, slug, url, status, created_at, created_by.
+  Renamed from the previous organizational table by the team_rename spec.
+  Represents an organizational group that users belong to.
+- `team_configs` — team_id, setup_scripts (JSON), default_provider,
+  default_model.
+- `workspaces` — id, slug, git_url, branch, owner_id, team_id, status,
+  created_at. Maps a git repository plus optional branch to an execution
+  context. Owned by a user via owner_id, optionally associated with a
+  team via team_id. Status is `active` or `archived`.
 - `campaigns` — id, name, status, goal_document, shared_context_ids (JSON),
   created_at, updated_at
 - `campaign_members` — campaign_id, workspace_id, spec_id, dependency_edges

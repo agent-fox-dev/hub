@@ -66,16 +66,17 @@ WAL mode is always enabled before any schema initialization.
 
 ### Schema
 
-The database schema consists of five tables, all created with
+The database schema consists of six tables, all created with
 `CREATE TABLE IF NOT EXISTS` on startup:
 
 | Table | Primary key | Notable constraints |
 |-------|-------------|---------------------|
 | `users` | `id` (UUID TEXT) | UNIQUE on `username`; UNIQUE on `(provider, provider_id)` |
-| `workspaces` | `id` (UUID TEXT) | UNIQUE on `name`, `slug`, `url` |
-| `workspace_members` | `(user_id, workspace_id)` composite | FK to `users` and `workspaces` |
-| `api_keys` | `id` (UUID TEXT) | UNIQUE on `key_id`; FK to `users` and `workspaces` |
+| `teams` | `id` (UUID TEXT) | UNIQUE on `name`, `slug`, `url` (renamed from the old `workspaces` table by spec 06) |
+| `team_members` | `(user_id, team_id)` composite | FK to `users` and `teams` |
+| `api_keys` | `id` (UUID TEXT) | UNIQUE on `key_id`; FK to `users` and `teams` |
 | `admin_tokens` | `id` (UUID TEXT) | Stores SHA-256 hash of the admin bootstrap token |
+| `workspaces` | `id` (UUID TEXT) | UNIQUE on `slug`; FK `owner_id` to `users`, FK `team_id` to `teams`. Maps a git repository to an execution context. |
 
 All primary keys are UUID v4 TEXT values (generated via `github.com/google/uuid`).
 All timestamps are stored as RFC 3339 TEXT strings.
