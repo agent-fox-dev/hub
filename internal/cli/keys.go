@@ -5,9 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
+	"github.com/agent-fox/af-hub/internal/cliconfig"
 	"github.com/spf13/cobra"
 )
+
+// apiKeyResponse represents the key fields returned by the server on
+// key creation and refresh. Used to parse the response for config updates.
+type apiKeyResponse struct {
+	Key   string `json:"key"`
+	KeyID string `json:"key_id"`
+}
 
 var apiKey string
 
@@ -86,11 +95,25 @@ func newKeysCreateCmd() *cobra.Command {
 				return ParseHTTPError(resp)
 			}
 
-			// Decode and print the key object to stdout.
+			// Decode the response to extract key_id and token for config update.
 			var result json.RawMessage
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 				return fmt.Errorf("failed to decode response: %w", err)
 			}
+
+			// Parse the key response for config storage.
+			var keyResp apiKeyResponse
+			if err := json.Unmarshal(result, &keyResp); err == nil && keyResp.KeyID != "" && keyResp.Key != "" {
+				// Store the key in the config file. Use the --workspace flag
+				// value as the section key and --label flag value for the label
+				// (the server response does not include these fields).
+				if homeDir, err := os.UserHomeDir(); err == nil && loadedConfig != nil {
+					if addErr := cliconfig.AddKeyEntry(homeDir, loadedConfig, workspace, keyResp.KeyID, keyResp.Key, label); addErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to save key to config: %v\n", addErr)
+					}
+				}
+			}
+
 			return PrintJSON(cmd.OutOrStdout(), result)
 		},
 	}
@@ -189,11 +212,22 @@ func newKeysRefreshCmd() *cobra.Command {
 				return ParseHTTPError(resp)
 			}
 
-			// Decode and print the updated key object to stdout.
+			// Decode the response to extract the new token for config update.
 			var result json.RawMessage
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 				return fmt.Errorf("failed to decode response: %w", err)
 			}
+
+			// Parse the key response and update the token in config.
+			var keyResp apiKeyResponse
+			if err := json.Unmarshal(result, &keyResp); err == nil && keyResp.Key != "" {
+				if homeDir, err := os.UserHomeDir(); err == nil && loadedConfig != nil {
+					if updateErr := cliconfig.UpdateKeyToken(homeDir, loadedConfig, keyID, keyResp.Key, cmd.ErrOrStderr()); updateErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to update key in config: %v\n", updateErr)
+					}
+				}
+			}
+
 			return PrintJSON(cmd.OutOrStdout(), result)
 		},
 	}
@@ -242,6 +276,13 @@ func newKeysRevokeCmd() *cobra.Command {
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return ParseHTTPError(resp)
+			}
+
+			// Remove the key from the config file.
+			if homeDir, err := os.UserHomeDir(); err == nil && loadedConfig != nil {
+				if removeErr := cliconfig.RemoveKeyEntry(homeDir, loadedConfig, keyID, cmd.ErrOrStderr()); removeErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to remove key from config: %v\n", removeErr)
+				}
 			}
 
 			// Print confirmation to stderr (not stdout).
