@@ -413,7 +413,7 @@
             "06-REQ-1.1",
             "06-REQ-1.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -430,7 +430,7 @@
           "requirement_refs": [
             "06-REQ-1.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

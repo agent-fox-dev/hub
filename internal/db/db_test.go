@@ -48,7 +48,7 @@ func TestInitSchema_CreatesAllTables(t *testing.T) {
 		t.Fatalf("InitSchema returned error: %v", err)
 	}
 
-	expectedTables := []string{"users", "workspaces", "workspace_members", "api_keys", "admin_tokens"}
+	expectedTables := []string{"users", "teams", "team_members", "api_keys", "admin_tokens"}
 	for _, tableName := range expectedTables {
 		var name string
 		err := db.QueryRow(
@@ -94,107 +94,107 @@ func TestSchemaConstraints(t *testing.T) {
 		}
 	})
 
-	t.Run("workspace_members: duplicate (user_id, workspace_id)", func(t *testing.T) {
+	t.Run("team_members: duplicate (user_id, team_id)", func(t *testing.T) {
 		userID := uuid.New().String()
-		wsID := uuid.New().String()
+		teamID := uuid.New().String()
 
-		// Insert user and workspace to satisfy FK if present.
+		// Insert user and team to satisfy FK if present.
 		_, _ = db.Exec(
 			`INSERT INTO users (id, username, email, provider, provider_id, status, created_at, updated_at)
 			 VALUES (?, 'fk_user', 'fk@test.com', 'local', 'fk1', 'active', ?, ?)`,
 			userID, now, now,
 		)
 		_, _ = db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'ws1', 'ws1', 'https://ws1.test', 'active', ?, ?)`,
-			wsID, now, userID,
+			teamID, now, userID,
 		)
 
 		_, err := db.Exec(
-			`INSERT INTO workspace_members (user_id, workspace_id, role, created_at, granted_by)
+			`INSERT INTO team_members (user_id, team_id, role, created_at, granted_by)
 			 VALUES (?, ?, 'admin', ?, ?)`,
-			userID, wsID, now, userID,
+			userID, teamID, now, userID,
 		)
 		if err != nil {
 			t.Fatalf("first member insert failed: %v", err)
 		}
 
 		_, err = db.Exec(
-			`INSERT INTO workspace_members (user_id, workspace_id, role, created_at, granted_by)
+			`INSERT INTO team_members (user_id, team_id, role, created_at, granted_by)
 			 VALUES (?, ?, 'member', ?, ?)`,
-			userID, wsID, now, userID,
+			userID, teamID, now, userID,
 		)
 		if err == nil {
-			t.Fatal("expected UNIQUE/PK constraint error for duplicate (user_id, workspace_id)")
+			t.Fatal("expected UNIQUE/PK constraint error for duplicate (user_id, team_id)")
 		}
 	})
 
-	t.Run("workspaces: duplicate name", func(t *testing.T) {
+	t.Run("teams: duplicate name", func(t *testing.T) {
 		adminID := getFirstUserID(t, db)
-		ws1 := uuid.New().String()
-		ws2 := uuid.New().String()
+		t1 := uuid.New().String()
+		t2 := uuid.New().String()
 
 		_, err := db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'dupname', 'slug-a', 'https://a.test', 'active', ?, ?)`,
-			ws1, now, adminID,
+			t1, now, adminID,
 		)
 		if err != nil {
-			t.Fatalf("first workspace insert failed: %v", err)
+			t.Fatalf("first team insert failed: %v", err)
 		}
 
 		_, err = db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'dupname', 'slug-b', 'https://b.test', 'active', ?, ?)`,
-			ws2, now, adminID,
+			t2, now, adminID,
 		)
 		if err == nil {
 			t.Fatal("expected UNIQUE constraint error for duplicate name")
 		}
 	})
 
-	t.Run("workspaces: duplicate slug", func(t *testing.T) {
+	t.Run("teams: duplicate slug", func(t *testing.T) {
 		adminID := getFirstUserID(t, db)
-		ws1 := uuid.New().String()
-		ws2 := uuid.New().String()
+		t1 := uuid.New().String()
+		t2 := uuid.New().String()
 
 		_, err := db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'name-c', 'dup-slug', 'https://c.test', 'active', ?, ?)`,
-			ws1, now, adminID,
+			t1, now, adminID,
 		)
 		if err != nil {
-			t.Fatalf("first workspace insert failed: %v", err)
+			t.Fatalf("first team insert failed: %v", err)
 		}
 
 		_, err = db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'name-d', 'dup-slug', 'https://d.test', 'active', ?, ?)`,
-			ws2, now, adminID,
+			t2, now, adminID,
 		)
 		if err == nil {
 			t.Fatal("expected UNIQUE constraint error for duplicate slug")
 		}
 	})
 
-	t.Run("workspaces: duplicate url", func(t *testing.T) {
+	t.Run("teams: duplicate url", func(t *testing.T) {
 		adminID := getFirstUserID(t, db)
-		ws1 := uuid.New().String()
-		ws2 := uuid.New().String()
+		t1 := uuid.New().String()
+		t2 := uuid.New().String()
 
 		_, err := db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'name-e', 'slug-e', 'https://dup.test', 'active', ?, ?)`,
-			ws1, now, adminID,
+			t1, now, adminID,
 		)
 		if err != nil {
-			t.Fatalf("first workspace insert failed: %v", err)
+			t.Fatalf("first team insert failed: %v", err)
 		}
 
 		_, err = db.Exec(
-			`INSERT INTO workspaces (id, name, slug, url, status, created_at, created_by)
+			`INSERT INTO teams (id, name, slug, url, status, created_at, created_by)
 			 VALUES (?, 'name-f', 'slug-f', 'https://dup.test', 'active', ?, ?)`,
-			ws2, now, adminID,
+			t2, now, adminID,
 		)
 		if err == nil {
 			t.Fatal("expected UNIQUE constraint error for duplicate url")
@@ -357,11 +357,11 @@ func TestInitSchema_ExactlyFiveTables(t *testing.T) {
 	}
 
 	expected := map[string]bool{
-		"users":             true,
-		"workspaces":        true,
-		"workspace_members": true,
-		"api_keys":          true,
-		"admin_tokens":      true,
+		"users":        true,
+		"teams":        true,
+		"team_members": true,
+		"api_keys":     true,
+		"admin_tokens": true,
 	}
 	for _, tbl := range tables {
 		if !expected[tbl] {

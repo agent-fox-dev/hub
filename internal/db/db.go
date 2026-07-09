@@ -62,8 +62,8 @@ func InitSchema(db *sql.DB) error {
 			)`,
 		},
 		{
-			name: "workspaces",
-			ddl: `CREATE TABLE IF NOT EXISTS workspaces (
+			name: "teams",
+			ddl: `CREATE TABLE IF NOT EXISTS teams (
 				id TEXT PRIMARY KEY,
 				name TEXT UNIQUE NOT NULL,
 				slug TEXT UNIQUE NOT NULL,
@@ -74,14 +74,14 @@ func InitSchema(db *sql.DB) error {
 			)`,
 		},
 		{
-			name: "workspace_members",
-			ddl: `CREATE TABLE IF NOT EXISTS workspace_members (
+			name: "team_members",
+			ddl: `CREATE TABLE IF NOT EXISTS team_members (
+				team_id TEXT REFERENCES teams(id),
 				user_id TEXT REFERENCES users(id),
-				workspace_id TEXT REFERENCES workspaces(id),
 				role TEXT NOT NULL,
 				created_at TEXT,
 				granted_by TEXT REFERENCES users(id),
-				PRIMARY KEY (user_id, workspace_id)
+				PRIMARY KEY (user_id, team_id)
 			)`,
 		},
 		{
@@ -90,8 +90,8 @@ func InitSchema(db *sql.DB) error {
 				id TEXT PRIMARY KEY,
 				key_id TEXT UNIQUE,
 				key_hash TEXT,
+				team_id TEXT REFERENCES teams(id),
 				user_id TEXT REFERENCES users(id),
-				workspace_id TEXT REFERENCES workspaces(id),
 				role TEXT,
 				label TEXT,
 				expires_at TEXT,
