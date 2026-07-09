@@ -4,7 +4,10 @@
 package cliconfig
 
 import (
+	"fmt"
 	"os"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Config represents the afc CLI client configuration stored in
@@ -39,6 +42,17 @@ func ConfigFilePath(homeDir string) string {
 // $HOME/.af/config.toml. Returns a descriptive error if the file cannot
 // be read or contains invalid TOML.
 func LoadConfig(homeDir string) (*Config, error) {
-	// Stub: not yet implemented — will be done in task group 5.
-	return nil, nil
+	configPath := ConfigFilePath(homeDir)
+
+	var cfg Config
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file %s: %w", configPath, err)
+	}
+
+	// Ensure the Keys map is initialized even if the TOML had no [keys.*] sections.
+	if cfg.Keys == nil {
+		cfg.Keys = make(map[string]KeyEntry)
+	}
+
+	return &cfg, nil
 }

@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/agent-fox/af-hub/internal/cliconfig"
 	"github.com/spf13/cobra"
 )
 
 var hubURL string
+
+// loadedConfig holds the parsed client configuration loaded during
+// PersistentPreRunE. It is nil until the root command's pre-run executes.
+var loadedConfig *cliconfig.Config
 
 // NewRootCmd creates and returns the root afc command.
 func NewRootCmd() *cobra.Command {
@@ -19,6 +24,26 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage: true,
 		// SilenceErrors prevents Cobra's own error printing so we control stderr output.
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to determine home directory: %w", err)
+			}
+
+			// Ensure the config directory and file exist.
+			if err := cliconfig.EnsureConfigExists(homeDir); err != nil {
+				return err
+			}
+
+			// Load the config file.
+			cfg, err := cliconfig.LoadConfig(homeDir)
+			if err != nil {
+				return err
+			}
+
+			loadedConfig = cfg
+			return nil
+		},
 	}
 
 	// Register --hub-url as a persistent flag available on all subcommands.
@@ -40,26 +65,22 @@ func Execute() {
 	}
 }
 
-// resolveHubURL returns the hub URL from the --hub-url flag if set, else from
-// the AF_HUB_URL environment variable. Returns an error if neither is set.
+// resolveHubURL returns the hub URL using the precedence chain:
+// --hub-url flag > AF_HUB_URL env var > config file hub_url > error.
 func resolveHubURL() (string, error) {
-	if hubURL != "" {
-		return hubURL, nil
+	cfg := loadedConfig
+	if cfg == nil {
+		cfg = &cliconfig.Config{}
 	}
-	if envURL := os.Getenv("AF_HUB_URL"); envURL != "" {
-		return envURL, nil
-	}
-	return "", fmt.Errorf("hub URL is required: use --hub-url flag or set AF_HUB_URL environment variable")
+	return cliconfig.ResolveHubURL(hubURL, os.Getenv("AF_HUB_URL"), cfg)
 }
 
-// resolveAPIKey returns the API key from the --api-key flag if set, else from
-// the AF_HUB_API_KEY environment variable. Returns an error if neither is set.
+// resolveAPIKey returns the API key token using the precedence chain:
+// --api-key flag > AF_HUB_API_KEY env var > config file keys lookup > error.
 func resolveAPIKey(flagVal string) (string, error) {
-	if flagVal != "" {
-		return flagVal, nil
+	cfg := loadedConfig
+	if cfg == nil {
+		cfg = &cliconfig.Config{}
 	}
-	if envKey := os.Getenv("AF_HUB_API_KEY"); envKey != "" {
-		return envKey, nil
-	}
-	return "", fmt.Errorf("API key is required: use --api-key flag or set AF_HUB_API_KEY environment variable")
+	return cliconfig.ResolveAPIKey(flagVal, os.Getenv("AF_HUB_API_KEY"), cfg)
 }
