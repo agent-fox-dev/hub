@@ -1,0 +1,664 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "cli_client_config",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-05-1",
+      "requirement_id": "05-REQ-1.1",
+      "kind": "unit",
+      "description": "Verifies that on first startup, when config.toml does not exist, the CLI creates $HOME/.af/ with 0700 and $HOME/.af/config.toml with 0600 containing a comment header and hub_url = \"\".",
+      "preconditions": [
+        "$HOME/.af/ directory does not exist",
+        "$HOME is set to a writable temp directory controlled by the test"
+      ],
+      "input": "CLI startup routine is invoked (e.g. ensureConfigFile() or equivalent initialization function)",
+      "expected": "$HOME/.af/ directory exists with permissions 0700; $HOME/.af/config.toml exists with permissions 0600; file content includes a comment header and the line `hub_url = \"\"`",
+      "assertion_pseudocode": "call ensureConfigExists(homeDir)\nassert dirExists(homeDir + \"/.af/\")\nassert dirPermissions(homeDir + \"/.af/\") == 0700\nassert fileExists(homeDir + \"/.af/config.toml\")\nassert filePermissions(homeDir + \"/.af/config.toml\") == 0600\ncontent = readFile(homeDir + \"/.af/config.toml\")\nassert content contains \"hub_url = \\\"\\\"\"\nassert content contains \"# Client configuration for afc\""
+    },
+    {
+      "id": "TS-05-2",
+      "requirement_id": "05-REQ-1.2",
+      "kind": "unit",
+      "description": "Verifies that when $HOME/.af/config.toml already exists, the CLI startup routine makes no changes to the file or directory.",
+      "preconditions": [
+        "$HOME/.af/ directory exists",
+        "$HOME/.af/config.toml exists with custom content (e.g. hub_url = \"https://existing.example.com\")"
+      ],
+      "input": "CLI startup routine is invoked",
+      "expected": "$HOME/.af/config.toml content is unchanged after startup; no new files are created; directory permissions are not altered",
+      "assertion_pseudocode": "existingContent = readFile(homeDir + \"/.af/config.toml\")\nexistingModTime = modTime(homeDir + \"/.af/config.toml\")\ncall ensureConfigExists(homeDir)\nassert readFile(homeDir + \"/.af/config.toml\") == existingContent\nassert modTime(homeDir + \"/.af/config.toml\") == existingModTime"
+    },
+    {
+      "id": "TS-05-3",
+      "requirement_id": "05-REQ-1.3",
+      "kind": "unit",
+      "description": "Verifies that permissions on pre-existing $HOME/.af/ and config.toml are not modified by the CLI startup routine.",
+      "preconditions": [
+        "$HOME/.af/ directory exists with permissions 0755 (non-standard)",
+        "$HOME/.af/config.toml exists with permissions 0644 (non-standard)"
+      ],
+      "input": "CLI startup routine is invoked",
+      "expected": "$HOME/.af/ retains permissions 0755 and $HOME/.af/config.toml retains permissions 0644 — neither is changed to 0700/0600",
+      "assertion_pseudocode": "call ensureConfigExists(homeDir)\nassert dirPermissions(homeDir + \"/.af/\") == 0755\nassert filePermissions(homeDir + \"/.af/config.toml\") == 0644"
+    },
+    {
+      "id": "TS-05-4",
+      "requirement_id": "05-REQ-2.1",
+      "kind": "unit",
+      "description": "Verifies that the config file is parsed into a struct with hub_url (string) and api_key (string) top-level fields using the BurntSushi TOML decoder.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists and contains valid TOML with hub_url and api_key set"
+      ],
+      "input": "config.toml content: `hub_url = \"https://hub.example.com\"\napi_key = \"my-project\"`",
+      "expected": "Decoded struct has HubURL == \"https://hub.example.com\" and APIKey == \"my-project\"",
+      "assertion_pseudocode": "cfg = loadConfig(homeDir)\nassert cfg.HubURL == \"https://hub.example.com\"\nassert cfg.APIKey == \"my-project\""
+    },
+    {
+      "id": "TS-05-5",
+      "requirement_id": "05-REQ-2.2",
+      "kind": "unit",
+      "description": "Verifies that [keys.<workspace_slug>] TOML sections are parsed into key entries with key_id, token, and optional label fields.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with a [keys.my-project] section containing key_id, token, and label"
+      ],
+      "input": "config.toml content includes:\n```toml\n[keys.my-project]\nkey_id = \"a1b2c3\"\ntoken = \"af_a1b2c3_secret\"\nlabel = \"dev laptop\"\n```",
+      "expected": "cfg.Keys[\"my-project\"].KeyID == \"a1b2c3\", cfg.Keys[\"my-project\"].Token == \"af_a1b2c3_secret\", cfg.Keys[\"my-project\"].Label == \"dev laptop\"",
+      "assertion_pseudocode": "cfg = loadConfig(homeDir)\nassert cfg.Keys[\"my-project\"].KeyID == \"a1b2c3\"\nassert cfg.Keys[\"my-project\"].Token == \"af_a1b2c3_secret\"\nassert cfg.Keys[\"my-project\"].Label == \"dev laptop\""
+    },
+    {
+      "id": "TS-05-6",
+      "requirement_id": "05-REQ-2.3",
+      "kind": "unit",
+      "description": "Verifies that an empty string for hub_url or api_key in the config file is treated as unset and resolution falls through to the next precedence level.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with hub_url = \"\" and api_key = \"\""
+      ],
+      "input": "No --hub-url flag, no AF_HUB_URL env var; config file has hub_url = \"\"",
+      "expected": "resolveHubURL returns an error (falls through to error level, not an empty string result)",
+      "assertion_pseudocode": "cfg = loadConfig(homeDir)\n// hub_url is empty string\nresult, err = resolveHubURL(flag=\"\", env=\"\", cfg=cfg)\nassert err != nil\nassert result == \"\"\n// api_key is empty string\nresult, err = resolveAPIKey(flag=\"\", env=\"\", cfg=cfg)\nassert err != nil"
+    },
+    {
+      "id": "TS-05-7",
+      "requirement_id": "05-REQ-3.1",
+      "kind": "unit",
+      "description": "Verifies the full hub URL resolution precedence: flag > AF_HUB_URL env var > config file hub_url > error.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with hub_url = \"https://config.example.com\""
+      ],
+      "input": "Test four scenarios in order: (1) flag=\"https://flag.example.com\", env=\"https://env.example.com\"; (2) flag=\"\", env=\"https://env.example.com\"; (3) flag=\"\", env=\"\"; (4) flag=\"\", env=\"\", config hub_url = \"\"",
+      "expected": "(1) returns \"https://flag.example.com\"; (2) returns \"https://env.example.com\"; (3) returns \"https://config.example.com\"; (4) returns error",
+      "assertion_pseudocode": "// scenario 1\nresult, err = resolveHubURL(flag=\"https://flag.example.com\", env=\"https://env.example.com\", cfg.HubURL=\"https://config.example.com\")\nassert err == nil AND result == \"https://flag.example.com\"\n// scenario 2\nresult, err = resolveHubURL(flag=\"\", env=\"https://env.example.com\", cfg.HubURL=\"https://config.example.com\")\nassert err == nil AND result == \"https://env.example.com\"\n// scenario 3\nresult, err = resolveHubURL(flag=\"\", env=\"\", cfg.HubURL=\"https://config.example.com\")\nassert err == nil AND result == \"https://config.example.com\"\n// scenario 4\nresult, err = resolveHubURL(flag=\"\", env=\"\", cfg.HubURL=\"\")\nassert err != nil"
+    },
+    {
+      "id": "TS-05-8",
+      "requirement_id": "05-REQ-3.2",
+      "kind": "unit",
+      "description": "Verifies the full API key token resolution precedence: --api-key flag > AF_HUB_API_KEY env var > config file keys lookup > error.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with api_key = \"my-project\" and [keys.my-project] token = \"af_abc_secret\""
+      ],
+      "input": "Four scenarios: (1) flag token provided; (2) env var token provided; (3) neither flag nor env, config has valid key; (4) no source has a valid key",
+      "expected": "(1) returns flag value as token; (2) returns env var as token; (3) returns \"af_abc_secret\" from config; (4) returns error",
+      "assertion_pseudocode": "// scenario 1\nresult, err = resolveAPIKey(flag=\"af_flagtoken\", env=\"af_envtoken\", cfg=cfg)\nassert err == nil AND result == \"af_flagtoken\"\n// scenario 2\nresult, err = resolveAPIKey(flag=\"\", env=\"af_envtoken\", cfg=cfg)\nassert err == nil AND result == \"af_envtoken\"\n// scenario 3\nresult, err = resolveAPIKey(flag=\"\", env=\"\", cfg=cfg) // cfg.APIKey=\"my-project\", cfg.Keys[\"my-project\"].Token=\"af_abc_secret\"\nassert err == nil AND result == \"af_abc_secret\"\n// scenario 4\nresult, err = resolveAPIKey(flag=\"\", env=\"\", cfg=emptyConfig)\nassert err != nil"
+    },
+    {
+      "id": "TS-05-9",
+      "requirement_id": "05-REQ-3.3",
+      "kind": "unit",
+      "description": "Verifies that the error message when hub URL or API key cannot be resolved mentions $HOME/.af/config.toml, the relevant flag, and the relevant env var.",
+      "preconditions": [
+        "No --hub-url flag set",
+        "AF_HUB_URL not set in environment",
+        "$HOME/.af/config.toml has hub_url = \"\""
+      ],
+      "input": "resolveHubURL with flag=\"\", env=\"\", cfg.HubURL=\"\"",
+      "expected": "Error message string contains references to \"$HOME/.af/config.toml\" (or expanded path), \"--hub-url\", and \"AF_HUB_URL\"",
+      "assertion_pseudocode": "_, err = resolveHubURL(flag=\"\", env=\"\", cfg.HubURL=\"\")\nassert err != nil\nassert errorMessage(err) contains \"config.toml\"\nassert errorMessage(err) contains \"--hub-url\"\nassert errorMessage(err) contains \"AF_HUB_URL\""
+    },
+    {
+      "id": "TS-05-10",
+      "requirement_id": "05-REQ-4.1",
+      "kind": "unit",
+      "description": "Verifies that config file mutations write to a temp file in $HOME/.af/ via os.CreateTemp then rename atomically via os.Rename.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with valid content"
+      ],
+      "input": "Trigger any config mutation (e.g. setDefaultKey(\"my-project\")) while observing file system calls",
+      "expected": "A temp file is created in $HOME/.af/ before config.toml is updated; config.toml is atomically replaced via rename; no temp file remains after the operation",
+      "assertion_pseudocode": "// instrument os.CreateTemp and os.Rename with test doubles\nspy = newFileOpSpy()\ncall setDefaultKey(homeDir, \"my-project\", spy)\nassert spy.createTempCalled == true\nassert spy.createTempDir == homeDir + \"/.af/\"\nassert spy.renameCalled == true\nassert spy.renameDestination == homeDir + \"/.af/config.toml\"\n// verify temp file is gone after mutation\nassert NOT fileExists(spy.tempFilePath)"
+    },
+    {
+      "id": "TS-05-11",
+      "requirement_id": "05-REQ-4.2",
+      "kind": "unit",
+      "description": "Verifies that the temp file used for atomic config writes is created with permissions 0600 before config content is written to it.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with valid content"
+      ],
+      "input": "Trigger a config mutation and capture the temp file's permissions before rename",
+      "expected": "Temp file has permissions 0600 at the moment it is written",
+      "assertion_pseudocode": "call mutateConfig(homeDir, newConfig, capturePermsBefore=true)\nassert capturedTempFilePermissions == 0600"
+    },
+    {
+      "id": "TS-05-12",
+      "requirement_id": "05-REQ-5.1",
+      "kind": "integration",
+      "description": "Verifies that after a successful afc login, a [keys._login] section with key_id, token, and label=\"login\" is written to config.toml and api_key is set to _login.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists (possibly auto-created) with hub_url = \"https://hub.example.com\"",
+        "Mock server at POST /api/v1/auth/callback returns {\"user\": {...}, \"api_key\": {\"key\": \"af_0011aabb_secret\", \"key_id\": \"0011aabb\"}}"
+      ],
+      "input": "`afc login --hub-url https://hub.example.com` with OAuth callback returning api_key",
+      "expected": "config.toml contains [keys._login] with key_id=\"0011aabb\", token=\"af_0011aabb_secret\", label=\"login\"; top-level api_key=\"_login\"; exit code 0",
+      "assertion_pseudocode": "runCLI([\"login\", \"--hub-url\", \"https://hub.example.com\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.APIKey == \"_login\"\nassert cfg.Keys[\"_login\"].KeyID == \"0011aabb\"\nassert cfg.Keys[\"_login\"].Token == \"af_0011aabb_secret\"\nassert cfg.Keys[\"_login\"].Label == \"login\""
+    },
+    {
+      "id": "TS-05-13",
+      "requirement_id": "05-REQ-5.2",
+      "kind": "integration",
+      "description": "Verifies that afc login writes hub_url to the config file when hub_url is currently empty.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with hub_url = \"\"",
+        "OAuth callback mock returns valid api_key"
+      ],
+      "input": "`afc login --hub-url https://hub.example.com`",
+      "expected": "After login, config.toml has hub_url = \"https://hub.example.com\"",
+      "assertion_pseudocode": "// pre-condition: cfg.HubURL == \"\"\nrunCLI([\"login\", \"--hub-url\", \"https://hub.example.com\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.HubURL == \"https://hub.example.com\""
+    },
+    {
+      "id": "TS-05-14",
+      "requirement_id": "05-REQ-5.3",
+      "kind": "integration",
+      "description": "Verifies that afc login does not overwrite an already-set hub_url in the config file.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with hub_url = \"https://existing.example.com\"",
+        "OAuth callback mock returns valid api_key"
+      ],
+      "input": "`afc login --hub-url https://new.example.com`",
+      "expected": "After login, config.toml still has hub_url = \"https://existing.example.com\" (not overwritten)",
+      "assertion_pseudocode": "// pre-condition: cfg.HubURL == \"https://existing.example.com\"\nrunCLI([\"login\", \"--hub-url\", \"https://new.example.com\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.HubURL == \"https://existing.example.com\""
+    },
+    {
+      "id": "TS-05-15",
+      "requirement_id": "05-REQ-6.1",
+      "kind": "integration",
+      "description": "Verifies that afc keys create adds a [keys.<workspace_slug>] section to config.toml with key_id, token, and label from the server response.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with valid credentials",
+        "Mock API returns a new key with key_id, token, label for workspace \"my-project\""
+      ],
+      "input": "`afc keys create --workspace my-project`",
+      "expected": "config.toml gains a [keys.my-project] section with correct key_id, token, and label; exit code 0",
+      "assertion_pseudocode": "runCLI([\"keys\", \"create\", \"--workspace\", \"my-project\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert \"my-project\" in cfg.Keys\nassert cfg.Keys[\"my-project\"].KeyID != \"\"\nassert cfg.Keys[\"my-project\"].Token != \"\""
+    },
+    {
+      "id": "TS-05-16",
+      "requirement_id": "05-REQ-7.1",
+      "kind": "integration",
+      "description": "Verifies that afc keys refresh updates the token of the matching [keys.*] section in config.toml identified by key_id.",
+      "preconditions": [
+        "$HOME/.af/config.toml has [keys.my-project] with key_id=\"a1b2c3\" and token=\"af_a1b2c3_old\"",
+        "Mock API returns new token \"af_a1b2c3_new\" for key_id=\"a1b2c3\""
+      ],
+      "input": "`afc keys refresh a1b2c3`",
+      "expected": "config.toml [keys.my-project].token is updated to \"af_a1b2c3_new\"; key_id and label are unchanged; exit code 0",
+      "assertion_pseudocode": "runCLI([\"keys\", \"refresh\", \"a1b2c3\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.Keys[\"my-project\"].Token == \"af_a1b2c3_new\"\nassert cfg.Keys[\"my-project\"].KeyID == \"a1b2c3\""
+    },
+    {
+      "id": "TS-05-17",
+      "requirement_id": "05-REQ-8.1",
+      "kind": "integration",
+      "description": "Verifies that afc keys revoke removes the [keys.*] section matching the given key_id from config.toml.",
+      "preconditions": [
+        "$HOME/.af/config.toml has [keys.staging] with key_id=\"f7e8d9\" and api_key set to a different slug",
+        "Mock API confirms revocation"
+      ],
+      "input": "`afc keys revoke f7e8d9`",
+      "expected": "[keys.staging] section is removed from config.toml; api_key is not changed (was not the default); exit code 0",
+      "assertion_pseudocode": "runCLI([\"keys\", \"revoke\", \"f7e8d9\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert \"staging\" NOT in cfg.Keys"
+    },
+    {
+      "id": "TS-05-18",
+      "requirement_id": "05-REQ-8.2",
+      "kind": "integration",
+      "description": "Verifies that when the revoked key's workspace slug matches the current api_key default, api_key is cleared and a warning is printed to stderr.",
+      "preconditions": [
+        "$HOME/.af/config.toml has api_key = \"my-project\" and [keys.my-project] with key_id=\"a1b2c3\"",
+        "Mock API confirms revocation"
+      ],
+      "input": "`afc keys revoke a1b2c3` where the revoked key's slug is the current default",
+      "expected": "config.toml api_key is set to empty string; warning printed to stderr mentioning `afc keys default`; exit code 0",
+      "assertion_pseudocode": "stderr, _ = runCLIWithOutput([\"keys\", \"revoke\", \"a1b2c3\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.APIKey == \"\"\nassert \"my-project\" NOT in cfg.Keys\nassert stderr contains \"afc keys default\""
+    },
+    {
+      "id": "TS-05-19",
+      "requirement_id": "05-REQ-9.1",
+      "kind": "unit",
+      "description": "Verifies that afc keys default sets api_key to the specified workspace_slug when a matching [keys.*] section exists.",
+      "preconditions": [
+        "$HOME/.af/config.toml has [keys.my-project] and api_key = \"_login\""
+      ],
+      "input": "`afc keys default my-project`",
+      "expected": "config.toml api_key is updated to \"my-project\"; confirmation printed to stdout; exit code 0",
+      "assertion_pseudocode": "stdout, _ = runCLIWithOutput([\"keys\", \"default\", \"my-project\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.APIKey == \"my-project\"\nassert stdout contains \"my-project\""
+    },
+    {
+      "id": "TS-05-20",
+      "requirement_id": "05-REQ-9.2",
+      "kind": "unit",
+      "description": "Verifies that afc keys default _login sets api_key to _login when a [keys._login] section exists.",
+      "preconditions": [
+        "$HOME/.af/config.toml has [keys._login] with valid key_id and token; api_key = \"my-project\""
+      ],
+      "input": "`afc keys default _login`",
+      "expected": "config.toml api_key is updated to \"_login\"; exit code 0",
+      "assertion_pseudocode": "runCLI([\"keys\", \"default\", \"_login\"])\nassert exitCode == 0\ncfg = loadConfig(homeDir)\nassert cfg.APIKey == \"_login\""
+    },
+    {
+      "id": "TS-05-21",
+      "requirement_id": "05-REQ-10.1",
+      "kind": "integration",
+      "description": "Verifies that the server's POST /api/v1/auth/callback response includes both a user object and an api_key object with key and key_id fields.",
+      "preconditions": [
+        "afc server is running with OAuth configured",
+        "Valid OAuth callback is triggered"
+      ],
+      "input": "POST /api/v1/auth/callback with valid OAuth parameters",
+      "expected": "HTTP 200 response body is valid JSON containing {\"user\": {...}, \"api_key\": {\"key\": \"af_<key_id>_<secret>\", \"key_id\": \"<key_id>\"}}",
+      "assertion_pseudocode": "response = httpPost(\"/api/v1/auth/callback\", validOAuthPayload)\nassert response.statusCode == 200\nbody = parseJSON(response.body)\nassert body.user != null\nassert body.api_key != null\nassert body.api_key.key matches regex \"^af_[a-f0-9]+_\"\nassert body.api_key.key_id matches regex \"^[a-f0-9]+$\""
+    },
+    {
+      "id": "TS-05-22",
+      "requirement_id": "05-REQ-11.1",
+      "kind": "unit",
+      "description": "Verifies that --hub-url, --api-key, AF_HUB_URL, and AF_HUB_API_KEY are still accepted and function with identical semantics as before config file support.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with hub_url = \"https://config.example.com\" and a valid key"
+      ],
+      "input": "Run command with --hub-url https://flag.example.com --api-key af_flag_secret",
+      "expected": "Resolved hub URL is \"https://flag.example.com\" and resolved token is \"af_flag_secret\"; config file values are not used",
+      "assertion_pseudocode": "result = resolveCredentials(flag_hub_url=\"https://flag.example.com\", flag_api_key=\"af_flag_secret\", cfg=cfg)\nassert result.hubURL == \"https://flag.example.com\"\nassert result.token == \"af_flag_secret\""
+    },
+    {
+      "id": "TS-05-23",
+      "requirement_id": "05-REQ-11.2",
+      "kind": "unit",
+      "description": "Verifies that when --hub-url flag or AF_HUB_URL env var is present, hub_url from config file is not used.",
+      "preconditions": [
+        "$HOME/.af/config.toml has hub_url = \"https://config.example.com\""
+      ],
+      "input": "resolveHubURL called with flag=\"https://flag.example.com\" and config.hub_url=\"https://config.example.com\"",
+      "expected": "Returns \"https://flag.example.com\" without reading config file value",
+      "assertion_pseudocode": "result, err = resolveHubURL(flag=\"https://flag.example.com\", env=\"\", cfg.HubURL=\"https://config.example.com\")\nassert err == nil\nassert result == \"https://flag.example.com\"\n// Also test env var override\nresult, err = resolveHubURL(flag=\"\", env=\"https://env.example.com\", cfg.HubURL=\"https://config.example.com\")\nassert err == nil\nassert result == \"https://env.example.com\""
+    },
+    {
+      "id": "TS-05-24",
+      "requirement_id": "05-REQ-11.3",
+      "kind": "unit",
+      "description": "Verifies that when --api-key flag or AF_HUB_API_KEY env var is present, the config file key lookup is bypassed.",
+      "preconditions": [
+        "$HOME/.af/config.toml has api_key = \"my-project\" and [keys.my-project].token = \"af_config_token\""
+      ],
+      "input": "resolveAPIKey called with flag=\"af_flag_token\" and env=\"af_env_token\"",
+      "expected": "Flag value is returned without reading config; env var value is returned when flag is empty",
+      "assertion_pseudocode": "result, err = resolveAPIKey(flag=\"af_flag_token\", env=\"af_env_token\", cfg=cfg)\nassert err == nil\nassert result == \"af_flag_token\"\n// env var path\nresult, err = resolveAPIKey(flag=\"\", env=\"af_env_token\", cfg=cfg)\nassert err == nil\nassert result == \"af_env_token\""
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-05-P1",
+      "property_id": "05-PROP-1",
+      "validates": [
+        "05-REQ-3.1",
+        "05-REQ-11.2"
+      ],
+      "description": "For any invocation where --hub-url or AF_HUB_URL is set to a non-empty value, the resolved hub URL must always equal the flag or env var value, never the config file value.",
+      "for_any_strategy": "Generate random non-empty strings for flag_hub_url or env_hub_url; generate random strings (possibly equal, possibly different) for cfg.HubURL; also generate cases where config has a non-empty hub_url",
+      "invariant_check": "for all (flag, env, cfg_hub_url) where flag != \"\" OR env != \"\":\n  result, err = resolveHubURL(flag=flag, env=env, cfg.HubURL=cfg_hub_url)\n  assert err == nil\n  if flag != \"\":\n    assert result == flag\n  else:\n    assert result == env\n  assert result != cfg_hub_url OR result == flag OR result == env  // config value never wins when flag/env set"
+    },
+    {
+      "id": "TS-05-P2",
+      "property_id": "05-PROP-2",
+      "validates": [
+        "05-REQ-1.1",
+        "05-REQ-1.3"
+      ],
+      "description": "For any newly created $HOME/.af/ directory and $HOME/.af/config.toml file, permissions must immediately be 0700 and 0600 respectively.",
+      "for_any_strategy": "For any writable temp directory used as homeDir (generate multiple distinct temp dirs)",
+      "invariant_check": "for any homeDir where $HOME/.af/ does not yet exist:\n  call ensureConfigExists(homeDir)\n  assert dirPermissions(homeDir + \"/.af/\") == 0700\n  assert filePermissions(homeDir + \"/.af/config.toml\") == 0600"
+    },
+    {
+      "id": "TS-05-P3",
+      "property_id": "05-PROP-3",
+      "validates": [
+        "05-REQ-4.1",
+        "05-REQ-4.E1"
+      ],
+      "description": "For any config mutation operation, at no point does config.toml contain partially written content; the file is always either the complete old or complete new content.",
+      "for_any_strategy": "For any valid config state and any mutation (setDefaultKey, updateToken, removeKey, writeLoginKey) with random concurrent read of the config file during write",
+      "invariant_check": "for any mutation M applied to config C:\n  // Read config.toml at any point during M\n  snapshot = readFileAtRandomPoint(homeDir + \"/.af/config.toml\")\n  // Snapshot must be parseable as valid TOML (either old or new state)\n  _, err = toml.Decode(snapshot)\n  assert err == nil\n  // File size must equal either old content size or new content size\n  assert len(snapshot) == len(oldContent) OR len(snapshot) == len(newContent)"
+    },
+    {
+      "id": "TS-05-P4",
+      "property_id": "05-PROP-4",
+      "validates": [
+        "05-REQ-2.3",
+        "05-REQ-3.1",
+        "05-REQ-3.2"
+      ],
+      "description": "For any config file where hub_url or api_key is set to an empty string, resolution never short-circuits with an empty string result; it always falls through to the next level.",
+      "for_any_strategy": "Generate config files with hub_url = \"\" and/or api_key = \"\"; generate all combinations of flag (empty/non-empty) and env var (empty/non-empty)",
+      "invariant_check": "for any cfg where cfg.HubURL == \"\":\n  if flag == \"\" AND env == \"\":\n    result, err = resolveHubURL(flag=\"\", env=\"\", cfg=cfg)\n    assert result == \"\" AND err != nil  // error, not empty success\n  if flag != \"\":\n    result, err = resolveHubURL(flag=flag, env=\"\", cfg=cfg)\n    assert result == flag AND err == nil\nfor any cfg where cfg.APIKey == \"\":\n  if flag == \"\" AND env == \"\":\n    result, err = resolveAPIKey(flag=\"\", env=\"\", cfg=cfg)\n    assert err != nil"
+    },
+    {
+      "id": "TS-05-P5",
+      "property_id": "05-PROP-5",
+      "validates": [
+        "05-REQ-5.1",
+        "05-REQ-6.1",
+        "05-REQ-7.1",
+        "05-REQ-8.1",
+        "05-REQ-9.1"
+      ],
+      "description": "For any afc command that is not login, keys create, keys refresh, keys revoke, or keys default, config.toml must not be modified.",
+      "for_any_strategy": "For any non-mutating command (e.g. workspace list, keys list, workspace create without key storage) and any initial config state",
+      "invariant_check": "for each non-mutating command C:\n  originalContent = readFile(homeDir + \"/.af/config.toml\")\n  originalModTime = modTime(homeDir + \"/.af/config.toml\")\n  runCLI(C)\n  assert readFile(homeDir + \"/.af/config.toml\") == originalContent\n  assert modTime(homeDir + \"/.af/config.toml\") == originalModTime"
+    },
+    {
+      "id": "TS-05-P6",
+      "property_id": "05-PROP-6",
+      "validates": [
+        "05-REQ-9.E1"
+      ],
+      "description": "For any workspace_slug argument to afc keys default that has no matching [keys.*] section, api_key in config.toml must not be modified and exit code must be non-zero.",
+      "for_any_strategy": "Generate random workspace slug strings that are guaranteed not to appear in the config file's Keys map (e.g. random UUID-like strings); test with any initial api_key value",
+      "invariant_check": "for any slug NOT in cfg.Keys:\n  originalAPIKey = cfg.APIKey\n  runCLI([\"keys\", \"default\", slug])\n  assert exitCode != 0\n  assert loadConfig(homeDir).APIKey == originalAPIKey"
+    },
+    {
+      "id": "TS-05-P7",
+      "property_id": "05-PROP-7",
+      "validates": [
+        "05-REQ-3.1",
+        "05-REQ-3.2"
+      ],
+      "description": "Resolution of hub URL and API key terminates in a bounded number of steps (at most 3 checks: flag, env, config) and never loops or retries indefinitely.",
+      "for_any_strategy": "For any combination of flag (empty/non-empty), env var (empty/non-empty), and config state (valid, empty, missing key), invoke resolve functions and count internal state transitions",
+      "invariant_check": "for any (flag, env, cfg) input:\n  stepsCounter = 0\n  result, err = resolveHubURLInstrumented(flag, env, cfg, counter=&stepsCounter)\n  assert stepsCounter <= 3  // flag check, env check, config check\n  // Same for API key\n  stepsCounter2 = 0\n  result2, err2 = resolveAPIKeyInstrumented(flag, env, cfg, counter=&stepsCounter2)\n  assert stepsCounter2 <= 4  // flag check, env check, api_key slug lookup, keys section lookup"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-05-E1",
+      "requirement_id": "05-REQ-1.E1",
+      "kind": "unit",
+      "description": "Verifies that when $HOME/.af/ cannot be created due to a permission error, the CLI exits with a non-zero status and prints a descriptive error to stderr.",
+      "preconditions": [
+        "Parent directory of $HOME is not writable (or $HOME itself is read-only) so mkdir for $HOME/.af/ will fail",
+        "Test uses a temp home dir where .af cannot be mkdir'd (e.g. permissions set to 0500 on homeDir)"
+      ],
+      "input": "CLI startup routine invoked with homeDir set to a directory where .af/ cannot be created",
+      "expected": "ensureConfigExists returns a non-nil error; error message contains the path and describes the permission failure",
+      "assertion_pseudocode": "os.Chmod(homeDir, 0500) // make homeDir read-only\nerr = ensureConfigExists(homeDir)\nassert err != nil\nassert errorMessage(err) contains homeDir + \"/.af\"\nos.Chmod(homeDir, 0700) // restore for cleanup"
+    },
+    {
+      "id": "TS-05-E2",
+      "requirement_id": "05-REQ-1.E2",
+      "kind": "unit",
+      "description": "Verifies that when config.toml cannot be created (directory not writable), the CLI exits with an error and descriptive stderr message.",
+      "preconditions": [
+        "$HOME/.af/ exists but has permissions 0500 (no write)",
+        "config.toml does not exist"
+      ],
+      "input": "CLI startup routine invoked with $HOME/.af/ not writable",
+      "expected": "ensureConfigExists returns a non-nil error; error message references $HOME/.af/config.toml",
+      "assertion_pseudocode": "os.MkdirAll(homeDir + \"/.af/\", 0500)\nerr = ensureConfigExists(homeDir)\nassert err != nil\nassert errorMessage(err) contains \"config.toml\""
+    },
+    {
+      "id": "TS-05-E3",
+      "requirement_id": "05-REQ-1.E3",
+      "kind": "unit",
+      "description": "Verifies that if config.toml creation fails partway through (simulated write error), any partial file is cleaned up before returning the error.",
+      "preconditions": [
+        "$HOME/.af/ directory exists",
+        "Write to config.toml is interrupted after partial content is written (simulated via a write-limited fake file)"
+      ],
+      "input": "File write operation fails mid-write during auto-creation",
+      "expected": "Partial $HOME/.af/config.toml is removed; ensureConfigExists returns non-nil error; no partial file remains",
+      "assertion_pseudocode": "// Inject a fake writer that fails after N bytes\nerr = ensureConfigExistsWithWriter(homeDir, failingWriter)\nassert err != nil\nassert NOT fileExists(homeDir + \"/.af/config.toml\")"
+    },
+    {
+      "id": "TS-05-E4",
+      "requirement_id": "05-REQ-2.E1",
+      "kind": "unit",
+      "description": "Verifies that when config.toml contains invalid TOML, the CLI exits immediately with a non-zero status and a parse error message identifying the file and the issue.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with invalid TOML content (e.g. `hub_url = [not valid`)"
+      ],
+      "input": "loadConfig invoked on a malformed config file",
+      "expected": "loadConfig returns a non-nil error; error message contains the file path and a description of the parse failure; program does not silently fall through",
+      "assertion_pseudocode": "writeFile(homeDir + \"/.af/config.toml\", \"hub_url = [not valid\")\n_, err = loadConfig(homeDir)\nassert err != nil\nassert errorMessage(err) contains homeDir + \"/.af/config.toml\"\nassert errorMessage(err) contains \"parse\" OR \"decode\" OR \"TOML\""
+    },
+    {
+      "id": "TS-05-E5",
+      "requirement_id": "05-REQ-2.E2",
+      "kind": "unit",
+      "description": "Verifies that when api_key references a workspace_slug with no matching [keys.*] section, the value is treated as unset and resolution falls through.",
+      "preconditions": [
+        "$HOME/.af/config.toml has api_key = \"nonexistent-slug\" with no matching [keys.nonexistent-slug] section"
+      ],
+      "input": "resolveAPIKey called with flag=\"\", env=\"\", cfg.APIKey=\"nonexistent-slug\", cfg.Keys has no \"nonexistent-slug\" entry",
+      "expected": "resolveAPIKey does not return \"nonexistent-slug\" as a token; falls through to return an error (since no other source is available)",
+      "assertion_pseudocode": "cfg.APIKey = \"nonexistent-slug\"\ncfg.Keys = {} // empty\nresult, err = resolveAPIKey(flag=\"\", env=\"\", cfg=cfg)\nassert err != nil\nassert result == \"\""
+    },
+    {
+      "id": "TS-05-E6",
+      "requirement_id": "05-REQ-4.E1",
+      "kind": "unit",
+      "description": "Verifies that when os.Rename fails during an atomic config write, the temp file is removed via deferred cleanup and the original config.toml is left unchanged.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with known content",
+        "os.Rename is stubbed/mocked to return an error"
+      ],
+      "input": "Atomic write mutation triggered with a mocked rename failure",
+      "expected": "Original config.toml content is unchanged; temp file no longer exists; function returns non-nil error",
+      "assertion_pseudocode": "originalContent = readFile(homeDir + \"/.af/config.toml\")\n// inject rename failure\nerr = atomicWriteConfig(homeDir, newConfig, renameFunc=alwaysFailRename)\nassert err != nil\nassert readFile(homeDir + \"/.af/config.toml\") == originalContent\n// temp file should be removed\nassert count(glob(homeDir + \"/.af/tmp*\")) == 0"
+    },
+    {
+      "id": "TS-05-E7",
+      "requirement_id": "05-REQ-4.E2",
+      "kind": "unit",
+      "description": "Verifies that when os.CreateTemp fails during a config mutation, no changes are made to the original config.toml.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with known content",
+        "os.CreateTemp is stubbed to return an error"
+      ],
+      "input": "Config mutation triggered with mocked CreateTemp failure",
+      "expected": "Original config.toml content is unchanged; function returns non-nil error",
+      "assertion_pseudocode": "originalContent = readFile(homeDir + \"/.af/config.toml\")\nerr = atomicWriteConfig(homeDir, newConfig, createTempFunc=alwaysFailCreateTemp)\nassert err != nil\nassert readFile(homeDir + \"/.af/config.toml\") == originalContent"
+    },
+    {
+      "id": "TS-05-E8",
+      "requirement_id": "05-REQ-5.E1",
+      "kind": "integration",
+      "description": "Verifies that when the login callback response is missing the api_key field, the CLI exits with an error and does not modify the config file.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with known content",
+        "Mock server at POST /api/v1/auth/callback returns only {\"user\": {...}} with no api_key field"
+      ],
+      "input": "`afc login --hub-url https://hub.example.com` with OAuth callback missing api_key",
+      "expected": "CLI exits with non-zero status; error message on stderr mentions missing credential data; config.toml is unchanged",
+      "assertion_pseudocode": "originalContent = readFile(homeDir + \"/.af/config.toml\")\n_, stderr = runCLIWithOutput([\"login\", \"--hub-url\", \"https://hub.example.com\"])\nassert exitCode != 0\nassert stderr contains \"api_key\" OR stderr contains \"credential\"\nassert readFile(homeDir + \"/.af/config.toml\") == originalContent"
+    },
+    {
+      "id": "TS-05-E9",
+      "requirement_id": "05-REQ-7.E1",
+      "kind": "integration",
+      "description": "Verifies that when afc keys refresh is called for a key_id not present in config.toml, a warning is logged to stderr but the CLI does not exit with an error.",
+      "preconditions": [
+        "$HOME/.af/config.toml has no [keys.*] section with key_id=\"deadbeef\"",
+        "Mock API successfully refreshes the remote key"
+      ],
+      "input": "`afc keys refresh deadbeef`",
+      "expected": "Exit code 0; warning on stderr mentions the key was not found locally in config; config.toml is not modified",
+      "assertion_pseudocode": "_, stderr = runCLIWithOutput([\"keys\", \"refresh\", \"deadbeef\"])\nassert exitCode == 0\nassert stderr contains \"deadbeef\" OR stderr contains \"not found\""
+    },
+    {
+      "id": "TS-05-E10",
+      "requirement_id": "05-REQ-8.E1",
+      "kind": "integration",
+      "description": "Verifies that when afc keys revoke is called for a key_id not present in config.toml, a warning is logged to stderr but exit code remains 0.",
+      "preconditions": [
+        "$HOME/.af/config.toml has no [keys.*] section with key_id=\"cafebabe\"",
+        "Mock API successfully revokes the remote key"
+      ],
+      "input": "`afc keys revoke cafebabe`",
+      "expected": "Exit code 0; warning on stderr mentions key not found in local config",
+      "assertion_pseudocode": "_, stderr = runCLIWithOutput([\"keys\", \"revoke\", \"cafebabe\"])\nassert exitCode == 0\nassert stderr contains \"cafebabe\" OR stderr contains \"not found\""
+    },
+    {
+      "id": "TS-05-E11",
+      "requirement_id": "05-REQ-9.E1",
+      "kind": "unit",
+      "description": "Verifies that afc keys default exits with non-zero status and no config change when the specified workspace_slug has no matching [keys.*] section.",
+      "preconditions": [
+        "$HOME/.af/config.toml has no [keys.nonexistent] section"
+      ],
+      "input": "`afc keys default nonexistent`",
+      "expected": "Exit code non-zero; error message on stderr; config.toml api_key is unchanged",
+      "assertion_pseudocode": "originalAPIKey = loadConfig(homeDir).APIKey\n_, stderr = runCLIWithOutput([\"keys\", \"default\", \"nonexistent\"])\nassert exitCode != 0\nassert stderr contains \"nonexistent\"\nassert loadConfig(homeDir).APIKey == originalAPIKey"
+    },
+    {
+      "id": "TS-05-E12",
+      "requirement_id": "05-REQ-9.E2",
+      "kind": "unit",
+      "description": "Verifies that afc keys default with no argument prints usage help and exits with non-zero status.",
+      "preconditions": [
+        "$HOME/.af/config.toml exists with valid content"
+      ],
+      "input": "`afc keys default` with no <workspace-slug> argument",
+      "expected": "Exit code non-zero; usage/help message printed to stderr",
+      "assertion_pseudocode": "_, stderr = runCLIWithOutput([\"keys\", \"default\"])\nassert exitCode != 0\nassert stderr contains \"Usage\" OR stderr contains \"usage\" OR stderr contains \"workspace-slug\""
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-05-SMOKE-1",
+      "execution_path_id": "05-PATH-1",
+      "description": "End-to-end smoke test: first-time user runs afc login then executes an authenticated command without any flags, relying entirely on the auto-created config file.",
+      "trigger": "User runs `afc login --hub-url https://hub.example.com` from a clean environment (no existing config), then runs `afc workspace list` with no flags",
+      "real_components": [
+        "afc CLI binary (built from source)",
+        "Config file auto-creation logic",
+        "OAuth login flow and callback parser",
+        "Config file write logic (atomic write)",
+        "Credential resolution logic (resolveHubURL, resolveAPIKey)",
+        "workspace list command"
+      ],
+      "mockable": [
+        "afc server OAuth endpoint (POST /api/v1/auth/callback) — returns fake user + api_key",
+        "workspace list API endpoint — returns fake workspace list"
+      ],
+      "expected_effects": [
+        "$HOME/.af/ created with permissions 0700",
+        "$HOME/.af/config.toml created with permissions 0600",
+        "After login: config.toml contains [keys._login] with key_id, token, label=\"login\" and api_key=\"_login\" and hub_url=\"https://hub.example.com\"",
+        "afc login exits with code 0 and prints confirmation to stdout",
+        "afc workspace list succeeds using resolved credentials from config.toml without any flags",
+        "afc workspace list exits with code 0"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-2",
+      "execution_path_id": "05-PATH-2",
+      "description": "End-to-end smoke test: user creates a workspace key and sets it as the default using afc keys default.",
+      "trigger": "User runs `afc keys create --workspace my-project` then `afc keys default my-project`",
+      "real_components": [
+        "afc CLI binary",
+        "afc keys create command and config write logic",
+        "afc keys default command and config write logic",
+        "Config file atomic write logic",
+        "Credential resolution logic"
+      ],
+      "mockable": [
+        "afc server keys create API endpoint — returns fake key_id, token, label",
+        "Existing valid config.toml with hub_url and _login credentials"
+      ],
+      "expected_effects": [
+        "After keys create: config.toml contains [keys.my-project] with key_id, token, label",
+        "keys create exits with code 0",
+        "After keys default: config.toml api_key = \"my-project\"",
+        "keys default exits with code 0 and prints confirmation to stdout"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-3",
+      "execution_path_id": "05-PATH-3",
+      "description": "End-to-end smoke test: user revokes the default key, verifying config.toml is cleaned up and a warning is issued.",
+      "trigger": "User runs `afc keys revoke a1b2c3d4e5f6` where the revoked key's workspace slug is the current api_key default",
+      "real_components": [
+        "afc CLI binary",
+        "afc keys revoke command and config update logic",
+        "Config file atomic write logic"
+      ],
+      "mockable": [
+        "afc server keys revoke API endpoint — confirms revocation",
+        "Existing config.toml with [keys.my-project] (key_id=a1b2c3d4e5f6) and api_key=\"my-project\""
+      ],
+      "expected_effects": [
+        "[keys.my-project] section is removed from config.toml",
+        "api_key is set to empty string in config.toml",
+        "Warning is printed to stderr mentioning `afc keys default`",
+        "Exit code is 0"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-4",
+      "execution_path_id": "05-PATH-4",
+      "description": "Backward compatibility smoke test: user passes --hub-url and --api-key flags and the command executes successfully without reading the config file for those values.",
+      "trigger": "User runs `afc workspace list --hub-url https://hub.example.com --api-key af_abc123_secret`",
+      "real_components": [
+        "afc CLI binary",
+        "Credential resolution logic (flag precedence path)",
+        "workspace list command"
+      ],
+      "mockable": [
+        "afc server workspace list API endpoint — returns fake workspace list",
+        "Config file may or may not exist (test with both absent and present)"
+      ],
+      "expected_effects": [
+        "workspace list command executes using flag-provided hub URL and token",
+        "No modifications made to config.toml",
+        "Exit code 0",
+        "Workspace list results displayed to stdout"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-5",
+      "execution_path_id": "05-PATH-5",
+      "description": "Malformed config file smoke test: verifies that any afc command immediately exits with a descriptive parse error when config.toml contains invalid TOML.",
+      "trigger": "User runs any afc command (e.g. `afc workspace list`) when $HOME/.af/config.toml contains invalid TOML syntax",
+      "real_components": [
+        "afc CLI binary",
+        "Config file loading/parsing logic (github.com/BurntSushi/toml DecodeFile)"
+      ],
+      "mockable": [
+        "No network calls needed (command should fail before reaching API layer)"
+      ],
+      "expected_effects": [
+        "CLI exits with non-zero status code",
+        "Error message is printed to stderr",
+        "Error message contains the path to $HOME/.af/config.toml",
+        "Error message describes the TOML parse failure",
+        "No API calls are made"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

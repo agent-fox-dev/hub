@@ -1,0 +1,785 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "cli_client_config",
+  "schema_version": 1,
+  "introduction": "This spec defines the persistent client configuration system for the `afc` CLI, enabling users to store hub URL and API key credentials in `$HOME/.af/config.toml` so that authenticated commands can be invoked without supplying flags or environment variables on every call. Note: requirements referencing `github.com/BurntSushi/toml` APIs are based on unverified PRD assumptions and should be cross-checked against the installed library version before implementation.",
+  "glossary": {
+    "$HOME/.af/": "The configuration directory for the afc CLI, created with permissions 0700.",
+    "$HOME/.af/config.toml": "The canonical path to the persistent client configuration file for the afc CLI.",
+    "--api-key": "CLI flag that sets the API key for a single invocation, taking highest precedence.",
+    "--hub-url": "CLI flag that sets the hub URL for a single invocation, taking highest precedence.",
+    "AF_HUB_API_KEY": "Environment variable that overrides the API key token from the config file.",
+    "AF_HUB_URL": "Environment variable that overrides the hub URL from the config file.",
+    "POST /api/v1/auth/callback": "The server-side auth callback endpoint that must be extended to return an api_key field alongside the user object.",
+    "[keys.<workspace_slug>]": "A TOML table section that stores one API key entry (key_id, token, and optional label) for a given workspace slug.",
+    "_login": "The reserved workspace slug used to store the token obtained via `afc login`.",
+    "afc": "The command-line interface tool being configured by this spec.",
+    "afc keys create": "CLI command that creates a new API key for a workspace and stores it in the config file.",
+    "afc keys default": "New CLI command introduced by this spec that sets the active workspace slug in the config file.",
+    "afc keys refresh": "CLI command that rotates an existing API key token and updates it in the config file.",
+    "afc keys revoke": "CLI command that removes an API key and its config file section.",
+    "afc login": "CLI command that performs OAuth login and stores the returned token as `[keys._login]` in the config file.",
+    "api_key": "Top-level TOML field storing the workspace slug that identifies the active API key section.",
+    "github.com/BurntSushi/toml": "The TOML parsing and encoding library used by this project.",
+    "hub_url": "Top-level TOML field storing the default hub URL used when no flag or environment variable overrides it.",
+    "key_id": "The hex identifier for an API key, stored in a `[keys.<workspace_slug>]` section and used by `keys refresh` and `keys revoke` commands.",
+    "os.CreateTemp": "Go standard library function used to create a temporary file for atomic config writes.",
+    "os.Rename": "Go standard library function used to atomically replace the config file with the updated temp file.",
+    "token": "The full plaintext API key string (e.g. `af_<key_id>_<secret>`) stored in a `[keys.<workspace_slug>]` TOML section.",
+    "workspace_slug": "A short human-readable identifier for a workspace, used as the key in `[keys.<workspace_slug>]` TOML sections and matching the `--workspace` flag value.",
+    "label": "An optional human-readable string in a `[keys.<workspace_slug>]` TOML section describing the key's purpose.",
+    "--workspace": "CLI flag on `afc keys create` that specifies the workspace slug to scope the new API key to.",
+    "[keys._login]": "The TOML section storing the token obtained via `afc login`, using the reserved workspace slug `_login`.",
+    "api_key.key": "The `key` subfield within the `api_key` object returned by `POST /api/v1/auth/callback`, containing the full plaintext API key string.",
+    "key": "In the context of the `api_key` response object, the full plaintext API key string (format `af_<key_id>_<secret>`).",
+    "<workspace-slug>": "A positional argument representing a workspace slug value passed to `afc keys default`.",
+    "afc keys refresh <key-id>": "CLI command that rotates the secret of an existing API key identified by its hex `key_id` and updates the matching config file entry.",
+    "afc keys revoke <key-id>": "CLI command that permanently revokes an API key identified by its hex `key_id` and removes it from the config file.",
+    "afc keys default <workspace-slug>": "CLI command that sets the `api_key` field in the config file to the specified workspace slug.",
+    "hub_url = \"\"": "The initial value of the `hub_url` field in a newly auto-created config file, representing an unset hub URL.",
+    "label = \"login\"": "The hardcoded label value assigned to the `[keys._login]` section when `afc login` stores credentials."
+  },
+  "requirements": [
+    {
+      "id": "05-REQ-1",
+      "title": "Config file auto-creation on startup",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have the config file and directory created automatically on first run",
+        "benefit": "I do not need to manually create configuration infrastructure before using the CLI"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "creates the `$HOME/.af/` directory with permissions 0700, then creates `$HOME/.af/config.toml` with permissions 0600 containing a comment header and `hub_url = \"\"`",
+          "return_contract": "directory and file exist on disk with correct contents and permissions after startup",
+          "trigger": "starts up and `$HOME/.af/config.toml` does not exist"
+        },
+        {
+          "id": "05-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "makes no changes to the directory or file",
+          "return_contract": null,
+          "trigger": "starts up and `$HOME/.af/config.toml` already exists"
+        },
+        {
+          "id": "05-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "sets permissions on `$HOME/.af/` to 0700 and on `$HOME/.af/config.toml` to 0600 only at creation time; it never modifies permissions on already-existing paths",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "exits with a non-zero status code and prints a descriptive error message identifying the failed directory creation",
+          "return_contract": "non-zero exit code; error message printed to stderr",
+          "error_condition": "`$HOME/.af/` directory cannot be created due to a permission denied or other OS error"
+        },
+        {
+          "id": "05-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "exits with a non-zero status code and prints a descriptive error message identifying the failed file creation",
+          "return_contract": "non-zero exit code; error message printed to stderr",
+          "error_condition": "`$HOME/.af/config.toml` cannot be created (e.g. write permission denied on the directory)"
+        },
+        {
+          "id": "05-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "removes the partial file before exiting with an error, ensuring no corrupt config file is left behind",
+          "return_contract": "non-zero exit code; partial file cleaned up; error message printed to stderr",
+          "error_condition": "auto-creation of `$HOME/.af/config.toml` fails partway (e.g. write interrupted), leaving a partial file on disk"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-2",
+      "title": "Config file TOML structure and field definitions",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have a human-readable and hand-editable config file at a predictable location",
+        "benefit": "I can inspect and modify my credentials without tooling"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-2.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI config file",
+          "action": "stores `hub_url` as a top-level string field and `api_key` as a top-level string field referencing a `workspace_slug`, using TOML format parseable by `github.com/BurntSushi/toml`",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-2.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI config file",
+          "action": "stores each API key in a `[keys.<workspace_slug>]` TOML table section containing required string fields `key_id` and `token`, and optional string field `label`",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-2.3",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "treats an empty string value for `hub_url` or `api_key` in the config file as equivalent to the field being absent, falling through to the next resolution precedence level",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "exits immediately with a non-zero status code and prints a descriptive parse error message identifying the problem in the config file",
+          "return_contract": "non-zero exit code; parse error message printed to stderr with file path and parse issue details",
+          "error_condition": "`$HOME/.af/config.toml` exists but contains invalid TOML or unexpected field types"
+        },
+        {
+          "id": "05-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "treats `api_key` as unset and falls through to the next resolution precedence level (flag, env var, or error)",
+          "return_contract": null,
+          "error_condition": "`api_key` references a `workspace_slug` for which no matching `[keys.<workspace_slug>]` section exists"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-3",
+      "title": "Hub URL and API key resolution precedence",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have flags and environment variables always take precedence over the config file",
+        "benefit": "I can override stored credentials for individual invocations without editing the config file"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-3.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "resolves hub URL by checking, in order: `--hub-url` flag, `AF_HUB_URL` environment variable, `hub_url` config file field (empty string treated as unset), then exits with a descriptive error if none is found",
+          "return_contract": "resolved hub URL string, or non-zero exit code with error message referencing the config file, `--hub-url` flag, and `AF_HUB_URL` env var"
+        },
+        {
+          "id": "05-REQ-3.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "resolves the API key token by checking, in order: `--api-key` flag value used directly as token, `AF_HUB_API_KEY` environment variable used directly as token, then config file (reads `api_key` `workspace_slug` and retrieves `token` from matching `[keys.<workspace_slug>]` section), then exits with a descriptive error if none is found",
+          "return_contract": "resolved API key token string, or non-zero exit code with error message referencing the config file, `--api-key` flag, and `AF_HUB_API_KEY` env var"
+        },
+        {
+          "id": "05-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "prints an error message to stderr that mentions `$HOME/.af/config.toml` as an option alongside the relevant flags and environment variables",
+          "return_contract": "non-zero exit code; error message on stderr",
+          "trigger": "neither a flag, environment variable, nor populated config file entry provides the hub URL or API key"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "05-REQ-4",
+      "title": "Atomic config file writes",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have config file mutations be atomic",
+        "benefit": "a crash or interruption during a write cannot leave the config file in a corrupt state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "writes all config file mutations by first encoding updated content to a temp file created via `os.CreateTemp` in `$HOME/.af/`, then atomically replacing `$HOME/.af/config.toml` via `os.Rename`",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-4.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "creates the temp file used for atomic writes with permissions 0600 before writing config content to it",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "removes the temp file via a deferred cleanup before returning an error; the original `$HOME/.af/config.toml` is left unchanged",
+          "return_contract": "non-zero exit code; temp file removed; original config file intact; error message on stderr",
+          "error_condition": "`os.Rename` fails after the temp file has been written during an atomic config update"
+        },
+        {
+          "id": "05-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "returns an error without modifying the original `$HOME/.af/config.toml`",
+          "return_contract": "non-zero exit code; original config file unchanged; error message on stderr",
+          "error_condition": "`os.CreateTemp` fails (e.g. disk full or permission denied) during a config mutation"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-5",
+      "title": "afc login stores credentials in config file",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have `afc login` automatically populate my config file with the returned token",
+        "benefit": "I am ready for daily use immediately after login without manual file editing"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "writes a `[keys._login]` section with `key_id`, `token` (from `api_key.key`), and `label = \"login\"` to `$HOME/.af/config.toml`, then sets `api_key` to `_login`",
+          "return_contract": "config file updated; exit code 0; confirmation printed to stdout",
+          "trigger": "`afc login` completes successfully and the server responds via `POST /api/v1/auth/callback` with a user object and an `api_key` field containing `key` and `key_id`"
+        },
+        {
+          "id": "05-REQ-5.2",
+          "ears_pattern": "complex_event",
+          "system": "afc CLI",
+          "action": "also writes the login hub URL (resolved from `--hub-url` flag or `AF_HUB_URL` env var) to `hub_url` in `$HOME/.af/config.toml`",
+          "return_contract": "config file updated with `hub_url`; exit code 0",
+          "trigger": "`afc login` completes successfully",
+          "condition": "`hub_url` in the config file is currently empty or unset"
+        },
+        {
+          "id": "05-REQ-5.3",
+          "ears_pattern": "complex_event",
+          "system": "afc CLI",
+          "action": "does not overwrite the existing `hub_url` value in `$HOME/.af/config.toml`",
+          "return_contract": null,
+          "trigger": "`afc login` completes successfully",
+          "condition": "`hub_url` in the config file is already set to a non-empty value"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "exits with a non-zero status code and prints an error message indicating the login response was missing credential data; no config file changes are made",
+          "return_contract": "non-zero exit code; error message on stderr; config file unchanged",
+          "error_condition": "`POST /api/v1/auth/callback` response does not include an `api_key` field or the field is malformed"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-6",
+      "title": "afc keys create updates config file",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have newly created API keys automatically saved to the config file",
+        "benefit": "I can use a new key immediately without manually editing the config file"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "adds a `[keys.<workspace_slug>]` section to `$HOME/.af/config.toml` containing `key_id`, `token`, and `label` fields, where `workspace_slug` comes from the `--workspace` flag",
+          "return_contract": "config file updated with new key section; exit code 0",
+          "trigger": "`afc keys create` completes successfully"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "05-REQ-7",
+      "title": "afc keys refresh updates token in config file",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have a refreshed API key token automatically updated in the config file",
+        "benefit": "I do not need to manually update the config file after rotating a key"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "finds the `[keys.<workspace_slug>]` section in `$HOME/.af/config.toml` whose `key_id` matches the argument and updates its `token` field to the new value",
+          "return_contract": "config file updated with new token; exit code 0",
+          "trigger": "`afc keys refresh <key-id>` completes successfully"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "logs a warning to stderr noting the key was not found in the config file, but does not exit with an error (the remote refresh may still have succeeded)",
+          "return_contract": "exit code 0 if remote operation succeeded; warning on stderr about missing local config entry",
+          "error_condition": "no `[keys.<workspace_slug>]` section in `$HOME/.af/config.toml` has a `key_id` matching the argument passed to `afc keys refresh`"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-8",
+      "title": "afc keys revoke removes key section from config file",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "have revoked API keys automatically removed from the config file",
+        "benefit": "my config file stays clean and does not contain stale credentials"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "finds and removes the `[keys.<workspace_slug>]` section from `$HOME/.af/config.toml` whose `key_id` matches the argument",
+          "return_contract": "config file updated with key section removed; exit code 0",
+          "trigger": "`afc keys revoke <key-id>` completes successfully"
+        },
+        {
+          "id": "05-REQ-8.2",
+          "ears_pattern": "complex_event",
+          "system": "afc CLI",
+          "action": "clears `api_key` to an empty string in `$HOME/.af/config.toml` and prints a warning to stderr instructing the user to set a new default with `afc keys default`",
+          "return_contract": "config file updated; `api_key` set to empty string; warning printed to stderr; exit code 0",
+          "trigger": "`afc keys revoke <key-id>` completes successfully",
+          "condition": "the revoked key's `workspace_slug` matches the current value of `api_key` in the config file"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "logs a warning to stderr noting the key was not found in the config file, but does not exit with an error",
+          "return_contract": "exit code 0 if remote operation succeeded; warning on stderr about missing local config entry",
+          "error_condition": "no `[keys.<workspace_slug>]` section in `$HOME/.af/config.toml` has a `key_id` matching the argument passed to `afc keys revoke`"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-9",
+      "title": "afc keys default command sets active workspace slug",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "be able to choose which stored API key is used by default",
+        "benefit": "I can switch between workspaces without passing a flag on every invocation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "sets `api_key` to the specified `workspace_slug` in `$HOME/.af/config.toml` using an atomic write",
+          "return_contract": "exit code 0; config file updated; confirmation message on stdout",
+          "trigger": "user runs `afc keys default <workspace-slug>` and the specified `workspace_slug` has a matching `[keys.<workspace_slug>]` section in `$HOME/.af/config.toml`"
+        },
+        {
+          "id": "05-REQ-9.2",
+          "ears_pattern": "optional",
+          "system": "afc CLI",
+          "action": "sets `api_key` to `_login` in `$HOME/.af/config.toml`, pointing to the login token section",
+          "return_contract": "exit code 0; config file updated; confirmation message on stdout",
+          "feature": "`afc keys default` with `workspace_slug` value `_login`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "exits with a non-zero status code and prints an error message; no changes are made to the config file",
+          "return_contract": "non-zero exit code; error message on stderr; config file unchanged",
+          "error_condition": "the `workspace_slug` argument to `afc keys default` does not match any existing `[keys.<workspace_slug>]` section in `$HOME/.af/config.toml`"
+        },
+        {
+          "id": "05-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "prints usage help and exits with a non-zero status code",
+          "return_contract": "non-zero exit code; usage message on stderr",
+          "error_condition": "no `<workspace-slug>` argument is provided to `afc keys default`"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-10",
+      "title": "Server-side auth callback returns API key",
+      "user_story": {
+        "role": "afc CLI user",
+        "goal": "receive an API key token from the server after logging in",
+        "benefit": "the CLI can automatically store my credentials without a separate step"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "afc server",
+          "action": "returns a JSON response containing both the user object and an `api_key` object with `key` (full token string) and `key_id` (hex identifier) fields",
+          "return_contract": "HTTP 200 with JSON body: `{\"user\": {...}, \"api_key\": {\"key\": \"af_<key_id>_<secret>\", \"key_id\": \"<key_id>\"}}`",
+          "trigger": "a successful OAuth callback is processed at `POST /api/v1/auth/callback`"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "05-REQ-11",
+      "title": "Backward compatibility with existing flags and environment variables",
+      "user_story": {
+        "role": "existing afc CLI user",
+        "goal": "continue using `--hub-url`, `--api-key`, `AF_HUB_URL`, and `AF_HUB_API_KEY` exactly as before",
+        "benefit": "I experience no behavior change from the introduction of config file support"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-11.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "continues to accept `--hub-url`, `--api-key`, `AF_HUB_URL`, and `AF_HUB_API_KEY` with the same semantics as before this feature, with flags and env vars always taking precedence over config file values",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-11.2",
+          "ears_pattern": "state_driven",
+          "system": "afc CLI",
+          "action": "uses the flag or env var value for the hub URL without reading `hub_url` from `$HOME/.af/config.toml`",
+          "return_contract": null,
+          "state": "a valid `--hub-url` flag or `AF_HUB_URL` env var is present"
+        },
+        {
+          "id": "05-REQ-11.3",
+          "ears_pattern": "state_driven",
+          "system": "afc CLI",
+          "action": "uses the flag or env var value directly as the API key token without reading from `$HOME/.af/config.toml`",
+          "return_contract": null,
+          "state": "a valid `--api-key` flag or `AF_HUB_API_KEY` env var is present"
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "05-PROP-1",
+      "title": "Flag and env var always override config file",
+      "for_any": "afc CLI invocation where `--hub-url` or `AF_HUB_URL` is set to a non-empty value",
+      "invariant": "the resolved hub URL equals the flag or env var value, never the `hub_url` field from `$HOME/.af/config.toml`",
+      "validates": [
+        "05-REQ-3.1",
+        "05-REQ-11.2"
+      ]
+    },
+    {
+      "id": "05-PROP-2",
+      "title": "Config file permissions are always restrictive at creation",
+      "for_any": "newly created `$HOME/.af/config.toml` or `$HOME/.af/` directory",
+      "invariant": "the directory has permissions 0700 and the file has permissions 0600 immediately after creation",
+      "validates": [
+        "05-REQ-1.1",
+        "05-REQ-1.3"
+      ]
+    },
+    {
+      "id": "05-PROP-3",
+      "title": "Atomic writes never leave a partial config file",
+      "for_any": "any config mutation operation (login, keys create, keys refresh, keys revoke, keys default)",
+      "invariant": "at no point in time does `$HOME/.af/config.toml` contain partially written content; the file transitions atomically from old to new content via `os.Rename`",
+      "validates": [
+        "05-REQ-4.1",
+        "05-REQ-4.E1"
+      ]
+    },
+    {
+      "id": "05-PROP-4",
+      "title": "Empty string config values fall through to next precedence level",
+      "for_any": "config file where `hub_url` or `api_key` is set to an empty string",
+      "invariant": "the empty string is treated identically to the field being absent; resolution continues to the next level and does not short-circuit with an empty value",
+      "validates": [
+        "05-REQ-2.3",
+        "05-REQ-3.1",
+        "05-REQ-3.2"
+      ]
+    },
+    {
+      "id": "05-PROP-5",
+      "title": "Only designated commands modify the config file",
+      "for_any": "any `afc` command that is not `afc login`, `afc keys create`, `afc keys refresh`, `afc keys revoke`, or `afc keys default`",
+      "invariant": "`$HOME/.af/config.toml` is not modified (no writes, no permission changes, no structural changes) during the command's execution",
+      "validates": [
+        "05-REQ-5.1",
+        "05-REQ-6.1",
+        "05-REQ-7.1",
+        "05-REQ-8.1",
+        "05-REQ-9.1"
+      ]
+    },
+    {
+      "id": "05-PROP-6",
+      "title": "keys default rejects non-existent workspace slugs",
+      "for_any": "`workspace_slug` argument to `afc keys default` that has no matching `[keys.<workspace_slug>]` section in `$HOME/.af/config.toml`",
+      "invariant": "`api_key` in the config file is not modified and the command exits with a non-zero status code",
+      "validates": [
+        "05-REQ-9.E1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "05-PATH-1",
+      "title": "First-time user: login then run authenticated command",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc login --hub-url https://hub.example.com`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "detects `$HOME/.af/config.toml` does not exist, creates `$HOME/.af/` (0700) and `$HOME/.af/config.toml` (0600) with `hub_url = \"\"`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "initiates OAuth flow and receives callback from server at `POST /api/v1/auth/callback`"
+        },
+        {
+          "actor": "afc server",
+          "action": "returns JSON response with user object and `api_key` containing `key` and `key_id` fields"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "writes `[keys._login]` section with `key_id`, `token`, and `label = \"login\"` to `$HOME/.af/config.toml` via atomic write; sets `api_key = \"_login\"`; writes `hub_url = \"https://hub.example.com\"` since it was empty"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints confirmation to stdout; exits with code 0"
+        },
+        {
+          "actor": "User",
+          "action": "runs `afc workspace list` (no flags)"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "reads `$HOME/.af/config.toml`, resolves hub URL from `hub_url` field and API key token from `[keys._login].token`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "executes the workspace list command using resolved credentials; returns results to user"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-2",
+      "title": "User creates a workspace key and sets it as default",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc keys create --workspace my-project`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "resolves credentials from `$HOME/.af/config.toml` (hub URL and active key token) and calls the remote API to create a new key"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "on success, writes `[keys.my-project]` section with `key_id`, `token`, and `label` to `$HOME/.af/config.toml` via atomic write"
+        },
+        {
+          "actor": "User",
+          "action": "runs `afc keys default my-project`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "verifies `[keys.my-project]` exists in `$HOME/.af/config.toml`, then sets `api_key = \"my-project\"` via atomic write"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints confirmation to stdout; exits with code 0"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-3",
+      "title": "User revokes the default key",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc keys revoke a1b2c3d4e5f6`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "resolves credentials from `$HOME/.af/config.toml` and calls the remote API to revoke the key"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "finds `[keys.my-project]` section with matching `key_id = \"a1b2c3d4e5f6\"` in `$HOME/.af/config.toml`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "removes `[keys.my-project]` section; detects that `api_key` was `\"my-project\"` (the revoked slug); clears `api_key` to empty string; writes updated config atomically"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints warning to stderr instructing user to run `afc keys default` to set a new active key; exits with code 0"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-4",
+      "title": "User with existing flags continues working unchanged",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc workspace list --hub-url https://hub.example.com --api-key af_abc123_secret`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "resolves hub URL from `--hub-url` flag (highest precedence) and API key from `--api-key` flag (highest precedence), bypassing config file for these values"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "executes the workspace list command using flag-provided credentials; returns results to user"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-5",
+      "title": "Malformed config file causes immediate exit",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs any `afc` command when `$HOME/.af/config.toml` contains invalid TOML"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "attempts to parse `$HOME/.af/config.toml` using `github.com/BurntSushi/toml`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "detects parse error; prints descriptive error message to stderr identifying the file path and parse issue; exits with non-zero status code"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "05-ERR-1",
+      "condition": "`$HOME/.af/` directory cannot be created due to OS permission or I/O error",
+      "behavior": "afc CLI exits with non-zero status code and prints a descriptive error message to stderr identifying the failed directory creation and the path",
+      "requirement_id": "05-REQ-1.E1"
+    },
+    {
+      "id": "05-ERR-2",
+      "condition": "`$HOME/.af/config.toml` cannot be created during auto-creation (e.g. write permission denied)",
+      "behavior": "afc CLI exits with non-zero status code and prints a descriptive error message to stderr",
+      "requirement_id": "05-REQ-1.E2"
+    },
+    {
+      "id": "05-ERR-3",
+      "condition": "Auto-creation of `$HOME/.af/config.toml` fails midway leaving a partial file",
+      "behavior": "afc CLI removes the partial file before exiting with a non-zero status code and error message on stderr",
+      "requirement_id": "05-REQ-1.E3"
+    },
+    {
+      "id": "05-ERR-4",
+      "condition": "`$HOME/.af/config.toml` contains invalid TOML or unexpected field types",
+      "behavior": "afc CLI exits immediately with non-zero status code and prints a descriptive parse error message to stderr identifying the file path and nature of the parse failure",
+      "requirement_id": "05-REQ-2.E1"
+    },
+    {
+      "id": "05-ERR-5",
+      "condition": "`api_key` workspace_slug references a non-existent `[keys.<workspace_slug>]` section",
+      "behavior": "afc CLI treats `api_key` as unset and falls through to the next resolution level; if no level provides a value, exits with a descriptive error referencing the config file",
+      "requirement_id": "05-REQ-2.E2"
+    },
+    {
+      "id": "05-ERR-6",
+      "condition": "Hub URL not found via flag, `AF_HUB_URL`, or config file",
+      "behavior": "afc CLI exits with non-zero status code and prints an error to stderr mentioning `$HOME/.af/config.toml`, the `--hub-url` flag, and `AF_HUB_URL` env var as options",
+      "requirement_id": "05-REQ-3.3"
+    },
+    {
+      "id": "05-ERR-7",
+      "condition": "API key token not found via flag, `AF_HUB_API_KEY`, or config file",
+      "behavior": "afc CLI exits with non-zero status code and prints an error to stderr mentioning `$HOME/.af/config.toml`, the `--api-key` flag, and `AF_HUB_API_KEY` env var as options",
+      "requirement_id": "05-REQ-3.3"
+    },
+    {
+      "id": "05-ERR-8",
+      "condition": "`os.Rename` fails after writing temp file during atomic config update",
+      "behavior": "afc CLI removes the temp file via deferred cleanup, leaves original `$HOME/.af/config.toml` unchanged, exits with non-zero status and error on stderr",
+      "requirement_id": "05-REQ-4.E1"
+    },
+    {
+      "id": "05-ERR-9",
+      "condition": "`os.CreateTemp` fails during a config mutation",
+      "behavior": "afc CLI returns an error without modifying the original config file; exits with non-zero status and error message on stderr",
+      "requirement_id": "05-REQ-4.E2"
+    },
+    {
+      "id": "05-ERR-10",
+      "condition": "`POST /api/v1/auth/callback` response is missing or has a malformed `api_key` field after `afc login`",
+      "behavior": "afc CLI exits with non-zero status code and prints an error to stderr indicating the login response lacked credential data; config file is not modified",
+      "requirement_id": "05-REQ-5.E1"
+    },
+    {
+      "id": "05-ERR-11",
+      "condition": "`afc keys revoke` is called for a `key_id` not found in any `[keys.<workspace_slug>]` section of the config file",
+      "behavior": "afc CLI logs a warning to stderr that the key was not found locally but does not exit with an error if the remote operation succeeded",
+      "requirement_id": "05-REQ-8.E1"
+    },
+    {
+      "id": "05-ERR-12",
+      "condition": "`afc keys default` is called with a `workspace_slug` that has no matching `[keys.<workspace_slug>]` section",
+      "behavior": "afc CLI exits with non-zero status code and prints an error to stderr; the config file is not modified",
+      "requirement_id": "05-REQ-9.E1"
+    },
+    {
+      "id": "05-ERR-13",
+      "condition": "`afc keys default` is called with no `<workspace-slug>` argument",
+      "behavior": "afc CLI prints usage help to stderr and exits with a non-zero status code",
+      "requirement_id": "05-REQ-9.E2"
+    },
+    {
+      "id": "05-ERR-14",
+      "condition": "`afc keys revoke` removes the key whose `workspace_slug` matches the current `api_key` default",
+      "behavior": "afc CLI clears `api_key` to empty string in the config file and prints a warning to stderr instructing the user to run `afc keys default` to set a new default",
+      "requirement_id": "05-REQ-8.2"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/BurntSushi/toml",
+      "version": "unverified — cross-check installed version before implementation",
+      "symbols": [
+        {
+          "name": "Decode",
+          "import_path": "github.com/BurntSushi/toml",
+          "signature": "func Decode(data string, v interface{}) (MetaData, error)",
+          "notes": "Parses TOML string into a Go value. Signature unverified — check actual installed library."
+        },
+        {
+          "name": "DecodeFile",
+          "import_path": "github.com/BurntSushi/toml",
+          "signature": "func DecodeFile(fpath string, v interface{}) (MetaData, error)",
+          "notes": "Parses a TOML file into a Go value. Signature unverified — check actual installed library."
+        },
+        {
+          "name": "NewEncoder",
+          "import_path": "github.com/BurntSushi/toml",
+          "signature": "func NewEncoder(w io.Writer) *Encoder",
+          "notes": "Creates a TOML encoder writing to w. Signature unverified — check actual installed library."
+        },
+        {
+          "name": "Encoder.Encode",
+          "import_path": "github.com/BurntSushi/toml",
+          "signature": "func (e *Encoder) Encode(v interface{}) error",
+          "notes": "Encodes v as TOML to the underlying writer. Signature unverified — check actual installed library."
+        }
+      ]
+    }
+  ]
+}

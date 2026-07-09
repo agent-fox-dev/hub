@@ -1,0 +1,1253 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "cli_client_config",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/cliconfig/... ./internal/cli/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "03",
+      "from_group": 5,
+      "to_group": 1,
+      "relationship": "Existing CLI commands, flag handling, and resolve functions from spec 03 are prerequisites for implementing config-layer wiring in this spec.",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: config auto-creation and TOML structure (REQ-1, REQ-2)",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for config directory and file auto-creation (TS-05-1, TS-05-2, TS-05-3)",
+          "details": [
+            "Create test file internal/cliconfig/autocreate_test.go.",
+            "TS-05-1: Call ensureConfigExists(homeDir) on a fresh temp dir; assert $HOME/.af/ exists with 0700 and config.toml exists with 0600 containing hub_url = \"\" and comment header.",
+            "TS-05-2: Pre-create config.toml with custom content; call ensureConfigExists; assert content and mtime are unchanged.",
+            "TS-05-3: Pre-create $HOME/.af/ (0755) and config.toml (0644); call ensureConfigExists; assert permissions are NOT changed to 0700/0600."
+          ],
+          "test_spec_refs": [
+            "TS-05-1",
+            "TS-05-2",
+            "TS-05-3"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-1.2",
+            "05-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write unit tests for config auto-creation error paths (TS-05-E1, TS-05-E2, TS-05-E3)",
+          "details": [
+            "TS-05-E1: chmod homeDir to 0500; assert ensureConfigExists returns non-nil error whose message contains the .af path.",
+            "TS-05-E2: mkdir $HOME/.af/ with 0500 (no write); assert ensureConfigExists returns error referencing config.toml.",
+            "TS-05-E3: Inject a write-failing writer; assert ensureConfigExistsWithWriter returns error and config.toml does not exist (partial file removed)."
+          ],
+          "test_spec_refs": [
+            "TS-05-E1",
+            "TS-05-E2",
+            "TS-05-E3"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.E1",
+            "05-REQ-1.E2",
+            "05-REQ-1.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write unit tests for TOML config struct parsing (TS-05-4, TS-05-5, TS-05-6)",
+          "details": [
+            "Create test file internal/cliconfig/config_test.go.",
+            "TS-05-4: Write config with hub_url and api_key; assert loadConfig returns struct with matching HubURL and APIKey.",
+            "TS-05-5: Write config with [keys.my-project] section; assert cfg.Keys[\"my-project\"] has correct KeyID, Token, Label.",
+            "TS-05-6: Write config with hub_url = \"\" and api_key = \"\"; assert resolveHubURL returns error and resolveAPIKey returns error."
+          ],
+          "test_spec_refs": [
+            "TS-05-4",
+            "TS-05-5",
+            "TS-05-6"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.1",
+            "05-REQ-2.2",
+            "05-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write unit tests for TOML parse error and missing key fallthrough (TS-05-E4, TS-05-E5)",
+          "details": [
+            "TS-05-E4: Write invalid TOML to config.toml; assert loadConfig returns non-nil error containing the file path and parse failure description.",
+            "TS-05-E5: Set cfg.APIKey = \"nonexistent-slug\" with empty Keys map; assert resolveAPIKey returns error and empty string token."
+          ],
+          "test_spec_refs": [
+            "TS-05-E4",
+            "TS-05-E5"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.E1",
+            "05-REQ-2.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test functions in internal/cliconfig/autocreate_test.go and internal/cliconfig/config_test.go compile without errors: go build ./internal/cliconfig/...",
+          "Tests for this group fail (red) before implementation: go test ./internal/cliconfig/... -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/cliconfig/..."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: resolution precedence and atomic writes (REQ-3, REQ-4)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write unit tests for hub URL and API key resolution precedence (TS-05-7, TS-05-8, TS-05-9)",
+          "details": [
+            "Create internal/cliconfig/resolve_test.go.",
+            "TS-05-7: Test all four hub URL resolution scenarios: flag wins, env wins, config wins, all empty → error.",
+            "TS-05-8: Test all four API key resolution scenarios: flag wins, env wins, config+keys lookup wins, no source → error.",
+            "TS-05-9: Assert error message from resolveHubURL (all empty) contains 'config.toml', '--hub-url', and 'AF_HUB_URL'."
+          ],
+          "test_spec_refs": [
+            "TS-05-7",
+            "TS-05-8",
+            "TS-05-9"
+          ],
+          "requirement_refs": [
+            "05-REQ-3.1",
+            "05-REQ-3.2",
+            "05-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write unit tests for atomic config write mechanics (TS-05-10, TS-05-11)",
+          "details": [
+            "Create internal/cliconfig/atomic_write_test.go.",
+            "TS-05-10: Inject spy for os.CreateTemp and os.Rename; trigger setDefaultKey; assert createTemp called in $HOME/.af/, rename destination is config.toml, and temp file is gone after operation.",
+            "TS-05-11: Trigger mutation and capture temp file permissions before rename; assert temp file has permissions 0600."
+          ],
+          "test_spec_refs": [
+            "TS-05-10",
+            "TS-05-11"
+          ],
+          "requirement_refs": [
+            "05-REQ-4.1",
+            "05-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write unit tests for atomic write failure paths (TS-05-E6, TS-05-E7)",
+          "details": [
+            "TS-05-E6: Stub os.Rename to always fail; assert original config.toml unchanged, temp file removed, error returned.",
+            "TS-05-E7: Stub os.CreateTemp to always fail; assert original config.toml unchanged, error returned."
+          ],
+          "test_spec_refs": [
+            "TS-05-E6",
+            "TS-05-E7"
+          ],
+          "requirement_refs": [
+            "05-REQ-4.E1",
+            "05-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write property-based tests for resolution and atomic write invariants (TS-05-P1, TS-05-P3, TS-05-P4)",
+          "details": [
+            "Create internal/cliconfig/properties_test.go.",
+            "TS-05-P1: For random non-empty flag/env values, assert resolveHubURL always returns flag/env value, never config value.",
+            "TS-05-P3: For random mutations, assert config.toml snapshot at any point is always valid TOML (old or new content).",
+            "TS-05-P4: For config with empty hub_url/api_key and empty flag/env, assert resolution returns error not empty string."
+          ],
+          "test_spec_refs": [
+            "TS-05-P1",
+            "TS-05-P3",
+            "TS-05-P4"
+          ],
+          "requirement_refs": [
+            "05-REQ-3.1",
+            "05-REQ-4.1",
+            "05-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files in internal/cliconfig/ compile: go build ./internal/cliconfig/...",
+          "Resolution and atomic write tests are red before implementation: go test ./internal/cliconfig/... -run 'TestResolve|TestAtomic|TestProperty' -count=1 -v",
+          "No linter warnings: go vet ./internal/cliconfig/..."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: command config side-effects and keys default (REQ-5 through REQ-9)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write integration tests for afc login config writes (TS-05-12, TS-05-13, TS-05-14, TS-05-E8)",
+          "details": [
+            "Create internal/integration/login_test.go.",
+            "TS-05-12: Mock POST /api/v1/auth/callback returning user + api_key; run login; assert [keys._login] with key_id, token, label='login' and api_key='_login'.",
+            "TS-05-13: Pre-set hub_url=''; run login; assert hub_url is updated to login URL.",
+            "TS-05-14: Pre-set hub_url='https://existing.example.com'; run login with different --hub-url; assert hub_url unchanged.",
+            "TS-05-E8: Mock callback returns no api_key field; assert exit non-zero, stderr mentions missing credential data, config.toml unchanged."
+          ],
+          "test_spec_refs": [
+            "TS-05-12",
+            "TS-05-13",
+            "TS-05-14",
+            "TS-05-E8"
+          ],
+          "requirement_refs": [
+            "05-REQ-5.1",
+            "05-REQ-5.2",
+            "05-REQ-5.3",
+            "05-REQ-5.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write integration tests for keys create, refresh, revoke config writes (TS-05-15, TS-05-16, TS-05-17, TS-05-18)",
+          "details": [
+            "Create internal/integration/keys_test.go.",
+            "TS-05-15: Run keys create --workspace my-project; assert [keys.my-project] section added with key_id and token.",
+            "TS-05-16: Pre-set [keys.my-project] with old token; run keys refresh a1b2c3; assert token updated, key_id unchanged.",
+            "TS-05-17: Pre-set [keys.staging] where api_key is different; run keys revoke f7e8d9; assert [keys.staging] removed, api_key unchanged.",
+            "TS-05-18: Pre-set api_key='my-project', [keys.my-project] key_id='a1b2c3'; run keys revoke a1b2c3; assert api_key cleared, [keys.my-project] removed, warning on stderr mentions 'afc keys default'."
+          ],
+          "test_spec_refs": [
+            "TS-05-15",
+            "TS-05-16",
+            "TS-05-17",
+            "TS-05-18"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.1",
+            "05-REQ-7.1",
+            "05-REQ-8.1",
+            "05-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write unit/integration tests for keys refresh/revoke error paths (TS-05-E9, TS-05-E10)",
+          "details": [
+            "TS-05-E9: No config entry for key_id='deadbeef'; mock API refreshes successfully; assert exit 0, warning on stderr contains 'deadbeef' or 'not found'.",
+            "TS-05-E10: No config entry for key_id='cafebabe'; mock API revokes successfully; assert exit 0, warning on stderr contains 'cafebabe' or 'not found'."
+          ],
+          "test_spec_refs": [
+            "TS-05-E9",
+            "TS-05-E10"
+          ],
+          "requirement_refs": [
+            "05-REQ-7.E1",
+            "05-REQ-8.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write unit tests for afc keys default command (TS-05-19, TS-05-20, TS-05-E11, TS-05-E12)",
+          "details": [
+            "Create internal/cli/keys_default_test.go.",
+            "TS-05-19: [keys.my-project] exists; run 'keys default my-project'; assert api_key='my-project', confirmation on stdout.",
+            "TS-05-20: [keys._login] exists; run 'keys default _login'; assert api_key='_login'.",
+            "TS-05-E11: No [keys.nonexistent]; run 'keys default nonexistent'; assert exit non-zero, stderr contains 'nonexistent', api_key unchanged.",
+            "TS-05-E12: Run 'keys default' with no argument; assert exit non-zero, stderr contains usage/workspace-slug."
+          ],
+          "test_spec_refs": [
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-E11",
+            "TS-05-E12"
+          ],
+          "requirement_refs": [
+            "05-REQ-9.1",
+            "05-REQ-9.2",
+            "05-REQ-9.E1",
+            "05-REQ-9.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write property and backward-compat tests (TS-05-P2, TS-05-P5, TS-05-P6, TS-05-22, TS-05-23, TS-05-24)",
+          "details": [
+            "TS-05-P2: For any fresh homeDir, assert $HOME/.af/ gets 0700 and config.toml gets 0600 on creation.",
+            "TS-05-P5: For each non-mutating command, assert config.toml content and mtime are unchanged after invocation.",
+            "TS-05-P6: For random slugs not in cfg.Keys, assert 'keys default <slug>' exits non-zero and api_key is unchanged.",
+            "TS-05-22: resolveCredentials with both flags set; assert flag values used, config ignored.",
+            "TS-05-23: resolveHubURL with --hub-url flag; assert flag value returned not config value. Same for AF_HUB_URL.",
+            "TS-05-24: resolveAPIKey with --api-key flag; assert flag value returned not config lookup. Same for AF_HUB_API_KEY."
+          ],
+          "test_spec_refs": [
+            "TS-05-P2",
+            "TS-05-P5",
+            "TS-05-P6",
+            "TS-05-22",
+            "TS-05-23",
+            "TS-05-24"
+          ],
+          "requirement_refs": [
+            "05-REQ-11.1",
+            "05-REQ-11.2",
+            "05-REQ-11.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All integration and CLI test files compile: go build ./internal/integration/... ./internal/cli/...",
+          "Command config side-effect tests are red before implementation: go test ./internal/integration/... ./internal/cli/... -count=1 -v",
+          "No linter warnings: go vet ./internal/integration/... ./internal/cli/..."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: server auth callback and smoke tests (REQ-10, smoke paths)",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write integration test for server POST /api/v1/auth/callback api_key response (TS-05-21)",
+          "details": [
+            "Create internal/integration/auth_callback_test.go.",
+            "POST /api/v1/auth/callback with valid OAuth payload; assert HTTP 200, body JSON has user != null, api_key.key matches '^af_[a-f0-9]+_', api_key.key_id matches '^[a-f0-9]+$'."
+          ],
+          "test_spec_refs": [
+            "TS-05-21"
+          ],
+          "requirement_refs": [
+            "05-REQ-10.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write smoke test scaffolding for first-time login and workspace list (TS-05-SMOKE-1)",
+          "details": [
+            "Create internal/integration/smoke_test.go.",
+            "TS-05-SMOKE-1: From a clean temp home dir, run afc login with mocked OAuth callback; assert $HOME/.af/ (0700), config.toml (0600), [keys._login] section, api_key='_login', hub_url set. Then run workspace list with no flags and assert exit 0."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-5.1",
+            "05-REQ-3.1",
+            "05-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write smoke tests for keys create+default, revoke-default-key, and backward-compat paths (TS-05-SMOKE-2, TS-05-SMOKE-3, TS-05-SMOKE-4)",
+          "details": [
+            "TS-05-SMOKE-2: Run keys create --workspace my-project (mock API); assert [keys.my-project] added. Run keys default my-project; assert api_key='my-project', exit 0.",
+            "TS-05-SMOKE-3: Pre-set api_key='my-project'; run keys revoke a1b2c3d4e5f6; assert [keys.my-project] removed, api_key='', warning on stderr.",
+            "TS-05-SMOKE-4: Run workspace list --hub-url https://hub.example.com --api-key af_abc123_secret; assert exit 0, config.toml unmodified."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-3",
+            "TS-05-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.1",
+            "05-REQ-9.1",
+            "05-REQ-8.1",
+            "05-REQ-8.2",
+            "05-REQ-11.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write smoke test for malformed config immediate exit (TS-05-SMOKE-5) and property test TS-05-P7",
+          "details": [
+            "TS-05-SMOKE-5: Write invalid TOML to config.toml; run any afc command; assert exit non-zero, stderr contains config.toml path and parse error description, no API calls made.",
+            "TS-05-P7: For any (flag, env, cfg) combination, instrument resolveHubURL and resolveAPIKey to count state transitions; assert steps <= 3 for hub URL and <= 4 for API key."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-5",
+            "TS-05-P7"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.E1",
+            "05-REQ-3.1",
+            "05-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All smoke and server test files compile: go build ./internal/integration/...",
+          "Smoke tests are red before implementation: go test ./internal/integration/... -run 'TestSmoke' -count=1 -v",
+          "No linter warnings: go vet ./internal/integration/..."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement config package: types, auto-creation, and TOML load/save",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Define Config struct and TOML field mappings",
+          "details": [
+            "Create internal/cliconfig/config.go.",
+            "Define Config struct with fields: HubURL string `toml:\"hub_url\"`, APIKey string `toml:\"api_key\"`, Keys map[string]KeyEntry `toml:\"keys\"`.",
+            "Define KeyEntry struct with KeyID string `toml:\"key_id\"`, Token string `toml:\"token\"`, Label string `toml:\"label\"`.",
+            "Implement loadConfig(homeDir string) (*Config, error) using toml.DecodeFile; return descriptive error on parse failure including file path."
+          ],
+          "test_spec_refs": [
+            "TS-05-4",
+            "TS-05-5"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.1",
+            "05-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement ensureConfigExists with correct permissions and initial content",
+          "details": [
+            "Implement ensureConfigExists(homeDir string) error in internal/cliconfig/autocreate.go.",
+            "Check if config.toml exists; if so, return nil immediately (no permission changes).",
+            "Create $HOME/.af/ with os.MkdirAll and permission 0700 if not present.",
+            "Create config.toml with os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600); write comment header and hub_url = \"\".",
+            "On write failure, remove partial file (deferred cleanup) and return error."
+          ],
+          "test_spec_refs": [
+            "TS-05-1",
+            "TS-05-2",
+            "TS-05-3"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-1.2",
+            "05-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement atomic config write (writeConfigAtomic)",
+          "details": [
+            "Implement writeConfigAtomic(homeDir string, cfg *Config) error in internal/cliconfig/atomic_write.go.",
+            "Use os.CreateTemp(homeDir+'/.af/', 'config-*.toml') to create temp file.",
+            "chmod temp file to 0600 before writing.",
+            "Encode cfg to temp file using toml.NewEncoder; close temp file.",
+            "Defer os.Remove(tempPath) to clean up if subsequent steps fail.",
+            "Call os.Rename(tempPath, configPath) to atomically replace; on success cancel the deferred remove."
+          ],
+          "test_spec_refs": [
+            "TS-05-10",
+            "TS-05-11",
+            "TS-05-E6",
+            "TS-05-E7"
+          ],
+          "requirement_refs": [
+            "05-REQ-4.1",
+            "05-REQ-4.2",
+            "05-REQ-4.E1",
+            "05-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement hub URL and API key resolution functions",
+          "details": [
+            "Implement resolveHubURL(flagVal, envVal string, cfg *Config) (string, error) in internal/cliconfig/resolve.go.",
+            "Priority: flagVal != '' → return flagVal; envVal != '' → return envVal; cfg.HubURL != '' → return cfg.HubURL; else error mentioning config.toml, --hub-url, AF_HUB_URL.",
+            "Implement resolveAPIKey(flagVal, envVal string, cfg *Config) (string, error).",
+            "Priority: flagVal != '' → return flagVal; envVal != '' → return envVal; cfg.APIKey != '' → look up cfg.Keys[cfg.APIKey].Token (if missing, fall through); else error mentioning config.toml, --api-key, AF_HUB_API_KEY."
+          ],
+          "test_spec_refs": [
+            "TS-05-6",
+            "TS-05-7",
+            "TS-05-8",
+            "TS-05-9"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.3",
+            "05-REQ-3.1",
+            "05-REQ-3.2",
+            "05-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.5",
+          "title": "Wire config initialization into CLI startup (cobra PersistentPreRunE)",
+          "details": [
+            "In the root cobra command's PersistentPreRunE, call ensureConfigExists(homeDir) then loadConfig(homeDir).",
+            "Store loaded config in cobra command context or a package-level variable accessible to subcommands.",
+            "On loadConfig error, print descriptive parse error to stderr and return non-zero exit.",
+            "Pass loaded config to resolveHubURL and resolveAPIKey; override with --hub-url/AF_HUB_URL and --api-key/AF_HUB_API_KEY as highest-priority sources."
+          ],
+          "test_spec_refs": [
+            "TS-05-1",
+            "TS-05-E4",
+            "TS-05-22"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-2.E1",
+            "05-REQ-11.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Unit tests for config package pass: go test ./internal/cliconfig/... -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/cliconfig/...",
+          "Requirements 05-REQ-1.1, 05-REQ-1.2, 05-REQ-1.3, 05-REQ-2.1, 05-REQ-2.2, 05-REQ-2.3, 05-REQ-3.1, 05-REQ-3.2, 05-REQ-3.3, 05-REQ-4.1, 05-REQ-4.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement config mutation helpers for key management commands",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement writeLoginKey and conditional hub_url write for afc login",
+          "details": [
+            "Implement writeLoginKey(homeDir string, cfg *Config, keyID, token, loginHubURL string) error in internal/cliconfig/mutations.go.",
+            "Add or overwrite cfg.Keys['_login'] = KeyEntry{KeyID: keyID, Token: token, Label: 'login'}.",
+            "Set cfg.APIKey = '_login'.",
+            "If cfg.HubURL == '', set cfg.HubURL = loginHubURL.",
+            "Call writeConfigAtomic(homeDir, cfg).",
+            "In the login command, assert api_key field is present in callback response; if absent or malformed, return error without calling writeLoginKey."
+          ],
+          "test_spec_refs": [
+            "TS-05-12",
+            "TS-05-13",
+            "TS-05-14",
+            "TS-05-E8"
+          ],
+          "requirement_refs": [
+            "05-REQ-5.1",
+            "05-REQ-5.2",
+            "05-REQ-5.3",
+            "05-REQ-5.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement addKeyEntry for afc keys create config side-effect",
+          "details": [
+            "Implement addKeyEntry(homeDir string, cfg *Config, workspaceSlug, keyID, token, label string) error in internal/cliconfig/mutations.go.",
+            "Add cfg.Keys[workspaceSlug] = KeyEntry{KeyID: keyID, Token: token, Label: label}.",
+            "Call writeConfigAtomic(homeDir, cfg).",
+            "Hook into the existing afc keys create cobra command's RunE after successful API call."
+          ],
+          "test_spec_refs": [
+            "TS-05-15"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement updateKeyToken for afc keys refresh config side-effect",
+          "details": [
+            "Implement updateKeyToken(homeDir string, cfg *Config, keyID, newToken string) error in internal/cliconfig/mutations.go.",
+            "Iterate cfg.Keys to find the entry whose KeyID == keyID; update its Token field.",
+            "If no entry found, print warning to stderr ('key <keyID> not found in local config, skipping update') and return nil.",
+            "Call writeConfigAtomic(homeDir, cfg) only if a matching entry was found.",
+            "Hook into the existing afc keys refresh cobra command's RunE after successful API call."
+          ],
+          "test_spec_refs": [
+            "TS-05-16",
+            "TS-05-E9"
+          ],
+          "requirement_refs": [
+            "05-REQ-7.1",
+            "05-REQ-7.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Implement removeKeyEntry for afc keys revoke config side-effect",
+          "details": [
+            "Implement removeKeyEntry(homeDir string, cfg *Config, keyID string, stderr io.Writer) error in internal/cliconfig/mutations.go.",
+            "Iterate cfg.Keys to find the entry whose KeyID == keyID; note its workspace slug.",
+            "If not found, print warning to stderr and return nil.",
+            "Delete the entry from cfg.Keys.",
+            "If the deleted slug == cfg.APIKey, clear cfg.APIKey = '' and print warning to stderr: 'Default key removed; run afc keys default <workspace-slug> to set a new default.'",
+            "Call writeConfigAtomic(homeDir, cfg).",
+            "Hook into existing afc keys revoke cobra command's RunE after successful API call."
+          ],
+          "test_spec_refs": [
+            "TS-05-17",
+            "TS-05-18",
+            "TS-05-E10"
+          ],
+          "requirement_refs": [
+            "05-REQ-8.1",
+            "05-REQ-8.2",
+            "05-REQ-8.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Integration tests for login and keys commands pass: go test ./internal/integration/... -run 'TestLogin|TestKeys' -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/cliconfig/... ./internal/integration/...",
+          "Requirements 05-REQ-5.1, 05-REQ-5.2, 05-REQ-5.3, 05-REQ-6.1, 05-REQ-7.1, 05-REQ-8.1, 05-REQ-8.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement afc keys default command and server auth callback extension",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement setDefaultKey for afc keys default command",
+          "details": [
+            "Implement setDefaultKey(homeDir string, cfg *Config, workspaceSlug string) error in internal/cliconfig/mutations.go.",
+            "Check that cfg.Keys[workspaceSlug] exists; if not, return descriptive error (do not modify config).",
+            "Set cfg.APIKey = workspaceSlug; call writeConfigAtomic(homeDir, cfg).",
+            "Print confirmation message to stdout: 'Default API key set to <workspaceSlug>'."
+          ],
+          "test_spec_refs": [
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-E11",
+            "TS-05-E12"
+          ],
+          "requirement_refs": [
+            "05-REQ-9.1",
+            "05-REQ-9.2",
+            "05-REQ-9.E1",
+            "05-REQ-9.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Register afc keys default cobra command",
+          "details": [
+            "Create internal/cli/keys_default.go with a cobra.Command for 'keys default <workspace-slug>'.",
+            "Mark <workspace-slug> as a required positional arg (Args: cobra.ExactArgs(1)); cobra will print usage and exit non-zero if missing.",
+            "In RunE: load config, call setDefaultKey, handle errors by printing to stderr and returning non-zero exit.",
+            "Register the command as a child of the keys cobra command."
+          ],
+          "test_spec_refs": [
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-E12"
+          ],
+          "requirement_refs": [
+            "05-REQ-9.1",
+            "05-REQ-9.2",
+            "05-REQ-9.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Extend server POST /api/v1/auth/callback to return api_key in response",
+          "details": [
+            "In the server-side auth callback handler, after OAuth token exchange, create or retrieve an API key for the authenticated user.",
+            "Extend the response JSON struct to include an APIKey field: struct { Key string `json:\"key\"`, KeyID string `json:\"key_id\"` }.",
+            "Return HTTP 200 with {\"user\": {...}, \"api_key\": {\"key\": \"af_<key_id>_<secret>\", \"key_id\": \"<key_id>\"}}.",
+            "Ensure backward compatibility: the user field remains unchanged in shape."
+          ],
+          "test_spec_refs": [
+            "TS-05-21"
+          ],
+          "requirement_refs": [
+            "05-REQ-10.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.4",
+          "title": "Update CLI login command to parse and store api_key from callback response",
+          "details": [
+            "In the afc login command's OAuth callback handler, parse api_key.key and api_key.key_id from the response body.",
+            "If api_key field is absent or any required subfield is empty, return error to stderr: 'login response missing api_key credential data'; do not modify config.",
+            "On success, call writeLoginKey(homeDir, cfg, keyID, token, hubURL).",
+            "Print confirmation to stdout: 'Logged in successfully. Config saved to ~/.af/config.toml'."
+          ],
+          "test_spec_refs": [
+            "TS-05-12",
+            "TS-05-13",
+            "TS-05-E8"
+          ],
+          "requirement_refs": [
+            "05-REQ-5.1",
+            "05-REQ-5.2",
+            "05-REQ-5.3",
+            "05-REQ-5.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "keys default command tests pass: go test ./internal/cli/... -run 'TestKeysDefault' -count=1 -v",
+          "Server auth callback test passes: go test ./internal/integration/... -run 'TestAuthCallback' -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/cli/... ./internal/integration/...",
+          "Requirements 05-REQ-9.1, 05-REQ-9.2, 05-REQ-9.E1, 05-REQ-9.E2, 05-REQ-10.1 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "checkpoint",
+      "title": "Checkpoint: full test suite green and backward compatibility verified",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Run full test suite and confirm all spec tests pass",
+          "details": [
+            "Run: go test ./... -count=1 and confirm zero failures.",
+            "Run spec-specific tests: go test ./internal/cliconfig/... ./internal/cli/... ./internal/integration/... -count=1 -v.",
+            "Confirm backward-compat tests TS-05-22, TS-05-23, TS-05-24 all pass (flags/env vars override config)."
+          ],
+          "test_spec_refs": [
+            "TS-05-22",
+            "TS-05-23",
+            "TS-05-24"
+          ],
+          "requirement_refs": [
+            "05-REQ-11.1",
+            "05-REQ-11.2",
+            "05-REQ-11.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Run property-based tests and confirm invariants hold",
+          "details": [
+            "Run property tests: go test ./internal/cliconfig/... -run 'TestProperty' -count=5 -v.",
+            "Confirm PROP-1 (flag/env always wins), PROP-2 (permissions at creation), PROP-3 (atomic writes), PROP-4 (empty string fallthrough), PROP-5 (only designated commands modify config), PROP-6 (keys default rejects non-existent slugs) all pass."
+          ],
+          "test_spec_refs": [
+            "TS-05-P1",
+            "TS-05-P2",
+            "TS-05-P3",
+            "TS-05-P4",
+            "TS-05-P5",
+            "TS-05-P6"
+          ],
+          "requirement_refs": [
+            "05-PROP-1",
+            "05-PROP-2",
+            "05-PROP-3",
+            "05-PROP-4",
+            "05-PROP-5",
+            "05-PROP-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Confirm no regressions in existing CLI commands",
+          "details": [
+            "Run all upstream CLI tests from spec 03: go test ./... -count=1.",
+            "Manually verify that --hub-url and --api-key flags still work for workspace list, workspace create, and keys list commands.",
+            "Verify AF_HUB_URL and AF_HUB_API_KEY environment variables still override config file values as expected."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-11.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Full test suite passes with zero failures: go test ./... -count=1",
+          "All spec tests pass: go test ./internal/cliconfig/... ./internal/cli/... ./internal/integration/... -count=1 -v",
+          "No linter warnings across all packages: go vet ./...",
+          "Property tests pass across multiple runs: go test ./internal/cliconfig/... -run 'TestProperty' -count=5"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Documentation updates: docs/cli.md and docs/configuration.md",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Update docs/cli.md with keys default command and config auto-creation notes",
+          "details": [
+            "Add 'afc keys default <workspace-slug>' to the keys sub-command section with description, argument table, preconditions, and error behavior.",
+            "Add a note to 'afc login', 'afc keys create', 'afc keys refresh', and 'afc keys revoke' entries explaining they automatically update $HOME/.af/config.toml.",
+            "Add a 'Configuration' section noting that config.toml is auto-created on first run."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-9.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Update docs/configuration.md with full client configuration reference",
+          "details": [
+            "Add 'Client Configuration' section documenting: file location ($HOME/.af/config.toml), TOML structure with field definitions table, resolution precedence order for hub_url and api_key.",
+            "Document auto-creation behavior (directory 0700, file 0600, initial content), atomic write strategy, file permissions, and security considerations (plaintext storage, 0600 protection, single-user threat model).",
+            "Include an annotated example config.toml matching the PRD's Config File Structure section."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-2.1",
+            "05-REQ-3.1",
+            "05-REQ-4.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "docs/cli.md contains a 'keys default' command entry with argument and error documentation",
+          "docs/configuration.md contains a 'Client Configuration' section with location, structure, precedence, permissions, and security notes",
+          "No broken markdown links: verify docs build or render without errors",
+          "All tests still pass after documentation changes: go test ./... -count=1"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and stub audit",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths and verify call chain continuity",
+          "details": [
+            "PATH-1: Confirm root cobra PersistentPreRunE calls ensureConfigExists → loadConfig → resolveHubURL/resolveAPIKey; verify afc login RunE calls writeLoginKey after callback parse.",
+            "PATH-2: Confirm keys create RunE calls addKeyEntry after API success; confirm keys default RunE calls setDefaultKey.",
+            "PATH-3: Confirm keys revoke RunE calls removeKeyEntry; verify default-key-cleared warning path reaches stderr.",
+            "PATH-5: Confirm loadConfig error surfaces as immediate non-zero exit before any API call is attempted.",
+            "Use grep/code-search to confirm each function is called from production code, not only from tests."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-3.1",
+            "05-REQ-5.1",
+            "05-REQ-9.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Verify return value propagation across the call chain",
+          "details": [
+            "Confirm that errors from ensureConfigExists are propagated to PersistentPreRunE and cause non-zero exit.",
+            "Confirm that errors from writeConfigAtomic (CreateTemp or Rename failures) are returned from all mutation helpers (writeLoginKey, addKeyEntry, updateKeyToken, removeKeyEntry, setDefaultKey) and surfaced to the cobra RunE as non-zero exit.",
+            "Confirm that resolveHubURL and resolveAPIKey error strings reach stderr output in the CLI's error handling path."
+          ],
+          "test_spec_refs": [
+            "TS-05-E6",
+            "TS-05-E7"
+          ],
+          "requirement_refs": [
+            "05-REQ-4.E1",
+            "05-REQ-4.E2",
+            "05-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Run all smoke tests with real components",
+          "details": [
+            "Run all smoke tests: go test ./internal/integration/... -run 'TestSmoke' -count=1 -v.",
+            "SMOKE-1: Assert clean-env login produces correct $HOME/.af/config.toml with 0700/0600 permissions and subsequent workspace list works without flags.",
+            "SMOKE-2: Assert keys create + keys default sequence produces correct api_key in config.",
+            "SMOKE-3: Assert keys revoke on default key clears api_key and emits warning.",
+            "SMOKE-4: Assert backward-compat flags bypass config file; config.toml is unmodified.",
+            "SMOKE-5: Assert malformed config causes immediate exit with parse error on stderr."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-3",
+            "TS-05-SMOKE-4",
+            "TS-05-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-5.1",
+            "05-REQ-6.1",
+            "05-REQ-8.1",
+            "05-REQ-11.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Search for Go stub markers: grep -rn 'panic(\"not implemented\")' ./internal/cliconfig/ ./internal/cli/ — expect zero results.",
+            "Search for bare TODO comments on implemented functions: grep -rn '// TODO' ./internal/cliconfig/ ./internal/cli/ — review and resolve any that indicate incomplete implementation.",
+            "Verify no function in the config or cli packages has an empty body or a bare 'return nil' in a non-trivial path (e.g. writeConfigAtomic must actually call os.CreateTemp and os.Rename).",
+            "Confirm all cobra RunE functions for login, keys create, keys refresh, keys revoke, and keys default have their config mutation hooks wired (not commented out or stubbed)."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-4.1",
+            "05-REQ-5.1",
+            "05-REQ-9.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.5",
+          "title": "Cross-spec entry point verification (spec 03 dependency)",
+          "details": [
+            "Confirm that the existing cobra commands for keys create, keys refresh, and keys revoke (owned by spec 03) have their RunE functions updated with config mutation calls from this spec.",
+            "Confirm these production RunE wiring changes are present in the spec 03 command files, not only as test doubles.",
+            "Run the full cross-spec test suite: go test ./... -count=1 and confirm zero failures."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-6.1",
+            "05-REQ-7.1",
+            "05-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All smoke tests pass: go test ./internal/integration/... -run 'TestSmoke' -count=1 -v",
+          "Full test suite passes with zero failures: go test ./... -count=1",
+          "No stub markers found: grep -rn 'panic(\"not implemented\")' ./internal/cliconfig/ ./internal/cli/ returns zero results",
+          "No linter warnings: go vet ./...",
+          "All five smoke paths (PATH-1 through PATH-5) traced and confirmed wired in production code",
+          "Cross-spec commands (keys create, keys refresh, keys revoke) confirmed wired with config mutations from spec 03 command files"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "05-REQ-1.1",
+      "test_spec_id": "TS-05-1",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.2",
+      "test_spec_id": "TS-05-2",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.3",
+      "test_spec_id": "TS-05-3",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.E1",
+      "test_spec_id": "TS-05-E1",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.E2",
+      "test_spec_id": "TS-05-E2",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.E3",
+      "test_spec_id": "TS-05-E3",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.1",
+      "test_spec_id": "TS-05-4",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.2",
+      "test_spec_id": "TS-05-5",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.3",
+      "test_spec_id": "TS-05-6",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.E1",
+      "test_spec_id": "TS-05-E4",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.E2",
+      "test_spec_id": "TS-05-E5",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.1",
+      "test_spec_id": "TS-05-7",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.2",
+      "test_spec_id": "TS-05-8",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.3",
+      "test_spec_id": "TS-05-9",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-10",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.2",
+      "test_spec_id": "TS-05-11",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.E1",
+      "test_spec_id": "TS-05-E6",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.E2",
+      "test_spec_id": "TS-05-E7",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.1",
+      "test_spec_id": "TS-05-12",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.2",
+      "test_spec_id": "TS-05-13",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.3",
+      "test_spec_id": "TS-05-14",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.E1",
+      "test_spec_id": "TS-05-E8",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-15",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-7.1",
+      "test_spec_id": "TS-05-16",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-7.E1",
+      "test_spec_id": "TS-05-E9",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-8.1",
+      "test_spec_id": "TS-05-17",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-8.2",
+      "test_spec_id": "TS-05-18",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-8.E1",
+      "test_spec_id": "TS-05-E10",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.1",
+      "test_spec_id": "TS-05-19",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.2",
+      "test_spec_id": "TS-05-20",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.E1",
+      "test_spec_id": "TS-05-E11",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.E2",
+      "test_spec_id": "TS-05-E12",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-10.1",
+      "test_spec_id": "TS-05-21",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-11.1",
+      "test_spec_id": "TS-05-22",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-11.2",
+      "test_spec_id": "TS-05-23",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-11.3",
+      "test_spec_id": "TS-05-24",
+      "task_id": "5.4",
+      "test_path": null
+    }
+  ]
+}
