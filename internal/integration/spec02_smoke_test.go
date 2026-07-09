@@ -83,8 +83,9 @@ func TestSmoke_OAuthLoginNewUser(t *testing.T) {
 			cbRec.Code, http.StatusOK, cbRec.Body.String())
 	}
 
-	var user userResponse
-	parseJSON(t, cbRec, &user)
+	var cbResp oauthCallbackTestResponse
+	parseJSON(t, cbRec, &cbResp)
+	user := cbResp.User
 
 	// Verify user fields.
 	if user.Username == "" {
@@ -616,8 +617,9 @@ func TestSmoke_FullOAuthFlowWithMockProvider(t *testing.T) {
 			cbRec.Code, http.StatusOK, cbRec.Body.String())
 	}
 
-	var createdUser userResponse
-	parseJSON(t, cbRec, &createdUser)
+	var createdResp oauthCallbackTestResponse
+	parseJSON(t, cbRec, &createdResp)
+	createdUser := createdResp.User
 
 	if createdUser.Status != "active" {
 		t.Errorf("created user status = %q, want 'active'", createdUser.Status)

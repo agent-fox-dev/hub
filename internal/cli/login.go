@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agent-fox/af-hub/internal/cliconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -189,8 +190,22 @@ func fetchProviders(hubURL string) ([]providerInfo, error) {
 	return providers, nil
 }
 
-// exchangeCode sends the authorization code to the hub and prints the user object.
-func exchangeCode(stdout, _ interface{ Write([]byte) (int, error) }, hubURL, provider, code, redirectURI string) error {
+// callbackResponse represents the server response from POST /api/v1/auth/callback.
+// Per 05-REQ-10.1, it includes both a user object and an api_key object.
+type callbackResponse struct {
+	User   json.RawMessage     `json:"user"`
+	APIKey *callbackAPIKeyInfo `json:"api_key"`
+}
+
+// callbackAPIKeyInfo represents the api_key portion of the callback response.
+type callbackAPIKeyInfo struct {
+	Key   string `json:"key"`
+	KeyID string `json:"key_id"`
+}
+
+// exchangeCode sends the authorization code to the hub, stores the returned
+// credentials in the config file, and prints the response to stdout.
+func exchangeCode(stdout, stderr interface{ Write([]byte) (int, error) }, hubURL, provider, code, redirectURI string) error {
 	body := map[string]string{
 		"provider":     provider,
 		"code":         code,
@@ -211,13 +226,39 @@ func exchangeCode(stdout, _ interface{ Write([]byte) (int, error) }, hubURL, pro
 		return ParseHTTPError(resp)
 	}
 
-	// Decode and print the user object to stdout.
-	var result json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("failed to decode user response: %w", err)
+	// Decode the full response to extract both user and api_key.
+	var rawBytes json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&rawBytes); err != nil {
+		return fmt.Errorf("failed to decode login response: %w", err)
 	}
 
-	return PrintJSON(stdout, result)
+	// Parse the callback response to extract api_key fields.
+	var cbResp callbackResponse
+	if err := json.Unmarshal(rawBytes, &cbResp); err != nil {
+		return fmt.Errorf("failed to parse login response: %w", err)
+	}
+
+	// Validate the api_key field is present and well-formed (05-REQ-5.E1).
+	if cbResp.APIKey == nil || cbResp.APIKey.Key == "" || cbResp.APIKey.KeyID == "" {
+		return fmt.Errorf("login response missing api_key credential data")
+	}
+
+	// Store the credentials in the config file.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to determine home directory: %w", err)
+	}
+
+	if loadedConfig != nil {
+		if writeErr := cliconfig.WriteLoginKey(homeDir, loadedConfig, cbResp.APIKey.KeyID, cbResp.APIKey.Key, hubURL); writeErr != nil {
+			fmt.Fprintf(stderr, "Warning: failed to save login credentials to config: %v\n", writeErr)
+		} else {
+			fmt.Fprintf(stderr, "Logged in successfully. Config saved to %s\n", cliconfig.ConfigFilePath(homeDir))
+		}
+	}
+
+	// Print the full response to stdout for backward compatibility.
+	return PrintJSON(stdout, rawBytes)
 }
 
 // buildAuthURL constructs the OAuth authorization URL with the redirect_uri.

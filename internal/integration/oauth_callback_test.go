@@ -42,9 +42,10 @@ func TestOAuthCallback_CreatesNewUser(t *testing.T) {
 			rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	// Parse the user object from the response
-	var user userResponse
-	parseJSON(t, rec, &user)
+	// Parse the response with nested user and api_key structure.
+	var resp oauthCallbackTestResponse
+	parseJSON(t, rec, &resp)
+	user := resp.User
 
 	// Verify user fields
 	if user.Username == "" {
@@ -118,8 +119,9 @@ func TestOAuthCallback_UpsertsExistingUser(t *testing.T) {
 		t.Fatalf("status = %d, want %d\nBody: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	var user userResponse
-	parseJSON(t, rec, &user)
+	var resp oauthCallbackTestResponse
+	parseJSON(t, rec, &resp)
+	user := resp.User
 
 	// Email should be updated
 	if user.Email != "updated@example.com" {
@@ -175,8 +177,9 @@ func TestOAuthCallback_BlockedUserStatusNotChanged(t *testing.T) {
 		t.Fatalf("status = %d, want %d\nBody: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	var user userResponse
-	parseJSON(t, rec, &user)
+	var resp oauthCallbackTestResponse
+	parseJSON(t, rec, &resp)
+	user := resp.User
 
 	// User status in the response should still be 'blocked'
 	if user.Status != "blocked" {
@@ -235,11 +238,11 @@ func TestOAuthCallback_BlockedUserMultipleCalls(t *testing.T) {
 			t.Fatalf("call %d: status = %d, want %d", i, rec.Code, http.StatusOK)
 		}
 
-		var user userResponse
-		parseJSON(t, rec, &user)
+		var resp oauthCallbackTestResponse
+		parseJSON(t, rec, &resp)
 
-		if user.Status != "blocked" {
-			t.Errorf("call %d: user.status = %q, want 'blocked'", i, user.Status)
+		if resp.User.Status != "blocked" {
+			t.Errorf("call %d: user.status = %q, want 'blocked'", i, resp.User.Status)
 		}
 	}
 

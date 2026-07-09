@@ -2,7 +2,11 @@
 package handler
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/agent-fox/af-hub/internal/auth"
@@ -108,7 +112,73 @@ func (h *AuthHandler) OAuthCallback(c echo.Context) error {
 		return NewErrorResponse(c, http.StatusInternalServerError, "internal server error")
 	}
 
-	return c.JSON(http.StatusOK, user)
+	// Generate a login API key for the user.
+	loginKey, err := h.createLoginKey(user.ID)
+	if err != nil {
+		return NewErrorResponse(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	// Return the user object and api_key in the response per 05-REQ-10.1.
+	return c.JSON(http.StatusOK, oauthCallbackResponse{
+		User:   user,
+		APIKey: loginKey,
+	})
+}
+
+// oauthCallbackResponse is the response structure for POST /api/v1/auth/callback.
+// It wraps the user object and the generated login API key per 05-REQ-10.1.
+type oauthCallbackResponse struct {
+	User   *store.User         `json:"user"`
+	APIKey *loginAPIKeyResponse `json:"api_key"`
+}
+
+// loginAPIKeyResponse represents the api_key portion of the OAuth callback response.
+type loginAPIKeyResponse struct {
+	Key   string `json:"key"`
+	KeyID string `json:"key_id"`
+}
+
+// createLoginKey generates a new API key for the user after a successful login.
+// The key is stored in the database and the plaintext token is returned exactly once.
+// Login keys have no workspace scope, no expiry, and are labeled "login".
+func (h *AuthHandler) createLoginKey(userID string) (*loginAPIKeyResponse, error) {
+	// Generate key_id (random hex).
+	keyIDBytes := make([]byte, 16)
+	if _, err := rand.Read(keyIDBytes); err != nil {
+		return nil, fmt.Errorf("generate key_id: %w", err)
+	}
+	keyID := hex.EncodeToString(keyIDBytes)
+
+	// Generate secret.
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return nil, fmt.Errorf("generate secret: %w", err)
+	}
+	secret := hex.EncodeToString(secretBytes)
+
+	// Hash the secret for storage.
+	h256 := sha256.Sum256([]byte(secret))
+	keyHash := hex.EncodeToString(h256[:])
+
+	// Build the plaintext token: af_<key_id>_<secret>.
+	plaintextKey := fmt.Sprintf("af_%s_%s", keyID, secret)
+
+	apiKey := &store.APIKey{
+		KeyID:   keyID,
+		KeyHash: keyHash,
+		UserID:  userID,
+		Role:    "member",
+		Label:   "login",
+	}
+
+	if _, err := h.store.CreateAPIKey(apiKey); err != nil {
+		return nil, fmt.Errorf("store login key: %w", err)
+	}
+
+	return &loginAPIKeyResponse{
+		Key:   plaintextKey,
+		KeyID: keyID,
+	}, nil
 }
 
 // upsertUser creates a new user if not found, or updates an existing user's

@@ -197,6 +197,19 @@ type userResponse struct {
 	Status     string `json:"status"`
 }
 
+// oauthCallbackTestResponse represents the full response from POST /api/v1/auth/callback.
+// It wraps the user object and the login api_key per 05-REQ-10.1.
+type oauthCallbackTestResponse struct {
+	User   userResponse              `json:"user"`
+	APIKey *oauthCallbackAPIKeyEntry `json:"api_key"`
+}
+
+// oauthCallbackAPIKeyEntry represents the api_key portion of the callback response.
+type oauthCallbackAPIKeyEntry struct {
+	Key   string `json:"key"`
+	KeyID string `json:"key_id"`
+}
+
 // apiKeyResponse represents an API key object in list responses (no plaintext).
 type apiKeyResponse struct {
 	ID          string  `json:"id"`

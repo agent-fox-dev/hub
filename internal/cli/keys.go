@@ -36,6 +36,7 @@ func newKeysCmd() *cobra.Command {
 	keysCmd.AddCommand(newKeysListCmd())
 	keysCmd.AddCommand(newKeysRefreshCmd())
 	keysCmd.AddCommand(newKeysRevokeCmd())
+	keysCmd.AddCommand(newKeysDefaultCmd())
 
 	return keysCmd
 }
