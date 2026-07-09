@@ -52,6 +52,7 @@ func NewRootCmd() *cobra.Command {
 	// Register subcommands.
 	rootCmd.AddCommand(newLoginCmd())
 	rootCmd.AddCommand(newKeysCmd())
+	rootCmd.AddCommand(newWorkspaceCmd())
 
 	return rootCmd
 }
