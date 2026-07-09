@@ -78,6 +78,7 @@ func SetupServer(cfg *config.Config, s store.Store, registry *auth.Registry, db 
 	authHandler := handler.NewAuthHandler(registry, s)
 	userHandler := handler.NewUserHandler(s)
 	workspaceHandler := handler.NewWorkspaceHandler(s)
+	workspaceV2Handler := handler.NewWorkspaceV2Handler(s)
 	apiKeyHandler := handler.NewAPIKeyHandler(s)
 
 	// Public auth routes (no auth middleware).
@@ -89,8 +90,15 @@ func SetupServer(cfg *config.Config, s store.Store, registry *auth.Registry, db 
 	// Register user management routes.
 	RegisterUserRoutes(apiGroup, userHandler)
 
-	// Register workspace management routes (admin only).
+	// Register legacy workspace management routes (admin only).
+	// Note: POST /api/v1/workspaces (create) is handled by the V2 handler
+	// below — it is NOT admin-only; the handler checks auth internally.
 	RegisterWorkspaceRoutes(apiGroup, workspaceHandler)
+
+	// Register spec 07 workspace V2 create route. This route is behind
+	// AuthMiddleware but NOT RequireRole(admin) — the handler itself
+	// rejects admin tokens and accepts any authenticated user.
+	RegisterWorkspaceV2Routes(apiGroup, workspaceV2Handler)
 
 	// Register API key management routes.
 	RegisterAPIKeyRoutes(apiGroup, apiKeyHandler)
@@ -117,17 +125,28 @@ func RegisterUserRoutes(g *echo.Group, h *handler.UserHandler) {
 	g.PUT("/users/:id", h.UpdateUser, auth.RequireAdminOrSelf())
 }
 
-// RegisterWorkspaceRoutes registers workspace management routes on the
-// given Echo group. All workspace routes are admin-only.
+// RegisterWorkspaceRoutes registers legacy workspace management routes on
+// the given Echo group. These routes are admin-only and operate on the
+// legacy workspace/team schema (spec 01). POST /workspaces (create) is
+// intentionally NOT registered here — it is handled by the spec 07 V2
+// handler via RegisterWorkspaceV2Routes.
 func RegisterWorkspaceRoutes(g *echo.Group, h *handler.WorkspaceHandler) {
 	adminGroup := g.Group("", auth.RequireRole(auth.RoleAdmin))
-	adminGroup.POST("/workspaces", h.CreateWorkspace)
 	adminGroup.GET("/workspaces", h.ListWorkspaces)
 	adminGroup.POST("/workspaces/:id/archive", h.ArchiveWorkspace)
 	adminGroup.POST("/workspaces/:id/reactivate", h.ReactivateWorkspace)
 	adminGroup.DELETE("/workspaces/:id", h.DeleteWorkspace)
 	adminGroup.POST("/workspaces/:id/members", h.AddOrUpdateMember)
 	adminGroup.GET("/workspaces/:id/members", h.ListMembers)
+}
+
+// RegisterWorkspaceV2Routes registers the spec 07 workspace entity routes
+// on the given Echo group. The POST /workspaces route is behind
+// AuthMiddleware but NOT RequireRole(admin) — the handler itself checks
+// whether the caller is an admin token (rejected) or a regular user
+// (accepted). This implements 07-REQ-3.8 and 07-REQ-3.9.
+func RegisterWorkspaceV2Routes(g *echo.Group, h *handler.WorkspaceV2Handler) {
+	g.POST("/workspaces", h.CreateWorkspaceV2)
 }
 
 // RegisterAPIKeyRoutes registers API key management routes on the given
