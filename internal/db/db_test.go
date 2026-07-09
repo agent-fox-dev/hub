@@ -48,7 +48,7 @@ func TestInitSchema_CreatesAllTables(t *testing.T) {
 		t.Fatalf("InitSchema returned error: %v", err)
 	}
 
-	expectedTables := []string{"users", "teams", "team_members", "api_keys", "admin_tokens"}
+	expectedTables := []string{"users", "teams", "team_members", "api_keys", "admin_tokens", "workspaces"}
 	for _, tableName := range expectedTables {
 		var name string
 		err := db.QueryRow(
@@ -328,8 +328,8 @@ func TestWALBeforeCreateTable(t *testing.T) {
 	}
 }
 
-// TS-01-P7: Verify that exactly five CREATE TABLE IF NOT EXISTS calls are made.
-func TestInitSchema_ExactlyFiveTables(t *testing.T) {
+// TS-01-P7: Verify that exactly six CREATE TABLE IF NOT EXISTS calls are made.
+func TestInitSchema_ExactlySixTables(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -352,8 +352,8 @@ func TestInitSchema_ExactlyFiveTables(t *testing.T) {
 		tables = append(tables, name)
 	}
 
-	if len(tables) != 5 {
-		t.Errorf("expected exactly 5 tables, got %d: %v", len(tables), tables)
+	if len(tables) != 6 {
+		t.Errorf("expected exactly 6 tables, got %d: %v", len(tables), tables)
 	}
 
 	expected := map[string]bool{
@@ -362,6 +362,7 @@ func TestInitSchema_ExactlyFiveTables(t *testing.T) {
 		"team_members": true,
 		"api_keys":     true,
 		"admin_tokens": true,
+		"workspaces":   true,
 	}
 	for _, tbl := range tables {
 		if !expected[tbl] {

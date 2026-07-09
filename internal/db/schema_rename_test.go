@@ -80,13 +80,10 @@ func TestDDLNoLegacyWorkspaceNames(t *testing.T) {
 	}
 	src := string(content)
 
-	t.Run("no workspaces table reference", func(t *testing.T) {
-		// Match word-boundary 'workspaces' — the legacy table name.
-		re := regexp.MustCompile(`\bworkspaces\b`)
-		if re.MatchString(src) {
-			t.Error("db.go still contains a reference to legacy table name 'workspaces'")
-		}
-	})
+	// Note: spec 07 introduces a NEW 'workspaces' table (git-repo entity),
+	// so the word 'workspaces' itself is now legitimate in db.go. We only
+	// check for the LEGACY naming patterns (workspace_members, workspace_id)
+	// that should have been fully renamed by spec 06.
 
 	t.Run("no workspace_members table reference", func(t *testing.T) {
 		re := regexp.MustCompile(`\bworkspace_members\b`)
@@ -134,8 +131,9 @@ func TestSchemaInit_TeamsAndTeamMembersTables(t *testing.T) {
 	// Verify api_keys has 'team_id' column
 	assertColumnExists(t, db, "api_keys", "team_id")
 
-	// Negative: verify legacy table names do NOT exist
-	assertTableNotExists(t, db, "workspaces")
+	// Note: spec 07 introduces a NEW 'workspaces' table (git-repo entity),
+	// so we no longer assert its absence. We still verify the legacy naming
+	// patterns (workspace_members, workspace_id) are gone per spec 06.
 	assertTableNotExists(t, db, "workspace_members")
 
 	// Negative: verify legacy column names do NOT exist
@@ -158,9 +156,10 @@ func TestLegacyNameGrepLint(t *testing.T) {
 	dbGoPath := filepath.Join(projectRoot, "internal", "db", "db.go")
 
 	t.Run("grep finds no legacy names in db.go", func(t *testing.T) {
-		// grep -E 'workspaces|workspace_members|workspace_id' internal/db/db.go
-		// Expected: exit code 1 (no matches) when the file is correctly renamed.
-		cmd := exec.Command("grep", "-E", `workspaces|workspace_members|workspace_id`, dbGoPath)
+		// Note: 'workspaces' is now a legitimate table name (spec 07 git-repo entity).
+		// Only check for the legacy patterns that should have been renamed by spec 06:
+		// workspace_members, workspace_id.
+		cmd := exec.Command("grep", "-E", `workspace_members|workspace_id`, dbGoPath)
 		output, err := cmd.CombinedOutput()
 		if err == nil {
 			// grep exited 0, meaning it found matches — this is a CI failure

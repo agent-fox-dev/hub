@@ -35,6 +35,14 @@ func OpenDatabase(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("db: expected journal_mode 'wal', got %q", journalMode)
 	}
 
+	// Enable foreign key enforcement — SQLite disables it by default.
+	// This must be set per-connection before any schema or DML statements
+	// that depend on FK constraints (e.g. workspaces.team_id → teams(id)).
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("db: enable foreign_keys: %w", err)
+	}
+
 	return db, nil
 }
 
@@ -105,6 +113,22 @@ func InitSchema(db *sql.DB) error {
 				id TEXT PRIMARY KEY,
 				token_hash TEXT,
 				created_at TEXT
+			)`,
+		},
+		{
+			// workspaces: maps to a git repository (+ optional branch),
+			// owned by a user, optionally belonging to a team.
+			// Depends on: users table (owner_id FK), teams table (team_id FK).
+			name: "workspaces",
+			ddl: `CREATE TABLE IF NOT EXISTS workspaces (
+				id TEXT PRIMARY KEY,
+				slug TEXT UNIQUE NOT NULL,
+				git_url TEXT NOT NULL,
+				branch TEXT,
+				owner_id TEXT NOT NULL REFERENCES users(id),
+				team_id TEXT REFERENCES teams(id),
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 			)`,
 		},
 	}
