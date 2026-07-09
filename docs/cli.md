@@ -3,14 +3,31 @@
 `afc` is the command-line client for af-hub. It supports OAuth authentication
 and API key management for programmatic access to hub workspaces.
 
+## Configuration
+
+On first run, `afc` automatically creates `$HOME/.af/config.toml` (and the
+`$HOME/.af/` directory) if they do not exist. The directory is created with
+permissions `0700` and the file with `0600`. Once created, `afc` never
+modifies permissions on these paths. See
+[docs/configuration.md](configuration.md) for the full client configuration
+reference.
+
+Credentials and the hub URL can be supplied via flags, environment variables,
+or the config file. Resolution order (highest precedence first):
+
+1. CLI flags (`--hub-url`, `--api-key`)
+2. Environment variables (`AF_HUB_URL`, `AF_HUB_API_KEY`)
+3. `$HOME/.af/config.toml` values
+
 ## Global Flags
 
 | Flag | Environment Variable | Description |
 |------|---------------------|-------------|
-| `--hub-url` | `AF_HUB_URL` | Hub server base URL. The flag takes precedence over the environment variable. |
+| `--hub-url` | `AF_HUB_URL` | Hub server base URL. The flag takes precedence over the environment variable, which takes precedence over `hub_url` in the config file. |
 
-When neither `--hub-url` nor `AF_HUB_URL` is provided, commands that require
-the hub URL will exit with a descriptive error.
+When neither `--hub-url`, `AF_HUB_URL`, nor a non-empty `hub_url` in
+`$HOME/.af/config.toml` is provided, commands that require the hub URL will
+exit with a descriptive error.
 
 ## Output Conventions
 
@@ -53,11 +70,19 @@ returned user object as JSON to stdout.
    `xdg-open` on Linux).
 5. Waits for the OAuth redirect (times out after 5 minutes).
 6. Sends the authorization code to `POST /api/v1/auth/callback` on the hub.
-7. Prints the returned user object as JSON to stdout.
-8. Shuts down the callback server and releases the port.
+7. Stores the returned API key in `$HOME/.af/config.toml` as `[keys._login]`
+   with `label = "login"` and sets `api_key = "_login"`.
+8. If `hub_url` in the config file is currently empty, writes the login hub
+   URL to `hub_url`. An existing non-empty `hub_url` is not overwritten.
+9. Prints the returned user object as JSON to stdout.
+10. Shuts down the callback server and releases the port.
 
 The callback server is always shut down on exit, whether the flow succeeds,
 times out, encounters an error, or is interrupted by SIGINT/SIGTERM.
+
+**Config file effects:** On success, `afc login` automatically updates
+`$HOME/.af/config.toml` with the returned credentials. No manual file editing
+is needed after login.
 
 **Example:**
 
@@ -98,6 +123,11 @@ The plaintext secret is never logged or re-displayed.
 afc keys create --workspace ws-123 --label ci-bot --expires 30 \
   --api-key <your-api-key> --hub-url https://hub.example.com
 ```
+
+**Config file effects:** On success, the new key is automatically saved as a
+`[keys.<workspace>]` section in `$HOME/.af/config.toml` with `key_id`,
+`token`, and `label` fields. Use `afc keys default <workspace>` to make it
+the active key.
 
 **Error conditions:**
 
@@ -159,6 +189,12 @@ afc keys refresh key-abc-123 \
   --api-key <your-api-key> --hub-url https://hub.example.com
 ```
 
+**Config file effects:** On success, the `token` field in the matching
+`[keys.*]` section of `$HOME/.af/config.toml` is automatically updated to the
+new value. If the key ID is not found in the local config, a warning is
+printed to stderr but the command still exits successfully (the remote refresh
+succeeded).
+
 **Error conditions:**
 
 - Missing `<key-id>` argument: prints usage error to stderr.
@@ -192,6 +228,13 @@ afc keys revoke key-abc-123 \
   --api-key <your-api-key> --hub-url https://hub.example.com
 ```
 
+**Config file effects:** On success, the matching `[keys.*]` section is
+removed from `$HOME/.af/config.toml`. If the revoked key's workspace slug was
+the current `api_key` default, `api_key` is cleared to an empty string and a
+warning is printed to stderr instructing the user to run `afc keys default` to
+set a new default. If the key ID is not found in the local config, a warning
+is printed to stderr but the command still exits successfully.
+
 **Error conditions:**
 
 - Missing `<key-id>` argument: prints usage error to stderr.
@@ -200,12 +243,53 @@ afc keys revoke key-abc-123 \
 
 ---
 
+### keys default
+
+Set which stored API key is used by default by specifying its workspace slug.
+The command updates the `api_key` field in `$HOME/.af/config.toml` to point to
+the specified `[keys.<workspace-slug>]` section.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug (or ID) identifying the key entry to set as default (required). |
+
+**Preconditions:**
+
+- A `[keys.<workspace-slug>]` section must exist in `$HOME/.af/config.toml`.
+  Create one first with `afc keys create` or `afc login`.
+
+**Example:**
+
+```bash
+# Set the default to a workspace key
+afc keys default my-project
+
+# Set the default back to the login token
+afc keys default _login
+```
+
+**Config file effects:** Sets `api_key` to the specified workspace slug in
+`$HOME/.af/config.toml` using an atomic write. A confirmation message is
+printed to stdout.
+
+**Error conditions:**
+
+- Missing `<workspace-slug>` argument: prints usage help to stderr and exits
+  with non-zero status.
+- Workspace slug not found in config: prints error to stderr listing available
+  options and exits with non-zero status. No changes are made to the config
+  file.
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `AF_HUB_URL` | Hub server base URL. Overridden by `--hub-url` flag. |
-| `AF_HUB_API_KEY` | API key for authentication on key management commands. Overridden by `--api-key` flag. |
+| `AF_HUB_URL` | Hub server base URL. Overridden by `--hub-url` flag. Overrides `hub_url` from `$HOME/.af/config.toml`. |
+| `AF_HUB_API_KEY` | API key for authentication on key management commands. Overridden by `--api-key` flag. Overrides key lookup from `$HOME/.af/config.toml`. |
 
 ## Exit Codes
 
