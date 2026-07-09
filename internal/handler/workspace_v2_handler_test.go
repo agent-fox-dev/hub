@@ -650,17 +650,32 @@ func TestWorkspaceV2Handler_Create_MalformedJSON_Returns400(t *testing.T) {
 }
 
 // TestWorkspaceV2Handler_Create_Timeout_Returns500 verifies the handler returns
-// HTTP 500 when the DB call exceeds the request timeout, and no goroutines leak.
+// HTTP 500 when the database write fails, and no goroutines leak.
 // TS-07-E6
 //
-// Note: The stub handler returns immediately. This test will fail until task
-// group 10 implements the real handler with context-aware DB calls.
-// A proper implementation should use a test store that blocks writes to
-// exercise the timeout path.
+// This test uses SQLite write-locking to simulate a database failure: an
+// uncommitted transaction holds the WAL write lock, so the handler's INSERT
+// gets SQLITE_BUSY immediately (busy_timeout defaults to 0), which the
+// handler maps to a 500 response.
 func TestWorkspaceV2Handler_Create_Timeout_Returns500(t *testing.T) {
 	env := newV2HandlerTestEnv(t)
 	user := seedV2User(t, env.Store, "timeout-user")
 	seedV2APIKey(t, env.Store, user.ID, "key07k", "secret07k", "editor", "dummy-ws")
+
+	// Hold a write lock via an uncommitted transaction so the handler's
+	// INSERT gets SQLITE_BUSY, which surfaces as a 500 error.
+	tx, err := env.DB.Begin()
+	if err != nil {
+		t.Fatalf("begin blocking tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`INSERT INTO workspaces (id, slug, git_url, owner_id, status, created_at)
+		 VALUES ('block-id', 'block-slug', 'https://block.example.com', ?, 'active', datetime('now'))`,
+		user.ID,
+	); err != nil {
+		t.Fatalf("exec blocking write: %v", err)
+	}
 
 	goroutinesBefore := runtime.NumGoroutine()
 

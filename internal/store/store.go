@@ -127,6 +127,13 @@ type Store interface {
 	GetAdminTokenByHash(hash string) (*AdminToken, error)
 	UpdateAdminToken(t *AdminToken) (*AdminToken, error)
 	DeleteAdminToken(id string) error
+
+	// Workspace V2 (spec 07)
+	CreateWorkspaceV2(params CreateWorkspaceParams) (*WorkspaceV2, error)
+
+	// Team lookups (spec 07 workspace handler)
+	TeamExists(id string) (bool, error)
+	IsTeamMember(userID, teamID string) (bool, error)
 }
 
 // sqliteStore is the concrete Store implementation backed by SQLite.
