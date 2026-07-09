@@ -227,3 +227,119 @@ func TestResolveAPIKey_NilConfigKeys(t *testing.T) {
 		t.Errorf("expected empty result, got %q", result)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TS-05-22: Backward compatibility — flags and env vars override config
+// REQ: 05-REQ-11.1
+// ---------------------------------------------------------------------------
+
+func TestBackwardCompat_FlagsOverrideConfig(t *testing.T) {
+	// TS-05-22: When both --hub-url and --api-key flags are set, config file
+	// values must be ignored entirely.
+
+	cfg := &cliconfig.Config{
+		HubURL: "https://config.example.com",
+		APIKey: "my-project",
+		Keys: map[string]cliconfig.KeyEntry{
+			"my-project": {KeyID: "abc", Token: "af_abc_config", Label: "test"},
+		},
+	}
+
+	// Hub URL flag overrides config.
+	hubResult, err := cliconfig.ResolveHubURL("https://flag.example.com", "", cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if hubResult != "https://flag.example.com" {
+		t.Errorf("expected hub URL = %q, got %q", "https://flag.example.com", hubResult)
+	}
+
+	// API key flag overrides config.
+	keyResult, err := cliconfig.ResolveAPIKey("af_flag_secret", "", cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if keyResult != "af_flag_secret" {
+		t.Errorf("expected API key = %q, got %q", "af_flag_secret", keyResult)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-05-23: --hub-url flag and AF_HUB_URL env var override config hub_url
+// REQ: 05-REQ-11.2
+// ---------------------------------------------------------------------------
+
+func TestBackwardCompat_HubURLFlagOverridesConfig(t *testing.T) {
+	// TS-05-23: When --hub-url flag is set, config hub_url is not used.
+
+	cfg := &cliconfig.Config{
+		HubURL: "https://config.example.com",
+	}
+
+	result, err := cliconfig.ResolveHubURL("https://flag.example.com", "", cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != "https://flag.example.com" {
+		t.Errorf("expected flag URL %q, got %q", "https://flag.example.com", result)
+	}
+}
+
+func TestBackwardCompat_HubURLEnvOverridesConfig(t *testing.T) {
+	// TS-05-23: When AF_HUB_URL env var is set, config hub_url is not used.
+
+	cfg := &cliconfig.Config{
+		HubURL: "https://config.example.com",
+	}
+
+	result, err := cliconfig.ResolveHubURL("", "https://env.example.com", cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != "https://env.example.com" {
+		t.Errorf("expected env URL %q, got %q", "https://env.example.com", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-05-24: --api-key flag and AF_HUB_API_KEY env var bypass config lookup
+// REQ: 05-REQ-11.3
+// ---------------------------------------------------------------------------
+
+func TestBackwardCompat_APIKeyFlagBypassesConfig(t *testing.T) {
+	// TS-05-24: When --api-key flag is set, config key lookup is bypassed.
+
+	cfg := &cliconfig.Config{
+		APIKey: "my-project",
+		Keys: map[string]cliconfig.KeyEntry{
+			"my-project": {KeyID: "abc", Token: "af_config_token", Label: "test"},
+		},
+	}
+
+	result, err := cliconfig.ResolveAPIKey("af_flag_token", "", cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != "af_flag_token" {
+		t.Errorf("expected flag token %q, got %q", "af_flag_token", result)
+	}
+}
+
+func TestBackwardCompat_APIKeyEnvBypassesConfig(t *testing.T) {
+	// TS-05-24: When AF_HUB_API_KEY env var is set, config key lookup is bypassed.
+
+	cfg := &cliconfig.Config{
+		APIKey: "my-project",
+		Keys: map[string]cliconfig.KeyEntry{
+			"my-project": {KeyID: "abc", Token: "af_config_token", Label: "test"},
+		},
+	}
+
+	result, err := cliconfig.ResolveAPIKey("", "af_env_token", cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != "af_env_token" {
+		t.Errorf("expected env token %q, got %q", "af_env_token", result)
+	}
+}

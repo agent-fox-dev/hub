@@ -261,6 +261,102 @@ func TestPropertyResolveAPIKey_EmptyConfigNeverReturnsEmptySuccess(t *testing.T)
 }
 
 // ---------------------------------------------------------------------------
+// TS-05-P2: Newly created config dir and file have correct permissions
+// PROP: 05-PROP-2
+// Validates: 05-REQ-1.1, 05-REQ-1.3
+// ---------------------------------------------------------------------------
+
+func TestPropertyEnsureConfig_PermissionsCorrectOnCreation(t *testing.T) {
+	// For any writable temp directory used as homeDir, after ensureConfigExists,
+	// $HOME/.af/ must have 0700 and config.toml must have 0600.
+
+	for i := range 10 {
+		homeDir := t.TempDir()
+
+		err := cliconfig.EnsureConfigExists(homeDir)
+		if err != nil {
+			t.Fatalf("iteration %d: EnsureConfigExists error: %v", i, err)
+		}
+
+		afDir := filepath.Join(homeDir, ".af")
+		dirInfo, statErr := os.Stat(afDir)
+		if statErr != nil {
+			t.Fatalf("iteration %d: failed to stat .af dir: %v", i, statErr)
+		}
+		dirPerm := dirInfo.Mode().Perm()
+		if dirPerm != 0700 {
+			t.Errorf("iteration %d: expected .af dir permissions 0700, got %04o", i, dirPerm)
+		}
+
+		configPath := filepath.Join(afDir, "config.toml")
+		fileInfo, statErr := os.Stat(configPath)
+		if statErr != nil {
+			t.Fatalf("iteration %d: failed to stat config.toml: %v", i, statErr)
+		}
+		filePerm := fileInfo.Mode().Perm()
+		if filePerm != 0600 {
+			t.Errorf("iteration %d: expected config.toml permissions 0600, got %04o", i, filePerm)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-05-P6: keys default rejects non-existent workspace slugs
+// PROP: 05-PROP-6
+// Validates: 05-REQ-9.E1
+// ---------------------------------------------------------------------------
+
+func TestPropertyKeysDefault_RejectsNonExistentSlugs(t *testing.T) {
+	// For any workspace slug that has no matching [keys.*] section,
+	// SetDefaultKey must return an error and api_key must remain unchanged.
+
+	rng := rand.New(rand.NewSource(77))
+
+	for i := range 30 {
+		homeDir := t.TempDir()
+		afDir := filepath.Join(homeDir, ".af")
+		if err := os.MkdirAll(afDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create a config with a known api_key and some existing keys.
+		originalAPIKey := randomSlugString(rng)
+		cfg := &cliconfig.Config{
+			HubURL: "https://hub.example.com",
+			APIKey: originalAPIKey,
+			Keys: map[string]cliconfig.KeyEntry{
+				"existing-key": {KeyID: "aabb", Token: "af_aabb_secret", Label: "test"},
+			},
+		}
+
+		// Write config to disk.
+		configPath := filepath.Join(afDir, "config.toml")
+		f, err := os.Create(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+		f.Close()
+
+		// Generate a random slug guaranteed not to be in the Keys map.
+		nonExistentSlug := "nonexistent-" + randomSlugString(rng) + fmt.Sprintf("-%d", i)
+
+		err = cliconfig.SetDefaultKey(homeDir, cfg, nonExistentSlug)
+		if err == nil {
+			t.Errorf("iteration %d: expected error for non-existent slug %q, got nil", i, nonExistentSlug)
+		}
+
+		// Verify api_key was not modified.
+		if cfg.APIKey != originalAPIKey {
+			t.Errorf("iteration %d: expected api_key to remain %q, got %q", i, originalAPIKey, cfg.APIKey)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers for property-based test data generation
 // ---------------------------------------------------------------------------
 
