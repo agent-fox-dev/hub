@@ -29,8 +29,8 @@ const (
 // It is stored in Echo's context under AuthContextKey.
 // For admin token auth, UserID is empty and IsAdmin is true.
 type AuthContext struct {
-	CredentialType CredentialType // "admin", "api_key", or "workspace_token"
-	UserID         string         // UUID of the authenticated user; empty for admin token auth
-	WorkspaceID    string         // UUID of the workspace; empty if not a workspace token
-	IsAdmin        bool           // true only for admin token credential type
+	CredentialType CredentialType `json:"credential_type"` // "admin", "api_key", or "workspace_token"
+	UserID         string         `json:"user_id"`         // UUID of the authenticated user; empty for admin token auth
+	WorkspaceID    string         `json:"workspace_id"`    // UUID of the workspace; empty if not a workspace token
+	IsAdmin        bool           `json:"is_admin"`        // true only for admin token credential type
 }

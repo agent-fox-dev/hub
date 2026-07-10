@@ -33,10 +33,11 @@ func setupEchoWithFullMiddleware(t *testing.T) *echo.Echo {
 	// Custom error handler for translating errors to envelope format.
 	e.HTTPErrorHandler = handler.CustomErrorHandler
 
-	// Global middleware stack (spec 01 order: Recover → body-size limit → request logger).
+	// Global middleware stack (spec 01 order: Recover → request logger → body-size limit).
+	// RequestLogger must run before BodySizeLimit so X-Request-ID is set even on 413 responses.
 	e.Use(echoMw.Recover())
-	e.Use(mw.BodySizeLimitMiddleware("1M"))
 	e.Use(mw.RequestLoggerMiddleware())
+	e.Use(mw.BodySizeLimitMiddleware("1M"))
 
 	// Health probes on root Echo instance.
 	e.GET("/healthz", func(c echo.Context) error {

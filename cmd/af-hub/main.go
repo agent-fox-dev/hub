@@ -7,16 +7,39 @@
 //	                       a fresh admin token, replacing the existing one.
 //
 // Both flags are independent and can be combined freely.
-// Full startup sequence wiring is implemented in task group 14.
+//
+// Startup sequence (REQ 01-REQ-2.1):
+//
+//  1. Parse CLI flags
+//  2. Load config.toml
+//  3. Initialize structured logging
+//  4. Open/initialize SQLite
+//  5. Run admin bootstrap or token validation
+//  6. Register HTTP routes and middleware, custom error handler
+//  7. Log startup info
+//  8. Start HTTP listener
+//  9. Arm SIGTERM/SIGINT handler
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/agent-fox-dev/hub/internal/serverconfig"
+	"github.com/labstack/echo/v4"
+	echoMw "github.com/labstack/echo/v4/middleware"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/agent-fox-dev/hub/internal/admin"
+	"github.com/agent-fox-dev/hub/internal/auth"
+	"github.com/agent-fox-dev/hub/internal/db"
+	"github.com/agent-fox-dev/hub/internal/handler"
+	"github.com/agent-fox-dev/hub/internal/middleware"
+	"github.com/agent-fox-dev/hub/internal/server"
+	"github.com/agent-fox-dev/hub/internal/serverconfig"
 )
 
 // version is injected at build time via -ldflags.
@@ -56,13 +79,85 @@ func main() {
 	}
 	log.SetLevel(level)
 
-	// Steps 4-9: remaining startup sequence will be wired in task group 14.
-	// For now, log the startup info and exit.
-	_ = resetAdminToken // Will be used in step 5 (admin bootstrap/validation).
-	_ = result.ConfigDir // Will be used for admin_token file placement.
+	// Step 4: Open/initialize SQLite database.
+	database, err := db.InitDatabase(result.Config.Database.Path)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize database")
+	}
+	defer database.Close()
 
-	log.WithFields(log.Fields(serverconfig.StartupLogFields(result.Config))).Info()
+	// Step 5: Run admin bootstrap or token validation.
+	admin.Bootstrap(database, result.ConfigDir, *resetAdminToken)
 
-	fmt.Fprintf(os.Stderr, "af-hub v%s: full startup sequence not yet implemented (task group 14)\n", version)
-	os.Exit(1)
+	// Step 6: Register HTTP routes and middleware, custom error handler.
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.HTTPErrorHandler = handler.CustomErrorHandler
+
+	// Global middleware stack: Recover → request logger → body-size limit.
+	// RequestLogger runs before BodySizeLimit so X-Request-ID is set even on 413 responses.
+	e.Use(echoMw.Recover())
+	e.Use(middleware.RequestLoggerMiddleware())
+	e.Use(middleware.BodySizeLimitMiddleware("1M"))
+
+	// Health probes on root Echo instance (no group, no auth middleware).
+	e.GET("/healthz", handler.HealthzHandler())
+	e.HEAD("/healthz", handler.HealthzHandler())
+	e.GET("/readyz", handler.ReadyzHandler(database))
+	e.HEAD("/readyz", handler.ReadyzHandler(database))
+
+	// Auth group at /api/v1/auth — no auth middleware.
+	// Any("/*", ...) catch-all ensures unregistered auth paths stay within
+	// this group and don't fall through to the protected group's auth middleware.
+	authGroup := e.Group("/api/v1/auth")
+	authGroup.Any("/*", func(c echo.Context) error {
+		return echo.ErrNotFound
+	})
+
+	// Protected group at /api/v1 — with spec 01 auth middleware.
+	e.Group("/api/v1", middleware.AuthMiddleware(database))
+
+	// Register spec 02/04 routes (OAuth, users, keys, workspaces).
+	// Create an empty OAuth registry and allowlist since providers are
+	// configured via config and registered separately.
+	registry := auth.NewRegistry()
+	devMode := result.Config.Server.ExternalURL == ""
+	allowlist := auth.NewAllowlist(result.Config.Server.ExternalURL, devMode)
+	server.RegisterRoutes(e, database, registry, allowlist)
+
+	// Step 7: Log startup info.
+	log.WithFields(log.Fields{
+		"bind":      result.Config.Server.Bind,
+		"port":      result.Config.Server.Port,
+		"db_path":   result.Config.Database.Path,
+		"log_level": result.Config.Log.Level,
+	}).Info("server starting")
+
+	// Step 8: Start HTTP listener in a goroutine.
+	addr := fmt.Sprintf("%s:%d", result.Config.Server.Bind, result.Config.Server.Port)
+	go func() {
+		if err := e.Start(addr); err != nil {
+			// echo.Start returns http.ErrServerClosed on graceful shutdown,
+			// which is expected. Other errors are fatal.
+			log.WithError(err).Info("http server stopped")
+		}
+	}()
+
+	// Step 9: Arm SIGTERM/SIGINT handler and block until signal.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	// Graceful shutdown with 15-second drain timeout.
+	shutdownErr := middleware.GracefulShutdown(e, middleware.ShutdownTimeout)
+	if shutdownErr != nil {
+		if shutdownErr == context.DeadlineExceeded {
+			log.Warn("graceful shutdown timed out; some connections may have been dropped")
+		} else {
+			log.WithError(shutdownErr).Warn("error during shutdown")
+		}
+	} else {
+		log.Info("server shutdown complete")
+	}
 }

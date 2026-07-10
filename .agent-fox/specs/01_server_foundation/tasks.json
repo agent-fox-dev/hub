@@ -1232,7 +1232,7 @@
             "01-REQ-2.1",
             "01-REQ-2.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1250,7 +1250,7 @@
           "requirement_refs": [
             "01-REQ-5.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1271,7 +1271,7 @@
             "01-REQ-13.2",
             "01-REQ-13.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
