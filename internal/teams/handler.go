@@ -168,15 +168,74 @@ func (h *Handler) listTeams(c echo.Context) error {
 }
 
 func (h *Handler) getTeam(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	id := c.Param("id")
+	if err := validateUUID(id); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	team, err := h.store.GetTeamByID(id)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return writeError(c, http.StatusNotFound, ErrTeamNotFound.Error())
+		}
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	return c.JSON(http.StatusOK, teamToResponse(team))
 }
 
 func (h *Handler) archiveTeam(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	id := c.Param("id")
+	if err := validateUUID(id); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	// Fetch current team to check its status.
+	team, err := h.store.GetTeamByID(id)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return writeError(c, http.StatusNotFound, ErrTeamNotFound.Error())
+		}
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	if team.Status == "archived" {
+		return writeError(c, http.StatusConflict, ErrTeamAlreadyArchived.Error())
+	}
+
+	updated, err := h.store.UpdateTeamStatus(id, "archived")
+	if err != nil {
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	return c.JSON(http.StatusOK, teamToResponse(updated))
 }
 
 func (h *Handler) reactivateTeam(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	id := c.Param("id")
+	if err := validateUUID(id); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	// Fetch current team to check its status.
+	team, err := h.store.GetTeamByID(id)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return writeError(c, http.StatusNotFound, ErrTeamNotFound.Error())
+		}
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	if team.Status == "active" {
+		return writeError(c, http.StatusConflict, ErrTeamAlreadyActive.Error())
+	}
+
+	updated, err := h.store.UpdateTeamStatus(id, "active")
+	if err != nil {
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	return c.JSON(http.StatusOK, teamToResponse(updated))
 }
 
 func (h *Handler) deleteTeam(c echo.Context) error {

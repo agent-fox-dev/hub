@@ -114,21 +114,6 @@ func parseErrorResponse(t *testing.T, rec *httptest.ResponseRecorder) errorRespo
 	return resp
 }
 
-// seedTeamDirect inserts a team directly into the database, bypassing the handler.
-func seedTeamDirect(t *testing.T, db *sql.DB, name, slug, status string) string {
-	t.Helper()
-	id := uuid.New().String()
-	now := teams.FormatTime(time.Now())
-	_, err := db.Exec(
-		`INSERT INTO teams (id, name, slug, url, status, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?)`,
-		id, name, slug, status, now, now,
-	)
-	if err != nil {
-		t.Fatalf("failed to seed team: %v", err)
-	}
-	return id
-}
-
 // ---------------------------------------------------------------------------
 // TS-03-4: Successful team creation with name trimming and full response shape
 // Requirement: 03-REQ-2.1

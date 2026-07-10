@@ -182,6 +182,62 @@ func (s *Store) ListTeams(includeArchived bool) ([]Team, error) {
 	return result, nil
 }
 
+// GetTeamByID retrieves a single team by its UUID. Returns ErrTeamNotFound
+// if the team does not exist or has status = 'deleted'.
+func (s *Store) GetTeamByID(id string) (*Team, error) {
+	var t Team
+	var createdStr, updatedStr string
+	err := s.db.QueryRow(
+		`SELECT id, name, slug, url, status, created_at, updated_at
+		 FROM teams WHERE id = ? AND status != 'deleted'`, id,
+	).Scan(&t.ID, &t.Name, &t.Slug, &t.URL, &t.Status, &createdStr, &updatedStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrTeamNotFound
+		}
+		return nil, fmt.Errorf("getting team by ID: %w", err)
+	}
+
+	var parseErr error
+	t.CreatedAt, parseErr = parseTimestamp(createdStr)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parsing created_at for team %s: %w", t.ID, parseErr)
+	}
+	t.UpdatedAt, parseErr = parseTimestamp(updatedStr)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parsing updated_at for team %s: %w", t.ID, parseErr)
+	}
+
+	return &t, nil
+}
+
+// UpdateTeamStatus transitions a team's status and updates the updated_at
+// timestamp. Returns ErrTeamNotFound if the team does not exist or is deleted.
+// Callers are responsible for validating the transition is valid before calling.
+func (s *Store) UpdateTeamStatus(id, newStatus string) (*Team, error) {
+	now := time.Now().UTC()
+	nowStr := FormatTime(now)
+
+	result, err := s.db.Exec(
+		`UPDATE teams SET status = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`,
+		newStatus, nowStr, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updating team status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return nil, ErrTeamNotFound
+	}
+
+	// Read back the updated row.
+	return s.GetTeamByID(id)
+}
+
 // mapConstraintError inspects a SQLite error for partial UNIQUE index
 // violations and maps them to the appropriate sentinel error.
 func mapConstraintError(err error) error {
