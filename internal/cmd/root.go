@@ -12,6 +12,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/login"
 	"github.com/agent-fox-dev/hub/internal/output"
 	"github.com/agent-fox-dev/hub/internal/validate"
+	"github.com/agent-fox-dev/hub/internal/wsclient"
 	"github.com/spf13/cobra"
 )
 
@@ -385,18 +386,7 @@ func newWorkspaceCmd() *cobra.Command {
 	createCmd := &cobra.Command{
 		Use:   "create",
 		Short: "Register a new workspace",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			gitURL, _ := cmd.Flags().GetString("git-url")
-			if err := validate.ValidateNonEmpty("git-url", gitURL); err != nil {
-				return err
-			}
-			slug, _ := cmd.Flags().GetString("slug")
-			if err := validate.ValidateNonEmpty("slug", slug); err != nil {
-				return err
-			}
-			// Stub: not implemented yet (task group 10).
-			return nil
-		},
+		RunE:  runWorkspaceCreate,
 	}
 	createCmd.Flags().String("git-url", "", "Git repository URL (required)")
 	createCmd.Flags().String("slug", "", "Workspace slug (required)")
@@ -408,25 +398,124 @@ func newWorkspaceCmd() *cobra.Command {
 	wsCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List all workspaces",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet (task group 10).
-			return nil
-		},
+		RunE:  runWorkspaceList,
 	})
 
 	wsCmd.AddCommand(&cobra.Command{
 		Use:   "get",
 		Short: "Get a workspace by slug",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet (task group 10).
-			return nil
-		},
+		RunE:  runWorkspaceGet,
 	})
 
 	wsCmd.AddCommand(newWorkspaceTokenCmd())
 
 	return wsCmd
+}
+
+// runWorkspaceList implements "afc workspace list": GET /api/v1/workspaces
+// with Bearer auth, pretty-print JSON response to stdout.
+func runWorkspaceList(cmd *cobra.Command, args []string) error {
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	client := httpclient.NewClient()
+	body, statusCode, err := wsclient.ListWorkspaces(resolved.HubURL, resolved.APIKey, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	return output.PrintJSON(cmd.OutOrStdout(), body)
+}
+
+// runWorkspaceGet implements "afc workspace get <slug>": GET /api/v1/workspaces/:slug
+// with Bearer auth, pretty-print JSON response to stdout.
+func runWorkspaceGet(cmd *cobra.Command, args []string) error {
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	slug := args[0]
+
+	client := httpclient.NewClient()
+	body, statusCode, err := wsclient.GetWorkspace(resolved.HubURL, resolved.APIKey, slug, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	return output.PrintJSON(cmd.OutOrStdout(), body)
+}
+
+// runWorkspaceCreate implements "afc workspace create": validates flags,
+// resolves team slug if --team is provided, and POSTs the workspace.
+func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
+	// Step 1: Validate required flags before any network call.
+	gitURL, _ := cmd.Flags().GetString("git-url")
+	if err := validate.ValidateNonEmpty("git-url", gitURL); err != nil {
+		return err
+	}
+	slug, _ := cmd.Flags().GetString("slug")
+	if err := validate.ValidateNonEmpty("slug", slug); err != nil {
+		return err
+	}
+
+	// Step 2: Resolve auth config (hub_url, user_id, api_key).
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	client := httpclient.NewClient()
+
+	// Step 3: Build the POST payload with required fields.
+	payload := map[string]any{
+		"git_url": gitURL,
+		"slug":    slug,
+	}
+
+	// Step 4: Add optional branch if provided.
+	branch, _ := cmd.Flags().GetString("branch")
+	if branch != "" {
+		payload["branch"] = branch
+	}
+
+	// Step 5: Resolve team slug to UUID if --team is provided.
+	team, _ := cmd.Flags().GetString("team")
+	if team != "" {
+		teams, err := wsclient.ListTeams(resolved.HubURL, resolved.APIKey, client)
+		if err != nil {
+			return err
+		}
+
+		teamID, err := wsclient.ResolveTeamSlug(teams, team)
+		if err != nil {
+			return err
+		}
+		payload["team_id"] = teamID
+	}
+
+	// Step 6: Create workspace via POST /api/v1/workspaces.
+	body, statusCode, err := wsclient.CreateWorkspace(resolved.HubURL, resolved.APIKey, payload, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	return output.PrintJSON(cmd.OutOrStdout(), body)
 }
 
 // newWorkspaceTokenCmd creates the workspace token subcommand tree.
