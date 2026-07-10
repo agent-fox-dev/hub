@@ -16,6 +16,7 @@ lint:
 # Build all packages
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/afc ./cmd/afc
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/af-hub ./cmd/af-hub
 
 # Clean build artifacts
 clean:

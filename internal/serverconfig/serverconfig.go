@@ -6,6 +6,15 @@
 // package from internal/config.
 package serverconfig
 
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/BurntSushi/toml"
+)
+
 // Config represents the af-hub server configuration loaded from config.toml.
 //
 // Default values when fields are omitted:
@@ -72,6 +81,47 @@ type LoadResult struct {
 	// For example, an invalid log.level value generates a warning with the
 	// invalid_value field name.
 	Warnings []string
+
+	// InvalidLogLevel is set to the original invalid log level value when
+	// log.level is not in the recognized set. The caller should include this
+	// in the warn-level log entry as the "invalid_value" field.
+	InvalidLogLevel string
+}
+
+// validLogLevels is the set of recognized log level strings.
+var validLogLevels = map[string]bool{
+	"trace": true,
+	"debug": true,
+	"info":  true,
+	"warn":  true,
+	"error": true,
+	"fatal": true,
+	"panic": true,
+}
+
+// applyDefaults sets default values for any Config fields that are zero-valued.
+func applyDefaults(cfg *Config) {
+	if cfg.Server.Port == 0 {
+		cfg.Server.Port = 8080
+	}
+	if cfg.Server.Bind == "" {
+		cfg.Server.Bind = "0.0.0.0"
+	}
+	if cfg.Database.Path == "" {
+		cfg.Database.Path = "./data/af-hub.db"
+	}
+	if cfg.Log.Level == "" {
+		cfg.Log.Level = "info"
+	}
+}
+
+// resolveConfigDir returns the absolute path of the directory containing path.
+func resolveConfigDir(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve config path: %w", err)
+	}
+	return filepath.Dir(absPath), nil
 }
 
 // LoadConfig loads the server configuration from a TOML file at the given path.
@@ -84,9 +134,52 @@ type LoadResult struct {
 //     added to LoadResult.Warnings and the level defaults to "info".
 //   - ConfigDir is set to the absolute path of the directory containing the config file.
 func LoadConfig(path string) (*LoadResult, error) {
-	// Stub: returns zero-value config without defaults.
-	// Implementation will be added in task group 8.
-	return &LoadResult{Config: &Config{}}, nil
+	configDir, err := resolveConfigDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &LoadResult{
+		Config:    &Config{},
+		ConfigDir: configDir,
+	}
+
+	// Attempt to decode the TOML file.
+	md, err := toml.DecodeFile(path, result.Config)
+	if err != nil {
+		// Check if the file simply doesn't exist — that's non-fatal.
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) && errors.Is(pathErr.Err, os.ErrNotExist) {
+			// File not found is non-fatal; apply all defaults.
+			applyDefaults(result.Config)
+			return result, nil
+		}
+		// Also handle the case where os.IsNotExist returns true.
+		if os.IsNotExist(err) {
+			applyDefaults(result.Config)
+			return result, nil
+		}
+		// Any other error (parse failure, permission error) is fatal.
+		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	}
+
+	// Collect unrecognized keys from TOML metadata.
+	for _, key := range md.Undecoded() {
+		result.UnrecognizedKeys = append(result.UnrecognizedKeys, key.String())
+	}
+
+	// Validate log level.
+	if result.Config.Log.Level != "" && !validLogLevels[result.Config.Log.Level] {
+		result.InvalidLogLevel = result.Config.Log.Level
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("unrecognized log level %q; defaulting to \"info\"", result.Config.Log.Level))
+		result.Config.Log.Level = ""
+	}
+
+	// Apply defaults for any omitted fields.
+	applyDefaults(result.Config)
+
+	return result, nil
 }
 
 // StartupLogFields returns the structured fields for the "server starting"
@@ -95,6 +188,11 @@ func LoadConfig(path string) (*LoadResult, error) {
 // Returns a map with keys: "bind" (string), "port" (int), "db_path" (string),
 // "log_level" (string), "msg" (string = "server starting").
 func StartupLogFields(cfg *Config) map[string]any {
-	// Stub: returns nil. Implementation in task group 14.
-	return nil
+	return map[string]any{
+		"bind":      cfg.Server.Bind,
+		"port":      cfg.Server.Port,
+		"db_path":   cfg.Database.Path,
+		"log_level": cfg.Log.Level,
+		"msg":       "server starting",
+	}
 }
