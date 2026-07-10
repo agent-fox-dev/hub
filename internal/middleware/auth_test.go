@@ -157,7 +157,10 @@ func TestSpec01_AuthMiddlewareFive401Conditions(t *testing.T) {
 //
 // TS-01-49, REQ: 01-REQ-14.5
 func TestSpec01_AuthContextRetrievable(t *testing.T) {
-	db := setupTestDB(t)
+	db := setupAuthTestDBWithSchema(t)
+	// Insert admin token hash for the test token suffix.
+	suffix := "0000000000000000000000000000000000000000000000000000000000000000"
+	insertAdminTokenHash(t, db, suffix)
 	e := setupAuthTestEcho(t, db)
 
 	// Use a valid admin token format to authenticate.

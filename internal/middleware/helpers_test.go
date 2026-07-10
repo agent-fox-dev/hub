@@ -332,19 +332,21 @@ func setupContentionDB(t *testing.T) *sql.DB {
 		t.Fatalf("blocker: failed to set DELETE journal mode: %v", err)
 	}
 
-	// Start a write transaction that holds the exclusive lock.
-	tx, err := blocker.Begin()
-	if err != nil {
-		t.Fatalf("failed to begin blocker transaction: %v", err)
+	// Start an EXCLUSIVE transaction that blocks ALL other connections,
+	// including readers. A DEFERRED BEGIN + INSERT only acquires a RESERVED
+	// lock, which is compatible with SHARED (read) locks in DELETE journal
+	// mode. We need EXCLUSIVE to block the middleware's SELECT queries.
+	if _, err := blocker.Exec("BEGIN EXCLUSIVE"); err != nil {
+		t.Fatalf("failed to begin exclusive blocker transaction: %v", err)
 	}
-	// Do a write to escalate to EXCLUSIVE lock.
-	if _, err := tx.Exec("INSERT INTO admin_tokens (id, token_hash, created_at) VALUES ('blocker', 'fake', ?)"+
-		"", now); err != nil {
+	// Do a write inside the exclusive transaction.
+	if _, err := blocker.Exec("INSERT INTO admin_tokens (id, token_hash, created_at) VALUES ('blocker', 'fake', ?)",
+		now); err != nil {
 		t.Fatalf("blocker write failed: %v", err)
 	}
 
 	t.Cleanup(func() {
-		tx.Rollback()
+		blocker.Exec("ROLLBACK")
 		blocker.Close()
 		primary.Close()
 	})

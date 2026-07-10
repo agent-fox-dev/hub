@@ -1385,7 +1385,7 @@
             "01-PATH-7",
             "01-PATH-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1407,7 +1407,7 @@
             "01-REQ-3.1",
             "01-REQ-8.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1437,7 +1437,7 @@
             "01-PATH-7",
             "01-PATH-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1457,7 +1457,7 @@
             "01-REQ-11.1",
             "01-REQ-11.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
