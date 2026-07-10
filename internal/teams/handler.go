@@ -149,7 +149,7 @@ func (h *Handler) createTeam(c echo.Context) error {
 	return c.JSON(http.StatusCreated, teamToResponse(team))
 }
 
-// --- Stub handlers for endpoints not yet implemented ---
+// --- List teams handler ---
 
 func (h *Handler) listTeams(c echo.Context) error {
 	includeArchived := c.QueryParam("include_archived") == "true"

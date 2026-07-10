@@ -154,14 +154,14 @@ func TestCreateTeamEdge_ReuseDeletedNameSlug(t *testing.T) {
 	origResp := parseTeamResponse(t, rec)
 	origID := origResp.ID
 
-	// Step 2: Archive the team (directly in DB since archive handler is a stub).
+	// Step 2: Archive the team directly in DB for test setup.
 	_, err := db.Exec(`UPDATE teams SET status = 'archived', updated_at = ? WHERE id = ?`,
 		teams.FormatTime(time.Now()), origID)
 	if err != nil {
 		t.Fatalf("failed to archive team: %v", err)
 	}
 
-	// Step 3: Delete the team (directly in DB since delete handler is a stub).
+	// Step 3: Delete the team directly in DB for test setup.
 	_, err = db.Exec(`DELETE FROM team_members WHERE team_id = ?`, origID)
 	if err != nil {
 		t.Fatalf("failed to delete team members: %v", err)
@@ -363,7 +363,7 @@ func TestListTeams_NoPagination(t *testing.T) {
 
 	// Seed 50 active teams with distinct created_at timestamps.
 	expectedIDs := make([]string, 50)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		name := fmt.Sprintf("Team %03d", i)
 		slug := fmt.Sprintf("team-%03d", i)
 		createdAt := baseTime.Add(time.Duration(i) * time.Second)
