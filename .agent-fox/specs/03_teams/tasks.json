@@ -1346,7 +1346,7 @@
             "03-REQ-8.1",
             "03-REQ-9.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1365,7 +1365,7 @@
             "03-REQ-8.E1",
             "03-REQ-2.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1387,7 +1387,7 @@
             "TS-03-SMOKE-5"
           ],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1402,7 +1402,7 @@
           ],
           "test_spec_refs": [],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1422,7 +1422,7 @@
             "03-REQ-8.1",
             "03-REQ-9.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
