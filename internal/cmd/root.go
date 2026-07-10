@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/agent-fox-dev/hub/internal/apierror"
 	"github.com/agent-fox-dev/hub/internal/config"
 	"github.com/agent-fox-dev/hub/internal/httpclient"
+	"github.com/agent-fox-dev/hub/internal/keys"
 	"github.com/agent-fox-dev/hub/internal/login"
+	"github.com/agent-fox-dev/hub/internal/output"
 	"github.com/agent-fox-dev/hub/internal/validate"
 	"github.com/spf13/cobra"
 )
@@ -20,6 +23,10 @@ func NewRootCmd(version string) *cobra.Command {
 		Short: "af-hub CLI client",
 		Long:  "afc is the CLI client for the af-hub platform.",
 		// When invoked with no subcommand, Cobra prints help (default behavior).
+		// SilenceUsage prevents Cobra from printing usage text on RunE errors;
+		// usage is only printed for help/version/unknown command, not for
+		// runtime errors from command handlers.
+		SilenceUsage: true,
 	}
 	rootCmd.Version = version
 	rootCmd.SetVersionTemplate("afc version {{.Version}}\n")
@@ -205,31 +212,166 @@ func newKeysCmd() *cobra.Command {
 	keysCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List all API keys",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet (task group 9).
-			return nil
-		},
+		RunE:  runKeysList,
 	})
 
 	keysCmd.AddCommand(&cobra.Command{
 		Use:   "refresh",
 		Short: "Rotate the current API key",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet (task group 9).
-			return nil
-		},
+		RunE:  runKeysRefresh,
 	})
 
 	keysCmd.AddCommand(&cobra.Command{
 		Use:   "revoke",
 		Short: "Revoke the current API key and clear local credentials",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet (task group 9).
-			return nil
-		},
+		RunE:  runKeysRevoke,
 	})
 
 	return keysCmd
+}
+
+// resolveAuthConfig loads the config file and resolves hub_url, user_id, and
+// api_key using the standard precedence chain (flag > env > config file).
+// Returns the resolved config, the config file path, and the raw config
+// (needed for key_id and config mutations).
+func resolveAuthConfig(cmd *cobra.Command) (*config.ResolvedConfig, string, *config.Config, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to determine home directory: %w", err)
+	}
+	cfgPath := config.ConfigPath(home)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	flags := map[string]string{
+		"hub-url": getFlagString(cmd, "hub-url"),
+		"user-id": getFlagString(cmd, "user-id"),
+		"api-key": getFlagString(cmd, "api-key"),
+	}
+
+	resolved, err := config.Resolve(flags, cfg)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return resolved, cfgPath, cfg, nil
+}
+
+// getFlagString retrieves a string flag value, returning "" if the flag
+// is not defined on this command (persistent flags may not be directly
+// accessible on subcommands via Flags()).
+func getFlagString(cmd *cobra.Command, name string) string {
+	val, err := cmd.Flags().GetString(name)
+	if err != nil {
+		// Try inherited persistent flags.
+		val, _ = cmd.InheritedFlags().GetString(name)
+	}
+	return val
+}
+
+// runKeysList implements "afc keys list": GET /api/v1/keys with Bearer auth,
+// pretty-print JSON response to stdout.
+func runKeysList(cmd *cobra.Command, args []string) error {
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	client := httpclient.NewClient()
+	body, statusCode, err := keys.ListKeys(resolved.HubURL, resolved.APIKey, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	return output.PrintJSON(cmd.OutOrStdout(), body)
+}
+
+// runKeysRefresh implements "afc keys refresh": POST /api/v1/keys/:key_id/refresh,
+// update config with new credentials, print response JSON to stdout.
+func runKeysRefresh(cmd *cobra.Command, args []string) error {
+	resolved, cfgPath, cfg, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// key_id must be present in config (no flag/env override).
+	if err := keys.ValidateKeyID(resolved.KeyID); err != nil {
+		return err
+	}
+
+	client := httpclient.NewClient()
+	refreshResp, rawBody, err := keys.RefreshKey(resolved.HubURL, resolved.APIKey, resolved.KeyID, client)
+	if err != nil {
+		return err
+	}
+
+	// Update config with new credentials from refresh response.
+	// Per spec 02: token is the full composite key for Bearer auth,
+	// key_id is the new key identifier.
+	cfg.APIKey = refreshResp.Token
+	cfg.KeyID = refreshResp.KeyID
+	if err := config.Save(cfgPath, cfg); err != nil {
+		return err
+	}
+
+	return output.PrintJSON(cmd.OutOrStdout(), rawBody)
+}
+
+// runKeysRevoke implements "afc keys revoke": DELETE /api/v1/keys/:key_id,
+// clear credentials on success or 404, print status to stderr.
+func runKeysRevoke(cmd *cobra.Command, args []string) error {
+	resolved, cfgPath, cfg, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// key_id must be present in config.
+	if err := keys.ValidateKeyID(resolved.KeyID); err != nil {
+		return err
+	}
+
+	client := httpclient.NewClient()
+	statusCode, body, err := keys.RevokeKey(resolved.HubURL, resolved.APIKey, resolved.KeyID, client)
+	if err != nil {
+		return err
+	}
+
+	// Handle the three response categories:
+	// 1. 2xx: key revoked successfully
+	// 2. 404: key not found (already revoked or deleted)
+	// 3. Other non-2xx: server error
+	switch {
+	case apierror.IsSuccess(statusCode):
+		// Clear credentials in config.
+		cfg.APIKey = ""
+		cfg.KeyID = ""
+		cfg.UserID = ""
+		if err := config.Save(cfgPath, cfg); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), "API key revoked.")
+		return nil
+
+	case statusCode == 404:
+		// Treat 404 as success — clear local credentials anyway.
+		cfg.APIKey = ""
+		cfg.KeyID = ""
+		cfg.UserID = ""
+		if err := config.Save(cfgPath, cfg); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), "API key not found on server. Local credentials cleared.")
+		return nil
+
+	default:
+		// Other non-2xx: print error to stderr, do not modify config.
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
 }
 
 // newWorkspaceCmd creates the workspace parent command with create, list, get,
