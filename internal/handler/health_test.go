@@ -2,7 +2,9 @@ package handler_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agent-fox-dev/hub/internal/handler"
 	"github.com/labstack/echo/v4"
@@ -68,6 +71,115 @@ func setupBrokenDB(t *testing.T) *sql.DB {
 	os.Remove(dbPath)
 
 	return database
+}
+
+// authTestSchemaDDL is the full DDL needed for auth middleware tests.
+// Duplicated from middleware_test helpers_test.go because test packages
+// cannot share unexported constants across packages.
+const authTestSchemaDDL = `
+CREATE TABLE IF NOT EXISTS users (
+    id          TEXT PRIMARY KEY,
+    username    TEXT NOT NULL UNIQUE,
+    email       TEXT NOT NULL,
+    full_name   TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'active',
+    provider    TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    UNIQUE (provider, provider_id)
+);
+
+CREATE TABLE IF NOT EXISTS admin_tokens (
+    id          TEXT PRIMARY KEY,
+    token_hash  TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z')
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id              TEXT PRIMARY KEY,
+    key_id          TEXT NOT NULL UNIQUE,
+    secret_hash     TEXT NOT NULL,
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    expires_at      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    revoked_at      TEXT,
+    expires_in_days INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    slug        TEXT NOT NULL UNIQUE,
+    url         TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'active',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z')
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id    TEXT NOT NULL REFERENCES teams(id),
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    id         TEXT PRIMARY KEY,
+    slug       TEXT NOT NULL UNIQUE,
+    git_url    TEXT NOT NULL,
+    branch     TEXT,
+    owner_id   TEXT NOT NULL REFERENCES users(id),
+    team_id    TEXT REFERENCES teams(id),
+    status     TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z')
+);
+
+CREATE TABLE IF NOT EXISTS workspace_tokens (
+    id           TEXT PRIMARY KEY,
+    token_id     TEXT NOT NULL UNIQUE,
+    secret_hash  TEXT NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    user_id      TEXT NOT NULL REFERENCES users(id),
+    label        TEXT,
+    expires_at   TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+    revoked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_tokens_token_id ON workspace_tokens(token_id);
+CREATE INDEX IF NOT EXISTS idx_users_provider ON users(provider, provider_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_slug ON workspaces(slug);
+CREATE INDEX IF NOT EXISTS idx_teams_slug ON teams(slug);
+`
+
+// setupAuthTestDB creates a temporary SQLite database with the full auth
+// schema and a seeded admin token for tests that need real auth middleware.
+// Returns the *sql.DB and the plaintext admin token string.
+func setupAuthTestDB(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	db := setupTestDB(t)
+	if _, err := db.Exec(authTestSchemaDDL); err != nil {
+		t.Fatalf("failed to create auth test schema: %v", err)
+	}
+
+	// Seed a known admin token.
+	suffix := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" // 64 hex chars
+	h := sha256.Sum256([]byte(suffix))
+	tokenHash := hex.EncodeToString(h[:])
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		"INSERT INTO admin_tokens (id, token_hash, created_at) VALUES (?, ?, ?)",
+		"admin-tok-test", tokenHash, now,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert admin token: %v", err)
+	}
+
+	return db, "af_admin_" + suffix
 }
 
 // ---------------------------------------------------------------------------

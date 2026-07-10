@@ -30,13 +30,14 @@ type errorEnvelope struct {
 // setupEchoWithRouteGroups creates an Echo instance with the spec 01 route
 // group structure:
 //   - Health probes registered directly on root (no group, no auth middleware)
-//   - Auth group at /api/v1/auth (no auth middleware)
+//   - Auth group at /api/v1/auth (no auth middleware, catch-all for structural exclusion)
 //   - Protected group at /api/v1 (with auth middleware)
 //   - Custom error handler assigned to e.HTTPErrorHandler
 //   - Global middleware: Recover, body-size limit, request logger
 //
+// Returns the Echo instance and a valid admin token for authenticated requests.
 // A test handler is registered on both the auth and protected groups.
-func setupEchoWithRouteGroups(t *testing.T) *echo.Echo {
+func setupEchoWithRouteGroups(t *testing.T) (*echo.Echo, string) {
 	t.Helper()
 	e := echo.New()
 
@@ -67,15 +68,22 @@ func setupEchoWithRouteGroups(t *testing.T) *echo.Echo {
 	authGroup.GET("/test", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"ok": "true"})
 	})
+	// Catch-all on the auth group ensures unregistered paths under
+	// /api/v1/auth/* are handled by this group (no auth middleware)
+	// rather than falling through to the protected group's auth middleware.
+	// This enforces structural exclusion via Echo's group model (REQ-11.2).
+	authGroup.Any("/*", func(c echo.Context) error {
+		return echo.ErrNotFound
+	})
 
 	// Protected group at /api/v1 — WITH auth middleware.
-	testDB := setupTestDB(t)
+	testDB, adminToken := setupAuthTestDB(t)
 	protectedGroup := e.Group("/api/v1", mw.AuthMiddleware(testDB))
 	protectedGroup.GET("/test", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"ok": "true"})
 	})
 
-	return e
+	return e, adminToken
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +96,7 @@ func setupEchoWithRouteGroups(t *testing.T) *echo.Echo {
 //
 // TS-01-35, REQ: 01-REQ-11.1
 func TestSpec01_RouteGroupHealthzAccessibleWithoutAuth(t *testing.T) {
-	e := setupEchoWithRouteGroups(t)
+	e, _ := setupEchoWithRouteGroups(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -105,7 +113,7 @@ func TestSpec01_RouteGroupHealthzAccessibleWithoutAuth(t *testing.T) {
 //
 // TS-01-35, REQ: 01-REQ-11.1
 func TestSpec01_RouteGroupProtectedRequiresAuth(t *testing.T) {
-	e := setupEchoWithRouteGroups(t)
+	e, _ := setupEchoWithRouteGroups(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
 	// No Authorization header set.
@@ -123,7 +131,7 @@ func TestSpec01_RouteGroupProtectedRequiresAuth(t *testing.T) {
 //
 // TS-01-35, TS-01-36, REQ: 01-REQ-11.1, 01-REQ-11.2
 func TestSpec01_RouteGroupAuthGroupNoChallenge(t *testing.T) {
-	e := setupEchoWithRouteGroups(t)
+	e, _ := setupEchoWithRouteGroups(t)
 
 	// Registered route under auth group.
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/test", nil)
@@ -142,7 +150,7 @@ func TestSpec01_RouteGroupAuthGroupNoChallenge(t *testing.T) {
 //
 // TS-01-36, REQ: 01-REQ-11.2
 func TestSpec01_AuthGroupExclusionIsStructural(t *testing.T) {
-	e := setupEchoWithRouteGroups(t)
+	e, _ := setupEchoWithRouteGroups(t)
 
 	// Try an unregistered path under the auth group. Should get 404 (not 401)
 	// because auth middleware is not applied to this group.
@@ -168,7 +176,7 @@ func TestSpec01_AuthGroupExclusionIsStructural(t *testing.T) {
 //
 // TS-01-37, REQ: 01-REQ-12.1
 func TestSpec01_CustomErrorHandlerEnvelope(t *testing.T) {
-	e := setupEchoWithRouteGroups(t)
+	e, _ := setupEchoWithRouteGroups(t)
 
 	// Access a nonexistent route under /api/v1 — should trigger 404 from Echo.
 	// Note: Since the auth middleware stub is pass-through, 404 should reach
@@ -214,7 +222,7 @@ func TestSpec01_CustomErrorHandlerEnvelope(t *testing.T) {
 //
 // TS-01-41, REQ: 01-REQ-12.5
 func TestSpec01_HealthProbeResponseNotErrorEnvelope(t *testing.T) {
-	e := setupEchoWithRouteGroups(t)
+	e, _ := setupEchoWithRouteGroups(t)
 
 	t.Run("healthz", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)

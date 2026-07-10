@@ -52,11 +52,14 @@ func TestSpec01_PropErrorEnvelopeConsistency(t *testing.T) {
 	e.Use(mw.BodySizeLimitMiddleware("1M"))
 	e.Use(mw.RequestLoggerMiddleware())
 
-	// Auth group (no auth middleware).
-	e.Group("/api/v1/auth")
+	// Auth group (no auth middleware) with catch-all for structural exclusion.
+	authGroup := e.Group("/api/v1/auth")
+	authGroup.Any("/*", func(c echo.Context) error {
+		return echo.ErrNotFound
+	})
 
-	// Protected group (with auth middleware).
-	testDB := setupTestDB(t)
+	// Protected group (with auth middleware using full schema + seeded admin token).
+	testDB, adminToken := setupAuthTestDB(t)
 	protected := e.Group("/api/v1", mw.AuthMiddleware(testDB))
 
 	// Register test handlers that produce specific errors.
@@ -90,6 +93,10 @@ func TestSpec01_PropErrorEnvelopeConsistency(t *testing.T) {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Auth header for cases that need to pass through auth middleware
+	// to reach the handler and trigger the intended error condition.
+	authHeader := map[string]string{"Authorization": "Bearer " + adminToken}
+
 	type errorCase struct {
 		method         string
 		path           string
@@ -102,24 +109,24 @@ func TestSpec01_PropErrorEnvelopeConsistency(t *testing.T) {
 	cases := []errorCase{
 		// 1. No auth header on protected route → 401
 		{http.MethodGet, "/api/v1/test-nonexistent", "", nil, http.StatusUnauthorized, "missing_auth_401"},
-		// 2. Route not found under /api/v1/ → 404
-		{http.MethodGet, "/api/v1/does-not-exist-xyz", "", nil, http.StatusNotFound, "not_found_404"},
-		// 3. Oversized body → 413
-		{http.MethodPost, "/api/v1/body-endpoint", strings.Repeat("X", 2*1024*1024), nil, http.StatusRequestEntityTooLarge, "body_too_large_413"},
-		// 4. Panic in handler → 500
-		{http.MethodGet, "/api/v1/panic-trigger", "", nil, http.StatusInternalServerError, "panic_500"},
-		// 5. Plain Go error → 500
-		{http.MethodGet, "/api/v1/plain-error", "", nil, http.StatusInternalServerError, "plain_error_500"},
-		// 6. HTTPError 422
-		{http.MethodGet, "/api/v1/http-422", "", nil, http.StatusUnprocessableEntity, "http_error_422"},
-		// 7. HTTPError 400
-		{http.MethodGet, "/api/v1/http-400", "", nil, http.StatusBadRequest, "http_error_400"},
-		// 8. HTTPError 403
-		{http.MethodGet, "/api/v1/http-403", "", nil, http.StatusForbidden, "http_error_403"},
-		// 9. HTTPError 409
-		{http.MethodGet, "/api/v1/http-409", "", nil, http.StatusConflict, "http_error_409"},
-		// 10. HTTPError 429
-		{http.MethodGet, "/api/v1/http-429", "", nil, http.StatusTooManyRequests, "http_error_429"},
+		// 2. Route not found under /api/v1/ → 404 (with auth to pass middleware)
+		{http.MethodGet, "/api/v1/does-not-exist-xyz", "", authHeader, http.StatusNotFound, "not_found_404"},
+		// 3. Oversized body → 413 (body-size limit fires before auth)
+		{http.MethodPost, "/api/v1/body-endpoint", strings.Repeat("X", 2*1024*1024), authHeader, http.StatusRequestEntityTooLarge, "body_too_large_413"},
+		// 4. Panic in handler → 500 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/panic-trigger", "", authHeader, http.StatusInternalServerError, "panic_500"},
+		// 5. Plain Go error → 500 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/plain-error", "", authHeader, http.StatusInternalServerError, "plain_error_500"},
+		// 6. HTTPError 422 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/http-422", "", authHeader, http.StatusUnprocessableEntity, "http_error_422"},
+		// 7. HTTPError 400 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/http-400", "", authHeader, http.StatusBadRequest, "http_error_400"},
+		// 8. HTTPError 403 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/http-403", "", authHeader, http.StatusForbidden, "http_error_403"},
+		// 9. HTTPError 409 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/http-409", "", authHeader, http.StatusConflict, "http_error_409"},
+		// 10. HTTPError 429 (with auth to reach handler)
+		{http.MethodGet, "/api/v1/http-429", "", authHeader, http.StatusTooManyRequests, "http_error_429"},
 	}
 
 	for i, tc := range cases {

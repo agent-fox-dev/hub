@@ -1,10 +1,9 @@
 // Package middleware also provides body-size limiting middleware for af-hub.
-//
-// Implementation will be added in task group 14.
 package middleware
 
 import (
 	"github.com/labstack/echo/v4"
+	echoMw "github.com/labstack/echo/v4/middleware"
 )
 
 // BodySizeLimitMiddleware returns Echo middleware that limits the request body
@@ -14,13 +13,11 @@ import (
 //
 // The limit parameter follows Echo's size notation (e.g., "1M" for 1 megabyte).
 //
-// Stub: returns a pass-through middleware. Implementation in task group 14.
+// Delegates to Echo's built-in BodyLimit middleware, which produces an
+// *echo.HTTPError with status 413 that flows through the custom error handler
+// to produce the standard error envelope.
+//
+// REQ: 01-REQ-13.1, 01-REQ-13.2, 01-REQ-13.3
 func BodySizeLimitMiddleware(limit string) echo.MiddlewareFunc {
-	// Stub: pass-through. Implementation in task group 14.
-	_ = limit
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			return next(c)
-		}
-	}
+	return echoMw.BodyLimit(limit)
 }
