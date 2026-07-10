@@ -759,7 +759,7 @@
             "04-REQ-14.1",
             "04-REQ-14.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -783,7 +783,7 @@
             "04-REQ-6.3",
             "04-REQ-6.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -816,7 +816,7 @@
             "04-REQ-7.E1",
             "04-REQ-13.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -825,7 +825,7 @@
           "details": [],
           "test_spec_refs": [],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
