@@ -1,0 +1,475 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `web_ui_scaffold` PRD is well-structured and sufficiently detailed for artifact generation. It clearly articulates intent, provides concrete and measurable goals, explicitly scopes out non-goals, and includes granular functional requirements with technical boundaries. The spec is deliberately minimal in its backend dependency (only the Vite dev proxy touches backend paths), which is appropriate for a scaffold. One minor area worth clarifying is the relationship to the `server_foundation` spec, which owns the `/healthz` and `/readyz` health probe paths that the proxy config references. No blocking gaps were identified.",
+      "gaps": [
+        "The 'Background' section is entirely absent. There is no context explaining why a web UI is being introduced now, what user or operator need it serves, or what prior work (if any) informs the technology choices (React, Vite, shadcn/ui, etc.).",
+        "The spec references proxying /healthz and /readyz, which are owned by the active `server_foundation` spec, but no formal dependency on `server_foundation` is declared in a Dependencies section.",
+        "The owner field is empty, meaning accountability for this spec is unassigned.",
+        "The 'project version' displayed in the hello-world route is mentioned but not defined \u2014 it's unclear where this value comes from (package.json version, a build-time env var injected by Vite, a backend API call, etc.).",
+        "No mention of how web/dist/ is served in production (e.g., embedded in the Go binary via go:embed, served by a CDN, or a separate static host). This may be intentional as a non-goal but is not explicitly called out."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Can you add a Background section explaining the motivation for introducing a web UI at this stage of the project and why this specific toolchain (React + Vite + Tailwind + shadcn/ui) was chosen?",
+          "context": "The Background section is a required part of the spec format. Without it, reviewers and future contributors lack the context needed to understand why decisions were made, making the spec harder to maintain and evolve.",
+          "options": [],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Should this spec declare a formal dependency on `server_foundation` (spec `server_foundation`), given that the Vite dev proxy is configured to forward /healthz and /readyz \u2014 paths that are defined and owned by that spec?",
+          "context": "The `server_foundation` spec is active and owns the health probe endpoints. Declaring a dependency makes the relationship explicit and ensures artifact generation respects the correct ordering. This is currently flagged as a gap because the proxy config will silently fail if the backend is not running.",
+          "options": [
+            "Yes \u2014 add a ## Dependencies section listing server_foundation as a runtime dependency for the dev proxy.",
+            "No \u2014 the proxy is optional during development; document it as a soft dependency in a note.",
+            "No \u2014 the proxy targets are configurable and the scaffold works without the backend."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Where does the 'project version' displayed in the hello-world route come from?",
+          "context": "The functional requirements state the hello-world component renders 'the project version', but the source of this value is unspecified. Artifact generation needs to know whether to read it from package.json (via Vite's define), a build-time environment variable, a hardcoded constant, or another source.",
+          "options": [
+            "Read from package.json via Vite's define/__APP_VERSION__ pattern.",
+            "Injected as a Vite environment variable (VITE_APP_VERSION) at build time.",
+            "Hardcoded placeholder string for now (e.g., '0.0.1').",
+            "Fetched from the backend /healthz or a /api/version endpoint."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "How is web/dist/ intended to be served in production \u2014 and should this be explicitly listed as a non-goal for this spec?",
+          "context": "The spec defines the build output target (web/dist/) but says nothing about how that output is ultimately served to users. If this is out of scope for the scaffold, it should be called out explicitly in Non-Goals to avoid ambiguity for future specs.",
+          "options": [
+            "Explicitly add 'Production serving of web/dist/ (go:embed, CDN, etc.)' to Non-Goals.",
+            "It will be embedded in the Go binary via go:embed \u2014 document this as a future dependency.",
+            "It will be handled by a separate infrastructure/deployment spec."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Who is the owner of this spec? The owner field is currently empty.",
+          "context": "An unowned spec has no clear accountability for review, sign-off, or maintenance. This should be assigned before the spec moves past draft status.",
+          "options": [],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and clear in its intent \u2014 establishing a frontend scaffold without overreaching into functional pages. Toolchain choices are justified, dependencies are declared, and the scope is tightly bounded. However, several gaps exist around directory structure conventions, version pinning strategy, ESLint configuration specifics, proxy failure behavior, Makefile integration context, and the hello-world component's exact content/structure. These are not blockers for starting work, but resolving them will prevent ambiguity during implementation.",
+      "gaps": [
+        "No explicit Node.js or npm version requirement is specified, which can cause environment inconsistencies across dev machines and CI.",
+        "The exact ESLint configuration (ruleset, config file format \u2014 flat config vs. legacy .eslintrc) is not specified, leaving room for inconsistent lint setups.",
+        "No mention of a .nvmrc or similar Node version pinning file to enforce the runtime environment.",
+        "The directory structure inside web/ is not described (e.g., src/, src/components/, src/routes/, src/main.tsx, index.html placement), which may lead to inconsistent scaffolding.",
+        "shadcn/ui initialization is mentioned but the component(s) to be copied in (if any) for the scaffold are not specified \u2014 it is unclear whether any shadcn component is used in the hello-world route or if initialization alone is sufficient.",
+        "The hello-world route component file path and name are not specified (e.g., src/routes/index.tsx or src/pages/Home.tsx).",
+        "No tsconfig.json strictness settings or notable compiler options (e.g., strict: true, moduleResolution) are mentioned.",
+        "The Makefile targets are defined but it is not stated whether they should be added to an existing top-level Makefile phony target list or a new one, and whether a `make web-lint` target is also expected.",
+        "No CI integration or script for running lint/build in CI is mentioned, which may be implied but is unconfirmed.",
+        "Package version pinning strategy (exact versions, semver ranges, or a lockfile commitment) is not addressed."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What Node.js version (and npm version, if relevant) should be used? Should a .nvmrc or .node-version file be committed to enforce this?",
+          "context": "Without a pinned Node.js version, different developers and CI environments may produce different build outputs or encounter incompatibilities with native dependencies.",
+          "options": [
+            "Node 20 LTS (with .nvmrc)",
+            "Node 22 LTS (with .nvmrc)",
+            "No pinning required \u2014 leave to the developer"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What ESLint configuration format and ruleset should be used? Should the scaffold use the new flat config (eslint.config.js) or the legacy .eslintrc format?",
+          "context": "ESLint 9+ defaults to flat config, but many TypeScript + React setups still use .eslintrc. Specifying this avoids implementation divergence.",
+          "options": [
+            "Flat config (eslint.config.js) \u2014 ESLint 9+",
+            "Legacy .eslintrc.cjs \u2014 ESLint 8",
+            "No preference \u2014 implementer decides"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What should the web/ directory structure look like? Specifically, should there be a src/ subdirectory, and what top-level files/folders are expected (e.g., src/main.tsx, src/routes/, src/components/, index.html)?",
+          "context": "Without a prescribed directory layout, different implementers may produce incompatible structures that future specs will have to work around.",
+          "options": [
+            "Standard Vite scaffold layout: index.html at web/ root, src/main.tsx, src/App.tsx, src/routes/",
+            "Flat src/ with no subdirectories for now",
+            "No preference \u2014 implementer decides"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Should any shadcn/ui component be used in the hello-world route, or is shadcn/ui simply initialized (configured + CLI installed) with no components copied in yet?",
+          "context": "shadcn/ui components are added individually via CLI. It is ambiguous whether the scaffold should include at least one component (e.g., Button) to validate the setup, or just the configuration.",
+          "options": [
+            "Initialize only \u2014 no components copied in yet",
+            "Copy in at least one component (e.g., Button) to validate the setup",
+            "No preference"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should a make web-lint target be added to the top-level Makefile alongside web-dev and web-build?",
+          "context": "npm run lint is specified as a requirement, but only web-dev and web-build are listed as Makefile targets. Consistency suggests web-lint should also exist.",
+          "options": [
+            "Yes, add make web-lint",
+            "No, lint is only accessible via npm run lint",
+            "No preference"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "Should the tsconfig.json use strict: true and any other notable compiler options (e.g., noUncheckedIndexedAccess, moduleResolution: bundler)?",
+          "context": "TypeScript strictness settings affect how much type-safety future page implementations must comply with. Establishing this in the scaffold avoids painful retrofits later.",
+          "options": [
+            "strict: true only (standard baseline)",
+            "strict: true plus noUncheckedIndexedAccess and moduleResolution: bundler",
+            "Vite scaffold defaults \u2014 no customization"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "Should package versions be pinned to exact versions, or are semver ranges (^) acceptable? Should the lockfile (package-lock.json or similar) be committed?",
+          "context": "Lockfile strategy affects reproducibility of builds in CI and across developer environments.",
+          "options": [
+            "Exact versions + lockfile committed",
+            "Semver ranges (^) + lockfile committed",
+            "Semver ranges, no lockfile requirement"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and unusually thorough for a scaffold spec. It clearly defines toolchain rationale, file layout, dependency lists, configuration snippets, Makefile targets, and a hello-world route. The vast majority of implementation decisions are already made. A few gaps remain around CI integration, port configurability, Tailwind/shadcn theming baseline, testing strategy, and some minor consistency issues that could cause ambiguity during implementation.",
+      "gaps": [
+        "No CI integration guidance \u2014 the PRD mentions CI reproducibility (lockfile) but does not specify whether `web-lint` and `web-build` are expected to run in the existing CI pipeline, or how they hook into it.",
+        "Vite dev server port is unspecified \u2014 the default Vite port (5173) is assumed but never stated, which could conflict with other services in the repo.",
+        "No guidance on how `web/dist/` is handled in `.gitignore` or the repo \u2014 whether it should be committed, ignored, or excluded from existing ignore rules is left implicit.",
+        "Tailwind CSS configuration baseline is underspecified \u2014 content paths for purging, dark-mode strategy, and whether the shadcn/ui CSS variable theming convention should be used are not addressed.",
+        "The `components.json` file required by shadcn/ui CLI is not mentioned in the project file tree, yet it is generated by `npx shadcn-ui init` and must be committed.",
+        "Path aliases (e.g., `@/` mapping to `src/`) are not addressed \u2014 shadcn/ui conventionally requires a `@/` alias in both `tsconfig.json` (paths) and `vite.config.ts` (resolve.alias), and omitting this will break the copied Button component.",
+        "No explicit error handling or fallback route defined \u2014 a 404/catch-all route is absent and not listed as a non-goal.",
+        "Testing strategy is entirely absent and not called out as a non-goal \u2014 it is unclear whether any unit test tooling (e.g., Vitest) is deferred to a future spec or intentionally excluded.",
+        "The `eslint-plugin-react` and `eslint-plugin-react-hooks` packages are listed as 'should be included' (not required), creating ambiguity for the implementer.",
+        "Ownership of the `Makefile` integration is ambiguous \u2014 it is unclear if this spec owns adding the phony targets or if that requires coordination with another spec/team."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should `make web-lint` and `make web-build` be wired into the existing CI pipeline (e.g., GitHub Actions workflow) as part of this spec, or is CI integration deferred to a future spec?",
+          "context": "The PRD emphasises reproducible installs in CI but says nothing about whether the new Makefile targets are actually invoked in CI. Implementers need to know the scope boundary.",
+          "options": [
+            "Wire into CI in this spec",
+            "Defer CI integration to a future spec",
+            "Document the expectation but leave CI changes out of scope"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What port should the Vite dev server listen on? Should it use the Vite default (5173) or a project-specific port?",
+          "context": "The PRD specifies the backend runs on localhost:8080 but never pins the frontend dev server port. Conflicts with other services are possible without an explicit port.",
+          "options": [
+            "Use Vite default (5173)",
+            "Use a custom port (please specify)",
+            "Leave it unconfigured (developer's choice)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Should `web/dist/` be added to `.gitignore`? Are there any other web-specific paths (e.g., `web/node_modules/`) already covered by a root-level `.gitignore`, or does a `web/.gitignore` need to be created?",
+          "context": "Production build output and node_modules should not be committed. The PRD is silent on `.gitignore` handling, which can lead to accidental commits of build artifacts.",
+          "options": [
+            "Add web/dist/ and web/node_modules/ to the root .gitignore",
+            "Create a web/.gitignore for web-specific ignores",
+            "Both are already covered by an existing .gitignore"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Should the shadcn/ui CSS variable theming convention be used (i.e., the default shadcn/ui `tailwind.config.ts` with CSS variable colour tokens), or should Tailwind be configured with a plain/minimal setup?",
+          "context": "The shadcn/ui CLI generates a specific Tailwind config and a `globals.css` with CSS variable declarations. If this convention is not followed, the copied Button component will render without correct styles.",
+          "options": [
+            "Use the full shadcn/ui Tailwind + CSS variable convention (recommended)",
+            "Use a minimal Tailwind config without CSS variables",
+            "No preference \u2014 implementer decides"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should a `@/` path alias (mapping to `src/`) be configured in both `tsconfig.json` and `vite.config.ts`?",
+          "context": "shadcn/ui components conventionally import from `@/components/ui/...`. Without this alias, the copied Button component will have broken imports and the project will fail to build.",
+          "options": [
+            "Yes \u2014 configure @/ alias in both tsconfig.json and vite.config.ts",
+            "No \u2014 use relative imports instead and adjust shadcn component imports accordingly"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Should `components.json` (generated by `npx shadcn-ui init`) be committed to the repository?",
+          "context": "The shadcn/ui CLI reads `components.json` to know where to copy components, what alias to use, and which style/theme is selected. Without it, future `npx shadcn-ui add <component>` commands will fail.",
+          "options": [
+            "Yes \u2014 commit components.json",
+            "No \u2014 document the init command instead and regenerate as needed"
+          ],
+          "required": true
+        },
+        {
+          "id": "q7",
+          "text": "Is unit/component testing (e.g., Vitest + React Testing Library) explicitly out of scope for this scaffold, or should a minimal test configuration be included?",
+          "context": "The PRD has no mention of testing. Clarifying this as a non-goal prevents scope creep while also signalling to future specs whether they need to add testing infrastructure.",
+          "options": [
+            "Explicitly out of scope for this spec \u2014 add to Non-goals",
+            "Include a minimal Vitest configuration as part of the scaffold",
+            "Defer to a future spec"
+          ],
+          "required": false
+        },
+        {
+          "id": "q8",
+          "text": "Should `eslint-plugin-react` and `eslint-plugin-react-hooks` be required (not just recommended) lint dependencies in this spec?",
+          "context": "The PRD uses 'should be included' (non-normative) for these plugins, which creates ambiguity. React hooks rules in particular catch common bugs and are widely considered essential for React projects.",
+          "options": [
+            "Make them required \u2014 change 'should' to 'must'",
+            "Keep as recommended \u2014 'should' is intentional",
+            "Drop the mention entirely and leave to implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q9",
+          "text": "Should a 404 / catch-all route be included in the React Router setup, or is that explicitly deferred to a future spec?",
+          "context": "Without a catch-all route, navigating to any path other than / will render nothing. Clarifying whether this is in or out of scope avoids an implicit gap.",
+          "options": [
+            "Include a minimal 404 catch-all route in this spec",
+            "Defer to a future spec \u2014 add to Non-goals"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured scaffold PRD. It is thorough, internally consistent, and covers toolchain rationale, functional requirements, directory layout, configuration details, and explicit non-goals. The level of specificity is appropriate for an implementation-ready spec. A small number of minor gaps and clarifying questions remain, but none are blockers for implementation.",
+      "gaps": [
+        "The `.nvmrc` location is ambiguous: the Goals section says 'web/.nvmrc (or repo root)' and the directory tree shows it under `web/`, but the Environment Pinning requirement says 'web/.nvmrc (or repo root)'. A single canonical location should be specified.",
+        "The Vite proxy configuration does not specify the `changeOrigin` or `rewrite` options, which are commonly needed for correct proxy behaviour (e.g., `/healthz` forwarded verbatim vs. rewritten). This could cause subtle issues if not clarified.",
+        "No explicit `tsconfig.node.json` (or equivalent Vite config TS split) is mentioned, which is the standard Vite+TypeScript scaffold pattern and may cause confusion for implementers.",
+        "The `define` block injects `__APP_VERSION__` via `process.env.npm_package_version`, which is only available when running via `npm run`. Behaviour when invoking Vite directly (e.g., `npx vite`) is undefined and could confuse developers.",
+        "Dark mode toggle is not addressed: `tailwind.config.ts` sets `darkMode: 'class'`, but no mechanism to switch classes is provided or explicitly noted as out of scope.",
+        "The spec does not clarify whether `eslint-plugin-react` requires the `react/react-in-jsx-scope` rule to be disabled (required for React 17+ JSX transform), which is a common linting pitfall.",
+        "No mention of a `src/lib/utils.ts` file, which `npx shadcn-ui init` generates by default and is imported by all shadcn/ui components (including Button). Its absence from the directory tree may mislead implementers."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Where should `.nvmrc` be placed \u2014 at the repo root or inside `web/`?",
+          "context": "The Goals section, the directory tree, and the Environment Pinning section give slightly conflicting guidance ('web/.nvmrc (or repo root)'). A single canonical location avoids ambiguity for implementers and CI tooling.",
+          "options": [
+            "Repo root only",
+            "web/ only",
+            "Both locations (repo root takes precedence)",
+            "Both locations (web/ takes precedence)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should the Vite dev proxy for `/healthz` and `/readyz` forward the paths verbatim, or should they be rewritten? And should `changeOrigin: true` be set?",
+          "context": "Without explicit `changeOrigin` and path-rewrite configuration in the spec, implementers may produce a proxy that works locally but behaves incorrectly in some environments. Since the backend owns these paths via `server_foundation`, the exact forwarding semantics should be pinned.",
+          "options": [
+            "Verbatim path forwarding, changeOrigin: true",
+            "Verbatim path forwarding, changeOrigin: false (default)",
+            "Path rewrite required \u2014 specify rewrite rule",
+            "Leave to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should `src/lib/utils.ts` (the `cn()` utility generated by `npx shadcn-ui init`) be explicitly listed in the directory tree and required by the spec?",
+          "context": "`npx shadcn-ui init` generates `src/lib/utils.ts` containing the `cn()` helper, which is imported by every shadcn/ui component including Button. Omitting it from the spec's directory tree may cause confusion or incomplete implementations.",
+          "options": [
+            "Yes \u2014 add it to the directory tree and note it as generated by shadcn-ui init",
+            "No \u2014 implementers can infer it from running the CLI",
+            "No \u2014 but add a note in the shadcn/ui section that additional files may be generated by the CLI"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should a `tsconfig.node.json` (for Vite config files) be included alongside `tsconfig.json`?",
+          "context": "The standard Vite+TypeScript scaffold splits TypeScript config into `tsconfig.json` (for src/) and `tsconfig.node.json` (for vite.config.ts and other Node-side config files). Without it, `vite.config.ts` may emit type errors or require workarounds. The spec currently only mentions `tsconfig.json`.",
+          "options": [
+            "Yes \u2014 add tsconfig.node.json to the file tree and requirements",
+            "No \u2014 use a single tsconfig.json covering all files",
+            "No \u2014 but add a note that vite.config.ts is excluded from strict checking"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the dark mode class-switching mechanism be explicitly noted as out of scope, or should a minimal toggle be included in the hello-world route?",
+          "context": "`tailwind.config.ts` uses `darkMode: 'class'`, meaning dark mode only activates when a `dark` class is present on the root element. Without at least a note, implementers may wonder whether to wire this up or leave the UI stuck in light mode.",
+          "options": [
+            "Explicitly out of scope \u2014 add to Non-goals",
+            "Include a minimal toggle in the hello-world route",
+            "Default to dark mode by adding the 'dark' class to <html> statically",
+            "Leave unaddressed (current behaviour)"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This PRD is exceptionally well-written and comprehensive. It clearly defines the scope, toolchain rationale, directory structure, configuration specifics, and boundaries for a frontend scaffold. The document is implementation-ready with minimal ambiguity. Only a small number of minor clarifications could further improve it, but none are blockers.",
+      "gaps": [
+        "No explicit semver range versions or approximate versions are specified for runtime/dev dependencies (e.g., which major version of react-router-dom, @tanstack/react-query, etc.), which could lead to unexpected compatibility issues if a major version bump occurs between setup and CI lockdown.",
+        "The `hello-world` route content for the version display is described but the exact JSX structure (heading tag level, surrounding layout) is not specified, leaving minor inconsistency risk across implementations.",
+        "No guidance is given on whether `eslint.config.js` should use `ignores` to exclude `web/dist/` or `web/node_modules/` from linting, which could cause lint errors if those directories contain JS/TS files.",
+        "The `tsconfig.node.json` example uses `moduleResolution: bundler` but does not clarify whether `@types/node` is required as a dev dependency for `path` and `__dirname` usage in `vite.config.ts`.",
+        "No explicit statement about whether `src/components/ui/` (beyond `button.tsx`) should be committed as an empty directory or only populated by future `npx shadcn-ui add` commands."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should approximate major versions or minimum version constraints be specified for key runtime dependencies (e.g., React 18+, React Router v6/v7, TanStack Query v5)?",
+          "context": "Without version guidance, a future npm install could pull in a major version with breaking API changes (e.g., React Router v7's new API surface), causing the scaffold to diverge from what future specs assume.",
+          "options": [
+            "Yes \u2014 pin major versions explicitly in package.json (e.g., `react: ^18`, `react-router-dom: ^6`, `@tanstack/react-query: ^5`)",
+            "No \u2014 leave fully open and rely on the lockfile as the only source of truth",
+            "Add a note in the PRD listing minimum tested major versions without enforcing them in package.json"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should `@types/node` be listed as a dev dependency to support `path` and `__dirname` usage in `vite.config.ts`?",
+          "context": "`vite.config.ts` uses `import path from 'path'` and `path.resolve(__dirname, ...)`, which require Node.js type definitions. Without `@types/node`, TypeScript may error on these. This is a common gotcha that could break `npm run lint` (tsc --noEmit).",
+          "options": [
+            "Yes \u2014 add @types/node to devDependencies and mention it in the PRD",
+            "No \u2014 rely on Vite's bundled types or vite/client to cover this",
+            "Not sure \u2014 leave it to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should `eslint.config.js` explicitly ignore `dist/` and `node_modules/` directories to prevent lint errors on build artifacts?",
+          "context": "ESLint 9 flat config does not automatically ignore `dist/` or other non-source directories the way the legacy `.eslintignore` did. If `npm run lint` is run and `web/dist/` contains JS files, ESLint may attempt to lint them and produce errors, breaking the zero-errors requirement.",
+          "options": [
+            "Yes \u2014 add explicit `ignores: ['dist/', 'node_modules/']` to eslint.config.js and document this in the PRD",
+            "No \u2014 the root .gitignore exclusion is sufficient",
+            "Leave it to the implementer to handle"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should the hello-world route specify a minimum visual structure (e.g., heading tag level, page layout wrapper) to ensure consistency with future functional pages?",
+          "context": "Future specs adding functional pages may expect a consistent page shell or layout component. Specifying even a minimal structure (e.g., `<main>` wrapper, `<h1>` for the heading) in the scaffold prevents future refactoring work.",
+          "options": [
+            "Yes \u2014 specify that the heading uses <h1>, the version is in a <p> tag, and the layout uses a simple centered <main> wrapper",
+            "No \u2014 leave layout details entirely to the implementer; future specs will define the design system",
+            "Add a note that the exact markup is intentionally minimal and will be replaced by a future layout spec"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the `src/components/ui/` directory (beyond `button.tsx`) be committed as an empty placeholder, or left entirely absent until future specs add components?",
+          "context": "An empty committed directory (via `.gitkeep`) signals to future contributors where shadcn components should land. Without it, the directory tree shown in the PRD may not match what gets committed, causing confusion.",
+          "options": [
+            "Commit an empty `src/components/ui/` directory with a `.gitkeep` file",
+            "Only commit the directory once `button.tsx` is added (which it is, per the spec) \u2014 no .gitkeep needed",
+            "Leave this unspecified"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "af-hub needs a web UI for operators and users to interact with the platform. The web UI will eventually provide dashboards, settings management, and operational views. This scaffold spec sets up the project structure and toolchain so future specs can add functional pages incrementally. The toolchain was chosen for: Vite (fast dev server, good TypeScript support), React (team familiarity, large ecosystem), Tailwind CSS (utility-first styling, rapid prototyping), shadcn/ui (accessible components copied into the tree for full control, built on Radix UI), React Router (standard client-side routing), TanStack Query (powerful async state management for future API integration). This is a TypeScript project.",
+        "q2": "Yes -- add a ## Dependencies section listing server_foundation as a runtime dependency for the dev proxy. The proxy will fail silently if the backend is not running, but this is expected during frontend-only development.",
+        "q3": "Read from package.json via Vite's define/__APP_VERSION__ pattern.",
+        "q4": "Explicitly add 'Production serving of web/dist/ (go:embed, CDN, etc.)' to Non-Goals.",
+        "q5": "Leave the owner field empty for now. It will be assigned during review."
+      },
+      "timestamp": "2026-07-10T15:02:51.592733+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Node 22 LTS (with .nvmrc)",
+        "q2": "Flat config (eslint.config.js) -- ESLint 9+",
+        "q3": "Standard Vite scaffold layout: index.html at web/ root, src/main.tsx, src/App.tsx, src/routes/, src/components/",
+        "q4": "Copy in at least one component (e.g., Button) to validate the setup",
+        "q5": "Yes, add make web-lint",
+        "q6": "strict: true plus noUncheckedIndexedAccess and moduleResolution: bundler",
+        "q7": "Semver ranges (^) + lockfile committed"
+      },
+      "timestamp": "2026-07-10T15:04:03.670344+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Defer CI integration to a future spec",
+        "q2": "Use Vite default (5173)",
+        "q3": "Add web/dist/ and web/node_modules/ to the root .gitignore",
+        "q4": "Use the full shadcn/ui Tailwind + CSS variable convention (recommended)",
+        "q5": "Yes -- configure @/ alias in both tsconfig.json and vite.config.ts",
+        "q6": "Yes -- commit components.json",
+        "q7": "Explicitly out of scope for this spec -- add to Non-goals",
+        "q8": "Make them required -- change 'should' to 'must'",
+        "q9": "Include a minimal 404 catch-all route in this spec"
+      },
+      "timestamp": "2026-07-10T15:05:41.634897+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "web/ only",
+        "q2": "Verbatim path forwarding, changeOrigin: true",
+        "q3": "Yes -- add it to the directory tree and note it as generated by shadcn-ui init",
+        "q4": "Yes -- add tsconfig.node.json to the file tree and requirements",
+        "q5": "Explicitly out of scope -- add to Non-goals"
+      },
+      "timestamp": "2026-07-10T15:07:30.306625+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

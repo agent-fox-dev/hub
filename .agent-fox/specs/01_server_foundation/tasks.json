@@ -1,0 +1,1996 @@
+{
+  "$schema": null,
+  "spec_id": "01",
+  "spec_name": "server_foundation",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/... -count=1 -v -run 'TestSpec01'",
+    "all_tests": "go test ./... -count=1 -race",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write spec tests: configuration loading and startup sequence",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for config loading defaults and valid TOML parsing",
+          "details": [
+            "Create test file internal/config/config_test.go",
+            "Test: loadConfig with no config.toml returns all defaults (port=8080, bind=0.0.0.0, db=./data/af-hub.db, level=info)",
+            "Test: loadConfig with fully populated config.toml parses all fields correctly including [[oauth.providers]] blocks",
+            "Assert cfg.Server.Port, cfg.Server.Bind, cfg.Server.ExternalURL, cfg.Database.Path, cfg.Log.Level, cfg.OAuth.Providers"
+          ],
+          "test_spec_refs": [
+            "TS-01-1",
+            "TS-01-5"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.1",
+            "01-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write unit tests for config parse errors and unknown field warnings",
+          "details": [
+            "Test: invalid TOML syntax causes process exit code 1 with fatal log entry",
+            "Test: unrecognized fields emit warn-level log per field and server continues",
+            "Test: invalid log.level emits warn log with invalid_value field and defaults to info",
+            "Test: missing config.toml is non-fatal; all defaults applied with no error log"
+          ],
+          "test_spec_refs": [
+            "TS-01-2",
+            "TS-01-3",
+            "TS-01-4",
+            "TS-01-E1"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.2",
+            "01-REQ-1.3",
+            "01-REQ-1.4",
+            "01-REQ-1.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write unit tests for admin_token file directory anchoring",
+          "details": [
+            "Test: without --config flag, admin_token file is written to current working directory",
+            "Test: with --config /tmp/test-config.toml, admin_token file is written to /tmp/",
+            "Test: startup info log entry contains all four fields (bind, port, db_path, log_level) with correct types (port=integer)"
+          ],
+          "test_spec_refs": [
+            "TS-01-E2",
+            "TS-01-7"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.E2",
+            "01-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write integration tests for startup sequence ordering",
+          "details": [
+            "Test: log entries appear in correct order — logging init before DB, DB before admin bootstrap, admin bootstrap before startup info",
+            "Test: fatal error during init steps 2-5 exits with code 1 before opening HTTP listener",
+            "Use log timestamp ordering to verify sequential initialization"
+          ],
+          "test_spec_refs": [
+            "TS-01-6",
+            "TS-01-E3"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "Test stubs exist and fail as expected (not yet implemented): go test ./internal/config/... -count=1 -v",
+          "No linter errors in test files: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write spec tests: database initialization and health probes",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write integration tests for SQLite initialization, pragmas, and schema",
+          "details": [
+            "Test: parent directories for DB path are created automatically (mkdir -p equivalent)",
+            "Test: WAL, foreign_keys, and busy_timeout pragmas applied in order; verify via PRAGMA queries",
+            "Test: all 7 tables and 5 indexes exist after initialization; idempotent on second boot",
+            "Test: sql.DB instance has default MaxOpenConnections=0 (no explicit SetMaxOpenConns override)"
+          ],
+          "test_spec_refs": [
+            "TS-01-8",
+            "TS-01-9",
+            "TS-01-10",
+            "TS-01-11"
+          ],
+          "requirement_refs": [
+            "01-REQ-3.1",
+            "01-REQ-3.2",
+            "01-REQ-3.3",
+            "01-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write unit tests for SQLite fatal error paths",
+          "details": [
+            "Test: unwritable parent directory causes fatal exit code 1 with directory creation failure reason in log",
+            "Test: DB open failure (e.g., path is a directory) causes fatal exit code 1",
+            "Test: PRAGMA failure logs the specific failing pragma name and exits with code 1",
+            "Test: write contention beyond busy_timeout returns HTTP 503 with standard error envelope"
+          ],
+          "test_spec_refs": [
+            "TS-01-E4",
+            "TS-01-E5",
+            "TS-01-E6",
+            "TS-01-E7"
+          ],
+          "requirement_refs": [
+            "01-REQ-3.E1",
+            "01-REQ-3.E2",
+            "01-REQ-3.E3",
+            "01-REQ-3.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write integration tests for health probe endpoints",
+          "details": [
+            "Test: GET /healthz returns 200 with {\"status\": \"ok\"}; HEAD /healthz returns 200 with no body",
+            "Test: GET /readyz returns 200 with {\"status\": \"ready\"} when DB is healthy",
+            "Test: GET /readyz returns 503 and server remains running (no shutdown); GET /healthz still 200 after degraded readyz",
+            "Test: POST /healthz and POST /readyz return 405 using Echo default (not API error envelope)"
+          ],
+          "test_spec_refs": [
+            "TS-01-12",
+            "TS-01-13",
+            "TS-01-15",
+            "TS-01-16"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.1",
+            "01-REQ-4.2",
+            "01-REQ-4.4",
+            "01-REQ-4.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write integration tests for readyz failure counter and logging cadence",
+          "details": [
+            "Test: first DB failure increments counter to 1 and logs at error level",
+            "Test: subsequent consecutive failures log at debug level only",
+            "Test: recovery after degraded state emits info-level recovery log and resets counter to 0",
+            "Test: two concurrent probes recovering simultaneously may emit duplicate recovery logs; counter is correctly 0; use -race flag"
+          ],
+          "test_spec_refs": [
+            "TS-01-14",
+            "TS-01-E8"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.3",
+            "01-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "DB and health probe test stubs fail as expected (not yet implemented): go test ./internal/db/... ./internal/handler/... -count=1 -v",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write spec tests: logging, request ID, and graceful shutdown",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write unit tests for structured logging initialization",
+          "details": [
+            "Test: logrus configured with JSONFormatter, output=os.Stdout, level from config",
+            "Test: request logger middleware emits entry with method, path, status (int), duration_ms (float), request_id (UUID string)",
+            "Test: all 7 log levels including trace map to logrus.TraceLevel natively; logrus.ParseLevel(\"trace\") succeeds"
+          ],
+          "test_spec_refs": [
+            "TS-01-17",
+            "TS-01-18",
+            "TS-01-19"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1",
+            "01-REQ-5.2",
+            "01-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write unit and integration tests for request ID generation and propagation",
+          "details": [
+            "Test: valid X-Request-ID header value is propagated as-is to context and response header",
+            "Test: absent X-Request-ID header causes UUID v4 generation; response header set",
+            "Test: X-Request-ID response header always present on every response",
+            "Test: invalid X-Request-ID (empty, non-printable bytes \\x01, >128 chars) silently discarded; fresh UUID v4 generated; no error returned"
+          ],
+          "test_spec_refs": [
+            "TS-01-20",
+            "TS-01-21",
+            "TS-01-22",
+            "TS-01-E9"
+          ],
+          "requirement_refs": [
+            "01-REQ-6.1",
+            "01-REQ-6.2",
+            "01-REQ-6.3",
+            "01-REQ-6.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration tests for graceful shutdown behavior",
+          "details": [
+            "Test: SIGTERM stops new connections; in-flight request completes; e.Shutdown used with 15s context",
+            "Test: clean drain emits info-level msg=server shutdown complete; process exits code 0",
+            "Test: 15-second timeout expiry emits fixed warn msg with no connection count",
+            "Test: hijacked connections closed immediately by Shutdown; server exits within 15s window"
+          ],
+          "test_spec_refs": [
+            "TS-01-23",
+            "TS-01-24",
+            "TS-01-25",
+            "TS-01-E10"
+          ],
+          "requirement_refs": [
+            "01-REQ-7.1",
+            "01-REQ-7.2",
+            "01-REQ-7.3",
+            "01-REQ-7.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "Logging and shutdown test stubs fail as expected: go test ./internal/middleware/... -count=1 -v",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write spec tests: admin bootstrap, token validation, and rotation",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write integration tests for admin bootstrap on first boot",
+          "details": [
+            "Test: first boot creates admin user row, generates af_admin_<64hex> token, stores SHA-256 hash, writes file mode 0600, emits warn log with absolute path",
+            "Test: AF_HUB_ADMIN_TOKEN set on first boot emits info notice and is ignored",
+            "Test: existing admin_token file overwritten silently with warn log containing path field",
+            "Test: unwritable directory for admin_token file causes fatal exit code 1",
+            "Test: missing admin user row on subsequent boot does not prevent startup or admin token auth"
+          ],
+          "test_spec_refs": [
+            "TS-01-26",
+            "TS-01-27",
+            "TS-01-28",
+            "TS-01-E11",
+            "TS-01-E12"
+          ],
+          "requirement_refs": [
+            "01-REQ-8.1",
+            "01-REQ-8.2",
+            "01-REQ-8.3",
+            "01-REQ-8.E1",
+            "01-REQ-8.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write integration tests for subsequent-boot token validation",
+          "details": [
+            "Test: correct AF_HUB_ADMIN_TOKEN SHA-256 matches stored hash → server starts; wrong token → fatal exit code 1",
+            "Test: admin_token file still present on subsequent boot emits warn security notice with path",
+            "Test: admin_token file absent on subsequent boot emits no log entry about the file",
+            "Test: absent AF_HUB_ADMIN_TOKEN on subsequent boot → fatal exit code 1; no HTTP listener opened"
+          ],
+          "test_spec_refs": [
+            "TS-01-29",
+            "TS-01-30",
+            "TS-01-31",
+            "TS-01-E13"
+          ],
+          "requirement_refs": [
+            "01-REQ-9.1",
+            "01-REQ-9.2",
+            "01-REQ-9.3",
+            "01-REQ-9.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write integration tests for admin token rotation via --reset-admin-token",
+          "details": [
+            "Test: --reset-admin-token bypasses AF_HUB_ADMIN_TOKEN; new token replaces old; file overwritten mode 0600; warn log with path",
+            "Test: --reset-admin-token with empty admin_tokens behaves identically to first boot",
+            "Test: --reset-admin-token + --config <path> processed independently; token file written to config directory",
+            "Test: unwritable token file destination during rotation → fatal exit code 1"
+          ],
+          "test_spec_refs": [
+            "TS-01-32",
+            "TS-01-33",
+            "TS-01-34",
+            "TS-01-E14"
+          ],
+          "requirement_refs": [
+            "01-REQ-10.1",
+            "01-REQ-10.2",
+            "01-REQ-10.3",
+            "01-REQ-10.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "Admin bootstrap test stubs fail as expected: go test ./internal/admin/... -count=1 -v",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write spec tests: route groups, error handler, middleware order, and auth middleware",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write integration tests for route group structure and custom error handler",
+          "details": [
+            "Test: /healthz reachable without auth; /api/v1/ requires auth (401); /api/v1/auth/* not challenged (404 not 401)",
+            "Test: /api/v1/auth/* exclusion is structural via Echo group, not path-prefix matching",
+            "Test: GET /api/v1/nonexistent returns 404 with error envelope {\"error\": {\"code\": 404, \"message\": ...}}",
+            "Test: /healthz and /readyz return {\"status\": ...} not error envelope"
+          ],
+          "test_spec_refs": [
+            "TS-01-35",
+            "TS-01-36",
+            "TS-01-37",
+            "TS-01-41"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.1",
+            "01-REQ-11.2",
+            "01-REQ-12.1",
+            "01-REQ-12.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write unit tests for custom error handler dispatch logic",
+          "details": [
+            "Test: *echo.HTTPError with Code=422, Message=unprocessable entity → HTTP 422 with envelope",
+            "Test: plain Go error → HTTP 500 with {\"error\": {\"code\": 500, \"message\": \"internal server error\"}}",
+            "Test: panic in handler → Recover middleware → custom error handler → HTTP 500 envelope; no raw panic in body; X-Request-ID present"
+          ],
+          "test_spec_refs": [
+            "TS-01-38",
+            "TS-01-39",
+            "TS-01-40"
+          ],
+          "requirement_refs": [
+            "01-REQ-12.2",
+            "01-REQ-12.3",
+            "01-REQ-12.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write integration tests for middleware execution order and body-size limit",
+          "details": [
+            "Test: POST with 2MB body returns 413 before auth processes; 413 appears in request log",
+            "Test: POST with 1.1MB body returns 413 with error envelope; log entry has status=413",
+            "Test: GET and HEAD /healthz return 200 with no 413 (body-size limit is no-op for bodyless requests)"
+          ],
+          "test_spec_refs": [
+            "TS-01-42",
+            "TS-01-43",
+            "TS-01-44"
+          ],
+          "requirement_refs": [
+            "01-REQ-13.1",
+            "01-REQ-13.2",
+            "01-REQ-13.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Write integration tests for auth middleware 401 conditions and AuthContext storage",
+          "details": [
+            "Test: all five 401 conditions (absent header, non-Bearer, empty token, unrecognized prefix, structural failure) return HTTP 401 with standard envelope",
+            "Test: AuthContext retrievable from Echo context via c.Get(string(AuthContextKey)).(*AuthContext) after successful auth",
+            "Test: structurally invalid tokens (wrong key_id length, wrong secret length) return 401 immediately with zero DB queries"
+          ],
+          "test_spec_refs": [
+            "TS-01-45",
+            "TS-01-49",
+            "TS-01-50"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.1",
+            "01-REQ-14.5",
+            "01-REQ-14.6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "Route group and middleware test stubs fail as expected: go test ./internal/middleware/... ./internal/handler/... -count=1 -v",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "tests",
+      "title": "Write spec tests: auth middleware credential verification and edge cases",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Write integration tests for admin token auth and user API key auth",
+          "details": [
+            "Test: valid admin token → AuthContext{CredentialType=admin, IsAdmin=true, UserID=\"\", WorkspaceID=\"\"}",
+            "Test: valid user API key → AuthContext{CredentialType=api_key, UserID=<uuid>, IsAdmin=false, WorkspaceID=\"\"}",
+            "Test: all hash comparisons use crypto/subtle.ConstantTimeCompare (code review / static analysis assertion)",
+            "Test: admin token auth with admin user row status=blocked still returns 2xx (admin bypasses blocked-user check)"
+          ],
+          "test_spec_refs": [
+            "TS-01-46",
+            "TS-01-47",
+            "TS-01-51",
+            "TS-01-52"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.2",
+            "01-REQ-14.3",
+            "01-REQ-14.7",
+            "01-REQ-14.8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Write integration tests for workspace token auth and token state edge cases",
+          "details": [
+            "Test: valid workspace token → AuthContext{CredentialType=workspace_token, UserID=<uuid>, WorkspaceID=<uuid>, IsAdmin=false}",
+            "Test: malformed workspace tokens (too many parts, token_id <8, secret <32) → 401 with zero DB queries",
+            "Test: malformed API key tokens (key_id too short, missing secret, secret <32) → 401 with zero DB queries",
+            "Test: revoked token (revoked_at IS NOT NULL) → 401; same response as expired",
+            "Test: expired token (expires_at < now) → 401; token with expires_at == now is NOT expired (exclusive boundary)"
+          ],
+          "test_spec_refs": [
+            "TS-01-48",
+            "TS-01-E16",
+            "TS-01-E17",
+            "TS-01-E18",
+            "TS-01-E19"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.4",
+            "01-REQ-14.E2",
+            "01-REQ-14.E3",
+            "01-REQ-14.E4",
+            "01-REQ-14.E5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Write integration tests for auth middleware DB contention and blocked user",
+          "details": [
+            "Test: DB lookup for api_keys during auth with write lock held → HTTP 503 {\"error\": {\"code\": 503, \"message\": \"service temporarily unavailable\"}}",
+            "Test: DB lookup for workspace_tokens with busy timeout → HTTP 503 with same envelope"
+          ],
+          "test_spec_refs": [
+            "TS-01-E15"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Write property and correctness tests for hash invariants and expiry boundary",
+          "details": [
+            "Property test: 100 random 64-char hex suffixes → stored hash == hex(sha256(suffix)); verification recomputes same hash",
+            "Property test: 100 random (key_id, secret) pairs → sha256 of secret only stored; constant-time compare used",
+            "Property test: 100 random (token_id, secret) pairs for workspace tokens → same as API key invariant",
+            "Property test: 20 admin_token file writes → mode always 0600; group/world bits always 0",
+            "Property test: 50 tokens spanning past/exact-now/future expires_at → exclusive UTC boundary enforced"
+          ],
+          "test_spec_refs": [
+            "TS-01-P1",
+            "TS-01-P2",
+            "TS-01-P3",
+            "TS-01-P9",
+            "TS-01-P10"
+          ],
+          "requirement_refs": [
+            "01-PROP-1",
+            "01-PROP-2",
+            "01-PROP-3",
+            "01-PROP-9",
+            "01-PROP-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "Auth middleware test stubs fail as expected: go test ./internal/middleware/auth_test.go -count=1 -v",
+          "Property test files compile and skeletons run: go test ./internal/... -run 'TestProp' -count=1 -v",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "tests",
+      "title": "Write spec tests: system properties and smoke test stubs",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Write property tests for startup ordering, error envelope, and readyz goroutine safety",
+          "details": [
+            "Property test: 50 admin token requests with varied users table state → IsAdmin=true, UserID=\"\", no users query, no 403",
+            "Property test: 200 random token strings → no DB query for structurally invalid tokens",
+            "Property test: 20 boot cycles (first boot, subsequent, reset flag) → HTTP listener never opens before DB init and admin bootstrap",
+            "Property test: 10 different error conditions on /api/v1/* → all bodies match envelope; code == HTTP status",
+            "Property test: 50 concurrent /readyz requests with -race → no data race on failure counter; no negative counter"
+          ],
+          "test_spec_refs": [
+            "TS-01-P4",
+            "TS-01-P5",
+            "TS-01-P6",
+            "TS-01-P7",
+            "TS-01-P8"
+          ],
+          "requirement_refs": [
+            "01-PROP-4",
+            "01-PROP-5",
+            "01-PROP-6",
+            "01-PROP-7",
+            "01-PROP-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Write smoke test harness stubs for all 8 execution paths",
+          "details": [
+            "Create internal/integration/smoke_test.go with test functions for all 8 smoke scenarios",
+            "SMOKE-1: first boot — DB created, tables/indexes exist, admin_token file mode 0600, /healthz 200, /readyz 200",
+            "SMOKE-2: subsequent boot — hash validation succeeds, security warn if file present, /healthz 200",
+            "SMOKE-3: --reset-admin-token — old hash replaced, file overwritten, old token rejected",
+            "SMOKE-4: admin token auth — AuthContext IsAdmin=true, X-Request-ID set, request log entry",
+            "SMOKE-5: blocked user rejection — HTTP 403 with envelope, log status=403",
+            "SMOKE-6: degraded readyz — HTTP 503, server still alive, error log on first failure",
+            "SMOKE-7: graceful SIGTERM shutdown — clean drain, info log, exit 0",
+            "SMOKE-8: oversized body — HTTP 413 envelope, log status=413, handler not invoked"
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-1",
+            "TS-01-SMOKE-2",
+            "TS-01-SMOKE-3",
+            "TS-01-SMOKE-4",
+            "TS-01-SMOKE-5",
+            "TS-01-SMOKE-6",
+            "TS-01-SMOKE-7",
+            "TS-01-SMOKE-8"
+          ],
+          "requirement_refs": [
+            "01-PATH-1",
+            "01-PATH-2",
+            "01-PATH-3",
+            "01-PATH-4",
+            "01-PATH-5",
+            "01-PATH-6",
+            "01-PATH-7",
+            "01-PATH-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "All smoke test stubs compile: go build ./internal/integration/...",
+          "Smoke test file exists and is parseable: go vet ./internal/integration/...",
+          "Property test skeletons compile: go build ./internal/...",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement configuration loading and CLI flag parsing",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Define Config struct with all documented fields and TOML tags",
+          "details": [
+            "Create internal/config/config.go",
+            "Define Config, ServerConfig, DatabaseConfig, LogConfig, OAuthConfig, OAuthProvider structs",
+            "Use exact TOML field names: [server] port, bind, external_url; [database] path; [log] level; [[oauth.providers]] name, client_id, client_secret, authorize_url, token_url, userinfo_url",
+            "Set struct defaults: Port=8080, Bind=\"0.0.0.0\", Path=\"./data/af-hub.db\", Level=\"info\""
+          ],
+          "test_spec_refs": [
+            "TS-01-5"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement loadConfig using BurntSushi/toml with missing-file, unknown-field, and invalid-level handling",
+          "details": [
+            "Use toml.DecodeFile; on os.IsNotExist error → apply all defaults silently",
+            "On TOML parse error → logrus.Fatalf with parse failure reason + os.Exit(1)",
+            "Use md.Undecoded() to detect unrecognized fields; emit logrus.Warn per field with name/path",
+            "Use logrus.ParseLevel for log.level; on error emit warn with invalid_value field and default to info",
+            "Return (*Config, configDir string) where configDir is the directory of the resolved config path"
+          ],
+          "test_spec_refs": [
+            "TS-01-1",
+            "TS-01-2",
+            "TS-01-3",
+            "TS-01-4",
+            "TS-01-E1"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.1",
+            "01-REQ-1.2",
+            "01-REQ-1.3",
+            "01-REQ-1.4",
+            "01-REQ-1.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement CLI flag parsing for --config and --reset-admin-token",
+          "details": [
+            "Use standard library flag package in cmd/af-hub/main.go",
+            "Define --config string flag (default: ./config.toml) and --reset-admin-token bool flag",
+            "Flags are parsed first before any other initialization (step 1 of startup sequence)",
+            "Both flags are independent; combining them is fully supported"
+          ],
+          "test_spec_refs": [
+            "TS-01-6",
+            "TS-01-34"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-10.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Config unit tests pass: go test ./internal/config/... -count=1 -v",
+          "TS-01-1 through TS-01-5 and TS-01-E1 pass",
+          "No linter errors: go vet ./internal/config/...",
+          "go mod tidy confirms github.com/BurntSushi/toml is in go.mod"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement structured logging initialization",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement initLogging function using logrus with JSONFormatter and stdout",
+          "details": [
+            "Create internal/logging/logging.go",
+            "Call logrus.SetFormatter(&logrus.JSONFormatter{})",
+            "Call logrus.SetOutput(os.Stdout)",
+            "Call logrus.SetLevel(parsedLevel) where parsedLevel comes from config (already validated)",
+            "Ensure go.mod pins github.com/sirupsen/logrus v1.4.0 minimum",
+            "No stderr or file output — stdout only"
+          ],
+          "test_spec_refs": [
+            "TS-01-17",
+            "TS-01-19"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1",
+            "01-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement request logger middleware with request ID generation and propagation",
+          "details": [
+            "Create internal/middleware/request_logger.go",
+            "On each request: check X-Request-ID header — validate non-empty, printable ASCII (0x20-0x7E), ≤128 chars; discard invalid; generate uuid.New().String() if absent or invalid",
+            "Attach request_id to Echo context via c.Set(string(AuthContextKey), ...) — use a separate ContextKey for request ID",
+            "Set X-Request-ID response header before returning",
+            "After handler returns: log with logrus.WithFields{method, path, status, duration_ms, request_id}"
+          ],
+          "test_spec_refs": [
+            "TS-01-18",
+            "TS-01-20",
+            "TS-01-21",
+            "TS-01-22",
+            "TS-01-E9"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.2",
+            "01-REQ-6.1",
+            "01-REQ-6.2",
+            "01-REQ-6.3",
+            "01-REQ-6.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Logging and request ID tests pass: go test ./internal/logging/... ./internal/middleware/... -run 'TestLog|TestRequestID' -count=1 -v",
+          "TS-01-17 through TS-01-22 and TS-01-E9 pass",
+          "go mod tidy confirms logrus v1.4.0 pin in go.mod",
+          "No linter errors: go vet ./internal/logging/... ./internal/middleware/..."
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement SQLite database initialization",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement database open with parent directory creation and PRAGMA application",
+          "details": [
+            "Create internal/db/db.go; import _ \"modernc.org/sqlite\"",
+            "os.MkdirAll(parentDir, 0755) before sql.Open; on error → logrus.Fatalf + os.Exit(1)",
+            "sql.Open(\"sqlite\", dbPath) then db.Ping(); on error → logrus.Fatalf + os.Exit(1)",
+            "Apply pragmas in order: PRAGMA journal_mode = WAL, PRAGMA foreign_keys = ON, PRAGMA busy_timeout = 5000",
+            "On any PRAGMA exec error → logrus.Fatalf identifying the specific PRAGMA name + os.Exit(1)"
+          ],
+          "test_spec_refs": [
+            "TS-01-8",
+            "TS-01-9",
+            "TS-01-E4",
+            "TS-01-E5",
+            "TS-01-E6"
+          ],
+          "requirement_refs": [
+            "01-REQ-3.1",
+            "01-REQ-3.2",
+            "01-REQ-3.E1",
+            "01-REQ-3.E2",
+            "01-REQ-3.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement schema creation: all 7 tables and 5 indexes via CREATE TABLE/INDEX IF NOT EXISTS",
+          "details": [
+            "Execute DDL for all tables: users, admin_tokens, api_keys, teams, team_members, workspaces, workspace_tokens",
+            "Execute DDL for all indexes: idx_api_keys_key_id, idx_workspace_tokens_token_id, idx_users_provider, idx_workspaces_slug, idx_teams_slug",
+            "All statements use IF NOT EXISTS for idempotency",
+            "No SetMaxOpenConns or SetMaxIdleConns overrides; rely on busy_timeout pragma",
+            "Return *sql.DB to caller"
+          ],
+          "test_spec_refs": [
+            "TS-01-10",
+            "TS-01-11"
+          ],
+          "requirement_refs": [
+            "01-REQ-3.3",
+            "01-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement health probe handlers: /healthz and /readyz with atomic failure counter",
+          "details": [
+            "Create internal/handler/health.go",
+            "healthzHandler: return c.JSON(200, map[string]string{\"status\": \"ok\"})",
+            "readyzHandler: ctx with 2s timeout; db.QueryRowContext(ctx, \"SELECT 1\"); on success: check counter > 0 → log info recovery + atomic.StoreInt64(&counter, 0); return 200 ready",
+            "On failure: atomic.AddInt64(&counter, 1); if counter==1 → error log; else → debug log; return 503 {\"status\": \"not ready\"}",
+            "package-level var readyzFailureCounter int64 accessed exclusively via sync/atomic"
+          ],
+          "test_spec_refs": [
+            "TS-01-12",
+            "TS-01-13",
+            "TS-01-14",
+            "TS-01-15",
+            "TS-01-16",
+            "TS-01-E8"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.1",
+            "01-REQ-4.2",
+            "01-REQ-4.3",
+            "01-REQ-4.4",
+            "01-REQ-4.5",
+            "01-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "DB initialization tests pass: go test ./internal/db/... -count=1 -v",
+          "Health probe tests pass: go test ./internal/handler/... -run 'TestHealth' -count=1 -v",
+          "TS-01-8 through TS-01-16 and TS-01-E4 through TS-01-E8 pass",
+          "No linter errors: go vet ./internal/db/... ./internal/handler/..."
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement admin bootstrap, token validation, and rotation",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Implement token generation helpers and admin_token file write",
+          "details": [
+            "Create internal/admin/bootstrap.go",
+            "generateAdminToken(): use crypto/rand to generate 32 random bytes; hex.EncodeToString → 64 hex chars; prepend af_admin_",
+            "hashAdminTokenSuffix(suffix string) string: return hex.EncodeToString(sha256.Sum256([]byte(suffix)))",
+            "writeAdminTokenFile(path, token string): os.WriteFile with perm 0600; if file exists → warn log with path; if write fails → logrus.Fatalf + os.Exit(1)",
+            "Log absolute path of written file at warn level after successful write"
+          ],
+          "test_spec_refs": [
+            "TS-01-P1",
+            "TS-01-P9"
+          ],
+          "requirement_refs": [
+            "01-PROP-1",
+            "01-PROP-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement first-boot admin bootstrap flow",
+          "details": [
+            "Count rows in admin_tokens; if 0 → first boot path",
+            "If AF_HUB_ADMIN_TOKEN env var is set → log info notice and ignore it",
+            "Insert admin user row: id=uuid.New(), username=admin, email=admin@localhost, provider=local, provider_id=admin, status=active",
+            "Generate token, compute hash, insert into admin_tokens, write plaintext to configDir/admin_token",
+            "On subsequent boot: check if admin user row missing → continue normally (admin token auth does no user lookup)"
+          ],
+          "test_spec_refs": [
+            "TS-01-26",
+            "TS-01-27",
+            "TS-01-28",
+            "TS-01-E11",
+            "TS-01-E12"
+          ],
+          "requirement_refs": [
+            "01-REQ-8.1",
+            "01-REQ-8.2",
+            "01-REQ-8.3",
+            "01-REQ-8.E1",
+            "01-REQ-8.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Implement subsequent-boot token validation and --reset-admin-token rotation",
+          "details": [
+            "Subsequent boot: read AF_HUB_ADMIN_TOKEN env; if absent → logrus.Fatalf + os.Exit(1)",
+            "Compute SHA-256 of env var value; compare to stored hash; mismatch → logrus.Fatalf + os.Exit(1)",
+            "Check if admin_token file exists at configDir/admin_token: if present → warn log with path and msg; if absent → silence",
+            "--reset-admin-token: skip validation entirely; delete existing admin_tokens row; generate new token; insert new hash; write file; log path; continue startup",
+            "--reset-admin-token with empty admin_tokens: identical to first boot (no special-casing)"
+          ],
+          "test_spec_refs": [
+            "TS-01-29",
+            "TS-01-30",
+            "TS-01-31",
+            "TS-01-E13",
+            "TS-01-32",
+            "TS-01-33",
+            "TS-01-E14"
+          ],
+          "requirement_refs": [
+            "01-REQ-9.1",
+            "01-REQ-9.2",
+            "01-REQ-9.3",
+            "01-REQ-9.E1",
+            "01-REQ-10.1",
+            "01-REQ-10.2",
+            "01-REQ-10.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Admin bootstrap tests pass: go test ./internal/admin/... -count=1 -v",
+          "TS-01-26 through TS-01-34 and TS-01-E11 through TS-01-E14 pass",
+          "Property test TS-01-P1 and TS-01-P9 pass: go test ./internal/admin/... -run 'TestProp' -count=1 -v",
+          "No linter errors: go vet ./internal/admin/..."
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "standard",
+      "title": "Implement authentication middleware",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Define AuthContext, ContextKey types and token parsing helpers",
+          "details": [
+            "Create internal/middleware/auth.go",
+            "Define ContextKey string type, AuthContextKey ContextKey = \"auth_context\"",
+            "Define CredentialType string type with constants: CredentialTypeAdmin, CredentialTypeAPIKey, CredentialTypeWorkspaceToken",
+            "Define AuthContext struct with CredentialType, UserID, WorkspaceID, IsAdmin fields",
+            "Implement token parsing: detect prefix (af_admin_, af_wt_, af_); structural validation before any DB call; return 401 immediately on structural failure"
+          ],
+          "test_spec_refs": [
+            "TS-01-49",
+            "TS-01-50"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.5",
+            "01-REQ-14.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Implement admin token verification in auth middleware",
+          "details": [
+            "Strip af_admin_ prefix; validate suffix is exactly 64 hex chars",
+            "Compute sha256 of suffix; query admin_tokens for stored hash",
+            "Compare using subtle.ConstantTimeCompare; mismatch → HTTP 401",
+            "On match: set AuthContext{CredentialType=admin, IsAdmin=true, UserID=\"\", WorkspaceID=\"\"}; no users table lookup; blocked-user check bypassed entirely",
+            "Store in Echo context: c.Set(string(AuthContextKey), &authCtx)"
+          ],
+          "test_spec_refs": [
+            "TS-01-46",
+            "TS-01-51",
+            "TS-01-52",
+            "TS-01-P4"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.2",
+            "01-REQ-14.7",
+            "01-REQ-14.8",
+            "01-PROP-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Implement user API key and workspace token verification in auth middleware",
+          "details": [
+            "API key: split on _ yielding 3 parts; validate key_id (8 alphanumeric), secret (32 alphanumeric); query api_keys by key_id; sha256(secret) vs secret_hash via subtle.ConstantTimeCompare",
+            "Check expires_at (exclusive UTC: expires_at < now → 401) and revoked_at (IS NOT NULL → 401); no distinction between expired/revoked in response",
+            "Workspace token: strip af_wt_ prefix; split remainder on _ yielding 2 parts; validate token_id (8 alphanumeric), secret (32 alphanumeric); query workspace_tokens; same hash/expiry/revocation checks",
+            "After hash+state validation: query users table for status; if status=blocked → HTTP 403",
+            "On success: set AuthContext with correct CredentialType, UserID from users row, WorkspaceID (workspace token only)"
+          ],
+          "test_spec_refs": [
+            "TS-01-47",
+            "TS-01-48",
+            "TS-01-E18",
+            "TS-01-E19",
+            "TS-01-P2",
+            "TS-01-P3",
+            "TS-01-P5"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.3",
+            "01-REQ-14.4",
+            "01-REQ-14.E4",
+            "01-REQ-14.E5",
+            "01-PROP-2",
+            "01-PROP-3",
+            "01-PROP-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.4",
+          "title": "Implement DB write contention error handling in auth middleware",
+          "details": [
+            "Detect SQLite busy/locked error from driver (check error string for SQLITE_BUSY or use error code)",
+            "Return HTTP 503 with {\"error\": {\"code\": 503, \"message\": \"service temporarily unavailable\"}} for write contention",
+            "Server remains running; no shutdown triggered",
+            "Same 503 envelope applies for write contention during normal handler DB writes (not just auth)"
+          ],
+          "test_spec_refs": [
+            "TS-01-E15",
+            "TS-01-E7"
+          ],
+          "requirement_refs": [
+            "01-REQ-14.E1",
+            "01-REQ-3.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "Auth middleware tests pass: go test ./internal/middleware/... -run 'TestAuth' -count=1 -v -race",
+          "TS-01-45 through TS-01-52 and TS-01-E15 through TS-01-E19 pass",
+          "Property tests TS-01-P2 through TS-01-P5 pass: go test ./internal/middleware/... -run 'TestProp' -count=1 -v",
+          "No linter errors: go vet ./internal/middleware/..."
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "standard",
+      "title": "Implement Echo route groups, middleware stack, custom error handler, and graceful shutdown",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Implement custom error handler for non-health-probe routes",
+          "details": [
+            "Create internal/handler/error.go",
+            "customErrorHandler(err error, c echo.Context): type-switch on *echo.HTTPError vs generic error",
+            "For *echo.HTTPError: use Code and Message.(string) for envelope; for other: HTTP 500 internal server error",
+            "Assign to e.HTTPErrorHandler; skip envelope for /healthz and /readyz paths",
+            "Panic recovery via Echo's Recover middleware surfaces through this handler → HTTP 500 envelope"
+          ],
+          "test_spec_refs": [
+            "TS-01-37",
+            "TS-01-38",
+            "TS-01-39",
+            "TS-01-40",
+            "TS-01-41",
+            "TS-01-P7"
+          ],
+          "requirement_refs": [
+            "01-REQ-12.1",
+            "01-REQ-12.2",
+            "01-REQ-12.3",
+            "01-REQ-12.4",
+            "01-REQ-12.5",
+            "01-PROP-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Implement Echo route group structure and middleware registration",
+          "details": [
+            "Create internal/server/server.go",
+            "e.Use(middleware.Recover(), bodySizeLimitMiddleware(1<<20), requestLoggerMiddleware())",
+            "Register GET and HEAD /healthz and /readyz on root Echo instance (no group)",
+            "authGroup := e.Group(\"/api/v1/auth\") — no auth middleware",
+            "protectedGroup := e.Group(\"/api/v1\", authMiddleware(db)) — auth middleware applied",
+            "e.HTTPErrorHandler = customErrorHandler"
+          ],
+          "test_spec_refs": [
+            "TS-01-35",
+            "TS-01-36",
+            "TS-01-42",
+            "TS-01-43",
+            "TS-01-44"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.1",
+            "01-REQ-11.2",
+            "01-REQ-13.1",
+            "01-REQ-13.2",
+            "01-REQ-13.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Implement graceful shutdown handler with 15-second drain timeout",
+          "details": [
+            "In main.go: signal.NotifyContext or signal.Notify for os.Interrupt and syscall.SIGTERM",
+            "On signal: ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second); defer cancel()",
+            "Call e.Shutdown(ctx); if err == context.DeadlineExceeded → logrus.Warn fixed message; else → logrus.Info server shutdown complete",
+            "Delegates in-flight tracking entirely to net/http; no separate counter"
+          ],
+          "test_spec_refs": [
+            "TS-01-23",
+            "TS-01-24",
+            "TS-01-25",
+            "TS-01-E10"
+          ],
+          "requirement_refs": [
+            "01-REQ-7.1",
+            "01-REQ-7.2",
+            "01-REQ-7.3",
+            "01-REQ-7.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "Route group and error handler tests pass: go test ./internal/server/... ./internal/handler/... -count=1 -v",
+          "TS-01-35 through TS-01-44 pass",
+          "Graceful shutdown tests pass: go test ./internal/server/... -run 'TestShutdown' -count=1 -v",
+          "No linter errors: go vet ./internal/server/... ./internal/handler/..."
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "kind": "standard",
+      "title": "Implement main.go startup sequence and binary wiring",
+      "subtasks": [
+        {
+          "id": "14.1",
+          "title": "Implement main.go with strict startup sequence steps 1-9",
+          "details": [
+            "Create cmd/af-hub/main.go",
+            "Step 1: flag.Parse() for --config and --reset-admin-token",
+            "Step 2: loadConfig(configPath) → cfg, configDir",
+            "Step 3: initLogging(cfg.Log.Level)",
+            "Step 4: db = initDatabase(cfg.Database.Path)",
+            "Step 5: runAdminBootstrap(db, resetFlag, configDir) or validateAdminToken(db, configDir)",
+            "Step 6: e = echo.New(); registerRoutes(e, db); e.HTTPErrorHandler = customErrorHandler",
+            "Step 7: logrus.WithFields{bind, port, db_path, log_level}.Info(\"server starting\")",
+            "Step 8: go e.Start(addr) in goroutine",
+            "Step 9: arm signal handler; block until signal; call e.Shutdown with 15s timeout"
+          ],
+          "test_spec_refs": [
+            "TS-01-6",
+            "TS-01-7"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.2",
+          "title": "Configure go.mod with all required dependencies and version pins",
+          "details": [
+            "Ensure go.mod has: require github.com/sirupsen/logrus v1.4.0 (minimum pin)",
+            "Add github.com/labstack/echo/v4, github.com/BurntSushi/toml, modernc.org/sqlite, github.com/google/uuid",
+            "Run go mod tidy and go mod verify to confirm no conflicts",
+            "Create Makefile with `make build` target: go build -o bin/af-hub ./cmd/af-hub/"
+          ],
+          "test_spec_refs": [
+            "TS-01-17"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.3",
+          "title": "Implement body-size limit middleware (1 MB cap) with 413 error handling",
+          "details": [
+            "Use echo/middleware.BodyLimit(\"1M\") or implement custom middleware using http.MaxBytesReader",
+            "Ensure 413 is wrapped through the custom error handler producing the standard envelope",
+            "No-op for GET/HEAD requests (no body to read); middleware wraps response writer in all cases but triggers only on body read"
+          ],
+          "test_spec_refs": [
+            "TS-01-42",
+            "TS-01-43",
+            "TS-01-44"
+          ],
+          "requirement_refs": [
+            "01-REQ-13.1",
+            "01-REQ-13.2",
+            "01-REQ-13.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "14.V",
+        "checks": [
+          "Binary builds successfully: make build",
+          "TS-01-6 and TS-01-7 pass: go test ./internal/integration/... -run 'TestStartup' -count=1 -v",
+          "go mod tidy produces no changes; go mod verify succeeds",
+          "No linter errors: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "kind": "checkpoint",
+      "title": "Checkpoint: all unit and integration tests pass",
+      "subtasks": [
+        {
+          "id": "15.1",
+          "title": "Run the full test suite with the race detector enabled",
+          "details": [
+            "Execute: go test ./... -count=1 -race -timeout=120s",
+            "Confirm no data races detected (especially readyz failure counter)",
+            "All previously written spec tests must now pass against the implementation"
+          ],
+          "test_spec_refs": [
+            "TS-01-P8"
+          ],
+          "requirement_refs": [
+            "01-PROP-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "15.2",
+          "title": "Run property-based tests for hash correctness and startup ordering",
+          "details": [
+            "Execute: go test ./... -run 'TestProp' -count=1 -v",
+            "Verify admin token hash invariant holds for 100 random suffixes",
+            "Verify API key and workspace token hash-from-secret-only invariant",
+            "Verify HTTP listener never opens before DB + admin bootstrap completion",
+            "Verify token expiry exclusive UTC boundary invariant"
+          ],
+          "test_spec_refs": [
+            "TS-01-P1",
+            "TS-01-P2",
+            "TS-01-P3",
+            "TS-01-P6",
+            "TS-01-P10"
+          ],
+          "requirement_refs": [
+            "01-PROP-1",
+            "01-PROP-2",
+            "01-PROP-3",
+            "01-PROP-6",
+            "01-PROP-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "15.3",
+          "title": "Verify admin_token file mode and error envelope consistency properties",
+          "details": [
+            "Execute: go test ./... -run 'TestPropFileMode|TestPropEnvelope' -count=1 -v",
+            "20 iterations alternating first boot and rotation: file mode always 0600, no group/world read bits",
+            "10 different error conditions on /api/v1/*: all bodies match {\"error\": {\"code\": N, \"message\": \"...\"}} with code == HTTP status"
+          ],
+          "test_spec_refs": [
+            "TS-01-P7",
+            "TS-01-P9"
+          ],
+          "requirement_refs": [
+            "01-PROP-7",
+            "01-PROP-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "15.V",
+        "checks": [
+          "Full test suite passes with race detector: go test ./... -count=1 -race -timeout=120s",
+          "Zero race conditions detected",
+          "All property tests pass: go test ./... -run 'TestProp' -count=1 -v",
+          "No linter errors: go vet ./...",
+          "Binary still builds: make build"
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and smoke tests",
+      "subtasks": [
+        {
+          "id": "16.1",
+          "title": "Trace all execution paths and verify no stubs remain",
+          "details": [
+            "Search codebase for stub markers: grep -r 'panic(\"not implemented\")' ./; grep -r 'TODO' ./ | grep -v '_test.go'",
+            "Trace PATH-1 (first boot): main → loadConfig → initLogging → initDatabase → runAdminBootstrap → registerRoutes → Start",
+            "Trace PATH-2 (subsequent boot): main → validateAdminToken → registerRoutes → Start",
+            "Trace PATH-3 (reset): main → --reset-admin-token flag → generateAndStoreNewToken → registerRoutes → Start",
+            "Trace PATH-4 (admin token auth): request → Recover → BodyLimit → RequestLogger → authMiddleware → handler → response"
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-1",
+            "TS-01-SMOKE-2",
+            "TS-01-SMOKE-3",
+            "TS-01-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "01-PATH-1",
+            "01-PATH-2",
+            "01-PATH-3",
+            "01-PATH-4",
+            "01-PATH-5",
+            "01-PATH-6",
+            "01-PATH-7",
+            "01-PATH-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "16.2",
+          "title": "Verify return value propagation across all module boundaries",
+          "details": [
+            "Confirm loadConfig returns (*Config, configDir) and main.go uses both values",
+            "Confirm initDatabase returns *sql.DB and db is passed to authMiddleware and handler constructors",
+            "Confirm AuthContext is stored in Echo context and retrievable by downstream handlers",
+            "Confirm readyz failure counter is the package-level atomic var (not a local copy)",
+            "Confirm e.Shutdown return value is inspected to distinguish clean drain vs timeout"
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-5",
+            "TS-01-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-3.1",
+            "01-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "16.3",
+          "title": "Run all smoke tests against the real binary",
+          "details": [
+            "Build binary: make build",
+            "SMOKE-1: run bin/af-hub in clean temp dir; verify DB, tables, admin_token file mode 0600, /healthz 200, /readyz 200",
+            "SMOKE-2: subsequent boot with correct AF_HUB_ADMIN_TOKEN; verify security warn if file present",
+            "SMOKE-3: --reset-admin-token; verify old hash replaced; old token rejected with 401",
+            "SMOKE-7: send SIGTERM; verify info log server shutdown complete; process exits 0 within 15s",
+            "SMOKE-8: POST with 2MB body; verify 413 with envelope; status=413 in log"
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-1",
+            "TS-01-SMOKE-2",
+            "TS-01-SMOKE-3",
+            "TS-01-SMOKE-5",
+            "TS-01-SMOKE-7",
+            "TS-01-SMOKE-8"
+          ],
+          "requirement_refs": [
+            "01-PATH-1",
+            "01-PATH-2",
+            "01-PATH-3",
+            "01-PATH-5",
+            "01-PATH-7",
+            "01-PATH-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "16.4",
+          "title": "Verify cross-spec entry points are exported and accessible",
+          "details": [
+            "Confirm authGroup (*echo.Group at /api/v1/auth) and protectedGroup (*echo.Group at /api/v1) are exported or returned from server constructor for downstream specs (2-5) to register routes",
+            "Verify /api/v1/auth/* paths do not receive 401 from auth middleware (structural exclusion, not string matching)",
+            "Verify /api/v1/* paths receive 401 without auth header",
+            "Confirm AuthContextKey, AuthContext, CredentialType types are exported from internal/middleware package for use by downstream specs"
+          ],
+          "test_spec_refs": [
+            "TS-01-35",
+            "TS-01-36"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.1",
+            "01-REQ-11.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "16.V",
+        "checks": [
+          "All smoke tests pass: go test ./internal/integration/... -run 'TestSmoke' -count=1 -v -timeout=120s",
+          "No stub markers found: grep -r 'panic(\"not implemented\")' ./internal/ returns empty",
+          "No TODO stubs in production code: grep -r 'TODO' ./internal/ | grep -v '_test.go' returns empty or only documented deferred items",
+          "Full test suite passes with race detector: go test ./... -count=1 -race -timeout=120s",
+          "Binary builds and starts cleanly in a fresh temp directory: make build && (cd /tmp/af-hub-test && $OLDPWD/bin/af-hub &) && sleep 1 && curl -sf http://localhost:8080/healthz",
+          "No linter errors in any package: go vet ./..."
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "01-REQ-1.1",
+      "test_spec_id": "TS-01-1",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.2",
+      "test_spec_id": "TS-01-2",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.3",
+      "test_spec_id": "TS-01-3",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.4",
+      "test_spec_id": "TS-01-4",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.5",
+      "test_spec_id": "TS-01-5",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.E1",
+      "test_spec_id": "TS-01-E1",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.E2",
+      "test_spec_id": "TS-01-E2",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-2.1",
+      "test_spec_id": "TS-01-6",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-2.2",
+      "test_spec_id": "TS-01-7",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-2.E1",
+      "test_spec_id": "TS-01-E3",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.1",
+      "test_spec_id": "TS-01-8",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.2",
+      "test_spec_id": "TS-01-9",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.3",
+      "test_spec_id": "TS-01-10",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.4",
+      "test_spec_id": "TS-01-11",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.E1",
+      "test_spec_id": "TS-01-E4",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.E2",
+      "test_spec_id": "TS-01-E5",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.E3",
+      "test_spec_id": "TS-01-E6",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.E4",
+      "test_spec_id": "TS-01-E7",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.1",
+      "test_spec_id": "TS-01-12",
+      "task_id": "2.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.2",
+      "test_spec_id": "TS-01-13",
+      "task_id": "2.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.3",
+      "test_spec_id": "TS-01-14",
+      "task_id": "2.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.4",
+      "test_spec_id": "TS-01-15",
+      "task_id": "2.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.5",
+      "test_spec_id": "TS-01-16",
+      "task_id": "2.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.E1",
+      "test_spec_id": "TS-01-E8",
+      "task_id": "2.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.1",
+      "test_spec_id": "TS-01-17",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.2",
+      "test_spec_id": "TS-01-18",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.3",
+      "test_spec_id": "TS-01-19",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.1",
+      "test_spec_id": "TS-01-20",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.2",
+      "test_spec_id": "TS-01-21",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.3",
+      "test_spec_id": "TS-01-22",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.E1",
+      "test_spec_id": "TS-01-E9",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.1",
+      "test_spec_id": "TS-01-23",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.2",
+      "test_spec_id": "TS-01-24",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.3",
+      "test_spec_id": "TS-01-25",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.E1",
+      "test_spec_id": "TS-01-E10",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.1",
+      "test_spec_id": "TS-01-26",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.2",
+      "test_spec_id": "TS-01-27",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.3",
+      "test_spec_id": "TS-01-28",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.E1",
+      "test_spec_id": "TS-01-E11",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.E2",
+      "test_spec_id": "TS-01-E12",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.1",
+      "test_spec_id": "TS-01-29",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.2",
+      "test_spec_id": "TS-01-30",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.3",
+      "test_spec_id": "TS-01-31",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.E1",
+      "test_spec_id": "TS-01-E13",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.1",
+      "test_spec_id": "TS-01-32",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.2",
+      "test_spec_id": "TS-01-33",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.3",
+      "test_spec_id": "TS-01-34",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.E1",
+      "test_spec_id": "TS-01-E14",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.1",
+      "test_spec_id": "TS-01-35",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.2",
+      "test_spec_id": "TS-01-36",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.1",
+      "test_spec_id": "TS-01-37",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.2",
+      "test_spec_id": "TS-01-38",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.3",
+      "test_spec_id": "TS-01-39",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.4",
+      "test_spec_id": "TS-01-40",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.5",
+      "test_spec_id": "TS-01-41",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-13.1",
+      "test_spec_id": "TS-01-42",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-13.2",
+      "test_spec_id": "TS-01-43",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-13.3",
+      "test_spec_id": "TS-01-44",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.1",
+      "test_spec_id": "TS-01-45",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.2",
+      "test_spec_id": "TS-01-46",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.3",
+      "test_spec_id": "TS-01-47",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.4",
+      "test_spec_id": "TS-01-48",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.5",
+      "test_spec_id": "TS-01-49",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.6",
+      "test_spec_id": "TS-01-50",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.7",
+      "test_spec_id": "TS-01-51",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.8",
+      "test_spec_id": "TS-01-52",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.E1",
+      "test_spec_id": "TS-01-E15",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.E2",
+      "test_spec_id": "TS-01-E16",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.E3",
+      "test_spec_id": "TS-01-E17",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.E4",
+      "test_spec_id": "TS-01-E18",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.E5",
+      "test_spec_id": "TS-01-E19",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-1",
+      "test_spec_id": "TS-01-P1",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-2",
+      "test_spec_id": "TS-01-P2",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-3",
+      "test_spec_id": "TS-01-P3",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-4",
+      "test_spec_id": "TS-01-P4",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-5",
+      "test_spec_id": "TS-01-P5",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-6",
+      "test_spec_id": "TS-01-P6",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-7",
+      "test_spec_id": "TS-01-P7",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-8",
+      "test_spec_id": "TS-01-P8",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-9",
+      "test_spec_id": "TS-01-P9",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-PROP-10",
+      "test_spec_id": "TS-01-P10",
+      "task_id": "6.4",
+      "test_path": null
+    }
+  ]
+}

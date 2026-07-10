@@ -1,0 +1,711 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD for `oauth_and_users` is well-structured and substantively complete. It has a clear Intent, well-articulated Goals, explicit Non-Goals, and detailed Functional Requirements covering OAuth flow, user management, and API key lifecycle. The spec correctly references and builds on `server_foundation` (spec 1). However, it is missing a formal **Background** section, and there are a few targeted gaps that should be addressed before the spec is considered ready: overlap/dependency relationship with `server_foundation` needs to be formally declared, some edge cases are underspecified (e.g. refresh key authorization, state parameter storage/validation), and the owner field is empty.",
+      "gaps": [
+        "Missing **Background** section: There is no dedicated section providing context, motivation, or prior art. The brief reference to spec 1 in the Intent is insufficient to satisfy this requirement.",
+        "No formal `## Dependencies` section: The spec textually references `server_foundation` (spec 1) for auth middleware, database schema, and error handling, but this dependency is not formally declared. Per cross-spec awareness rules, a dependency on the active `server_foundation` spec should be explicitly listed.",
+        "Overlap with `server_foundation` (active spec): `server_foundation` explicitly covers 'authentication middleware that recognizes all three credential types (admin token, user API key, workspace token)'. This spec introduces the user API key lifecycle and generation logic. The boundary between what `server_foundation` owns (middleware/recognition) and what this spec owns (key creation/revocation) should be clarified to avoid implementation ambiguity.",
+        "State parameter storage and validation are unspecified: The spec requires a cryptographically random `state` parameter for CSRF protection but does not specify how `state` is stored server-side (e.g. in-memory cache, database, signed cookie) or how it is validated on callback.",
+        "Refresh key authorization is ambiguous: `POST /api/v1/keys/:key_id/refresh` \u2014 it is unclear whether a user can only refresh their own key, or whether admins can refresh any user's key. The authorization rules are not stated for this endpoint.",
+        "Key listing authorization for workspace tokens is unspecified: `GET /api/v1/keys` defines behavior for admin tokens and user API keys, but it is unclear what happens when a workspace token is used (if applicable at this stage).",
+        "Owner field is empty: The `owner` metadata field is blank, which is a process/governance gap."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Can you add a Background section explaining the motivation for implementing OAuth and user management at this stage, and any prior art or design decisions that informed the approach (e.g. why GitHub OAuth first, why no PKCE, why one active key per user)?",
+          "context": "The PRD template requires a Background section covering context, motivation, and prior art. This is currently absent, which is a formal gap against the spec format.",
+          "options": [],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Should this spec formally declare a dependency on `server_foundation`? If yes, please confirm what specifically it depends on (e.g. auth middleware, DB schema, error handling), so a `## Dependencies` section can be added.",
+          "context": "The active `server_foundation` spec provides auth middleware, database schema, and error handling that this spec relies on. Cross-spec awareness requires this to be formally declared as a dependency rather than only referenced in prose.",
+          "options": [
+            "Yes \u2014 declare dependency on server_foundation for auth middleware, DB schema, and error handling infrastructure.",
+            "Yes \u2014 declare dependency on server_foundation for DB schema only; middleware is re-implemented here.",
+            "No \u2014 this spec is intended to be self-contained."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "`server_foundation` is listed as owning 'authentication middleware that recognizes all three credential types (admin token, user API key, workspace token)'. This spec defines the creation and revocation of user API keys. Is the intent that `server_foundation` owns key *recognition/validation* while `oauth_and_users` owns key *generation/lifecycle*, or should one spec supersede the other on this topic?",
+          "context": "There is a potential overlap between the two active specs on the API key domain. Clarifying the boundary prevents conflicting implementations.",
+          "options": [
+            "server_foundation owns recognition/validation only; oauth_and_users owns generation, refresh, and revocation.",
+            "oauth_and_users supersedes server_foundation on all API key concerns.",
+            "The two specs should be merged on this topic."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "How should the OAuth `state` parameter be stored and validated? The spec mandates CSRF protection via a random `state` but does not specify the storage mechanism.",
+          "context": "Without a specified storage strategy, implementers may make incompatible choices. Common options are an in-memory cache with TTL, a short-lived DB record, or a signed/encrypted cookie.",
+          "options": [
+            "In-memory cache with a short TTL (e.g. 10 minutes).",
+            "Short-lived database record (e.g. oauth_states table).",
+            "Signed cookie or JWT \u2014 no server-side storage needed.",
+            "Leave to implementer discretion."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "For `POST /api/v1/keys/:key_id/refresh`, who is authorized to call this endpoint? Can a user only refresh their own key, or can admins refresh any user's key?",
+          "context": "The authorization rules for the refresh endpoint are not stated, unlike the list and revoke endpoints which have clearer rules. This needs to be explicit to avoid security ambiguity.",
+          "options": [
+            "Users can only refresh their own key; admins can refresh any key.",
+            "Users can only refresh their own key; admins cannot use this endpoint (they create keys via admin user endpoints).",
+            "Only the owning user can refresh their own key; no admin override."
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Who is the owner of this spec? The `owner` metadata field is currently blank.",
+          "context": "Governance and accountability require an identified owner for each spec.",
+          "options": [],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the core OAuth flow, user management, and API key lifecycle with good clarity. The background reasoning, dependency boundaries, and non-goals are particularly strong. However, several gaps remain that could cause ambiguity during implementation: the redirect_uri allowlist matching rules are underspecified, the self-update authorization model has a boundary conflict, the refresh endpoint's \"resets expiry based on original duration\" is ambiguous, error response shapes for key endpoints are missing, and there are open questions around rate limiting, state cache eviction strategy, and the admin token identity in key listings.",
+      "gaps": [
+        "Redirect URI allowlist matching rules are underspecified: 'http://localhost:*' \u2014 is this a glob, prefix match, or regex? What happens in production when external_url is not configured?",
+        "Self-update authorization conflict: Goals say 'middleware checks requesting user's ID against :id' but the User Management section says 'Any authenticated user can update their own full_name (middleware checks requesting user ID against :id)' while also listing PUT /api/v1/users/:id under 'admin only' endpoints. The boundary between admin-only and self-service is unclear.",
+        "POST /api/v1/keys/:key_id/refresh \u2014 'Resets expiry based on original duration' is ambiguous: does it recalculate from now (new expires_at = now + original N days), or does it restore the original expires_at? What happens if the original duration was 0 (indefinite)?",
+        "No error responses specified for API key endpoints (e.g., key not found = 404? Already revoked key deleted again = 409 or 404?).",
+        "No specification for what fields are returned in GET /api/v1/users (list) \u2014 full user objects, or a subset? Does it include sensitive fields like provider_id?",
+        "GET /api/v1/keys response shape is unspecified: does it return the hashed secret, a masked version, or omit the secret entirely for existing keys?",
+        "No rate limiting or brute-force protection mentioned for the callback endpoint, which exchanges OAuth codes.",
+        "State cache eviction strategy beyond TTL is not specified \u2014 e.g., maximum cache size, behavior under memory pressure, or whether a distributed/multi-instance deployment would break the in-memory assumption.",
+        "POST /api/v1/users (admin create) \u2014 no mention of what provider_id represents or whether it must be unique globally vs. per-provider. Duplicate detection only mentions (provider, provider_id) but not email uniqueness.",
+        "No mention of how the admin token is identified in GET /api/v1/keys \u2014 is the admin token associated with a user record, and does it appear in key listings?"
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How should redirect_uri allowlist matching work for the localhost dev rule \u2014 glob, prefix match, or exact match? And what should happen if the server's external_url is not configured in production?",
+          "context": "The current spec says 'dev: http://localhost:*' without defining the matching algorithm. Implementors need a precise rule to avoid security mismatches (e.g., does http://localhost.evil.com match?).",
+          "options": [
+            "Exact match against a static allowlist configured in config file",
+            "Prefix match (URI must start with the allowed base)",
+            "Glob/wildcard match (e.g., http://localhost:* matches any port)",
+            "Regex match defined in config"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "For PUT /api/v1/users/:id, should it be listed as an admin-only endpoint with a self-update carve-out, or as a mixed-auth endpoint? Specifically: can a non-admin user call this endpoint to update only full_name, and if so, should the endpoint reject attempts to change status with HTTP 403 rather than routing to a separate endpoint?",
+          "context": "The spec lists PUT /api/v1/users/:id under 'User management endpoints (admin only)' but then carves out self-update for full_name. This creates an implementation ambiguity about how auth middleware should behave.",
+          "options": [
+            "Admin-only endpoint; provide a separate PATCH /api/v1/users/me for self-update",
+            "Mixed-auth: any authenticated user can call PUT /api/v1/users/:id but field-level permissions apply (non-admins can only set full_name, status change returns 403)",
+            "Admin-only; self-update of full_name is not supported in this spec"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "When refreshing an API key (POST /api/v1/keys/:key_id/refresh), how should the new expiry be calculated?",
+          "context": "'Resets expiry based on original duration' is ambiguous \u2014 implementors need to know whether expires_at is recalculated from the current timestamp or from the original creation time, and what happens for indefinite (0-day) keys.",
+          "options": [
+            "New expires_at = now + original N days (rolling forward from refresh time)",
+            "New expires_at = original created_at + N days (restoring original expiry, effectively a no-op for expiry)",
+            "Indefinite keys (expires=0) remain indefinite; timed keys get new expires_at = now + original N days"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What fields should GET /api/v1/keys return for existing (already-issued) keys? Should the secret be exposed, masked, or omitted?",
+          "context": "API keys contain a sensitive secret. The listing endpoint needs a clear spec for what is returned \u2014 returning the full secret would be a security risk, but implementors need to know the intended shape.",
+          "options": [
+            "Return all fields except the secret (key_id, user_id, created_at, expires_at, revoked_at, status)",
+            "Return a masked secret (e.g., af_<key_id>_****)",
+            "Return full key including secret (same as key generation response)",
+            "Return only metadata (key_id, status, expiry dates)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What HTTP status and behavior should occur when DELETE /api/v1/keys/:key_id is called on a key that is already revoked?",
+          "context": "The spec does not address idempotency of the revoke endpoint. This affects error handling implementation and client behavior.",
+          "options": [
+            "Return HTTP 200/204 (idempotent \u2014 revoking an already-revoked key is a no-op)",
+            "Return HTTP 409 Conflict",
+            "Return HTTP 404 Not Found"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "For POST /api/v1/users (admin create), is email required to be unique? And should a duplicate email return HTTP 409 alongside duplicate username or (provider, provider_id)?",
+          "context": "The spec mentions 409 on duplicate username or (provider, provider_id) but does not address email uniqueness, which is a common identity constraint.",
+          "options": [
+            "Email must be unique; duplicate email returns HTTP 409",
+            "Email is not required to be unique (multiple accounts can share an email)",
+            "Email uniqueness is enforced at the database level but returns a generic 409"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "Is the in-memory state cache expected to work correctly in a multi-instance (horizontally scaled) deployment, or is single-instance deployment assumed for this spec?",
+          "context": "In-memory state caches break in multi-instance deployments because the callback may hit a different instance than the one that generated the state. Clarifying deployment assumptions avoids a future architectural surprise.",
+          "options": [
+            "Single-instance deployment only; multi-instance is out of scope for this spec",
+            "Multi-instance must be supported; use a shared cache (e.g., Redis) instead",
+            "Multi-instance is a known limitation; document it but do not change the implementation"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the core OAuth flow, user management, and API key lifecycle with good clarity. Dependencies, boundaries, and non-goals are clearly articulated. However, several areas need elaboration before implementation can begin confidently: the exact shape of request/response payloads is underspecified, error handling for several edge cases is ambiguous, the `expires` field semantics during key refresh need clarification, the admin token's nature and source are not defined here (assumed from server_foundation but the boundary is blurry), and there are open questions around revoked-key behavior during login and the `POST /api/v1/users` API key generation.",
+      "gaps": [
+        "Request and response payload schemas are not formally specified (field names, types, nullability). For example, the user object shape in POST /api/v1/users response and GET /api/v1/users/:id are described in prose but not as a schema.",
+        "POST /api/v1/auth/callback: it is unclear whether a new `expires` value can be passed on refresh via callback, or whether it only applies at initial login. The relationship between the `expires` parameter and key refresh is ambiguous.",
+        "POST /api/v1/keys/:key_id/refresh: the spec says 'timed keys get a new expires_at = now + original N days' but does not specify whether the caller can override the expiry duration at refresh time, or whether it always uses the original N.",
+        "Login behavior when the existing active key is already revoked (e.g., manually revoked before re-login): does login still generate a new key and succeed? The spec says 'revoking any existing active key' but does not clarify behavior when no active key exists.",
+        "POST /api/v1/users (admin create): it is unspecified whether creating a user via this endpoint also generates an API key, or whether the user starts with no key.",
+        "The `status` field valid values and transitions are mentioned (`active` / `blocked`) but initial status on user creation (both via OAuth and via admin create) is not stated.",
+        "Error response body format is referenced as coming from server_foundation but no example or field contract is given here \u2014 implementors may not have server_foundation available for reference.",
+        "The `state` parameter: the spec says the state value is generated server-side when constructing the authorize URL, but GET /api/v1/auth/providers returns the authorize URL. It is unclear whether the state is embedded in the returned authorize URL or generated separately and returned as a distinct field.",
+        "Pagination or ordering for GET /api/v1/users and GET /api/v1/keys list endpoints is not addressed.",
+        "The `provider_id` field in POST /api/v1/users: it is unclear what format/type this is expected to be (string, integer, opaque), and whether validation is performed."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "For POST /api/v1/keys/:key_id/refresh \u2014 can the caller supply a new `expires` value to change the expiry duration, or does refresh always reuse the original N days?",
+          "context": "The spec says 'timed keys get a new expires_at = now + original N days', implying the duration is fixed. But it's common UX to allow re-specifying expiry on refresh. Clarifying this prevents ambiguity in the refresh endpoint implementation.",
+          "options": [
+            "Always reuse the original N days (no override allowed at refresh time)",
+            "Caller may optionally supply a new `expires` value (0/30/60/90); if omitted, the original N is used",
+            "Caller must always supply an `expires` value on refresh"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Does POST /api/v1/users (admin create user) also generate an API key for the new user, or does the user start with no API key until they log in via OAuth?",
+          "context": "The key lifecycle section ties key creation to login. But admin-created users may never go through OAuth (e.g., service accounts). Clarifying this determines whether the create-user response includes an API key.",
+          "options": [
+            "No API key is generated \u2014 the user starts with no key and must log in via OAuth to get one",
+            "An API key is automatically generated and returned in the 201 response (with the plaintext secret)",
+            "An optional `generate_key` flag controls this behavior"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the initial `status` of a newly created user \u2014 both via OAuth login and via POST /api/v1/users?",
+          "context": "The spec defines status values (`active` / `blocked`) and describes blocking behavior but never states the default. Implementors need this to correctly initialize the users table row.",
+          "options": [
+            "`active` for both OAuth login and admin-created users",
+            "`active` for OAuth login, `active` for admin-created users (same)",
+            "`active` for OAuth login, but admin-created users have a configurable or explicit status field"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Does GET /api/v1/auth/providers return the state-embedded authorize URL (i.e., the server generates a state value per call and embeds it in the URL), or does it return a base authorize URL template and the state is handled separately?",
+          "context": "The CSRF state is generated server-side and stored in the in-memory cache. If the authorize URL is returned from the providers endpoint, the state must be generated at that point and included. If the URL is a template, the client constructs the final URL \u2014 but that contradicts server-side state generation.",
+          "options": [
+            "The providers endpoint generates a unique state per call, stores it in the cache, and returns the full authorize URL with state embedded",
+            "The providers endpoint returns a base URL (without state); a separate endpoint generates the state and returns the full authorize URL",
+            "The providers endpoint returns a base URL; the client is responsible for appending state (not compatible with server-side state generation)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What happens during OAuth login (POST /api/v1/auth/callback) when the user's existing key has already been manually revoked before they log in again? Is a new key still generated?",
+          "context": "The spec says login generates a new key 'revoking any existing active key'. If there is no active key (already revoked), the behavior (silently create a new key, or error) needs to be explicit.",
+          "options": [
+            "A new key is always generated on login regardless of whether a prior active key exists",
+            "If no active key exists, login still succeeds and generates a new key",
+            "Both of the above (same answer \u2014 login always creates a new key; 'revoking existing' is a no-op if none exists)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Should the list endpoints (GET /api/v1/users, GET /api/v1/keys) support pagination or sorting, or is a flat unordered array acceptable for this spec?",
+          "context": "Without pagination, large datasets could cause performance issues. Even if pagination is out of scope for now, specifying a default sort order (e.g., created_at DESC) prevents inconsistent implementations.",
+          "options": [
+            "No pagination required; return all records in a flat array, ordered by created_at ASC",
+            "No pagination required; return all records in a flat array, ordered by created_at DESC",
+            "No pagination required; order is unspecified/implementation-defined",
+            "Basic pagination (page/limit or cursor) is required"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "What is the expected format and type of `provider_id` in POST /api/v1/users, and should the server validate its format?",
+          "context": "GitHub provider IDs are integers (e.g., 12345678), but other providers may use strings or UUIDs. Defining the type and any validation prevents schema mismatches, especially since uniqueness is enforced on (provider, provider_id).",
+          "options": [
+            "String (opaque); no format validation \u2014 the server stores whatever the caller provides",
+            "String; must be non-empty but otherwise opaque",
+            "Integer for GitHub, string for others \u2014 provider-specific validation"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the OAuth flow, user management, and API key lifecycle with strong clarity. Background, intent, dependencies, goals, non-goals, and functional requirements are all present and mostly thorough. However, several gaps remain that could cause ambiguity during implementation: error response shapes are not fully specified, the key refresh behavior on revoked keys is undefined, the `username` uniqueness source during OAuth upsert is unclear, the `provider_id` storage for OAuth-created users is not explicitly called out in the callback flow, and a few authorization edge cases (e.g., admin updating their own record via the mixed-auth endpoint) are unspecified. These gaps are addressable with targeted clarification.",
+      "gaps": [
+        "Error response shapes are not defined \u2014 the PRD references HTTP 400/403/404/409/500 but never specifies the JSON body format for error responses (field names, structure). Since server_foundation owns error handling infrastructure, this may be intentional, but an explicit cross-reference or example would eliminate ambiguity.",
+        "Key refresh behavior on a revoked key is unspecified \u2014 if a user or admin calls POST /api/v1/keys/:key_id/refresh on a key where revoked_at is set, should it succeed (un-revoking the key), fail with a specific HTTP error code, or be treated differently?",
+        "OAuth upsert: username derivation is not specified \u2014 step 4 of the callback flow says 'upserts user: creates if new; updates username and email if existing', but never explains how username is derived from the GitHub provider response. Is it the GitHub login/handle? What happens if the GitHub username conflicts with an existing user record owned by a different provider_id?",
+        "provider_id handling in OAuth callback is not explicitly stated \u2014 the callback processing steps do not mention storing or using provider_id, yet the admin GET /users/:id returns provider_id and POST /users requires it. It is implied but not explicitly documented that the callback flow stores/uses provider_id for the upsert key.",
+        "Admin self-update behavior in PUT /api/v1/users/:id is ambiguous \u2014 the mixed-auth section describes non-admin rules and admin privileges, but does not state whether an admin updating their own record follows admin rules (can set status) or the same rules as any user on their own record.",
+        "API key listing does not specify the status field \u2014 the GET /api/v1/keys response schema omits a 'status' or 'active' indicator. Consumers cannot tell from the listed fields alone whether a key is currently valid (non-expired, non-revoked) without computing it themselves; it is unclear whether a computed 'status' field is intentional to omit.",
+        "Callback: behavior when code exchange fails (e.g., network error or provider returns an error) is not specified \u2014 what HTTP status and response should the server return?",
+        "Redirect URI allowlist: the PRD does not clarify what 'dev environment' means in terms of configuration (e.g., is it an environment variable, a config flag named 'env: development'?) which is necessary for implementers to know how to detect the mode at runtime."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What HTTP status code and response body should the server return when the OAuth code exchange fails (e.g., the provider returns an error or is unreachable)?",
+          "context": "The callback processing steps specify behavior for invalid redirect_uri (400) and empty email (400), but do not address provider-side failures. Implementers need a defined behavior to avoid divergent implementations.",
+          "options": [
+            "HTTP 502 Bad Gateway with a structured error body",
+            "HTTP 400 Bad Request (treat as a bad code/invalid request)",
+            "HTTP 503 Service Unavailable",
+            "Defer to server_foundation error handling conventions (just document the cross-reference)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What should happen when POST /api/v1/keys/:key_id/refresh is called on a key that has already been revoked?",
+          "context": "The revoke endpoint is defined as permanent and idempotent, but the refresh endpoint does not address revoked keys. Without a specified behavior, different implementers may allow or deny the operation inconsistently.",
+          "options": [
+            "Return HTTP 409 Conflict \u2014 revoked keys cannot be refreshed",
+            "Return HTTP 400 Bad Request",
+            "Allow the refresh (clears revoked_at and generates a new secret)",
+            "Return HTTP 404 \u2014 treat revoked keys as non-existent for this operation"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "How is the username derived from the GitHub OAuth provider response, and what happens if it conflicts with an existing user owned by a different provider_id?",
+          "context": "Step 4 of the callback flow says the server 'updates username and email if existing' but never defines how username is initially derived. GitHub returns a 'login' field (the handle). A conflict on username from a different GitHub account could violate the uniqueness constraint.",
+          "options": [
+            "Use GitHub 'login' field as username; on conflict with a different provider_id, return HTTP 409",
+            "Use GitHub 'login' field as username; on conflict, append a numeric suffix to ensure uniqueness",
+            "Use GitHub 'login' field as username; conflicts are prevented by the (provider, provider_id) unique constraint taking precedence",
+            "Other (please specify)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Should the GET /api/v1/keys response include a computed 'status' or 'is_active' field to indicate whether a key is currently valid (non-expired and non-revoked)?",
+          "context": "The current response schema only exposes expires_at and revoked_at. Clients must compute validity themselves. A computed field improves usability but adds server-side logic.",
+          "options": [
+            "Yes \u2014 add a computed 'status' field (e.g., active | expired | revoked)",
+            "No \u2014 consumers calculate validity from expires_at and revoked_at; keep the schema minimal",
+            "Yes \u2014 add a boolean 'is_active' field only"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Is provider_id explicitly extracted and stored during the OAuth callback flow (POST /api/v1/auth/callback), and what is the unique constraint behavior when the same GitHub account triggers a second login?",
+          "context": "The callback steps do not mention provider_id, yet the admin GET /users/:id returns it and POST /users requires it. The upsert behavior (create if new; update username and email if existing) implies a lookup by (provider, provider_id), but this is never stated explicitly.",
+          "options": [
+            "Yes \u2014 upsert key is (provider, provider_id); provider_id is stored on create and not updated thereafter",
+            "Yes \u2014 upsert key is (provider, provider_id); provider_id is stored on create and updated on each login",
+            "The upsert key is email; provider_id is stored but not used as the lookup key",
+            "Other (please specify)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "When an admin calls PUT /api/v1/users/:id on their own user record, do admin-level permissions apply (i.e., they can set 'status' on themselves)?",
+          "context": "The mixed-auth section defines rules for non-admins and for admins updating others, but the self-update case for admins is unaddressed. This matters for implementation of the field-level permission check.",
+          "options": [
+            "Yes \u2014 admins always have admin-level permissions regardless of whether the target is themselves",
+            "No \u2014 admins follow the same self-update rules as regular users when updating their own record (cannot change their own status)",
+            "Admins cannot update their own record at all via this endpoint"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "How is 'dev environment' detected at runtime for the redirect_uri allowlist logic \u2014 is it a specific config flag, an environment variable, or another mechanism?",
+          "context": "The allowlist section distinguishes dev vs. production behavior (localhost permissiveness vs. strict external_url matching), but does not define how the server determines which mode it is running in. Implementers need a concrete mechanism.",
+          "options": [
+            "A config file field (e.g., [server] env = development | production)",
+            "An environment variable (e.g., AF_ENV=development)",
+            "Inferred from whether external_url is set (absent = dev, present = production)",
+            "Other (please specify)"
+          ],
+          "required": true
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the core OAuth flow, user management, and API key lifecycle with impressive clarity and detail. Design decisions are well-justified (PKCE rationale, state ownership, one-active-key model), boundaries with `server_foundation` are clearly drawn, and most edge cases are explicitly handled. However, several gaps remain that could block or ambiguate implementation: the secret generation mechanism is unspecified, the user ID format is undefined, email uniqueness semantics are unclear, update endpoint response shape has a stated inconsistency, and a few authorization/error behaviors need disambiguation.",
+      "gaps": [
+        "Secret and key_id generation mechanism is unspecified \u2014 the format is defined (8 + 32 alphanumeric chars) but the generation algorithm (e.g., crypto/rand, base62 encoding) is not stated, leaving room for insecure implementations.",
+        "User ID format is undefined \u2014 the schema uses 'string' but does not specify UUID, ULID, sequential integer, or other format, which affects database schema design and API contract stability.",
+        "Email uniqueness semantics are ambiguous \u2014 `POST /api/v1/users` states email is 'not required to be globally unique', but the OAuth upsert path updates email from the provider on every login. It is unclear whether two users from different providers can share an email and what the expected behavior is.",
+        "PUT /api/v1/users/:id response shape inconsistency \u2014 the spec states it returns the same shape as GET /api/v1/users/:id 'without team_memberships', but GET includes provider_id. It is unclear whether PUT also returns provider_id or uses the list-level shape (which omits it).",
+        "No HTTP status code specified for GET /api/v1/users/:id or GET /api/v1/keys when the resource is not found (404 behavior not documented for these endpoints).",
+        "PUT /api/v1/users/:id \u2014 behavior when a non-admin sends an empty or no-op update body (no recognized fields) is unspecified. Should it return 200, 400, or 422?",
+        "POST /api/v1/keys/:key_id/refresh \u2014 the response includes revoked_at: null but behavior when a key is expired (not revoked) is not explicitly stated. Can expired keys be refreshed?",
+        "The `expires` field default (90 days) is stated for login, but it is unclear whether admin-created users who later log in via OAuth also default to 90 days, or whether the admin can specify a different default at user creation time.",
+        "No specification of how the GitHub OAuth scopes are configured or defaulted (e.g., whether 'user:email' scope is required to retrieve email from GitHub API).",
+        "Error response shape for user-not-found on GET /api/v1/users/:id and key-not-found on DELETE /api/v1/keys/:key_id is referenced as 'see server_foundation' but no pointer or example is given, making it hard to verify consistency."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What format should user IDs take?",
+          "context": "The PRD uses 'string' for user IDs throughout but does not specify the format. This affects database schema design, API contract stability, sortability, and whether IDs are guessable. Common choices are UUID v4 (random), ULIDs (sortable), or sequential integers.",
+          "options": [
+            "UUID v4 (e.g., '550e8400-e29b-41d4-a716-446655440000')",
+            "ULID (sortable, e.g., '01ARZ3NDEKTSV4RRFFQ69G5FAV')",
+            "Sequential integer",
+            "Opaque string \u2014 leave to implementer"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "How should key_id and secret values be generated \u2014 is there a required algorithm or entropy source?",
+          "context": "The format is defined (8 alphanumeric + 32 alphanumeric) but the generation mechanism is not. For security, the secret must be cryptographically random. Specifying crypto/rand with base62 or hex encoding prevents insecure implementations and ensures reproducible test strategies.",
+          "options": [
+            "crypto/rand, base62-encoded (alphanumeric output)",
+            "crypto/rand, hex-encoded (then truncated to length)",
+            "Leave algorithm to implementer, mandate crypto/rand as entropy source only",
+            "No constraint \u2014 leave entirely to implementer"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Can two users (from different providers) share the same email address?",
+          "context": "POST /api/v1/users says email is 'not required to be globally unique', and the OAuth upsert updates email on every login. If two provider identities can map to the same email, listing and lookup behavior may be confusing. Clarifying this prevents silent data anomalies.",
+          "options": [
+            "Yes \u2014 email is not unique; multiple users may share an email",
+            "No \u2014 email must be unique across all users; return HTTP 409 on conflict",
+            "Email uniqueness is enforced only within the same provider"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What fields does PUT /api/v1/users/:id return in its success response \u2014 does it include provider_id?",
+          "context": "The spec says the update response uses 'the same shape as GET /api/v1/users/:id, without team_memberships'. GET /api/v1/users/:id includes provider_id, but list responses omit it. Clarifying which shape applies prevents an implementation inconsistency.",
+          "options": [
+            "Include provider_id (same as GET /api/v1/users/:id minus team_memberships)",
+            "Omit provider_id (same as list-level shape)",
+            "Return only the fields that were updated"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Can an expired (but not revoked) API key be refreshed?",
+          "context": "The spec says revoked keys return HTTP 404 on refresh, but does not explicitly address expired keys. If expired keys cannot be refreshed, users would need to log in again via OAuth rather than use the refresh endpoint. This has UX implications for the CLI.",
+          "options": [
+            "Yes \u2014 expired keys can be refreshed (generates a new secret and resets expiry)",
+            "No \u2014 expired keys return HTTP 404 on refresh (same as revoked)",
+            "No \u2014 expired keys return a distinct HTTP 410 Gone on refresh"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "What GitHub OAuth scopes does the server request by default?",
+          "context": "GitHub does not return a user's email by default unless the 'user:email' scope is requested. Since the spec requires email and fails login if it is null, the required scopes must be defined. The CLI appends scope to the authorize URL, but the server or config must define what that scope string should be.",
+          "options": [
+            "'user:email' only",
+            "'user:email read:user' (email + basic profile)",
+            "'user' (full user access)",
+            "Scope is configurable per provider in server config",
+            "Scope is entirely the CLI's responsibility \u2014 not defined by the server"
+          ],
+          "required": true
+        },
+        {
+          "id": "q7",
+          "text": "What HTTP status should GET /api/v1/users/:id return when the user does not exist?",
+          "context": "The spec documents 404 for key operations but does not explicitly state it for user lookups. While 404 is the obvious answer, explicitly documenting it (and whether the error body follows server_foundation format) ensures consistency.",
+          "options": [
+            "HTTP 404 with structured error body (per server_foundation format)",
+            "HTTP 404 with empty body",
+            "HTTP 400"
+          ],
+          "required": false
+        },
+        {
+          "id": "q8",
+          "text": "Should the server define and document the required GitHub OAuth scope string, or is scope configuration entirely delegated to the CLI?",
+          "context": "The GET /api/v1/auth/providers endpoint returns a base authorize URL without appending scope. If the server or config does not define the required scope, the CLI must know the correct value out-of-band. A provider config field for default scopes would make this self-documenting.",
+          "options": [
+            "Server config defines a 'scopes' field per provider; included in provider registry",
+            "Scope is hardcoded per provider in the server implementation",
+            "Scope is entirely the CLI's responsibility \u2014 server does not define it"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the core OAuth flow, user management, and API key lifecycle in considerable depth. Identifiers, security requirements, provider registry design, redirect URI allowlist logic, and auth boundary clarifications are all clearly articulated. However, several gaps remain that could cause ambiguity during implementation: input validation rules are largely unspecified, the `updated_at` update trigger is not defined, the `GET /api/v1/keys` scoping for a user's \"own key(s)\" is inconsistent with the one-active-key-per-user model, the `full_name` nullability/clearing behavior on update is not addressed, the `provider_id` storage for the admin-create path is not validated beyond non-empty, and a few edge cases around blocked users and key operations are underspecified.",
+      "gaps": [
+        "Input validation is largely absent: no maximum/minimum lengths specified for `username`, `email`, `full_name`, `provider`, or `provider_id` fields on `POST /api/v1/users` or `PUT /api/v1/users/:id`. No character-set or format constraints are defined for `username` (e.g., alphanumeric only, no spaces?).",
+        "`updated_at` update semantics are not specified: it is unclear whether `updated_at` is updated on every write (including no-op updates), only on actual field changes, or only on specific field mutations.",
+        "The `GET /api/v1/keys` response for a non-admin user references 'own key(s)' (plural) but the one-active-key-per-user model implies at most one active key. It is unclear whether this endpoint returns all historical keys (including revoked/expired ones) or just the current active key for the requesting user.",
+        "`full_name` nullability on `PUT /api/v1/users/:id` is unspecified: can a user explicitly set `full_name` to `null` to clear it? Is an empty string `\"\"` treated as null or rejected?",
+        "No guidance on what happens when an admin calls `POST /api/v1/keys/:key_id/refresh` on a key belonging to a blocked user \u2014 is that permitted or rejected with HTTP 403?",
+        "No definition of the `role` field values in `team_memberships` (returned by `GET /api/v1/users/:id`). Since team management is spec 3, this field's allowed values are undefined here, which may cause schema drift.",
+        "The `POST /api/v1/users` admin-create endpoint does not specify behavior when the provided `provider` string does not match any registered OAuth provider \u2014 is this rejected (HTTP 400) or stored as-is?",
+        "The error response for `POST /api/v1/auth/callback` does not distinguish between an invalid/unrecognized `provider` value (e.g., `\"notgithub\"`) and other 400-class errors \u2014 no HTTP status is specified for this case.",
+        "No specification of whether the `expires` field in `POST /api/v1/auth/callback` returns an HTTP 400 if an invalid value is supplied (e.g., `expires: 45`), or whether it silently defaults to 90.",
+        "Database transaction scope is not specified for multi-step operations like the callback flow (upsert + key revocation + key creation). A partial failure could leave the database in an inconsistent state.",
+        "The `DELETE /api/v1/keys/:key_id` endpoint does not specify what happens when an admin attempts to revoke the key of a blocked user \u2014 whether this is allowed or rejected.",
+        "No rate limiting or abuse protection is mentioned for `POST /api/v1/users` (admin endpoint), which could be exploited to pre-provision large numbers of users."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What are the validation rules for `username`? Specifically: what is the maximum length, are there allowed/disallowed characters (e.g., alphanumeric + hyphens only, no spaces), and is case sensitivity enforced (e.g., is `Alice` the same as `alice`)?",
+          "context": "Username uniqueness enforcement requires knowing the comparison semantics (case-sensitive or case-insensitive). Character constraints prevent injection and interoperability issues downstream.",
+          "options": [
+            "Alphanumeric + hyphens/underscores only, max 39 characters, case-insensitive uniqueness (lowercased on store)",
+            "Alphanumeric + hyphens/underscores only, max 39 characters, case-sensitive uniqueness",
+            "No character restrictions beyond non-empty, case-sensitive uniqueness",
+            "Mirror GitHub's username rules: alphanumeric + hyphens, max 39 chars, case-insensitive"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Does `GET /api/v1/keys` for a non-admin user return only the current active key, or all keys ever associated with that user (including expired and revoked historical keys)?",
+          "context": "The PRD says 'user sees own key only' but also says 'includes expired and revoked keys in all listings.' These are potentially contradictory \u2014 a user with a one-active-key model may have multiple historical keys if they logged in multiple times.",
+          "options": [
+            "All keys ever associated with the user (including revoked and expired), ordered by created_at ASC",
+            "Only the current active key (if one exists), or an empty array if none",
+            "All non-revoked keys for the user (active + expired but not revoked)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "When `PUT /api/v1/users/:id` is called with `\"full_name\": null` or `\"full_name\": \"\"`, what is the expected behavior? Should this clear the field to null, be treated as a no-op, or return a validation error?",
+          "context": "Without this, implementers will make inconsistent choices about whether users can remove their display name, and whether empty strings are stored or normalized to null.",
+          "options": [
+            "null clears the field to null; empty string \"\" is rejected with HTTP 400",
+            "Both null and \"\" clear the field to null",
+            "null is treated as absent (no-op); \"\" is rejected with HTTP 400",
+            "null and \"\" are both treated as no-ops (field is not changed)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Should `updated_at` be updated on every write to a user record (including no-op updates where no fields actually change), or only when at least one field value actually changes?",
+          "context": "This affects cache invalidation and audit trail reliability. No-op updates returning a bumped `updated_at` can be confusing to consumers.",
+          "options": [
+            "Only updated when at least one field value actually changes",
+            "Updated on every write, even no-ops",
+            "No-op requests (empty body) don't touch updated_at; real field changes always update it"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What should happen in `POST /api/v1/auth/callback` if the `expires` field is supplied with an invalid value (e.g., `45`, `\"ninety\"`, or `-1`)?",
+          "context": "Only 0, 30, 60, and 90 are valid values, but no error behavior is specified for out-of-range or non-integer inputs.",
+          "options": [
+            "Return HTTP 400 with a structured error body describing the invalid value",
+            "Silently default to 90 days and proceed",
+            "Return HTTP 422 Unprocessable Entity"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "When `POST /api/v1/auth/callback` receives an unrecognized `provider` value (e.g., `\"gitlab\"`), what HTTP status should be returned?",
+          "context": "The error table does not include this case. An unrecognized provider cannot be looked up in the registry, so it must be handled, but the response code is unspecified.",
+          "options": [
+            "HTTP 400 Bad Request with a structured error body",
+            "HTTP 404 Not Found (provider not registered)",
+            "HTTP 422 Unprocessable Entity"
+          ],
+          "required": true
+        },
+        {
+          "id": "q7",
+          "text": "Should `POST /api/v1/users` (admin create) validate that the `provider` value matches a registered OAuth provider in the registry, or should it accept any non-empty string?",
+          "context": "Allowing arbitrary provider strings could create orphaned user records that can never authenticate. Restricting to registered providers adds a referential integrity check at the application layer.",
+          "options": [
+            "Validate against registered providers; return HTTP 400 if not recognized",
+            "Accept any non-empty string; no provider validation at creation time",
+            "Accept any non-empty string but log a warning if provider is not in registry"
+          ],
+          "required": false
+        },
+        {
+          "id": "q8",
+          "text": "Are the multi-step operations in `POST /api/v1/auth/callback` (user upsert + previous key revocation + new key creation) required to execute within a single database transaction to guarantee atomicity?",
+          "context": "Without a transaction, a failure mid-way (e.g., after revoking the old key but before inserting the new key) could leave the user without any valid API key, requiring manual intervention.",
+          "options": [
+            "Yes \u2014 all three steps must execute within a single database transaction; any failure rolls back all steps",
+            "No \u2014 best-effort sequential operations are acceptable for this iteration",
+            "Yes for key revocation + creation; upsert may be separate"
+          ],
+          "required": true
+        },
+        {
+          "id": "q9",
+          "text": "Can an admin refresh or revoke the API key of a blocked user?",
+          "context": "A blocked user cannot authenticate, but their key may still exist in the database. Allowing revocation of a blocked user's key is a useful housekeeping operation; allowing refresh is less clear.",
+          "options": [
+            "Admin may both refresh and revoke keys for blocked users",
+            "Admin may revoke keys for blocked users, but not refresh them (refresh returns HTTP 403 for blocked user keys)",
+            "Neither refresh nor revoke is permitted for blocked users' keys (both return HTTP 403)"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The PRD is now well-specified and implementation-ready. All nine previously identified gaps have been resolved: username validation rules (GitHub mirror: alphanumeric+hyphens, 39 chars, case-insensitive) are explicit; `GET /api/v1/keys` for non-admin users is clarified to return all historical keys; `full_name` null/empty-string clearing behavior is defined; `updated_at` only bumps on actual field changes; invalid `expires` values return HTTP 400; unrecognized `provider` in callback returns HTTP 400; admin-create accepts any non-empty provider string with a warning logged; the callback flow's three steps are required to run in a single database transaction; and admins may refresh/revoke keys for blocked users. The remaining minor open item (role field values in team_memberships) is correctly deferred to spec 3 and explicitly noted as opaque at this layer. No blocking ambiguities remain for implementation.",
+      "gaps": [
+        "The `role` field values in `team_memberships` (returned by `GET /api/v1/users/:id`) are intentionally deferred to spec 3 (team management) and treated as an opaque string at this layer. This is an accepted cross-spec dependency, not a blocking gap.",
+        "No maximum length is specified for `email` or `full_name` fields beyond what the database column supports. This is low risk given the lack of uniqueness constraints, but implementers should apply a reasonable database column size (e.g., 255 chars for email) in the schema owned by `server_foundation`."
+      ],
+      "questions": [
+        {
+          "id": "q10",
+          "text": "Should the server enforce a maximum length on the `email` field at the application layer (e.g., 254 characters per RFC 5321), or is this left entirely to the database column definition in `server_foundation`?",
+          "context": "No application-level length limit is currently specified for email. Most systems enforce 254 chars per RFC 5321. Without an explicit limit, implementers may make inconsistent choices.",
+          "options": [
+            "Enforce 254-character maximum at application layer (RFC 5321)",
+            "Leave entirely to the database column definition in server_foundation",
+            "No limit enforced at any layer"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Background: af-hub requires user identity before any platform capability can operate. OAuth is the standard mechanism for delegated authentication. GitHub is the first provider because it is the primary git hosting platform for the target users. PKCE is not required because this is a server-side (confidential client) flow where the client secret is securely stored. One active key per user simplifies the mental model and prevents key sprawl \u2014 the user always knows which credential is active.",
+        "q2": "Yes \u2014 declare dependency on server_foundation for auth middleware, DB schema, and error handling infrastructure.",
+        "q3": "server_foundation owns recognition/validation only; oauth_and_users owns generation, refresh, and revocation.",
+        "q4": "In-memory cache with a short TTL (10 minutes). The state parameter is only needed during the OAuth flow which completes in seconds. No persistence needed.",
+        "q5": "Users can only refresh their own key; admins can refresh any key.",
+        "q6": "Not assigned \u2014 greenfield project."
+      },
+      "timestamp": "2026-07-10T14:46:17.844756+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Exact host+port match: in dev, http://localhost with any port is allowed. In production, only URIs matching the exact external_url host+scheme are allowed. If external_url is not configured in production, the callback fails. Implemented as a list of allowed origin strings checked against the URI's scheme+host+port.",
+        "q2": "Mixed-auth: any authenticated user can call PUT /api/v1/users/:id but field-level permissions apply. Non-admins can only set full_name; attempts to change status return 403.",
+        "q3": "Indefinite keys (expires=0) remain indefinite; timed keys get new expires_at = now + original N days. Rolling forward from refresh time.",
+        "q4": "Return all fields except the secret (key_id, user_id, created_at, expires_at, revoked_at). The secret is never returned after initial creation.",
+        "q5": "Return HTTP 200/204 (idempotent \u2014 revoking an already-revoked key is a no-op).",
+        "q6": "Email is not required to be unique. Multiple accounts can share an email (different providers may return the same email).",
+        "q7": "Single-instance deployment only. Multi-instance is out of scope for this iteration."
+      },
+      "timestamp": "2026-07-10T14:47:46.213193+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Always reuse the original N days (no override allowed at refresh time). Keeps the endpoint simple.",
+        "q2": "No API key is generated \u2014 the user starts with no key and must log in via OAuth to get one. Admin-created users are typically for pre-provisioning before OAuth login.",
+        "q3": "active for both OAuth login and admin-created users.",
+        "q4": "The providers endpoint returns a base URL (without state). The state is generated by the CLI client, not the server. The CLI sends the state to the callback endpoint for validation. Wait \u2014 actually, the state is a client-side CSRF token. The CLI generates it, includes it in the authorize URL, stores it locally, and validates it on the callback. The server does NOT store or validate the state. The state cache is on the CLI side, not the server side.",
+        "q5": "Both (same answer) \u2014 login always creates a new key. Revoking existing is a no-op if none exists.",
+        "q6": "No pagination required; return all records in a flat array, ordered by created_at ASC.",
+        "q7": "String; must be non-empty but otherwise opaque. Stored as TEXT."
+      },
+      "timestamp": "2026-07-10T14:49:38.557834+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "HTTP 502 Bad Gateway with structured error body. This clearly communicates an upstream provider failure.",
+        "q2": "Return HTTP 404 \u2014 treat revoked keys as non-existent for refresh operations. Revocation is permanent.",
+        "q3": "Use GitHub 'login' field as username; on conflict with a different provider_id, return HTTP 409. The admin must resolve this manually.",
+        "q4": "No \u2014 consumers calculate validity from expires_at and revoked_at. Keep the schema minimal.",
+        "q5": "Yes \u2014 upsert key is (provider, provider_id). provider_id is stored on create and not updated thereafter. The provider_id is extracted from the GitHub user info response.",
+        "q6": "Yes \u2014 admins always have admin-level permissions regardless of whether the target is themselves.",
+        "q7": "Inferred from whether external_url is set. Absent = dev (localhost allowed), present = production (strict matching against external_url)."
+      },
+      "timestamp": "2026-07-10T14:51:50.814155+00:00"
+    },
+    {
+      "assessment_index": 4,
+      "answers": {
+        "q1": "UUID v4. Already specified in the master PRD and used by the google/uuid dependency.",
+        "q2": "crypto/rand as entropy source, base62-encoded for alphanumeric output. This is a security requirement.",
+        "q3": "Yes \u2014 email is not unique. Multiple users from different providers may share the same email. This mirrors GitHub's model where email privacy settings vary.",
+        "q4": "Include provider_id (same as GET /api/v1/users/:id minus team_memberships).",
+        "q5": "Yes \u2014 expired keys can be refreshed. This generates a new secret and resets expiry. This is better UX than forcing re-login via OAuth.",
+        "q6": "Scope is configurable per provider in server config, with 'user:email' as the default for GitHub. The scope is included in the provider registry and returned by GET /api/v1/auth/providers.",
+        "q7": "HTTP 404 with structured error body per server_foundation format.",
+        "q8": "Server config defines a 'scopes' field per provider. Included in provider registry response."
+      },
+      "timestamp": "2026-07-10T14:54:18.890696+00:00"
+    },
+    {
+      "assessment_index": 5,
+      "answers": {
+        "q1": "Mirror GitHub's username rules: alphanumeric + hyphens, max 39 chars, case-insensitive uniqueness (stored as-is, compared lowercased).",
+        "q2": "All keys ever associated with the user (including revoked and expired), ordered by created_at ASC. This allows users to see their key history.",
+        "q3": "Both null and empty string clear the field to null. Users can remove their display name.",
+        "q4": "Only updated when at least one field value actually changes.",
+        "q5": "Return HTTP 400 with a structured error body describing the invalid value.",
+        "q6": "HTTP 400 Bad Request with structured error body. Unrecognized providers are invalid input.",
+        "q7": "Accept any non-empty string but log a warning if provider is not in registry. Admin may pre-provision users for providers not yet configured.",
+        "q8": "Yes \u2014 all three steps must execute within a single database transaction. Any failure rolls back all steps.",
+        "q9": "Admin may both refresh and revoke keys for blocked users. Administrative key management should not be blocked by user status."
+      },
+      "timestamp": "2026-07-10T14:57:18.516419+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

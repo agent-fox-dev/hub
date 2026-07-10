@@ -1,0 +1,627 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"workspaces_and_tokens\" PRD is well-structured and comprehensive. All four required sections (Intent, Goals, Non-Goals, Background/context) are present and substantive. The functional requirements are detailed, access control rules are explicit, token lifecycle is clearly specified, and technical boundaries are stated. Two minor cross-spec concerns are noted: (1) the `teams` spec is active and overlaps via the `team_id` field on workspace creation \u2014 a dependency or integration note should be declared; (2) the `cli_client` spec explicitly references workspace registration and workspace token management, which overlaps in scope. Neither is a blocking gap given the PRD's clarity, but both warrant acknowledgment. The PRD is ready to proceed to artifact generation with optional clarifications.",
+      "gaps": [
+        "No explicit `## Dependencies` section is present. The PRD references server_foundation and oauth_and_users in the Intent, and implicitly relies on the `teams` spec (via team_id validation), but dependencies are not formally declared.",
+        "The `teams` spec (active) overlaps with this PRD via the team_id field accepted on POST /api/v1/workspaces. The relationship between these two specs (dependency vs. integration) is not formally stated.",
+        "The `cli_client` spec (active) explicitly covers workspace registration and workspace token management from the client side. There is no cross-reference or acknowledgment of how this spec's API contracts align with the CLI spec's expectations.",
+        "The owner field in the PRD frontmatter is empty \u2014 minor metadata gap.",
+        "Error response shapes (e.g., for 400 validation failures, 403, 404, 409) are not specified, which may cause inconsistency with other specs' error conventions.",
+        "No mention of pagination for list endpoints (GET /api/v1/workspaces, GET /api/v1/workspaces/:slug/tokens) \u2014 whether these are unbounded or have limits is unspecified."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The active `teams` spec provides team management, and this PRD accepts a `team_id` on workspace creation. Should `workspaces_and_tokens` declare a formal dependency on the `teams` spec, or is the team_id validation self-contained within this spec (e.g., a direct DB lookup)?",
+          "context": "Formal dependency declarations help sequencing and clarify which spec owns the teams table schema and active-status logic that workspace creation must validate against.",
+          "options": [
+            "Declare a dependency on the `teams` spec in a ## Dependencies section",
+            "The validation is a self-contained DB lookup \u2014 no formal dependency needed, but add a note",
+            "The teams spec is a prerequisite; workspaces_and_tokens should not proceed until teams is implemented"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "The active `cli_client` spec covers workspace registration and workspace token management from the client side. Should this PRD explicitly reference the CLI spec as a consumer, or does the CLI spec depend on this one (making this the authoritative source for API contracts)?",
+          "context": "Clarifying the dependency direction avoids contract drift between the backend API spec and the CLI spec that consumes it.",
+          "options": [
+            "cli_client depends on workspaces_and_tokens \u2014 add this spec as a dependency in the CLI spec",
+            "Add a ## Consumers section here referencing cli_client",
+            "No change needed \u2014 the relationship is already implied by spec ordering"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Are the list endpoints (GET /api/v1/workspaces and GET /api/v1/workspaces/:slug/tokens) intentionally unbounded, or should they support pagination? If pagination is intended, what style (cursor, offset/limit)?",
+          "context": "Without pagination, large workspaces or token lists could become a performance issue. Specifying this now avoids a breaking API change later.",
+          "options": [
+            "Unbounded for now \u2014 pagination is a future non-goal",
+            "Offset/limit pagination (e.g., ?page=1&per_page=50)",
+            "Cursor-based pagination",
+            "Return all results but add a max-results cap (e.g., 500)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What should the error response shape be for validation failures (HTTP 400), not-found (HTTP 404), and conflict (HTTP 409)? Should this follow a convention established in server_foundation or oauth_and_users?",
+          "context": "Consistent error envelopes across specs make client (CLI, web UI) error handling simpler. If a convention already exists in an earlier spec, referencing it here prevents drift.",
+          "options": [
+            "Follow the same error envelope already defined in server_foundation / oauth_and_users (reference that spec)",
+            "Define a new error shape explicitly in this PRD",
+            "Defer to implementation \u2014 not a requirements concern"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured, clearly scoped, and covers the core functional requirements for workspace management and token delegation. Dependencies, non-goals, access control rules, and error responses are all documented. However, several gaps remain that could cause ambiguity during implementation: the workspace object response schema is not defined, token creation response fields are unspecified, access control for edge cases (e.g., expired/revoked tokens on GET) is unclear, the idempotency behavior on token revocation needs a status code confirmation, team_id validation error response is missing, and a few behavioral edge cases (duplicate token labels, blocked user token behavior on list endpoints) are unaddressed.",
+      "gaps": [
+        "Workspace object response schema is not defined (fields returned by GET /api/v1/workspaces and GET /api/v1/workspaces/:slug are unspecified).",
+        "Token creation response schema is incomplete \u2014 fields beyond 'full token including plaintext secret' are not listed (e.g., token_id, label, expires_at, created_at).",
+        "No HTTP status code specified for the idempotent DELETE /api/v1/workspaces/:slug/tokens/:token_id (200 vs 204).",
+        "Behavior of expired or revoked workspace tokens on GET /api/v1/workspaces/:slug is not specified \u2014 do they return 401, 403, or 404?",
+        "Error response for invalid/inactive team_id on POST /api/v1/workspaces is not defined (400 vs 404).",
+        "Token label uniqueness constraint (or lack thereof) is not stated \u2014 can two tokens for the same workspace share the same label?",
+        "No mention of a 401 Unauthorized response in the error table \u2014 missing unauthenticated caller scenario.",
+        "Behavior when a blocked user's tokens appear in GET /api/v1/workspaces/:slug/tokens list is not addressed.",
+        "Maximum label length for workspace tokens is not defined.",
+        "It is unclear whether GET /api/v1/workspaces/:slug/tokens is accessible via workspace token (the access control table says workspace tokens only get GET /api/v1/workspaces/:slug, implying no, but this is not stated explicitly for token list endpoint)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What fields does the workspace object include in API responses (e.g., for GET /api/v1/workspaces and GET /api/v1/workspaces/:slug)?",
+          "context": "Without a defined response schema, implementers may include or omit fields inconsistently, and consumers like cli_client cannot reliably parse responses.",
+          "options": [
+            "id, slug, git_url, branch, team_id, owner_user_id, created_at, updated_at",
+            "slug, git_url, branch, team_id, created_at only",
+            "Custom \u2014 please specify"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What fields does the POST /api/v1/workspaces/:slug/tokens response body include beyond the plaintext token string?",
+          "context": "The PRD states the plaintext secret is returned exactly once, but does not list accompanying metadata fields (token_id, label, expires_at, created_at, etc.) that the caller will likely need.",
+          "options": [
+            "token (full string), token_id, label, expires_at, created_at",
+            "token (full string) only",
+            "Custom \u2014 please specify"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What HTTP status code should DELETE /api/v1/workspaces/:slug/tokens/:token_id return on success (including the idempotent already-revoked case)?",
+          "context": "The PRD says the operation is idempotent and returns success, but does not specify whether the status code is 200 (with body) or 204 (no body), which affects client implementation.",
+          "options": [
+            "200 OK with empty or confirmation body",
+            "204 No Content"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What should happen when an expired or revoked workspace token is used to authenticate GET /api/v1/workspaces/:slug?",
+          "context": "The PRD states expired tokens cannot authenticate but remain in listings. The exact HTTP response code for an expired/revoked token auth attempt needs to be specified for consistent error handling.",
+          "options": [
+            "401 Unauthorized",
+            "403 Forbidden",
+            "Same as invalid token (treat as unauthenticated)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What HTTP status and error code should be returned when a provided team_id does not exist or is inactive on POST /api/v1/workspaces?",
+          "context": "The PRD describes the team_id validation logic but omits the error response for failure, leaving implementers to guess between 400 Bad Request and 404 Not Found.",
+          "options": [
+            "400 Bad Request (treat as validation failure)",
+            "404 Not Found (team not found)",
+            "422 Unprocessable Entity"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Are workspace token labels required to be unique within a workspace, or can multiple tokens share the same label?",
+          "context": "If labels must be unique, a 409 or 400 error case needs to be documented. If not, this should be stated to avoid confusion during implementation.",
+          "options": [
+            "Labels must be unique per workspace",
+            "Labels do not need to be unique",
+            "Labels are optional and uniqueness is not enforced"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "Should the error table include a 401 Unauthorized response for unauthenticated requests (missing or invalid API key / token)?",
+          "context": "The current error table starts at 400 and jumps to 403, with no 401 entry. If auth middleware from server_foundation handles 401 uniformly, this can be noted as out-of-scope here \u2014 but it should be stated explicitly.",
+          "options": [
+            "Yes, add 401 to the error table for this spec",
+            "No, 401 is handled globally by auth middleware from server_foundation and out of scope here"
+          ],
+          "required": false
+        },
+        {
+          "id": "q8",
+          "text": "What is the maximum allowed length for a workspace token label?",
+          "context": "Without a defined maximum, validation behavior is ambiguous and database schema constraints may conflict with API behavior.",
+          "options": [
+            "64 characters",
+            "128 characters",
+            "255 characters",
+            "No explicit limit \u2014 rely on DB column size"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the core requirements for workspace management and workspace token delegation with commendable precision. Access control is clearly tabulated, schemas are defined, dependencies are explicitly called out, and the non-goals section is appropriately scoped. However, several gaps remain that could cause implementation ambiguity: the token secret format/character set for base62 encoding is under-specified, the behavior for updating workspace fields (PATCH/PUT) is absent but not explicitly a non-goal, there is no specification for the `updated_at` field mutation triggers, the `branch` field validation rules are missing, and there are open questions around how blocked-user token behavior is enforced (middleware vs. handler), slug uniqueness scope, and the `token_id` generation source.",
+      "gaps": [
+        "No PATCH/PUT workspace endpoint is defined, and it is not listed as a non-goal \u2014 it is unclear whether workspace fields (git_url, branch, team_id) are immutable after creation or simply deferred.",
+        "The `updated_at` field is included in the workspace object schema but no trigger or mutation path is defined (since there is no update endpoint), leaving it ambiguous whether it ever differs from `created_at`.",
+        "The `branch` field accepts an optional string but has no validation rules (max length, allowed characters, forbidden values, etc.).",
+        "The base62 encoding character set and exact output length for the 32-character secret are not fully specified (e.g., whether the alphabet is 0-9A-Za-z or a restricted subset).",
+        "Blocked-user token enforcement is mentioned ('tokens of blocked users are inert') but the mechanism is not specified \u2014 it is unclear whether this check is performed by the auth middleware or requires a per-request user-status lookup.",
+        "Slug uniqueness scope is implied to be global but never explicitly stated \u2014 it is not confirmed whether slugs must be unique across all users/teams or only within an owner's workspaces.",
+        "The `token_id` is described as '8-character alphanumeric' but its generation source (crypto/rand + base62, or a separate scheme) is not explicitly stated, unlike the secret.",
+        "No explicit HTTP response body shape is defined for the `GET /api/v1/workspaces` list endpoint (e.g., whether it returns a JSON array directly or an envelope object with a key like `{\"workspaces\": [...]}`).",
+        "The `DELETE /api/v1/workspaces/:slug/tokens/:token_id` idempotency claim ('already-revoked returns 204') does not address the case where the token_id does not exist at all \u2014 whether that also returns 204 or 404 is unspecified.",
+        "No rate limiting, quota, or maximum token count per workspace is mentioned \u2014 it is unclear if this is intentionally deferred or out of scope."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Are workspace fields (git_url, branch, team_id) immutable after creation, or is a workspace update (PATCH/PUT) endpoint planned and simply omitted from this spec?",
+          "context": "The workspace object schema includes `updated_at`, implying fields may change, but no update endpoint is defined and it is not listed as a non-goal. This directly affects whether `updated_at` will ever differ from `created_at` and whether implementers should leave an update path open.",
+          "options": [
+            "Workspace fields are immutable after creation; `updated_at` equals `created_at` always and is included for schema consistency only.",
+            "A PATCH endpoint is planned but deferred; `updated_at` should be maintained for future use.",
+            "A PATCH endpoint should be added to this spec now."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What validation rules apply to the `branch` field? For example: maximum length, character restrictions, or forbidden values?",
+          "context": "The spec states branch is an optional, nullable string but provides no validation constraints. Without rules, implementers may accept or reject values inconsistently (e.g., branch names with spaces, special characters, or excessively long strings).",
+          "options": [
+            "No validation beyond presence \u2014 any non-empty string is accepted as-is.",
+            "Max 255 characters, standard git branch name characters only (alphanumeric, hyphens, underscores, slashes, dots).",
+            "Max 255 characters, no whitespace, stored as-is without git-ref validation."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Is slug uniqueness enforced globally (across all workspaces regardless of owner/team), or is it scoped to a user or team?",
+          "context": "The spec mentions HTTP 409 on duplicate slug but does not state the uniqueness domain. This determines the database unique index definition and the user-facing behavior when two different users try to create workspaces with the same slug.",
+          "options": [
+            "Global uniqueness \u2014 slugs must be unique across all workspaces in the system.",
+            "Per-user uniqueness \u2014 slugs must be unique within a user's own workspaces.",
+            "Per-team uniqueness \u2014 slugs must be unique within a team."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "How is the 'tokens of blocked users are inert' rule enforced \u2014 by the auth middleware, or by a per-handler user-status check?",
+          "context": "The spec states blocked-user tokens behave as invalid but does not specify the enforcement point. This matters because the middleware in server_foundation is described as handling 401 globally \u2014 if blocked-user checks belong there, the middleware must be extended; if they belong in handlers, each handler in this spec must perform a user-status lookup.",
+          "options": [
+            "Auth middleware (server_foundation) is extended to check user block status on every authenticated request.",
+            "Each handler in this spec performs a user-status check and returns 401/403 accordingly.",
+            "Blocked-user enforcement is out of scope for this spec and handled by a separate blocking spec."
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Does `DELETE /api/v1/workspaces/:slug/tokens/:token_id` return HTTP 204 or HTTP 404 when the token_id does not exist at all (as opposed to an already-revoked token)?",
+          "context": "The spec states the endpoint is idempotent and that revoking an already-revoked token returns 204, but does not address a completely unknown token_id. This is a common edge case that implementers and API consumers need to handle consistently.",
+          "options": [
+            "Return 204 for any token_id not found (fully idempotent \u2014 treat missing as already-revoked).",
+            "Return 404 if the token_id has never existed; return 204 only if it exists but was already revoked."
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Does `GET /api/v1/workspaces` return a bare JSON array or a wrapper object (e.g., `{\"workspaces\": [...]}`)? Same question for `GET /api/v1/workspaces/:slug/tokens`.",
+          "context": "The spec defines individual workspace and token object schemas precisely but does not specify the top-level response envelope for list endpoints. This is needed for consistent client implementation and testing.",
+          "options": [
+            "Bare JSON array for both list endpoints.",
+            "Wrapper object with a named key (e.g., `{\"workspaces\": [...]}` and `{\"tokens\": [...]}`).",
+            "Follows the same envelope pattern established in server_foundation/oauth_and_users \u2014 please specify what that pattern is."
+          ],
+          "required": true
+        },
+        {
+          "id": "q7",
+          "text": "Is there a maximum number of workspace tokens allowed per workspace, or is token creation unbounded?",
+          "context": "Without a cap, a single workspace could accumulate an unbounded number of tokens, which affects storage, list endpoint performance, and potential abuse. Clarifying this determines whether a quota check is needed in the token creation handler.",
+          "options": [
+            "Unbounded \u2014 no maximum token count per workspace in this iteration.",
+            "Cap at a specific number (please specify, e.g., 50 or 100 tokens per workspace)."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers most critical areas clearly: endpoint contracts, access control matrix, schema definitions, token lifecycle, validation rules, and dependency relationships are all documented with useful precision. The spec is close to implementation-ready, but several areas have gaps or ambiguities that could cause inconsistent implementations or require developer guesswork. Key gaps include: missing token authentication mechanics detail (how the middleware extracts and validates workspace tokens), unspecified behavior for edge cases in DELETE revocation (token belongs to a different workspace), absent ordering guarantee on token list, unspecified database behavior on token storage (e.g., the hash column name), and missing details on secret generation length and entropy expectations.",
+      "gaps": [
+        "Token authentication mechanics: The PRD says auth middleware validates workspace tokens, but does not specify how the token is presented in requests (e.g., Authorization: Bearer header? A custom header?). Implementers must infer this from server_foundation, which is not included here.",
+        "DELETE /tokens/:token_id edge case: The spec defines behavior when a token is already revoked (204) and when it never existed (404), but does not address what happens when the token_id exists in the database but belongs to a different workspace (i.e., valid token_id, wrong slug). Should this return 404 or 403?",
+        "Token list ordering: GET /api/v1/workspaces/:slug/tokens has no defined ordering (unlike GET /api/v1/workspaces which specifies created_at ASC). This could lead to inconsistent responses across implementations.",
+        "Secret length and entropy: The token_id is 8 base62 chars and the secret is 32 base62 chars, but the PRD does not explicitly state how many bytes of crypto/rand are consumed before base62 encoding (e.g., 6 bytes \u2192 8 base62 chars). This matters for security review and consistency.",
+        "Database column name for token hash: The PRD references storing a SHA-256 hash of the secret but never names the database column (e.g., `secret_hash`). Since the schema is owned by server_foundation, a cross-reference or explicit column name should be stated here to prevent ambiguity.",
+        "Token authentication scope check: The PRD states workspace tokens grant access to GET /api/v1/workspaces/:slug, but it is unclear whether the middleware or the handler is responsible for verifying that the token's workspace scope matches the requested :slug. This boundary should be explicit.",
+        "branch field validation: The PRD states branch must have no whitespace characters, but does not define 'whitespace' precisely (e.g., does it include Unicode whitespace, or only ASCII space/tab/newline?). This edge case should be clarified.",
+        "GET /api/v1/workspaces/:slug \u2014 behavior for admin accessing a non-existent workspace slug is not differentiated from a workspace that exists but the caller doesn't own. The 404 scenario for this endpoint is listed in the error table but not explicitly called out in the endpoint description."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How are workspace tokens presented in HTTP requests? For example, is it via the Authorization header (e.g., `Authorization: Bearer af_wt_...`), a custom header, or another mechanism? Is this the same header format used for API keys?",
+          "context": "The PRD delegates token validation to the auth middleware from server_foundation, but does not specify the wire format. Implementers of this spec need to know how to present workspace tokens when calling the API, and reviewers need this to verify the middleware contract.",
+          "options": [
+            "Authorization: Bearer <token> (same header as API keys, type inferred from token prefix)",
+            "Authorization: Token <token> (custom scheme)",
+            "X-Workspace-Token: <token> (custom header, separate from API key header)",
+            "Defined entirely in server_foundation \u2014 no need to re-state here"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "When DELETE /api/v1/workspaces/:slug/tokens/:token_id is called and the token_id exists in the database but belongs to a *different* workspace (not the one in :slug), what should the response be?",
+          "context": "The spec covers 'token never existed' (404) and 'already revoked' (204), but this cross-workspace case is unaddressed. Returning 404 leaks no information; returning 403 is more explicit about the authorization failure. The behavior needs to be defined to avoid inconsistent implementations.",
+          "options": [
+            "Return 404 (treat as not found for this workspace \u2014 preferred for information hiding)",
+            "Return 403 (explicitly reject cross-workspace access)",
+            "Return 204 (idempotent \u2014 treat as already revoked, regardless of workspace)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What ordering should GET /api/v1/workspaces/:slug/tokens use when returning the token list?",
+          "context": "The workspace list endpoint specifies `created_at ASC`, but no ordering is defined for the token list. Consistent ordering makes the API predictable and testable.",
+          "options": [
+            "created_at ASC (oldest first, consistent with workspace list)",
+            "created_at DESC (newest first)",
+            "No guaranteed ordering (implementation-defined)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Is the responsibility for verifying that a workspace token's scope matches the requested :slug handled by the auth middleware or by the individual route handler?",
+          "context": "The PRD says the middleware validates tokens (expiry, revocation, blocked users) but does not clarify who checks that the token's workspace_id matches the workspace identified by :slug. This boundary affects how server_foundation middleware is implemented versus this spec's handlers.",
+          "options": [
+            "Auth middleware resolves the token and attaches the scoped workspace_id; the handler compares it to :slug and returns 403 if mismatched",
+            "The handler is fully responsible for scope checking after the middleware confirms the token is valid",
+            "The middleware rejects mismatched scope and returns 403 before the handler runs"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "How should 'no whitespace' be interpreted for the branch field validation \u2014 ASCII whitespace only (space, tab, newline, carriage return), or any Unicode whitespace character?",
+          "context": "Branch names are git ref strings. Defining the whitespace character set precisely prevents divergent implementations (e.g., one using Go's `strings.Fields` vs. `unicode.IsSpace`).",
+          "options": [
+            "ASCII whitespace only: space (0x20), tab (0x09), newline (0x0A), carriage return (0x0D)",
+            "Any Unicode whitespace as defined by Go's unicode.IsSpace (includes non-breaking space, etc.)",
+            "Any character that is not a printable ASCII character"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "Should the PRD explicitly state the number of raw random bytes consumed before base62 encoding for the token_id (8 chars) and secret (32 chars)? If so, what are those byte counts?",
+          "context": "Security reviewers and implementers benefit from knowing the exact entropy \u2014 e.g., 6 bytes yields ~47.6 bits encoded as 8 base62 chars. If this is intentionally left to the implementer, that should be stated explicitly.",
+          "options": [
+            "Yes \u2014 specify exactly: 6 bytes for token_id (8 base62), 24 bytes for secret (32 base62)",
+            "Yes \u2014 specify differently (please clarify)",
+            "No \u2014 leave entropy details to the implementer; only the output character count and alphabet matter"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is comprehensive and well-structured overall. It clearly defines workspace and token CRUD semantics, access control, error handling, and schema details. Dependencies on upstream specs are well-articulated. However, several gaps remain that could cause ambiguity or implementation inconsistency: the git_url validation rules are underdefined (accepted formats lack regex/examples for edge cases), the token secret column name in the DB is referenced indirectly, the workspace object returned for token-scoped GET is not confirmed to be the full object vs. a reduced view, and there are missing details around the token_id uniqueness guarantee and collision handling strategy. A few behavioral edge cases (e.g., creating a workspace with a slug that matches a previously-used but deleted workspace, concurrent slug creation races) are also unaddressed.",
+      "gaps": [
+        "git_url validation rules are underspecified \u2014 no regex or canonical examples are given for SSH format (e.g., are non-standard ports or paths with colons valid?), and there is no stated maximum length for git_url.",
+        "The database column name storing the SHA-256 hashed secret is referred to only indirectly ('the column designated by the workspace_tokens table schema in server_foundation spec 01') \u2014 implementers reading this spec in isolation cannot identify the column without referencing another spec.",
+        "It is not explicitly stated whether GET /api/v1/workspaces/:slug returns the full workspace object schema (as defined in the Workspace object schema table) when accessed via a workspace token, or whether any fields are redacted for token callers.",
+        "The token_id uniqueness guarantee and collision-handling strategy are not addressed \u2014 if a generated token_id collides with an existing one, the expected behavior (retry, error, etc.) is unspecified.",
+        "There is no stated maximum length for the git_url field, which could lead to inconsistent database schema decisions or missing validation.",
+        "The behavior when a slug was previously used (if workspace deletion were ever supported) is not addressed. While deletion is a non-goal now, the 'globally unique' constraint could benefit from a note on whether uniqueness is enforced against soft-deleted or historical records.",
+        "The response body shape for POST /api/v1/workspaces (workspace creation) is not explicitly confirmed \u2014 the spec says 'Returns HTTP 201 with the workspace object' but does not state that this is the same schema as the Workspace object schema table.",
+        "The ordering guarantee for GET /api/v1/workspaces (list) says 'ordered by created_at ASC' but does not specify a tiebreaker for workspaces created at the same timestamp (e.g., by id ASC)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What are the exact validation rules for git_url? Please confirm: (a) accepted SSH format(s) with an example, (b) whether non-standard SSH ports are accepted (e.g., ssh://git@host:2222/path), (c) the maximum allowed length for git_url, and (d) whether any other URL schemes (e.g., git://) should be rejected with HTTP 400.",
+          "context": "The current spec accepts 'HTTPS and SSH formats' but does not provide a regex, canonical examples for edge-case SSH variants, or a length cap. Implementers may make inconsistent choices about what constitutes a valid SSH URL.",
+          "options": [
+            "Only allow https:// and git@host:path/repo.git (standard SCP-style SSH); reject all others including ssh:// and git://; max 2048 chars",
+            "Allow https://, git@..., and ssh:// variants; reject git://; max 2048 chars",
+            "Allow any non-empty string that starts with https:// or git@; enforce a max of 1024 chars",
+            "Other \u2014 please specify"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Does GET /api/v1/workspaces/:slug return the full workspace object (all fields in the Workspace object schema table) regardless of whether the caller is the owner, an admin, or a workspace token holder? Or should any fields be redacted for workspace token callers?",
+          "context": "The spec defines the workspace object schema but does not explicitly state whether all fields are returned equally for all authorized caller types. Token-scoped callers may not need to see owner_user_id or team_id, and an explicit statement prevents ambiguity.",
+          "options": [
+            "All authorized callers (owner, admin, workspace token) receive the identical full workspace object with all fields",
+            "Workspace token callers receive a reduced workspace object (omit owner_user_id and/or team_id)",
+            "Other \u2014 please specify"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What should happen if token_id generation produces a collision with an existing token_id in the database?",
+          "context": "The spec states token_id is 8 base62 characters (crypto/rand), giving ~218 trillion combinations. Collisions are statistically rare but the handling strategy must be defined for correctness and implementer guidance.",
+          "options": [
+            "Silently retry generation up to N times (specify N), then return HTTP 500 if all retries collide",
+            "Retry indefinitely until a unique token_id is found (acceptable given collision probability)",
+            "Return HTTP 500 immediately on collision (rely on uniqueness constraint)",
+            "Other \u2014 please specify"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Does POST /api/v1/workspaces (workspace creation) return the full workspace object as defined in the Workspace object schema table? Please confirm this explicitly, or describe any differences (e.g., additional fields, omitted fields).",
+          "context": "The spec says 'Returns HTTP 201 with the workspace object' but does not explicitly cross-reference the Workspace object schema table. Explicit confirmation prevents implementers from guessing.",
+          "options": [
+            "Yes \u2014 POST /api/v1/workspaces returns exactly the fields defined in the Workspace object schema table, nothing more or less",
+            "POST /api/v1/workspaces returns the workspace object plus additional fields not present in GET responses",
+            "Other \u2014 please specify"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What is the tiebreaker for ordering in GET /api/v1/workspaces and GET /api/v1/workspaces/:slug/tokens when multiple records share the same created_at timestamp?",
+          "context": "The spec defines ordering as 'created_at ASC' for both list endpoints, but does not specify a secondary sort key. Without a tiebreaker, ordering is non-deterministic for records with identical timestamps, which can cause test flakiness or inconsistent client behavior.",
+          "options": [
+            "Secondary sort by id ASC (UUID lexicographic order)",
+            "Secondary sort by id DESC",
+            "No tiebreaker required \u2014 created_at alone is sufficient",
+            "Other \u2014 please specify"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD that is largely implementation-ready. It clearly defines workspace and workspace token CRUD operations, access control rules, validation constraints, wire formats, schema definitions, error handling, and dependency relationships. The document is internally consistent, with precise edge-case handling (e.g., collision retry logic, cross-workspace token 403 vs 404, idempotent revoke). A few minor gaps remain around operational concerns and a handful of schema/behavioral edge cases that could cause ambiguity during implementation.",
+      "gaps": [
+        "No HTTP request body schema or explicit field list is documented for POST /api/v1/workspaces (only fields are named in prose; no formal table like those used for response schemas).",
+        "No HTTP request body schema is documented for POST /api/v1/workspaces/:slug/tokens (fields 'label' and 'expires' are named in prose only).",
+        "The label field validation (max 128 chars) is mentioned in prose and error table, but no handling is specified for empty string labels \u2014 it is unclear whether an empty string is treated as null or rejected.",
+        "No explicit behavior is defined when an unrecognized or extra field is supplied in a request body (strict parsing vs. silent ignore).",
+        "The token_id format in the token list response and token creation response schemas is specified as 8-character alphanumeric, but the full token wire format (af_wt_<token_id>_<secret>) uses '_' as a separator \u2014 the combined token string length and structure is defined, but no explicit constraint is placed on what happens if token_id itself were to contain underscores (unlikely given base62, but worth a note).",
+        "No explicit maximum is defined for the number of workspaces a single user can own (pagination is deferred, but an unbounded list could be a concern).",
+        "The updated_at field behavior ('equals created_at until a PATCH endpoint is introduced') may be ambiguous for implementers \u2014 it is unclear whether this field should be actively maintained by the token/workspace creation handler or simply set equal to created_at at insert time.",
+        "No behavior is specified for what happens when the database is unavailable or returns an unexpected error (beyond the 500 for token_id collision) \u2014 a general internal error policy would be useful.",
+        "The GET /api/v1/workspaces/:slug endpoint specifies HTTP 404 uniformly (no distinction between not found and not authorized), but this policy is only explicitly noted for admins. It would be clearer to state this applies to all caller types uniformly.",
+        "No content-type requirement is specified for request bodies (e.g., whether Content-Type: application/json is required and what happens if it is missing or wrong)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should the POST /api/v1/workspaces and POST /api/v1/workspaces/:slug/tokens request bodies be documented with formal field tables (similar to the response schema tables), and if so, should unknown/extra fields in the request body be silently ignored or rejected with HTTP 400?",
+          "context": "The PRD defines response schemas as formal tables but describes request bodies only in prose. Implementers may make different choices about strict vs. lenient body parsing, leading to inconsistent behavior across endpoints.",
+          "options": [
+            "Add formal request body schema tables; silently ignore unknown fields",
+            "Add formal request body schema tables; reject unknown fields with HTTP 400",
+            "Prose descriptions are sufficient; silently ignore unknown fields",
+            "Prose descriptions are sufficient; reject unknown fields with HTTP 400"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "How should an empty string label ('') be handled on token creation \u2014 treated the same as a missing/null label, or rejected with HTTP 400?",
+          "context": "The spec says label is optional and null if not supplied, but does not define behavior for an explicitly provided empty string. This is a common edge case that implementers will encounter.",
+          "options": [
+            "Treat empty string as null (store null, return null)",
+            "Reject empty string with HTTP 400 (label must be non-empty if provided)",
+            "Store empty string as-is and return it as an empty string"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Should the GET /api/v1/workspaces/:slug endpoint explicitly state that HTTP 404 is returned uniformly for all caller types (not just admins) when a slug does not exist \u2014 regardless of whether the caller would have had access if it did exist?",
+          "context": "The current text notes 'this applies uniformly to all caller types, including admins' but this reads as if admins are the notable case. Clarifying that non-owners and workspace token callers also receive 404 (not 403) for nonexistent slugs prevents information-leaking ambiguity during implementation.",
+          "options": [
+            "Yes, explicitly state 404 applies to all caller types for nonexistent slugs",
+            "No, the current wording is sufficient"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What should the updated_at field be set to at workspace creation time \u2014 explicitly set equal to created_at by the insert handler, or left to the database default? And should token/workspace update operations in future specs be responsible for maintaining it?",
+          "context": "The PRD states updated_at 'equals created_at until a PATCH endpoint is introduced' but does not specify the implementation mechanism. If the database default sets it automatically, implementers need to know whether to override it or trust the default.",
+          "options": [
+            "Set updated_at = created_at explicitly in the INSERT statement",
+            "Rely on the database default/trigger to set updated_at at insert time",
+            "Either approach is acceptable \u2014 leave it to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the API enforce a Content-Type: application/json requirement on request bodies for POST endpoints, and if so, what HTTP status should be returned when it is missing or incorrect?",
+          "context": "The spec does not mention Content-Type enforcement. Without a defined policy, some implementations may accept plain text or form bodies silently, while others reject them \u2014 leading to inconsistent behavior.",
+          "options": [
+            "Require Content-Type: application/json; return HTTP 415 Unsupported Media Type if missing/wrong",
+            "Require Content-Type: application/json; return HTTP 400 if missing/wrong",
+            "Do not enforce Content-Type; attempt JSON parsing regardless"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a well-structured, high-quality PRD that is largely implementation-ready. It covers functional requirements, access control, error handling, data schemas, token lifecycle, validation rules, and dependency boundaries with exceptional clarity and precision. The vast majority of implementation decisions are explicitly addressed, leaving very little ambiguity. A small number of gaps and edge cases were identified that could benefit from explicit clarification, but none of them are blockers for implementation.",
+      "gaps": [
+        "The token list endpoint (GET .../tokens) does not define whether it returns both active and revoked/expired tokens \u2014 only the schema includes revoked_at/expires_at fields, but listing behavior for expired/revoked items is only mentioned in the lifecycle section, not in the endpoint definition itself.",
+        "The GET /api/v1/workspaces/:slug endpoint access control for a valid workspace token scoped to a *different* workspace (mismatch case) is described in the scope enforcement section, but the access control table does not have a separate row for this case \u2014 it only shows 'valid, scoped' (same workspace). The mismatch outcome (403) is documented in prose but omitted from the table.",
+        "There is no explicit definition of what 'admin' means in context \u2014 whether admin is a role on a user account or a separate credential type (af_at_ prefix is mentioned but the admin identity model is described as external to this spec). Implementers must infer from context.",
+        "The DELETE .../tokens/:token_id idempotency guarantee (204 for already-revoked) does not clarify whether it also returns 204 when the token is expired but not revoked \u2014 only 'already revoked' is explicitly stated.",
+        "The POST /api/v1/workspaces endpoint specifies API key auth only and returns 403 for admin tokens, but does not specify what happens if both a workspace token and an API key are somehow present in the same request (e.g., which takes precedence). This is a middleware concern but could affect this endpoint.",
+        "No explicit maximum length constraint is specified for the `branch` field in the workspace object schema table \u2014 it is only stated in the validation section. The schema table would benefit from inline Notes.",
+        "The spec does not describe index or query strategy for the slug-to-workspace lookup used for token scope enforcement \u2014 implementers must infer that a slug\u2192workspace_id join or lookup is needed before comparing to the token's scoped workspace_id."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The token list endpoint description says it returns token metadata but does not explicitly state that expired and revoked tokens are included. Should the endpoint definition section explicitly state this (in addition to the lifecycle section where it is currently mentioned)?",
+          "context": "Currently the inclusion of expired/revoked tokens in listings is only stated in the 'Workspace token lifecycle' section, not in the GET .../tokens endpoint definition. Implementers reading only the endpoint definition may miss this behavior.",
+          "options": [
+            "Yes, add explicit statement to the endpoint definition",
+            "No, the lifecycle section is sufficient \u2014 implementers are expected to read the full spec"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Does DELETE /api/v1/workspaces/:slug/tokens/:token_id return HTTP 204 for expired-but-not-revoked tokens (in addition to already-revoked tokens)? The current spec only explicitly mentions the already-revoked case as idempotent.",
+          "context": "The idempotency guarantee currently says 'revoking a token that exists and belongs to this workspace but is already revoked also returns HTTP 204.' It is unclear whether an expired token that has never been explicitly revoked should also return 204 (soft-delete style) or whether expiry and revocation are distinct states with different delete semantics.",
+          "options": [
+            "Yes, also return 204 for expired tokens (treat expired and revoked uniformly on delete)",
+            "No, only explicitly revoked tokens are idempotent \u2014 expired tokens should still be revocable and return 204 on first revocation"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should the access control table be updated to include an explicit row (or column note) for a workspace token scoped to a *different* workspace than :slug, to make the 403 outcome discoverable from the table alone?",
+          "context": "The mismatch case (valid token, wrong workspace) is documented in the 'Workspace token scope enforcement' prose section and the error table, but the access control matrix only shows the matching-scope case. A reader using the table as a quick reference may miss the 403 for mismatched tokens.",
+          "options": [
+            "Yes, add a 'Workspace token (valid, mismatched scope)' row to the access control table",
+            "No, the prose section is sufficient for this case"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should the Workspace object schema table include inline Notes for the `branch` field's validation constraints (max 255 chars, no ASCII whitespace), for parity with how other fields are documented?",
+          "context": "The branch validation rules are fully specified in the Workspace validation section, but the schema table's Notes column for branch is blank. Adding constraints inline to the table would make the schema table self-contained for implementers who reference it directly.",
+          "options": [
+            "Yes, add branch constraints to the schema table Notes",
+            "No, the validation section is the right place \u2014 keep the schema table focused on field types"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "The validation is a self-contained DB lookup \u2014 no formal dependency needed, but add a note. The workspace creation handler simply checks that the team_id exists and is active in the teams table with a direct SQL query. The teams table schema is defined in server_foundation (spec 01). No formal spec dependency on the teams spec is needed.",
+        "q2": "cli_client depends on workspaces_and_tokens \u2014 this spec is the authoritative source for workspace and token API contracts. The CLI spec is the consumer. No change needed in this PRD; the relationship is implied by spec ordering and the CLI spec should reference this one.",
+        "q3": "Unbounded for now \u2014 pagination is a future non-goal. The expected scale for workspaces and tokens per workspace is small enough that pagination is not needed in this iteration.",
+        "q4": "Follow the same error envelope already defined in server_foundation / oauth_and_users. The error response shape uses the standard JSON error envelope: {\"error\": {\"code\": <integer>, \"message\": \"<string>\"}}. The error code field is an integer. This is the convention established in spec 01 and spec 02."
+      },
+      "timestamp": "2026-07-10T15:02:54.237622+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "id, slug, git_url, branch, team_id, owner_user_id, created_at, updated_at. These are the standard workspace fields matching the database schema.",
+        "q2": "token (full plaintext string af_wt_<token_id>_<secret>), token_id, label, expires_at, created_at. The caller needs all metadata alongside the one-time plaintext secret.",
+        "q3": "204 No Content. This is the standard RESTful response for a successful delete/revoke operation with no response body. Same status code for both first-revoke and already-revoked (idempotent).",
+        "q4": "401 Unauthorized. An expired or revoked workspace token is treated the same as an invalid token \u2014 the caller is unauthenticated. The auth middleware rejects it before the handler runs.",
+        "q5": "400 Bad Request \u2014 treat as a validation failure. The team_id is input from the user, so if it references a nonexistent or inactive team, it's a bad request, not a not-found resource error.",
+        "q6": "Labels are optional and uniqueness is not enforced. Multiple tokens within the same workspace can share the same label or have no label at all.",
+        "q7": "No, 401 is handled globally by auth middleware from server_foundation and is out of scope for this spec. The auth middleware returns 401 for missing or invalid credentials before any handler runs.",
+        "q8": "128 characters. This provides reasonable room for descriptive labels without allowing abuse."
+      },
+      "timestamp": "2026-07-10T15:04:11.882869+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "A PATCH endpoint is planned but deferred. updated_at should be maintained for future use. The workspace fields are not immutable \u2014 they can be updated in a future spec \u2014 but the update endpoint is not in scope for this spec.",
+        "q2": "Max 255 characters, no whitespace, stored as-is without git-ref validation. We trust the user to provide a valid git branch name but enforce basic sanity checks (length and no whitespace).",
+        "q3": "Global uniqueness \u2014 slugs must be unique across all workspaces in the system. This matches the workspace-as-URL-path model where slugs appear in API URLs like /api/v1/workspaces/:slug.",
+        "q4": "Auth middleware (server_foundation) is extended to check user block status on every authenticated request. The blocked-user check belongs in the middleware so it is applied uniformly across all endpoints, not just workspace endpoints. This is handled by server_foundation's auth middleware.",
+        "q5": "Return 404 if the token_id has never existed; return 204 only if it exists (whether active or already revoked). This distinguishes between 'never existed' (likely a bug/typo) and 'already handled' (idempotent success).",
+        "q6": "Bare JSON array for both list endpoints. This matches the simple pattern used in the existing API \u2014 GET /api/v1/workspaces returns a JSON array of workspace objects, GET /api/v1/workspaces/:slug/tokens returns a JSON array of token metadata objects.",
+        "q7": "Unbounded \u2014 no maximum token count per workspace in this iteration. Rate limiting and quotas are a future concern."
+      },
+      "timestamp": "2026-07-10T15:05:54.861019+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "Authorization: Bearer <token> \u2014 same header as API keys, type inferred from token prefix. The auth middleware inspects the token prefix (af_wt_ for workspace tokens, af_key_ for API keys, af_at_ for admin tokens) to determine the authentication type. This is the same mechanism already established in server_foundation.",
+        "q2": "Return 404 \u2014 treat as not found for this workspace. This is preferred for information hiding. The handler should look up the token within the scope of the workspace identified by :slug. If the token_id does not belong to this workspace, it is effectively 'not found' in this context.",
+        "q3": "created_at ASC \u2014 oldest first, consistent with the workspace list endpoint ordering.",
+        "q4": "Auth middleware resolves the token and attaches the scoped workspace_id to the request context. The handler compares it to the :slug parameter and returns 403 if mismatched. This keeps the middleware general-purpose (it validates tokens and extracts claims) while handlers enforce resource-level authorization.",
+        "q5": "ASCII whitespace only: space (0x20), tab (0x09), newline (0x0A), carriage return (0x0D). This is sufficient for git branch name validation and avoids pulling in Unicode complexity.",
+        "q6": "No \u2014 leave entropy details to the implementer. Only the output character count (8 for token_id, 32 for secret) and the base62 alphabet (0-9A-Za-z) matter for the spec. The implementer should use crypto/rand to generate sufficient random bytes and encode to base62."
+      },
+      "timestamp": "2026-07-10T15:07:45.141614+00:00"
+    },
+    {
+      "assessment_index": 4,
+      "answers": {
+        "q1": "Only allow https:// and git@host:path/repo.git (standard SCP-style SSH); reject all others including ssh:// and git://; max 2048 chars. We keep it simple \u2014 standard HTTPS and SCP-style SSH cover 99% of real-world usage.",
+        "q2": "All authorized callers (owner, admin, workspace token) receive the identical full workspace object with all fields. No field redaction for token callers \u2014 keeping responses consistent simplifies both implementation and client-side handling.",
+        "q3": "Silently retry generation up to 3 times, then return HTTP 500 if all retries collide. Given the collision probability is astronomically low with 8 base62 chars, 3 retries is more than sufficient.",
+        "q4": "Yes \u2014 POST /api/v1/workspaces returns exactly the fields defined in the Workspace object schema table, nothing more or less. The same schema is used for creation response and GET responses.",
+        "q5": "Secondary sort by id ASC. This ensures deterministic ordering even when created_at timestamps are identical."
+      },
+      "timestamp": "2026-07-10T15:09:43.367688+00:00"
+    },
+    {
+      "assessment_index": 5,
+      "answers": {
+        "q1": "Prose descriptions are sufficient; silently ignore unknown fields. Echo's default JSON binding behavior ignores unknown fields, and this is the convention established by the existing specs. No need to add formal request body schema tables \u2014 the prose descriptions are clear enough.",
+        "q2": "Treat empty string as null \u2014 store null, return null. This is the simplest and most user-friendly behavior. An empty label provides no information, so normalizing it to null is sensible.",
+        "q3": "Yes, explicitly state 404 applies to all caller types for nonexistent slugs. This prevents any ambiguity about information leaking through differing status codes.",
+        "q4": "Set updated_at = created_at explicitly in the INSERT statement. This makes the behavior explicit and does not depend on database defaults or triggers.",
+        "q5": "Do not enforce Content-Type; attempt JSON parsing regardless. Echo's JSON binding already handles this gracefully, and the existing API endpoints follow this convention."
+      },
+      "timestamp": "2026-07-10T15:11:46.133637+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

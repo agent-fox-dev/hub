@@ -1,0 +1,1485 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "cli_client",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/... ./cmd/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 7,
+      "to_group": 1,
+      "relationship": "afc CLI routes HTTP requests through the server_foundation API routing layer; URL paths and response envelopes must match spec 01 conventions",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "02",
+      "from_group": 8,
+      "to_group": 1,
+      "relationship": "afc login command consumes POST /api/v1/auth/callback and GET /api/v1/auth/providers defined in oauth_and_users (spec 02); Authorization: Bearer scheme per spec 02",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "03",
+      "from_group": 10,
+      "to_group": 1,
+      "relationship": "afc workspace create uses GET /api/v1/teams for slug-to-UUID resolution defined in teams (spec 03)",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "04",
+      "from_group": 10,
+      "to_group": 1,
+      "relationship": "afc workspace and workspace token commands consume endpoints defined in workspaces_and_tokens (spec 04)",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: config initialization, resolution, and atomic writes",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for config initialization (REQ-1)",
+          "details": [
+            "Create test file internal/config/config_test.go.",
+            "TS-05-1: write config struct and verify TOML round-trip of all four fields.",
+            "TS-05-2: use t.TempDir() as $HOME; assert directory mode 0700, file mode 0600, empty fields.",
+            "TS-05-3: write invalid TOML; assert exit code 1, stderr contains 'Error: failed to parse config file:', file unchanged.",
+            "TS-05-E1: make parent dir read-only (0555); assert descriptive error and exit code 1.",
+            "TS-05-E2: create config.toml as a directory; assert descriptive error and exit code 1."
+          ],
+          "test_spec_refs": [
+            "TS-05-1",
+            "TS-05-2",
+            "TS-05-3",
+            "TS-05-E1",
+            "TS-05-E2"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-1.2",
+            "05-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write unit tests for config resolution precedence (REQ-2)",
+          "details": [
+            "TS-05-4: exercise all three sources for hub_url, user_id, api_key; assert flag > env > config.",
+            "TS-05-5: assert key_id comes only from config file; assert no --key-id flag exists on root command.",
+            "TS-05-6: empty config, no env, no flag; assert exit code 1 and descriptive error naming missing value.",
+            "TS-05-E3: AF_HUB_URL set + config hub_url set, no flag; assert env value is used for requests.",
+            "TS-05-E4: --hub-url flag + env + config all set; assert flag value wins.",
+            "Write property test TS-05-P1 enumerating all 8 combinations of present/absent sources."
+          ],
+          "test_spec_refs": [
+            "TS-05-4",
+            "TS-05-5",
+            "TS-05-6",
+            "TS-05-E3",
+            "TS-05-E4"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.1",
+            "05-REQ-2.2",
+            "05-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write unit tests for atomic config writes (REQ-3)",
+          "details": [
+            "TS-05-7: hook os.CreateTemp; assert temp file has prefix 'config.toml.', ends up renamed to config.toml with new values, no temp file remains.",
+            "TS-05-8: assert temp file and final config.toml both have mode 0600.",
+            "TS-05-E5: stub os.CreateTemp to return error; assert exit code 1, original config unchanged.",
+            "TS-05-E6: stub os.Rename to return error; assert exit code 1, original config unchanged, temp file may remain.",
+            "Write property test TS-05-P2 simulating crash points during atomic write."
+          ],
+          "test_spec_refs": [
+            "TS-05-7",
+            "TS-05-8",
+            "TS-05-E5",
+            "TS-05-E6"
+          ],
+          "requirement_refs": [
+            "05-REQ-3.1",
+            "05-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write unit tests for root command, version flag, and flag validation (REQ-4, REQ-5)",
+          "details": [
+            "TS-05-9: run CLI with no args; assert exit code 0 and 'Usage:' in stdout.",
+            "TS-05-10: run with --version; assert 'afc version 0.1.0' in stdout, exit code 0.",
+            "TS-05-11: run --help and 'help login'; assert exit code 0, relevant flags visible.",
+            "TS-05-12: --expires 45 for 'afc login'; assert exit code 1, exact error message, zero network calls.",
+            "TS-05-13: --git-url '' for 'workspace create'; assert exit code 1, descriptive error, zero network calls.",
+            "TS-05-14: --workspace '' for 'workspace token list'; assert exit code 1, descriptive error, zero network calls.",
+            "Write property test TS-05-P6 covering all integer values in [-5,120] not in {0,30,60,90}."
+          ],
+          "test_spec_refs": [
+            "TS-05-9",
+            "TS-05-10",
+            "TS-05-11",
+            "TS-05-12",
+            "TS-05-13",
+            "TS-05-14"
+          ],
+          "requirement_refs": [
+            "05-REQ-4.1",
+            "05-REQ-4.2",
+            "05-REQ-4.3",
+            "05-REQ-5.1",
+            "05-REQ-5.2",
+            "05-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All tests in internal/config/... compile and run: go test ./internal/config/... -count=1 -v",
+          "No linter warnings: go vet ./internal/config/...",
+          "TS-05-1 through TS-05-14, TS-05-E1 through TS-05-E6, TS-05-P1, TS-05-P2, TS-05-P6 all pass or are correctly skipped as stubs pending implementation",
+          "Requirements 05-REQ-1.1, 05-REQ-1.2, 05-REQ-1.3, 05-REQ-2.1, 05-REQ-2.2, 05-REQ-2.3, 05-REQ-3.1, 05-REQ-3.2, 05-REQ-4.1, 05-REQ-4.2, 05-REQ-4.3, 05-REQ-5.1, 05-REQ-5.2, 05-REQ-5.3 acceptance criteria are exercised by at least one test each"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: login OAuth flow (REQ-6)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write integration and unit tests for login provider validation and CSRF state",
+          "details": [
+            "TS-05-15: mock GET /api/v1/auth/providers returning ['github']; stub browser.OpenURL; assert providers endpoint called, CSRF state >= 16 bytes, redirect_uri matches http://localhost:<port>/callback, URL printed to stderr.",
+            "TS-05-16: stub browser.OpenURL to return error; assert authorization URL still appears on stderr.",
+            "TS-05-21: mock providers returning ['github']; run with --provider gitlab; assert exit code 1, exact unsupported provider message, browser not opened.",
+            "TS-05-E9: stub OpenURL to return error; assert login flow continues waiting for callback and URL is on stderr.",
+            "TS-05-E11: stub net.Listen to fail; assert exit code 1, descriptive error, browser not opened.",
+            "TS-05-E12: mock GET /api/v1/auth/providers returning 503; assert exit code 1, browser not opened.",
+            "Write property test TS-05-P3 generating 1000 CSRF states and asserting uniqueness and entropy >= 16 bytes."
+          ],
+          "test_spec_refs": [
+            "TS-05-15",
+            "TS-05-16",
+            "TS-05-21",
+            "TS-05-E9",
+            "TS-05-E11",
+            "TS-05-E12"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.1",
+            "05-REQ-6.2",
+            "05-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write integration tests for login OAuth callback and credential storage",
+          "details": [
+            "TS-05-17: trigger callback with correct state and code; assert HTTP 200 HTML response containing 'Login successful!', POST /api/v1/auth/callback called with code.",
+            "TS-05-18: successful callback exchange; assert config written with user_id, api_key, key_id, hub_url, exit code 0.",
+            "TS-05-19: capture POST /api/v1/auth/callback body; assert provider, code, redirect_uri, expires as integer.",
+            "TS-05-20: pre-populate config with old credentials; run login; assert new credentials overwrite, DELETE /api/v1/keys never called.",
+            "TS-05-E8: reduce callback timeout for test; send no callback; assert exit code 1, timeout error on stderr, config unchanged.",
+            "TS-05-E10: send callback with wrong state; assert exit code 1, state mismatch error, no credentials stored."
+          ],
+          "test_spec_refs": [
+            "TS-05-17",
+            "TS-05-18",
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-E8",
+            "TS-05-E10"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.3",
+            "05-REQ-6.4",
+            "05-REQ-6.5",
+            "05-REQ-6.6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All login-related tests compile and run: go test ./internal/login/... ./cmd/afc/... -count=1 -v -run TestLogin",
+          "No linter warnings: go vet ./internal/login/... ./cmd/afc/...",
+          "TS-05-15 through TS-05-21, TS-05-E8 through TS-05-E12, TS-05-P3 all pass or correctly stub pending implementation",
+          "Requirements 05-REQ-6.1 through 05-REQ-6.7 acceptance criteria are exercised by at least one test each"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: keys commands (REQ-7, REQ-8, REQ-9)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write integration tests for keys list, refresh, and revoke success paths",
+          "details": [
+            "TS-05-22: mock GET /api/v1/keys returning array; assert Authorization: Bearer header, stdout pretty-printed 2-space JSON, exit code 0.",
+            "TS-05-23: mock POST /api/v1/keys/old-kid/refresh; assert config updated with new api_key and key_id, stdout contains new key JSON, exit code 0.",
+            "TS-05-25: mock DELETE /api/v1/keys/my-kid returning 204; assert api_key/key_id/user_id cleared in config, stderr 'API key revoked.', exit code 0.",
+            "TS-05-26: mock DELETE /api/v1/keys/gone-kid returning 404; assert credentials cleared, stderr 'API key not found on server. Local credentials cleared.', exit code 0."
+          ],
+          "test_spec_refs": [
+            "TS-05-22",
+            "TS-05-23",
+            "TS-05-25",
+            "TS-05-26"
+          ],
+          "requirement_refs": [
+            "05-REQ-7.1",
+            "05-REQ-8.1",
+            "05-REQ-9.1",
+            "05-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write unit and integration tests for keys error paths",
+          "details": [
+            "TS-05-24: key_id empty in config; run 'keys refresh'; assert exit code 1, exact error message, zero network calls.",
+            "TS-05-27: key_id empty in config; run 'keys revoke'; assert exit code 1, exact error message, zero network calls.",
+            "TS-05-28: mock DELETE returning 500 with JSON error; assert exit code 1, error message on stderr, config unchanged.",
+            "TS-05-E13: mock GET /api/v1/keys returning 401 with JSON; assert exit code 1, error on stderr, empty stdout.",
+            "TS-05-E14: mock POST /api/v1/keys/kid/refresh returning 403; assert exit code 1, error on stderr, config unchanged.",
+            "TS-05-E15: stub os.Rename to fail after 204 revoke; assert exit code 1, descriptive error on stderr."
+          ],
+          "test_spec_refs": [
+            "TS-05-24",
+            "TS-05-27",
+            "TS-05-28",
+            "TS-05-E13",
+            "TS-05-E14",
+            "TS-05-E15"
+          ],
+          "requirement_refs": [
+            "05-REQ-8.2",
+            "05-REQ-9.3",
+            "05-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All keys-related tests compile and run: go test ./internal/keys/... ./cmd/afc/... -count=1 -v -run TestKeys",
+          "No linter warnings: go vet ./internal/keys/...",
+          "TS-05-22 through TS-05-28, TS-05-E13 through TS-05-E15 all pass or correctly stub pending implementation",
+          "Requirements 05-REQ-7.1, 05-REQ-8.1, 05-REQ-8.2, 05-REQ-9.1 through 05-REQ-9.4 acceptance criteria exercised"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: workspace commands (REQ-10, REQ-11)",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write integration tests for workspace create including team slug resolution",
+          "details": [
+            "TS-05-29: mock GET /api/v1/teams and POST /api/v1/workspaces; assert payload git_url/slug/branch/team_id, pretty-printed stdout, exit code 0.",
+            "TS-05-30: teams returns empty list; assert exit code 1, 'team not found: nonexistent-team', no workspace POST.",
+            "TS-05-31: teams returns two entries with same slug; assert exit code 1, 'ambiguous team slug: dup-team', no workspace POST.",
+            "TS-05-32: no --branch or --team; assert POST payload omits branch and team_id keys.",
+            "TS-05-E7: server returns 422 with JSON error; assert request was sent (no client-side format validation), exit code 1, server error on stderr.",
+            "TS-05-E16: GET /api/v1/teams returns connection error; assert exit code 1, descriptive network error, no workspace POST."
+          ],
+          "test_spec_refs": [
+            "TS-05-29",
+            "TS-05-30",
+            "TS-05-31",
+            "TS-05-32",
+            "TS-05-E7",
+            "TS-05-E16"
+          ],
+          "requirement_refs": [
+            "05-REQ-10.1",
+            "05-REQ-10.2",
+            "05-REQ-10.3",
+            "05-REQ-10.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write integration tests for workspace list, get, and error paths",
+          "details": [
+            "TS-05-33: mock GET /api/v1/workspaces; assert Authorization: Bearer header, 2-space indented JSON array on stdout, exit code 0.",
+            "TS-05-34: mock GET /api/v1/workspaces/my-ws; assert correct path, Bearer auth, pretty-printed workspace JSON on stdout, exit code 0.",
+            "TS-05-E17: POST /api/v1/workspaces returns 502 HTML; assert 'Error: unexpected response from server (HTTP 502).', raw HTML not in stderr/stdout.",
+            "TS-05-E18: GET /api/v1/workspaces/no-such-ws returns 404 JSON; assert exit code 1, error message on stderr, empty stdout."
+          ],
+          "test_spec_refs": [
+            "TS-05-33",
+            "TS-05-34",
+            "TS-05-E17",
+            "TS-05-E18"
+          ],
+          "requirement_refs": [
+            "05-REQ-11.1",
+            "05-REQ-11.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All workspace command tests compile and run: go test ./internal/workspace/... ./cmd/afc/... -count=1 -v -run TestWorkspace",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "TS-05-29 through TS-05-34, TS-05-E7, TS-05-E16 through TS-05-E18 all pass or correctly stub pending implementation",
+          "Requirements 05-REQ-10.1 through 05-REQ-10.4, 05-REQ-11.1, 05-REQ-11.2 acceptance criteria exercised"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write tests: workspace token commands and cross-cutting concerns (REQ-12, REQ-13, REQ-14, REQ-15, REQ-16, REQ-17)",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write integration tests for workspace token create, list, and revoke",
+          "details": [
+            "TS-05-35: mock POST /api/v1/workspaces/my-ws/tokens; assert token in stdout, not in config, expires as integer.",
+            "TS-05-36: no --label provided; assert label absent from payload, expires always present as integer.",
+            "TS-05-37: mock GET /api/v1/workspaces/ws1/tokens; assert Bearer auth, pretty-printed metadata JSON on stdout.",
+            "TS-05-38: mock DELETE /api/v1/workspaces/ws1/tokens/tok-abc returning 204; assert 'Token tok-abc revoked.' on stderr, exit code 0.",
+            "TS-05-39: omit token-id positional arg; assert Cobra ExactArgs(1) error on stderr, exit code 1, zero network calls.",
+            "TS-05-E19: POST /api/v1/workspaces/ws1/tokens returns 403 JSON; assert exit code 1, error on stderr, no token in config.",
+            "Write property test TS-05-P4 verifying token secret never written to config."
+          ],
+          "test_spec_refs": [
+            "TS-05-35",
+            "TS-05-36",
+            "TS-05-37",
+            "TS-05-38",
+            "TS-05-39",
+            "TS-05-E19"
+          ],
+          "requirement_refs": [
+            "05-REQ-12.1",
+            "05-REQ-12.2",
+            "05-REQ-13.1",
+            "05-REQ-14.1",
+            "05-REQ-14.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write unit tests for stdout/stderr separation, HTTP auth, timeout, and non-JSON errors",
+          "details": [
+            "TS-05-40: assert stdout equals jsonIndent(serverResp, 2) with all original fields preserved.",
+            "TS-05-41: 'keys revoke' success; assert 'API key revoked.' on stderr only, not stdout; stdout empty or valid JSON.",
+            "TS-05-42: inspect request headers; assert Authorization: Bearer <api_key> on GET /api/v1/keys.",
+            "TS-05-43: inspect http.Client.Timeout == 30*time.Second, or mock server delay > 30s produces timeout error.",
+            "TS-05-44: mock 502 with HTML body; assert 'Error: unexpected response from server (HTTP 502).', raw HTML absent.",
+            "TS-05-E20: DELETE workspace token returns 404 JSON; assert exit code 1, error on stderr.",
+            "TS-05-E21: mock server hangs; assert exit code 1, timeout/deadline error, request count == 1.",
+            "TS-05-E22: hub_url points to non-listening port; assert exit code 1, 'connection refused' on stderr.",
+            "Write property tests TS-05-P5 and TS-05-P7."
+          ],
+          "test_spec_refs": [
+            "TS-05-40",
+            "TS-05-41",
+            "TS-05-42",
+            "TS-05-43",
+            "TS-05-44",
+            "TS-05-E20",
+            "TS-05-E21",
+            "TS-05-E22"
+          ],
+          "requirement_refs": [
+            "05-REQ-15.1",
+            "05-REQ-15.2",
+            "05-REQ-16.1",
+            "05-REQ-16.2",
+            "05-REQ-17.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All workspace token and cross-cutting tests compile and run: go test ./internal/... ./cmd/afc/... -count=1 -v -run 'TestWorkspaceToken|TestHTTP|TestOutput'",
+          "No linter warnings: go vet ./internal/... ./cmd/afc/...",
+          "TS-05-35 through TS-05-44, TS-05-E19 through TS-05-E22, TS-05-P4, TS-05-P5, TS-05-P7 all pass or correctly stub pending implementation",
+          "Requirements 05-REQ-12.1, 05-REQ-12.2, 05-REQ-13.1, 05-REQ-14.1, 05-REQ-14.2, 05-REQ-15.1, 05-REQ-15.2, 05-REQ-16.1, 05-REQ-16.2, 05-REQ-17.1 acceptance criteria exercised"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement config package: initialization, parsing, resolution, and atomic writes",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Scaffold internal/config package with Config struct and TOML encoding",
+          "details": [
+            "Create internal/config/config.go.",
+            "Define Config struct with fields HubURL, UserID, APIKey, KeyID (TOML tags: hub_url, user_id, api_key, key_id).",
+            "Implement Load(path string) (*Config, error) using github.com/BurntSushi/toml Decode.",
+            "Implement Save(path string, cfg *Config) error using atomic write pattern (os.CreateTemp + toml.NewEncoder + os.Rename).",
+            "Ensure temp file is created with mode 0600 using os.OpenFile or Chmod before writing.",
+            "Return typed errors for TOML parse failures to enable correct error message formatting."
+          ],
+          "test_spec_refs": [
+            "TS-05-1"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement config directory and file auto-creation on first run",
+          "details": [
+            "Implement EnsureConfigDir(home string) error: create $HOME/.af/ with os.MkdirAll mode 0700.",
+            "Implement EnsureConfigFile(path string) error: if file absent, write empty Config with mode 0600.",
+            "On Load, if TOML parse fails, return descriptive error wrapping the toml error; do not modify file.",
+            "Handle the case where config.toml is a directory: detect via os.Stat and return descriptive error.",
+            "Integrate EnsureConfigDir and EnsureConfigFile into the root command's PersistentPreRunE hook."
+          ],
+          "test_spec_refs": [
+            "TS-05-2",
+            "TS-05-3",
+            "TS-05-E1",
+            "TS-05-E2"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.2",
+            "05-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement config resolution precedence: flags > env vars > config file",
+          "details": [
+            "Implement Resolve(flagVals map[string]string, cfg *Config) (*ResolvedConfig, error) in internal/config/resolve.go.",
+            "For hub_url: check --hub-url flag, then AF_HUB_URL env, then cfg.HubURL; error if all empty.",
+            "For user_id: check --user-id flag, then AF_HUB_USER_ID env, then cfg.UserID.",
+            "For api_key: check --api-key flag, then AF_HUB_API_KEY env, then cfg.APIKey.",
+            "For key_id: use cfg.KeyID only; no flag or env override.",
+            "On missing required value, return error with message naming the field and listing flag/env/config sources.",
+            "Register --hub-url, --user-id, --api-key as persistent flags on the root Cobra command."
+          ],
+          "test_spec_refs": [
+            "TS-05-4",
+            "TS-05-5",
+            "TS-05-6",
+            "TS-05-E3",
+            "TS-05-E4"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.1",
+            "05-REQ-2.2",
+            "05-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Implement atomic config write with temp file and rename",
+          "details": [
+            "In Save(path string, cfg *Config): call os.CreateTemp(dir, 'config.toml.') to create temp file.",
+            "Write config via toml.NewEncoder(tmpFile).Encode(cfg); close temp file.",
+            "Call os.Chmod(tmpFile.Name(), 0600) before rename.",
+            "Call os.Rename(tmpFile.Name(), path); on error, return descriptive error (temp file may remain).",
+            "On CreateTemp failure, return descriptive error; original config unchanged.",
+            "Inject file system operations as function values or interface to enable stubbing in tests."
+          ],
+          "test_spec_refs": [
+            "TS-05-7",
+            "TS-05-8",
+            "TS-05-E5",
+            "TS-05-E6"
+          ],
+          "requirement_refs": [
+            "05-REQ-3.1",
+            "05-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Config package tests pass: go test ./internal/config/... -count=1 -v",
+          "No linter warnings: go vet ./internal/config/...",
+          "TS-05-1, TS-05-2, TS-05-3, TS-05-4, TS-05-5, TS-05-6, TS-05-7, TS-05-8 pass",
+          "TS-05-E1, TS-05-E2, TS-05-E3, TS-05-E4, TS-05-E5, TS-05-E6 pass",
+          "Requirements 05-REQ-1.1, 05-REQ-1.2, 05-REQ-1.3, 05-REQ-2.1, 05-REQ-2.2, 05-REQ-2.3, 05-REQ-3.1, 05-REQ-3.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement root Cobra command, HTTP client, and error handling utilities",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement root Cobra command with version flag and persistent flags",
+          "details": [
+            "Create cmd/afc/main.go with var version = '0.1.0' (overridable via -ldflags -X main.version=...).",
+            "Create internal/cmd/root.go with rootCmd cobra.Command; set Version field to version variable.",
+            "Configure Cobra's SetVersionTemplate to output 'afc version <semver>'.",
+            "Register --hub-url, --user-id, --api-key as PersistentFlags on rootCmd.",
+            "Add PersistentPreRunE to load and ensure config file on every command invocation.",
+            "Implement Makefile target 'build' that compiles to bin/afc with -ldflags version injection."
+          ],
+          "test_spec_refs": [
+            "TS-05-9",
+            "TS-05-10",
+            "TS-05-11"
+          ],
+          "requirement_refs": [
+            "05-REQ-4.1",
+            "05-REQ-4.2",
+            "05-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement shared HTTP client with 30-second timeout and Bearer auth",
+          "details": [
+            "Create internal/httpclient/client.go with NewClient() *http.Client; set Timeout: 30 * time.Second.",
+            "Implement DoRequest(ctx, method, url, apiKey, body) (*http.Response, error) helper.",
+            "Add Authorization: Bearer <apiKey> header to every authenticated request.",
+            "Network errors and timeout errors are returned as error values; callers print descriptive messages to stderr.",
+            "No retry logic; first failure is final."
+          ],
+          "test_spec_refs": [
+            "TS-05-42",
+            "TS-05-43",
+            "TS-05-E21",
+            "TS-05-E22"
+          ],
+          "requirement_refs": [
+            "05-REQ-16.1",
+            "05-REQ-16.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement error handling utilities: JSON error parsing, non-JSON fallback, flag validation",
+          "details": [
+            "Create internal/apierror/apierror.go with HandleResponse(resp *http.Response) error.",
+            "On non-2xx: attempt json.Unmarshal of body into {error: string}; if success, return that message.",
+            "If JSON parse fails, return error with text 'unexpected response from server (HTTP <status>).'.",
+            "Create internal/validate/validate.go with ValidateExpires(val int) error returning exact error message.",
+            "ValidateExpires checks membership in {0, 30, 60, 90}; returns 'Error: --expires must be one of: 0, 30, 60, 90'.",
+            "Add ValidateNonEmpty(flag, val string) error for required string flag validation."
+          ],
+          "test_spec_refs": [
+            "TS-05-12",
+            "TS-05-44",
+            "TS-05-E7"
+          ],
+          "requirement_refs": [
+            "05-REQ-5.1",
+            "05-REQ-17.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.4",
+          "title": "Implement JSON pretty-print output helper",
+          "details": [
+            "Create internal/output/output.go with PrintJSON(w io.Writer, data []byte) error.",
+            "Use json.Indent to format with 2-space indentation; write to provided writer (stdout).",
+            "All human-readable messages use fmt.Fprintln(os.Stderr, msg); never write them to stdout.",
+            "Ensure command RunE functions return errors (printed to stderr by Cobra's error handler) rather than writing directly to stdout."
+          ],
+          "test_spec_refs": [
+            "TS-05-40",
+            "TS-05-41"
+          ],
+          "requirement_refs": [
+            "05-REQ-15.1",
+            "05-REQ-15.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Root command and utility tests pass: go test ./internal/cmd/... ./internal/httpclient/... ./internal/apierror/... ./internal/validate/... ./internal/output/... -count=1 -v",
+          "No linter warnings: go vet ./internal/... ./cmd/...",
+          "TS-05-9, TS-05-10, TS-05-11, TS-05-12, TS-05-40, TS-05-41, TS-05-42, TS-05-43, TS-05-44 pass",
+          "Binary builds successfully: make build; bin/afc --version outputs 'afc version 0.1.0'",
+          "Requirements 05-REQ-4.1, 05-REQ-4.2, 05-REQ-4.3, 05-REQ-5.1, 05-REQ-15.1, 05-REQ-15.2, 05-REQ-16.1, 05-REQ-16.2, 05-REQ-17.1 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement login command with OAuth authorization code flow",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement CSRF state generation and local callback HTTP server",
+          "details": [
+            "Create internal/login/state.go with GenerateState() (string, error) using crypto/rand.Read(16 bytes) encoded as base64url.",
+            "Create internal/login/callback.go with StartCallbackServer() (*CallbackServer, error); bind net.Listen('tcp', ':0') to get OS-assigned port.",
+            "CallbackServer exposes Port int, WaitForCode(timeout time.Duration) (code, state string, err error).",
+            "Handler at /callback: validate state query param, capture code, respond HTTP 200 with HTML success page containing 'Login successful! You may close this tab.'.",
+            "Always print full authorization URL to stderr before waiting for callback.",
+            "On port binding failure, return descriptive error; caller exits before opening browser."
+          ],
+          "test_spec_refs": [
+            "TS-05-15",
+            "TS-05-16",
+            "TS-05-E11"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.1",
+            "05-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement login command: provider validation, browser open, code exchange, config write",
+          "details": [
+            "Create internal/cmd/login.go with loginCmd cobra.Command; flags: --provider (default 'github'), --expires (default 90).",
+            "RunE: call ValidateExpires; fetch GET /api/v1/auth/providers; validate --provider in list or exit with exact error message.",
+            "Generate CSRF state; start callback server; build authorization URL; call browser.OpenURL (error is non-fatal); print URL to stderr.",
+            "Wait up to 2 minutes via WaitForCode(2*time.Minute); timeout returns exit code 1 without writing config.",
+            "On callback: validate state match (mismatch -> exit 1 without writing config); exchange code via POST /api/v1/auth/callback with JSON payload {provider, code, redirect_uri, expires}.",
+            "On success: write hub_url, user_id (response.user.id), api_key (response.api_key.key), key_id (response.api_key.id) to config via atomic Save; exit code 0."
+          ],
+          "test_spec_refs": [
+            "TS-05-17",
+            "TS-05-18",
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-21",
+            "TS-05-E8"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.3",
+            "05-REQ-6.4",
+            "05-REQ-6.5",
+            "05-REQ-6.6",
+            "05-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement GET /api/v1/auth/providers fetch and --expires flag validation for login",
+          "details": [
+            "Implement fetchProviders(ctx, client, hubURL) ([]string, error) in internal/login/providers.go.",
+            "Call ValidateExpires before any network calls; return error immediately if invalid.",
+            "After fetching providers, check if --provider value is in the returned list using a linear search.",
+            "If not found, return formatted error: 'Error: unsupported provider: <value>. Available: <comma-separated list>'.",
+            "If GET /api/v1/auth/providers returns non-2xx, call HandleResponse and surface error to stderr."
+          ],
+          "test_spec_refs": [
+            "TS-05-12",
+            "TS-05-21",
+            "TS-05-E12"
+          ],
+          "requirement_refs": [
+            "05-REQ-5.1",
+            "05-REQ-6.1",
+            "05-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Login command tests pass: go test ./internal/login/... ./internal/cmd/... -count=1 -v -run TestLogin",
+          "No linter warnings: go vet ./internal/login/... ./internal/cmd/...",
+          "TS-05-15 through TS-05-21, TS-05-E8 through TS-05-E12, TS-05-P3 all pass",
+          "Requirements 05-REQ-5.1 (login path), 05-REQ-6.1 through 05-REQ-6.7 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement keys commands: list, refresh, revoke",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement keys list command",
+          "details": [
+            "Create internal/cmd/keys.go with keysCmd and keysListCmd cobra.Command.",
+            "RunE: resolve config; send GET /api/v1/keys with Bearer auth; on 2xx, call PrintJSON(os.Stdout, body); on non-2xx, call HandleResponse and write error to stderr; exit code 1.",
+            "Attach keysCmd as subcommand of rootCmd; attach keysListCmd as subcommand of keysCmd."
+          ],
+          "test_spec_refs": [
+            "TS-05-22",
+            "TS-05-E13"
+          ],
+          "requirement_refs": [
+            "05-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement keys refresh command",
+          "details": [
+            "Add keysRefreshCmd to keys.go.",
+            "RunE: resolve config; if key_id empty, print 'Error: key_id is not set. Run \"afc login\" first.' and return exit code 1 with zero network calls.",
+            "POST /api/v1/keys/<key_id>/refresh with Bearer auth.",
+            "On 2xx: unmarshal response to extract new id and key; update cfg.APIKey and cfg.KeyID; Save config atomically; PrintJSON(os.Stdout, body); exit code 0.",
+            "On non-2xx: call HandleResponse; print error to stderr; do not modify config; exit code 1."
+          ],
+          "test_spec_refs": [
+            "TS-05-23",
+            "TS-05-24",
+            "TS-05-E14"
+          ],
+          "requirement_refs": [
+            "05-REQ-8.1",
+            "05-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Implement keys revoke command with 404 handling",
+          "details": [
+            "Add keysRevokeCmd to keys.go.",
+            "RunE: resolve config; if key_id empty, return error 'Error: key_id is not set. Run \"afc login\" first.'",
+            "DELETE /api/v1/keys/<key_id> with Bearer auth.",
+            "On 2xx: clear cfg.APIKey, cfg.KeyID, cfg.UserID; Save atomically; print 'API key revoked.' to stderr; exit code 0.",
+            "On 404: clear cfg.APIKey, cfg.KeyID, cfg.UserID; Save atomically; print 'API key not found on server. Local credentials cleared.' to stderr; exit code 0.",
+            "On other non-2xx: call HandleResponse; print error to stderr; do not modify config; exit code 1.",
+            "On Save failure after server success: print descriptive error to stderr; exit code 1 (config may retain stale values)."
+          ],
+          "test_spec_refs": [
+            "TS-05-25",
+            "TS-05-26",
+            "TS-05-27",
+            "TS-05-28",
+            "TS-05-E15"
+          ],
+          "requirement_refs": [
+            "05-REQ-9.1",
+            "05-REQ-9.2",
+            "05-REQ-9.3",
+            "05-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Keys command tests pass: go test ./internal/cmd/... -count=1 -v -run TestKeys",
+          "No linter warnings: go vet ./internal/cmd/...",
+          "TS-05-22, TS-05-23, TS-05-24, TS-05-25, TS-05-26, TS-05-27, TS-05-28, TS-05-E13, TS-05-E14, TS-05-E15 all pass",
+          "Requirements 05-REQ-7.1, 05-REQ-8.1, 05-REQ-8.2, 05-REQ-9.1 through 05-REQ-9.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement workspace commands: create, list, get",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement workspace list and get commands",
+          "details": [
+            "Create internal/cmd/workspace.go with workspaceCmd, workspaceListCmd, workspaceGetCmd cobra.Commands.",
+            "workspaceListCmd RunE: GET /api/v1/workspaces with Bearer auth; PrintJSON on 2xx; HandleResponse on non-2xx.",
+            "workspaceGetCmd: takes one positional arg (slug); GET /api/v1/workspaces/<slug>; PrintJSON on 2xx; HandleResponse on non-2xx including 404.",
+            "Register all three commands in the Cobra command tree."
+          ],
+          "test_spec_refs": [
+            "TS-05-33",
+            "TS-05-34",
+            "TS-05-E18"
+          ],
+          "requirement_refs": [
+            "05-REQ-11.1",
+            "05-REQ-11.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement workspace create with team slug resolution",
+          "details": [
+            "Add workspaceCreateCmd with flags --git-url (required, non-empty), --slug (required, non-empty), --branch (optional), --team (optional).",
+            "Validate --git-url and --slug non-empty before any network call; return descriptive error if empty.",
+            "If --team provided: GET /api/v1/teams with Bearer auth; filter by slug field; zero matches -> 'team not found: <slug>'; multiple -> 'ambiguous team slug: <slug>'.",
+            "Build POST payload as map[string]interface{}; include git_url, slug always; include branch only if --branch provided; include team_id (UUID) only if --team resolved.",
+            "POST /api/v1/workspaces; on 2xx call PrintJSON; on non-2xx (including HTML 502) call HandleResponse which returns non-JSON fallback message."
+          ],
+          "test_spec_refs": [
+            "TS-05-29",
+            "TS-05-30",
+            "TS-05-31",
+            "TS-05-32",
+            "TS-05-E7",
+            "TS-05-E16",
+            "TS-05-E17"
+          ],
+          "requirement_refs": [
+            "05-REQ-10.1",
+            "05-REQ-10.2",
+            "05-REQ-10.3",
+            "05-REQ-10.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Workspace command tests pass: go test ./internal/cmd/... -count=1 -v -run TestWorkspace",
+          "No linter warnings: go vet ./internal/cmd/...",
+          "TS-05-29 through TS-05-34, TS-05-E7, TS-05-E16, TS-05-E17, TS-05-E18 all pass",
+          "Requirements 05-REQ-10.1 through 05-REQ-10.4, 05-REQ-11.1, 05-REQ-11.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement workspace token commands: create, list, revoke",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Implement workspace token create command",
+          "details": [
+            "Create internal/cmd/workspace_token.go with workspaceTokenCmd and workspaceTokenCreateCmd.",
+            "Flags: --workspace (required, non-empty), --label (optional), --expires (default 30, validated via ValidateExpires before any network call).",
+            "Build payload map: always include 'expires' as int; include 'label' only if --label provided.",
+            "POST /api/v1/workspaces/<slug>/tokens with Bearer auth and JSON payload.",
+            "On 2xx: PrintJSON(os.Stdout, body); do NOT write token to config; exit code 0.",
+            "On non-2xx: HandleResponse; print error to stderr; exit code 1."
+          ],
+          "test_spec_refs": [
+            "TS-05-35",
+            "TS-05-36",
+            "TS-05-E19"
+          ],
+          "requirement_refs": [
+            "05-REQ-12.1",
+            "05-REQ-12.2",
+            "05-REQ-5.1",
+            "05-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement workspace token list and revoke commands",
+          "details": [
+            "workspaceTokenListCmd: --workspace flag (required, non-empty); GET /api/v1/workspaces/<slug>/tokens; PrintJSON on 2xx; HandleResponse on non-2xx.",
+            "workspaceTokenRevokeCmd: --workspace flag (required, non-empty); cobra.ExactArgs(1) for token-id positional arg.",
+            "RunE: DELETE /api/v1/workspaces/<slug>/tokens/<token-id> with Bearer auth.",
+            "On 2xx: fmt.Fprintf(os.Stderr, 'Token %s revoked.\\n', tokenID); exit code 0.",
+            "On non-2xx: HandleResponse; print error to stderr; exit code 1.",
+            "Register workspaceTokenCmd under workspaceCmd with token subcommand tree."
+          ],
+          "test_spec_refs": [
+            "TS-05-37",
+            "TS-05-38",
+            "TS-05-39",
+            "TS-05-E20"
+          ],
+          "requirement_refs": [
+            "05-REQ-13.1",
+            "05-REQ-14.1",
+            "05-REQ-14.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Workspace token command tests pass: go test ./internal/cmd/... -count=1 -v -run TestWorkspaceToken",
+          "No linter warnings: go vet ./internal/cmd/...",
+          "TS-05-35, TS-05-36, TS-05-37, TS-05-38, TS-05-39, TS-05-E19, TS-05-E20 all pass",
+          "Requirements 05-REQ-12.1, 05-REQ-12.2, 05-REQ-13.1, 05-REQ-14.1, 05-REQ-14.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "checkpoint",
+      "title": "Full test suite and integration checkpoint",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Run full unit and integration test suite",
+          "details": [
+            "Run go test ./... -count=1 -v and confirm all unit and integration tests pass.",
+            "Run smoke tests (TS-05-SMOKE-1 through TS-05-SMOKE-5) using the compiled bin/afc binary against mock servers.",
+            "Confirm make build produces bin/afc with correct version string output.",
+            "Confirm no test is skipped that should be exercising a real implementation path."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-3",
+            "TS-05-SMOKE-4",
+            "TS-05-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-2.1",
+            "05-REQ-3.1",
+            "05-REQ-6.1",
+            "05-REQ-7.1",
+            "05-REQ-10.1",
+            "05-REQ-12.1",
+            "05-REQ-15.1",
+            "05-REQ-16.1",
+            "05-REQ-17.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Verify property tests and edge case coverage",
+          "details": [
+            "Run all property tests and confirm all 7 properties hold.",
+            "Confirm TS-05-P3 (CSRF state uniqueness): 1000 generated states are distinct and each >= 16 bytes.",
+            "Confirm TS-05-P2 (atomic write): simulate crash scenarios, confirm config is never partially written.",
+            "Confirm TS-05-P7 (non-JSON error bodies): exercise all non-2xx status codes with HTML/binary bodies.",
+            "Verify edge cases TS-05-E1 through TS-05-E22 all pass."
+          ],
+          "test_spec_refs": [
+            "TS-05-P1",
+            "TS-05-P2",
+            "TS-05-P3",
+            "TS-05-P4",
+            "TS-05-P5",
+            "TS-05-P6",
+            "TS-05-P7"
+          ],
+          "requirement_refs": [
+            "05-REQ-2.1",
+            "05-REQ-3.1",
+            "05-REQ-5.1",
+            "05-REQ-6.1",
+            "05-REQ-12.1",
+            "05-REQ-15.1",
+            "05-REQ-17.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Audit stdout/stderr separation and JSON output fidelity",
+          "details": [
+            "Run TS-05-40: confirm stdout equals json.Indent(serverResp, 2) for workspace list.",
+            "Run TS-05-41: confirm 'API key revoked.' only on stderr, not stdout.",
+            "Manually invoke bin/afc keys list against a running mock server and inspect raw stdout/stderr streams.",
+            "Confirm no human-readable messages ever appear on stdout."
+          ],
+          "test_spec_refs": [
+            "TS-05-40",
+            "TS-05-41",
+            "TS-05-P5"
+          ],
+          "requirement_refs": [
+            "05-REQ-15.1",
+            "05-REQ-15.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "All tests pass with no failures: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "All 5 smoke tests (TS-05-SMOKE-1 through TS-05-SMOKE-5) pass with compiled bin/afc binary",
+          "All 7 property tests (TS-05-P1 through TS-05-P7) pass",
+          "All 22 edge case tests (TS-05-E1 through TS-05-E22) pass",
+          "bin/afc --version outputs 'afc version 0.1.0'"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and stub audit",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Trace execution paths and verify entry point call chains",
+          "details": [
+            "05-PATH-1: trace 'afc login' -> rootCmd.PersistentPreRunE -> loginCmd.RunE -> fetchProviders -> StartCallbackServer -> WaitForCode -> POST /api/v1/auth/callback -> config.Save. Confirm no step is stubbed out.",
+            "05-PATH-1 continued: trace 'afc workspace create' -> workspaceCreateCmd.RunE -> GET /api/v1/teams -> POST /api/v1/workspaces -> PrintJSON. Confirm team_id UUID flows from teams response into workspace payload.",
+            "05-PATH-2: trace 'afc keys refresh' -> keysRefreshCmd.RunE -> POST /api/v1/keys/<key_id>/refresh -> config.Save with new api_key and key_id. Confirm both fields updated.",
+            "05-PATH-4: trace 'afc workspace token revoke' -> workspaceTokenRevokeCmd.RunE -> ExactArgs(1) validation -> DELETE /api/v1/workspaces/<slug>/tokens/<id> -> fmt.Fprintf(os.Stderr, 'Token %s revoked.', id).",
+            "05-PATH-5: trace 'afc keys revoke' with 404 -> keysRevokeCmd.RunE -> DELETE -> 404 branch -> cfg.APIKey='', cfg.KeyID='', cfg.UserID='' -> config.Save -> stderr message."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-4",
+            "TS-05-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.1",
+            "05-REQ-8.1",
+            "05-REQ-9.1",
+            "05-REQ-10.1",
+            "05-REQ-12.1",
+            "05-REQ-14.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Verify return value propagation through the call chain",
+          "details": [
+            "Confirm keys refresh: response body is unmarshalled, new api_key and key_id are extracted, passed into cfg fields, and cfg is passed to config.Save — no field is silently dropped.",
+            "Confirm keys revoke 404: response status code 404 is checked in keysRevokeCmd.RunE; the 404 branch clears cfg fields and calls config.Save; the non-404 branch calls HandleResponse.",
+            "Confirm login: response.user.id, response.api_key.key, response.api_key.id are extracted and stored into cfg.UserID, cfg.APIKey, cfg.KeyID respectively before config.Save is called.",
+            "Confirm http.Client returned by NewClient() is used in all DoRequest calls (no default http.Client usage without timeout)."
+          ],
+          "test_spec_refs": [
+            "TS-05-23",
+            "TS-05-26",
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "05-REQ-3.1",
+            "05-REQ-8.1",
+            "05-REQ-9.2",
+            "05-REQ-16.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Audit for stub markers and dead code",
+          "details": [
+            "Search entire codebase for panic(\"not implemented\"), bare 'return nil' in non-trivial RunE functions, and // TODO markers: grep -rn 'panic(\"not implemented\")\\|// TODO' ./internal ./cmd",
+            "Confirm zero stub markers remain in production code paths (test helpers are exempt).",
+            "Confirm all cobra.Command.RunE fields are set (non-nil) for every registered command: login, keys list/refresh/revoke, workspace create/list/get, workspace token create/list/revoke.",
+            "Confirm PersistentPreRunE is set on rootCmd and calls EnsureConfigDir, EnsureConfigFile, and config.Load in that order.",
+            "Confirm all error returns from config.Save in login, keys refresh, and keys revoke are checked and produce exit code 1 with a message on stderr."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-1.1",
+            "05-REQ-6.1",
+            "05-REQ-7.1",
+            "05-REQ-10.1",
+            "05-REQ-12.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.4",
+          "title": "Run all smoke tests with the compiled binary against mock servers",
+          "details": [
+            "TS-05-SMOKE-1: compile bin/afc; run login then workspace create with team against mock server; verify config written, workspace JSON on stdout, both exit code 0.",
+            "TS-05-SMOKE-2: run 'afc keys refresh' with pre-populated config; verify config updated with new api_key/key_id, stdout has pretty-printed JSON, exit code 0.",
+            "TS-05-SMOKE-3: run login with reduced callback timeout and no callback; verify exit code 1, timeout error on stderr, config unchanged.",
+            "TS-05-SMOKE-4: run 'afc workspace token revoke' with mock 204; verify 'Token abc-token-id revoked.' on stderr, exit code 0.",
+            "TS-05-SMOKE-5: run 'afc keys revoke' with mock 404; verify credentials cleared in config, 'API key not found on server. Local credentials cleared.' on stderr, exit code 0."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-3",
+            "TS-05-SMOKE-4",
+            "TS-05-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "05-REQ-6.4",
+            "05-REQ-8.1",
+            "05-REQ-9.2",
+            "05-REQ-10.1",
+            "05-REQ-14.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.5",
+          "title": "Verify cross-spec API surface compatibility",
+          "details": [
+            "Confirm all API endpoint paths match specs 1-4 exactly: /api/v1/auth/providers, /api/v1/auth/callback, /api/v1/keys, /api/v1/keys/:key_id/refresh, /api/v1/keys/:key_id, /api/v1/teams, /api/v1/workspaces, /api/v1/workspaces/:slug, /api/v1/workspaces/:slug/tokens, /api/v1/workspaces/:slug/tokens/:token_id.",
+            "Confirm Authorization: Bearer header is set for all authenticated endpoints (not set for /api/v1/auth/providers and /api/v1/auth/callback).",
+            "Confirm POST /api/v1/auth/callback payload uses field names 'provider', 'code', 'redirect_uri', 'expires' matching spec 2 oauth_and_users contract.",
+            "Confirm POST /api/v1/workspaces payload uses field names 'git_url', 'slug', 'branch', 'team_id' matching spec 4 workspaces_and_tokens contract.",
+            "Confirm POST /api/v1/workspaces/:slug/tokens payload uses field names 'label', 'expires' matching spec 4 contract."
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "05-REQ-7.1",
+            "05-REQ-8.1",
+            "05-REQ-9.1",
+            "05-REQ-10.1",
+            "05-REQ-11.1",
+            "05-REQ-12.1",
+            "05-REQ-13.1",
+            "05-REQ-14.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "Complete test suite passes: go test ./... -count=1 with zero failures",
+          "No linter warnings in any package: go vet ./...",
+          "Zero stub markers found: grep -rn 'panic(\"not implemented\")' ./internal ./cmd returns no results",
+          "All 5 smoke tests pass with the compiled bin/afc binary against mock HTTP servers",
+          "All cross-spec API endpoint paths, payload field names, and Authorization header usage verified against specs 1-4",
+          "bin/afc built via 'make build'; bin/afc --version outputs 'afc version 0.1.0'"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "05-REQ-1.1",
+      "test_spec_id": "TS-05-1",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.2",
+      "test_spec_id": "TS-05-2",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.3",
+      "test_spec_id": "TS-05-3",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.1",
+      "test_spec_id": "TS-05-4",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.2",
+      "test_spec_id": "TS-05-5",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.3",
+      "test_spec_id": "TS-05-6",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.1",
+      "test_spec_id": "TS-05-7",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.2",
+      "test_spec_id": "TS-05-8",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-9",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.2",
+      "test_spec_id": "TS-05-10",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.3",
+      "test_spec_id": "TS-05-11",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.1",
+      "test_spec_id": "TS-05-12",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.2",
+      "test_spec_id": "TS-05-13",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.3",
+      "test_spec_id": "TS-05-14",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-15",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.2",
+      "test_spec_id": "TS-05-16",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.3",
+      "test_spec_id": "TS-05-17",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.4",
+      "test_spec_id": "TS-05-18",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.5",
+      "test_spec_id": "TS-05-19",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.6",
+      "test_spec_id": "TS-05-20",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.7",
+      "test_spec_id": "TS-05-21",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-7.1",
+      "test_spec_id": "TS-05-22",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-8.1",
+      "test_spec_id": "TS-05-23",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-8.2",
+      "test_spec_id": "TS-05-24",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.1",
+      "test_spec_id": "TS-05-25",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.2",
+      "test_spec_id": "TS-05-26",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.3",
+      "test_spec_id": "TS-05-27",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.4",
+      "test_spec_id": "TS-05-28",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-10.1",
+      "test_spec_id": "TS-05-29",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-10.2",
+      "test_spec_id": "TS-05-30",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-10.3",
+      "test_spec_id": "TS-05-31",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-10.4",
+      "test_spec_id": "TS-05-32",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-11.1",
+      "test_spec_id": "TS-05-33",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-11.2",
+      "test_spec_id": "TS-05-34",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-12.1",
+      "test_spec_id": "TS-05-35",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-12.2",
+      "test_spec_id": "TS-05-36",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-13.1",
+      "test_spec_id": "TS-05-37",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-14.1",
+      "test_spec_id": "TS-05-38",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-14.2",
+      "test_spec_id": "TS-05-39",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-15.1",
+      "test_spec_id": "TS-05-40",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-15.2",
+      "test_spec_id": "TS-05-41",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-16.1",
+      "test_spec_id": "TS-05-42",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-16.2",
+      "test_spec_id": "TS-05-43",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-17.1",
+      "test_spec_id": "TS-05-44",
+      "task_id": "7.3",
+      "test_path": null
+    }
+  ]
+}

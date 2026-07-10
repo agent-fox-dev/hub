@@ -24,6 +24,7 @@ This iteration delivers the foundation that everything else depends on: user ide
 - **Spec package storage or lifecycle within a workspace.** Future coordination-layer work.
 - **Git branch management, cloning, or checkout.** Workspace `git_url` is stored as metadata, not validated for reachability.
 - **Workspace lifecycle beyond creation and token management.** Archive and delete operations for workspaces are future work.
+- **Team member removal.** Removing users from teams is deferred to a future iteration.
 - **Team-based role-based access control (RBAC).** Teams exist as a lightweight organizational grouping only. Granular per-team roles (editor, viewer, etc.) are deferred to a future iteration.
 - **Campaign management, agent runs, or activity logs.**
 - **Rate limiting.** Not implemented in the first iteration.
@@ -69,7 +70,7 @@ This iteration delivers the foundation that everything else depends on: user ide
 - The admin token (`af_admin_...`) grants unrestricted access to all endpoints and all resources.
 - User API keys identify a user. The server looks up the `key_id`, verifies the hashed secret, and resolves the associated user. The key is always associated with exactly one user.
 - Workspace tokens grant read-only access to a single workspace, acting on behalf of the user who created them. The server looks up the `token_id`, verifies the hashed secret, and resolves the associated workspace and user.
-- Revoked credentials are rejected with HTTP 401.
+- Expired or revoked credentials are rejected with HTTP 401.
 - Blocked users are rejected with HTTP 403 on every authenticated request, regardless of credential validity. Workspace tokens created by blocked users are effectively inert — if the user is unblocked, their tokens resume working.
 
 ### OAuth provider registry
@@ -82,10 +83,13 @@ This iteration delivers the foundation that everything else depends on: user ide
 ### OAuth flow (CLI)
 
 - `afc login --provider github` fetches the provider list from the hub.
-- The CLI opens the authorization URL in the user's browser.
+- The CLI opens the authorization URL in the user's browser, including a cryptographically random `state` parameter for CSRF protection.
 - The CLI starts a local HTTP callback server on a random port.
-- The CLI captures the authorization code and exchanges it with the hub via `POST /api/v1/auth/callback`.
-- The hub exchanges the code with the identity provider, retrieves user info, and upserts the user: creates if new, updates username/email if existing. Blocked users are not re-activated on OAuth login.
+- The CLI receives the callback, validates the `state` parameter matches the one it sent, and captures the authorization code.
+- The CLI exchanges the code with the hub via `POST /api/v1/auth/callback`.
+- The hub validates that `redirect_uri` matches the configured allowlist (in development: `http://localhost:*`; in production: derived from `[server] external_url`). Mismatched URIs are rejected with HTTP 400.
+- The hub exchanges the code with the identity provider and retrieves user info. If the provider returns a null or empty email, the login fails with an error — email is a required field.
+- The hub upserts the user: creates if new, updates username/email if existing. Blocked users are not re-activated on OAuth login.
 - The hub generates a new user API key for the user (revoking any previously active key for that user) and returns the user object and API key to the CLI.
 - The CLI stores the hub URL, user ID, and API key in the persistent config file (see CLI client configuration).
 - Admin-created users and OAuth-upserted users are the same population. If an admin creates a user with `provider: github, provider_id: 12345`, and that GitHub user later authenticates via OAuth, the existing record is matched and updated.
@@ -131,7 +135,9 @@ Workspace tokens enable delegated access to a workspace. They are designed for t
 - Workspace tokens use the format `af_wt_<token_id>_<secret>`, where `token_id` is a random 8-character alphanumeric identifier and `secret` is a random 32-character alphanumeric string. Only the SHA-256 hash of the secret is stored.
 - Each token is scoped to a single workspace and references the creating user (the workspace owner).
 - Workspace tokens grant **read-only** access to the workspace by default. No other access levels are defined in this iteration.
+- When creating a workspace token, `expires` accepts 0 (no expiry), 30, 60, or 90 (days). Default is 30. Expiry is calculated as exactly `24h × N` from the creation timestamp. The `expires_at` field is nullable (null when `expires` is 0).
 - A workspace token can optionally carry a `label` (human-readable name, e.g. "ci-bot", "agent-1").
+- Expired workspace tokens cannot authenticate but remain visible in listings for reference.
 - Only the workspace owner can create, list, and revoke tokens for their workspace. Admin tokens can also manage tokens on any workspace.
 - The full token (including plaintext secret) is returned exactly once at creation time. It is the user's responsibility to store it securely — workspace tokens are NOT persisted in the CLI config file.
 - Revoking a workspace token is permanent.
@@ -168,15 +174,17 @@ Permission matrix:
 
 \*Admin tokens cannot create workspaces — a real user must be the owner.
 
-Exception: Any authenticated user can update their own `full_name` via `PUT /api/v1/users/:id`, but only admins can change `status`.
+Exception: Any authenticated user can update their own `full_name` via `PUT /api/v1/users/:id` — the middleware checks whether the requesting user's ID matches `:id` and permits the update if so. Only admins can change `status`.
 
 ### API key management
 
 - User API keys use the opaque format `af_<key_id>_<secret>`, where `key_id` is a random 8-character alphanumeric identifier and `secret` is a random 32-character alphanumeric string. Only the SHA-256 hash of the secret is stored.
 - Each user has one active API key at a time. A new login generates a new key, revoking the previous one.
+- When creating a key (via login), `expires` accepts 0 (no expiry), 30, 60, or 90 (days). Default is 90. Expiry is calculated as exactly `24h × N` from the creation timestamp. The `expires_at` field is nullable (null when `expires` is 0).
 - The full key (including plaintext secret) is returned at login and on refresh.
-- Refreshing a key generates a new secret for an existing key (same `key_id`).
+- Refreshing a key generates a new secret for an existing key (same `key_id`) and resets the expiry based on the original expiry duration.
 - Revoking a key is permanent. The user must re-login to obtain a new key.
+- Expired keys cannot authenticate but remain visible in listings for reference (the `expires_at` field makes their status clear).
 - `GET /api/v1/keys` returns all keys across all users when authenticated with an admin token. When authenticated with a user API key, it returns only the authenticated user's key.
 
 ### API endpoints
@@ -191,7 +199,7 @@ Exception: Any authenticated user can update their own `full_name` via `PUT /api
 #### OAuth (public)
 
 - `GET /api/v1/auth/providers` — List configured OAuth providers (no secrets exposed). Returns provider name and authorize URL.
-- `POST /api/v1/auth/callback` — Exchange an OAuth authorization code for a user record and API key. Accepts `provider`, `code`, and `redirect_uri`. Creates or updates the user as needed. Generates a new API key for the user (revoking any existing key). Returns:
+- `POST /api/v1/auth/callback` — Exchange an OAuth authorization code for a user record and API key. Accepts `provider`, `code`, `redirect_uri`, and `expires` (0, 30, 60, or 90 days; default 90). Validates `redirect_uri` against the configured allowlist. Creates or updates the user as needed. Fails if the provider returns a null or empty email. Generates a new API key for the user (revoking any existing key). Returns:
 
 ```json
 {
@@ -238,7 +246,7 @@ Exception: Any authenticated user can update their own `full_name` via `PUT /api
 
 #### Workspace token management (authenticated)
 
-- `POST /api/v1/workspaces/:slug/tokens` — Create a workspace token. Requires workspace ownership or admin. Accepts `label` (optional). Returns the full token including plaintext secret.
+- `POST /api/v1/workspaces/:slug/tokens` — Create a workspace token. Requires workspace ownership or admin. Accepts `label` (optional) and `expires` (0, 30, 60, or 90 days; default 30). Returns the full token including plaintext secret.
 - `GET /api/v1/workspaces/:slug/tokens` — List all tokens for a workspace (token_id, label, created_at — never the secret). Requires workspace ownership or admin.
 - `DELETE /api/v1/workspaces/:slug/tokens/:token_id` — Permanently revoke a workspace token. Requires workspace ownership or admin.
 
@@ -250,7 +258,7 @@ Exception: Any authenticated user can update their own `full_name` via `PUT /api
 
 ### Error handling
 
-All API errors use a consistent JSON envelope: `{"error": {"code": "<HTTP_STATUS>", "message": "Human-readable description"}}`.
+All API errors use a consistent JSON envelope: `{"error": {"code": <HTTP_STATUS>, "message": "Human-readable description"}}`, where `code` is an integer (e.g. `409`, not `"409"`).
 
 | Status | Meaning |
 |--------|---------|
@@ -302,14 +310,14 @@ All config mutations use atomic writes (write to temp file, rename into place).
 
 #### Commands
 
-- `afc login --provider <provider>` — Run the OAuth authorization code flow. Default provider: `github`. Stores returned credentials in config.
+- `afc login --provider <provider> [--expires 0|30|60|90]` — Run the OAuth authorization code flow. Default provider: `github`. Default key expiry: 90 days. Stores returned credentials in config.
 - `afc keys list` — Show the current API key metadata (key_id, created_at). Admin: list all keys across users.
 - `afc keys refresh` — Refresh the current API key (new secret, same key_id). Updates config.
 - `afc keys revoke` — Revoke the current API key. Clears credentials from config. User must re-login to obtain a new key.
 - `afc workspace create --git-url <url> --slug <slug> [--branch <ref>] [--team <team-slug>]` — Register a workspace. The `--team` flag accepts a slug; the CLI resolves it to a UUID before the API call. On success, prints the workspace object as JSON.
 - `afc workspace list` — List the user's workspaces. Prints JSON.
 - `afc workspace get <slug>` — Get workspace details by slug. Prints JSON.
-- `afc workspace token create --workspace <slug> [--label <label>]` — Create a workspace token. Prints the full token (including plaintext secret) to stdout. The token is NOT stored in the config file — it is the user's responsibility to store it securely.
+- `afc workspace token create --workspace <slug> [--label <label>] [--expires 0|30|60|90]` — Create a workspace token (default 30 days). Prints the full token (including plaintext secret) to stdout. The token is NOT stored in the config file — it is the user's responsibility to store it securely.
 - `afc workspace token list --workspace <slug>` — List workspace tokens (metadata only, no secrets). Prints JSON.
 - `afc workspace token revoke --workspace <slug> <token-id>` — Permanently revoke a workspace token.
 
@@ -348,6 +356,7 @@ Environment variables:
 - Embedded SQLite with WAL mode for concurrent write safety.
 - Structured JSON logging via logrus. Every request is logged with method, path, status, and duration.
 - Graceful shutdown on SIGTERM/SIGINT with a 15-second drain timeout.
+- Request body size limit: 1 MB. Requests exceeding this limit are rejected with HTTP 413.
 - Kubernetes-compatible health probes at `/healthz` and `/readyz`.
 
 ### Documentation
@@ -403,6 +412,19 @@ Environment variables:
 | **User API key** | A user-scoped credential in the format `af_<key_id>_<secret>`, tied to a single user. One active key per user, created on login. |
 | **Workspace token** | A workspace-scoped, read-only credential in the format `af_wt_<token_id>_<secret>`, created by the workspace owner for delegation to tools, agents, and programs. Not stored in CLI config. |
 | **Admin token** | A global credential in the format `af_admin_<64 hex>` that grants unrestricted access. |
+
+## Clarifications
+
+1. **Error code type.** The `code` field in error responses is an integer (e.g. `409`), not a string.
+2. **Self-update permission.** The `PUT /api/v1/users/:id` middleware checks whether the requesting user's ID matches `:id` — if so, `full_name` updates are permitted regardless of role. Only admins can change `status`.
+3. **OAuth CSRF protection.** The CLI generates a cryptographically random `state` parameter and validates it on callback.
+4. **Email required from OAuth provider.** If the identity provider returns a null or empty email, login fails with an error.
+5. **Team member removal.** Deferred to a future iteration. Only adding members is supported.
+6. **OAuth `redirect_uri` validation.** The hub validates `redirect_uri` against a configured allowlist (dev: `http://localhost:*`; production: derived from `[server] external_url`).
+7. **Request body size limit.** 1 MB maximum. Requests exceeding this are rejected with HTTP 413.
+8. **No pagination.** List endpoints return all results without pagination in this iteration.
+9. **Workspace token expiry.** Tokens accept `expires` of 0 (indefinite), 30, 60, or 90 days. Default: 30 days.
+10. **API key expiry.** Keys accept `expires` of 0 (indefinite), 30, 60, or 90 days. Default: 90 days.
 
 ## Design Decisions
 

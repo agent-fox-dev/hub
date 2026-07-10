@@ -1,0 +1,411 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `cli_client` PRD is well-structured and comprehensive. All four required sections (Intent, Goals, Non-Goals, Background/context) are present and substantive. The Intent is clear and concise, Goals are specific and implementation-oriented, Non-Goals draw explicit boundaries, and the functional requirements section provides detailed, actionable specifications for every command group. Technical boundaries are clearly stated. The spec correctly declares dependencies on all four active backend specs. No blocking gaps were identified; only minor clarification opportunities exist.",
+      "gaps": [
+        "Background section is absent as a named section \u2014 context is embedded in the Intent via dependency references, which is sufficient but slightly below the spec format's expectation of an explicit Background section.",
+        "Goals are implementation tasks (build X, implement Y) rather than measurable outcome statements (e.g., success metrics, user adoption targets, error-rate thresholds). This is common for infrastructure/tooling specs but worth acknowledging.",
+        "The `afc keys refresh` command uses 'key_id from current config', but the config schema only stores `api_key` (the key value), not a `key_id`. It is unclear how the key_id is resolved \u2014 whether it is stored separately, derived from the API key value, or fetched dynamically via `keys list`.",
+        "The `--expires` flag accepts `0|30|60|90` but the semantics of `0` (never expires vs. immediate expiry) are not defined in the PRD.",
+        "No mention of how `afc login` handles the case where a user is already logged in (i.e., config already has api_key set) \u2014 overwrite silently, prompt, or require --force flag.",
+        "The PRD references spec 6 (Web UI) in Non-Goals but the Existing Spec Landscape shows `web_ui_scaffold` without a spec number 6 \u2014 minor inconsistency in cross-referencing.",
+        "No explicit mention of HTTP client timeout configuration or retry behavior for transient network errors, which may matter for operator tooling reliability."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How is the `key_id` resolved for `afc keys refresh` and `afc keys revoke`? The config schema stores only `api_key` (the key value), not a `key_id`. Should the config also persist a `key_id` field, should the CLI call `GET /api/v1/keys` at runtime to look up the ID, or does the API support keying by value?",
+          "context": "The functional requirements say 'key_id from current config' but the config structure only lists three fields: hub_url, user_id, api_key. Without a stored or derivable key_id, these commands cannot function as specified.",
+          "options": [
+            "Add a `key_id` field to the config schema (stored alongside api_key at login/refresh time).",
+            "Derive key_id at runtime by calling GET /api/v1/keys and matching on the stored api_key value.",
+            "The API supports using the key value directly as the identifier \u2014 no key_id needed."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What does `--expires 0` mean for login and workspace token create commands \u2014 does it mean the credential never expires, or that it expires immediately (i.e., is invalid)?",
+          "context": "The value `0` appears in both `afc login` and `afc workspace token create` as an accepted expires option. The intent is ambiguous and needs to be documented so error messaging and API payloads are constructed correctly.",
+          "options": [
+            "0 means never expires (no expiry set).",
+            "0 means expires immediately (not useful; should be excluded from the allowed set).",
+            "0 means the server default is used."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What should `afc login` do if the user is already logged in (config already contains a non-empty api_key)?",
+          "context": "Without specifying this behavior, implementations may silently overwrite existing credentials, which could surprise operators who run login by mistake.",
+          "options": [
+            "Silently overwrite \u2014 last login wins.",
+            "Print a warning to stderr and prompt for confirmation before overwriting.",
+            "Require an explicit --force flag to overwrite existing credentials.",
+            "Automatically revoke the old key before issuing a new one."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should the CLI support any HTTP client-level configuration such as timeouts, retries on transient failures, or TLS certificate verification options (e.g., --insecure for self-signed certs in dev environments)?",
+          "context": "Operator tooling targeting a self-hosted hub server commonly needs --insecure or a --ca-cert flag for non-production deployments. Omitting this now is fine if out of scope, but it should be an explicit non-goal.",
+          "options": [
+            "Yes \u2014 add --insecure / --ca-cert flags and document default timeout (e.g., 30s).",
+            "No \u2014 TLS verification is always enforced; add to Non-Goals explicitly.",
+            "Out of scope for now; add to Non-Goals and track as a future enhancement."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers most functional areas with good specificity. The intent, background, goals, non-goals, and technical boundaries are clearly stated. However, several gaps remain that could create ambiguity during implementation: the OAuth callback flow (local server lifecycle, browser-open failure handling), the exact JSON output shapes, atomic write mechanics, team-slug resolution edge cases, and test/acceptance criteria are underspecified or absent entirely.",
+      "gaps": [
+        "OAuth callback server lifecycle is unspecified: no timeout defined for how long the local callback server waits for the browser redirect before giving up, and no description of what happens if the browser cannot be opened.",
+        "JSON output shapes are not defined: the PRD says 'Prints JSON to stdout' for list/get/create commands but never specifies whether the raw API response body is forwarded as-is or whether the CLI reshapes/filters fields.",
+        "Atomic write mechanics are referenced but not specified: the temp-file naming convention, the directory used for the temp file, and fsync-before-rename requirements are not described.",
+        "Team-slug resolution edge cases are unhandled: no behavior is defined when the slug matches zero teams or more than one team (ambiguous match).",
+        "No acceptance / testing criteria: there are no unit-test, integration-test, or end-to-end test expectations, making it impossible to verify completeness.",
+        "Port-selection strategy for the OAuth callback server is underspecified: 'random available port' is mentioned but no fallback or range restriction is described.",
+        "Config-file locking is not addressed: concurrent invocations of config-mutating commands could corrupt the file; no file-locking or advisory-lock strategy is mentioned.",
+        "Authentication mechanism for API calls is not stated: the PRD doesn't specify how the API key is sent (e.g., Authorization header, Bearer scheme, custom header).",
+        "Exit codes beyond code 1 are not defined: success exit code (0) is implied but never stated, and no other error-category exit codes are specified.",
+        "The `afc keys revoke` behavior when the key is already revoked server-side (404 response) is not described."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How long should the local OAuth callback server wait for the browser redirect before timing out, and what should happen if the user's browser cannot be opened automatically?",
+          "context": "Without a timeout, the CLI could hang indefinitely waiting for a callback that never arrives. Without a browser-open fallback, users in headless environments would be stuck.",
+          "options": [
+            "Wait 5 minutes, then print a timeout error to stderr and exit 1; if browser open fails, print the authorization URL to stderr and continue waiting.",
+            "Wait 2 minutes, then time out; if browser open fails, always print the URL to stderr as a fallback.",
+            "Use a configurable timeout (flag --timeout), default 3 minutes; always print the URL to stderr regardless of whether the browser opened."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Should the CLI forward the raw API response body as-is to stdout, or should it reshape/filter the JSON for each command?",
+          "context": "Defining this determines whether output is stable across server upgrades and whether consumers can rely on a fixed schema. It also affects how token secrets are handled in create responses.",
+          "options": [
+            "Forward the raw API response body as-is (easiest, most complete).",
+            "Reshape/filter to a defined subset of fields per command (more stable contract, requires per-command schema definitions).",
+            "Forward raw response but pretty-print with indentation."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the expected behavior when `afc workspace create --team <slug>` cannot resolve the team slug (zero matches or multiple matches)?",
+          "context": "The current PRD describes resolving a team slug via GET /api/v1/teams but gives no guidance on error cases, which would leave the implementation undefined.",
+          "options": [
+            "Zero matches: print an error to stderr listing available teams and exit 1. Multiple matches: treat as an error and exit 1.",
+            "Zero matches: exit 1 with 'team not found'. Multiple matches: exit 1 with 'ambiguous team slug, please use the team UUID directly'.",
+            "In both cases, exit 1 with a descriptive message; the distinction between zero and multiple matches should be surfaced to the user."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "How should the API key be transmitted in HTTP requests to the hub (authentication scheme)?",
+          "context": "The PRD describes storing the API key but never specifies how it is presented to the server. This is a critical implementation detail that must be consistent with the backend specs.",
+          "options": [
+            "Authorization: Bearer <api_key> header.",
+            "Authorization: ApiKey <api_key> header.",
+            "X-API-Key: <api_key> custom header.",
+            "As defined in spec 2 (oauth_and_users) \u2014 please reference that spec's auth header convention."
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should config-mutating commands use any file-locking strategy to prevent corruption from concurrent CLI invocations?",
+          "context": "Atomic rename prevents partial writes but does not prevent two simultaneous processes from each writing a temp file and racing to rename. For operator tooling this may be acceptable, but it should be an explicit decision.",
+          "options": [
+            "No locking required \u2014 operators are expected to run one command at a time; document this limitation.",
+            "Use an advisory lock file (e.g., $HOME/.af/config.lock) with a short timeout.",
+            "Out of scope for this spec; defer to a future enhancement."
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "What should happen when `afc keys revoke` is run and the server returns a 404 (key already revoked or not found)?",
+          "context": "Without specifying this, the implementation might either silently succeed (clearing config) or surface a confusing error when the user is simply cleaning up an already-invalid key.",
+          "options": [
+            "Treat 404 as success: clear api_key, key_id, and user_id from config and print a confirmation to stderr.",
+            "Treat 404 as an error: print 'key not found' to stderr and exit 1 without modifying config.",
+            "Treat 404 as success silently (no config changes, no message)."
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "Are there any testing expectations for this spec (unit tests, integration tests, or a test harness against a mock server)?",
+          "context": "Without acceptance criteria or test expectations, there is no way to verify the implementation meets requirements, which increases delivery risk.",
+          "options": [
+            "Unit tests for config resolution, atomic write, and CSRF state generation are required.",
+            "Integration tests against a local mock HTTP server are required for all command flows.",
+            "No automated tests are required for this spec; manual testing is sufficient.",
+            "Both unit and integration tests are required."
+          ],
+          "required": true
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and covers the majority of requirements with good depth. Config resolution, auth flow, command set, error handling, and testing requirements are clearly articulated. However, several gaps remain that could cause ambiguity during implementation: the exact shape of request payloads sent to the server is unspecified, the login callback server's HTTP response to the browser is undefined, the `afc workspace token revoke` success output is underspecified, cross-platform behavior (macOS vs. Linux browser open) is not addressed, and a few edge cases around config initialization and validation are missing.",
+      "gaps": [
+        "Request payload shapes for POST /api/v1/auth/callback, POST /api/v1/workspaces, POST /api/v1/workspaces/:slug/tokens are not defined in this spec (fields, types, omitempty rules beyond expires_at).",
+        "The HTTP response served by the local OAuth callback server to the browser after receiving the code is not specified (e.g., a plain-text success page, redirect, or HTML).",
+        "The browser-open mechanism across platforms (macOS: 'open', Linux: 'xdg-open') is not specified \u2014 implementors must guess or pick a library.",
+        "afc workspace token revoke confirmation message to stderr is not defined (format or content).",
+        "afc keys revoke confirmation message to stderr is not defined (format or content).",
+        "Behavior when config file exists but is malformed/unparseable TOML is not specified.",
+        "The format of the --expires flag is not fully specified: is it an integer (number of days), and how is it translated into the API payload's expires_at field (e.g., UTC timestamp, ISO 8601)?",
+        "There is no specification for the `afc version` or `afc help` commands, nor whether a root-level `afc` with no subcommand should print help or exit 1.",
+        "The redirect_uri value sent in POST /api/v1/auth/callback is not specified (e.g., http://localhost:<port>/callback).",
+        "Config initialization behavior when $HOME is unset or unwritable is not defined."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What HTTP response should the local OAuth callback server return to the browser after successfully receiving the authorization code and state? For example: a plain HTML success page, a plain-text message, a redirect to a hub URL, or just an empty 200 OK?",
+          "context": "The callback server must respond to the browser redirect or the browser will show a connection error to the user. Defining this prevents implementation divergence and affects UX.",
+          "options": [
+            "Return a minimal HTML page with a 'Login successful, you may close this tab.' message.",
+            "Return a plain-text 200 OK with a success message.",
+            "Redirect the browser to the hub_url after success.",
+            "Return an empty 200 OK (no body)."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the exact JSON payload structure sent to POST /api/v1/auth/callback? Specifically: what are all required fields (provider, code, redirect_uri, expires?), what is the type of the expires field (integer days? ISO timestamp?), and what is the exact redirect_uri value (e.g., http://localhost:<port>/callback)?",
+          "context": "Without the exact payload shape, implementors must reverse-engineer it from spec 2 or guess. This is a primary integration point between the CLI and the backend.",
+          "options": [],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "How should the --expires flag value be translated into the API request? Is the value a number of days from now (integer), and should the CLI compute a UTC timestamp (e.g., time.Now().UTC().AddDate(0,0,N)) to send as an ISO 8601 string in expires_at? Or does the server accept the integer days directly?",
+          "context": "The spec mentions '--expires 0|30|60|90' and says to omit expires_at when 0, but does not clarify whether the CLI computes the timestamp or passes the integer to the server.",
+          "options": [
+            "CLI computes the absolute UTC timestamp (ISO 8601) and sends it as expires_at.",
+            "CLI sends the integer number of days directly; server computes the expiry timestamp.",
+            "The field name and format are defined in the referenced backend specs \u2014 CLI should follow those."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Which mechanism should be used to open the browser on each supported OS? For example: exec 'open' on macOS, 'xdg-open' on Linux, or use a cross-platform library like github.com/pkg/browser. Is Windows explicitly out of scope?",
+          "context": "The non-goals mention Windows path conventions are out of scope, but the browser-open mechanism needs to be specified so the implementation is consistent and testable.",
+          "options": [
+            "Use github.com/pkg/browser (cross-platform library).",
+            "Use 'open' on macOS, 'xdg-open' on Linux; Windows is fully out of scope.",
+            "Any working approach is acceptable; leave to implementor discretion."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "What should the CLI do if the config file exists but contains malformed/unparseable TOML? Should it exit with an error message, overwrite it silently, or back it up before overwriting?",
+          "context": "A corrupted config file is a realistic failure mode. Without a specified behavior, implementations may silently destroy user config or fail with an opaque error.",
+          "options": [
+            "Exit with a descriptive error message (e.g., 'config file is malformed: <parse error>').",
+            "Overwrite with an empty config and print a warning to stderr.",
+            "Back up the malformed file (e.g., config.toml.bak) and start fresh, printing a warning."
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "What exact confirmation message(s) should be printed to stderr for (a) afc keys revoke on success/404, and (b) afc workspace token revoke on success? Or is the format left to implementor discretion?",
+          "context": "Specifying the exact or approximate message format enables integration tests to assert on stderr output and ensures consistent operator UX.",
+          "options": [
+            "Define exact strings (e.g., 'API key revoked and credentials cleared.' / 'Workspace token <id> revoked.').",
+            "Define a general format requirement but leave wording to the implementor.",
+            "Leave entirely to implementor discretion \u2014 tests only check exit code."
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "What should happen when 'afc' is invoked with no subcommand \u2014 should it print help to stdout/stderr and exit 0, or exit 1?",
+          "context": "Cobra's default behavior prints help and exits 0, but some CLIs exit 1 on no-op invocations. This affects scripting behavior.",
+          "options": [
+            "Print help to stdout and exit 0 (Cobra default).",
+            "Print help to stderr and exit 1.",
+            "Leave to Cobra's default behavior."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a well-structured, detailed PRD for the `afc` CLI binary. It covers intent, goals, non-goals, functional requirements, acceptance criteria, and technical boundaries with strong specificity. The document is largely implementation-ready, with precise API endpoint references, payload schemas, exit code semantics, error message strings, config field names, and testing requirements clearly articulated. A few minor gaps remain around edge cases, observability, and validation behavior, but none are blockers for implementation to begin.",
+      "gaps": [
+        "No explicit validation rules for --git-url, --slug, --branch, or --label flags (e.g., max length, allowed characters, URL format). It is unclear whether the CLI validates these client-side or defers entirely to server-side validation errors.",
+        "The workspace token revoke command accepts <token-id> as a positional argument, but there is no specification for what happens if it is omitted (error message format, exit code).",
+        "The keys refresh and keys revoke commands depend on key_id being present in config, but there is no explicit error message specified for when key_id is missing (e.g., before login or after a partial config state).",
+        "No specification for what happens when afc login is run but --provider value is not in the list returned by GET /api/v1/auth/providers (client-side validation vs. server-side rejection).",
+        "The --expires flag for both login and workspace token create accepts 0|30|60|90, but there is no specification for what happens if an invalid value (e.g., 45) is provided \u2014 whether the CLI validates this client-side or passes it to the server.",
+        "No versioning or --version flag behavior is specified for the afc binary.",
+        "The PRD does not specify the Go module path or repository layout conventions, which may be relevant for dependency management and build reproducibility.",
+        "No mention of how HTTP response bodies are handled when the server returns a non-JSON error body (e.g., gateway timeout HTML from a proxy) \u2014 the error printing behavior is underspecified for this case."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should the CLI validate the --expires flag value client-side (rejecting values not in {0, 30, 60, 90}) or pass any integer through to the server and let the server reject invalid values?",
+          "context": "Both login and workspace token create accept --expires with a constrained set of values. Without specifying client-side validation, implementers may make inconsistent choices, and error messages to users will differ depending on approach.",
+          "options": [
+            "Validate client-side: reject values not in {0, 30, 60, 90} with a descriptive error to stderr and exit code 1.",
+            "Pass through to server: any integer is accepted by the CLI and forwarded; the server returns an error if invalid.",
+            "Validate client-side but accept any non-negative integer (not just the listed options)."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What error message and exit code should be produced when a command requires key_id from config (keys refresh, keys revoke) but key_id is absent or empty?",
+          "context": "A user might run keys refresh or keys revoke before logging in, or after a partial config state. Without a specified error message, implementations will diverge.",
+          "options": [
+            "Print: 'Error: key_id is not set in config. Run afc login first.' to stderr, exit code 1.",
+            "Print a generic 'missing required config value: key_id' message consistent with the existing missing-config error pattern.",
+            "Attempt the API call anyway (with an empty key_id in the URL) and surface the server error."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Should afc login validate the --provider value against the list returned by GET /api/v1/auth/providers before constructing the authorization URL, or should it pass the value directly to the server?",
+          "context": "If the CLI does client-side provider validation, it needs to define the error message and handle the case where the providers endpoint is unreachable. If it defers to the server, the OAuth flow may fail at a later, less obvious step.",
+          "options": [
+            "Validate client-side: fetch providers list, check --provider value is present, and exit with 'Error: unsupported provider: <value>. Available: <list>' if not found.",
+            "Pass through: send whatever value is given and let the server reject it at the callback exchange step.",
+            "Fetch providers for display/info purposes only, but do not block on validation."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What should happen when the <token-id> positional argument is omitted from afc workspace token revoke?",
+          "context": "The command signature is afc workspace token revoke --workspace <slug> <token-id>. Cobra will not automatically enforce the presence of a positional argument unless configured with Args validators. The error message and behavior need to be defined.",
+          "options": [
+            "Print: 'Error: token-id argument is required.' to stderr and exit code 1 (via Cobra Args: cobra.ExactArgs(1)).",
+            "Print Cobra's default usage error and exit code 1.",
+            "Prompt the user interactively for the token ID."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the afc binary expose a --version flag, and if so, what format should the version output take?",
+          "context": "Most CLI tools expose version information for debugging and support. Without specifying this, it will either be omitted or implemented inconsistently. The build system (make build) could inject a version string at compile time.",
+          "options": [
+            "Yes \u2014 afc --version prints 'afc version <semver>' to stdout and exits 0. Version is injected at build time via -ldflags.",
+            "Yes \u2014 expose via Cobra's built-in version field.",
+            "No \u2014 version flag is out of scope for this spec."
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "How should the CLI handle non-JSON error response bodies from the server (e.g., an HTML 502 Bad Gateway from a reverse proxy)?",
+          "context": "The error handling section specifies printing 'the error message from the JSON error envelope,' but proxies and load balancers may return non-JSON bodies. Without guidance, implementations may panic, print raw HTML, or produce a confusing message.",
+          "options": [
+            "Attempt JSON parse; if it fails, print the raw response body (truncated to a reasonable length, e.g., 512 bytes) with a prefix like 'Error: server returned non-JSON response (HTTP <status>):'.",
+            "Attempt JSON parse; if it fails, print only 'Error: unexpected response from server (HTTP <status>).' without the body.",
+            "Always print the raw response body regardless of content type."
+          ],
+          "required": true
+        },
+        {
+          "id": "q7",
+          "text": "Should the CLI perform any client-side validation on --git-url, --slug, --label, or --branch flag values, or defer all validation to the server?",
+          "context": "Client-side validation can provide faster, friendlier error messages (e.g., 'slug must not contain spaces') but requires keeping validation logic in sync with the server. Deferring to the server keeps the client simpler but may produce less helpful error messages.",
+          "options": [
+            "Defer all validation to the server \u2014 the CLI only checks that required flags are non-empty.",
+            "Validate non-emptiness client-side for required fields; defer format/content validation to the server.",
+            "Define explicit client-side validation rules (specify the rules in the PRD)."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The PRD is now implementation-ready. All previously identified gaps have been resolved with clear, consistent specifications: `--expires` validation is client-side with a precise error message; `key_id` missing-config error is defined; provider validation is fully specified including the error message and network-error fallback behavior; `<token-id>` omission is handled via Cobra's `ExactArgs(1)`; `--version` behavior is defined with build-time injection; non-JSON error bodies have a deterministic handling path; and client-side validation scope for workspace flags is clearly scoped to non-empty string checks only. The document is internally consistent, references all dependent specs correctly, and provides sufficient detail for an implementer to begin without ambiguity.",
+      "gaps": [],
+      "questions": []
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Add a `key_id` field to the config schema (stored alongside api_key at login/refresh time). The config file should have four fields: hub_url, user_id, api_key, key_id. When login or keys refresh returns a response, both the api_key value and the key_id are persisted to config. This is the simplest and most reliable approach \u2014 no extra API call needed at runtime.",
+        "q2": "0 means never expires (no expiry set). This is the standard convention for CLI tools. When expires=0 is passed, the API request should omit the expires_at field or set it to null, resulting in a credential that does not expire.",
+        "q3": "Silently overwrite \u2014 last login wins. This is the simplest and most expected UX for a CLI tool. The old key is not automatically revoked; the user can manually revoke it via `afc keys revoke` if desired. A message to stderr noting that existing credentials were replaced is acceptable but not required.",
+        "q4": "Out of scope for now; add to Non-Goals explicitly. HTTP client timeout should use a sensible default (30s) but is not user-configurable in this spec. TLS verification, --insecure, --ca-cert, and retry behavior are future enhancements."
+      },
+      "timestamp": "2026-07-10T15:02:58.961936+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Wait 2 minutes, then time out with an error message to stderr and exit 1. If browser open fails, always print the authorization URL to stderr as a fallback so the user can manually open it. The timeout is not user-configurable in this spec.",
+        "q2": "Forward the raw API response body as-is to stdout, pretty-printed with 2-space indentation. The CLI does not reshape or filter fields. This is the simplest approach and avoids maintaining per-command output schemas. Consumers parse the JSON as returned by the server.",
+        "q3": "Zero matches: exit 1 with 'team not found: <slug>' to stderr. Multiple matches should not occur since team slugs are unique per the teams spec (spec 3). If it somehow does occur, exit 1 with 'ambiguous team slug' to stderr. In both cases, the user gets a descriptive error message.",
+        "q4": "Authorization: Bearer <api_key> header, as defined in spec 2 (oauth_and_users). All authenticated API requests include this header with the stored api_key value.",
+        "q5": "No locking required \u2014 operators are expected to run one command at a time. Atomic rename is sufficient protection against partial writes. Document this as a known limitation. File locking is a future enhancement if needed.",
+        "q6": "Treat 404 as success: clear api_key, key_id, and user_id from config and print a confirmation to stderr. The user's intent is to disconnect, and the key being already gone on the server should not block that.",
+        "q7": "Both unit and integration tests are required. Unit tests for config resolution, atomic write, CSRF state generation, and flag/env/config precedence. Integration tests against a local mock HTTP server for the login flow, keys commands, workspace commands, and workspace token commands."
+      },
+      "timestamp": "2026-07-10T15:04:26.904057+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Return a minimal HTML page with a 'Login successful! You may close this tab.' message and a 200 OK status. Keep it simple \u2014 no redirects, no JavaScript. The page should have a basic HTML structure with a visible success message.",
+        "q2": "The POST /api/v1/auth/callback payload follows spec 2 (oauth_and_users). The fields are: provider (string, e.g. 'github'), code (string, the authorization code), redirect_uri (string, 'http://localhost:<port>/callback' where port is the local callback server's port), and expires (integer, number of days \u2014 0 for no expiry, 30/60/90 for days). The server computes the expiry timestamp from the integer days value. The response contains user (object with id field) and api_key (object with id and key fields). The CLI stores user.id as user_id, api_key.key as api_key, and api_key.id as key_id in config.",
+        "q3": "CLI sends the integer number of days directly in the 'expires' field; the server computes the expiry timestamp. This matches the backend spec convention. When expires=0, the field is still sent with value 0, meaning no expiry.",
+        "q4": "Use github.com/pkg/browser as a cross-platform library. It handles macOS (open) and Linux (xdg-open) automatically. Windows is out of scope as stated in non-goals.",
+        "q5": "Exit with a descriptive error message to stderr (e.g., 'Error: failed to parse config file: <parse error>') and exit code 1. Do not silently overwrite or back up. The user must manually fix or delete the corrupted config file.",
+        "q6": "Define a general format requirement: confirmation messages should include the action taken and any relevant identifiers. For keys revoke: 'API key revoked.' to stderr. For keys revoke with 404: 'API key not found on server. Local credentials cleared.' For workspace token revoke: 'Token <id> revoked.' Tests check exit code and can optionally check stderr contains a confirmation.",
+        "q7": "Leave to Cobra's default behavior \u2014 print help to stdout and exit 0. This is the standard convention for Cobra-based CLIs. The afc binary should also support 'afc --help' and 'afc help <command>' as Cobra provides these out of the box."
+      },
+      "timestamp": "2026-07-10T15:06:28.005865+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "Validate client-side: reject values not in {0, 30, 60, 90} with a descriptive error to stderr (e.g., 'Error: --expires must be one of: 0, 30, 60, 90') and exit code 1. This provides immediate feedback without a network round-trip.",
+        "q2": "Print a message consistent with the existing missing-config error pattern: 'Error: key_id is not set. Run \"afc login\" first.' to stderr, exit code 1. This follows the same pattern as other missing config values.",
+        "q3": "Validate client-side: fetch providers list from GET /api/v1/auth/providers, check that --provider value is present, and exit with 'Error: unsupported provider: <value>. Available: <comma-separated list>' to stderr, exit 1 if not found. If the providers endpoint is unreachable, surface the network error as usual.",
+        "q4": "Use Cobra's ExactArgs(1) validator. Cobra prints its default usage error and exits with code 1 when the positional argument is missing. This is standard Cobra behavior and sufficient.",
+        "q5": "Yes \u2014 expose via Cobra's built-in Version field. 'afc --version' prints 'afc version <semver>' to stdout and exits 0. Version string is injected at build time via -ldflags. Initial version is 0.1.0.",
+        "q6": "Attempt JSON parse; if it fails, print only 'Error: unexpected response from server (HTTP <status>).' to stderr without the body. This avoids dumping HTML to the terminal and keeps error output clean and predictable.",
+        "q7": "Defer all validation to the server \u2014 the CLI only checks that required flags are non-empty strings. This keeps the client simple and avoids sync issues with server-side validation rules. Format and content validation is the server's responsibility."
+      },
+      "timestamp": "2026-07-10T15:08:53.468042+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

@@ -1,0 +1,1045 @@
+{
+  "$schema": null,
+  "spec_id": "03",
+  "spec_name": "teams",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-03-1",
+      "requirement_id": "03-REQ-1.1",
+      "kind": "unit",
+      "description": "Verifies that the teams migration creates the `teams` table with all required columns and partial UNIQUE indexes on `name` and `slug` scoped to non-deleted rows.",
+      "preconditions": [
+        "A fresh in-memory SQLite database is initialised with no tables.",
+        "The migration runner from server_foundation is available.",
+        "The teams migration SQL file is embedded via embed.FS."
+      ],
+      "input": "Run the migration runner against the embedded teams migration file on the blank SQLite database.",
+      "expected": "The `teams` table exists with columns: id (TEXT PK), name (TEXT), slug (TEXT), url (TEXT nullable), status (TEXT), created_at (DATETIME), updated_at (DATETIME). Two partial UNIQUE indexes exist: one on `name WHERE status != 'deleted'` and one on `slug WHERE status != 'deleted'`.",
+      "assertion_pseudocode": "db = open_sqlite_in_memory()\nrun_migrations(db, embedded_migration_files)\nassert table_exists(db, 'teams')\ncols = get_columns(db, 'teams')\nassert 'id' in cols AND cols['id'].is_primary_key\nassert 'name' in cols AND cols['name'].type == 'TEXT'\nassert 'slug' in cols AND cols['slug'].type == 'TEXT'\nassert 'url' in cols AND cols['url'].nullable == true\nassert 'status' in cols\nassert 'created_at' in cols\nassert 'updated_at' in cols\nindexes = get_indexes(db, 'teams')\nassert any index with column='name' AND partial_where=\"status != 'deleted'\" AND unique=true in indexes\nassert any index with column='slug' AND partial_where=\"status != 'deleted'\" AND unique=true in indexes"
+    },
+    {
+      "id": "TS-03-2",
+      "requirement_id": "03-REQ-1.2",
+      "kind": "unit",
+      "description": "Verifies that the team_members migration creates the `team_members` table with correct columns, composite primary key, and foreign key constraints.",
+      "preconditions": [
+        "A fresh in-memory SQLite database is initialised.",
+        "The `users` table from the oauth_and_users spec exists (or is stubbed).",
+        "Both migration files (teams and team_members) are embedded via embed.FS."
+      ],
+      "input": "Run all relevant migration files in order on the blank SQLite database.",
+      "expected": "The `team_members` table exists with columns: team_id (TEXT FK → teams.id cascade delete), user_id (TEXT FK → users.id), created_at (DATETIME). The composite primary key is (team_id, user_id).",
+      "assertion_pseudocode": "db = open_sqlite_in_memory()\nrun_migrations(db, embedded_migration_files)\nassert table_exists(db, 'team_members')\ncols = get_columns(db, 'team_members')\nassert 'team_id' in cols\nassert 'user_id' in cols\nassert 'created_at' in cols\npk = get_primary_key(db, 'team_members')\nassert pk == ['team_id', 'user_id']\nfks = get_foreign_keys(db, 'team_members')\nassert any fk where fk.from='team_id' AND fk.table='teams' AND fk.on_delete='CASCADE' in fks\nassert any fk where fk.from='user_id' AND fk.table='users' in fks"
+    },
+    {
+      "id": "TS-03-3",
+      "requirement_id": "03-REQ-1.3",
+      "kind": "unit",
+      "description": "Verifies that migration files are embedded via embed.FS, use sequential numeric prefixes, and are applied in ascending numeric order exactly once.",
+      "preconditions": [
+        "The compiled Go binary embeds the migration files via embed.FS.",
+        "The migration runner from server_foundation is available."
+      ],
+      "input": "Inspect the embedded file system for migration files and run migrations twice on the same database.",
+      "expected": "Migration files have sequential numeric prefixes. Running migrations a second time does not re-apply already-applied files. The migration runner applies them in ascending numeric order.",
+      "assertion_pseudocode": "files = list_embedded_files(embed_fs)\nassert all files match pattern /^\\d+_.*\\.sql$/\nnumeric_prefixes = [extract_prefix(f) for f in files]\nassert numeric_prefixes == sorted(numeric_prefixes)\ndb = open_sqlite_in_memory()\nrun_migrations(db, embed_fs)  // first run\nrow_count_1 = query_scalar(db, 'SELECT count(*) FROM schema_migrations')\nrun_migrations(db, embed_fs)  // second run\nrow_count_2 = query_scalar(db, 'SELECT count(*) FROM schema_migrations')\nassert row_count_1 == row_count_2  // no new rows added on second run"
+    },
+    {
+      "id": "TS-03-4",
+      "requirement_id": "03-REQ-2.1",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams with valid name, slug, and optional URL creates a team and returns HTTP 201 with the complete team object.",
+      "preconditions": [
+        "SQLite database is initialised with the teams and team_members tables.",
+        "An admin user session/token is available.",
+        "No existing team with the same name or slug exists."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"  Engineering  \", \"slug\": \"engineering\", \"url\": \"https://eng.example.com\"} and admin auth header.",
+      "expected": "HTTP 201 response with Content-Type: application/json. Body contains {id: <uuid>, name: \"Engineering\", slug: \"engineering\", url: \"https://eng.example.com\", status: \"active\", created_at: <RFC3339 UTC>, updated_at: <RFC3339 UTC>}. A row exists in the `teams` table with these values.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={name:'  Engineering  ', slug:'engineering', url:'https://eng.example.com'}, headers={Authorization: admin_token})\nassert resp.status == 201\nassert resp.headers['Content-Type'] contains 'application/json'\nbody = parse_json(resp.body)\nassert is_valid_uuid(body.id)\nassert body.name == 'Engineering'  // trimmed\nassert body.slug == 'engineering'\nassert body.url == 'https://eng.example.com'\nassert body.status == 'active'\nassert is_rfc3339_utc_microseconds(body.created_at)\nassert is_rfc3339_utc_microseconds(body.updated_at)\ndb_row = query_one(db, 'SELECT * FROM teams WHERE id = ?', body.id)\nassert db_row != nil\nassert db_row.name == 'Engineering'"
+    },
+    {
+      "id": "TS-03-5",
+      "requirement_id": "03-REQ-2.2",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 422 with 'invalid team name' when the name is empty after trimming.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"   \", \"slug\": \"valid-slug\"} (name is whitespace-only).",
+      "expected": "HTTP 422 with body {\"code\": 422, \"message\": \"invalid team name\"}. No team row is inserted.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={name:'   ', slug:'valid-slug'}, headers={Authorization: admin_token})\nassert resp.status == 422\nbody = parse_json(resp.body)\nassert body.code == 422\nassert body.message == 'invalid team name'\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE slug = ?', 'valid-slug') == 0"
+    },
+    {
+      "id": "TS-03-6",
+      "requirement_id": "03-REQ-2.2",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 422 with 'invalid team name' when the name exceeds 255 characters.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": <256-char string>, \"slug\": \"valid-slug\"}.",
+      "expected": "HTTP 422 with body {\"code\": 422, \"message\": \"invalid team name\"}. No team row is inserted.",
+      "assertion_pseudocode": "long_name = 'a' * 256\nresp = POST('/api/v1/teams', body={name: long_name, slug:'valid-slug'}, headers={Authorization: admin_token})\nassert resp.status == 422\nbody = parse_json(resp.body)\nassert body.code == 422\nassert body.message == 'invalid team name'"
+    },
+    {
+      "id": "TS-03-7",
+      "requirement_id": "03-REQ-2.3",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 422 with 'invalid slug format' when the slug does not match the required regex.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"My Team\", \"slug\": \"-bad-slug\"} (starts with hyphen, invalid).",
+      "expected": "HTTP 422 with body {\"code\": 422, \"message\": \"invalid slug format\"}. No team row is inserted.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={name:'My Team', slug:'-bad-slug'}, headers={Authorization: admin_token})\nassert resp.status == 422\nbody = parse_json(resp.body)\nassert body.code == 422\nassert body.message == 'invalid slug format'"
+    },
+    {
+      "id": "TS-03-8",
+      "requirement_id": "03-REQ-2.4",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 422 with 'invalid url format' when a URL is provided without an http/https scheme.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"My Team\", \"slug\": \"my-team\", \"url\": \"ftp://notallowed.com\"}.",
+      "expected": "HTTP 422 with body {\"code\": 422, \"message\": \"invalid url format\"}. No team row is inserted.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={name:'My Team', slug:'my-team', url:'ftp://notallowed.com'}, headers={Authorization: admin_token})\nassert resp.status == 422\nbody = parse_json(resp.body)\nassert body.code == 422\nassert body.message == 'invalid url format'"
+    },
+    {
+      "id": "TS-03-9",
+      "requirement_id": "03-REQ-2.5",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 409 with 'team name already exists' when a non-deleted team with the same name already exists.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "A non-deleted team with name 'Engineering' already exists in the database."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"Engineering\", \"slug\": \"engineering-2\"} where 'Engineering' is already taken.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team name already exists\"}. No new team row is inserted.",
+      "assertion_pseudocode": "seed_team(db, name='Engineering', slug='eng-old', status='active')\nresp = POST('/api/v1/teams', body={name:'Engineering', slug:'engineering-2'}, headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message == 'team name already exists'\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE slug = ?', 'engineering-2') == 0"
+    },
+    {
+      "id": "TS-03-10",
+      "requirement_id": "03-REQ-2.6",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 409 with 'team slug already exists' when a non-deleted team with the same slug already exists.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "A non-deleted team with slug 'my-team' already exists in the database."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"New Team\", \"slug\": \"my-team\"} where 'my-team' slug is already taken.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team slug already exists\"}. No new team row is inserted.",
+      "assertion_pseudocode": "seed_team(db, name='Old Team', slug='my-team', status='active')\nresp = POST('/api/v1/teams', body={name:'New Team', slug:'my-team'}, headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message == 'team slug already exists'"
+    },
+    {
+      "id": "TS-03-11",
+      "requirement_id": "03-REQ-2.7",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 400 with 'invalid request body' when the request body is malformed JSON.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams with body \"not-valid-json{\" and Content-Type: application/json.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid request body\"}.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', raw_body='not-valid-json{', headers={Authorization: admin_token, 'Content-Type':'application/json'})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid request body'"
+    },
+    {
+      "id": "TS-03-12",
+      "requirement_id": "03-REQ-2.8",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams returns HTTP 422 with 'missing required field' when a required field (name or slug) is absent.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams with body {\"url\": \"https://example.com\"} (missing name and slug).",
+      "expected": "HTTP 422 with body {\"code\": 422, \"message\": \"missing required field\"}.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={url:'https://example.com'}, headers={Authorization: admin_token})\nassert resp.status == 422\nbody = parse_json(resp.body)\nassert body.code == 422\nassert body.message == 'missing required field'"
+    },
+    {
+      "id": "TS-03-13",
+      "requirement_id": "03-REQ-2.9",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams silently ignores unrecognized fields in the request body and still creates the team.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "No existing team with name 'Alpha' or slug 'alpha-team' exists."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"Alpha\", \"slug\": \"alpha-team\", \"unknown_field\": \"ignored\", \"another\": 42}.",
+      "expected": "HTTP 201 with a valid team object. The unrecognized fields are not reflected in the response or stored in the database.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={name:'Alpha', slug:'alpha-team', unknown_field:'ignored', another:42}, headers={Authorization: admin_token})\nassert resp.status == 201\nbody = parse_json(resp.body)\nassert body.name == 'Alpha'\nassert body.slug == 'alpha-team'\nassert 'unknown_field' not in body\nassert 'another' not in body"
+    },
+    {
+      "id": "TS-03-14",
+      "requirement_id": "03-REQ-2.10",
+      "kind": "integration",
+      "description": "Verifies that a database-level partial UNIQUE index violation on slug during a concurrent insert is mapped to HTTP 409 with the correct message.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table and partial UNIQUE indexes.",
+        "An admin user session/token is available.",
+        "The application-layer uniqueness check is bypassed (simulated by inserting directly into DB after the check passes)."
+      ],
+      "input": "Simulate a scenario where application-layer check passes but another insert commits the same slug before this transaction commits, triggering a DB UNIQUE constraint error.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team slug already exists\"}. The transaction is rolled back and no duplicate row exists.",
+      "assertion_pseudocode": "// Simulate concurrent race: insert the conflicting slug directly into DB after app check passes\nslug = 'race-slug'\ndb.exec('INSERT INTO teams (id, name, slug, status, created_at, updated_at) VALUES (uuid(), \"Race Team\", ?, \"active\", now(), now())', slug)\n// Now issue the API request that will fail on DB constraint\nresp = POST('/api/v1/teams', body={name:'Other Team', slug: slug}, headers={Authorization: admin_token})\n// The DB constraint catches the duplicate\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message in ['team slug already exists', 'team name already exists']\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE slug = ? AND status != \"deleted\"', slug) == 1"
+    },
+    {
+      "id": "TS-03-15",
+      "requirement_id": "03-REQ-3.1",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams without query params returns only active teams ordered by created_at ascending.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "Three teams exist: two active (created at T1 < T2) and one archived."
+      ],
+      "input": "GET /api/v1/teams with admin auth header and no query params.",
+      "expected": "HTTP 200 with a JSON array of exactly 2 active team objects, ordered oldest first by created_at. The archived team is not included.",
+      "assertion_pseudocode": "t1 = seed_team(db, name='Alpha', slug='alpha', status='active', created_at=T1)\nt2 = seed_team(db, name='Beta', slug='beta', status='archived', created_at=T2)\nt3 = seed_team(db, name='Gamma', slug='gamma', status='active', created_at=T3)\nresp = GET('/api/v1/teams', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert len(body) == 2\nassert body[0].id == t1.id  // oldest active first\nassert body[1].id == t3.id\nassert all(t.status == 'active' for t in body)"
+    },
+    {
+      "id": "TS-03-16",
+      "requirement_id": "03-REQ-3.2",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams?include_archived=true returns both active and archived teams ordered by created_at ascending.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "Two active teams and one archived team exist."
+      ],
+      "input": "GET /api/v1/teams?include_archived=true with admin auth header.",
+      "expected": "HTTP 200 with a JSON array of 3 team objects (2 active + 1 archived), ordered by created_at ascending.",
+      "assertion_pseudocode": "t1 = seed_team(db, name='Alpha', slug='alpha', status='active', created_at=T1)\nt2 = seed_team(db, name='Beta', slug='beta', status='archived', created_at=T2)\nt3 = seed_team(db, name='Gamma', slug='gamma', status='active', created_at=T3)\nresp = GET('/api/v1/teams?include_archived=true', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert len(body) == 3\nassert body[0].id == t1.id\nassert body[1].id == t2.id\nassert body[2].id == t3.id\nassert any(t.status == 'archived' for t in body)"
+    },
+    {
+      "id": "TS-03-17",
+      "requirement_id": "03-REQ-3.3",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams never returns teams with status = 'deleted' regardless of query parameters.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "One active team and one deleted team exist."
+      ],
+      "input": "GET /api/v1/teams?include_archived=true with admin auth header.",
+      "expected": "HTTP 200 with a JSON array containing only the active team; the deleted team does not appear.",
+      "assertion_pseudocode": "seed_team(db, name='Active', slug='active-t', status='active')\nseed_team(db, name='Deleted', slug='deleted-t', status='deleted')  // directly in DB\nresp = GET('/api/v1/teams?include_archived=true', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert all(t.status != 'deleted' for t in body)\nassert not any(t.slug == 'deleted-t' for t in body)"
+    },
+    {
+      "id": "TS-03-18",
+      "requirement_id": "03-REQ-3.4",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams returns all matching records with no pagination, ordered by created_at ascending.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "Fifty active teams are seeded in the database with distinct created_at timestamps."
+      ],
+      "input": "GET /api/v1/teams with admin auth header.",
+      "expected": "HTTP 200 with a JSON array of exactly 50 team objects, all active, strictly ordered by created_at ascending.",
+      "assertion_pseudocode": "teams = [seed_team(db, status='active', created_at=T_base + i_seconds) for i in range(50)]\nresp = GET('/api/v1/teams', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert len(body) == 50\nfor i in range(len(body)-1):\n  assert parse_timestamp(body[i].created_at) <= parse_timestamp(body[i+1].created_at)"
+    },
+    {
+      "id": "TS-03-19",
+      "requirement_id": "03-REQ-4.1",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id returns HTTP 200 with the team object for an active or archived team.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "A team with known UUID and status 'active' exists in the database."
+      ],
+      "input": "GET /api/v1/teams/<known-team-uuid> with admin auth header.",
+      "expected": "HTTP 200 with a JSON team object containing the correct id, name, slug, url, status, created_at, updated_at fields.",
+      "assertion_pseudocode": "team = seed_team(db, name='My Team', slug='my-team', status='active')\nresp = GET('/api/v1/teams/' + team.id, headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert body.id == team.id\nassert body.name == 'My Team'\nassert body.slug == 'my-team'\nassert body.status == 'active'"
+    },
+    {
+      "id": "TS-03-20",
+      "requirement_id": "03-REQ-4.2",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id returns HTTP 404 with 'team not found' for a deleted team or non-existent UUID.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "A deleted team's UUID is known (record physically removed from DB) or a random UUID that does not exist."
+      ],
+      "input": "GET /api/v1/teams/<uuid-of-deleted-or-nonexistent-team> with admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "nonexistent_id = new_uuid()\nresp = GET('/api/v1/teams/' + nonexistent_id, headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-21",
+      "requirement_id": "03-REQ-4.3",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id returns HTTP 400 with 'invalid id format' before any DB lookup when the :id is not a valid UUID.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "GET /api/v1/teams/not-a-uuid with admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid id format\"}. No database query is performed.",
+      "assertion_pseudocode": "resp = GET('/api/v1/teams/not-a-uuid', headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid id format'"
+    },
+    {
+      "id": "TS-03-22",
+      "requirement_id": "03-REQ-5.1",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/archive archives an active team, sets updated_at, and returns HTTP 200 with the updated team object.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An active team exists in the database."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/archive with admin auth header (no body required).",
+      "expected": "HTTP 200 with team object where status = 'archived' and updated_at > created_at. The database row reflects the new status.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nbefore_update = team.updated_at\nresp = POST('/api/v1/teams/' + team.id + '/archive', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert body.id == team.id\nassert body.status == 'archived'\nassert parse_timestamp(body.updated_at) >= parse_timestamp(before_update)\ndb_row = query_one(db, 'SELECT status FROM teams WHERE id = ?', team.id)\nassert db_row.status == 'archived'"
+    },
+    {
+      "id": "TS-03-23",
+      "requirement_id": "03-REQ-5.2",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/archive returns HTTP 409 with 'team is already archived' when the team is already archived.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An archived team exists in the database."
+      ],
+      "input": "POST /api/v1/teams/<archived-team-uuid>/archive with admin auth header.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team is already archived\"}.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nresp = POST('/api/v1/teams/' + team.id + '/archive', headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message == 'team is already archived'"
+    },
+    {
+      "id": "TS-03-24",
+      "requirement_id": "03-REQ-5.3",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/archive returns HTTP 404 with 'team not found' for a non-existent or deleted team.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams/<nonexistent-uuid>/archive with admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "nonexistent_id = new_uuid()\nresp = POST('/api/v1/teams/' + nonexistent_id + '/archive', headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-25",
+      "requirement_id": "03-REQ-5.4",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/archive returns HTTP 400 with 'invalid id format' before any DB lookup when :id is not a valid UUID.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams/bad-id/archive with admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid id format\"}.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams/bad-id/archive', headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid id format'"
+    },
+    {
+      "id": "TS-03-26",
+      "requirement_id": "03-REQ-5.5",
+      "kind": "integration",
+      "description": "Verifies that the archive endpoint ignores any request body and does not enforce Content-Type.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An active team exists in the database."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/archive with a JSON body {\"unexpected\": \"data\"} and Content-Type: text/plain.",
+      "expected": "HTTP 200 with the updated team object (archived). The body and Content-Type header are silently ignored.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp = POST('/api/v1/teams/' + team.id + '/archive', raw_body='{\"unexpected\":\"data\"}', headers={Authorization: admin_token, 'Content-Type':'text/plain'})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert body.status == 'archived'"
+    },
+    {
+      "id": "TS-03-27",
+      "requirement_id": "03-REQ-6.1",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/reactivate reactivates an archived team, updates updated_at, and returns HTTP 200 with the updated team object.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An archived team exists in the database."
+      ],
+      "input": "POST /api/v1/teams/<archived-team-uuid>/reactivate with admin auth header.",
+      "expected": "HTTP 200 with team object where status = 'active' and updated_at is current UTC. The database row reflects the new status.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nresp = POST('/api/v1/teams/' + team.id + '/reactivate', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert body.id == team.id\nassert body.status == 'active'\nassert is_rfc3339_utc_microseconds(body.updated_at)\ndb_row = query_one(db, 'SELECT status FROM teams WHERE id = ?', team.id)\nassert db_row.status == 'active'"
+    },
+    {
+      "id": "TS-03-28",
+      "requirement_id": "03-REQ-6.2",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/reactivate returns HTTP 409 with 'team is already active' when the team is already active.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An active team exists in the database."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/reactivate with admin auth header.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team is already active\"}.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp = POST('/api/v1/teams/' + team.id + '/reactivate', headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message == 'team is already active'"
+    },
+    {
+      "id": "TS-03-29",
+      "requirement_id": "03-REQ-6.3",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/reactivate returns HTTP 404 with 'team not found' for a non-existent or deleted team.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams/<nonexistent-uuid>/reactivate with admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "nonexistent_id = new_uuid()\nresp = POST('/api/v1/teams/' + nonexistent_id + '/reactivate', headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-30",
+      "requirement_id": "03-REQ-6.4",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/reactivate returns HTTP 400 with 'invalid id format' before any DB lookup when :id is not a valid UUID.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams/not-a-uuid/reactivate with admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid id format\"}.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams/not-a-uuid/reactivate', headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid id format'"
+    },
+    {
+      "id": "TS-03-31",
+      "requirement_id": "03-REQ-6.5",
+      "kind": "integration",
+      "description": "Verifies that the reactivate endpoint ignores any request body and does not enforce Content-Type.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An archived team exists in the database."
+      ],
+      "input": "POST /api/v1/teams/<archived-team-uuid>/reactivate with body {\"extra\": \"field\"} and no Content-Type header.",
+      "expected": "HTTP 200 with the updated team object (active). Body and Content-Type are silently ignored.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nresp = POST('/api/v1/teams/' + team.id + '/reactivate', raw_body='{\"extra\":\"field\"}', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert body.status == 'active'"
+    },
+    {
+      "id": "TS-03-32",
+      "requirement_id": "03-REQ-7.1",
+      "kind": "integration",
+      "description": "Verifies that DELETE /api/v1/teams/:id deletes an archived team and all its members atomically, returning HTTP 204.",
+      "preconditions": [
+        "SQLite database is initialised with the teams and team_members tables.",
+        "An admin user session/token is available.",
+        "An archived team with 2 members exists in the database."
+      ],
+      "input": "DELETE /api/v1/teams/<archived-team-uuid> with admin auth header.",
+      "expected": "HTTP 204 with no body. The team row and all team_members rows for that team are removed from the database.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nseed_member(db, team_id=team.id, user_id=user1.id)\nseed_member(db, team_id=team.id, user_id=user2.id)\nresp = DELETE('/api/v1/teams/' + team.id, headers={Authorization: admin_token})\nassert resp.status == 204\nassert resp.body == '' or resp.body is None\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', team.id) == 0\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ?', team.id) == 0"
+    },
+    {
+      "id": "TS-03-33",
+      "requirement_id": "03-REQ-7.2",
+      "kind": "integration",
+      "description": "Verifies that DELETE /api/v1/teams/:id returns HTTP 409 with 'team must be archived before deletion' when the team is active.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An active team exists in the database."
+      ],
+      "input": "DELETE /api/v1/teams/<active-team-uuid> with admin auth header.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team must be archived before deletion\"}. The team row remains in the database.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp = DELETE('/api/v1/teams/' + team.id, headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message == 'team must be archived before deletion'\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', team.id) == 1"
+    },
+    {
+      "id": "TS-03-34",
+      "requirement_id": "03-REQ-7.3",
+      "kind": "integration",
+      "description": "Verifies that DELETE /api/v1/teams/:id returns HTTP 404 with 'team not found' for a non-existent or already deleted team.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "DELETE /api/v1/teams/<nonexistent-uuid> with admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "nonexistent_id = new_uuid()\nresp = DELETE('/api/v1/teams/' + nonexistent_id, headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-35",
+      "requirement_id": "03-REQ-7.4",
+      "kind": "integration",
+      "description": "Verifies that DELETE /api/v1/teams/:id returns HTTP 400 with 'invalid id format' before any DB lookup when :id is not a valid UUID.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "DELETE /api/v1/teams/not-a-uuid with admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid id format\"}.",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/teams/not-a-uuid', headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid id format'"
+    },
+    {
+      "id": "TS-03-36",
+      "requirement_id": "03-REQ-8.1",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members adds a new user to an active team and returns HTTP 200 with the member object including fresh user data.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team and a user exist in the database.",
+        "The user is not yet a member of the team."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/members with body {\"user_id\": \"<user-uuid>\"} and admin auth header.",
+      "expected": "HTTP 200 with member object {user_id, team_id, email, name, joined_at}. The email and name match the current user record. A row exists in team_members.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nuser = seed_user(db, email='jane@example.com', name='Jane Doe')\nresp = POST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert body.user_id == user.id\nassert body.team_id == team.id\nassert body.email == 'jane@example.com'\nassert body.name == 'Jane Doe'\nassert is_rfc3339_utc_microseconds(body.joined_at)\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ? AND user_id = ?', team.id, user.id) == 1"
+    },
+    {
+      "id": "TS-03-37",
+      "requirement_id": "03-REQ-8.2",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members is idempotent: re-adding an existing member returns HTTP 200 with current user data and the original joined_at, without creating a duplicate row.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team and a user exist; the user is already a member of the team with a known joined_at timestamp."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/members with body {\"user_id\": \"<user-uuid>\"} (user already a member).",
+      "expected": "HTTP 200 with member object where joined_at equals the original membership creation timestamp, and email/name reflect current user data. No duplicate row in team_members.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nuser = seed_user(db, email='jane@example.com', name='Jane Doe')\noriginal_joined_at = seed_member(db, team_id=team.id, user_id=user.id, created_at=T_original)\n// Second add (idempotent)\nresp = POST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert parse_timestamp(body.joined_at) == parse_timestamp(T_original)  // original unchanged\nassert body.email == 'jane@example.com'\nassert body.name == 'Jane Doe'\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ? AND user_id = ?', team.id, user.id) == 1"
+    },
+    {
+      "id": "TS-03-38",
+      "requirement_id": "03-REQ-8.3",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members returns HTTP 409 with 'team is archived' when the team is archived.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An archived team and a valid user exist."
+      ],
+      "input": "POST /api/v1/teams/<archived-team-uuid>/members with body {\"user_id\": \"<user-uuid>\"} and admin auth header.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team is archived\"}. No row is inserted in team_members.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nuser = seed_user(db)\nresp = POST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.code == 409\nassert body.message == 'team is archived'\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ?', team.id) == 0"
+    },
+    {
+      "id": "TS-03-39",
+      "requirement_id": "03-REQ-8.4",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members returns HTTP 404 with 'team not found' when the team does not exist or is deleted.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "A valid user exists."
+      ],
+      "input": "POST /api/v1/teams/<nonexistent-uuid>/members with body {\"user_id\": \"<valid-user-uuid>\"} and admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "user = seed_user(db)\nnonexistent_id = new_uuid()\nresp = POST('/api/v1/teams/' + nonexistent_id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-40",
+      "requirement_id": "03-REQ-8.5",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members returns HTTP 404 with 'user not found' when the user_id does not match any user.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team exists but the specified user_id does not exist in the users table."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/members with body {\"user_id\": \"<nonexistent-user-uuid>\"} and admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"user not found\"}.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nnonexistent_user_id = new_uuid()\nresp = POST('/api/v1/teams/' + team.id + '/members', body={user_id: nonexistent_user_id}, headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'user not found'"
+    },
+    {
+      "id": "TS-03-41",
+      "requirement_id": "03-REQ-8.6",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members returns HTTP 400 with 'invalid id format' when :id or user_id is not a valid UUID.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams/bad-id/members with body {\"user_id\": \"<valid-uuid>\"} and admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid id format\"}.",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams/bad-id/members', body={user_id: new_uuid()}, headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid id format'"
+    },
+    {
+      "id": "TS-03-42",
+      "requirement_id": "03-REQ-8.7",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members returns HTTP 400 with 'invalid request body' when the request body is malformed JSON.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team exists."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/members with raw body '{not valid json' and admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid request body\"}.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp = POST('/api/v1/teams/' + team.id + '/members', raw_body='{not valid json', headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid request body'"
+    },
+    {
+      "id": "TS-03-43",
+      "requirement_id": "03-REQ-8.8",
+      "kind": "integration",
+      "description": "Verifies that POST /api/v1/teams/:id/members returns HTTP 422 with 'missing required field' when user_id is absent from the request body.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team exists."
+      ],
+      "input": "POST /api/v1/teams/<active-team-uuid>/members with body {} (empty JSON object, no user_id).",
+      "expected": "HTTP 422 with body {\"code\": 422, \"message\": \"missing required field\"}.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp = POST('/api/v1/teams/' + team.id + '/members', body={}, headers={Authorization: admin_token})\nassert resp.status == 422\nbody = parse_json(resp.body)\nassert body.code == 422\nassert body.message == 'missing required field'"
+    },
+    {
+      "id": "TS-03-44",
+      "requirement_id": "03-REQ-9.1",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id/members returns HTTP 200 with all members ordered by joined_at ascending for an active or archived team.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team with 3 members (added at T1 < T2 < T3) exists."
+      ],
+      "input": "GET /api/v1/teams/<team-uuid>/members with admin auth header.",
+      "expected": "HTTP 200 with JSON array of 3 member objects ordered by joined_at ascending: first member has earliest joined_at.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nu1, u2, u3 = seed_users(db, count=3)\nseed_member(db, team.id, u1.id, created_at=T1)\nseed_member(db, team.id, u2.id, created_at=T2)\nseed_member(db, team.id, u3.id, created_at=T3)\nresp = GET('/api/v1/teams/' + team.id + '/members', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert len(body) == 3\nassert parse_timestamp(body[0].joined_at) <= parse_timestamp(body[1].joined_at)\nassert parse_timestamp(body[1].joined_at) <= parse_timestamp(body[2].joined_at)\nassert body[0].user_id == u1.id"
+    },
+    {
+      "id": "TS-03-45",
+      "requirement_id": "03-REQ-9.2",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id/members returns HTTP 404 with 'team not found' for a non-existent or deleted team.",
+      "preconditions": [
+        "SQLite database is initialised with teams and team_members tables.",
+        "An admin user session/token is available."
+      ],
+      "input": "GET /api/v1/teams/<nonexistent-uuid>/members with admin auth header.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "nonexistent_id = new_uuid()\nresp = GET('/api/v1/teams/' + nonexistent_id + '/members', headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert body.code == 404\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-46",
+      "requirement_id": "03-REQ-9.3",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id/members returns HTTP 400 with 'invalid id format' before any DB lookup when :id is not a valid UUID.",
+      "preconditions": [
+        "SQLite database is initialised with teams and team_members tables.",
+        "An admin user session/token is available."
+      ],
+      "input": "GET /api/v1/teams/bad-uuid/members with admin auth header.",
+      "expected": "HTTP 400 with body {\"code\": 400, \"message\": \"invalid id format\"}.",
+      "assertion_pseudocode": "resp = GET('/api/v1/teams/bad-uuid/members', headers={Authorization: admin_token})\nassert resp.status == 400\nbody = parse_json(resp.body)\nassert body.code == 400\nassert body.message == 'invalid id format'"
+    },
+    {
+      "id": "TS-03-47",
+      "requirement_id": "03-REQ-9.4",
+      "kind": "integration",
+      "description": "Verifies that GET /api/v1/teams/:id/members returns all records without pagination, ordered by joined_at ascending.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "A team with 20 members exists, each with distinct created_at timestamps."
+      ],
+      "input": "GET /api/v1/teams/<team-uuid>/members with admin auth header.",
+      "expected": "HTTP 200 with JSON array of exactly 20 member objects, ordered by joined_at ascending with no omissions.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nusers = [seed_user(db) for _ in range(20)]\nfor i, u in enumerate(users):\n  seed_member(db, team.id, u.id, created_at=T_base + i_seconds)\nresp = GET('/api/v1/teams/' + team.id + '/members', headers={Authorization: admin_token})\nassert resp.status == 200\nbody = parse_json(resp.body)\nassert len(body) == 20\nfor i in range(len(body)-1):\n  assert parse_timestamp(body[i].joined_at) <= parse_timestamp(body[i+1].joined_at)"
+    },
+    {
+      "id": "TS-03-48",
+      "requirement_id": "03-REQ-10.1",
+      "kind": "integration",
+      "description": "Verifies that the admin middleware is applied to all routes under /api/v1/teams before any handler logic executes.",
+      "preconditions": [
+        "The Echo router is configured with admin middleware on all /api/v1/teams routes.",
+        "A non-admin user token is available."
+      ],
+      "input": "GET /api/v1/teams with a non-admin user auth header.",
+      "expected": "HTTP 403 is returned by the admin middleware before the handler is reached. The response matches the error format defined by server_foundation.",
+      "assertion_pseudocode": "resp = GET('/api/v1/teams', headers={Authorization: non_admin_token})\nassert resp.status == 403\n// Verify handler was not invoked (e.g., no DB queries executed)\n// The error format follows server_foundation error envelope"
+    },
+    {
+      "id": "TS-03-49",
+      "requirement_id": "03-REQ-10.2",
+      "kind": "integration",
+      "description": "Verifies that the admin middleware returns HTTP 403 when the authenticated user is not an admin, for every team endpoint.",
+      "preconditions": [
+        "The Echo router is configured with admin middleware on all /api/v1/teams routes.",
+        "A non-admin user token is available."
+      ],
+      "input": "Send POST /api/v1/teams, GET /api/v1/teams, GET /api/v1/teams/:id, POST /api/v1/teams/:id/archive, POST /api/v1/teams/:id/reactivate, DELETE /api/v1/teams/:id, POST /api/v1/teams/:id/members, GET /api/v1/teams/:id/members — all with a non-admin auth token.",
+      "expected": "Every request returns HTTP 403 with the error envelope defined by server_foundation.",
+      "assertion_pseudocode": "endpoints = [\n  ('POST', '/api/v1/teams'),\n  ('GET', '/api/v1/teams'),\n  ('GET', '/api/v1/teams/' + new_uuid()),\n  ('POST', '/api/v1/teams/' + new_uuid() + '/archive'),\n  ('POST', '/api/v1/teams/' + new_uuid() + '/reactivate'),\n  ('DELETE', '/api/v1/teams/' + new_uuid()),\n  ('POST', '/api/v1/teams/' + new_uuid() + '/members'),\n  ('GET', '/api/v1/teams/' + new_uuid() + '/members'),\n]\nfor method, path in endpoints:\n  resp = http_request(method, path, headers={Authorization: non_admin_token})\n  assert resp.status == 403"
+    },
+    {
+      "id": "TS-03-50",
+      "requirement_id": "03-REQ-11.1",
+      "kind": "integration",
+      "description": "Verifies that an active team can only transition to archived, and reactivation of an active team is rejected with HTTP 409.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An active team exists."
+      ],
+      "input": "Attempt POST /api/v1/teams/:id/reactivate on an active team.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team is already active\"}. The team remains active.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp = POST('/api/v1/teams/' + team.id + '/reactivate', headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.message == 'team is already active'\nassert query_scalar(db, 'SELECT status FROM teams WHERE id = ?', team.id) == 'active'"
+    },
+    {
+      "id": "TS-03-51",
+      "requirement_id": "03-REQ-11.2",
+      "kind": "integration",
+      "description": "Verifies that an archived team can transition to active (reactivate) or be deleted, but cannot be directly archived again.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An archived team exists."
+      ],
+      "input": "Attempt POST /api/v1/teams/:id/archive on an archived team.",
+      "expected": "HTTP 409 with body {\"code\": 409, \"message\": \"team is already archived\"}. The team remains archived.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nresp = POST('/api/v1/teams/' + team.id + '/archive', headers={Authorization: admin_token})\nassert resp.status == 409\nbody = parse_json(resp.body)\nassert body.message == 'team is already archived'\nassert query_scalar(db, 'SELECT status FROM teams WHERE id = ?', team.id) == 'archived'"
+    },
+    {
+      "id": "TS-03-52",
+      "requirement_id": "03-REQ-11.3",
+      "kind": "integration",
+      "description": "Verifies that all endpoints return HTTP 404 for a deleted team's ID, since the record no longer exists.",
+      "preconditions": [
+        "SQLite database is initialised with teams and team_members tables.",
+        "An admin user session/token is available.",
+        "A team has been physically deleted from the database."
+      ],
+      "input": "Attempt GET, archive, reactivate, DELETE, add-member, and list-members on the deleted team's UUID.",
+      "expected": "All requests return HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}.",
+      "assertion_pseudocode": "team_id = new_uuid()  // was deleted; no record in DB\nrequests = [\n  ('GET', '/api/v1/teams/' + team_id),\n  ('POST', '/api/v1/teams/' + team_id + '/archive'),\n  ('POST', '/api/v1/teams/' + team_id + '/reactivate'),\n  ('DELETE', '/api/v1/teams/' + team_id),\n  ('POST', '/api/v1/teams/' + team_id + '/members'),\n  ('GET', '/api/v1/teams/' + team_id + '/members'),\n]\nfor method, path in requests:\n  resp = http_request(method, path, body={user_id: new_uuid()}, headers={Authorization: admin_token})\n  assert resp.status == 404\n  body = parse_json(resp.body)\n  assert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-53",
+      "requirement_id": "03-REQ-11.4",
+      "kind": "integration",
+      "description": "Verifies that updated_at is set to the current UTC timestamp on every successful archive or reactivate lifecycle transition.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "An active team with a known created_at and updated_at exists."
+      ],
+      "input": "POST /api/v1/teams/:id/archive, then POST /api/v1/teams/:id/reactivate on the same team.",
+      "expected": "After archive: updated_at in the response and DB is newer than original. After reactivate: updated_at is updated again.",
+      "assertion_pseudocode": "team = seed_team(db, status='active', updated_at=T0)\nresp1 = POST('/api/v1/teams/' + team.id + '/archive', headers={Authorization: admin_token})\nassert resp1.status == 200\nbody1 = parse_json(resp1.body)\nassert parse_timestamp(body1.updated_at) > parse_timestamp(T0)\nresp2 = POST('/api/v1/teams/' + team.id + '/reactivate', headers={Authorization: admin_token})\nassert resp2.status == 200\nbody2 = parse_json(resp2.body)\nassert parse_timestamp(body2.updated_at) >= parse_timestamp(body1.updated_at)"
+    },
+    {
+      "id": "TS-03-54",
+      "requirement_id": "03-REQ-12.1",
+      "kind": "integration",
+      "description": "Verifies that all successful JSON responses from team handlers include Content-Type: application/json.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available.",
+        "An active team exists."
+      ],
+      "input": "Send GET /api/v1/teams and GET /api/v1/teams/:id with admin auth.",
+      "expected": "Both responses have HTTP 200 and Content-Type header containing 'application/json'.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nresp1 = GET('/api/v1/teams', headers={Authorization: admin_token})\nassert resp1.status == 200\nassert 'application/json' in resp1.headers['Content-Type']\nresp2 = GET('/api/v1/teams/' + team.id, headers={Authorization: admin_token})\nassert resp2.status == 200\nassert 'application/json' in resp2.headers['Content-Type']"
+    },
+    {
+      "id": "TS-03-55",
+      "requirement_id": "03-REQ-12.2",
+      "kind": "integration",
+      "description": "Verifies that all error responses from team handlers use the standard error envelope {\"code\": <int>, \"message\": <string>} where code mirrors the HTTP status.",
+      "preconditions": [
+        "SQLite database is initialised with teams table.",
+        "An admin user session/token is available."
+      ],
+      "input": "Send GET /api/v1/teams/<nonexistent-uuid> to trigger a 404 error envelope.",
+      "expected": "HTTP 404 with body {\"code\": 404, \"message\": \"team not found\"}. The code field is an integer equal to 404.",
+      "assertion_pseudocode": "resp = GET('/api/v1/teams/' + new_uuid(), headers={Authorization: admin_token})\nassert resp.status == 404\nbody = parse_json(resp.body)\nassert typeof(body.code) == int\nassert body.code == 404\nassert typeof(body.message) == str\nassert body.message == 'team not found'"
+    },
+    {
+      "id": "TS-03-56",
+      "requirement_id": "03-REQ-12.3",
+      "kind": "integration",
+      "description": "Verifies that all timestamps in team and member response objects are UTC RFC3339 with microsecond precision.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables.",
+        "An admin user session/token is available."
+      ],
+      "input": "POST /api/v1/teams to create a team, then POST /api/v1/teams/:id/members to add a member.",
+      "expected": "created_at, updated_at in team object and joined_at in member object match the format 'YYYY-MM-DDTHH:MM:SS.ffffffZ' (microsecond precision, UTC).",
+      "assertion_pseudocode": "resp = POST('/api/v1/teams', body={name:'TS Team', slug:'ts-team'}, headers={Authorization: admin_token})\nbody = parse_json(resp.body)\nassert matches_regex(body.created_at, /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$/)\nassert matches_regex(body.updated_at, /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$/)\nuser = seed_user(db)\nresp2 = POST('/api/v1/teams/' + body.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\nbody2 = parse_json(resp2.body)\nassert matches_regex(body2.joined_at, /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$/)"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-03-P1",
+      "property_id": "03-PROP-1",
+      "validates": [
+        "03-REQ-4.2",
+        "03-REQ-5.3",
+        "03-REQ-6.3",
+        "03-REQ-7.3",
+        "03-REQ-8.4",
+        "03-REQ-9.2",
+        "03-REQ-11.3"
+      ],
+      "description": "For any team that has been physically deleted, every endpoint returns HTTP 404 for that team's ID and no data is returned.",
+      "for_any_strategy": "Generate a random team UUID that corresponds to a previously created, archived, and deleted team (record removed from the `teams` table in SQLite).",
+      "invariant_check": "for each endpoint in [GET /api/v1/teams/:id, POST /:id/archive, POST /:id/reactivate, DELETE /:id, POST /:id/members, GET /:id/members]:\n  resp = http_request(endpoint, team_id=deleted_team_id)\n  assert resp.status == 404\n  body = parse_json(resp.body)\n  assert body.message == 'team not found'\n  // Verify no data rows returned\n  assert 'id' not in body or body.id is None"
+    },
+    {
+      "id": "TS-03-P2",
+      "property_id": "03-PROP-2",
+      "validates": [
+        "03-REQ-2.5",
+        "03-REQ-2.6",
+        "03-REQ-2.10",
+        "03-REQ-2.E1",
+        "03-REQ-2.E2"
+      ],
+      "description": "For any two non-deleted teams in the database, they never share the same name or slug; uniqueness is enforced at both application and database layer.",
+      "for_any_strategy": "Generate N random (name, slug) pairs and attempt to create N teams. Some may collide. After all creates, query the `teams` table for all non-deleted rows.",
+      "invariant_check": "non_deleted = query_all(db, 'SELECT name, slug FROM teams WHERE status != \"deleted\"')\nnames = [r.name for r in non_deleted]\nslugs = [r.slug for r in non_deleted]\nassert len(names) == len(set(names))  // no duplicate names\nassert len(slugs) == len(set(slugs))  // no duplicate slugs\n// Also verify partial UNIQUE index enforcement\nfor pair in non_deleted:\n  assert count(n for n in names if n == pair.name) == 1\n  assert count(s for s in slugs if s == pair.slug) == 1"
+    },
+    {
+      "id": "TS-03-P3",
+      "property_id": "03-PROP-3",
+      "validates": [
+        "03-REQ-11.1",
+        "03-REQ-11.2",
+        "03-REQ-11.3",
+        "03-REQ-7.2"
+      ],
+      "description": "For any team record, the status field only ever transitions active→archived or archived→deleted; the active→deleted direct transition is always rejected with HTTP 409.",
+      "for_any_strategy": "Generate a random team and apply a random sequence of lifecycle operations (archive, reactivate, delete). Track the expected state at each step.",
+      "invariant_check": "team = create_team()\nstate = 'active'\nfor op in random_lifecycle_ops:\n  if op == 'archive':\n    if state == 'active':\n      resp = POST_archive(team.id)\n      assert resp.status == 200\n      state = 'archived'\n    elif state == 'archived':\n      resp = POST_archive(team.id)\n      assert resp.status == 409\n      assert parse_json(resp.body).message == 'team is already archived'\n  elif op == 'reactivate':\n    if state == 'archived':\n      resp = POST_reactivate(team.id)\n      assert resp.status == 200\n      state = 'active'\n    elif state == 'active':\n      resp = POST_reactivate(team.id)\n      assert resp.status == 409\n  elif op == 'delete':\n    if state == 'active':\n      resp = DELETE_team(team.id)\n      assert resp.status == 409\n      assert parse_json(resp.body).message == 'team must be archived before deletion'\n    elif state == 'archived':\n      resp = DELETE_team(team.id)\n      assert resp.status == 204\n      state = 'deleted'\n      break  // terminal state"
+    },
+    {
+      "id": "TS-03-P4",
+      "property_id": "03-PROP-4",
+      "validates": [
+        "03-REQ-7.1",
+        "03-REQ-7.E1"
+      ],
+      "description": "For any delete operation on an archived team, either both the team row and all its team_members rows are removed, or neither is removed — partial deletion never occurs.",
+      "for_any_strategy": "Generate an archived team with a random number of members (0 to 20). Attempt deletion (including injected failure scenarios).",
+      "invariant_check": "// Normal deletion case\nteam_exists_before = query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', team.id) == 1\nmembers_count_before = query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ?', team.id)\nresp = DELETE('/api/v1/teams/' + team.id, headers={Authorization: admin_token})\nif resp.status == 204:\n  assert query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', team.id) == 0\n  assert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ?', team.id) == 0\nelse:\n  // Any failure: both still present\n  assert query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', team.id) == 1\n  assert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ?', team.id) == members_count_before"
+    },
+    {
+      "id": "TS-03-P5",
+      "property_id": "03-PROP-5",
+      "validates": [
+        "03-REQ-8.2",
+        "03-REQ-8.E1"
+      ],
+      "description": "For any add-member request on a (team_id, user_id) pair that already exists, the team_members row is not duplicated or mutated, and joined_at always equals the original created_at.",
+      "for_any_strategy": "Generate an active team with an existing member. Issue N repeated add-member requests (N between 1 and 10) for the same (team_id, user_id).",
+      "invariant_check": "original_joined_at = query_scalar(db, 'SELECT created_at FROM team_members WHERE team_id = ? AND user_id = ?', team.id, user.id)\nfor _ in range(N):\n  resp = POST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\n  assert resp.status == 200\n  body = parse_json(resp.body)\n  assert parse_timestamp(body.joined_at) == parse_timestamp(original_joined_at)\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ? AND user_id = ?', team.id, user.id) == 1"
+    },
+    {
+      "id": "TS-03-P6",
+      "property_id": "03-PROP-6",
+      "validates": [
+        "03-REQ-3.1",
+        "03-REQ-3.2",
+        "03-REQ-3.3",
+        "03-REQ-3.4",
+        "03-REQ-9.1",
+        "03-REQ-9.4"
+      ],
+      "description": "For any list response from GET /api/v1/teams or GET /api/v1/teams/:id/members, results are ordered by created_at/joined_at ascending, contain all matching records, and never include deleted teams.",
+      "for_any_strategy": "Generate a random set of teams with varying statuses (active, archived, deleted) and a random set of members for a team. Issue list requests with and without include_archived.",
+      "invariant_check": "// For teams list\nteams_resp = GET('/api/v1/teams?include_archived=true', headers={Authorization: admin_token})\nteams_body = parse_json(teams_resp.body)\nassert all(t.status != 'deleted' for t in teams_body)\nfor i in range(len(teams_body)-1):\n  assert parse_timestamp(teams_body[i].created_at) <= parse_timestamp(teams_body[i+1].created_at)\nnon_deleted_in_db = query_all(db, 'SELECT id FROM teams WHERE status != \"deleted\"')\nassert len(teams_body) == len(non_deleted_in_db)\n\n// For members list\nmembers_resp = GET('/api/v1/teams/' + team.id + '/members', headers={Authorization: admin_token})\nmembers_body = parse_json(members_resp.body)\nfor i in range(len(members_body)-1):\n  assert parse_timestamp(members_body[i].joined_at) <= parse_timestamp(members_body[i+1].joined_at)\nall_members_in_db = query_all(db, 'SELECT user_id FROM team_members WHERE team_id = ?', team.id)\nassert len(members_body) == len(all_members_in_db)"
+    },
+    {
+      "id": "TS-03-P7",
+      "property_id": "03-PROP-7",
+      "validates": [
+        "03-REQ-11.4",
+        "03-REQ-5.1",
+        "03-REQ-6.1"
+      ],
+      "description": "For any archive or reactivate operation, updated_at is set to the current UTC timestamp on success; membership changes do not affect updated_at; and updated_at is not observable after deletion.",
+      "for_any_strategy": "Generate a random team. Apply random sequences of archive/reactivate and member-add operations. After each mutation, check updated_at in the DB and response.",
+      "invariant_check": "// Archive increases updated_at\nbefore = query_scalar(db, 'SELECT updated_at FROM teams WHERE id = ?', team.id)\nresp = POST('/api/v1/teams/' + team.id + '/archive', headers={Authorization: admin_token})\nif resp.status == 200:\n  after = parse_json(resp.body).updated_at\n  assert parse_timestamp(after) >= parse_timestamp(before)\n\n// Member add does NOT change team updated_at\nbefore_member = query_scalar(db, 'SELECT updated_at FROM teams WHERE id = ?', team.id)\nPOST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token})\nafter_member = query_scalar(db, 'SELECT updated_at FROM teams WHERE id = ?', team.id)\nassert parse_timestamp(before_member) == parse_timestamp(after_member)\n\n// After deletion, team is not readable\nDELETE('/api/v1/teams/' + archived_team.id, headers={Authorization: admin_token})\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', archived_team.id) == 0"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-03-E1",
+      "requirement_id": "03-REQ-1.E1",
+      "kind": "unit",
+      "description": "Verifies that the migration runner skips already-applied migration files and executes each file exactly once, even when run multiple times.",
+      "preconditions": [
+        "A SQLite database has already had the teams migrations applied once.",
+        "The migration runner from server_foundation is available."
+      ],
+      "input": "Run the migration runner a second time against the already-migrated database.",
+      "expected": "No errors are raised. The table schema is unchanged. No duplicate migration records are added to the migration tracking table.",
+      "assertion_pseudocode": "db = open_sqlite_in_memory()\nrun_migrations(db, embedded_migration_files)\nstate_before = get_migration_state(db)\nrun_migrations(db, embedded_migration_files)  // second run\nstate_after = get_migration_state(db)\nassert state_before == state_after  // idempotent\nassert table_exists(db, 'teams')  // schema unchanged"
+    },
+    {
+      "id": "TS-03-E2",
+      "requirement_id": "03-REQ-2.E1",
+      "kind": "integration",
+      "description": "Verifies that concurrent create requests with the same slug are handled safely: only one succeeds (HTTP 201) and the other gets HTTP 409, with no duplicate rows in the database.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table and partial UNIQUE indexes.",
+        "An admin user session/token is available.",
+        "No team with slug 'concurrent-slug' exists."
+      ],
+      "input": "Two concurrent POST /api/v1/teams requests with slug 'concurrent-slug' and different names are sent simultaneously.",
+      "expected": "Exactly one request returns HTTP 201 and exactly one returns HTTP 409. The database contains exactly one team row with slug 'concurrent-slug'.",
+      "assertion_pseudocode": "results = concurrent_requests([\n  lambda: POST('/api/v1/teams', body={name:'Team A', slug:'concurrent-slug'}, headers={Authorization: admin_token}),\n  lambda: POST('/api/v1/teams', body={name:'Team B', slug:'concurrent-slug'}, headers={Authorization: admin_token}),\n])\nstatuses = [r.status for r in results]\nassert 201 in statuses\nassert 409 in statuses\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE slug = ? AND status != \"deleted\"', 'concurrent-slug') == 1"
+    },
+    {
+      "id": "TS-03-E3",
+      "requirement_id": "03-REQ-2.E2",
+      "kind": "integration",
+      "description": "Verifies that a name or slug previously belonging to a deleted team can be reused by a new team.",
+      "preconditions": [
+        "SQLite database is initialised with the teams table.",
+        "An admin user session/token is available.",
+        "A team with name 'Reusable' and slug 'reusable-slug' was created, archived, and then deleted."
+      ],
+      "input": "POST /api/v1/teams with body {\"name\": \"Reusable\", \"slug\": \"reusable-slug\"} after the original team is deleted.",
+      "expected": "HTTP 201 with a new team object having name 'Reusable' and slug 'reusable-slug'. No uniqueness conflict is reported.",
+      "assertion_pseudocode": "// Setup: create, archive, delete original team\norig = seed_team(db, name='Reusable', slug='reusable-slug', status='active')\nPOST('/api/v1/teams/' + orig.id + '/archive', headers={Authorization: admin_token})\nDELETE('/api/v1/teams/' + orig.id, headers={Authorization: admin_token})\n// Now reuse the name and slug\nresp = POST('/api/v1/teams', body={name:'Reusable', slug:'reusable-slug'}, headers={Authorization: admin_token})\nassert resp.status == 201\nbody = parse_json(resp.body)\nassert body.name == 'Reusable'\nassert body.slug == 'reusable-slug'\nassert body.id != orig.id"
+    },
+    {
+      "id": "TS-03-E4",
+      "requirement_id": "03-REQ-7.E1",
+      "kind": "unit",
+      "description": "Verifies that if any step of the delete transaction fails, the entire transaction is rolled back and neither the team row nor its members are removed.",
+      "preconditions": [
+        "SQLite database is initialised with the teams and team_members tables.",
+        "An archived team with at least 2 member rows exists.",
+        "A mechanism exists to inject a failure during the team row deletion step after members are deleted."
+      ],
+      "input": "Trigger a simulated database error on the team row deletion step after member rows are deleted within the transaction.",
+      "expected": "HTTP 500 is returned. The team row still exists in the database. All team_members rows for that team still exist.",
+      "assertion_pseudocode": "team = seed_team(db, status='archived')\nseed_member(db, team.id, user1.id)\nseed_member(db, team.id, user2.id)\n// Inject failure on team row delete (e.g., mock DB to return error on 'DELETE FROM teams')\nwith inject_error_on('DELETE FROM teams WHERE id = ?'):\n  resp = DELETE('/api/v1/teams/' + team.id, headers={Authorization: admin_token})\nassert resp.status == 500\nassert query_scalar(db, 'SELECT count(*) FROM teams WHERE id = ?', team.id) == 1\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ?', team.id) == 2"
+    },
+    {
+      "id": "TS-03-E5",
+      "requirement_id": "03-REQ-8.E1",
+      "kind": "integration",
+      "description": "Verifies that concurrent add-member requests for the same (team_id, user_id) pair result in exactly one membership row, with no duplicates.",
+      "preconditions": [
+        "SQLite database is initialised with teams, team_members, and users tables with composite PK on (team_id, user_id).",
+        "An admin user session/token is available.",
+        "An active team and a user exist; the user is not yet a member."
+      ],
+      "input": "Two concurrent POST /api/v1/teams/:id/members requests with the same user_id are sent simultaneously.",
+      "expected": "Both requests return HTTP 200. Exactly one team_members row exists for (team_id, user_id). joined_at is the same in both responses.",
+      "assertion_pseudocode": "team = seed_team(db, status='active')\nuser = seed_user(db)\nresults = concurrent_requests([\n  lambda: POST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token}),\n  lambda: POST('/api/v1/teams/' + team.id + '/members', body={user_id: user.id}, headers={Authorization: admin_token}),\n])\nfor r in results:\n  assert r.status == 200\nassert query_scalar(db, 'SELECT count(*) FROM team_members WHERE team_id = ? AND user_id = ?', team.id, user.id) == 1"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-03-SMOKE-1",
+      "execution_path_id": "03-PATH-1",
+      "description": "End-to-end smoke test: admin creates a new team with valid name, slug, and URL, passing through auth middleware, admin middleware, validation, uniqueness check, DB insert, and receiving HTTP 201.",
+      "trigger": "POST /api/v1/teams with {name: '  Smoke Team  ', slug: 'smoke-team', url: 'https://smoke.example.com'} and valid admin auth token.",
+      "real_components": [
+        "Echo HTTP router with auth and admin middleware",
+        "POST /api/v1/teams handler",
+        "SQLite database (teams table with partial UNIQUE indexes)",
+        "Migration runner (teams schema applied)"
+      ],
+      "mockable": [
+        "auth middleware (can use a real test admin token from a seeded users table)"
+      ],
+      "expected_effects": [
+        "HTTP 201 response with Content-Type: application/json",
+        "Response body contains id (UUID), name='Smoke Team' (trimmed), slug='smoke-team', url='https://smoke.example.com', status='active', created_at and updated_at in RFC3339 UTC microsecond format",
+        "One row inserted into the SQLite `teams` table with matching values",
+        "No pre-existing team with the same slug or name exists after the test"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-2",
+      "execution_path_id": "03-PATH-2",
+      "description": "End-to-end smoke test: admin archives an active team and then deletes it, with cascade deletion of all member rows, returning HTTP 200 then HTTP 204.",
+      "trigger": "POST /api/v1/teams/:id/archive followed by DELETE /api/v1/teams/:id, both with valid admin auth token.",
+      "real_components": [
+        "Echo HTTP router with auth and admin middleware",
+        "POST /api/v1/teams/:id/archive handler",
+        "DELETE /api/v1/teams/:id handler",
+        "SQLite database (teams and team_members tables)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Archive request returns HTTP 200 with team object where status='archived' and updated_at is updated",
+        "Delete request returns HTTP 204 with no body",
+        "No row exists in `teams` table for the deleted team ID",
+        "No rows exist in `team_members` table for the deleted team ID",
+        "Subsequent GET /api/v1/teams/:id returns HTTP 404"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-3",
+      "execution_path_id": "03-PATH-3",
+      "description": "End-to-end smoke test: admin adds a user to an active team (first time) and then re-adds the same user (idempotent), verifying correct HTTP 200 responses with fresh user data and unchanged joined_at.",
+      "trigger": "POST /api/v1/teams/:id/members with {user_id: <uuid>} twice in sequence with valid admin auth token.",
+      "real_components": [
+        "Echo HTTP router with auth and admin middleware",
+        "POST /api/v1/teams/:id/members handler",
+        "SQLite database (teams, team_members, users tables)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "First add returns HTTP 200 with member object: user_id, team_id, email, name from users table, joined_at set to creation timestamp",
+        "Second add (idempotent) returns HTTP 200 with same joined_at as first add, and current email/name from users",
+        "Exactly one row in `team_members` for (team_id, user_id)",
+        "team.updated_at is unchanged after both member adds"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-4",
+      "execution_path_id": "03-PATH-4",
+      "description": "End-to-end smoke test: concurrent duplicate team creation race is resolved — one request gets HTTP 201 and the other gets HTTP 409 via partial UNIQUE index, with no duplicate rows.",
+      "trigger": "Two concurrent POST /api/v1/teams requests with the same slug 'my-team' sent simultaneously by two admin clients.",
+      "real_components": [
+        "Echo HTTP router with auth and admin middleware",
+        "POST /api/v1/teams handler",
+        "SQLite database (teams table with partial UNIQUE index on slug)"
+      ],
+      "mockable": [
+        "Concurrency mechanism (goroutines in Go test or parallel HTTP clients)"
+      ],
+      "expected_effects": [
+        "Exactly one request returns HTTP 201 with a valid team object",
+        "Exactly one request returns HTTP 409 with message 'team slug already exists'",
+        "Database contains exactly one non-deleted team row with slug 'my-team'",
+        "No panic or unhandled error occurs in the server"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-5",
+      "execution_path_id": "03-PATH-5",
+      "description": "Full end-to-end admin team management flow: auth → admin check → create team → add member → list members, all against a real SQLite DB.",
+      "trigger": "Admin sends POST /api/v1/teams, then POST /api/v1/teams/:id/members, then GET /api/v1/teams/:id/members in sequence with a valid admin bearer token.",
+      "real_components": [
+        "Echo HTTP server with auth middleware and admin middleware from server_foundation",
+        "POST /api/v1/teams handler",
+        "POST /api/v1/teams/:id/members handler",
+        "GET /api/v1/teams/:id/members handler",
+        "SQLite database (teams, team_members, users tables)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "POST /api/v1/teams returns HTTP 201 with a team object; team UUID is recorded",
+        "POST /api/v1/teams/:id/members returns HTTP 200 with member object including correct email and name from users table",
+        "GET /api/v1/teams/:id/members returns HTTP 200 with array containing the added member, ordered by joined_at ascending",
+        "All timestamps are in RFC3339 UTC microsecond format",
+        "Content-Type: application/json on all successful responses"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

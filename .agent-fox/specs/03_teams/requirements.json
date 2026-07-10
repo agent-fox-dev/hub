@@ -1,0 +1,1025 @@
+{
+  "$schema": null,
+  "spec_id": "03",
+  "spec_name": "teams",
+  "schema_version": 1,
+  "introduction": "This spec defines the team management subsystem for af-hub, implementing lightweight team CRUD and membership endpoints (admin only) built on top of the server foundation (spec 1). It establishes the `teams` and `team_members` database schema and enforces team lifecycle, slug/name/URL validation, and uniqueness constraints as the foundation for future RBAC work.",
+  "glossary": {
+    "DELETE /api/v1/teams/:id": "The HTTP endpoint for deleting an archived team.",
+    "GET /api/v1/teams": "The HTTP endpoint for listing teams.",
+    "GET /api/v1/teams/:id": "The HTTP endpoint for fetching a single team by ID.",
+    "GET /api/v1/teams/:id/members": "The HTTP endpoint for listing members of a team.",
+    "POST /api/v1/teams": "The HTTP endpoint for creating a new team.",
+    "POST /api/v1/teams/:id/archive": "The HTTP endpoint for archiving an active team.",
+    "POST /api/v1/teams/:id/members": "The HTTP endpoint for adding a user to a team.",
+    "POST /api/v1/teams/:id/reactivate": "The HTTP endpoint for reactivating an archived team.",
+    "active": "A team lifecycle state in which the team is operational and members can be added.",
+    "admin middleware": "Middleware provided by server_foundation (spec 1) that verifies the authenticated caller is an admin, returning HTTP 403 otherwise.",
+    "archived": "A team lifecycle state in which the team is inactive; members cannot be added, but the team is still readable.",
+    "auth middleware": "Middleware provided by server_foundation (spec 1) that authenticates the caller from the request.",
+    "created_at": "A UTC RFC3339 microsecond-precision timestamp column present on both `teams` and `team_members` tables recording when the row was inserted.",
+    "deleted": "A terminal team lifecycle state in which the team record has been physically removed from the database; treated as non-existent by all endpoints.",
+    "embed.FS": "A Go standard-library mechanism for embedding static files (such as SQL migration files) into the compiled binary.",
+    "error envelope": "The standard JSON error response shape `{\"code\": <int>, \"message\": <string>}` defined by server_foundation and reused by all team endpoints.",
+    "include_archived": "An optional boolean query parameter on the list-teams endpoint that, when `true`, causes archived teams to be included in the response alongside active teams.",
+    "joined_at": "The original timestamp when a user membership was created, sourced from `team_members.created_at`; never updated on idempotent re-adds.",
+    "migration runner": "Infrastructure provided by server_foundation (spec 1) that discovers and applies numbered SQL migration files in ascending order.",
+    "partial UNIQUE index": "A SQLite index enforcing uniqueness only among rows satisfying a WHERE clause (e.g., `WHERE status != 'deleted'`), used to allow reuse of deleted teams' names and slugs.",
+    "slug": "A URL-friendly identifier for a team: lowercase alphanumeric and hyphens, 3–64 characters, starting with a letter, not ending with a hyphen.",
+    "status": "The lifecycle state of a team; one of `active`, `archived`, or `deleted`.",
+    "team_members": "The database table that stores team membership records, owned by this spec.",
+    "teams": "The database table that stores team records, owned by this spec.",
+    "updated_at": "A UTC RFC3339 microsecond-precision timestamp column on the `teams` table that is updated whenever the team record is mutated (e.g., on archive or reactivate).",
+    "user_id": "The UUID primary key of a user in the `users` table, used to identify membership.",
+    "users": "The database table owned by the oauth_and_users spec that provides user identity data (id, email, name) joined for member responses."
+  },
+  "requirements": [
+    {
+      "id": "03-REQ-1",
+      "title": "Database schema migrations for teams and team_members",
+      "user_story": {
+        "role": "developer integrating this spec",
+        "goal": "have the `teams` and `team_members` tables created by numbered SQL migration files embedded via `embed.FS`",
+        "benefit": "the database schema is version-controlled and applied deterministically by the `migration runner`"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "teams migration",
+          "action": "creates the `teams` table with columns: `id` (TEXT PK, UUID), `name` (TEXT), `slug` (TEXT), `url` (TEXT nullable), `status` (TEXT, one of `active`/`archived`/`deleted`), `created_at` (DATETIME UTC), `updated_at` (DATETIME UTC); and applies a partial UNIQUE index on `name` WHERE `status` != 'deleted' and a partial UNIQUE index on `slug` WHERE `status` != 'deleted'",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "teams migration",
+          "action": "creates the `team_members` table with columns: `team_id` (TEXT FK referencing `teams`.id with cascade delete), `user_id` (TEXT FK referencing `users`.id), `created_at` (DATETIME UTC); composite primary key (`team_id`, `user_id`)",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "teams migration files",
+          "action": "are embedded Go files using `embed.FS`, assigned sequential numeric prefixes at integration time to avoid conflicts with other specs' migrations, and discovered and applied in ascending numeric order by the `migration runner`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "migration runner",
+          "action": "skips re-applying it, ensuring each migration is executed exactly once",
+          "return_contract": null,
+          "error_condition": "a migration file has already been applied"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-2",
+      "title": "Create team endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "create a new team by posting name, slug, and optional URL",
+        "benefit": "teams can be established as organizational groupings before permissions are layered on"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/teams handler",
+          "action": "trims leading/trailing whitespace from `name`, validates `name` (non-empty after trim, ≤255 chars), validates `slug` format (regex `^[a-z][a-z0-9-]{1,62}[a-z0-9]$`), validates `url` format (http/https scheme and host, if provided), checks uniqueness of `name` and `slug` among non-deleted teams, inserts the new team with `status` = `active` and current UTC timestamps for `created_at` and `updated_at` within a transaction",
+          "return_contract": "HTTP 201 with team object JSON: {id, name, slug, url, status, created_at, updated_at}",
+          "trigger": "an admin sends a valid POST request with `name`, `slug`, and optional `url`"
+        },
+        {
+          "id": "03-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "rejects the request with HTTP 422 and error envelope message `\"invalid team name\"`",
+          "return_contract": "HTTP 422, {\"code\": 422, \"message\": \"invalid team name\"}",
+          "error_condition": "the trimmed `name` is empty or exceeds 255 characters"
+        },
+        {
+          "id": "03-REQ-2.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "rejects the request with HTTP 422 and error envelope message `\"invalid slug format\"`",
+          "return_contract": "HTTP 422, {\"code\": 422, \"message\": \"invalid slug format\"}",
+          "error_condition": "`slug` does not match the required format"
+        },
+        {
+          "id": "03-REQ-2.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "rejects the request with HTTP 422 and error envelope message `\"invalid url format\"`",
+          "return_contract": "HTTP 422, {\"code\": 422, \"message\": \"invalid url format\"}",
+          "error_condition": "`url` is provided but does not have an http or https scheme and a host"
+        },
+        {
+          "id": "03-REQ-2.5",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "rejects the request with HTTP 409 and error envelope message `\"team name already exists\"`",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team name already exists\"}",
+          "error_condition": "a non-deleted team with the same `name` already exists"
+        },
+        {
+          "id": "03-REQ-2.6",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "rejects the request with HTTP 409 and error envelope message `\"team slug already exists\"`",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team slug already exists\"}",
+          "error_condition": "a non-deleted team with the same `slug` already exists"
+        },
+        {
+          "id": "03-REQ-2.7",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid request body\"`",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid request body\"}",
+          "error_condition": "the request body is malformed JSON or cannot be decoded"
+        },
+        {
+          "id": "03-REQ-2.8",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "returns HTTP 422 with error envelope message `\"missing required field\"`",
+          "return_contract": "HTTP 422, {\"code\": 422, \"message\": \"missing required field\"}",
+          "error_condition": "a required field (`name` or `slug`) is absent from the request body"
+        },
+        {
+          "id": "03-REQ-2.9",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /api/v1/teams handler",
+          "action": "silently ignores unrecognized body fields (lenient parsing)",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-2.10",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams handler",
+          "action": "maps the DB constraint error to HTTP 409 with the appropriate message (`\"team name already exists\"` or `\"team slug already exists\"`)",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team name already exists\"} or {\"code\": 409, \"message\": \"team slug already exists\"}",
+          "error_condition": "a concurrent insert causes a database-level `partial UNIQUE index` violation on `name` or `slug` after the application-layer check passes"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-2.E1",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /api/v1/teams handler",
+          "action": "performs the application-layer uniqueness check and insert within a single database transaction, so that a race between two concurrent creates with the same `name` or `slug` is caught either by the application-layer check or the `partial UNIQUE index` constraint, never producing duplicate rows",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-2.E2",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /api/v1/teams handler",
+          "action": "allows reuse of `name` or `slug` values that previously belonged to a `deleted` team, because uniqueness is scoped to non-deleted teams only",
+          "return_contract": null
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-3",
+      "title": "List teams endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "retrieve all active (or active + archived) teams",
+        "benefit": "I can see the current organizational groupings and their statuses"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/teams handler",
+          "action": "queries the `teams` table for all rows with `status` = `active`, ordered by `created_at` ascending, and returns them",
+          "return_contract": "HTTP 200 with JSON array of team objects (may be empty)",
+          "trigger": "an admin sends a GET request without `include_archived`"
+        },
+        {
+          "id": "03-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/teams handler",
+          "action": "queries the `teams` table for all rows with `status` in (`active`, `archived`), ordered by `created_at` ascending, and returns them",
+          "return_contract": "HTTP 200 with JSON array of team objects (may be empty)",
+          "trigger": "an admin sends a GET request with `?include_archived=true`"
+        },
+        {
+          "id": "03-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "GET /api/v1/teams handler",
+          "action": "never includes teams with `status` = `deleted` in any response, regardless of query parameters",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-3.4",
+          "ears_pattern": "ubiquitous",
+          "system": "GET /api/v1/teams handler",
+          "action": "returns all matching records with no pagination limit, ordered by `created_at` ascending",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-4",
+      "title": "Get team by ID endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "fetch a single team by its UUID",
+        "benefit": "I can inspect the full details of any active or archived team"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/teams/:id handler",
+          "action": "retrieves the team record from the `teams` table and returns it",
+          "return_contract": "HTTP 200 with team object JSON",
+          "trigger": "an admin requests a team by a valid UUID that belongs to an `active` or `archived` team"
+        },
+        {
+          "id": "03-REQ-4.2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/teams/:id handler",
+          "action": "returns HTTP 404 with error envelope message `\"team not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"team not found\"}",
+          "error_condition": "the UUID does not match any team or matches a `deleted` team"
+        },
+        {
+          "id": "03-REQ-4.3",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/teams/:id handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid id format\"` before performing any database lookup",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid id format\"}",
+          "error_condition": "the `:id` path parameter is not a valid UUID"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-5",
+      "title": "Archive team endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "archive an active team",
+        "benefit": "inactive teams are hidden from default listings while preserving their data"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/teams/:id/archive handler",
+          "action": "updates the team's `status` to `archived` and sets `updated_at` to the current UTC timestamp",
+          "return_contract": "HTTP 200 with updated team object JSON",
+          "trigger": "an admin posts to the archive endpoint for a team with `status` = `active`"
+        },
+        {
+          "id": "03-REQ-5.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/archive handler",
+          "action": "returns HTTP 409 with error envelope message `\"team is already archived\"`",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team is already archived\"}",
+          "error_condition": "the team already has `status` = `archived`"
+        },
+        {
+          "id": "03-REQ-5.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/archive handler",
+          "action": "returns HTTP 404 with error envelope message `\"team not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"team not found\"}",
+          "error_condition": "the team does not exist or has `status` = `deleted`"
+        },
+        {
+          "id": "03-REQ-5.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/archive handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid id format\"` before any database lookup",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid id format\"}",
+          "error_condition": "the `:id` path parameter is not a valid UUID"
+        },
+        {
+          "id": "03-REQ-5.5",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /api/v1/teams/:id/archive handler",
+          "action": "ignores any request body and does not enforce `Content-Type`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-6",
+      "title": "Reactivate team endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "reactivate an archived team",
+        "benefit": "previously archived teams can be brought back into active use"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/teams/:id/reactivate handler",
+          "action": "updates the team's `status` to `active` and sets `updated_at` to the current UTC timestamp",
+          "return_contract": "HTTP 200 with updated team object JSON",
+          "trigger": "an admin posts to the reactivate endpoint for a team with `status` = `archived`"
+        },
+        {
+          "id": "03-REQ-6.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/reactivate handler",
+          "action": "returns HTTP 409 with error envelope message `\"team is already active\"`",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team is already active\"}",
+          "error_condition": "the team already has `status` = `active`"
+        },
+        {
+          "id": "03-REQ-6.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/reactivate handler",
+          "action": "returns HTTP 404 with error envelope message `\"team not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"team not found\"}",
+          "error_condition": "the team does not exist or has `status` = `deleted`"
+        },
+        {
+          "id": "03-REQ-6.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/reactivate handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid id format\"` before any database lookup",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid id format\"}",
+          "error_condition": "the `:id` path parameter is not a valid UUID"
+        },
+        {
+          "id": "03-REQ-6.5",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /api/v1/teams/:id/reactivate handler",
+          "action": "ignores any request body and does not enforce `Content-Type`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-7",
+      "title": "Delete team endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "permanently delete an archived team and all its memberships",
+        "benefit": "teams that are no longer needed can be fully removed, releasing their name and slug for reuse"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "DELETE /api/v1/teams/:id handler",
+          "action": "within a single database transaction, deletes all rows in `team_members` with matching `team_id`, then deletes the team row from `teams`; if any step fails, the transaction is rolled back",
+          "return_contract": "HTTP 204 with no body",
+          "trigger": "an admin sends a DELETE request for a team with `status` = `archived`"
+        },
+        {
+          "id": "03-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/teams/:id handler",
+          "action": "returns HTTP 409 with error envelope message `\"team must be archived before deletion\"`",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team must be archived before deletion\"}",
+          "error_condition": "the team has `status` = `active`"
+        },
+        {
+          "id": "03-REQ-7.3",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/teams/:id handler",
+          "action": "returns HTTP 404 with error envelope message `\"team not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"team not found\"}",
+          "error_condition": "the team does not exist or has already been `deleted`"
+        },
+        {
+          "id": "03-REQ-7.4",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/teams/:id handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid id format\"` before any database lookup",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid id format\"}",
+          "error_condition": "the `:id` path parameter is not a valid UUID"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/teams/:id handler",
+          "action": "rolls back the entire transaction so neither the team record nor its memberships are removed, and returns an HTTP 500 error",
+          "return_contract": "HTTP 500 with error envelope",
+          "error_condition": "the database transaction partially fails (e.g., `team_members` deletion succeeds but `teams` row deletion fails)"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-8",
+      "title": "Add team member endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "add a user to a team by posting their user_id",
+        "benefit": "team membership is established and the current user profile is immediately reflected in the response"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "within a transaction, inserts a row into `team_members` with `team_id`, `user_id`, and `created_at` = current UTC timestamp; then performs a fresh JOIN against `users` to retrieve `email` and `name`",
+          "return_contract": "HTTP 200 with member object JSON: {user_id, team_id, email, name, joined_at}",
+          "trigger": "an admin posts a valid `user_id` for a user not yet a member of the team and the team has `status` = `active`"
+        },
+        {
+          "id": "03-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "performs a no-op (does not update `team_members`), then performs a fresh JOIN against `users` to retrieve current `email` and `name`; `joined_at` reflects the original membership `created_at`",
+          "return_contract": "HTTP 200 with member object JSON reflecting current user data and original `joined_at`",
+          "trigger": "an admin posts a `user_id` for a user who is already a member of the team"
+        },
+        {
+          "id": "03-REQ-8.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 409 with error envelope message `\"team is archived\"`",
+          "return_contract": "HTTP 409, {\"code\": 409, \"message\": \"team is archived\"}",
+          "error_condition": "the team has `status` = `archived`"
+        },
+        {
+          "id": "03-REQ-8.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 404 with error envelope message `\"team not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"team not found\"}",
+          "error_condition": "the team does not exist or has `status` = `deleted`"
+        },
+        {
+          "id": "03-REQ-8.5",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 404 with error envelope message `\"user not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"user not found\"}",
+          "error_condition": "the `user_id` does not correspond to any existing user in the `users` table"
+        },
+        {
+          "id": "03-REQ-8.6",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid id format\"` before any database lookup",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid id format\"}",
+          "error_condition": "the `:id` path parameter or the `user_id` body field is not a valid UUID"
+        },
+        {
+          "id": "03-REQ-8.7",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid request body\"`",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid request body\"}",
+          "error_condition": "the request body is malformed JSON or cannot be decoded"
+        },
+        {
+          "id": "03-REQ-8.8",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 422 with error envelope message `\"missing required field\"`",
+          "return_contract": "HTTP 422, {\"code\": 422, \"message\": \"missing required field\"}",
+          "error_condition": "`user_id` is absent from the request body"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "03-REQ-8.E1",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /api/v1/teams/:id/members handler",
+          "action": "performs the membership existence check and insert (or no-op) within a single database transaction to prevent race conditions between two concurrent requests adding the same member; the composite primary key (`team_id`, `user_id`) on `team_members` provides the database-level guard",
+          "return_contract": null
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-9",
+      "title": "List team members endpoint",
+      "user_story": {
+        "role": "admin",
+        "goal": "list all members of a team",
+        "benefit": "I can see who belongs to a team, including their current email and name"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/teams/:id/members handler",
+          "action": "queries `team_members` joined with `users` for rows matching the team ID, ordered by `team_members`.`created_at` ascending, and returns all records",
+          "return_contract": "HTTP 200 with JSON array of member objects (may be empty)",
+          "trigger": "an admin requests members for a valid team that is `active` or `archived`"
+        },
+        {
+          "id": "03-REQ-9.2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 404 with error envelope message `\"team not found\"`",
+          "return_contract": "HTTP 404, {\"code\": 404, \"message\": \"team not found\"}",
+          "error_condition": "the team does not exist or has `status` = `deleted`"
+        },
+        {
+          "id": "03-REQ-9.3",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 400 with error envelope message `\"invalid id format\"` before any database lookup",
+          "return_contract": "HTTP 400, {\"code\": 400, \"message\": \"invalid id format\"}",
+          "error_condition": "the `:id` path parameter is not a valid UUID"
+        },
+        {
+          "id": "03-REQ-9.4",
+          "ears_pattern": "ubiquitous",
+          "system": "GET /api/v1/teams/:id/members handler",
+          "action": "returns all records with no pagination, ordered by `joined_at` ascending (oldest member first)",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-10",
+      "title": "Admin middleware enforcement on all team routes",
+      "user_story": {
+        "role": "non-admin user or unauthenticated caller",
+        "goal": "receive a clear rejection when accessing team endpoints",
+        "benefit": "team management is restricted to admins only"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-10.1",
+          "ears_pattern": "ubiquitous",
+          "system": "teams router",
+          "action": "applies the `admin middleware` from server_foundation to all routes under `/api/v1/teams` before any handler logic executes",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-10.2",
+          "ears_pattern": "unwanted",
+          "system": "admin middleware",
+          "action": "returns HTTP 403 as defined by the `admin middleware` in server_foundation, before reaching any team handler",
+          "return_contract": "HTTP 403 with error envelope defined by server_foundation",
+          "error_condition": "the authenticated user is not an admin"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-11",
+      "title": "Team lifecycle state machine enforcement",
+      "user_story": {
+        "role": "admin",
+        "goal": "have lifecycle transitions enforced so teams can only move through valid states",
+        "benefit": "data integrity is maintained and invalid states are prevented"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-11.1",
+          "ears_pattern": "state_driven",
+          "system": "team lifecycle handler",
+          "action": "permits only the transition to `archived`; any other lifecycle mutation (reactivate) returns HTTP 409",
+          "return_contract": null,
+          "state": "team `status` is `active`"
+        },
+        {
+          "id": "03-REQ-11.2",
+          "ears_pattern": "state_driven",
+          "system": "team lifecycle handler",
+          "action": "permits transition to `active` (reactivate) or physical deletion; any other lifecycle mutation is rejected",
+          "return_contract": null,
+          "state": "team `status` is `archived`"
+        },
+        {
+          "id": "03-REQ-11.3",
+          "ears_pattern": "state_driven",
+          "system": "team lifecycle handler",
+          "action": "all lookup and mutation attempts return HTTP 404 because the record no longer exists; no recovery is possible",
+          "return_contract": "HTTP 404 for any request targeting a deleted team's ID",
+          "state": "team `status` is `deleted` (record physically removed)"
+        },
+        {
+          "id": "03-REQ-11.4",
+          "ears_pattern": "ubiquitous",
+          "system": "team lifecycle handler",
+          "action": "updates `updated_at` to the current UTC timestamp on every successful lifecycle transition (archive, reactivate); does not update `updated_at` on deletion since the record is removed",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "03-REQ-12",
+      "title": "Uniform response format and content type",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "receive consistently structured JSON responses with correct content type headers",
+        "benefit": "client code can reliably parse responses without special-casing"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "03-REQ-12.1",
+          "ears_pattern": "ubiquitous",
+          "system": "teams API handlers",
+          "action": "set `Content-Type: application/json` on all successful JSON responses",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-12.2",
+          "ears_pattern": "ubiquitous",
+          "system": "teams API handlers",
+          "action": "format all error responses using the `error envelope` structure `{\"code\": <int>, \"message\": <string>}` where `code` mirrors the HTTP status code",
+          "return_contract": null
+        },
+        {
+          "id": "03-REQ-12.3",
+          "ears_pattern": "ubiquitous",
+          "system": "teams API handlers",
+          "action": "format all timestamps in `teams` and `team_members` responses as UTC RFC3339 with microsecond precision (e.g., `2026-07-10T15:01:11.889182Z`)",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "03-PROP-1",
+      "title": "Deleted team IDs are inaccessible across all endpoints",
+      "for_any": "team that has been physically deleted from the `teams` table",
+      "invariant": "every endpoint returns HTTP 404 for that team's ID, and no endpoint returns any data for it",
+      "validates": [
+        "03-REQ-4.2",
+        "03-REQ-5.3",
+        "03-REQ-6.3",
+        "03-REQ-7.3",
+        "03-REQ-8.4",
+        "03-REQ-9.2",
+        "03-REQ-11.3"
+      ]
+    },
+    {
+      "id": "03-PROP-2",
+      "title": "Name and slug uniqueness scoped to non-deleted teams",
+      "for_any": "pair of non-deleted teams in the `teams` table",
+      "invariant": "no two non-deleted teams share the same `name` or the same `slug`; this is enforced at both the application layer and via `partial UNIQUE index` constraints at the database layer",
+      "validates": [
+        "03-REQ-2.5",
+        "03-REQ-2.6",
+        "03-REQ-2.10",
+        "03-REQ-2.E1",
+        "03-REQ-2.E2"
+      ]
+    },
+    {
+      "id": "03-PROP-3",
+      "title": "Team lifecycle transitions are strictly ordered",
+      "for_any": "team record in the `teams` table",
+      "invariant": "the `status` field only transitions from `active` → `archived` → `deleted`; the `active` → `deleted` direct transition is always rejected with HTTP 409",
+      "validates": [
+        "03-REQ-11.1",
+        "03-REQ-11.2",
+        "03-REQ-11.3",
+        "03-REQ-7.2"
+      ]
+    },
+    {
+      "id": "03-PROP-4",
+      "title": "Delete cascade is atomic",
+      "for_any": "delete operation on an `archived` team",
+      "invariant": "either both the team row in `teams` and all its rows in `team_members` are removed, or neither is removed; partial deletion never occurs",
+      "validates": [
+        "03-REQ-7.1",
+        "03-REQ-7.E1"
+      ]
+    },
+    {
+      "id": "03-PROP-5",
+      "title": "Member add is idempotent with fresh user data",
+      "for_any": "add-member request for a (team_id, user_id) pair that already exists in `team_members`",
+      "invariant": "the `team_members` row is not duplicated or mutated; the response always reflects current `email` and `name` from `users` via a fresh JOIN, and `joined_at` always equals the original `team_members`.`created_at`",
+      "validates": [
+        "03-REQ-8.2",
+        "03-REQ-8.E1"
+      ]
+    },
+    {
+      "id": "03-PROP-6",
+      "title": "List ordering is stable and complete",
+      "for_any": "list response from GET /api/v1/teams or GET /api/v1/teams/:id/members",
+      "invariant": "results are ordered by `created_at` ascending (for teams) or `joined_at` ascending (for members), contain all matching records with no pagination omissions, and never include `deleted` teams",
+      "validates": [
+        "03-REQ-3.1",
+        "03-REQ-3.2",
+        "03-REQ-3.3",
+        "03-REQ-3.4",
+        "03-REQ-9.1",
+        "03-REQ-9.4"
+      ]
+    },
+    {
+      "id": "03-PROP-7",
+      "title": "updated_at reflects every team mutation",
+      "for_any": "any archive or reactivate operation on a team",
+      "invariant": "`updated_at` is set to the current UTC timestamp on successful completion; it is not modified by membership changes and is not observable after deletion",
+      "validates": [
+        "03-REQ-11.4",
+        "03-REQ-5.1",
+        "03-REQ-6.1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "03-PATH-1",
+      "title": "Admin creates a new team successfully",
+      "steps": [
+        {
+          "actor": "Admin",
+          "action": "sends POST /api/v1/teams with valid name, slug, and optional url in JSON body"
+        },
+        {
+          "actor": "auth middleware (server_foundation)",
+          "action": "authenticates the caller from the request token"
+        },
+        {
+          "actor": "admin middleware (server_foundation)",
+          "action": "verifies the caller is an admin; proceeds if so, otherwise returns HTTP 403"
+        },
+        {
+          "actor": "POST /api/v1/teams handler",
+          "action": "parses the request body; trims name; validates name, slug format, and url format"
+        },
+        {
+          "actor": "POST /api/v1/teams handler",
+          "action": "opens a database transaction and queries `teams` for any non-deleted team with the same name or slug"
+        },
+        {
+          "actor": "POST /api/v1/teams handler",
+          "action": "inserts a new row into `teams` with status = `active` and current UTC timestamps; commits the transaction"
+        },
+        {
+          "actor": "POST /api/v1/teams handler",
+          "action": "returns HTTP 201 with the team object JSON to the admin"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-2",
+      "title": "Admin archives then deletes a team with cascade",
+      "steps": [
+        {
+          "actor": "Admin",
+          "action": "sends POST /api/v1/teams/:id/archive for an active team"
+        },
+        {
+          "actor": "admin middleware (server_foundation)",
+          "action": "verifies the caller is an admin"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/archive handler",
+          "action": "validates the UUID path parameter; fetches the team from `teams`; confirms status is `active`; updates status to `archived` and sets `updated_at`"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/archive handler",
+          "action": "returns HTTP 200 with updated team object to the admin"
+        },
+        {
+          "actor": "Admin",
+          "action": "sends DELETE /api/v1/teams/:id for the now-archived team"
+        },
+        {
+          "actor": "admin middleware (server_foundation)",
+          "action": "verifies the caller is an admin"
+        },
+        {
+          "actor": "DELETE /api/v1/teams/:id handler",
+          "action": "validates the UUID; fetches the team; confirms status is `archived`; opens a transaction"
+        },
+        {
+          "actor": "DELETE /api/v1/teams/:id handler",
+          "action": "deletes all rows in `team_members` with matching team_id, then deletes the team row; commits the transaction"
+        },
+        {
+          "actor": "DELETE /api/v1/teams/:id handler",
+          "action": "returns HTTP 204 to the admin"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-3",
+      "title": "Admin adds a member to an active team (idempotent)",
+      "steps": [
+        {
+          "actor": "Admin",
+          "action": "sends POST /api/v1/teams/:id/members with a valid user_id JSON body"
+        },
+        {
+          "actor": "admin middleware (server_foundation)",
+          "action": "verifies the caller is an admin"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/members handler",
+          "action": "validates UUID path parameter and user_id; fetches team from `teams`; confirms status is `active`; verifies user exists in `users`"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/members handler",
+          "action": "opens a transaction; checks if (team_id, user_id) row already exists in `team_members`; inserts if new, no-ops if existing; commits"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/members handler",
+          "action": "performs a fresh JOIN of `team_members` and `users` to assemble the member object with current email, name, and original joined_at"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 200 with member object JSON to the admin"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-4",
+      "title": "Concurrent duplicate team creation race resolved by partial UNIQUE index",
+      "steps": [
+        {
+          "actor": "Admin A",
+          "action": "sends POST /api/v1/teams with slug 'my-team'; handler passes application-layer uniqueness check"
+        },
+        {
+          "actor": "Admin B",
+          "action": "concurrently sends POST /api/v1/teams with slug 'my-team'; handler also passes application-layer uniqueness check before Admin A's transaction commits"
+        },
+        {
+          "actor": "POST /api/v1/teams handler (Admin A)",
+          "action": "commits the insert successfully; returns HTTP 201"
+        },
+        {
+          "actor": "POST /api/v1/teams handler (Admin B)",
+          "action": "encounters a `partial UNIQUE index` violation on `slug` at the database layer; maps the error to HTTP 409 with message \"team slug already exists\""
+        },
+        {
+          "actor": "POST /api/v1/teams handler (Admin B)",
+          "action": "returns HTTP 409 to Admin B, ensuring no duplicate non-deleted teams share the same slug"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-5",
+      "title": "Full end-to-end admin team management flow from auth through database",
+      "steps": [
+        {
+          "actor": "Admin",
+          "action": "sends POST /api/v1/teams with name, slug, url over HTTPS"
+        },
+        {
+          "actor": "auth middleware (server_foundation)",
+          "action": "validates the bearer token and identifies the caller"
+        },
+        {
+          "actor": "admin middleware (server_foundation)",
+          "action": "checks the caller's role from the `users` table; proceeds because the caller is an admin"
+        },
+        {
+          "actor": "POST /api/v1/teams handler",
+          "action": "validates input fields; opens a transaction against the SQLite database via the DB connection from server_foundation; checks uniqueness; inserts into `teams`; commits"
+        },
+        {
+          "actor": "POST /api/v1/teams handler",
+          "action": "returns HTTP 201 with team object; admin records the new team's UUID"
+        },
+        {
+          "actor": "Admin",
+          "action": "sends POST /api/v1/teams/:id/members with user_id to add a user"
+        },
+        {
+          "actor": "admin middleware (server_foundation)",
+          "action": "verifies admin role"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/members handler",
+          "action": "verifies team exists and is `active`; verifies user exists in `users`; inserts membership row in `team_members` within a transaction; JOINs `users` for fresh member data"
+        },
+        {
+          "actor": "POST /api/v1/teams/:id/members handler",
+          "action": "returns HTTP 200 with member object including email and name from `users` and original `joined_at`"
+        },
+        {
+          "actor": "Admin",
+          "action": "sends GET /api/v1/teams/:id/members to confirm membership"
+        },
+        {
+          "actor": "GET /api/v1/teams/:id/members handler",
+          "action": "queries `team_members` JOIN `users` ordered by joined_at ascending; returns HTTP 200 with array containing the newly added member"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "03-ERR-1",
+      "condition": "Duplicate team name among non-deleted teams (application-layer check)",
+      "behavior": "Returns HTTP 409 with error envelope {\"code\": 409, \"message\": \"team name already exists\"}",
+      "requirement_id": "03-REQ-2.5"
+    },
+    {
+      "id": "03-ERR-2",
+      "condition": "Duplicate team slug among non-deleted teams (application-layer check)",
+      "behavior": "Returns HTTP 409 with error envelope {\"code\": 409, \"message\": \"team slug already exists\"}",
+      "requirement_id": "03-REQ-2.6"
+    },
+    {
+      "id": "03-ERR-3",
+      "condition": "Database partial UNIQUE index violation on name or slug during concurrent insert",
+      "behavior": "Maps the DB constraint error to HTTP 409 with the appropriate message (\"team name already exists\" or \"team slug already exists\")",
+      "requirement_id": "03-REQ-2.10"
+    },
+    {
+      "id": "03-ERR-4",
+      "condition": "Invalid slug format (does not match regex ^[a-z][a-z0-9-]{1,62}[a-z0-9]$)",
+      "behavior": "Returns HTTP 422 with error envelope {\"code\": 422, \"message\": \"invalid slug format\"}",
+      "requirement_id": "03-REQ-2.3"
+    },
+    {
+      "id": "03-ERR-5",
+      "condition": "Invalid URL format (missing http/https scheme or host)",
+      "behavior": "Returns HTTP 422 with error envelope {\"code\": 422, \"message\": \"invalid url format\"}",
+      "requirement_id": "03-REQ-2.4"
+    },
+    {
+      "id": "03-ERR-6",
+      "condition": "Team name is empty after trimming or exceeds 255 characters",
+      "behavior": "Returns HTTP 422 with error envelope {\"code\": 422, \"message\": \"invalid team name\"}",
+      "requirement_id": "03-REQ-2.2"
+    },
+    {
+      "id": "03-ERR-7",
+      "condition": "Required field (name, slug, or user_id) is missing from the request body",
+      "behavior": "Returns HTTP 422 with error envelope {\"code\": 422, \"message\": \"missing required field\"}",
+      "requirement_id": "03-REQ-2.8"
+    },
+    {
+      "id": "03-ERR-8",
+      "condition": "Request body is malformed JSON or cannot be decoded on an endpoint that requires a body",
+      "behavior": "Returns HTTP 400 with error envelope {\"code\": 400, \"message\": \"invalid request body\"}",
+      "requirement_id": "03-REQ-2.7"
+    },
+    {
+      "id": "03-ERR-9",
+      "condition": "Path parameter :id or user_id is not a valid UUID",
+      "behavior": "Returns HTTP 400 with error envelope {\"code\": 400, \"message\": \"invalid id format\"} before any database lookup",
+      "requirement_id": "03-REQ-4.3"
+    },
+    {
+      "id": "03-ERR-10",
+      "condition": "Team does not exist or has status = deleted",
+      "behavior": "Returns HTTP 404 with error envelope {\"code\": 404, \"message\": \"team not found\"}",
+      "requirement_id": "03-REQ-4.2"
+    },
+    {
+      "id": "03-ERR-11",
+      "condition": "Archive attempted on a team that is already archived",
+      "behavior": "Returns HTTP 409 with error envelope {\"code\": 409, \"message\": \"team is already archived\"}",
+      "requirement_id": "03-REQ-5.2"
+    },
+    {
+      "id": "03-ERR-12",
+      "condition": "Reactivate attempted on a team that is already active",
+      "behavior": "Returns HTTP 409 with error envelope {\"code\": 409, \"message\": \"team is already active\"}",
+      "requirement_id": "03-REQ-6.2"
+    },
+    {
+      "id": "03-ERR-13",
+      "condition": "Delete attempted on a team with status = active",
+      "behavior": "Returns HTTP 409 with error envelope {\"code\": 409, \"message\": \"team must be archived before deletion\"}",
+      "requirement_id": "03-REQ-7.2"
+    },
+    {
+      "id": "03-ERR-14",
+      "condition": "Delete transaction partially fails (membership deletion succeeds but team row deletion fails)",
+      "behavior": "Rolls back the entire transaction; returns HTTP 500 with error envelope",
+      "requirement_id": "03-REQ-7.E1"
+    },
+    {
+      "id": "03-ERR-15",
+      "condition": "Add member attempted on a team with status = archived",
+      "behavior": "Returns HTTP 409 with error envelope {\"code\": 409, \"message\": \"team is archived\"}",
+      "requirement_id": "03-REQ-8.3"
+    },
+    {
+      "id": "03-ERR-16",
+      "condition": "User not found when adding a member",
+      "behavior": "Returns HTTP 404 with error envelope {\"code\": 404, \"message\": \"user not found\"}",
+      "requirement_id": "03-REQ-8.5"
+    },
+    {
+      "id": "03-ERR-17",
+      "condition": "Caller is not an admin (verified by admin middleware)",
+      "behavior": "Returns HTTP 403 as defined by the admin middleware in server_foundation, before any handler logic executes",
+      "requirement_id": "03-REQ-10.2"
+    }
+  ],
+  "external_apis": []
+}
