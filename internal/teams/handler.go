@@ -258,8 +258,85 @@ func (h *Handler) deleteTeam(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// MemberResponse is the JSON representation of a team member in API responses.
+type MemberResponse struct {
+	UserID   string `json:"user_id"`
+	TeamID   string `json:"team_id"`
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	JoinedAt string `json:"joined_at"`
+}
+
+// AddMemberRequest is the JSON request body for POST /api/v1/teams/:id/members.
+type AddMemberRequest struct {
+	UserID *string `json:"user_id"`
+}
+
+// memberToResponse converts a TeamMember domain model to a MemberResponse.
+func memberToResponse(m *TeamMember) MemberResponse {
+	return MemberResponse{
+		UserID:   m.UserID,
+		TeamID:   m.TeamID,
+		Email:    m.Email,
+		Name:     m.Name,
+		JoinedAt: FormatTime(m.JoinedAt),
+	}
+}
+
 func (h *Handler) addMember(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	// Validate team ID path parameter.
+	teamID := c.Param("id")
+	if err := validateUUID(teamID); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	// Parse request body.
+	var req AddMemberRequest
+	decoder := json.NewDecoder(c.Request().Body)
+	if err := decoder.Decode(&req); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidRequestBody.Error())
+	}
+
+	// Check required field user_id is present.
+	if req.UserID == nil || *req.UserID == "" {
+		return writeError(c, http.StatusUnprocessableEntity, ErrMissingRequired.Error())
+	}
+
+	// Validate user_id is a valid UUID.
+	if err := validateUUID(*req.UserID); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	// Check team exists and is not deleted.
+	team, err := h.store.GetTeamByID(teamID)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return writeError(c, http.StatusNotFound, ErrTeamNotFound.Error())
+		}
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	// Check team is not archived.
+	if team.Status == "archived" {
+		return writeError(c, http.StatusConflict, ErrTeamArchived.Error())
+	}
+
+	// Verify user exists.
+	exists, err := h.store.UserExists(*req.UserID)
+	if err != nil {
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+	if !exists {
+		return writeError(c, http.StatusNotFound, ErrUserNotFound.Error())
+	}
+
+	// Add member (idempotent).
+	member, err := h.store.AddMember(teamID, *req.UserID)
+	if err != nil {
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	return c.JSON(http.StatusOK, memberToResponse(member))
 }
 
 func (h *Handler) listMembers(c echo.Context) error {

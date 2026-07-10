@@ -284,6 +284,136 @@ func (s *Store) DeleteTeam(id string) error {
 	return nil
 }
 
+// UserExists checks whether a user with the given ID exists in the users table.
+func (s *Store) UserExists(id string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT count(*) FROM users WHERE id = ?`, id).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("checking user existence: %w", err)
+	}
+	return count > 0, nil
+}
+
+// AddMember adds a user to a team. The operation is idempotent: if the
+// membership already exists, no mutation occurs. In both cases the method
+// performs a fresh JOIN against the users table to return current user data
+// (email, name) and the original joined_at timestamp.
+//
+// Callers must verify team existence, team status, and user existence
+// before calling this method.
+func (s *Store) AddMember(teamID, userID string) (*TeamMember, error) {
+	now := time.Now().UTC()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint: errcheck
+
+	// Check if membership already exists within the transaction.
+	var existingCreatedAt string
+	err = tx.QueryRow(
+		`SELECT created_at FROM team_members WHERE team_id = ? AND user_id = ?`,
+		teamID, userID,
+	).Scan(&existingCreatedAt)
+
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("checking membership: %w", err)
+	}
+
+	if err == sql.ErrNoRows {
+		// Insert new membership.
+		_, insertErr := tx.Exec(
+			`INSERT INTO team_members (team_id, user_id, created_at) VALUES (?, ?, ?)`,
+			teamID, userID, FormatTime(now),
+		)
+		if insertErr != nil {
+			// Handle composite PK violation (concurrent race).
+			if strings.Contains(insertErr.Error(), "UNIQUE constraint failed") ||
+				strings.Contains(insertErr.Error(), "PRIMARY KEY") {
+				// Another request beat us — treat as idempotent success.
+				// Fall through to the fresh JOIN below after commit.
+			} else {
+				return nil, fmt.Errorf("inserting team member: %w", insertErr)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing add member transaction: %w", err)
+	}
+
+	// Perform a fresh JOIN against users to retrieve current email and name,
+	// plus the original joined_at timestamp from team_members.created_at.
+	return s.getMemberWithUserData(teamID, userID)
+}
+
+// getMemberWithUserData retrieves a team member record joined with current
+// user data (email, full_name) from the users table.
+func (s *Store) getMemberWithUserData(teamID, userID string) (*TeamMember, error) {
+	var m TeamMember
+	var joinedStr string
+
+	err := s.db.QueryRow(
+		`SELECT tm.team_id, tm.user_id, u.email, u.full_name, tm.created_at
+		 FROM team_members tm
+		 JOIN users u ON u.id = tm.user_id
+		 WHERE tm.team_id = ? AND tm.user_id = ?`,
+		teamID, userID,
+	).Scan(&m.TeamID, &m.UserID, &m.Email, &m.Name, &joinedStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("member not found after add: team=%s user=%s", teamID, userID)
+		}
+		return nil, fmt.Errorf("reading member data: %w", err)
+	}
+
+	var parseErr error
+	m.JoinedAt, parseErr = parseTimestamp(joinedStr)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parsing joined_at: %w", parseErr)
+	}
+
+	return &m, nil
+}
+
+// ListMembers retrieves all members of a team, joined with current user data,
+// ordered by joined_at (team_members.created_at) ascending.
+func (s *Store) ListMembers(teamID string) ([]TeamMember, error) {
+	rows, err := s.db.Query(
+		`SELECT tm.team_id, tm.user_id, u.email, u.full_name, tm.created_at
+		 FROM team_members tm
+		 JOIN users u ON u.id = tm.user_id
+		 WHERE tm.team_id = ?
+		 ORDER BY tm.created_at ASC`,
+		teamID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing members: %w", err)
+	}
+	defer rows.Close()
+
+	var result []TeamMember
+	for rows.Next() {
+		var m TeamMember
+		var joinedStr string
+		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Email, &m.Name, &joinedStr); err != nil {
+			return nil, fmt.Errorf("scanning member row: %w", err)
+		}
+		var parseErr error
+		m.JoinedAt, parseErr = parseTimestamp(joinedStr)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing joined_at: %w", parseErr)
+		}
+		result = append(result, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating member rows: %w", err)
+	}
+
+	return result, nil
+}
+
 // mapConstraintError inspects a SQLite error for partial UNIQUE index
 // violations and maps them to the appropriate sentinel error.
 func mapConstraintError(err error) error {
