@@ -34,53 +34,8 @@ func (h *Handler) RegisterRoutes(g *echo.Group) {
 	g.GET("/:id/members", h.listMembers)
 }
 
-// --- Response types ---
-
-// ErrorDetail is the inner error object in the nested error envelope.
-type ErrorDetail struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// ErrorResponse is the nested error envelope per server_foundation (spec 01):
-// {"error": {"code": <int>, "message": "<string>"}}
-type ErrorResponse struct {
-	Error ErrorDetail `json:"error"`
-}
-
-// TeamResponse is the JSON representation of a team in API responses.
-type TeamResponse struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	Slug      string  `json:"slug"`
-	URL       *string `json:"url"`
-	Status    string  `json:"status"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-}
-
-// writeError writes a nested error envelope response.
-func writeError(c echo.Context, code int, message string) error {
-	return c.JSON(code, ErrorResponse{
-		Error: ErrorDetail{
-			Code:    code,
-			Message: message,
-		},
-	})
-}
-
-// teamToResponse converts a Team domain model to a TeamResponse.
-func teamToResponse(t *Team) TeamResponse {
-	return TeamResponse{
-		ID:        t.ID,
-		Name:      t.Name,
-		Slug:      t.Slug,
-		URL:       t.URL,
-		Status:    t.Status,
-		CreatedAt: FormatTime(t.CreatedAt),
-		UpdatedAt: FormatTime(t.UpdatedAt),
-	}
-}
+// Response types (ErrorResponse, TeamResponse, MemberResponse) and helpers
+// (writeError, teamToResponse, memberToResponse) are defined in response.go.
 
 // validateUUID checks if the given string is a valid UUID.
 func validateUUID(s string) error {
@@ -259,29 +214,9 @@ func (h *Handler) deleteTeam(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// MemberResponse is the JSON representation of a team member in API responses.
-type MemberResponse struct {
-	UserID   string `json:"user_id"`
-	TeamID   string `json:"team_id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	JoinedAt string `json:"joined_at"`
-}
-
 // AddMemberRequest is the JSON request body for POST /api/v1/teams/:id/members.
 type AddMemberRequest struct {
 	UserID *string `json:"user_id"`
-}
-
-// memberToResponse converts a TeamMember domain model to a MemberResponse.
-func memberToResponse(m *TeamMember) MemberResponse {
-	return MemberResponse{
-		UserID:   m.UserID,
-		TeamID:   m.TeamID,
-		Email:    m.Email,
-		Name:     m.Name,
-		JoinedAt: FormatTime(m.JoinedAt),
-	}
 }
 
 func (h *Handler) addMember(c echo.Context) error {
