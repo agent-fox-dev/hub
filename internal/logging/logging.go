@@ -1,11 +1,11 @@
 // Package logging handles structured logging initialization for af-hub.
 // It configures logrus with a JSON formatter, stdout output, and the
 // log level from the server configuration.
-//
-// Implementation will be added in task group 9.
 package logging
 
 import (
+	"os"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,7 +20,14 @@ import (
 // This function operates on the global logrus instance (logrus.SetFormatter,
 // logrus.SetOutput, logrus.SetLevel) as required by REQ-5.1.
 func InitLogging(level string) {
-	// Stub: no-op. Implementation in task group 9.
-	_ = level
-	_ = logrus.TraceLevel // ensure logrus is imported
+	logrus.SetFormatter(&logrus.JSONFormatter{})
+	logrus.SetOutput(os.Stdout)
+
+	parsed, err := logrus.ParseLevel(level)
+	if err != nil {
+		// The config loader should have already validated the level,
+		// but default to info if somehow an invalid value arrives.
+		parsed = logrus.InfoLevel
+	}
+	logrus.SetLevel(parsed)
 }
