@@ -885,7 +885,7 @@
             "04-REQ-9.E2",
             "04-PROP-7"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -912,7 +912,7 @@
             "04-REQ-10.4",
             "04-REQ-10.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -948,7 +948,7 @@
             "04-REQ-11.E1",
             "04-PROP-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -957,7 +957,7 @@
           "details": [],
           "test_spec_refs": [],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
