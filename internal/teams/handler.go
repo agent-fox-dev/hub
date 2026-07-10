@@ -151,7 +151,20 @@ func (h *Handler) createTeam(c echo.Context) error {
 // --- Stub handlers for endpoints not yet implemented ---
 
 func (h *Handler) listTeams(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	includeArchived := c.QueryParam("include_archived") == "true"
+
+	teamsList, err := h.store.ListTeams(includeArchived)
+	if err != nil {
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	// Build response array; never return null for an empty list.
+	responses := make([]TeamResponse, 0, len(teamsList))
+	for i := range teamsList {
+		responses = append(responses, teamToResponse(&teamsList[i]))
+	}
+
+	return c.JSON(http.StatusOK, responses)
 }
 
 func (h *Handler) getTeam(c echo.Context) error {

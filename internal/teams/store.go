@@ -13,6 +13,31 @@ import (
 // The trailing "Z" is a literal character (UTC zone designator).
 const timeFormat = "2006-01-02T15:04:05.000000Z"
 
+// timeFormats lists formats the store recognises when reading timestamps back
+// from SQLite. The modernc.org/sqlite driver normalises DATETIME values and
+// may strip trailing ".000000" when microseconds are zero, so we accept the
+// full-precision format and several reduced-precision fallbacks.
+var timeFormats = []string{
+	"2006-01-02T15:04:05.000000Z",
+	"2006-01-02T15:04:05.000000Z07:00",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04:05Z07:00",
+	"2006-01-02 15:04:05",
+	time.RFC3339Nano,
+	time.RFC3339,
+}
+
+// parseTimestamp tries multiple timestamp formats to parse a datetime string
+// from SQLite. Returns the parsed time in UTC.
+func parseTimestamp(s string) (time.Time, error) {
+	for _, fmt := range timeFormats {
+		if t, err := time.Parse(fmt, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse timestamp %q", s)
+}
+
 // Team represents a team record in the database.
 type Team struct {
 	ID        string
@@ -108,6 +133,53 @@ func (s *Store) CreateTeam(name, slug string, urlVal *string) (*Team, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
+}
+
+// ListTeams retrieves teams from the database, filtered by status.
+// If includeArchived is false, only active teams are returned.
+// If includeArchived is true, both active and archived teams are returned.
+// Deleted teams are never returned. Results are ordered by created_at ascending.
+func (s *Store) ListTeams(includeArchived bool) ([]Team, error) {
+	var query string
+	if includeArchived {
+		query = `SELECT id, name, slug, url, status, created_at, updated_at
+		         FROM teams WHERE status IN ('active', 'archived')
+		         ORDER BY created_at ASC`
+	} else {
+		query = `SELECT id, name, slug, url, status, created_at, updated_at
+		         FROM teams WHERE status = 'active'
+		         ORDER BY created_at ASC`
+	}
+
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("listing teams: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Team
+	for rows.Next() {
+		var t Team
+		var createdStr, updatedStr string
+		if err := rows.Scan(&t.ID, &t.Name, &t.Slug, &t.URL, &t.Status, &createdStr, &updatedStr); err != nil {
+			return nil, fmt.Errorf("scanning team row: %w", err)
+		}
+		var parseErr error
+		t.CreatedAt, parseErr = parseTimestamp(createdStr)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing created_at for team %s: %w", t.ID, parseErr)
+		}
+		t.UpdatedAt, parseErr = parseTimestamp(updatedStr)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing updated_at for team %s: %w", t.ID, parseErr)
+		}
+		result = append(result, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating team rows: %w", err)
+	}
+
+	return result, nil
 }
 
 // mapConstraintError inspects a SQLite error for partial UNIQUE index
