@@ -113,13 +113,13 @@ dir_exists() {
 file_contains() {
   local file="$1"
   local pattern="$2"
-  grep -q "$pattern" "$file" 2>/dev/null
+  grep -qF -- "$pattern" "$file" 2>/dev/null
 }
 
 file_not_contains() {
   local file="$1"
   local pattern="$2"
-  ! grep -q "$pattern" "$file" 2>/dev/null
+  ! grep -qF -- "$pattern" "$file" 2>/dev/null
 }
 
 # Parse JSON with python3 (available on macOS/Linux without extra deps)
@@ -1039,7 +1039,7 @@ run_group8() {
       local msg=""
 
       file_contains "$tw_file" "./index.html" || { all_ok=false; msg+="missing './index.html' in content. "; }
-      file_contains "$tw_file" './src/\*\*/\*.\{ts,tsx,js,jsx\}' || { all_ok=false; msg+="missing './src/**/*.{ts,tsx,js,jsx}' in content. "; }
+      file_contains "$tw_file" './src/**/*.{ts,tsx,js,jsx}' || { all_ok=false; msg+="missing './src/**/*.{ts,tsx,js,jsx}' in content. "; }
       file_contains "$tw_file" "hsl(var(--background))" || { all_ok=false; msg+="missing 'hsl(var(--background))' theme extension. "; }
       # Check for darkMode: 'class' or darkMode: "class"
       (grep -qE "darkMode.*['\"]class['\"]" "$tw_file" 2>/dev/null) || { all_ok=false; msg+="missing darkMode: 'class'. "; }
@@ -1197,7 +1197,7 @@ run_edge_cases_2() {
       local has_src_glob=false
       local has_extensions=false
 
-      file_contains "$tw_file" './src/\*\*/' && has_src_glob=true
+      file_contains "$tw_file" './src/**/' && has_src_glob=true
       (file_contains "$tw_file" "{ts,tsx,js,jsx}" || file_contains "$tw_file" "tsx") && has_extensions=true
 
       if [[ "$has_src_glob" == "true" && "$has_extensions" == "true" ]]; then

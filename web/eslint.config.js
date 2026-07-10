@@ -37,6 +37,15 @@ export default [
     },
   },
   {
+    files: ['vite.config.ts'],
+    languageOptions: {
+      globals: {
+        __dirname: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
+  {
     ignores: ['dist/**'],
   },
 ];

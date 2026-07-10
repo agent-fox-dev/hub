@@ -3,6 +3,7 @@ node_modules/
 
 # build output
 web/dist/
+*.tsbuildinfo
 
 # agent-fox
 .agent-fox/*
