@@ -617,7 +617,7 @@
             "TS-01-P8"
           ],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -654,7 +654,7 @@
             "01-PATH-7",
             "01-PATH-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
