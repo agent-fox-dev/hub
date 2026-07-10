@@ -2,29 +2,29 @@
 
 ## Intent
 
-af-hub is the coordination hub for the agent-fox platform — the single stateful process that owns user identity, OAuth authentication, role-based authorization, multi-tenant team management, workspace registration, and programmatic access control.
+af-hub is the coordination hub for the agent-fox platform — the single stateful process that owns user identity, OAuth authentication, workspace ownership, and programmatic access control.
 
-This iteration delivers the foundation that everything else depends on: user identity via pluggable OAuth, organizational isolation via teams, git-repo-scoped workspaces as the unit of work, scoped API keys, a CLI with persistent configuration, and a web UI scaffold. Without this layer, no other platform capability — spec management, agent orchestration, sandbox provisioning — can operate securely. af-hub is the gate that every user and every agent passes through.
+This iteration delivers the foundation that everything else depends on: user identity via pluggable OAuth, git-repo-scoped workspaces as the unit of work with clear ownership, delegated workspace access via scoped tokens, a CLI (`afc`) for operator-driven login, workspace registration, and token management, and a web UI scaffold. Without this layer, no other platform capability — spec management, agent orchestration, sandbox provisioning — can operate securely. af-hub is the gate that every user and every agent passes through.
 
 ## Goals
 
 - Provide a pluggable OAuth-based authentication system, shipping with GitHub as the first provider.
-- Establish multi-tenant team isolation where organizational resources are scoped to a team.
-- Introduce workspaces as the git-repo-scoped execution context where work is done.
-- Enable programmatic access via scoped, revocable API keys.
-- Deliver a CLI (`afc`) for operator-driven login, key management, workspace registration, and persistent client configuration.
+- Establish workspaces as the git-repo-scoped execution context where work is done, with clear user ownership.
+- Enable delegated workspace access via scoped, revocable workspace tokens for tools and agents.
+- Deliver a CLI (`afc`) for operator-driven login, workspace registration, token management, and persistent client configuration.
 - Set up the web UI toolchain and project scaffold, ready for future functional pages.
 - Offer an admin bootstrap mechanism for initial system access on a fresh deployment, with support for token rotation.
-- Ensure all API endpoints enforce role-based access control (RBAC).
+- Ensure all API endpoints enforce access control based on credential type (admin token, user API key, or workspace token).
 - Ship comprehensive documentation as a first-class deliverable alongside every capability.
 
 ## Non-goals
 
-- **Agent orchestration and spec-driven workflows.** af-hub provides auth, team management, and workspace registration only in this iteration; coordination, runtime, and agent lifecycle are separate platform layers built later.
+- **Agent orchestration and spec-driven workflows.** af-hub provides auth, workspace ownership, and access delegation only in this iteration; coordination, runtime, and agent lifecycle are separate platform layers built later.
 - **Sandbox/OpenShell container provisioning.** Workspaces are metadata entities mapping to git repos; sandbox creation is future work.
 - **Spec package storage or lifecycle within a workspace.** Future coordination-layer work.
 - **Git branch management, cloning, or checkout.** Workspace `git_url` is stored as metadata, not validated for reachability.
-- **Workspace lifecycle beyond creation.** List, archive, and delete operations for workspaces are future work.
+- **Workspace lifecycle beyond creation and token management.** Archive and delete operations for workspaces are future work.
+- **Team-based role-based access control (RBAC).** Teams exist as a lightweight organizational grouping only. Granular per-team roles (editor, viewer, etc.) are deferred to a future iteration.
 - **Campaign management, agent runs, or activity logs.**
 - **Rate limiting.** Not implemented in the first iteration.
 - **CORS middleware.** Vite dev proxy handles CORS in development; production serves static assets from same origin.
@@ -34,8 +34,10 @@ This iteration delivers the foundation that everything else depends on: user ide
 - **Functional web UI pages.** This iteration scaffolds the web project only; login flows, dashboards, and settings pages are future work.
 - **Session-based authentication.** Session tokens for web UI auth will be specced when the web UI gets real pages.
 - **OS keychain or secret store integration.** CLI tokens are stored in plaintext with restricted file permissions only.
-- **Multi-profile or named-context CLI support.** One active hub URL and one default API key at a time.
+- **Multi-profile or named-context CLI support.** One active hub URL and one API key at a time.
 - **Windows-specific path conventions.** The CLI targets Unix-like systems using `$HOME`.
+- **Workspace token persistence in CLI config.** Workspace tokens are the user's responsibility to store securely.
+- **Granular workspace token permissions.** Workspace tokens have read-only access in this iteration. Fine-grained permissions are future work.
 
 ## Functional Requirements
 
@@ -55,12 +57,20 @@ This iteration delivers the foundation that everything else depends on: user ide
 
 ### Authentication
 
-- All `/api/v1/*` endpoints (except `/api/v1/auth/*`) require a Bearer token in the `Authorization` header.
-- Two token types are accepted: admin tokens and API keys.
-- The admin token (`af_admin_...`) grants global admin access to all endpoints and all teams.
-- API keys (`af_<key_id>_<secret>`) are scoped to a specific user and team. The user's role in that team determines permissions.
-- Revoked keys and expired keys are rejected with HTTP 401.
-- Blocked users are rejected with HTTP 403 on every authenticated request, regardless of token validity. API keys belonging to blocked users are effectively inert but not deleted — if the user is unblocked, their keys resume working.
+- All `/api/v1/*` endpoints (except `/api/v1/auth/*`) require authentication via a Bearer token in the `Authorization` header.
+- Three credential types are accepted:
+
+| Credential | Format | Scope | Access level |
+|------------|--------|-------|-------------|
+| Admin token | `af_admin_<64 hex>` | Global | Full access to all endpoints and resources |
+| User API key | `af_<key_id>_<secret>` | User-scoped | Full access to own resources; workspace owner access |
+| Workspace token | `af_wt_<token_id>_<secret>` | Workspace-scoped | Read-only access to the specific workspace |
+
+- The admin token (`af_admin_...`) grants unrestricted access to all endpoints and all resources.
+- User API keys identify a user. The server looks up the `key_id`, verifies the hashed secret, and resolves the associated user. The key is always associated with exactly one user.
+- Workspace tokens grant read-only access to a single workspace, acting on behalf of the user who created them. The server looks up the `token_id`, verifies the hashed secret, and resolves the associated workspace and user.
+- Revoked credentials are rejected with HTTP 401.
+- Blocked users are rejected with HTTP 403 on every authenticated request, regardless of credential validity. Workspace tokens created by blocked users are effectively inert — if the user is unblocked, their tokens resume working.
 
 ### OAuth provider registry
 
@@ -76,80 +86,98 @@ This iteration delivers the foundation that everything else depends on: user ide
 - The CLI starts a local HTTP callback server on a random port.
 - The CLI captures the authorization code and exchanges it with the hub via `POST /api/v1/auth/callback`.
 - The hub exchanges the code with the identity provider, retrieves user info, and upserts the user: creates if new, updates username/email if existing. Blocked users are not re-activated on OAuth login.
-- The hub returns the user object and an auto-generated API key to the CLI.
-- The CLI stores the returned credentials in the persistent config file (see CLI client configuration).
+- The hub generates a new user API key for the user (revoking any previously active key for that user) and returns the user object and API key to the CLI.
+- The CLI stores the hub URL, user ID, and API key in the persistent config file (see CLI client configuration).
 - Admin-created users and OAuth-upserted users are the same population. If an admin creates a user with `provider: github, provider_id: 12345`, and that GitHub user later authenticates via OAuth, the existing record is matched and updated.
 
-### Multi-tenancy and teams
+### Teams
 
-- Resources are scoped to teams. A team is the top-level organizational unit, comparable to a GitHub Organization.
-- Users are assigned roles per team via a membership table.
-- API keys are scoped to a specific user + team pair.
+Teams are a lightweight organizational grouping mechanism. In this iteration, teams have no permission implications — they serve as a way to organize users and workspaces into logical groups for future use.
+
+- A team has: `name` (unique), `slug` (unique), `url`, and `status`.
 - Both team names and slugs must be unique. Duplicate names or slugs return HTTP 409.
 - Team slugs must be lowercase alphanumeric + hyphens, 3–64 characters, must start with a letter, and must not end with a hyphen.
 - Team URLs must have a scheme (`http` or `https`) and a host at minimum.
+- Users can be associated with teams via a membership table. Membership has no permission implications in this iteration.
 
 ### Team lifecycle
 
 | State | Meaning | Allowed transitions |
 |-------|---------|---------------------|
-| **Active** | Default state. Resources and members are live. | → Archived |
+| **Active** | Default state. | → Archived |
 | **Archived** | Read-only. All state preserved. Hidden from default listings. | → Active (reactivate), → Deleted |
 | **Deleted** | Permanently removed. | Terminal |
 
 - Only archived teams can be deleted. Attempting to delete an active team returns an error.
-- Archiving preserves all state (members, API keys, associated data) and is fully reversible.
-- Deleting a team permanently removes it along with its memberships and all API keys scoped to it.
+- Archiving preserves all state (members, associated data) and is fully reversible.
+- Deleting a team permanently removes it along with its memberships.
 
 ### Workspaces
 
 A workspace is the context in which work is done: implementing a spec package, fixing a GitHub issue, or interactive agent work. Each workspace maps to one git repository.
 
-- A workspace has: `slug` (globally unique), `git_url` (HTTPS or SSH format), optional `branch` (null means repo's default branch), `owner_id` (the creating user), optional `team_id` (team association), and `status` (active/archived, default active).
+- A workspace has: `slug` (globally unique), `git_url` (HTTPS or SSH format), optional `branch` (null means repo's default branch), `owner_id` (the creating user), optional `team_id` (organizational association), and `status` (active/archived, default active).
 - Slug format: same rules as team slugs (lowercase alphanumeric + hyphens, 3–64 chars, starts with letter, no trailing hyphen).
 - The same `git_url` may appear in multiple workspaces with different slugs (e.g. one workspace per feature branch, or one per developer).
 - `git_url` accepts HTTPS (`https://...`) and SSH (`git@host:path`) formats. Not validated for reachability at creation time.
-- Any authenticated user (with API key, not admin token) can create a workspace. If `team_id` is provided, the user must be a member of that team (any role).
-- Admin tokens cannot create workspaces — a real user must be the owner.
+- Only users authenticated with a user API key (not admin token or workspace token) can create a workspace. The creating user becomes the workspace owner.
+- The workspace owner has full access to the workspace and its resources via their main API key. This includes creating and managing workspace tokens.
+- Admin tokens grant full access to any workspace but cannot create workspaces (workspaces require a real user as owner).
 
-### Roles and permissions
+### Workspace tokens
 
-Three roles are implemented:
+Workspace tokens enable delegated access to a workspace. They are designed for tools, agents, programs, and other automated entities that need to interact with a workspace on behalf of the owner.
 
-| Role | Scope | Description |
-|------|-------|-------------|
-| **admin** | Global | Full access to all endpoints and all teams |
-| **editor** | Per-team | Read/write on resources within assigned teams |
-| **reader** | Per-team | Read-only access within assigned teams |
+- Workspace tokens use the format `af_wt_<token_id>_<secret>`, where `token_id` is a random 8-character alphanumeric identifier and `secret` is a random 32-character alphanumeric string. Only the SHA-256 hash of the secret is stored.
+- Each token is scoped to a single workspace and references the creating user (the workspace owner).
+- Workspace tokens grant **read-only** access to the workspace by default. No other access levels are defined in this iteration.
+- A workspace token can optionally carry a `label` (human-readable name, e.g. "ci-bot", "agent-1").
+- Only the workspace owner can create, list, and revoke tokens for their workspace. Admin tokens can also manage tokens on any workspace.
+- The full token (including plaintext secret) is returned exactly once at creation time. It is the user's responsibility to store it securely — workspace tokens are NOT persisted in the CLI config file.
+- Revoking a workspace token is permanent.
+- When a workspace token is used for authentication, API requests are scoped to the specific workspace with read-only access. The token holder cannot access other workspaces, create workspaces, or manage tokens.
+- Tokens created by blocked users are inert. If the user is unblocked, the tokens resume working.
+
+### Access control
+
+Three access levels are implemented:
+
+| Level | Scope | Description |
+|-------|-------|-------------|
+| **Admin** | Global | Full access to all endpoints and all resources |
+| **Owner** | Per-workspace | Full access to owned workspaces, including token management |
+| **Token holder** | Per-workspace | Read-only access to the specific workspace the token is scoped to |
 
 Permission matrix:
 
-| Endpoint | Admin | Editor | Reader |
-|----------|-------|--------|--------|
-| Create API key (per team) | yes | yes | no |
-| List API keys | yes | yes | yes |
-| Refresh API key | yes | yes | no |
-| Revoke API key | yes | yes | no |
-| Create / list / get / update user | yes | no | no |
-| Create / list teams | yes | no | no |
-| Archive / reactivate / delete team | yes | no | no |
-| Add / list team members | yes | no | no |
-| Create workspace | no | yes | yes |
+| Endpoint | Admin | Owner (own workspace) | Token holder | Regular user |
+|----------|-------|-----------------------|-------------|-------------|
+| Create workspace | no\* | — | no | yes |
+| List workspaces | yes (all) | yes (own) | no | yes (own) |
+| Get workspace | yes | yes | yes (scoped) | no |
+| Create workspace token | yes | yes | no | no |
+| List workspace tokens | yes | yes | no | no |
+| Revoke workspace token | yes | yes | no | no |
+| List API keys | yes (all) | — | no | yes (own) |
+| Refresh API key | yes | — | no | yes (own) |
+| Revoke API key | yes | — | no | yes (own) |
+| Create / list / get / update user | yes | no | no | no |
+| Create / list teams | yes | no | no | no |
+| Archive / reactivate / delete team | yes | no | no | no |
+| Add / list team members | yes | no | no | no |
 
-Any authenticated user with an API key can create a workspace. Admin tokens cannot because workspaces require a real user as owner.
+\*Admin tokens cannot create workspaces — a real user must be the owner.
 
 Exception: Any authenticated user can update their own `full_name` via `PUT /api/v1/users/:id`, but only admins can change `status`.
 
 ### API key management
 
-- API keys use the opaque format `af_<key_id>_<secret>`, where `key_id` is a random 8-character alphanumeric identifier and `secret` is a random 32-character alphanumeric string. Only the SHA-256 hash of the secret is stored.
-- Keys are scoped to a specific user and team. The user must be a member of the team to create a key, and the key inherits the user's role in that team.
-- When creating a key, `expires` accepts 0 (no expiry), 30, 60, or 90 (days). Default is 30. Expiry is calculated as exactly `24h x N` from the creation timestamp.
-- The full key (including plaintext secret) is returned exactly once at creation time.
+- User API keys use the opaque format `af_<key_id>_<secret>`, where `key_id` is a random 8-character alphanumeric identifier and `secret` is a random 32-character alphanumeric string. Only the SHA-256 hash of the secret is stored.
+- Each user has one active API key at a time. A new login generates a new key, revoking the previous one.
+- The full key (including plaintext secret) is returned at login and on refresh.
 - Refreshing a key generates a new secret for an existing key (same `key_id`).
-- Revoking a key is permanent.
-- `GET /api/v1/keys` returns all keys for the authenticated user, including expired ones (the `expires_at` field makes their status clear). Expired keys cannot authenticate but remain visible for reference.
-- When authenticated with an admin token, `GET /api/v1/keys` lists ALL keys across all users. When authenticated with an API key, it lists only the authenticated user's keys.
+- Revoking a key is permanent. The user must re-login to obtain a new key.
+- `GET /api/v1/keys` returns all keys across all users when authenticated with an admin token. When authenticated with a user API key, it returns only the authenticated user's key.
 
 ### API endpoints
 
@@ -163,11 +191,21 @@ Exception: Any authenticated user can update their own `full_name` via `PUT /api
 #### OAuth (public)
 
 - `GET /api/v1/auth/providers` — List configured OAuth providers (no secrets exposed). Returns provider name and authorize URL.
-- `POST /api/v1/auth/callback` — Exchange an OAuth authorization code for a user record and API key. Accepts `provider`, `code`, and `redirect_uri`. Creates or updates the user as needed. Returns:
+- `POST /api/v1/auth/callback` — Exchange an OAuth authorization code for a user record and API key. Accepts `provider`, `code`, and `redirect_uri`. Creates or updates the user as needed. Generates a new API key for the user (revoking any existing key). Returns:
 
 ```json
 {
-  "user": { ... },
+  "user": {
+    "id": "<uuid>",
+    "username": "<string>",
+    "email": "<string>",
+    "full_name": "<string>",
+    "status": "active",
+    "provider": "<string>",
+    "provider_id": "<string>",
+    "created_at": "<timestamp>",
+    "updated_at": "<timestamp>"
+  },
   "api_key": {
     "key": "af_<key_id>_<secret>",
     "key_id": "<key_id>"
@@ -179,7 +217,7 @@ Exception: Any authenticated user can update their own `full_name` via `PUT /api
 
 - `POST /api/v1/users` — Create a user. Accepts `username`, `email`, `provider`, `provider_id`. Returns HTTP 201 with the created user. Returns HTTP 409 on duplicate username or duplicate `(provider, provider_id)`.
 - `GET /api/v1/users` — List all users.
-- `GET /api/v1/users/:id` — Get a user by ID, including team memberships and roles.
+- `GET /api/v1/users/:id` — Get a user by ID, including team memberships.
 - `PUT /api/v1/users/:id` — Update a user's `full_name` or `status` (`active` | `blocked`).
 
 #### Team management (admin only)
@@ -188,19 +226,26 @@ Exception: Any authenticated user can update their own `full_name` via `PUT /api
 - `GET /api/v1/teams` — List all teams. Archived teams excluded by default; include with `?include_archived=true`.
 - `POST /api/v1/teams/:id/archive` — Archive a team.
 - `POST /api/v1/teams/:id/reactivate` — Reactivate an archived team.
-- `DELETE /api/v1/teams/:id` — Delete a team. Returns error if not archived. Cascades: deletes memberships and API keys.
-- `POST /api/v1/teams/:id/members` — Add or update a user's role in a team. Accepts `user_id` and `role`.
+- `DELETE /api/v1/teams/:id` — Delete a team. Returns error if not archived. Cascades: deletes memberships.
+- `POST /api/v1/teams/:id/members` — Add a user to a team. Accepts `user_id`.
 - `GET /api/v1/teams/:id/members` — List all members of a team.
 
 #### Workspace management (authenticated)
 
-- `POST /api/v1/workspaces` — Create a workspace. Requires API key auth (not admin token). Accepts `slug`, `git_url`, `branch` (optional), `team_id` (optional). Returns HTTP 201 with the workspace object. Returns HTTP 409 on duplicate slug.
+- `POST /api/v1/workspaces` — Create a workspace. Requires user API key auth (not admin token or workspace token). Accepts `slug`, `git_url`, `branch` (optional), `team_id` (optional). Returns HTTP 201 with the workspace object. Returns HTTP 409 on duplicate slug.
+- `GET /api/v1/workspaces` — List workspaces. Admin: all workspaces. User (API key): own workspaces only. Workspace tokens: not allowed.
+- `GET /api/v1/workspaces/:slug` — Get a workspace by slug. Requires workspace ownership, admin, or a valid workspace token scoped to this workspace.
+
+#### Workspace token management (authenticated)
+
+- `POST /api/v1/workspaces/:slug/tokens` — Create a workspace token. Requires workspace ownership or admin. Accepts `label` (optional). Returns the full token including plaintext secret.
+- `GET /api/v1/workspaces/:slug/tokens` — List all tokens for a workspace (token_id, label, created_at — never the secret). Requires workspace ownership or admin.
+- `DELETE /api/v1/workspaces/:slug/tokens/:token_id` — Permanently revoke a workspace token. Requires workspace ownership or admin.
 
 #### API key management (authenticated)
 
-- `POST /api/v1/keys` — Create an API key scoped to a team. Accepts `team_id`, `label`, `expires` (0, 30, 60, or 90 days; default 30). Returns the full key including plaintext secret.
-- `GET /api/v1/keys` — List all keys (scope depends on token type; see API key management section above).
-- `POST /api/v1/keys/:key_id/refresh` — Generate a new secret for an existing key.
+- `GET /api/v1/keys` — List all keys (admin: all users; user API key: own key only).
+- `POST /api/v1/keys/:key_id/refresh` — Generate a new secret for the authenticated user's key. Returns the full key with new secret.
 - `DELETE /api/v1/keys/:key_id` — Permanently revoke a key.
 
 ### Error handling
@@ -210,8 +255,8 @@ All API errors use a consistent JSON envelope: `{"error": {"code": "<HTTP_STATUS
 | Status | Meaning |
 |--------|---------|
 | 400 | Bad request — malformed JSON, missing required fields, validation failure |
-| 401 | Unauthorized — missing, invalid, expired, or revoked token |
-| 403 | Forbidden — valid token but insufficient role, or user is blocked |
+| 401 | Unauthorized — missing, invalid, or revoked credential |
+| 403 | Forbidden — valid credential but insufficient access, or user is blocked |
 | 404 | Not found — resource does not exist |
 | 409 | Conflict — unique constraint violation (duplicate username, slug, name, etc.) |
 | 413 | Payload too large — request body exceeds limit |
@@ -223,29 +268,25 @@ The CLI binary is `afc`. It uses persistent client configuration stored at `$HOM
 
 #### Persistent client configuration
 
-- On startup, if `$HOME/.af/config.toml` does not exist, `afc` creates `$HOME/.af/` (mode 0700) and `$HOME/.af/config.toml` (mode 0600) with `hub_url = ""`.
+- On startup, if `$HOME/.af/config.toml` does not exist, `afc` creates `$HOME/.af/` (mode 0700) and `$HOME/.af/config.toml` (mode 0600) with empty values.
 - Existing config files are not modified on startup.
 
 **Config file structure:**
 
 ```toml
 hub_url = "https://hub.example.com"
-api_key = "my-project"
-
-[keys.my-project]
-key_id = "a1b2c3d4e5f6"
-token = "af_a1b2c3d4e5f6_deadbeef..."
-label = "dev laptop"
-
-[keys._login]
-key_id = "0011aabbccdd"
-token = "af_0011aabbccdd_aabbccdd..."
-label = "login"
+user_id = "550e8400-e29b-41d4-a716-446655440000"
+api_key = "af_a1b2c3d4_deadbeef..."
 ```
 
-**Resolution precedence** (for both hub URL and API key):
-1. Command-line flag (`--hub-url`, `--api-key`) — highest priority
-2. Environment variable (`AF_HUB_URL`, `AF_HUB_API_KEY`)
+Three fields only:
+- `hub_url` — The hub's base URL.
+- `user_id` — The authenticated user's UUID (received from OAuth callback).
+- `api_key` — The user's main API key (received from OAuth callback).
+
+**Resolution precedence** (for hub URL, user ID, and API key):
+1. Command-line flag (`--hub-url`, `--user-id`, `--api-key`) — highest priority
+2. Environment variable (`AF_HUB_URL`, `AF_HUB_USER_ID`, `AF_HUB_API_KEY`)
 3. Config file value (empty string treated as unset)
 4. Error with descriptive message
 
@@ -253,23 +294,24 @@ label = "login"
 
 | Command | Config change |
 |---------|---------------|
-| `afc login` | Stores token as `[keys._login]`, sets `api_key = "_login"`, writes `hub_url` if empty |
-| `afc keys create` | Adds `[keys.<team_slug>]` section |
-| `afc keys refresh <key-id>` | Updates `token` in matching section |
-| `afc keys revoke <key-id>` | Removes matching section; clears `api_key` if it was the default |
-| `afc keys default <slug>` | Sets `api_key` to the specified slug |
+| `afc login` | Sets `hub_url`, `user_id`, and `api_key` |
+| `afc keys refresh` | Updates `api_key` |
+| `afc keys revoke` | Clears `api_key` and `user_id` |
 
 All config mutations use atomic writes (write to temp file, rename into place).
 
 #### Commands
 
 - `afc login --provider <provider>` — Run the OAuth authorization code flow. Default provider: `github`. Stores returned credentials in config.
-- `afc keys create --team <team-slug> [--label <label>] [--expires 0|30|60|90]` — Create an API key (default 30 days). Stores in config.
-- `afc keys list` — List all keys for the authenticated user.
-- `afc keys refresh <key-id>` — Refresh a key's secret. Updates config.
-- `afc keys revoke <key-id>` — Revoke a key. Removes from config.
-- `afc keys default <slug>` — Set the default API key by team slug.
+- `afc keys list` — Show the current API key metadata (key_id, created_at). Admin: list all keys across users.
+- `afc keys refresh` — Refresh the current API key (new secret, same key_id). Updates config.
+- `afc keys revoke` — Revoke the current API key. Clears credentials from config. User must re-login to obtain a new key.
 - `afc workspace create --git-url <url> --slug <slug> [--branch <ref>] [--team <team-slug>]` — Register a workspace. The `--team` flag accepts a slug; the CLI resolves it to a UUID before the API call. On success, prints the workspace object as JSON.
+- `afc workspace list` — List the user's workspaces. Prints JSON.
+- `afc workspace get <slug>` — Get workspace details by slug. Prints JSON.
+- `afc workspace token create --workspace <slug> [--label <label>]` — Create a workspace token. Prints the full token (including plaintext secret) to stdout. The token is NOT stored in the config file — it is the user's responsibility to store it securely.
+- `afc workspace token list --workspace <slug>` — List workspace tokens (metadata only, no secrets). Prints JSON.
+- `afc workspace token revoke --workspace <slug> <token-id>` — Permanently revoke a workspace token.
 
 All commands print JSON to stdout and human-readable messages to stderr.
 
@@ -298,6 +340,7 @@ Required configuration:
 Environment variables:
 - `AF_HUB_ADMIN_TOKEN` — Required on subsequent boots (validated against stored hash).
 - `AF_HUB_URL` — Default hub URL for CLI commands.
+- `AF_HUB_USER_ID` — Default user ID for CLI commands.
 - `AF_HUB_API_KEY` — Default API key for CLI commands.
 
 ### Operational requirements
@@ -312,7 +355,7 @@ Environment variables:
 | Document | Location | Description |
 |----------|----------|-------------|
 | README.md | `/README.md` | Project overview, prerequisites, quickstart, project structure |
-| Architecture | `/docs/architecture.md` | Two-binary design, project layout, SQLite storage, config loading, request lifecycle, team/workspace entity model |
+| Architecture | `/docs/architecture.md` | Two-binary design, project layout, SQLite storage, config loading, request lifecycle, workspace entity model |
 | API reference | `/docs/api.md` | Complete REST API documentation: every endpoint with method, path, auth requirements, request/response bodies, status codes |
 | CLI reference | `/docs/cli.md` | `afc` usage: all commands, flags, environment variables, config file interaction |
 | Configuration | `/docs/configuration.md` | Server `config.toml` reference and client `$HOME/.af/config.toml` reference |
@@ -329,7 +372,7 @@ Environment variables:
 - **Config format:** TOML (`config.toml` for server, `$HOME/.af/config.toml` for client)
 - **Frontend stack:** React, Vite, Tailwind CSS, shadcn/ui (copied into tree), TanStack Query, React Router
 - **Logging:** Structured JSON via logrus
-- **Token hashing:** SHA-256 for admin tokens and API key secrets
+- **Token hashing:** SHA-256 for admin tokens, API key secrets, and workspace token secrets
 - **Build:** `make build` compiles both binaries to `bin/`. `make test` runs all tests. `make lint` runs `go vet`.
 - **Schema management:** `CREATE TABLE IF NOT EXISTS` on boot; no migration tooling
 - **OAuth redirect URI (dev):** `http://localhost:5173/callback` (Vite default port). Production derives from `[server] external_url` in config.
@@ -355,21 +398,25 @@ Environment variables:
 
 | Term | Definition |
 |------|------------|
-| **Team** | The top-level organizational unit, comparable to a GitHub Organization. The multi-tenancy boundary for users, roles, and API keys. (Previously called "workspace" in specs 01–04.) |
+| **Team** | A lightweight organizational grouping of users and workspaces. No permission implications in this iteration. |
 | **Workspace** | A git-repo-scoped execution context where work is done. Maps to one git repository and optional branch. Owned by a user, optionally associated with a team. |
-| **API key** | A scoped, revocable credential in the format `af_<key_id>_<secret>`, tied to a user + team pair. |
+| **User API key** | A user-scoped credential in the format `af_<key_id>_<secret>`, tied to a single user. One active key per user, created on login. |
+| **Workspace token** | A workspace-scoped, read-only credential in the format `af_wt_<token_id>_<secret>`, created by the workspace owner for delegation to tools, agents, and programs. Not stored in CLI config. |
 | **Admin token** | A global credential in the format `af_admin_<64 hex>` that grants unrestricted access. |
 
 ## Design Decisions
 
-1. **"Team" replaces "workspace" for the organizational concept.** The architecture defines "workspace" as a task-scoped execution context tied to a git repo. The original organizational entity is renamed to "team" to free the name. This is a terminology change only — the entity retains its schema, lifecycle, RBAC model, and API key scoping.
-2. **Auth callback returns an API key alongside the user object.** This enables the CLI to be fully configured after a single `afc login` — no manual key creation step required for basic use.
-3. **CLI uses persistent config at `$HOME/.af/config.toml`.** Eliminates the need for `--hub-url` and `--api-key` flags on every command. Tokens stored in plaintext with `0600` permissions; keychain integration deferred.
-4. **Admin token rotation via boot flag.** `--reset-admin-token` reuses first-boot token generation logic. Chosen over a runtime CLI command because rotation should work even when the service is stopped.
-5. **API key `expires: 0` means no expiry.** The `expires_at` field is nullable.
-6. **Workspaces are user-owned, not admin-managed.** Any authenticated user (via API key) can create a workspace. Admin tokens cannot, since workspaces need a real user as owner.
-7. **Workspace `git_url` not validated for reachability.** URL is stored as metadata for later use by sandbox provisioning. Network validation would add latency and fragility.
-8. **Fresh schema rebuild for the rename.** Since the project is pre-production with no deployed users, the team rename is implemented by updating DDL directly — no ALTER TABLE or data migration.
-9. **Config file atomic writes, no locking.** Last writer wins. Concurrent mutations are not a realistic scenario for a single-user interactive CLI.
-10. **Blocked user handling at middleware level.** Keys are inert while user is blocked, functional again if unblocked. Keys are not deleted on block.
-11. **Expired keys remain visible in listings.** For reference, but cannot authenticate.
+1. **API keys are user-scoped, not team-scoped.** The original model required team context for key creation, but a user logging in for the first time has no team. Making keys user-scoped resolves this contradiction and simplifies the authentication model.
+2. **Workspace tokens are a separate credential type.** Using a distinct format (`af_wt_...`) makes it trivial for the server to identify the credential type and apply the correct access rules. Workspace tokens always act on behalf of the creating user.
+3. **Workspace tokens are read-only by default.** Since granular permissions haven't been designed yet, read-only is the safe default. Finer-grained access levels can be added in a future iteration without changing the token format.
+4. **Workspace tokens are NOT stored in CLI config.** Workspace tokens are meant for external entities (tools, agents, CI systems) and may be stored in various secure locations (environment variables, secret managers, CI config). The CLI config only holds the user's own credentials.
+5. **Teams are organizational only in this iteration.** Teams retain CRUD and lifecycle operations but have no permission implications. This keeps the first iteration simple while preserving the entity for future RBAC work.
+6. **One active API key per user.** A new login replaces the existing key. This prevents key sprawl and simplifies the mental model.
+7. **Auth callback generates a fresh key each login.** The previous key is revoked on re-login. This ensures the user always has a single, known credential.
+8. **CLI uses persistent config at `$HOME/.af/config.toml`.** Three fields only: `hub_url`, `user_id`, `api_key`. Eliminates the need for flags on every command. Plaintext with `0600` permissions; keychain integration deferred.
+9. **Admin token rotation via boot flag.** `--reset-admin-token` reuses first-boot token generation logic. Chosen over a runtime CLI command because rotation should work even when the service is stopped.
+10. **Workspaces are user-owned, not admin-managed.** Any authenticated user (via API key) can create a workspace. Admin tokens cannot, since workspaces need a real user as owner.
+11. **Workspace `git_url` not validated for reachability.** URL is stored as metadata for later use by sandbox provisioning. Network validation would add latency and fragility.
+12. **Fresh schema rebuild for the rename.** Since the project is pre-production with no deployed users, the team rename is implemented by updating DDL directly — no ALTER TABLE or data migration.
+13. **Config file atomic writes, no locking.** Last writer wins. Concurrent mutations are not a realistic scenario for a single-user interactive CLI.
+14. **Blocked user handling at credential level.** API keys and workspace tokens are inert while user is blocked, functional again if unblocked. Credentials are not deleted on block.
