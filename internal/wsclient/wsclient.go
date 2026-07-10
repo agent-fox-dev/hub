@@ -58,3 +58,32 @@ func CreateWorkspace(hubURL, apiKey string, payload map[string]any, client *http
 	// Stub: not implemented yet.
 	return nil, 0, fmt.Errorf("CreateWorkspace not implemented")
 }
+
+// ---------------------------------------------------------------------------
+// Workspace Token Client Functions
+// ---------------------------------------------------------------------------
+
+// CreateToken sends POST /api/v1/workspaces/:slug/tokens with Bearer
+// authentication and a JSON payload containing 'expires' (integer) and
+// optionally 'label'. Returns the raw response body for pretty-printing,
+// the HTTP status code, and any error.
+func CreateToken(hubURL, apiKey, slug string, payload map[string]any, client *http.Client) (body []byte, statusCode int, err error) {
+	// Stub: not implemented yet.
+	return nil, 0, fmt.Errorf("CreateToken not implemented")
+}
+
+// ListTokens sends GET /api/v1/workspaces/:slug/tokens with Bearer
+// authentication. Returns the raw response body (token metadata only,
+// no secrets) for pretty-printing, the HTTP status code, and any error.
+func ListTokens(hubURL, apiKey, slug string, client *http.Client) (body []byte, statusCode int, err error) {
+	// Stub: not implemented yet.
+	return nil, 0, fmt.Errorf("ListTokens not implemented")
+}
+
+// RevokeToken sends DELETE /api/v1/workspaces/:slug/tokens/:tokenID with
+// Bearer authentication. Returns the HTTP status code, any response body,
+// and any error.
+func RevokeToken(hubURL, apiKey, slug, tokenID string, client *http.Client) (statusCode int, body []byte, err error) {
+	// Stub: not implemented yet.
+	return 0, nil, fmt.Errorf("RevokeToken not implemented")
+}

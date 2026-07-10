@@ -247,6 +247,27 @@ func TestEmptyWorkspaceFlag(t *testing.T) {
 	})
 }
 
+// TestWorkspaceTokenRevokeMissingTokenID verifies that omitting the <token-id>
+// positional argument for workspace token revoke causes Cobra's ExactArgs(1)
+// to print a usage error and exit with code 1.
+// TS-05-39
+func TestWorkspaceTokenRevokeMissingTokenID(t *testing.T) {
+	result := runCLI(t, []string{"workspace", "token", "revoke", "--workspace", "ws1"})
+
+	if result.ExitCode != 1 {
+		t.Errorf("exit code = %d, want 1", result.ExitCode)
+	}
+
+	// Cobra's ExactArgs(1) should produce a usage error about wrong number
+	// of arguments.
+	if !strings.Contains(result.Stderr, "accepts 1 arg") &&
+		!strings.Contains(result.Stderr, "argument") &&
+		!strings.Contains(result.Err.Error(), "accepts 1 arg") {
+		t.Errorf("stderr or error should mention wrong number of arguments, got stderr=%q, err=%v",
+			result.Stderr, result.Err)
+	}
+}
+
 // TestPropertyExpiresValidation is a property test that verifies for any
 // --expires value not in {0, 30, 60, 90}, the CLI exits with code 1 before
 // issuing any HTTP request, for both afc login and afc workspace token create.
