@@ -29,7 +29,7 @@ func TestRefreshKey_GeneratesNewSecret(t *testing.T) {
 	createdAt := pastISO(10 * 24 * time.Hour)
 	expiresAt := futureISO(80 * 24 * time.Hour) // 90 - 10 = 80 days from now
 	oldSecret := "oldsecret-32-chars-padding-12345"
-	insertTestAPIKey(t, db, "keyABC01", "user-uuid-6", oldSecret, createdAt, &expiresAt, nil)
+	insertTestAPIKey(t, db, "keyABC01", "user-uuid-6", oldSecret, createdAt, &expiresAt, nil, intPtr(90))
 
 	e := setupEcho()
 	e.POST("/api/v1/keys/:key_id/refresh", keys.RefreshKeyHandler(db), setAuthContext(userAuthContext("user-uuid-6")))
@@ -123,7 +123,7 @@ func TestRefreshKey_ExpiredKeyPermitted(t *testing.T) {
 	// Create a key with 30-day original expiry, now expired.
 	createdAt := pastISO(60 * 24 * time.Hour)  // created 60 days ago
 	expiredAt := pastISO(30 * 24 * time.Hour)   // expired 30 days ago (30-day original duration)
-	insertTestAPIKey(t, db, "keyExpd1", "user-uuid-7", "secret-expired-32-chars-pad-123", createdAt, &expiredAt, nil)
+	insertTestAPIKey(t, db, "keyExpd1", "user-uuid-7", "secret-expired-32-chars-pad-123", createdAt, &expiredAt, nil, intPtr(30))
 
 	e := setupEcho()
 	e.POST("/api/v1/keys/:key_id/refresh", keys.RefreshKeyHandler(db), setAuthContext(userAuthContext("user-uuid-7")))
@@ -177,7 +177,7 @@ func TestRefreshKey_AdminRefreshesBlockedUserKey(t *testing.T) {
 	initAllTables(t, db)
 
 	insertTestUser(t, db, "user-uuid-8", "user8", "u8@e.com", "blocked", "github", "ext-8", "2025-01-01T00:00:00Z")
-	insertTestAPIKey(t, db, "keyBlk01", "user-uuid-8", "secret-blocked-32-chars-pad-123", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyBlk01", "user-uuid-8", "secret-blocked-32-chars-pad-123", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	e := setupEcho()
 	e.POST("/api/v1/keys/:key_id/refresh", keys.RefreshKeyHandler(db), setAuthContext(adminAuthContext()))
@@ -220,7 +220,7 @@ func TestRefreshKey_IgnoresExpiresOverride(t *testing.T) {
 	// 30-day key.
 	createdAt := pastISO(5 * 24 * time.Hour)
 	expiresAt := futureISO(25 * 24 * time.Hour) // 30 - 5 = 25 days remaining
-	insertTestAPIKey(t, db, "key30day", "user-30day", "secret-30day-32-chars-pad-12345", createdAt, &expiresAt, nil)
+	insertTestAPIKey(t, db, "key30day", "user-30day", "secret-30day-32-chars-pad-12345", createdAt, &expiresAt, nil, intPtr(30))
 
 	e := setupEcho()
 	e.POST("/api/v1/keys/:key_id/refresh", keys.RefreshKeyHandler(db), setAuthContext(userAuthContext("user-30day")))
@@ -274,7 +274,7 @@ func TestRefreshKey_EdgeCase_NotFoundOrRevoked(t *testing.T) {
 
 	// Insert a revoked key.
 	revokedTime := "2025-01-15T00:00:00Z"
-	insertTestAPIKey(t, db, "keyRvkdR", "user-ref-e", "secret-revoked-32-chars-pad-123", "2025-01-01T00:00:00Z", nil, &revokedTime)
+	insertTestAPIKey(t, db, "keyRvkdR", "user-ref-e", "secret-revoked-32-chars-pad-123", "2025-01-01T00:00:00Z", nil, &revokedTime, nil)
 
 	e := setupEcho()
 	e.POST("/api/v1/keys/:key_id/refresh", keys.RefreshKeyHandler(db), setAuthContext(adminAuthContext()))
@@ -341,7 +341,7 @@ func TestRefreshKey_EdgeCase_NonAdminOtherUserKey(t *testing.T) {
 	insertTestUser(t, db, "user-owner", "userowner", "owner@e.com", "active", "github", "ext-owner", "2025-01-01T00:00:00Z")
 
 	originalSecret := "secret-of-user-b-32-chars-pad-1"
-	insertTestAPIKey(t, db, "keyOfUsB", "user-owner", originalSecret, "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyOfUsB", "user-owner", originalSecret, "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	e := setupEcho()
 	// Caller is user-caller, but the key belongs to user-owner.

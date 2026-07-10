@@ -249,8 +249,8 @@ func TestSmoke_UserRefreshesExpiredKey(t *testing.T) {
 	expiredAt := pastISO(30 * 24 * time.Hour)
 	secret := "abcdefghABCDEFGH0123456789aaaaaa"
 	secretHash := smokeUserSHA256(secret)
-	_, err := db.Exec(`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at)
-		VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+	_, err := db.Exec(`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at, expires_in_days)
+		VALUES (?, ?, ?, ?, ?, ?, NULL, 30)`,
 		"apikey-smk3key1", "smk3key1", secretHash, "user-smoke3", expiredAt, createdAt)
 	if err != nil {
 		t.Fatalf("SMOKE-3: failed to insert expired key: %v", err)

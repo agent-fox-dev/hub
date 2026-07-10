@@ -57,13 +57,14 @@ func callbackTestDB(t *testing.T) *sql.DB {
 		UNIQUE (provider, provider_id)
 	);
 	CREATE TABLE IF NOT EXISTS api_keys (
-		id          TEXT PRIMARY KEY,
-		key_id      TEXT NOT NULL UNIQUE,
-		secret_hash TEXT NOT NULL,
-		user_id     TEXT NOT NULL REFERENCES users(id),
-		expires_at  TEXT,
-		created_at  TEXT NOT NULL,
-		revoked_at  TEXT
+		id              TEXT PRIMARY KEY,
+		key_id          TEXT NOT NULL UNIQUE,
+		secret_hash     TEXT NOT NULL,
+		user_id         TEXT NOT NULL REFERENCES users(id),
+		expires_at      TEXT,
+		created_at      TEXT NOT NULL,
+		revoked_at      TEXT,
+		expires_in_days INTEGER
 	);
 	CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
 	`
@@ -242,8 +243,8 @@ func insertTestKey(t *testing.T, db *sql.DB, keyID, userID, secret string, expir
 	now := time.Now().UTC().Format(time.RFC3339)
 	secretHash := sha256hex(secret)
 	_, err := db.Exec(
-		`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at, expires_in_days)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"apikey-"+keyID, keyID, secretHash, userID, expiresAt, now, revokedAt,
 	)
 	if err != nil {

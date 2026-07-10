@@ -65,13 +65,14 @@ func initUsersTable(t *testing.T, db *sql.DB) {
 func initAPIKeysTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
-		id          TEXT PRIMARY KEY,
-		key_id      TEXT NOT NULL UNIQUE,
-		secret_hash TEXT NOT NULL,
-		user_id     TEXT NOT NULL REFERENCES users(id),
-		expires_at  TEXT,
-		created_at  TEXT NOT NULL,
-		revoked_at  TEXT
+		id              TEXT PRIMARY KEY,
+		key_id          TEXT NOT NULL UNIQUE,
+		secret_hash     TEXT NOT NULL,
+		user_id         TEXT NOT NULL REFERENCES users(id),
+		expires_at      TEXT,
+		created_at      TEXT NOT NULL,
+		revoked_at      TEXT,
+		expires_in_days INTEGER
 	)`)
 	if err != nil {
 		t.Fatalf("failed to create api_keys table: %v", err)
@@ -167,13 +168,14 @@ func insertTestUser(t *testing.T, db *sql.DB, id, username, email, status, provi
 }
 
 // insertTestAPIKey inserts an API key row directly into the database.
-func insertTestAPIKey(t *testing.T, db *sql.DB, keyID, userID, secret, createdAt string, expiresAt, revokedAt *string) {
+// expiresInDays stores the original expiry duration for refresh operations.
+func insertTestAPIKey(t *testing.T, db *sql.DB, keyID, userID, secret, createdAt string, expiresAt, revokedAt *string, expiresInDays *int) {
 	t.Helper()
 	secretHash := sha256Hex(secret)
 	_, err := db.Exec(
-		`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"apikey-"+keyID, keyID, secretHash, userID, expiresAt, createdAt, revokedAt,
+		`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at, expires_in_days)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"apikey-"+keyID, keyID, secretHash, userID, expiresAt, createdAt, revokedAt, expiresInDays,
 	)
 	if err != nil {
 		t.Fatalf("failed to insert test api key %s: %v", keyID, err)
@@ -200,6 +202,11 @@ func strPtr(s string) *string {
 	return &s
 }
 
+// intPtr returns a pointer to the given int (for nullable integer DB fields).
+func intPtr(i int) *int {
+	return &i
+}
+
 // ---------------------------------------------------------------------------
 // TS-02-24: Admin GET /api/v1/keys returns all API keys across all users
 // ordered by created_at ASC; no secret or token field in entries.
@@ -215,8 +222,8 @@ func TestListKeys_AdminReturnsAllKeys(t *testing.T) {
 	t2 := "2025-02-01T00:00:00Z"
 	insertTestUser(t, db, "user-a", "usera", "a@e.com", "active", "github", "ext-a", t1)
 	insertTestUser(t, db, "user-b", "userb", "b@e.com", "active", "github", "ext-b", t1)
-	insertTestAPIKey(t, db, "keyAAAA01", "user-a", "secret-a-32-chars-padding-12345", t1, nil, nil)
-	insertTestAPIKey(t, db, "keyBBBB01", "user-b", "secret-b-32-chars-padding-12345", t2, nil, nil)
+	insertTestAPIKey(t, db, "keyAAAA01", "user-a", "secret-a-32-chars-padding-12345", t1, nil, nil, nil)
+	insertTestAPIKey(t, db, "keyBBBB01", "user-b", "secret-b-32-chars-padding-12345", t2, nil, nil, nil)
 
 	e := setupEcho()
 	e.GET("/api/v1/keys", keys.ListKeysHandler(db), setAuthContext(adminAuthContext()))
@@ -286,12 +293,12 @@ func TestListKeys_UserReturnsOwnKeysOnly(t *testing.T) {
 	insertTestUser(t, db, "user-other", "otheruser", "other@e.com", "active", "github", "ext-other", t1)
 
 	// User 5 has 3 keys: one active, one expired, one revoked.
-	insertTestAPIKey(t, db, "key5actv", "user-uuid-5", "secret-active-32-chars-pad-1234", t1, nil, nil)                       // active
-	insertTestAPIKey(t, db, "key5expd", "user-uuid-5", "secret-expired-32-chars-pad-123", t2, &expiredTime, nil)               // expired
-	insertTestAPIKey(t, db, "key5rvkd", "user-uuid-5", "secret-revoked-32-chars-pad-123", t3, nil, &revokedTime)               // revoked
+	insertTestAPIKey(t, db, "key5actv", "user-uuid-5", "secret-active-32-chars-pad-1234", t1, nil, nil, nil)                       // active
+	insertTestAPIKey(t, db, "key5expd", "user-uuid-5", "secret-expired-32-chars-pad-123", t2, &expiredTime, nil, nil)               // expired
+	insertTestAPIKey(t, db, "key5rvkd", "user-uuid-5", "secret-revoked-32-chars-pad-123", t3, nil, &revokedTime, nil)               // revoked
 
 	// Other user has a key — should NOT be returned.
-	insertTestAPIKey(t, db, "keyOther", "user-other", "secret-other-32-chars-padding-1", t2, nil, nil)
+	insertTestAPIKey(t, db, "keyOther", "user-other", "secret-other-32-chars-padding-1", t2, nil, nil, nil)
 
 	e := setupEcho()
 	e.GET("/api/v1/keys", keys.ListKeysHandler(db), setAuthContext(userAuthContext("user-uuid-5")))
@@ -346,7 +353,7 @@ func TestListKeys_NoComputedStatusFields(t *testing.T) {
 	initAllTables(t, db)
 
 	insertTestUser(t, db, "user-status", "statususer", "s@e.com", "active", "github", "ext-s", "2025-01-01T00:00:00Z")
-	insertTestAPIKey(t, db, "keyStatA", "user-status", "secret-status-32-chars-pad-1234", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyStatA", "user-status", "secret-status-32-chars-pad-1234", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	e := setupEcho()
 	e.GET("/api/v1/keys", keys.ListKeysHandler(db), setAuthContext(adminAuthContext()))

@@ -13,11 +13,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"time"
 
 	"github.com/agent-fox-dev/hub/internal/apierror"
+	"github.com/agent-fox-dev/hub/internal/authctx"
 	"github.com/agent-fox-dev/hub/internal/httpclient"
 	"github.com/labstack/echo/v4"
 )
@@ -44,30 +44,30 @@ type RefreshResponse struct {
 // ---------------------------------------------------------------------------
 
 // CredentialType identifies the kind of authentication credential used.
-type CredentialType string
+// Type alias for authctx.CredentialType — enables keys package tests to
+// reference keys.CredentialType while sharing the same underlying type
+// with the auth middleware.
+type CredentialType = authctx.CredentialType
 
 const (
 	// CredentialTypeAdmin is an admin token credential.
-	CredentialTypeAdmin CredentialType = "admin"
+	CredentialTypeAdmin = authctx.CredentialTypeAdmin
 	// CredentialTypeAPIKey is a user API key credential.
-	CredentialTypeAPIKey CredentialType = "api_key"
+	CredentialTypeAPIKey = authctx.CredentialTypeAPIKey
 	// CredentialTypeWorkspaceToken is a workspace token credential.
-	CredentialTypeWorkspaceToken CredentialType = "workspace_token"
+	CredentialTypeWorkspaceToken = authctx.CredentialTypeWorkspaceToken
 )
 
 // ContextKey is a typed key for Echo context values.
-type ContextKey string
+type ContextKey = authctx.ContextKey
 
 // AuthContextKey is the Echo context key for AuthContext.
-const AuthContextKey ContextKey = "auth_context"
+const AuthContextKey = authctx.AuthContextKey
 
 // AuthContext holds the authentication state set by auth middleware.
-type AuthContext struct {
-	CredentialType CredentialType
-	UserID         string
-	WorkspaceID    string
-	IsAdmin        bool
-}
+// Type alias for authctx.AuthContext — the canonical definition lives in
+// authctx to break import cycles between auth and keys packages.
+type AuthContext = authctx.AuthContext
 
 // KeyRecord represents an API key row in the api_keys table.
 type KeyRecord struct {
@@ -174,9 +174,20 @@ func RevokeKey(hubURL, apiKey, keyID string, client *http.Client) (statusCode in
 // ---------------------------------------------------------------------------
 
 // getAuthContext extracts the AuthContext from the Echo context.
+// Handles both pointer storage (from unit test helpers) and value storage
+// (from real auth middleware).
 func getAuthContext(c echo.Context) *AuthContext {
-	ac, _ := c.Get(string(AuthContextKey)).(*AuthContext)
-	return ac
+	v := c.Get(string(AuthContextKey))
+	if v == nil {
+		return nil
+	}
+	if ac, ok := v.(*AuthContext); ok {
+		return ac
+	}
+	if ac, ok := v.(AuthContext); ok {
+		return &ac
+	}
+	return nil
 }
 
 // ListKeysHandler returns an Echo handler for GET /api/v1/keys.
@@ -245,12 +256,13 @@ func RefreshKeyHandler(db *sql.DB) echo.HandlerFunc {
 
 		// Look up the key; revoked keys are treated as non-existent.
 		var userID, createdAt string
-		var expiresAt, revokedAt sql.NullString
+		var revokedAt sql.NullString
+		var expiresInDays sql.NullInt64
 		err := db.QueryRowContext(c.Request().Context(),
-			`SELECT user_id, created_at, expires_at, revoked_at
+			`SELECT user_id, created_at, revoked_at, expires_in_days
 			 FROM api_keys WHERE key_id = ?`,
 			keyID,
-		).Scan(&userID, &createdAt, &expiresAt, &revokedAt)
+		).Scan(&userID, &createdAt, &revokedAt, &expiresInDays)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return echo.NewHTTPError(http.StatusNotFound, "API key not found")
@@ -268,19 +280,10 @@ func RefreshKeyHandler(db *sql.DB) echo.HandlerFunc {
 			return echo.NewHTTPError(http.StatusForbidden, "you can only refresh your own API keys")
 		}
 
-		// Compute original expiry duration in days.
+		// Use the stored expires_in_days value (0 or NULL means indefinite).
 		originalDays := 0
-		if expiresAt.Valid && expiresAt.String != "" {
-			createdTime, err := time.Parse(time.RFC3339, createdAt)
-			if err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to parse created_at")
-			}
-			expiresTime, err := time.Parse(time.RFC3339, expiresAt.String)
-			if err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to parse expires_at")
-			}
-			durationHours := expiresTime.Sub(createdTime).Hours()
-			originalDays = max(int(math.Ceil(durationHours/24)), 1)
+		if expiresInDays.Valid {
+			originalDays = int(expiresInDays.Int64)
 		}
 
 		// Generate new secret.

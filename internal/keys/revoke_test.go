@@ -20,7 +20,7 @@ func TestRevokeKey_SetsRevokedAt(t *testing.T) {
 	initAllTables(t, db)
 
 	insertTestUser(t, db, "user-uuid-9", "user9", "u9@e.com", "active", "github", "ext-9", "2025-01-01T00:00:00Z")
-	insertTestAPIKey(t, db, "keyToRvk", "user-uuid-9", "secret-torevoke-32-chars-pad-12", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyToRvk", "user-uuid-9", "secret-torevoke-32-chars-pad-12", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	e := setupEcho()
 	e.DELETE("/api/v1/keys/:key_id", keys.RevokeKeyHandler(db), setAuthContext(userAuthContext("user-uuid-9")))
@@ -63,7 +63,7 @@ func TestRevokeKey_Idempotent(t *testing.T) {
 
 	// Insert a key that is already revoked.
 	revokedTime := "2025-01-15T12:00:00Z"
-	insertTestAPIKey(t, db, "keyAlRvk", "user-idem", "secret-already-revoked-32-pad-1", "2025-01-01T00:00:00Z", nil, &revokedTime)
+	insertTestAPIKey(t, db, "keyAlRvk", "user-idem", "secret-already-revoked-32-pad-1", "2025-01-01T00:00:00Z", nil, &revokedTime, nil)
 
 	e := setupEcho()
 	e.DELETE("/api/v1/keys/:key_id", keys.RevokeKeyHandler(db), setAuthContext(adminAuthContext()))
@@ -98,7 +98,7 @@ func TestRevokeKey_AdminRevokesBlockedUserKey(t *testing.T) {
 	initAllTables(t, db)
 
 	insertTestUser(t, db, "user-blk-r", "userblkr", "blkr@e.com", "blocked", "github", "ext-blk-r", "2025-01-01T00:00:00Z")
-	insertTestAPIKey(t, db, "keyBlkRv", "user-blk-r", "secret-blocked-revoke-32-pad-12", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyBlkRv", "user-blk-r", "secret-blocked-revoke-32-pad-12", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	e := setupEcho()
 	e.DELETE("/api/v1/keys/:key_id", keys.RevokeKeyHandler(db), setAuthContext(adminAuthContext()))
@@ -172,7 +172,7 @@ func TestRevokeKey_EdgeCase_NonAdminOtherUserKey(t *testing.T) {
 	insertTestUser(t, db, "user-rvk-c", "userrvkc", "rvkc@e.com", "active", "github", "ext-rvk-c", "2025-01-01T00:00:00Z")
 
 	// Key belongs to user-rvk-c.
-	insertTestAPIKey(t, db, "keyOfUsC", "user-rvk-c", "secret-of-user-c-32-chars-pad-1", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyOfUsC", "user-rvk-c", "secret-of-user-c-32-chars-pad-1", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	e := setupEcho()
 	// Caller is user-rvk-a, but key belongs to user-rvk-c.

@@ -63,13 +63,14 @@ func initUsersTable(t *testing.T, db *sql.DB) {
 func initAPIKeysTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
-		id          TEXT PRIMARY KEY,
-		key_id      TEXT NOT NULL UNIQUE,
-		secret_hash TEXT NOT NULL,
-		user_id     TEXT NOT NULL REFERENCES users(id),
-		expires_at  TEXT,
-		created_at  TEXT NOT NULL,
-		revoked_at  TEXT
+		id              TEXT PRIMARY KEY,
+		key_id          TEXT NOT NULL UNIQUE,
+		secret_hash     TEXT NOT NULL,
+		user_id         TEXT NOT NULL REFERENCES users(id),
+		expires_at      TEXT,
+		created_at      TEXT NOT NULL,
+		revoked_at      TEXT,
+		expires_in_days INTEGER
 	)`)
 	if err != nil {
 		t.Fatalf("failed to create api_keys table: %v", err)

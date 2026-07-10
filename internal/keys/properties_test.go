@@ -34,7 +34,7 @@ func TestProperty_OneActiveKeyPerUser(t *testing.T) {
 	// handler should do.
 
 	// Key 1: active, indefinite.
-	insertTestAPIKey(t, db, "keyPrp01", userID, "secret-prop1-key1-32-chars-pad-1", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyPrp01", userID, "secret-prop1-key1-32-chars-pad-1", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	// Check: exactly 1 active key.
 	assertAtMostOneActiveKey(t, db, userID)
@@ -45,7 +45,7 @@ func TestProperty_OneActiveKeyPerUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to revoke key: %v", err)
 	}
-	insertTestAPIKey(t, db, "keyPrp02", userID, "secret-prop1-key2-32-chars-pad-1", "2025-02-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyPrp02", userID, "secret-prop1-key2-32-chars-pad-1", "2025-02-01T00:00:00Z", nil, nil, nil)
 	assertAtMostOneActiveKey(t, db, userID)
 
 	// Key 3: revoke key 2, create key 3.
@@ -54,7 +54,7 @@ func TestProperty_OneActiveKeyPerUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to revoke key: %v", err)
 	}
-	insertTestAPIKey(t, db, "keyPrp03", userID, "secret-prop1-key3-32-chars-pad-1", "2025-03-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyPrp03", userID, "secret-prop1-key3-32-chars-pad-1", "2025-03-01T00:00:00Z", nil, nil, nil)
 	assertAtMostOneActiveKey(t, db, userID)
 }
 
@@ -98,7 +98,7 @@ func TestProperty_SecretNeverStoredInPlaintext(t *testing.T) {
 
 	for i, secret := range plaintextSecrets {
 		keyID := fmt.Sprintf("keyP2k%d", i+1)
-		insertTestAPIKey(t, db, keyID, userID, secret, "2025-01-01T00:00:00Z", nil, nil)
+		insertTestAPIKey(t, db, keyID, userID, secret, "2025-01-01T00:00:00Z", nil, nil, nil)
 
 		// Verify the hash is correct.
 		var dbHash string
@@ -151,7 +151,7 @@ func TestProperty_RevocationIsPermanent(t *testing.T) {
 	insertTestUser(t, db, userID, "prp3user", "prp3@e.com", "active", "github", "ext-prp3", "2025-01-01T00:00:00Z")
 
 	revokedTime := "2025-01-15T00:00:00Z"
-	insertTestAPIKey(t, db, "keyP3rvk", userID, "secret-prop3-key1-32-chars-pad-1", "2025-01-01T00:00:00Z", nil, &revokedTime)
+	insertTestAPIKey(t, db, "keyP3rvk", userID, "secret-prop3-key1-32-chars-pad-1", "2025-01-01T00:00:00Z", nil, &revokedTime, nil)
 
 	e := setupEcho()
 
@@ -240,7 +240,7 @@ func TestProperty_LoginTransactionAtomicity(t *testing.T) {
 
 	userID := "user-prop5"
 	insertTestUser(t, db, userID, "prp5user", "prp5@e.com", "active", "github", "ext-prp5", "2025-01-01T00:00:00Z")
-	insertTestAPIKey(t, db, "keyP5old", userID, "secret-prop5-old-key-32-chars-1", "2025-01-01T00:00:00Z", nil, nil)
+	insertTestAPIKey(t, db, "keyP5old", userID, "secret-prop5-old-key-32-chars-1", "2025-01-01T00:00:00Z", nil, nil, nil)
 
 	// Snapshot before attempted "login".
 	var userCountBefore, keyCountBefore int

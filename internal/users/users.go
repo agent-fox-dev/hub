@@ -16,35 +16,33 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/agent-fox-dev/hub/internal/authctx"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
 // CredentialType identifies the kind of authentication credential used.
-type CredentialType string
+// Type alias for authctx.CredentialType.
+type CredentialType = authctx.CredentialType
 
 const (
 	// CredentialTypeAdmin is an admin token credential.
-	CredentialTypeAdmin CredentialType = "admin"
+	CredentialTypeAdmin = authctx.CredentialTypeAdmin
 	// CredentialTypeAPIKey is a user API key credential.
-	CredentialTypeAPIKey CredentialType = "api_key"
+	CredentialTypeAPIKey = authctx.CredentialTypeAPIKey
 	// CredentialTypeWorkspaceToken is a workspace token credential.
-	CredentialTypeWorkspaceToken CredentialType = "workspace_token"
+	CredentialTypeWorkspaceToken = authctx.CredentialTypeWorkspaceToken
 )
 
 // ContextKey is a typed key for Echo context values.
-type ContextKey string
+type ContextKey = authctx.ContextKey
 
 // AuthContextKey is the Echo context key for AuthContext.
-const AuthContextKey ContextKey = "auth_context"
+const AuthContextKey = authctx.AuthContextKey
 
 // AuthContext holds the authentication state set by auth middleware.
-type AuthContext struct {
-	CredentialType CredentialType
-	UserID         string
-	WorkspaceID    string
-	IsAdmin        bool
-}
+// Type alias for authctx.AuthContext.
+type AuthContext = authctx.AuthContext
 
 // User represents a user record in the users table.
 type User struct {
@@ -115,9 +113,20 @@ func writeError(c echo.Context, code int, message string) error {
 }
 
 // getAuthContext extracts the AuthContext from the Echo context.
+// Handles both pointer storage (from unit test helpers) and value storage
+// (from real auth middleware).
 func getAuthContext(c echo.Context) *AuthContext {
-	ac, _ := c.Get(string(AuthContextKey)).(*AuthContext)
-	return ac
+	v := c.Get(string(AuthContextKey))
+	if v == nil {
+		return nil
+	}
+	if ac, ok := v.(*AuthContext); ok {
+		return ac
+	}
+	if ac, ok := v.(AuthContext); ok {
+		return &ac
+	}
+	return nil
 }
 
 // ValidateUsername checks that a username contains only alphanumeric

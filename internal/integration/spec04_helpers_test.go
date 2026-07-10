@@ -71,13 +71,14 @@ CREATE TABLE IF NOT EXISTS admin_tokens (
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
-    id          TEXT PRIMARY KEY,
-    key_id      TEXT NOT NULL UNIQUE,
-    secret_hash TEXT NOT NULL,
-    user_id     TEXT NOT NULL REFERENCES users(id),
-    expires_at  TEXT,
-    created_at  TEXT NOT NULL,
-    revoked_at  TEXT
+    id              TEXT PRIMARY KEY,
+    key_id          TEXT NOT NULL UNIQUE,
+    secret_hash     TEXT NOT NULL,
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    expires_at      TEXT,
+    created_at      TEXT NOT NULL,
+    revoked_at      TEXT,
+    expires_in_days INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -213,8 +214,8 @@ func createTestAPIKey(t *testing.T, db *sql.DB, userID string, keyID string) str
 	secret := "abcdefghABCDEFGH0123456789abcdef"
 	secretHash := sha256Hex(secret)
 	now := nowISO()
-	_, err := db.Exec(`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at)
-		VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
+	_, err := db.Exec(`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at, expires_in_days)
+		VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL)`,
 		"apikey-"+keyID, keyID, secretHash, userID, now)
 	if err != nil {
 		t.Fatalf("createTestAPIKey(%s, %s): %v", userID, keyID, err)
@@ -227,8 +228,8 @@ func createTestAPIKeyWithSecret(t *testing.T, db *sql.DB, userID, keyID, secret 
 	t.Helper()
 	secretHash := sha256Hex(secret)
 	now := nowISO()
-	_, err := db.Exec(`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at)
-		VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
+	_, err := db.Exec(`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at, expires_in_days)
+		VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL)`,
 		"apikey-"+keyID, keyID, secretHash, userID, now)
 	if err != nil {
 		t.Fatalf("createTestAPIKeyWithSecret(%s, %s): %v", userID, keyID, err)

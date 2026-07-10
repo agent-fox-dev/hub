@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,9 +43,9 @@ func CreateKey(ctx context.Context, tx *sql.Tx, userID string, expiresInDays int
 	id := uuid.New().String()
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-		id, keyID, secretHash, userID, expiresAtStr, createdAt,
+		`INSERT INTO api_keys (id, key_id, secret_hash, user_id, expires_at, created_at, revoked_at, expires_in_days)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+		id, keyID, secretHash, userID, expiresAtStr, createdAt, expiresInDays,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("insert api_key: %w", err)
@@ -78,24 +77,21 @@ func RevokeActiveKey(ctx context.Context, tx *sql.Tx, userID string) error {
 }
 
 // StoreRefreshKey generates a new secret for an existing non-revoked key,
-// stores the SHA-256 hash, recalculates expires_at using the original expiry
-// duration, and returns the updated KeyRecord plus the plaintext secret.
+// stores the SHA-256 hash, recalculates expires_at using the stored
+// expires_in_days value, and returns the updated KeyRecord plus the plaintext
+// secret.
 //
 // Returns sql.ErrNoRows if the key_id does not exist or has been revoked.
-//
-// Note on expiry duration calculation: the original duration is computed as
-// ceil((expires_at - created_at) / 24h). This works correctly for the first
-// refresh. See docs/errata/02_user_management_divergences.md section 4 for
-// the limitation on subsequent refreshes.
 func StoreRefreshKey(ctx context.Context, db *sql.DB, keyID string) (*KeyRecord, string, error) {
 	// Look up the key; revoked keys are treated as non-existent.
 	var userID, createdAt string
-	var expiresAt, revokedAt sql.NullString
+	var revokedAt sql.NullString
+	var expiresInDays sql.NullInt64
 	err := db.QueryRowContext(ctx,
-		`SELECT user_id, created_at, expires_at, revoked_at
+		`SELECT user_id, created_at, revoked_at, expires_in_days
 		 FROM api_keys WHERE key_id = ?`,
 		keyID,
-	).Scan(&userID, &createdAt, &expiresAt, &revokedAt)
+	).Scan(&userID, &createdAt, &revokedAt, &expiresInDays)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, "", sql.ErrNoRows
@@ -108,19 +104,10 @@ func StoreRefreshKey(ctx context.Context, db *sql.DB, keyID string) (*KeyRecord,
 		return nil, "", sql.ErrNoRows
 	}
 
-	// Compute original expiry duration in days.
+	// Use the stored expires_in_days value (0 or NULL means indefinite).
 	originalDays := 0
-	if expiresAt.Valid && expiresAt.String != "" {
-		createdTime, err := time.Parse(time.RFC3339, createdAt)
-		if err != nil {
-			return nil, "", fmt.Errorf("parse created_at: %w", err)
-		}
-		expiresTime, err := time.Parse(time.RFC3339, expiresAt.String)
-		if err != nil {
-			return nil, "", fmt.Errorf("parse expires_at: %w", err)
-		}
-		durationHours := expiresTime.Sub(createdTime).Hours()
-		originalDays = max(int(math.Ceil(durationHours/24)), 1)
+	if expiresInDays.Valid {
+		originalDays = int(expiresInDays.Int64)
 	}
 
 	// Generate new secret.

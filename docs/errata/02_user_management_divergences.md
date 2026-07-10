@@ -66,15 +66,14 @@ which only works on the first refresh. After refresh, `expires_at` is
 updated but `created_at` remains the original value, causing the computed
 duration to grow on each subsequent refresh.
 
-**Adaptation:** The implementation should either:
-(a) Add an `expires_in_days` INTEGER column to the `api_keys` table, or
-(b) Store the original duration at key creation time and retrieve it at
-    refresh time using a different mechanism (e.g., compute from the FIRST
-    expires_at and created_at, before any refreshes).
+**Resolution:** Added `expires_in_days INTEGER` column to the `api_keys`
+table. The column stores the original N-day expiry duration at key creation
+time (NULL for indefinite keys). The refresh handler reads this column
+directly instead of computing from timestamps, eliminating the drift issue.
 
-Option (b) is viable if the handler stores the original N value in a new
-column or computes it from the initial state. This is deferred to the
-implementation task groups (5, 8).
+All test DDLs and INSERT helpers updated to include the column. The
+production migration DDL (in `internal/db`, currently a stub) must also
+include this column when implemented.
 
 **Affected requirements:** 02-REQ-9.1, 02-REQ-9.4, TS-02-27, TS-02-28,
 TS-02-30.
