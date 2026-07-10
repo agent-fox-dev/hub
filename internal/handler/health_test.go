@@ -1,17 +1,20 @@
 package handler_test
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/agent-fox-dev/hub/internal/handler"
 	"github.com/labstack/echo/v4"
+	"github.com/sirupsen/logrus"
 
 	_ "modernc.org/sqlite"
 )
@@ -289,12 +292,54 @@ func TestSpec01_HealthProbeMethodNotAllowed(t *testing.T) {
 // 2.4 — Readyz Failure Counter and Logging Cadence
 // ---------------------------------------------------------------------------
 
+// setupLogCapture redirects logrus output to a buffer for test assertions
+// on log levels. Returns the buffer. Restores the original logrus state on
+// test cleanup.
+func setupLogCapture(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+
+	origFormatter := logrus.StandardLogger().Formatter
+	origOutput := logrus.StandardLogger().Out
+	origLevel := logrus.GetLevel()
+
+	logrus.SetFormatter(&logrus.JSONFormatter{})
+	logrus.SetOutput(&buf)
+	logrus.SetLevel(logrus.TraceLevel) // Capture all levels.
+
+	t.Cleanup(func() {
+		logrus.SetFormatter(origFormatter)
+		logrus.SetOutput(origOutput)
+		logrus.SetLevel(origLevel)
+	})
+
+	return &buf
+}
+
+// parseLogEntries splits a buffer's content into individual JSON log entries.
+func parseLogEntries(buf *bytes.Buffer) []map[string]any {
+	var entries []map[string]any
+	for _, line := range strings.Split(buf.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err == nil {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
 // TestSpec01_ReadyzFirstFailureCounterAndLogLevel verifies that the first
 // DB check failure increments the atomic counter to 1 and logs at error level.
 // Subsequent failures log at debug level. Recovery logs at info level and
 // resets the counter to 0.
 // TS-01-14, REQ: 01-REQ-4.3
 func TestSpec01_ReadyzFirstFailureCounterAndLogLevel(t *testing.T) {
+	logBuf := setupLogCapture(t)
+
 	brokenDB := setupBrokenDB(t)
 	e := echo.New()
 
@@ -305,7 +350,8 @@ func TestSpec01_ReadyzFirstFailureCounterAndLogLevel(t *testing.T) {
 
 	handler.ResetReadyzFailureCounter()
 
-	// First failure: counter should go to 1.
+	// ---- First failure: counter should go to 1, log at error level ----
+	logBuf.Reset()
 	req1 := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec1 := httptest.NewRecorder()
 	c1 := e.NewContext(req1, rec1)
@@ -322,7 +368,21 @@ func TestSpec01_ReadyzFirstFailureCounterAndLogLevel(t *testing.T) {
 		t.Errorf("failure counter after first failure = %d, want 1", counter)
 	}
 
-	// Second failure: counter should be >= 2.
+	// First failure should log at error level.
+	entries1 := parseLogEntries(logBuf)
+	foundErrorLog := false
+	for _, entry := range entries1 {
+		if level, ok := entry["level"].(string); ok && level == "error" {
+			foundErrorLog = true
+			break
+		}
+	}
+	if !foundErrorLog {
+		t.Error("first DB failure should emit an error-level log entry; none found")
+	}
+
+	// ---- Second failure: counter >= 2, log at debug level ----
+	logBuf.Reset()
 	req2 := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec2 := httptest.NewRecorder()
 	c2 := e.NewContext(req2, rec2)
@@ -339,7 +399,26 @@ func TestSpec01_ReadyzFirstFailureCounterAndLogLevel(t *testing.T) {
 		t.Errorf("failure counter after second failure = %d, want >= 2", counter)
 	}
 
-	// Recovery: use a healthy DB.
+	// Subsequent failures should log at debug level, NOT error.
+	entries2 := parseLogEntries(logBuf)
+	for _, entry := range entries2 {
+		if level, ok := entry["level"].(string); ok && level == "error" {
+			t.Error("subsequent DB failure should log at debug level, not error level")
+		}
+	}
+	foundDebugLog := false
+	for _, entry := range entries2 {
+		if level, ok := entry["level"].(string); ok && level == "debug" {
+			foundDebugLog = true
+			break
+		}
+	}
+	if !foundDebugLog {
+		t.Error("subsequent DB failure should emit a debug-level log entry; none found")
+	}
+
+	// ---- Recovery: use a healthy DB, log at info level ----
+	logBuf.Reset()
 	healthyDB := setupTestDB(t)
 	recoveryH := handler.ReadyzHandler(healthyDB)
 	if recoveryH == nil {
@@ -360,6 +439,19 @@ func TestSpec01_ReadyzFirstFailureCounterAndLogLevel(t *testing.T) {
 	counter = handler.GetReadyzFailureCounter()
 	if counter != 0 {
 		t.Errorf("failure counter after recovery = %d, want 0", counter)
+	}
+
+	// Recovery should log at info level.
+	entries3 := parseLogEntries(logBuf)
+	foundInfoLog := false
+	for _, entry := range entries3 {
+		if level, ok := entry["level"].(string); ok && level == "info" {
+			foundInfoLog = true
+			break
+		}
+	}
+	if !foundInfoLog {
+		t.Error("recovery after degraded period should emit an info-level log entry; none found")
 	}
 }
 

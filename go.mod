@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
+	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.10.2
 	modernc.org/sqlite v1.53.0
 )

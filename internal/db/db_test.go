@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/hub/internal/db"
@@ -295,8 +296,12 @@ func TestSpec01_DBPragmaFailureIdentifiesName(t *testing.T) {
 	if err == nil {
 		t.Fatal("InitDatabase should return error when PRAGMA journal_mode=WAL fails on read-only DB, got nil")
 	}
-	// The error should mention the failing pragma or be informative.
-	// Implementation must include the PRAGMA name in the error.
+	// The error MUST identify the specific failing PRAGMA name.
+	// TS-01-E6 pseudocode: assert 'journal_mode' in fatal_log['msg']
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "journal_mode") {
+		t.Errorf("error message = %q, want it to contain 'journal_mode' (the specific failing PRAGMA name)", errMsg)
+	}
 }
 
 // TestSpec01_DBBusyTimeoutHTTP503 verifies that when a SQLite write
