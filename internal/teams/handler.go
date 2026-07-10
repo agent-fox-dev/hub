@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/agent-fox-dev/hub/internal/auth"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -340,5 +341,63 @@ func (h *Handler) addMember(c echo.Context) error {
 }
 
 func (h *Handler) listMembers(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	// Validate UUID path parameter before any DB lookup.
+	teamID := c.Param("id")
+	if err := validateUUID(teamID); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	// Check team exists and is not deleted.
+	_, err := h.store.GetTeamByID(teamID)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return writeError(c, http.StatusNotFound, ErrTeamNotFound.Error())
+		}
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	// Retrieve all members ordered by joined_at ascending.
+	members, err := h.store.ListMembers(teamID)
+	if err != nil {
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	// Build response array; never return null for an empty list.
+	responses := make([]MemberResponse, 0, len(members))
+	for i := range members {
+		responses = append(responses, memberToResponse(&members[i]))
+	}
+
+	return c.JSON(http.StatusOK, responses)
+}
+
+// AdminRequired returns Echo middleware that checks if the authenticated
+// caller is an admin. It reads the AuthContext set by the auth middleware
+// from server_foundation and returns HTTP 403 if the caller is not an admin.
+// This middleware must be applied after the auth middleware.
+func AdminRequired() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			raw := c.Get(string(auth.AuthContextKey))
+			if raw == nil {
+				return writeError(c, http.StatusForbidden, "admin access required")
+			}
+
+			authCtx, ok := raw.(auth.AuthContext)
+			if !ok {
+				// Try pointer form as well.
+				authCtxPtr, okPtr := raw.(*auth.AuthContext)
+				if !okPtr || authCtxPtr == nil {
+					return writeError(c, http.StatusForbidden, "admin access required")
+				}
+				authCtx = *authCtxPtr
+			}
+
+			if !authCtx.IsAdmin {
+				return writeError(c, http.StatusForbidden, "admin access required")
+			}
+
+			return next(c)
+		}
+	}
 }
