@@ -46,7 +46,19 @@
     "updated_at": "Timestamp column updated only when at least one field value actually changes; no-op writes do not bump this value.",
     "upsert": "Insert-or-update operation keyed on (provider, provider_id) that creates a new user record if none exists, or updates fields of an existing record.",
     "userinfo_url": "URL used server-side to fetch the authenticated user's profile from the OAuth provider after code exchange.",
-    "users table": "Database table storing user records with fields: id, username, email, full_name, status, provider, provider_id, created_at, updated_at."
+    "users table": "Database table storing user records with fields: id, username, email, full_name, status, provider, provider_id, created_at, updated_at.",
+    "af_<key_id>_<secret>": "Token or credential format string.",
+    "email": "Code reference or literal value used in requirements.",
+    "expires": "Code reference or literal value used in requirements.",
+    "full_name": "Code reference or literal value used in requirements.",
+    "http://localhost": "URL or URI format.",
+    "http://localhost.evil.com": "URL or URI format.",
+    "id": "Code reference or literal value used in requirements.",
+    "math/rand": "Code reference or literal value used in requirements.",
+    "name": "Code reference or literal value used in requirements.",
+    "providers": "Code reference or literal value used in requirements.",
+    "username": "Code reference or literal value used in requirements.",
+    "users": "Code reference or literal value used in requirements."
   },
   "requirements": [
     {
@@ -102,7 +114,7 @@
     },
     {
       "id": "02-REQ-2",
-      "title": "OAuth Callback — Code Exchange and User Upsert",
+      "title": "OAuth Callback \u2014 Code Exchange and User Upsert",
       "user_story": {
         "role": "authenticated CLI user",
         "goal": "complete the OAuth authorization code flow via the callback endpoint",
@@ -113,7 +125,7 @@
           "id": "02-REQ-2.1",
           "ears_pattern": "event_driven",
           "system": "server",
-          "action": "validates `provider` against the `provider registry`, validates `expires` (defaulting to 90 if omitted), validates `redirect_uri` `origin` against the `allowlist`, exchanges the code with the provider, upserts the user, revokes any existing `active key`, creates a new API key, and returns the user object and new key — all user upsert and key operations execute within a single database transaction",
+          "action": "validates `provider` against the `provider registry`, validates `expires` (defaulting to 90 if omitted), validates `redirect_uri` `origin` against the `allowlist`, exchanges the code with the provider, upserts the user, revokes any existing `active key`, creates a new API key, and returns the user object and new key \u2014 all user upsert and key operations execute within a single database transaction",
           "return_contract": "HTTP 200 with body containing user object and api_key object including plaintext `secret` and `token`",
           "trigger": "`POST /api/v1/auth/callback` is called with a valid JSON body containing recognized `provider`, valid `expires`, and an allowlisted `redirect_uri`"
         },
@@ -137,7 +149,7 @@
           "id": "02-REQ-2.4",
           "ears_pattern": "event_driven",
           "system": "server",
-          "action": "generates `key_id` (8 alphanumeric chars, base62, `crypto/rand`) and `secret` (32 alphanumeric chars, base62, `crypto/rand`), stores SHA-256 hash of the secret in the `api_keys table`, computes `expires_at` as now + 24h × N days (null when expires=0), and returns the plaintext `token` in format `af_<key_id>_<secret>`",
+          "action": "generates `key_id` (8 alphanumeric chars, base62, `crypto/rand`) and `secret` (32 alphanumeric chars, base62, `crypto/rand`), stores SHA-256 hash of the secret in the `api_keys table`, computes `expires_at` as now + 24h \u00d7 N days (null when expires=0), and returns the plaintext `token` in format `af_<key_id>_<secret>`",
           "return_contract": "api_key object with key_id, secret (plaintext, 32 chars), token, user_id, created_at, expires_at",
           "trigger": "a new API key is created during `POST /api/v1/auth/callback`"
         },
@@ -299,7 +311,7 @@
           "ears_pattern": "event_driven",
           "system": "server",
           "action": "creates a new user record with `status` 'active', a UUID v4 `id` generated via `google/uuid`, no associated API key, and returns HTTP 201 with the user object excluding `provider_id`",
-          "return_contract": "HTTP 201 with user object: {id, username, email, full_name, status, provider, created_at, updated_at} — provider_id omitted",
+          "return_contract": "HTTP 201 with user object: {id, username, email, full_name, status, provider, created_at, updated_at} \u2014 provider_id omitted",
           "trigger": "`POST /api/v1/users` is called by an admin with a valid request body"
         },
         {
@@ -558,7 +570,7 @@
           "id": "02-REQ-9.2",
           "ears_pattern": "event_driven",
           "system": "server",
-          "action": "permits the refresh; generates a new `secret`, recalculates `expires_at` as now + original N days, and returns HTTP 200 — the caller is not required to re-authenticate via OAuth",
+          "action": "permits the refresh; generates a new `secret`, recalculates `expires_at` as now + original N days, and returns HTTP 200 \u2014 the caller is not required to re-authenticate via OAuth",
           "return_contract": "HTTP 200 with updated key object including new plaintext secret",
           "trigger": "`POST /api/v1/keys/:key_id/refresh` is called for an expired (but not revoked) key"
         },
@@ -1110,7 +1122,7 @@
   "external_apis": [
     {
       "package": "github.com/google/uuid",
-      "version": "unverified — cross-check installed version before implementation",
+      "version": "unverified \u2014 cross-check installed version before implementation",
       "symbols": [
         {
           "name": "New",

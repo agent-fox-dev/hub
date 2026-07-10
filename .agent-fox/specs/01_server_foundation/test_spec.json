@@ -16,7 +16,8 @@
       ],
       "input": "Start server without any --config flag and without a config.toml present",
       "expected": "Server starts normally; configuration reflects defaults: port=8080, bind=0.0.0.0, db_path=./data/af-hub.db, log_level=info; no fatal error is logged; HTTP listener opens on 0.0.0.0:8080",
-      "assertion_pseudocode": "cfg = loadConfig(configPath=\"./config.toml\", flagProvided=false)\nassert cfg.Server.Port == 8080\nassert cfg.Server.Bind == \"0.0.0.0\"\nassert cfg.Server.ExternalURL == \"\"\nassert cfg.Database.Path == \"./data/af-hub.db\"\nassert cfg.Log.Level == \"info\"\nassert serverStartsWithoutError == true"
+      "assertion_pseudocode": "cfg = loadConfig(configPath=\"./config.toml\", flagProvided=false)\nassert cfg.Server.Port == 8080\nassert cfg.Server.Bind == \"0.0.0.0\"\nassert cfg.Server.ExternalURL == \"\"\nassert cfg.Database.Path == \"./data/af-hub.db\"\nassert cfg.Log.Level == \"info\"\nassert serverStartsWithoutError == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-2",
@@ -28,7 +29,8 @@
       ],
       "input": "config.toml with content: `[server\\nport = 8080` (malformed, unclosed bracket)",
       "expected": "Process exits with code 1; a fatal-level structured JSON log entry is emitted to stdout containing the parse failure reason; no HTTP port is opened",
-      "assertion_pseudocode": "write_file(\"./config.toml\", \"[server\\nport = 8080\")\nresult = run_server_process()\nassert result.exit_code == 1\nassert parse_json_log_contains(result.stdout, {\"level\": \"fatal\"})\nassert http_port_not_open(8080)"
+      "assertion_pseudocode": "write_file(\"./config.toml\", \"[server\\nport = 8080\")\nresult = run_server_process()\nassert result.exit_code == 1\nassert parse_json_log_contains(result.stdout, {\"level\": \"fatal\"})\nassert http_port_not_open(8080)",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-3",
@@ -40,7 +42,8 @@
       ],
       "input": "config.toml containing: `[servr]\\nport = 9090\\nfoo = \"bar\"`",
       "expected": "Server starts normally; one warn-level structured log entry is emitted to stdout for each unrecognized field including its name/path; defaults are applied for unrecognized keys",
-      "assertion_pseudocode": "write_file(\"./config.toml\", \"[servr]\\nport = 9090\\nfoo = \\\"bar\\\"\")\nresult = start_server_successfully()\nwarn_logs = filter_logs(result.stdout, level=\"warn\")\nassert len(warn_logs) >= 1\nfor each unrecognized_field in [\"servr\", \"foo\"]:\n  assert any(log contains field_name_or_path=unrecognized_field for log in warn_logs)\nassert server_is_listening() == true"
+      "assertion_pseudocode": "write_file(\"./config.toml\", \"[servr]\\nport = 9090\\nfoo = \\\"bar\\\"\")\nresult = start_server_successfully()\nwarn_logs = filter_logs(result.stdout, level=\"warn\")\nassert len(warn_logs) >= 1\nfor each unrecognized_field in [\"servr\", \"foo\"]:\n  assert any(log contains field_name_or_path=unrecognized_field for log in warn_logs)\nassert server_is_listening() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-4",
@@ -52,7 +55,8 @@
       ],
       "input": "config.toml containing: `[log]\\nlevel = \"verbose\"`",
       "expected": "Server starts normally using info log level; one warn-level JSON log entry is emitted with field `invalid_value` set to `verbose`; no fatal error occurs",
-      "assertion_pseudocode": "write_file(\"./config.toml\", \"[log]\\nlevel = \\\"verbose\\\"\")\nresult = start_server_successfully()\nwarn_log = find_log_entry(result.stdout, level=\"warn\", msg_contains=\"unrecognized log level\")\nassert warn_log != nil\nassert warn_log[\"invalid_value\"] == \"verbose\"\nassert effective_log_level() == \"info\""
+      "assertion_pseudocode": "write_file(\"./config.toml\", \"[log]\\nlevel = \\\"verbose\\\"\")\nresult = start_server_successfully()\nwarn_log = find_log_entry(result.stdout, level=\"warn\", msg_contains=\"unrecognized log level\")\nassert warn_log != nil\nassert warn_log[\"invalid_value\"] == \"verbose\"\nassert effective_log_level() == \"info\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-5",
@@ -64,7 +68,8 @@
       ],
       "input": "config.toml with port=9090, bind=127.0.0.1, external_url=https://example.com, database.path=./custom/db.db, log.level=debug, and one [[oauth.providers]] block with name=github, client_id=abc, client_secret=xyz",
       "expected": "Parsed config struct has Server.Port=9090, Server.Bind=127.0.0.1, Server.ExternalURL=https://example.com, Database.Path=./custom/db.db, Log.Level=debug, OAuth.Providers[0].Name=github, ClientID=abc, ClientSecret=xyz; server starts on port 9090",
-      "assertion_pseudocode": "write_file(\"./config.toml\", full_config_content)\ncfg = loadConfig(\"./config.toml\")\nassert cfg.Server.Port == 9090\nassert cfg.Server.Bind == \"127.0.0.1\"\nassert cfg.Server.ExternalURL == \"https://example.com\"\nassert cfg.Database.Path == \"./custom/db.db\"\nassert cfg.Log.Level == \"debug\"\nassert len(cfg.OAuth.Providers) == 1\nassert cfg.OAuth.Providers[0].Name == \"github\"\nassert cfg.OAuth.Providers[0].ClientID == \"abc\"\nassert cfg.OAuth.Providers[0].ClientSecret == \"xyz\""
+      "assertion_pseudocode": "write_file(\"./config.toml\", full_config_content)\ncfg = loadConfig(\"./config.toml\")\nassert cfg.Server.Port == 9090\nassert cfg.Server.Bind == \"127.0.0.1\"\nassert cfg.Server.ExternalURL == \"https://example.com\"\nassert cfg.Database.Path == \"./custom/db.db\"\nassert cfg.Log.Level == \"debug\"\nassert len(cfg.OAuth.Providers) == 1\nassert cfg.OAuth.Providers[0].Name == \"github\"\nassert cfg.OAuth.Providers[0].ClientID == \"abc\"\nassert cfg.OAuth.Providers[0].ClientSecret == \"xyz\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-6",
@@ -77,7 +82,8 @@
       ],
       "input": "Start server without any flags in a clean directory",
       "expected": "Log entries appear in stdout in strict order: logging setup before DB messages, DB init before admin bootstrap messages, admin bootstrap before route registration, startup info log entry appears immediately before server begins accepting connections; no step is skipped or reordered",
-      "assertion_pseudocode": "result = capture_startup_logs(run_server())\nlog_timestamps = extract_log_sequence(result.stdout)\nassert index_of(log_timestamps, \"db init\") > index_of(log_timestamps, \"logging initialized\")\nassert index_of(log_timestamps, \"admin bootstrap\") > index_of(log_timestamps, \"db init\")\nassert index_of(log_timestamps, \"server starting\") > index_of(log_timestamps, \"admin bootstrap\")\nassert server_accepts_connections_only_after_log(\"server starting\")"
+      "assertion_pseudocode": "result = capture_startup_logs(run_server())\nlog_timestamps = extract_log_sequence(result.stdout)\nassert index_of(log_timestamps, \"db init\") > index_of(log_timestamps, \"logging initialized\")\nassert index_of(log_timestamps, \"admin bootstrap\") > index_of(log_timestamps, \"db init\")\nassert index_of(log_timestamps, \"server starting\") > index_of(log_timestamps, \"admin bootstrap\")\nassert server_accepts_connections_only_after_log(\"server starting\")",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-7",
@@ -89,7 +95,8 @@
       ],
       "input": "Start server with default configuration",
       "expected": "Exactly one JSON log entry at info level with msg=server starting, bind=0.0.0.0, port=8080 (integer), db_path=./data/af-hub.db, log_level=info appears in stdout before connections are accepted",
-      "assertion_pseudocode": "result = capture_startup_logs(start_server())\nstartup_log = find_log_entry(result.stdout, level=\"info\", msg=\"server starting\")\nassert startup_log != nil\nassert startup_log[\"bind\"] == \"0.0.0.0\"\nassert startup_log[\"port\"] == 8080  // integer, not string\nassert startup_log[\"db_path\"] == \"./data/af-hub.db\"\nassert startup_log[\"log_level\"] == \"info\"\nassert count_matching_logs(result.stdout, msg=\"server starting\") == 1"
+      "assertion_pseudocode": "result = capture_startup_logs(start_server())\nstartup_log = find_log_entry(result.stdout, level=\"info\", msg=\"server starting\")\nassert startup_log != nil\nassert startup_log[\"bind\"] == \"0.0.0.0\"\nassert startup_log[\"port\"] == 8080  // integer, not string\nassert startup_log[\"db_path\"] == \"./data/af-hub.db\"\nassert startup_log[\"log_level\"] == \"info\"\nassert count_matching_logs(result.stdout, msg=\"server starting\") == 1",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-8",
@@ -102,7 +109,8 @@
       ],
       "input": "Start server with default database path ./data/af-hub.db where ./data does not exist",
       "expected": "Directory ./data is created; database file ./data/af-hub.db is created and opened; server continues startup without error",
-      "assertion_pseudocode": "ensure_directory_absent(\"./data\")\nstart_server()\nassert directory_exists(\"./data\") == true\nassert file_exists(\"./data/af-hub.db\") == true\nassert server_started_successfully() == true"
+      "assertion_pseudocode": "ensure_directory_absent(\"./data\")\nstart_server()\nassert directory_exists(\"./data\") == true\nassert file_exists(\"./data/af-hub.db\") == true\nassert server_started_successfully() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-9",
@@ -115,7 +123,8 @@
       ],
       "input": "Open SQLite database and apply pragmas",
       "expected": "After initialization: PRAGMA journal_mode returns WAL; PRAGMA foreign_keys returns 1; PRAGMA busy_timeout returns 5000; all three are applied before any table creation",
-      "assertion_pseudocode": "db = open_sqlite_database(\"./data/af-hub.db\")\napply_pragmas(db)\nresult_wal = db.query_scalar(\"PRAGMA journal_mode\")\nresult_fk = db.query_scalar(\"PRAGMA foreign_keys\")\nresult_bt = db.query_scalar(\"PRAGMA busy_timeout\")\nassert result_wal == \"wal\"\nassert result_fk == 1\nassert result_bt == 5000"
+      "assertion_pseudocode": "db = open_sqlite_database(\"./data/af-hub.db\")\napply_pragmas(db)\nresult_wal = db.query_scalar(\"PRAGMA journal_mode\")\nresult_fk = db.query_scalar(\"PRAGMA foreign_keys\")\nresult_bt = db.query_scalar(\"PRAGMA busy_timeout\")\nassert result_wal == \"wal\"\nassert result_fk == 1\nassert result_bt == 5000",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-10",
@@ -127,7 +136,8 @@
       ],
       "input": "Server startup with a fresh database",
       "expected": "All eight tables (users, admin_tokens, api_keys, teams, team_members, workspaces, workspace_tokens) and all five indexes (idx_api_keys_key_id, idx_workspace_tokens_token_id, idx_users_provider, idx_workspaces_slug, idx_teams_slug) exist in the database; subsequent boots are idempotent (no error on re-creation)",
-      "assertion_pseudocode": "start_server_and_stop()\ndb = open_sqlite_readonly(\"./data/af-hub.db\")\nexpected_tables = [\"users\", \"admin_tokens\", \"api_keys\", \"teams\", \"team_members\", \"workspaces\", \"workspace_tokens\"]\nfor tbl in expected_tables:\n  assert table_exists(db, tbl) == true\nexpected_indexes = [\"idx_api_keys_key_id\", \"idx_workspace_tokens_token_id\", \"idx_users_provider\", \"idx_workspaces_slug\", \"idx_teams_slug\"]\nfor idx in expected_indexes:\n  assert index_exists(db, idx) == true\n// Second boot must not fail\nstart_server_and_stop()  // idempotency check\nassert no_error_on_second_boot == true"
+      "assertion_pseudocode": "start_server_and_stop()\ndb = open_sqlite_readonly(\"./data/af-hub.db\")\nexpected_tables = [\"users\", \"admin_tokens\", \"api_keys\", \"teams\", \"team_members\", \"workspaces\", \"workspace_tokens\"]\nfor tbl in expected_tables:\n  assert table_exists(db, tbl) == true\nexpected_indexes = [\"idx_api_keys_key_id\", \"idx_workspace_tokens_token_id\", \"idx_users_provider\", \"idx_workspaces_slug\", \"idx_teams_slug\"]\nfor idx in expected_indexes:\n  assert index_exists(db, idx) == true\n// Second boot must not fail\nstart_server_and_stop()  // idempotency check\nassert no_error_on_second_boot == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-11",
@@ -139,7 +149,8 @@
       ],
       "input": "Inspect the sql.DB instance after initialization",
       "expected": "sql.DB instance has no explicit SetMaxOpenConns or SetMaxIdleConns overrides applied; busy_timeout pragma handles write contention at the SQLite layer",
-      "assertion_pseudocode": "db = initialize_database(\"./data/af-hub.db\")\nstats = db.Stats()\n// Default MaxOpenConns is 0 (unlimited)\nassert stats.MaxOpenConnections == 0\n// No explicit SetMaxIdleConns call was made (default is 2)\n// Verify by checking that no custom limit was set programmatically\nassert db_has_no_explicit_max_open_conns_override() == true\nassert pragma_busy_timeout_is_set(db, 5000) == true"
+      "assertion_pseudocode": "db = initialize_database(\"./data/af-hub.db\")\nstats = db.Stats()\n// Default MaxOpenConns is 0 (unlimited)\nassert stats.MaxOpenConnections == 0\n// No explicit SetMaxIdleConns call was made (default is 2)\n// Verify by checking that no custom limit was set programmatically\nassert db_has_no_explicit_max_open_conns_override() == true\nassert pragma_busy_timeout_is_set(db, 5000) == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-12",
@@ -151,7 +162,8 @@
       ],
       "input": "GET /healthz",
       "expected": "HTTP 200; response body is {\"status\": \"ok\"}; no database query is executed as part of this handler",
-      "assertion_pseudocode": "response = http_get(\"http://localhost:8080/healthz\")\nassert response.status_code == 200\nassert parse_json(response.body) == {\"status\": \"ok\"}"
+      "assertion_pseudocode": "response = http_get(\"http://localhost:8080/healthz\")\nassert response.status_code == 200\nassert parse_json(response.body) == {\"status\": \"ok\"}",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-13",
@@ -163,7 +175,8 @@
       ],
       "input": "GET /readyz",
       "expected": "HTTP 200; response body is {\"status\": \"ready\"}; SELECT 1 was executed against the SQLite connection with a 2-second timeout",
-      "assertion_pseudocode": "response = http_get(\"http://localhost:8080/readyz\")\nassert response.status_code == 200\nassert parse_json(response.body) == {\"status\": \"ready\"}"
+      "assertion_pseudocode": "response = http_get(\"http://localhost:8080/readyz\")\nassert response.status_code == 200\nassert parse_json(response.body) == {\"status\": \"ready\"}",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-14",
@@ -176,7 +189,8 @@
       ],
       "input": "Simulate DB failure then probe /readyz three times, then restore DB and probe again",
       "expected": "First probe after failure: error-level log entry emitted, counter=1; second probe after failure: debug-level log entry emitted; third probe after failure: debug-level log entry; first probe after recovery: info-level recovery log entry emitted, counter reset to 0",
-      "assertion_pseudocode": "simulate_db_failure()\nresponse1 = http_get(\"/readyz\")\nassert response1.status_code == 503\nassert log_contains(level=\"error\", about=\"db check failure\")\nassert atomic_read(readyz_failure_counter) == 1\n\nresponse2 = http_get(\"/readyz\")\nassert response2.status_code == 503\nassert last_readyz_log_level == \"debug\"\n\nrestore_db()\nresponse3 = http_get(\"/readyz\")\nassert response3.status_code == 200\nassert log_contains(level=\"info\", about=\"recovery\")\nassert atomic_read(readyz_failure_counter) == 0"
+      "assertion_pseudocode": "simulate_db_failure()\nresponse1 = http_get(\"/readyz\")\nassert response1.status_code == 503\nassert log_contains(level=\"error\", about=\"db check failure\")\nassert atomic_read(readyz_failure_counter) == 1\n\nresponse2 = http_get(\"/readyz\")\nassert response2.status_code == 503\nassert last_readyz_log_level == \"debug\"\n\nrestore_db()\nresponse3 = http_get(\"/readyz\")\nassert response3.status_code == 200\nassert log_contains(level=\"info\", about=\"recovery\")\nassert atomic_read(readyz_failure_counter) == 0",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-15",
@@ -188,7 +202,8 @@
       ],
       "input": "GET /readyz with a broken DB connection; then GET /healthz",
       "expected": "GET /readyz returns HTTP 503; server remains listening; subsequent GET /healthz returns HTTP 200; server does not shut down or restart",
-      "assertion_pseudocode": "simulate_db_failure()\nreadyz_response = http_get(\"/readyz\")\nassert readyz_response.status_code == 503\n\n// Server must still be alive\nhealthz_response = http_get(\"/healthz\")\nassert healthz_response.status_code == 200\nassert server_process_is_still_running() == true"
+      "assertion_pseudocode": "simulate_db_failure()\nreadyz_response = http_get(\"/readyz\")\nassert readyz_response.status_code == 503\n\n// Server must still be alive\nhealthz_response = http_get(\"/healthz\")\nassert healthz_response.status_code == 200\nassert server_process_is_still_running() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-16",
@@ -200,7 +215,8 @@
       ],
       "input": "POST /healthz and POST /readyz",
       "expected": "HTTP 405 for both; response body is Echo's default 405 body (not the {\"error\": {...}} API error envelope)",
-      "assertion_pseudocode": "response_healthz = http_post(\"http://localhost:8080/healthz\", body=nil)\nassert response_healthz.status_code == 405\nassert not_matches_api_error_envelope(response_healthz.body)\n\nresponse_readyz = http_post(\"http://localhost:8080/readyz\", body=nil)\nassert response_readyz.status_code == 405\nassert not_matches_api_error_envelope(response_readyz.body)"
+      "assertion_pseudocode": "response_healthz = http_post(\"http://localhost:8080/healthz\", body=nil)\nassert response_healthz.status_code == 405\nassert not_matches_api_error_envelope(response_healthz.body)\n\nresponse_readyz = http_post(\"http://localhost:8080/readyz\", body=nil)\nassert response_readyz.status_code == 405\nassert not_matches_api_error_envelope(response_readyz.body)",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-17",
@@ -212,7 +228,8 @@
       ],
       "input": "Initialize logging with config specifying debug level",
       "expected": "logrus global formatter is &logrus.JSONFormatter{}; output is os.Stdout; level is debug; no file or stderr output is configured",
-      "assertion_pseudocode": "cfg = Config{Log: {Level: \"debug\"}}\ninitialize_logging(cfg)\nassert logrus.GetFormatter() is instance of JSONFormatter\nassert logrus.GetOutput() == os.Stdout\nassert logrus.GetLevel() == logrus.DebugLevel\nassert no_stderr_writer_configured() == true\nassert no_file_writer_configured() == true"
+      "assertion_pseudocode": "cfg = Config{Log: {Level: \"debug\"}}\ninitialize_logging(cfg)\nassert logrus.GetFormatter() is instance of JSONFormatter\nassert logrus.GetOutput() == os.Stdout\nassert logrus.GetLevel() == logrus.DebugLevel\nassert no_stderr_writer_configured() == true\nassert no_file_writer_configured() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-18",
@@ -224,7 +241,8 @@
       ],
       "input": "GET /healthz",
       "expected": "A JSON log entry appears in stdout containing: method=GET (string), path=/healthz (string), status=200 (integer), duration_ms (float > 0), request_id (non-empty UUID string)",
-      "assertion_pseudocode": "response = http_get(\"http://localhost:8080/healthz\")\nlog_entry = find_request_log_entry(stdout, path=\"/healthz\")\nassert log_entry[\"method\"] == \"GET\"\nassert log_entry[\"path\"] == \"/healthz\"\nassert log_entry[\"status\"] == 200\nassert is_float(log_entry[\"duration_ms\"]) and log_entry[\"duration_ms\"] > 0\nassert is_valid_uuid(log_entry[\"request_id\"])"
+      "assertion_pseudocode": "response = http_get(\"http://localhost:8080/healthz\")\nlog_entry = find_request_log_entry(stdout, path=\"/healthz\")\nassert log_entry[\"method\"] == \"GET\"\nassert log_entry[\"path\"] == \"/healthz\"\nassert log_entry[\"status\"] == 200\nassert is_float(log_entry[\"duration_ms\"]) and log_entry[\"duration_ms\"] > 0\nassert is_valid_uuid(log_entry[\"request_id\"])",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-19",
@@ -236,7 +254,8 @@
       ],
       "input": "Set log level to trace; emit a logrus.Trace() entry",
       "expected": "logrus.ParseLevel(\"trace\") succeeds; logrus.SetLevel(TraceLevel) sets the level; trace-level log entries appear in stdout; no fallback or aliasing occurs",
-      "assertion_pseudocode": "level, err = logrus.ParseLevel(\"trace\")\nassert err == nil\nassert level == logrus.TraceLevel\nlogrus.SetLevel(level)\nlogrus.Trace(\"test trace message\")\nassert log_output_contains_level(stdout, \"trace\")\n// Verify all other levels too\nfor lvl in [\"debug\", \"info\", \"warn\", \"error\", \"fatal\", \"panic\"]:\n  parsed, err = logrus.ParseLevel(lvl)\n  assert err == nil"
+      "assertion_pseudocode": "level, err = logrus.ParseLevel(\"trace\")\nassert err == nil\nassert level == logrus.TraceLevel\nlogrus.SetLevel(level)\nlogrus.Trace(\"test trace message\")\nassert log_output_contains_level(stdout, \"trace\")\n// Verify all other levels too\nfor lvl in [\"debug\", \"info\", \"warn\", \"error\", \"fatal\", \"panic\"]:\n  parsed, err = logrus.ParseLevel(lvl)\n  assert err == nil",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-20",
@@ -248,7 +267,8 @@
       ],
       "input": "GET /healthz with X-Request-ID: my-valid-request-123",
       "expected": "request_id in the log entry and X-Request-ID response header both equal my-valid-request-123; no new UUID is generated",
-      "assertion_pseudocode": "response = http_get(\"/healthz\", headers={\"X-Request-ID\": \"my-valid-request-123\"})\nassert response.headers[\"X-Request-ID\"] == \"my-valid-request-123\"\nlog_entry = find_request_log_entry(stdout, request_id=\"my-valid-request-123\")\nassert log_entry[\"request_id\"] == \"my-valid-request-123\""
+      "assertion_pseudocode": "response = http_get(\"/healthz\", headers={\"X-Request-ID\": \"my-valid-request-123\"})\nassert response.headers[\"X-Request-ID\"] == \"my-valid-request-123\"\nlog_entry = find_request_log_entry(stdout, request_id=\"my-valid-request-123\")\nassert log_entry[\"request_id\"] == \"my-valid-request-123\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-21",
@@ -260,7 +280,8 @@
       ],
       "input": "GET /healthz with no X-Request-ID header",
       "expected": "X-Request-ID response header is set to a valid UUID v4 string; log entry contains the same UUID v4 as request_id",
-      "assertion_pseudocode": "response = http_get(\"/healthz\")  // no X-Request-ID header\nrequest_id = response.headers[\"X-Request-ID\"]\nassert is_valid_uuid_v4(request_id)\nlog_entry = find_request_log_entry(stdout)\nassert log_entry[\"request_id\"] == request_id"
+      "assertion_pseudocode": "response = http_get(\"/healthz\")  // no X-Request-ID header\nrequest_id = response.headers[\"X-Request-ID\"]\nassert is_valid_uuid_v4(request_id)\nlog_entry = find_request_log_entry(stdout)\nassert log_entry[\"request_id\"] == request_id",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-22",
@@ -272,7 +293,8 @@
       ],
       "input": "Multiple requests: one with X-Request-ID header, one without, one with an invalid X-Request-ID",
       "expected": "All three responses include X-Request-ID header; values are non-empty strings",
-      "assertion_pseudocode": "r1 = http_get(\"/healthz\", headers={\"X-Request-ID\": \"valid-id\"})\nassert r1.headers[\"X-Request-ID\"] == \"valid-id\"\n\nr2 = http_get(\"/healthz\")  // no header\nassert r2.headers[\"X-Request-ID\"] != \"\"\nassert is_valid_uuid_v4(r2.headers[\"X-Request-ID\"])\n\nr3 = http_get(\"/healthz\", headers={\"X-Request-ID\": \"\\x01invalid\"})\nassert r3.headers[\"X-Request-ID\"] != \"\"\nassert is_valid_uuid_v4(r3.headers[\"X-Request-ID\"])"
+      "assertion_pseudocode": "r1 = http_get(\"/healthz\", headers={\"X-Request-ID\": \"valid-id\"})\nassert r1.headers[\"X-Request-ID\"] == \"valid-id\"\n\nr2 = http_get(\"/healthz\")  // no header\nassert r2.headers[\"X-Request-ID\"] != \"\"\nassert is_valid_uuid_v4(r2.headers[\"X-Request-ID\"])\n\nr3 = http_get(\"/healthz\", headers={\"X-Request-ID\": \"\\x01invalid\"})\nassert r3.headers[\"X-Request-ID\"] != \"\"\nassert is_valid_uuid_v4(r3.headers[\"X-Request-ID\"])",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-23",
@@ -285,7 +307,8 @@
       ],
       "input": "Send SIGTERM while a request is in-flight",
       "expected": "Server stops accepting new connections immediately; the in-flight request completes before server exits; shutdown uses a 15-second context timeout; new connection attempts after SIGTERM are refused",
-      "assertion_pseudocode": "start_slow_request_async(\"/api/v1/slow\", duration=5s)\nsend_signal(server_pid, SIGTERM)\n\n// New connection should be refused\nnew_conn_result = try_connect(timeout=1s)\nassert new_conn_result == \"connection refused\"\n\n// In-flight request should complete\nslow_request_result = wait_for_slow_request()\nassert slow_request_result.completed == true\n\nassert server_exited() == true"
+      "assertion_pseudocode": "start_slow_request_async(\"/api/v1/slow\", duration=5s)\nsend_signal(server_pid, SIGTERM)\n\n// New connection should be refused\nnew_conn_result = try_connect(timeout=1s)\nassert new_conn_result == \"connection refused\"\n\n// In-flight request should complete\nslow_request_result = wait_for_slow_request()\nassert slow_request_result.completed == true\n\nassert server_exited() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-24",
@@ -297,7 +320,8 @@
       ],
       "input": "Send SIGTERM to the server process",
       "expected": "Server emits an info-level JSON log entry with msg=server shutdown complete; process exits with code 0; no warn-level timeout message is emitted",
-      "assertion_pseudocode": "send_signal(server_pid, SIGTERM)\nexit_code = wait_for_exit(server_process)\nassert exit_code == 0\nassert log_contains(stdout, {\"level\": \"info\", \"msg\": \"server shutdown complete\"})\nassert not log_contains(stdout, {\"level\": \"warn\", \"msg_contains\": \"timed out\"})"
+      "assertion_pseudocode": "send_signal(server_pid, SIGTERM)\nexit_code = wait_for_exit(server_process)\nassert exit_code == 0\nassert log_contains(stdout, {\"level\": \"info\", \"msg\": \"server shutdown complete\"})\nassert not log_contains(stdout, {\"level\": \"warn\", \"msg_contains\": \"timed out\"})",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-25",
@@ -310,7 +334,8 @@
       ],
       "input": "Send SIGTERM while a request that will not complete within 15 seconds is in-flight",
       "expected": "Server emits a warn-level JSON log entry with msg=graceful shutdown timed out; some connections may have been dropped; process exits; no connection count is included in the message",
-      "assertion_pseudocode": "start_blocking_request_async(\"/api/v1/slow\", blocks_forever=true)\nsend_signal(server_pid, SIGTERM)\nexit = wait_for_exit(server_process, timeout=20s)\nassert exit != nil  // process exited\nwarn_log = find_log_entry(stdout, level=\"warn\", msg=\"graceful shutdown timed out; some connections may have been dropped\")\nassert warn_log != nil\nassert \"connection_count\" not in warn_log  // no numeric count"
+      "assertion_pseudocode": "start_blocking_request_async(\"/api/v1/slow\", blocks_forever=true)\nsend_signal(server_pid, SIGTERM)\nexit = wait_for_exit(server_process, timeout=20s)\nassert exit != nil  // process exited\nwarn_log = find_log_entry(stdout, level=\"warn\", msg=\"graceful shutdown timed out; some connections may have been dropped\")\nassert warn_log != nil\nassert \"connection_count\" not in warn_log  // no numeric count",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-26",
@@ -324,7 +349,8 @@
       ],
       "input": "Start server for the first time",
       "expected": "users table has a row with username=admin, email=admin@localhost, provider=local, provider_id=admin, status=active; admin_tokens has exactly one row; ./admin_token file exists with mode 0600 containing a token matching af_admin_<64 hex chars> pattern; warn-level log entry with absolute path of admin_token file is emitted",
-      "assertion_pseudocode": "start_server_first_boot()\ndb = open_sqlite(\"./data/af-hub.db\")\nuser = db.query_one(\"SELECT * FROM users WHERE username = 'admin'\")\nassert user.email == \"admin@localhost\"\nassert user.provider == \"local\"\nassert user.provider_id == \"admin\"\nassert user.status == \"active\"\n\nadmin_token_row = db.query_one(\"SELECT * FROM admin_tokens\")\nassert admin_token_row != nil\n\ntoken_file_content = read_file(\"./admin_token\")\nassert matches_pattern(token_file_content, /^af_admin_[0-9a-f]{64}$/)\nassert file_mode(\"./admin_token\") == 0600\n\nhash_of_suffix = sha256(token_file_content[9:])  // strip \"af_admin_\"\nassert admin_token_row.token_hash == hex(hash_of_suffix)\n\nwarn_log = find_log_entry(stdout, level=\"warn\", msg_contains=\"admin_token\")\nassert is_absolute_path(warn_log[\"path\"])"
+      "assertion_pseudocode": "start_server_first_boot()\ndb = open_sqlite(\"./data/af-hub.db\")\nuser = db.query_one(\"SELECT * FROM users WHERE username = 'admin'\")\nassert user.email == \"admin@localhost\"\nassert user.provider == \"local\"\nassert user.provider_id == \"admin\"\nassert user.status == \"active\"\n\nadmin_token_row = db.query_one(\"SELECT * FROM admin_tokens\")\nassert admin_token_row != nil\n\ntoken_file_content = read_file(\"./admin_token\")\nassert matches_pattern(token_file_content, /^af_admin_[0-9a-f]{64}$/)\nassert file_mode(\"./admin_token\") == 0600\n\nhash_of_suffix = sha256(token_file_content[9:])  // strip \"af_admin_\"\nassert admin_token_row.token_hash == hex(hash_of_suffix)\n\nwarn_log = find_log_entry(stdout, level=\"warn\", msg_contains=\"admin_token\")\nassert is_absolute_path(warn_log[\"path\"])",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-27",
@@ -337,7 +363,8 @@
       ],
       "input": "Start server with AF_HUB_ADMIN_TOKEN=some_value and zero rows in admin_tokens",
       "expected": "Info-level log entry with msg=AF_HUB_ADMIN_TOKEN is set but will be ignored on first boot; a new token will be generated; new token is generated regardless; env var value is not used",
-      "assertion_pseudocode": "set_env(\"AF_HUB_ADMIN_TOKEN\", \"some_value\")\nstart_server_first_boot()\ninfo_log = find_log_entry(stdout, level=\"info\", msg=\"AF_HUB_ADMIN_TOKEN is set but will be ignored on first boot; a new token will be generated\")\nassert info_log != nil\n\n// Verify a new token was generated (not the env var value)\nnew_token = read_file(\"./admin_token\")\nassert new_token != \"some_value\"\nassert matches_pattern(new_token, /^af_admin_[0-9a-f]{64}$/)"
+      "assertion_pseudocode": "set_env(\"AF_HUB_ADMIN_TOKEN\", \"some_value\")\nstart_server_first_boot()\ninfo_log = find_log_entry(stdout, level=\"info\", msg=\"AF_HUB_ADMIN_TOKEN is set but will be ignored on first boot; a new token will be generated\")\nassert info_log != nil\n\n// Verify a new token was generated (not the env var value)\nnew_token = read_file(\"./admin_token\")\nassert new_token != \"some_value\"\nassert matches_pattern(new_token, /^af_admin_[0-9a-f]{64}$/)",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-28",
@@ -350,7 +377,8 @@
       ],
       "input": "Start server first boot when ./admin_token file already exists",
       "expected": "File is overwritten with the new token; warn-level log entry with msg=admin_token file already existed and was overwritten and path=<absolute path> is emitted",
-      "assertion_pseudocode": "write_file(\"./admin_token\", \"old_token_value\")\nstart_server_first_boot()\nnew_content = read_file(\"./admin_token\")\nassert new_content != \"old_token_value\"\nassert matches_pattern(new_content, /^af_admin_[0-9a-f]{64}$/)\n\nwarn_log = find_log_entry(stdout, level=\"warn\", msg=\"admin_token file already existed and was overwritten\")\nassert warn_log != nil\nassert is_absolute_path(warn_log[\"path\"])"
+      "assertion_pseudocode": "write_file(\"./admin_token\", \"old_token_value\")\nstart_server_first_boot()\nnew_content = read_file(\"./admin_token\")\nassert new_content != \"old_token_value\"\nassert matches_pattern(new_content, /^af_admin_[0-9a-f]{64}$/)\n\nwarn_log = find_log_entry(stdout, level=\"warn\", msg=\"admin_token file already existed and was overwritten\")\nassert warn_log != nil\nassert is_absolute_path(warn_log[\"path\"])",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-29",
@@ -363,7 +391,8 @@
       ],
       "input": "Two sub-cases: (a) Start with correct AF_HUB_ADMIN_TOKEN; (b) Start with wrong AF_HUB_ADMIN_TOKEN",
       "expected": "(a) Server starts successfully; (b) Server logs fatal error and exits with code 1",
-      "assertion_pseudocode": "// Sub-case (a): correct token\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nresult_a = start_server()\nassert result_a.started_successfully == true\n\n// Sub-case (b): wrong token\nset_env(\"AF_HUB_ADMIN_TOKEN\", \"af_admin_\" + \"0\" * 64)\nresult_b = run_server_process()\nassert result_b.exit_code == 1\nassert log_contains(result_b.stdout, {\"level\": \"fatal\"})"
+      "assertion_pseudocode": "// Sub-case (a): correct token\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nresult_a = start_server()\nassert result_a.started_successfully == true\n\n// Sub-case (b): wrong token\nset_env(\"AF_HUB_ADMIN_TOKEN\", \"af_admin_\" + \"0\" * 64)\nresult_b = run_server_process()\nassert result_b.exit_code == 1\nassert log_contains(result_b.stdout, {\"level\": \"fatal\"})",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-30",
@@ -375,7 +404,8 @@
       ],
       "input": "Start server on subsequent boot with ./admin_token file present",
       "expected": "Warn-level log entry with msg=admin_token plaintext file still exists on disk; delete after securing the token and path=<absolute path> is emitted; server continues startup normally",
-      "assertion_pseudocode": "ensure_file_exists(\"./admin_token\")\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nstart_server_subsequent_boot()\nwarn_log = find_log_entry(stdout, level=\"warn\", msg=\"admin_token plaintext file still exists on disk; delete after securing the token\")\nassert warn_log != nil\nassert is_absolute_path(warn_log[\"path\"])\nassert server_started_successfully() == true"
+      "assertion_pseudocode": "ensure_file_exists(\"./admin_token\")\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nstart_server_subsequent_boot()\nwarn_log = find_log_entry(stdout, level=\"warn\", msg=\"admin_token plaintext file still exists on disk; delete after securing the token\")\nassert warn_log != nil\nassert is_absolute_path(warn_log[\"path\"])\nassert server_started_successfully() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-31",
@@ -387,7 +417,8 @@
       ],
       "input": "Start server on subsequent boot without ./admin_token file",
       "expected": "No log entry of any kind references the absent admin_token file; server starts normally",
-      "assertion_pseudocode": "ensure_file_absent(\"./admin_token\")\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nstart_server_subsequent_boot()\nlogs = collect_all_stdout_logs()\nfor log in logs:\n  assert \"admin_token\" not in log[\"msg\"].lower() or log[\"msg\"] == \"server starting\"  // startup info only\nassert server_started_successfully() == true"
+      "assertion_pseudocode": "ensure_file_absent(\"./admin_token\")\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nstart_server_subsequent_boot()\nlogs = collect_all_stdout_logs()\nfor log in logs:\n  assert \"admin_token\" not in log[\"msg\"].lower() or log[\"msg\"] == \"server starting\"  // startup info only\nassert server_started_successfully() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-32",
@@ -401,7 +432,8 @@
       ],
       "input": "Start server with --reset-admin-token flag, no AF_HUB_ADMIN_TOKEN env var",
       "expected": "New token generated; admin_tokens has exactly one row with new hash; admin_token file contains new plaintext matching af_admin_<64 hex chars>; old token hash is gone; warn-level log with absolute path emitted; server continues to start normally",
-      "assertion_pseudocode": "old_hash = get_admin_token_hash_from_db()\nrun_server_with_flags([\"--reset-admin-token\"])\n\ndb = open_sqlite(\"./data/af-hub.db\")\nnew_hash = db.query_scalar(\"SELECT token_hash FROM admin_tokens\")\nassert new_hash != old_hash\nassert db.query_scalar(\"SELECT COUNT(*) FROM admin_tokens\") == 1\n\nnew_token = read_file(\"./admin_token\")\nassert matches_pattern(new_token, /^af_admin_[0-9a-f]{64}$/)\n\nwarn_log = find_log_entry(stdout, level=\"warn\", msg_contains=\"admin_token\")\nassert is_absolute_path(warn_log[\"path\"])\nassert server_started_successfully() == true"
+      "assertion_pseudocode": "old_hash = get_admin_token_hash_from_db()\nrun_server_with_flags([\"--reset-admin-token\"])\n\ndb = open_sqlite(\"./data/af-hub.db\")\nnew_hash = db.query_scalar(\"SELECT token_hash FROM admin_tokens\")\nassert new_hash != old_hash\nassert db.query_scalar(\"SELECT COUNT(*) FROM admin_tokens\") == 1\n\nnew_token = read_file(\"./admin_token\")\nassert matches_pattern(new_token, /^af_admin_[0-9a-f]{64}$/)\n\nwarn_log = find_log_entry(stdout, level=\"warn\", msg_contains=\"admin_token\")\nassert is_absolute_path(warn_log[\"path\"])\nassert server_started_successfully() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-33",
@@ -414,7 +446,8 @@
       ],
       "input": "Start server with --reset-admin-token and empty admin_tokens",
       "expected": "Token generated and stored; admin_token file written with mode 0600; server starts normally; no special-casing or error",
-      "assertion_pseudocode": "ensure_admin_tokens_empty()\nrun_server_with_flags([\"--reset-admin-token\"])\nassert file_exists(\"./admin_token\") == true\nassert matches_pattern(read_file(\"./admin_token\"), /^af_admin_[0-9a-f]{64}$/)\nassert file_mode(\"./admin_token\") == 0600\nassert db.query_scalar(\"SELECT COUNT(*) FROM admin_tokens\") == 1\nassert server_started_successfully() == true"
+      "assertion_pseudocode": "ensure_admin_tokens_empty()\nrun_server_with_flags([\"--reset-admin-token\"])\nassert file_exists(\"./admin_token\") == true\nassert matches_pattern(read_file(\"./admin_token\"), /^af_admin_[0-9a-f]{64}$/)\nassert file_mode(\"./admin_token\") == 0600\nassert db.query_scalar(\"SELECT COUNT(*) FROM admin_tokens\") == 1\nassert server_started_successfully() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-34",
@@ -427,7 +460,8 @@
       ],
       "input": "Start server with --reset-admin-token --config /tmp/test-config.toml",
       "expected": "Server applies the custom config from /tmp/test-config.toml; token rotation completes; admin_token file written in /tmp/ (same directory as config); server starts normally",
-      "assertion_pseudocode": "write_file(\"/tmp/test-config.toml\", \"[server]\\nport = 9191\")\nrun_server_with_flags([\"--reset-admin-token\", \"--config\", \"/tmp/test-config.toml\"])\nassert file_exists(\"/tmp/admin_token\") == true\nassert matches_pattern(read_file(\"/tmp/admin_token\"), /^af_admin_[0-9a-f]{64}$/)\nassert server_is_listening_on_port(9191) == true"
+      "assertion_pseudocode": "write_file(\"/tmp/test-config.toml\", \"[server]\\nport = 9191\")\nrun_server_with_flags([\"--reset-admin-token\", \"--config\", \"/tmp/test-config.toml\"])\nassert file_exists(\"/tmp/admin_token\") == true\nassert matches_pattern(read_file(\"/tmp/admin_token\"), /^af_admin_[0-9a-f]{64}$/)\nassert server_is_listening_on_port(9191) == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-35",
@@ -439,7 +473,8 @@
       ],
       "input": "Send requests to /healthz, /api/v1/auth/<any>, and /api/v1/<protected>",
       "expected": "/healthz accessible without any auth header; /api/v1/auth/test route (if registered) reachable without auth; /api/v1/ routes require auth header",
-      "assertion_pseudocode": "// Health probe accessible without auth\nr1 = http_get(\"/healthz\")\nassert r1.status_code == 200\n\n// Protected route requires auth\nr2 = http_get(\"/api/v1/some-endpoint\")  // no auth header\nassert r2.status_code == 401\n\n// Auth group has no auth middleware (route returns 404, not 401, for unregistered paths)\nr3 = http_get(\"/api/v1/auth/oauth/callback\")  // no auth header\nassert r3.status_code != 401  // should be 404 or route-specific, not auth rejection"
+      "assertion_pseudocode": "// Health probe accessible without auth\nr1 = http_get(\"/healthz\")\nassert r1.status_code == 200\n\n// Protected route requires auth\nr2 = http_get(\"/api/v1/some-endpoint\")  // no auth header\nassert r2.status_code == 401\n\n// Auth group has no auth middleware (route returns 404, not 401, for unregistered paths)\nr3 = http_get(\"/api/v1/auth/oauth/callback\")  // no auth header\nassert r3.status_code != 401  // should be 404 or route-specific, not auth rejection",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-36",
@@ -451,7 +486,8 @@
       ],
       "input": "GET /api/v1/auth/anything without Authorization header",
       "expected": "Request is not rejected with HTTP 401 by auth middleware; routes under /api/v1/auth/ do not trigger the auth middleware at all",
-      "assertion_pseudocode": "response = http_get(\"/api/v1/auth/test-route\")  // no Authorization header\n// The auth middleware should not have been invoked\nassert response.status_code != 401  // no auth challenge\n// 404 is acceptable since no handler is registered at this path yet\nassert response.status_code in [404, 200]"
+      "assertion_pseudocode": "response = http_get(\"/api/v1/auth/test-route\")  // no Authorization header\n// The auth middleware should not have been invoked\nassert response.status_code != 401  // no auth challenge\n// 404 is acceptable since no handler is registered at this path yet\nassert response.status_code in [404, 200]",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-37",
@@ -463,7 +499,8 @@
       ],
       "input": "GET /api/v1/nonexistent-route (triggers 404 from Echo)",
       "expected": "HTTP 404 with Content-Type application/json; body is {\"error\": {\"code\": 404, \"message\": \"Not Found\"}} (or similar message from echo.HTTPError)",
-      "assertion_pseudocode": "response = http_get(\"/api/v1/nonexistent\")\nassert response.status_code == 404\nassert response.headers[\"Content-Type\"] contains \"application/json\"\nbody = parse_json(response.body)\nassert body[\"error\"] != nil\nassert body[\"error\"][\"code\"] == 404\nassert body[\"error\"][\"message\"] != \"\""
+      "assertion_pseudocode": "response = http_get(\"/api/v1/nonexistent\")\nassert response.status_code == 404\nassert response.headers[\"Content-Type\"] contains \"application/json\"\nbody = parse_json(response.body)\nassert body[\"error\"] != nil\nassert body[\"error\"][\"code\"] == 404\nassert body[\"error\"][\"message\"] != \"\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-38",
@@ -475,7 +512,8 @@
       ],
       "input": "An *echo.HTTPError with Code=422 and Message=unprocessable entity is received by the error handler",
       "expected": "HTTP 422 response; body is {\"error\": {\"code\": 422, \"message\": \"unprocessable entity\"}}",
-      "assertion_pseudocode": "err = &echo.HTTPError{Code: 422, Message: \"unprocessable entity\"}\nresponse = invoke_error_handler(err)\nassert response.status_code == 422\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 422\nassert body[\"error\"][\"message\"] == \"unprocessable entity\""
+      "assertion_pseudocode": "err = &echo.HTTPError{Code: 422, Message: \"unprocessable entity\"}\nresponse = invoke_error_handler(err)\nassert response.status_code == 422\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 422\nassert body[\"error\"][\"message\"] == \"unprocessable entity\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-39",
@@ -487,7 +525,8 @@
       ],
       "input": "A plain Go error (errors.New(\"database connection lost\")) is received by the error handler",
       "expected": "HTTP 500; body is {\"error\": {\"code\": 500, \"message\": \"internal server error\"}}",
-      "assertion_pseudocode": "err = errors.New(\"database connection lost\")\nresponse = invoke_error_handler(err)\nassert response.status_code == 500\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 500\nassert body[\"error\"][\"message\"] == \"internal server error\""
+      "assertion_pseudocode": "err = errors.New(\"database connection lost\")\nresponse = invoke_error_handler(err)\nassert response.status_code == 500\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 500\nassert body[\"error\"][\"message\"] == \"internal server error\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-40",
@@ -500,7 +539,8 @@
       ],
       "input": "GET /api/v1/panic-route (handler panics)",
       "expected": "HTTP 500; body is {\"error\": {\"code\": 500, \"message\": \"internal server error\"}}; no raw panic stack trace in response body; X-Request-ID header is present",
-      "assertion_pseudocode": "register_panic_handler(\"/api/v1/panic-test\")\nresponse = http_get(\"/api/v1/panic-test\", headers={\"Authorization\": \"Bearer \" + valid_admin_token})\nassert response.status_code == 500\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 500\nassert body[\"error\"][\"message\"] == \"internal server error\"\nassert \"panic\" not in response.body.lower()  // no raw panic in body\nassert response.headers[\"X-Request-ID\"] != \"\""
+      "assertion_pseudocode": "register_panic_handler(\"/api/v1/panic-test\")\nresponse = http_get(\"/api/v1/panic-test\", headers={\"Authorization\": \"Bearer \" + valid_admin_token})\nassert response.status_code == 500\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 500\nassert body[\"error\"][\"message\"] == \"internal server error\"\nassert \"panic\" not in response.body.lower()  // no raw panic in body\nassert response.headers[\"X-Request-ID\"] != \"\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-41",
@@ -512,19 +552,21 @@
       ],
       "input": "GET /healthz and GET /readyz",
       "expected": "Bodies are {\"status\": \"ok\"} and {\"status\": \"ready\"} respectively; neither is wrapped in {\"error\": {...}}",
-      "assertion_pseudocode": "r1 = http_get(\"/healthz\")\nassert parse_json(r1.body) == {\"status\": \"ok\"}\nassert \"error\" not in parse_json(r1.body)\n\nr2 = http_get(\"/readyz\")\nassert parse_json(r2.body) in [{\"status\": \"ready\"}, {\"status\": \"not ready\"}]\nassert \"error\" not in parse_json(r2.body)"
+      "assertion_pseudocode": "r1 = http_get(\"/healthz\")\nassert parse_json(r1.body) == {\"status\": \"ok\"}\nassert \"error\" not in parse_json(r1.body)\n\nr2 = http_get(\"/readyz\")\nassert parse_json(r2.body) in [{\"status\": \"ready\"}, {\"status\": \"not ready\"}]\nassert \"error\" not in parse_json(r2.body)",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-42",
       "requirement_id": "01-REQ-13.1",
       "kind": "integration",
-      "description": "Middleware executes in the order: Recover → body-size limit → request logger → auth for protected routes.",
+      "description": "Middleware executes in the order: Recover \u2192 body-size limit \u2192 request logger \u2192 auth for protected routes.",
       "preconditions": [
         "Server is fully started with middleware registered in the correct order"
       ],
       "input": "POST /api/v1/some-endpoint with a body exceeding 1 MB and a valid auth token",
       "expected": "HTTP 413 is returned (body-size limit fires before auth); the 413 appears in the request log; no auth processing occurs after 413",
-      "assertion_pseudocode": "large_body = generate_bytes(2 * 1024 * 1024)  // 2 MB\nresponse = http_post(\"/api/v1/some-endpoint\",\n  headers={\"Authorization\": \"Bearer \" + valid_admin_token},\n  body=large_body)\nassert response.status_code == 413\nlog_entry = find_request_log_entry(stdout)\nassert log_entry[\"status\"] == 413\n// Auth context should NOT be set (body-size limit fired before auth)\n// Verified by checking the handler was never reached"
+      "assertion_pseudocode": "large_body = generate_bytes(2 * 1024 * 1024)  // 2 MB\nresponse = http_post(\"/api/v1/some-endpoint\",\n  headers={\"Authorization\": \"Bearer \" + valid_admin_token},\n  body=large_body)\nassert response.status_code == 413\nlog_entry = find_request_log_entry(stdout)\nassert log_entry[\"status\"] == 413\n// Auth context should NOT be set (body-size limit fired before auth)\n// Verified by checking the handler was never reached",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-43",
@@ -536,7 +578,8 @@
       ],
       "input": "POST /api/v1/some-endpoint with a 1.1 MB request body and valid admin token",
       "expected": "HTTP 413 with body {\"error\": {\"code\": 413, \"message\": \"Request Entity Too Large\"}} (or echo's default message); log entry has status=413",
-      "assertion_pseudocode": "body = generate_bytes(1100 * 1024)  // 1.1 MB\nresponse = http_post(\"/api/v1/test\",\n  headers={\"Authorization\": \"Bearer \" + valid_admin_token},\n  body=body)\nassert response.status_code == 413\nbody_json = parse_json(response.body)\nassert body_json[\"error\"][\"code\"] == 413\nlog_entry = find_request_log_entry(stdout)\nassert log_entry[\"status\"] == 413"
+      "assertion_pseudocode": "body = generate_bytes(1100 * 1024)  // 1.1 MB\nresponse = http_post(\"/api/v1/test\",\n  headers={\"Authorization\": \"Bearer \" + valid_admin_token},\n  body=body)\nassert response.status_code == 413\nbody_json = parse_json(response.body)\nassert body_json[\"error\"][\"code\"] == 413\nlog_entry = find_request_log_entry(stdout)\nassert log_entry[\"status\"] == 413",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-44",
@@ -548,7 +591,8 @@
       ],
       "input": "GET /healthz and HEAD /healthz",
       "expected": "Both return their expected status codes (200); no HTTP 413 is issued; requests proceed normally",
-      "assertion_pseudocode": "r_get = http_get(\"/healthz\")\nassert r_get.status_code == 200\n\nr_head = http_head(\"/healthz\")\nassert r_head.status_code == 200\n\n// No 413 in either case\nassert r_get.status_code != 413\nassert r_head.status_code != 413"
+      "assertion_pseudocode": "r_get = http_get(\"/healthz\")\nassert r_get.status_code == 200\n\nr_head = http_head(\"/healthz\")\nassert r_head.status_code == 200\n\n// No 413 in either case\nassert r_get.status_code != 413\nassert r_head.status_code != 413",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-45",
@@ -560,7 +604,8 @@
       ],
       "input": "Five requests: (a) no Authorization header, (b) Authorization: Basic foo, (c) Authorization: Bearer <empty>, (d) Authorization: Bearer totally-wrong, (e) Authorization: Bearer af_12345 (malformed)",
       "expected": "All five return HTTP 401 with {\"error\": {\"code\": 401, \"message\": \"missing or invalid authentication credentials\"}}",
-      "assertion_pseudocode": "cases = [\n  {},  // (a) no header\n  {\"Authorization\": \"Basic foo\"},  // (b) wrong scheme\n  {\"Authorization\": \"Bearer \"},  // (c) empty token\n  {\"Authorization\": \"Bearer totally-wrong\"},  // (d) unrecognized prefix\n  {\"Authorization\": \"Bearer af_12345\"},  // (e) structural failure\n]\nfor headers in cases:\n  r = http_get(\"/api/v1/test\", headers=headers)\n  assert r.status_code == 401\n  body = parse_json(r.body)\n  assert body[\"error\"][\"code\"] == 401\n  assert body[\"error\"][\"message\"] == \"missing or invalid authentication credentials\""
+      "assertion_pseudocode": "cases = [\n  {},  // (a) no header\n  {\"Authorization\": \"Basic foo\"},  // (b) wrong scheme\n  {\"Authorization\": \"Bearer \"},  // (c) empty token\n  {\"Authorization\": \"Bearer totally-wrong\"},  // (d) unrecognized prefix\n  {\"Authorization\": \"Bearer af_12345\"},  // (e) structural failure\n]\nfor headers in cases:\n  r = http_get(\"/api/v1/test\", headers=headers)\n  assert r.status_code == 401\n  body = parse_json(r.body)\n  assert body[\"error\"][\"code\"] == 401\n  assert body[\"error\"][\"message\"] == \"missing or invalid authentication credentials\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-46",
@@ -572,7 +617,8 @@
       ],
       "input": "GET /api/v1/test with Authorization: Bearer af_admin_<64 valid hex chars>",
       "expected": "Request reaches the handler; AuthContext in Echo context has CredentialType=admin, IsAdmin=true, UserID=\"\", WorkspaceID=\"\"; handler returns success",
-      "assertion_pseudocode": "token = read_file(\"./admin_token\").trim()\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 401\nassert response.status_code != 403\n// Verify via a test handler that echoes AuthContext:\nctx_data = parse_json(response.body)\nassert ctx_data[\"credential_type\"] == \"admin\"\nassert ctx_data[\"is_admin\"] == true\nassert ctx_data[\"user_id\"] == \"\"\nassert ctx_data[\"workspace_id\"] == \"\""
+      "assertion_pseudocode": "token = read_file(\"./admin_token\").trim()\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 401\nassert response.status_code != 403\n// Verify via a test handler that echoes AuthContext:\nctx_data = parse_json(response.body)\nassert ctx_data[\"credential_type\"] == \"admin\"\nassert ctx_data[\"is_admin\"] == true\nassert ctx_data[\"user_id\"] == \"\"\nassert ctx_data[\"workspace_id\"] == \"\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-47",
@@ -584,7 +630,8 @@
       ],
       "input": "GET /api/v1/test with Authorization: Bearer af_<key_id>_<secret>",
       "expected": "AuthContext has CredentialType=api_key, UserID=<user UUID>, IsAdmin=false, WorkspaceID=\"\"",
-      "assertion_pseudocode": "key_id = \"abcd1234\"  // 8 alphanumeric\nsecret = \"A\" * 32  // 32 alphanumeric\ntoken = \"af_\" + key_id + \"_\" + secret\ninsert_api_key(db, key_id, sha256(secret), user_id)\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 401\nassert response.status_code != 403\nctx = parse_auth_context(response)\nassert ctx.credential_type == \"api_key\"\nassert ctx.user_id == user_uuid\nassert ctx.is_admin == false\nassert ctx.workspace_id == \"\""
+      "assertion_pseudocode": "key_id = \"abcd1234\"  // 8 alphanumeric\nsecret = \"A\" * 32  // 32 alphanumeric\ntoken = \"af_\" + key_id + \"_\" + secret\ninsert_api_key(db, key_id, sha256(secret), user_id)\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 401\nassert response.status_code != 403\nctx = parse_auth_context(response)\nassert ctx.credential_type == \"api_key\"\nassert ctx.user_id == user_uuid\nassert ctx.is_admin == false\nassert ctx.workspace_id == \"\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-48",
@@ -596,7 +643,8 @@
       ],
       "input": "GET /api/v1/test with Authorization: Bearer af_wt_<token_id>_<secret>",
       "expected": "AuthContext has CredentialType=workspace_token, UserID=<user UUID>, WorkspaceID=<workspace UUID>, IsAdmin=false",
-      "assertion_pseudocode": "token_id = \"wt123456\"  // 8 alphanumeric\nsecret = \"B\" * 32  // 32 alphanumeric\ntoken = \"af_wt_\" + token_id + \"_\" + secret\ninsert_workspace_token(db, token_id, sha256(secret), workspace_id, user_id)\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 401\nassert response.status_code != 403\nctx = parse_auth_context(response)\nassert ctx.credential_type == \"workspace_token\"\nassert ctx.user_id == user_uuid\nassert ctx.workspace_id == workspace_uuid\nassert ctx.is_admin == false"
+      "assertion_pseudocode": "token_id = \"wt123456\"  // 8 alphanumeric\nsecret = \"B\" * 32  // 32 alphanumeric\ntoken = \"af_wt_\" + token_id + \"_\" + secret\ninsert_workspace_token(db, token_id, sha256(secret), workspace_id, user_id)\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 401\nassert response.status_code != 403\nctx = parse_auth_context(response)\nassert ctx.credential_type == \"workspace_token\"\nassert ctx.user_id == user_uuid\nassert ctx.workspace_id == workspace_uuid\nassert ctx.is_admin == false",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-49",
@@ -608,7 +656,8 @@
       ],
       "input": "A handler calls c.Get(string(AuthContextKey)).(*AuthContext) after auth middleware runs",
       "expected": "The retrieved *AuthContext is non-nil and has correct fields matching the authenticated identity",
-      "assertion_pseudocode": "// In a test handler registered after auth middleware:\nhandler = func(c echo.Context) error {\n  auth = c.Get(string(AuthContextKey)).(*AuthContext)\n  assert auth != nil\n  assert auth.CredentialType != \"\"\n  return c.JSON(200, auth)\n}\nresponse = invoke_protected_route_with_valid_token(handler)\nassert response.status_code == 200"
+      "assertion_pseudocode": "// In a test handler registered after auth middleware:\nhandler = func(c echo.Context) error {\n  auth = c.Get(string(AuthContextKey)).(*AuthContext)\n  assert auth != nil\n  assert auth.CredentialType != \"\"\n  return c.JSON(200, auth)\n}\nresponse = invoke_protected_route_with_valid_token(handler)\nassert response.status_code == 200",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-50",
@@ -620,7 +669,8 @@
       ],
       "input": "Structurally invalid tokens: af_tooshort_<32 chars>, af_wt_toolong1234_<32 chars>, af_admin_notHex",
       "expected": "HTTP 401 returned immediately for each; no DB queries are executed (verify via DB query log or mock)",
-      "assertion_pseudocode": "invalid_tokens = [\n  \"af_tooshort_\" + \"A\" * 32,  // key_id too short\n  \"af_wt_toolong1234_\" + \"B\" * 32,  // token_id too long\n  \"af_admin_notvalidhexstr_too_short\",  // admin token wrong length\n]\nfor token in invalid_tokens:\n  db_query_count_before = get_db_query_count()\n  response = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\n  db_query_count_after = get_db_query_count()\n  assert response.status_code == 401\n  assert db_query_count_after == db_query_count_before  // no DB queries"
+      "assertion_pseudocode": "invalid_tokens = [\n  \"af_tooshort_\" + \"A\" * 32,  // key_id too short\n  \"af_wt_toolong1234_\" + \"B\" * 32,  // token_id too long\n  \"af_admin_notvalidhexstr_too_short\",  // admin token wrong length\n]\nfor token in invalid_tokens:\n  db_query_count_before = get_db_query_count()\n  response = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\n  db_query_count_after = get_db_query_count()\n  assert response.status_code == 401\n  assert db_query_count_after == db_query_count_before  // no DB queries",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-51",
@@ -632,7 +682,8 @@
       ],
       "input": "Auth middleware source inspection or instrumented comparison for admin token, API key, and workspace token verification",
       "expected": "All three credential verification paths use subtle.ConstantTimeCompare for hash comparison; no direct byte slice equality (bytes.Equal) is used for hash comparison",
-      "assertion_pseudocode": "// Static analysis / code review assertion:\nsource_files = scan_source_files(\"internal/middleware/auth*.go\")\nfor cred_type in [\"admin_token\", \"api_key\", \"workspace_token\"]:\n  hash_comparison = find_hash_comparison_in_source(source_files, cred_type)\n  assert uses_constant_time_compare(hash_comparison) == true\n  assert uses_bytes_equal(hash_comparison) == false"
+      "assertion_pseudocode": "// Static analysis / code review assertion:\nsource_files = scan_source_files(\"internal/middleware/auth*.go\")\nfor cred_type in [\"admin_token\", \"api_key\", \"workspace_token\"]:\n  hash_comparison = find_hash_comparison_in_source(source_files, cred_type)\n  assert uses_constant_time_compare(hash_comparison) == true\n  assert uses_bytes_equal(hash_comparison) == false",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-52",
@@ -644,7 +695,8 @@
       ],
       "input": "GET /api/v1/test with a valid admin token when the admin user row has status=blocked",
       "expected": "HTTP 2xx from the handler (not 403); AuthContext has IsAdmin=true and UserID=\"\"; no users table lookup occurred for admin token auth",
-      "assertion_pseudocode": "db.exec(\"UPDATE users SET status = 'blocked' WHERE username = 'admin'\")\ntoken = read_file(\"./admin_token\").trim()\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 403\nassert response.status_code != 401\nctx = parse_auth_context(response)\nassert ctx.is_admin == true\nassert ctx.user_id == \"\""
+      "assertion_pseudocode": "db.exec(\"UPDATE users SET status = 'blocked' WHERE username = 'admin'\")\ntoken = read_file(\"./admin_token\").trim()\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code != 403\nassert response.status_code != 401\nctx = parse_auth_context(response)\nassert ctx.is_admin == true\nassert ctx.user_id == \"\"",
+      "requirement_ids": []
     }
   ],
   "property_tests": [
@@ -658,7 +710,8 @@
       ],
       "description": "For any admin token of format af_admin_<64 hex chars>, the stored hash in admin_tokens.token_hash is always the SHA-256 hex digest of the 64 hex-char suffix.",
       "for_any_strategy": "generate 100 random 64-char hex strings as admin token suffixes",
-      "invariant_check": "for each suffix: token = 'af_admin_' + suffix; stored_hash = store_and_retrieve_admin_token(token); expected_hash = hex(sha256(suffix)); assert stored_hash == expected_hash; at verification time: recomputed_hash = hex(sha256(suffix)); assert constant_time_compare(recomputed_hash, stored_hash) == true"
+      "invariant_check": "for each suffix: token = 'af_admin_' + suffix; stored_hash = store_and_retrieve_admin_token(token); expected_hash = hex(sha256(suffix)); assert stored_hash == expected_hash; at verification time: recomputed_hash = hex(sha256(suffix)); assert constant_time_compare(recomputed_hash, stored_hash) == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P2",
@@ -669,7 +722,8 @@
       ],
       "description": "For any user API key, the SHA-256 hash is computed from the raw 32-alphanumeric-char secret component only and compared via constant-time comparison.",
       "for_any_strategy": "generate 100 random (key_id: 8 alphanumeric chars, secret: 32 alphanumeric chars) pairs",
-      "invariant_check": "for each pair: token = 'af_' + key_id + '_' + secret; secret_hash = hex(sha256(secret)); insert api_key with this hash; invoke auth middleware with token; assert middleware computes sha256 of secret only (not full token, not key_id); assert comparison uses constant_time_compare; assert result is authenticated"
+      "invariant_check": "for each pair: token = 'af_' + key_id + '_' + secret; secret_hash = hex(sha256(secret)); insert api_key with this hash; invoke auth middleware with token; assert middleware computes sha256 of secret only (not full token, not key_id); assert comparison uses constant_time_compare; assert result is authenticated",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P3",
@@ -680,7 +734,8 @@
       ],
       "description": "For any workspace token, the SHA-256 hash is computed from the raw 32-alphanumeric-char secret component only and compared via constant-time comparison.",
       "for_any_strategy": "generate 100 random (token_id: 8 alphanumeric chars, secret: 32 alphanumeric chars) pairs",
-      "invariant_check": "for each pair: token = 'af_wt_' + token_id + '_' + secret; secret_hash = hex(sha256(secret)); insert workspace_token with this hash; invoke auth middleware with token; assert middleware computes sha256 of secret only (not full token, not token_id); assert comparison uses constant_time_compare; assert result is authenticated"
+      "invariant_check": "for each pair: token = 'af_wt_' + token_id + '_' + secret; secret_hash = hex(sha256(secret)); insert workspace_token with this hash; invoke auth middleware with token; assert middleware computes sha256 of secret only (not full token, not token_id); assert comparison uses constant_time_compare; assert result is authenticated",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P4",
@@ -691,7 +746,8 @@
       ],
       "description": "For any request authenticated via admin token, AuthContext.IsAdmin is always true, UserID is always empty string, and no users table query is ever executed.",
       "for_any_strategy": "generate 50 random valid admin tokens; vary users table state (empty, admin row present, admin row blocked, admin row absent)",
-      "invariant_check": "for each token and users state: auth_context = run_auth_middleware(token); assert auth_context.is_admin == true; assert auth_context.user_id == ''; assert auth_context.workspace_id == ''; assert db_users_query_count == 0; assert response_code != 403"
+      "invariant_check": "for each token and users state: auth_context = run_auth_middleware(token); assert auth_context.is_admin == true; assert auth_context.user_id == ''; assert auth_context.workspace_id == ''; assert db_users_query_count == 0; assert response_code != 403",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P5",
@@ -703,7 +759,8 @@
       ],
       "description": "For any token presented to auth middleware, no DB query is executed until the token has passed full structural validation.",
       "for_any_strategy": "generate 200 random strings: mix of valid-prefix-invalid-structure tokens and completely invalid tokens",
-      "invariant_check": "for each token_string: db_queries_before = get_db_query_count(); result = run_auth_middleware(token_string); if result.status == 401 and not_structurally_valid(token_string): assert get_db_query_count() == db_queries_before; // no DB queries were made for structurally invalid tokens"
+      "invariant_check": "for each token_string: db_queries_before = get_db_query_count(); result = run_auth_middleware(token_string); if result.status == 401 and not_structurally_valid(token_string): assert get_db_query_count() == db_queries_before; // no DB queries were made for structurally invalid tokens",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P6",
@@ -715,7 +772,8 @@
       ],
       "description": "For any server boot invocation, the HTTP listener never opens before SQLite initialization and admin bootstrap/validation have both completed.",
       "for_any_strategy": "run 20 server boot cycles with varying config and environment (first boot, subsequent boot, reset flag)",
-      "invariant_check": "for each boot: record timestamps of (db_init_complete, admin_bootstrap_complete, http_listener_open); assert http_listener_open > admin_bootstrap_complete; assert admin_bootstrap_complete > db_init_complete; assert health_probe_unreachable_before_listener_open()"
+      "invariant_check": "for each boot: record timestamps of (db_init_complete, admin_bootstrap_complete, http_listener_open); assert http_listener_open > admin_bootstrap_complete; assert admin_bootstrap_complete > db_init_complete; assert health_probe_unreachable_before_listener_open()",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P7",
@@ -728,7 +786,8 @@
       ],
       "description": "For any error response from a route under /api/v1/*, the body always matches the envelope {\"error\": {\"code\": <integer>, \"message\": \"<string>\"}} where code equals the HTTP status code.",
       "for_any_strategy": "trigger 10 different error conditions on /api/v1/* routes: 401 (no auth), 403 (blocked user), 404 (not found), 413 (body too large), 500 (panic), 503 (db contention)",
-      "invariant_check": "for each error_response: body = parse_json(error_response.body); assert 'error' in body; assert 'code' in body['error']; assert 'message' in body['error']; assert body['error']['code'] == error_response.status_code; assert type(body['error']['code']) == integer; assert type(body['error']['message']) == string; assert body['error']['message'] != ''"
+      "invariant_check": "for each error_response: body = parse_json(error_response.body); assert 'error' in body; assert 'code' in body['error']; assert 'message' in body['error']; assert body['error']['code'] == error_response.status_code; assert type(body['error']['code']) == integer; assert type(body['error']['message']) == string; assert body['error']['message'] != ''",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P8",
@@ -739,7 +798,8 @@
       ],
       "description": "For any number of concurrent GET /readyz requests, the failure counter is always a consistent int64 readable by any goroutine with no data races.",
       "for_any_strategy": "run 50 concurrent /readyz requests in goroutines under various DB health states (healthy, degraded, recovering)",
-      "invariant_check": "run all concurrent requests with Go race detector enabled (-race flag); assert no data race is detected on the failure counter; assert counter value after each successful probe is 0; assert counter value after each failed probe is >= 1; assert counter never becomes negative"
+      "invariant_check": "run all concurrent requests with Go race detector enabled (-race flag); assert no data race is detected on the failure counter; assert counter value after each successful probe is 0; assert counter value after each failed probe is >= 1; assert counter never becomes negative",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P9",
@@ -750,7 +810,8 @@
       ],
       "description": "The admin_token file is always written with mode 0600 on any first boot or --reset-admin-token rotation.",
       "for_any_strategy": "perform 20 iterations: alternate between first boot and rotation scenarios on varying filesystems",
-      "invariant_check": "for each iteration: trigger admin_token file write; file_info = stat('./admin_token'); assert file_info.mode().perm() == 0600; assert file_info.mode() & 0040 == 0; // no group read; assert file_info.mode() & 0004 == 0; // no world read"
+      "invariant_check": "for each iteration: trigger admin_token file write; file_info = stat('./admin_token'); assert file_info.mode().perm() == 0600; assert file_info.mode() & 0040 == 0; // no group read; assert file_info.mode() & 0004 == 0; // no world read",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-P10",
@@ -762,7 +823,8 @@
       ],
       "description": "Token expiry uses an exclusive UTC boundary: a token is expired iff expires_at < current UTC time; a token with expires_at equal to now is not expired.",
       "for_any_strategy": "generate 50 tokens with expires_at values spanning: past (various durations), exact now, near future (1ms, 1s, 1h ahead)",
-      "invariant_check": "for each token: now = utc_now(); result = check_token_expiry(token, now); if expires_at < now: assert result == EXPIRED; if expires_at == now: assert result == VALID; if expires_at > now: assert result == VALID; // exclusive lower boundary only"
+      "invariant_check": "for each token: now = utc_now(); result = check_token_expiry(token, now); if expires_at < now: assert result == EXPIRED; if expires_at == now: assert result == VALID; if expires_at > now: assert result == VALID; // exclusive lower boundary only",
+      "requirement_ids": []
     }
   ],
   "edge_case_tests": [
@@ -777,7 +839,8 @@
       ],
       "input": "Start server without config.toml present",
       "expected": "Server starts normally; all defaults apply (port=8080, bind=0.0.0.0, db=./data/af-hub.db, level=info); no error or fatal log entry about missing config",
-      "assertion_pseudocode": "ensure_file_absent(\"./config.toml\")\nresult = start_server()\nassert result.started_successfully == true\nassert result.config.port == 8080\nassert result.config.bind == \"0.0.0.0\"\nassert result.config.db_path == \"./data/af-hub.db\"\nassert result.config.log_level == \"info\"\nassert not log_contains(result.stdout, {\"level\": \"fatal\"})\nassert not log_contains(result.stdout, {\"level\": \"error\", \"msg_contains\": \"config\"})"
+      "assertion_pseudocode": "ensure_file_absent(\"./config.toml\")\nresult = start_server()\nassert result.started_successfully == true\nassert result.config.port == 8080\nassert result.config.bind == \"0.0.0.0\"\nassert result.config.db_path == \"./data/af-hub.db\"\nassert result.config.log_level == \"info\"\nassert not log_contains(result.stdout, {\"level\": \"fatal\"})\nassert not log_contains(result.stdout, {\"level\": \"error\", \"msg_contains\": \"config\"})",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E2",
@@ -790,7 +853,8 @@
       ],
       "input": "Start server without --config flag; first boot",
       "expected": "./admin_token file is created in the current working directory regardless of whether config.toml exists",
-      "assertion_pseudocode": "cwd = get_current_working_directory()\nstart_server_first_boot()\nassert file_exists(cwd + \"/admin_token\") == true\nassert is_absolute_path(get_warn_log_path(stdout)) == true\nassert warn_log_path == cwd + \"/admin_token\""
+      "assertion_pseudocode": "cwd = get_current_working_directory()\nstart_server_first_boot()\nassert file_exists(cwd + \"/admin_token\") == true\nassert is_absolute_path(get_warn_log_path(stdout)) == true\nassert warn_log_path == cwd + \"/admin_token\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E3",
@@ -802,7 +866,8 @@
       ],
       "input": "Start server with database.path=/root/noperm/db.db (permission denied)",
       "expected": "Process exits with code 1; fatal-level JSON log entry is emitted with the failure reason; no HTTP connections are accepted on any port",
-      "assertion_pseudocode": "write_config(\"./config.toml\", database_path=\"/root/noperm/db.db\")\nresult = run_server_process()\nassert result.exit_code == 1\nassert log_contains(result.stdout, {\"level\": \"fatal\"})\nassert http_port_not_open(8080) == true"
+      "assertion_pseudocode": "write_config(\"./config.toml\", database_path=\"/root/noperm/db.db\")\nresult = run_server_process()\nassert result.exit_code == 1\nassert log_contains(result.stdout, {\"level\": \"fatal\"})\nassert http_port_not_open(8080) == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E4",
@@ -814,7 +879,8 @@
       ],
       "input": "Start server with database path whose parent directory is unwritable",
       "expected": "Process exits with code 1; fatal-level log entry includes directory creation failure reason; no database file is opened",
-      "assertion_pseudocode": "write_config(\"./config.toml\", database_path=\"/root/no-write/af-hub.db\")\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert \"permission\" in fatal_log[\"msg\"].lower() or \"mkdir\" in fatal_log[\"msg\"].lower()"
+      "assertion_pseudocode": "write_config(\"./config.toml\", database_path=\"/root/no-write/af-hub.db\")\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert \"permission\" in fatal_log[\"msg\"].lower() or \"mkdir\" in fatal_log[\"msg\"].lower()",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E5",
@@ -826,7 +892,8 @@
       ],
       "input": "Start server where database path is an existing directory",
       "expected": "Process exits with code 1; fatal-level log entry with open failure reason; no retries; HTTP listener not started",
-      "assertion_pseudocode": "create_directory(\"./data/af-hub.db\")  // make it a directory, not a file\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil"
+      "assertion_pseudocode": "create_directory(\"./data/af-hub.db\")  // make it a directory, not a file\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E6",
@@ -838,7 +905,8 @@
       ],
       "input": "Simulate PRAGMA failure for journal_mode=WAL",
       "expected": "Process exits with code 1; fatal-level log entry names the specific PRAGMA that failed (e.g., journal_mode) and the reason",
-      "assertion_pseudocode": "// Simulate via mock or read-only DB\ndb = open_readonly_sqlite_db()\nresult = apply_pragmas_with_error_on_first(db)\nassert result.exit_code == 1\nfatal_log = find_log_entry(stdout, level=\"fatal\")\nassert \"journal_mode\" in fatal_log[\"msg\"] or fatal_log[\"pragma\"] == \"journal_mode\""
+      "assertion_pseudocode": "// Simulate via mock or read-only DB\ndb = open_readonly_sqlite_db()\nresult = apply_pragmas_with_error_on_first(db)\nassert result.exit_code == 1\nfatal_log = find_log_entry(stdout, level=\"fatal\")\nassert \"journal_mode\" in fatal_log[\"msg\"] or fatal_log[\"pragma\"] == \"journal_mode\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E7",
@@ -850,7 +918,8 @@
       ],
       "input": "POST /api/v1/some-endpoint that triggers a DB write while write lock is held by another connection",
       "expected": "HTTP 503 with body {\"error\": {\"code\": 503, \"message\": \"service temporarily unavailable\"}}; server remains running",
-      "assertion_pseudocode": "hold_write_lock(db, duration=10s)  // simulate contention\nresponse = http_post(\"/api/v1/write-endpoint\", headers={auth_header})\nassert response.status_code == 503\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 503\nassert body[\"error\"][\"message\"] == \"service temporarily unavailable\"\nassert server_still_running() == true"
+      "assertion_pseudocode": "hold_write_lock(db, duration=10s)  // simulate contention\nresponse = http_post(\"/api/v1/write-endpoint\", headers={auth_header})\nassert response.status_code == 503\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 503\nassert body[\"error\"][\"message\"] == \"service temporarily unavailable\"\nassert server_still_running() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E8",
@@ -863,7 +932,8 @@
       ],
       "input": "Two concurrent GET /readyz requests after DB recovery",
       "expected": "Both return HTTP 200; at most two info-level recovery log entries appear; counter is reset to 0; no panic or race condition occurs",
-      "assertion_pseudocode": "// Put server in degraded state\nsimulate_db_failure()\nhttp_get(\"/readyz\")  // increments counter to >= 1\nrestore_db()\n\n// Fire two concurrent probes\nresults = concurrent_http_get([\"/readyz\", \"/readyz\"], concurrency=2)\nfor r in results:\n  assert r.status_code == 200\n\nrecovery_logs = filter_logs(stdout, level=\"info\", msg_contains=\"recovery\")\nassert 1 <= len(recovery_logs) <= 2  // at most duplicate\nassert atomic_read(readyz_failure_counter) == 0"
+      "assertion_pseudocode": "// Put server in degraded state\nsimulate_db_failure()\nhttp_get(\"/readyz\")  // increments counter to >= 1\nrestore_db()\n\n// Fire two concurrent probes\nresults = concurrent_http_get([\"/readyz\", \"/readyz\"], concurrency=2)\nfor r in results:\n  assert r.status_code == 200\n\nrecovery_logs = filter_logs(stdout, level=\"info\", msg_contains=\"recovery\")\nassert 1 <= len(recovery_logs) <= 2  // at most duplicate\nassert atomic_read(readyz_failure_counter) == 0",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E9",
@@ -875,7 +945,8 @@
       ],
       "input": "Three requests with invalid X-Request-ID values: (a) empty string, (b) non-printable bytes (0x01), (c) 129-character string",
       "expected": "All three return their normal response with X-Request-ID set to a fresh UUID v4; no HTTP error is returned for any of them",
-      "assertion_pseudocode": "invalid_ids = [\n  \"\",  // empty\n  \"\\x01\\x02\",  // non-printable\n  \"a\" * 129,  // exceeds 128 chars\n]\nfor bad_id in invalid_ids:\n  response = http_get(\"/healthz\", headers={\"X-Request-ID\": bad_id})\n  assert response.status_code == 200\n  returned_id = response.headers[\"X-Request-ID\"]\n  assert returned_id != bad_id\n  assert is_valid_uuid_v4(returned_id)"
+      "assertion_pseudocode": "invalid_ids = [\n  \"\",  // empty\n  \"\\x01\\x02\",  // non-printable\n  \"a\" * 129,  // exceeds 128 chars\n]\nfor bad_id in invalid_ids:\n  response = http_get(\"/healthz\", headers={\"X-Request-ID\": bad_id})\n  assert response.status_code == 200\n  returned_id = response.headers[\"X-Request-ID\"]\n  assert returned_id != bad_id\n  assert is_valid_uuid_v4(returned_id)",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E10",
@@ -887,7 +958,8 @@
       ],
       "input": "Send SIGTERM while a WebSocket connection is hijacked",
       "expected": "Hijacked connection is closed immediately; server shutdown completes within the 15-second window; no special error or hang occurs",
-      "assertion_pseudocode": "ws_conn = open_websocket_connection(\"/api/v1/ws\")\nsend_signal(server_pid, SIGTERM)\nexit_result = wait_for_exit(server_process, timeout=18s)\nassert exit_result.exited == true\nassert exit_result.elapsed_seconds < 16  // within 15s window\nassert ws_conn.is_closed() == true"
+      "assertion_pseudocode": "ws_conn = open_websocket_connection(\"/api/v1/ws\")\nsend_signal(server_pid, SIGTERM)\nexit_result = wait_for_exit(server_process, timeout=18s)\nassert exit_result.exited == true\nassert exit_result.elapsed_seconds < 16  // within 15s window\nassert ws_conn.is_closed() == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E11",
@@ -900,7 +972,8 @@
       ],
       "input": "First boot with unwritable current working directory",
       "expected": "Process exits with code 1; fatal-level log entry with write failure reason; no HTTP listener started",
-      "assertion_pseudocode": "make_directory_unwritable(\".\")\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert \"permission\" in fatal_log[\"msg\"].lower() or \"admin_token\" in fatal_log[\"msg\"].lower()"
+      "assertion_pseudocode": "make_directory_unwritable(\".\")\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert \"permission\" in fatal_log[\"msg\"].lower() or \"admin_token\" in fatal_log[\"msg\"].lower()",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E12",
@@ -912,7 +985,8 @@
       ],
       "input": "Subsequent boot with admin_tokens populated but admin user row deleted from users",
       "expected": "Server starts successfully; admin token auth works without users table lookup; no fatal error",
-      "assertion_pseudocode": "db.exec(\"DELETE FROM users WHERE username = 'admin'\")\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nresult = start_server()\nassert result.started_successfully == true\n\n// Admin auth still works\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + correct_token})\nassert response.status_code != 401\nassert response.status_code != 403"
+      "assertion_pseudocode": "db.exec(\"DELETE FROM users WHERE username = 'admin'\")\nset_env(\"AF_HUB_ADMIN_TOKEN\", correct_token)\nresult = start_server()\nassert result.started_successfully == true\n\n// Admin auth still works\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + correct_token})\nassert response.status_code != 401\nassert response.status_code != 403",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E13",
@@ -924,7 +998,8 @@
       ],
       "input": "Start server on subsequent boot without AF_HUB_ADMIN_TOKEN env var",
       "expected": "Process exits with code 1; fatal-level log entry indicates missing env var; no HTTP listener opened",
-      "assertion_pseudocode": "unset_env(\"AF_HUB_ADMIN_TOKEN\")\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert http_port_not_open(8080) == true"
+      "assertion_pseudocode": "unset_env(\"AF_HUB_ADMIN_TOKEN\")\nresult = run_server_process()\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert http_port_not_open(8080) == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E14",
@@ -938,7 +1013,8 @@
       ],
       "input": "Start server with --reset-admin-token flag when admin_token file destination is unwritable",
       "expected": "Process exits with code 1; fatal-level log entry with write failure reason; server does not start with the new unwritten token",
-      "assertion_pseudocode": "make_directory_unwritable(\".\")\nresult = run_server_process(flags=[\"--reset-admin-token\"])\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert http_port_not_open(8080) == true"
+      "assertion_pseudocode": "make_directory_unwritable(\".\")\nresult = run_server_process(flags=[\"--reset-admin-token\"])\nassert result.exit_code == 1\nfatal_log = find_log_entry(result.stdout, level=\"fatal\")\nassert fatal_log != nil\nassert http_port_not_open(8080) == true",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E15",
@@ -950,7 +1026,8 @@
       ],
       "input": "GET /api/v1/test with valid-structure API key while DB write lock is held beyond busy_timeout",
       "expected": "HTTP 503 with {\"error\": {\"code\": 503, \"message\": \"service temporarily unavailable\"}}",
-      "assertion_pseudocode": "hold_write_lock(db, duration=10s)\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer af_abcd1234_\" + \"A\" * 32})\nassert response.status_code == 503\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 503\nassert body[\"error\"][\"message\"] == \"service temporarily unavailable\""
+      "assertion_pseudocode": "hold_write_lock(db, duration=10s)\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer af_abcd1234_\" + \"A\" * 32})\nassert response.status_code == 503\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 503\nassert body[\"error\"][\"message\"] == \"service temporarily unavailable\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E16",
@@ -962,7 +1039,8 @@
       ],
       "input": "Three malformed workspace tokens: (a) af_wt_abc_def_extra (3 parts after prefix), (b) af_wt_short_<32 chars> (token_id < 8 chars), (c) af_wt_abcd1234_<31 chars> (secret too short)",
       "expected": "HTTP 401 for all three; no DB query executed",
-      "assertion_pseudocode": "invalid_wt_tokens = [\n  \"af_wt_abc_def_extra\",  // too many parts\n  \"af_wt_short_\" + \"A\" * 32,  // token_id < 8\n  \"af_wt_abcd1234_\" + \"B\" * 31,  // secret < 32\n]\nfor token in invalid_wt_tokens:\n  db_count_before = get_db_query_count()\n  response = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\n  assert response.status_code == 401\n  assert body_is_auth_error_envelope(response.body)\n  assert get_db_query_count() == db_count_before"
+      "assertion_pseudocode": "invalid_wt_tokens = [\n  \"af_wt_abc_def_extra\",  // too many parts\n  \"af_wt_short_\" + \"A\" * 32,  // token_id < 8\n  \"af_wt_abcd1234_\" + \"B\" * 31,  // secret < 32\n]\nfor token in invalid_wt_tokens:\n  db_count_before = get_db_query_count()\n  response = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\n  assert response.status_code == 401\n  assert body_is_auth_error_envelope(response.body)\n  assert get_db_query_count() == db_count_before",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E17",
@@ -974,7 +1052,8 @@
       ],
       "input": "Three malformed API key tokens: (a) af_tooshort_<32 chars> (key_id < 8), (b) af_abcd1234 (missing secret), (c) af_abcd1234_<31 chars> (secret < 32)",
       "expected": "HTTP 401 for all three; no DB query executed",
-      "assertion_pseudocode": "invalid_api_tokens = [\n  \"af_short_\" + \"A\" * 32,  // key_id too short (5 chars)\n  \"af_abcd1234\",  // missing secret part\n  \"af_abcd1234_\" + \"B\" * 31,  // secret too short\n]\nfor token in invalid_api_tokens:\n  db_count_before = get_db_query_count()\n  response = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\n  assert response.status_code == 401\n  assert body[\"error\"][\"code\"] == 401\n  assert body[\"error\"][\"message\"] == \"missing or invalid authentication credentials\"\n  assert get_db_query_count() == db_count_before"
+      "assertion_pseudocode": "invalid_api_tokens = [\n  \"af_short_\" + \"A\" * 32,  // key_id too short (5 chars)\n  \"af_abcd1234\",  // missing secret part\n  \"af_abcd1234_\" + \"B\" * 31,  // secret too short\n]\nfor token in invalid_api_tokens:\n  db_count_before = get_db_query_count()\n  response = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\n  assert response.status_code == 401\n  assert body[\"error\"][\"code\"] == 401\n  assert body[\"error\"][\"message\"] == \"missing or invalid authentication credentials\"\n  assert get_db_query_count() == db_count_before",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E18",
@@ -986,7 +1065,8 @@
       ],
       "input": "GET /api/v1/test with a valid-structure API key whose api_keys row has revoked_at set",
       "expected": "HTTP 401 with {\"error\": {\"code\": 401, \"message\": \"missing or invalid authentication credentials\"}}; same response as for expired token",
-      "assertion_pseudocode": "revoke_api_key(db, key_id, revoked_at=now())\ntoken = \"af_\" + key_id + \"_\" + secret\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code == 401\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 401\nassert body[\"error\"][\"message\"] == \"missing or invalid authentication credentials\""
+      "assertion_pseudocode": "revoke_api_key(db, key_id, revoked_at=now())\ntoken = \"af_\" + key_id + \"_\" + secret\nresponse = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token})\nassert response.status_code == 401\nbody = parse_json(response.body)\nassert body[\"error\"][\"code\"] == 401\nassert body[\"error\"][\"message\"] == \"missing or invalid authentication credentials\"",
+      "requirement_ids": []
     },
     {
       "id": "TS-01-E19",
@@ -998,7 +1078,8 @@
       ],
       "input": "Two requests: (a) token with expires_at in the past; (b) token with expires_at equal to exact current UTC instant",
       "expected": "(a) HTTP 401; (b) request proceeds normally (not HTTP 401)",
-      "assertion_pseudocode": "// (a) expired token\npast_time = utc_now() - duration(1, \"second\")\ninsert_api_key(db, key_id_a, secret_hash_a, user_id, expires_at=past_time)\ntoken_a = \"af_\" + key_id_a + \"_\" + secret_a\nresponse_a = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token_a})\nassert response_a.status_code == 401\n\n// (b) boundary token (expires_at == now; exclusive, so NOT expired)\nboundary_time = utc_now()\ninsert_api_key(db, key_id_b, secret_hash_b, user_id, expires_at=boundary_time)\ntoken_b = \"af_\" + key_id_b + \"_\" + secret_b\nresponse_b = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token_b})\nassert response_b.status_code != 401  // still valid at boundary"
+      "assertion_pseudocode": "// (a) expired token\npast_time = utc_now() - duration(1, \"second\")\ninsert_api_key(db, key_id_a, secret_hash_a, user_id, expires_at=past_time)\ntoken_a = \"af_\" + key_id_a + \"_\" + secret_a\nresponse_a = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token_a})\nassert response_a.status_code == 401\n\n// (b) boundary token (expires_at == now; exclusive, so NOT expired)\nboundary_time = utc_now()\ninsert_api_key(db, key_id_b, secret_hash_b, user_id, expires_at=boundary_time)\ntoken_b = \"af_\" + key_id_b + \"_\" + secret_b\nresponse_b = http_get(\"/api/v1/test\", headers={\"Authorization\": \"Bearer \" + token_b})\nassert response_b.status_code != 401  // still valid at boundary",
+      "requirement_ids": []
     }
   ],
   "smoke_tests": [
@@ -1027,7 +1108,8 @@
         "info-level startup log with bind, port, db_path, log_level appears in stdout",
         "GET /healthz returns HTTP 200 with {\"status\": \"ok\"}",
         "GET /readyz returns HTTP 200 with {\"status\": \"ready\"}"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-2",
@@ -1049,7 +1131,8 @@
         "info-level startup log entry appears with all four fields",
         "GET /healthz returns HTTP 200",
         "GET /readyz returns HTTP 200"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-3",
@@ -1072,7 +1155,8 @@
         "warn-level log entry with new file absolute path appears in stdout",
         "Server starts and responds to GET /healthz with HTTP 200",
         "Old admin token is rejected with HTTP 401 on subsequent API requests"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-4",
@@ -1094,7 +1178,8 @@
         "X-Request-ID response header is set",
         "Request log entry appears in stdout with method=GET, path=/api/v1/test, status=200, duration_ms>0, request_id=UUID",
         "No users table query is executed during admin token auth"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-5",
@@ -1113,7 +1198,8 @@
         "HTTP 403 with body {\"error\": {\"code\": 403, \"message\": \"forbidden\"}}",
         "Request log entry has status=403",
         "X-Request-ID header is present in response"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-6",
@@ -1135,7 +1221,8 @@
         "readyz_failure_counter incremented to 1",
         "Server remains listening; GET /healthz still returns HTTP 200",
         "No server shutdown initiated"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-7",
@@ -1154,7 +1241,8 @@
         "info-level log entry with msg=server shutdown complete appears in stdout",
         "Process exits with code 0 (if drain completes within 15s)",
         "No warn-level timeout message appears (if drain completes in time)"
-      ]
+      ],
+      "requirement_ids": []
     },
     {
       "id": "TS-01-SMOKE-8",
@@ -1176,7 +1264,8 @@
         "Request log entry has status=413",
         "Handler is never invoked (body-size limit fires first)",
         "X-Request-ID header is present in the response"
-      ]
+      ],
+      "requirement_ids": []
     }
   ],
   "coverage": {

@@ -36,7 +36,16 @@
     "workspace token": "A delegated, read-only credential scoped to a single workspace, formatted as af_wt_<token_id>_<secret>",
     "workspace_id": "The internal UUID identifying a workspace, attached to request context by the auth middleware when a workspace token is authenticated",
     "workspace_tokens": "The database table storing workspace token metadata including hashed secrets, expiry, and revocation timestamps",
-    "workspaces": "The database table storing workspace records including slug, git_url, branch, team_id, and owner_user_id"
+    "workspaces": "The database table storing workspace records including slug, git_url, branch, team_id, and owner_user_id",
+    ":slug": "Code reference or literal value used in requirements.",
+    "af_wt_<token_id>_<secret>": "Token or credential format string.",
+    "git://": "Code reference or literal value used in requirements.",
+    "git@<host>:<path>": "URL or URI format.",
+    "http://": "URL or URI format.",
+    "https://": "URL or URI format.",
+    "id": "Code reference or literal value used in requirements.",
+    "ssh://": "Code reference or literal value used in requirements.",
+    "token": "Code reference or literal value used in requirements."
   },
   "requirements": [
     {
@@ -196,7 +205,7 @@
           "ears_pattern": "unwanted",
           "system": "workspace creation handler",
           "action": "accepts or rejects based on the whitespace/length rules only; an empty string contains no whitespace and is within length, so it is stored as an empty string (not normalized to null unless the PRD specifies otherwise)",
-          "return_contract": "`branch` stored as empty string or HTTP 400 if implementation treats empty string as invalid — implementation must document this choice",
+          "return_contract": "`branch` stored as empty string or HTTP 400 if implementation treats empty string as invalid \u2014 implementation must document this choice",
           "error_condition": "the submitted `branch` is an empty string \"\""
         }
       ]
@@ -380,7 +389,7 @@
           "id": "04-REQ-7.E1",
           "ears_pattern": "unwanted",
           "system": "GET /api/v1/workspaces/:slug handler",
-          "action": "returns HTTP 404 (not HTTP 403), preserving information hiding — the non-existence of the workspace is not treated as a secret",
+          "action": "returns HTTP 404 (not HTTP 403), preserving information hiding \u2014 the non-existence of the workspace is not treated as a secret",
           "return_contract": "HTTP 404 with {\"error\":{\"code\":404,\"message\":\"<description>\"}}",
           "error_condition": "a non-owner user queries a `slug` that does not exist in the `workspaces` table"
         }
@@ -765,7 +774,7 @@
       "id": "04-PROP-3",
       "title": "Token plaintext returned exactly once",
       "for_any": "`workspace token` created via POST /api/v1/workspaces/:slug/tokens",
-      "invariant": "the full plaintext token string (af_wt_<token_id>_<secret>) appears in exactly one HTTP response — the 201 response to the creation request — and is never returned by any subsequent endpoint",
+      "invariant": "the full plaintext token string (af_wt_<token_id>_<secret>) appears in exactly one HTTP response \u2014 the 201 response to the creation request \u2014 and is never returned by any subsequent endpoint",
       "validates": [
         "04-REQ-9.1",
         "04-REQ-9.2",
@@ -1086,7 +1095,7 @@
           "name": "Read",
           "import_path": "crypto/rand",
           "signature": "func Read(b []byte) (n int, err error)",
-          "notes": "Used to generate cryptographically secure random bytes for token_id (8 base62 chars) and secret (32 base62 chars). The number of raw bytes consumed is implementation-defined — sufficient bytes must be read to produce the required base62 output length."
+          "notes": "Used to generate cryptographically secure random bytes for token_id (8 base62 chars) and secret (32 base62 chars). The number of raw bytes consumed is implementation-defined \u2014 sufficient bytes must be read to produce the required base62 output length."
         }
       ]
     },
