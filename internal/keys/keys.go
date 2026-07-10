@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/agent-fox-dev/hub/internal/apierror"
+	"github.com/agent-fox-dev/hub/internal/httpclient"
 	"github.com/labstack/echo/v4"
 )
 
@@ -96,7 +98,7 @@ type KeyResponse struct {
 // with the exact message if key_id is absent or empty.
 func ValidateKeyID(keyID string) error {
 	if keyID == "" {
-		return fmt.Errorf(`key_id is not set. Run "afc login" first.`)
+		return fmt.Errorf(`Error: key_id is not set. Run "afc login" first.`)
 	}
 	return nil
 }
@@ -106,24 +108,17 @@ func ValidateKeyID(keyID string) error {
 // For a reachable server, err is nil even on non-2xx responses; the caller
 // decides what to do based on statusCode.
 func ListKeys(hubURL, apiKey string, client *http.Client) (body []byte, statusCode int, err error) {
-	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/v1/keys", nil)
+	resp, err := httpclient.DoRequest(client, "GET", hubURL+"/api/v1/keys", apiKey, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
-	body, err = io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read response body: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("failed to read response body: %w", err)
 	}
-
-	return body, resp.StatusCode, nil
+	return data, resp.StatusCode, nil
 }
 
 // RefreshKey sends POST /api/v1/keys/:key_id/refresh with Bearer authentication.
@@ -132,42 +127,27 @@ func ListKeys(hubURL, apiKey string, client *http.Client) (body []byte, statusCo
 // an error is returned so the caller can handle it appropriately.
 func RefreshKey(hubURL, apiKey, keyID string, client *http.Client) (*RefreshResponse, []byte, error) {
 	url := fmt.Sprintf("%s/api/v1/keys/%s/refresh", hubURL, keyID)
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	resp, err := httpclient.DoRequest(client, "POST", url, apiKey, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read response body: %w", err)
+		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Extract error message from structured error body if possible.
-		var errBody struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(body, &errBody) == nil && errBody.Error.Message != "" {
-			return nil, body, fmt.Errorf("%s", errBody.Error.Message)
-		}
-		return nil, body, fmt.Errorf("server returned HTTP %d", resp.StatusCode)
+		return nil, data, fmt.Errorf("server returned HTTP %d: %s",
+			resp.StatusCode, apierror.HandleResponseBody(resp.StatusCode, data))
 	}
 
 	var refreshResp RefreshResponse
-	if err := json.Unmarshal(body, &refreshResp); err != nil {
-		return nil, body, fmt.Errorf("parse response: %w", err)
+	if err := json.Unmarshal(data, &refreshResp); err != nil {
+		return nil, data, fmt.Errorf("failed to parse refresh response: %w", err)
 	}
-
-	return &refreshResp, body, nil
+	return &refreshResp, data, nil
 }
 
 // RevokeKey sends DELETE /api/v1/keys/:key_id with Bearer authentication.
@@ -176,24 +156,17 @@ func RefreshKey(hubURL, apiKey, keyID string, client *http.Client) (*RefreshResp
 // decides what to do based on statusCode.
 func RevokeKey(hubURL, apiKey, keyID string, client *http.Client) (statusCode int, body []byte, err error) {
 	url := fmt.Sprintf("%s/api/v1/keys/%s", hubURL, keyID)
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	resp, err := httpclient.DoRequest(client, "DELETE", url, apiKey, nil)
 	if err != nil {
-		return 0, nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("HTTP request failed: %w", err)
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 
-	body, err = io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("read response body: %w", err)
+		return resp.StatusCode, nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, data, nil
 }
 
 // ---------------------------------------------------------------------------

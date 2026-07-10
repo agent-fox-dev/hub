@@ -2,6 +2,11 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+
+	"github.com/agent-fox-dev/hub/internal/config"
+	"github.com/agent-fox-dev/hub/internal/validate"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +27,30 @@ func NewRootCmd(version string) *cobra.Command {
 	rootCmd.PersistentFlags().String("user-id", "", "User ID (overrides AF_HUB_USER_ID and config file)")
 	rootCmd.PersistentFlags().String("api-key", "", "API key (overrides AF_HUB_API_KEY and config file)")
 
+	// PersistentPreRunE: ensure config directory and file exist, load config.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to determine home directory: %w", err)
+		}
+
+		if err := config.EnsureConfigDir(home); err != nil {
+			return err
+		}
+
+		cfgPath := config.ConfigPath(home)
+		if err := config.EnsureConfigFile(cfgPath); err != nil {
+			return err
+		}
+
+		_, err = config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
 	// Register subcommands.
 	rootCmd.AddCommand(newLoginCmd())
 	rootCmd.AddCommand(newKeysCmd())
@@ -30,13 +59,17 @@ func NewRootCmd(version string) *cobra.Command {
 	return rootCmd
 }
 
-// newLoginCmd creates the login subcommand stub.
+// newLoginCmd creates the login subcommand.
 func newLoginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate with the hub using OAuth",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			expires, _ := cmd.Flags().GetInt("expires")
+			if err := validate.ValidateExpires(expires); err != nil {
+				return err
+			}
+			// Stub: login flow not implemented yet (task group 8).
 			return nil
 		},
 	}
@@ -56,7 +89,7 @@ func newKeysCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all API keys",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			// Stub: not implemented yet (task group 9).
 			return nil
 		},
 	})
@@ -65,7 +98,7 @@ func newKeysCmd() *cobra.Command {
 		Use:   "refresh",
 		Short: "Rotate the current API key",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			// Stub: not implemented yet (task group 9).
 			return nil
 		},
 	})
@@ -74,7 +107,7 @@ func newKeysCmd() *cobra.Command {
 		Use:   "revoke",
 		Short: "Revoke the current API key and clear local credentials",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			// Stub: not implemented yet (task group 9).
 			return nil
 		},
 	})
@@ -94,7 +127,15 @@ func newWorkspaceCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Register a new workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			gitURL, _ := cmd.Flags().GetString("git-url")
+			if err := validate.ValidateNonEmpty("git-url", gitURL); err != nil {
+				return err
+			}
+			slug, _ := cmd.Flags().GetString("slug")
+			if err := validate.ValidateNonEmpty("slug", slug); err != nil {
+				return err
+			}
+			// Stub: not implemented yet (task group 10).
 			return nil
 		},
 	}
@@ -109,7 +150,7 @@ func newWorkspaceCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all workspaces",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			// Stub: not implemented yet (task group 10).
 			return nil
 		},
 	})
@@ -119,7 +160,7 @@ func newWorkspaceCmd() *cobra.Command {
 		Short: "Get a workspace by slug",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			// Stub: not implemented yet (task group 10).
 			return nil
 		},
 	})
@@ -140,7 +181,15 @@ func newWorkspaceTokenCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Create a workspace token",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			workspace, _ := cmd.Flags().GetString("workspace")
+			if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
+				return err
+			}
+			expires, _ := cmd.Flags().GetInt("expires")
+			if err := validate.ValidateExpires(expires); err != nil {
+				return err
+			}
+			// Stub: not implemented yet (task group 11).
 			return nil
 		},
 	}
@@ -154,7 +203,11 @@ func newWorkspaceTokenCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List workspace tokens",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			workspace, _ := cmd.Flags().GetString("workspace")
+			if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
+				return err
+			}
+			// Stub: not implemented yet (task group 11).
 			return nil
 		},
 	}
@@ -167,7 +220,11 @@ func newWorkspaceTokenCmd() *cobra.Command {
 		Short: "Revoke a workspace token",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: not implemented yet.
+			workspace, _ := cmd.Flags().GetString("workspace")
+			if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
+				return err
+			}
+			// Stub: not implemented yet (task group 11).
 			return nil
 		},
 	}
