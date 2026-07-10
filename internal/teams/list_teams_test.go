@@ -81,6 +81,11 @@ func parseTeamListResponse(t *testing.T, body []byte) []teamResponse {
 
 func TestCreateTeamEdge_ConcurrentSameSlug(t *testing.T) {
 	e, db := setupListTeamTest(t)
+	// SQLite :memory: databases are per-connection. Without this limit,
+	// goroutines may open separate connections to different in-memory DBs,
+	// causing "no such table" errors. Constraining to 1 connection ensures
+	// all goroutines share the same in-memory database.
+	db.SetMaxOpenConns(1)
 
 	var wg sync.WaitGroup
 	results := make([]int, 2)
