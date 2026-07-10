@@ -239,7 +239,23 @@ func (h *Handler) reactivateTeam(c echo.Context) error {
 }
 
 func (h *Handler) deleteTeam(c echo.Context) error {
-	return writeError(c, http.StatusNotImplemented, "not implemented")
+	id := c.Param("id")
+	if err := validateUUID(id); err != nil {
+		return writeError(c, http.StatusBadRequest, ErrInvalidIDFormat.Error())
+	}
+
+	err := h.store.DeleteTeam(id)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return writeError(c, http.StatusNotFound, ErrTeamNotFound.Error())
+		}
+		if errors.Is(err, ErrArchiveBeforeDelete) {
+			return writeError(c, http.StatusConflict, ErrArchiveBeforeDelete.Error())
+		}
+		return writeError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *Handler) addMember(c echo.Context) error {

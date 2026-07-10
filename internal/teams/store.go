@@ -238,6 +238,52 @@ func (s *Store) UpdateTeamStatus(id, newStatus string) (*Team, error) {
 	return s.GetTeamByID(id)
 }
 
+// DeleteTeam permanently removes an archived team and all its members within
+// a single transaction. The caller must verify the team is archived before
+// calling. Returns ErrTeamNotFound if the team does not exist or is not archived.
+// Returns ErrArchiveBeforeDelete if the team is active.
+func (s *Store) DeleteTeam(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint: errcheck
+
+	// Fetch team status within the transaction.
+	var status string
+	err = tx.QueryRow(`SELECT status FROM teams WHERE id = ?`, id).Scan(&status)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ErrTeamNotFound
+		}
+		return fmt.Errorf("fetching team for delete: %w", err)
+	}
+
+	if status == "deleted" {
+		return ErrTeamNotFound
+	}
+	if status == "active" {
+		return ErrArchiveBeforeDelete
+	}
+
+	// Delete team_members rows first (also handled by CASCADE, but explicit
+	// for spec compliance and transaction atomicity verification).
+	if _, err := tx.Exec(`DELETE FROM team_members WHERE team_id = ?`, id); err != nil {
+		return fmt.Errorf("deleting team members: %w", err)
+	}
+
+	// Delete the team row.
+	if _, err := tx.Exec(`DELETE FROM teams WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("deleting team: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing delete transaction: %w", err)
+	}
+
+	return nil
+}
+
 // mapConstraintError inspects a SQLite error for partial UNIQUE index
 // violations and maps them to the appropriate sentinel error.
 func mapConstraintError(err error) error {
