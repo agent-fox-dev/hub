@@ -310,10 +310,11 @@ func TestLogin_SendsCodeAndPrintsUserJSON(t *testing.T) {
 	// with the authorization code (plus provider and redirect_uri per spec 02),
 	// and prints the JSON user object to stdout.
 
-	userObj := `{"id":"u1","email":"op@example.com"}`
+	// Response format per 05-REQ-10.1: nested user + api_key objects.
+	callbackResp := `{"user":{"id":"u1","email":"op@example.com"},"api_key":{"key":"af_aabb_secret","key_id":"aabb"}}`
 	stub := newStubServer(t)
 	stub.onRoute("GET", "/api/v1/auth/providers", http.StatusOK, stubProviderList("github"))
-	stub.onRoute("POST", "/api/v1/auth/callback", http.StatusOK, userObj)
+	stub.onRoute("POST", "/api/v1/auth/callback", http.StatusOK, callbackResp)
 
 	cmd, stdoutPipe, stderrPipe, done := execAfcAsync(t, []string{
 		"login", "--provider", "github",
@@ -377,11 +378,16 @@ func TestLogin_SendsCodeAndPrintsUserJSON(t *testing.T) {
 		t.Errorf("expected stdout to be valid JSON, got: %q", stdout)
 	}
 
-	// Assert the user object fields are present.
+	// Assert the response contains user and api_key fields (per 05-REQ-10.1).
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &parsed); err == nil {
-		if parsed["id"] != "u1" {
-			t.Errorf("expected user id 'u1', got: %v", parsed["id"])
+		// The response is nested: {"user":{...}, "api_key":{...}}
+		if userMap, ok := parsed["user"].(map[string]any); ok {
+			if userMap["id"] != "u1" {
+				t.Errorf("expected user id 'u1', got: %v", userMap["id"])
+			}
+		} else {
+			t.Errorf("expected 'user' object in response, got: %v", parsed)
 		}
 	}
 
