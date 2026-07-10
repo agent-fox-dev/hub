@@ -528,18 +528,7 @@ func newWorkspaceTokenCmd() *cobra.Command {
 	createCmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a workspace token",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			workspace, _ := cmd.Flags().GetString("workspace")
-			if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
-				return err
-			}
-			expires, _ := cmd.Flags().GetInt("expires")
-			if err := validate.ValidateExpires(expires); err != nil {
-				return err
-			}
-			// Stub: not implemented yet (task group 11).
-			return nil
-		},
+		RunE:  runWorkspaceTokenCreate,
 	}
 	createCmd.Flags().String("workspace", "", "Workspace slug (required)")
 	createCmd.Flags().String("label", "", "Human-readable token label (optional)")
@@ -550,14 +539,7 @@ func newWorkspaceTokenCmd() *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List workspace tokens",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			workspace, _ := cmd.Flags().GetString("workspace")
-			if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
-				return err
-			}
-			// Stub: not implemented yet (task group 11).
-			return nil
-		},
+		RunE:  runWorkspaceTokenList,
 	}
 	listCmd.Flags().String("workspace", "", "Workspace slug (required)")
 
@@ -567,18 +549,123 @@ func newWorkspaceTokenCmd() *cobra.Command {
 		Use:   "revoke",
 		Short: "Revoke a workspace token",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			workspace, _ := cmd.Flags().GetString("workspace")
-			if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
-				return err
-			}
-			// Stub: not implemented yet (task group 11).
-			return nil
-		},
+		RunE:  runWorkspaceTokenRevoke,
 	}
 	revokeCmd.Flags().String("workspace", "", "Workspace slug (required)")
 
 	tokenCmd.AddCommand(revokeCmd)
 
 	return tokenCmd
+}
+
+// runWorkspaceTokenCreate implements "afc workspace token create":
+// validates flags, POSTs /api/v1/workspaces/:slug/tokens, prints the full
+// token JSON (including secret) to stdout. Does NOT persist the token to config.
+func runWorkspaceTokenCreate(cmd *cobra.Command, args []string) error {
+	// Step 1: Validate --workspace non-empty before any network call.
+	workspace, _ := cmd.Flags().GetString("workspace")
+	if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
+		return err
+	}
+
+	// Step 2: Validate --expires before any network call.
+	expires, _ := cmd.Flags().GetInt("expires")
+	if err := validate.ValidateExpires(expires); err != nil {
+		return err
+	}
+
+	// Step 3: Resolve auth config (hub_url, user_id, api_key).
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Step 4: Build payload. Always include 'expires' as integer.
+	// Include 'label' only if provided.
+	payload := map[string]any{
+		"expires": expires,
+	}
+	label, _ := cmd.Flags().GetString("label")
+	if label != "" {
+		payload["label"] = label
+	}
+
+	// Step 5: POST /api/v1/workspaces/:slug/tokens with Bearer auth.
+	client := httpclient.NewClient()
+	body, statusCode, err := wsclient.CreateToken(resolved.HubURL, resolved.APIKey, workspace, payload, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	// Step 6: Print token JSON to stdout (do NOT write to config).
+	return output.PrintJSON(cmd.OutOrStdout(), body)
+}
+
+// runWorkspaceTokenList implements "afc workspace token list":
+// GET /api/v1/workspaces/:slug/tokens with Bearer auth, prints metadata
+// JSON to stdout.
+func runWorkspaceTokenList(cmd *cobra.Command, args []string) error {
+	// Step 1: Validate --workspace non-empty.
+	workspace, _ := cmd.Flags().GetString("workspace")
+	if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
+		return err
+	}
+
+	// Step 2: Resolve auth config.
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Step 3: GET /api/v1/workspaces/:slug/tokens with Bearer auth.
+	client := httpclient.NewClient()
+	body, statusCode, err := wsclient.ListTokens(resolved.HubURL, resolved.APIKey, workspace, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	return output.PrintJSON(cmd.OutOrStdout(), body)
+}
+
+// runWorkspaceTokenRevoke implements "afc workspace token revoke":
+// DELETE /api/v1/workspaces/:slug/tokens/:token_id with Bearer auth,
+// prints "Token <token-id> revoked." to stderr on success.
+func runWorkspaceTokenRevoke(cmd *cobra.Command, args []string) error {
+	// Step 1: Validate --workspace non-empty.
+	workspace, _ := cmd.Flags().GetString("workspace")
+	if err := validate.ValidateNonEmpty("workspace", workspace); err != nil {
+		return err
+	}
+
+	// Step 2: Resolve auth config.
+	resolved, _, _, err := resolveAuthConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Step 3: The token-id is the required positional argument (ExactArgs(1)).
+	tokenID := args[0]
+
+	// Step 4: DELETE /api/v1/workspaces/:slug/tokens/:token_id with Bearer auth.
+	client := httpclient.NewClient()
+	statusCode, body, err := wsclient.RevokeToken(resolved.HubURL, resolved.APIKey, workspace, tokenID, client)
+	if err != nil {
+		return err
+	}
+
+	if !apierror.IsSuccess(statusCode) {
+		return fmt.Errorf("%s", apierror.HandleResponseBody(statusCode, body))
+	}
+
+	// Step 5: Print confirmation to stderr.
+	fmt.Fprintf(cmd.ErrOrStderr(), "Token %s revoked.\n", tokenID)
+	return nil
 }

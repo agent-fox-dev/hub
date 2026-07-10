@@ -931,7 +931,7 @@
             "05-REQ-5.1",
             "05-REQ-5.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -956,7 +956,7 @@
             "05-REQ-14.1",
             "05-REQ-14.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
