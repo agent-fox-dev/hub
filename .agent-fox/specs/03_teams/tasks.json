@@ -1159,7 +1159,7 @@
             "03-REQ-8.7",
             "03-REQ-8.8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1185,7 +1185,7 @@
             "03-REQ-9.3",
             "03-REQ-9.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
