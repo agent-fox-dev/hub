@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/agent-fox-dev/hub/internal/config"
+	"github.com/agent-fox-dev/hub/internal/httpclient"
+	"github.com/agent-fox-dev/hub/internal/login"
 	"github.com/agent-fox-dev/hub/internal/validate"
 	"github.com/spf13/cobra"
 )
@@ -59,23 +61,138 @@ func NewRootCmd(version string) *cobra.Command {
 	return rootCmd
 }
 
+// LoginTimeout controls the maximum wait for an OAuth callback.
+// It can be overridden in tests to avoid 2-minute waits.
+var LoginTimeout = login.DefaultTimeout
+
 // newLoginCmd creates the login subcommand.
 func newLoginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate with the hub using OAuth",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			expires, _ := cmd.Flags().GetInt("expires")
-			if err := validate.ValidateExpires(expires); err != nil {
-				return err
-			}
-			// Stub: login flow not implemented yet (task group 8).
-			return nil
-		},
+		Long:  "Authenticate with the hub using OAuth authorization code flow.",
+		RunE:  runLogin,
 	}
 	cmd.Flags().String("provider", "github", "OAuth provider (e.g., 'github')")
 	cmd.Flags().Int("expires", 90, "Key expiry in days (0, 30, 60, or 90)")
 	return cmd
+}
+
+func runLogin(cmd *cobra.Command, args []string) error {
+	// Step 1: Validate --expires before any network calls.
+	expires, _ := cmd.Flags().GetInt("expires")
+	if err := validate.ValidateExpires(expires); err != nil {
+		return err
+	}
+
+	provider, _ := cmd.Flags().GetString("provider")
+
+	// Step 2: Resolve hub_url. Login doesn't require user_id or api_key.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to determine home directory: %w", err)
+	}
+	cfgPath := config.ConfigPath(home)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	// Resolve hub_url from flag > env > config.
+	hubURL, _ := cmd.Flags().GetString("hub-url")
+	resolvedHubURL := resolveHubURL(hubURL, cfg)
+	if resolvedHubURL == "" {
+		return fmt.Errorf("hub_url is not set. Provide it via --hub-url flag, AF_HUB_URL environment variable, or hub_url in config file")
+	}
+
+	// Step 3: Fetch providers from the hub.
+	client := httpclient.NewClient()
+	providers, err := login.FetchProviders(resolvedHubURL, "", client)
+	if err != nil {
+		return err
+	}
+
+	// Step 4: Validate --provider against the list.
+	if err := login.ValidateProvider(provider, providers); err != nil {
+		return err
+	}
+
+	// Find the selected provider's authorize URL.
+	selectedProvider, err := login.FindProvider(provider, providers)
+	if err != nil {
+		return err
+	}
+
+	// Step 5: Generate CSRF state.
+	state, err := login.GenerateState()
+	if err != nil {
+		return err
+	}
+
+	// Step 6: Start callback server.
+	cs, err := login.StartCallbackServer(state)
+	if err != nil {
+		return err
+	}
+	defer cs.Shutdown()
+
+	// Step 7: Build authorization URL.
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", cs.Port())
+	authURL := login.BuildAuthorizationURL(
+		selectedProvider.AuthorizeURL, state, redirectURI,
+	)
+
+	// Step 8: Open browser (non-fatal on error).
+	if err := login.BrowserOpenFunc(authURL); err != nil {
+		// Browser failure is non-fatal — URL is printed to stderr for manual use.
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not open browser: %v\n", err)
+	}
+
+	// Step 9: Always print auth URL to stderr.
+	fmt.Fprintf(cmd.ErrOrStderr(), "Open this URL in your browser to authenticate:\n%s\n", authURL)
+
+	// Step 10: Wait for callback.
+	code, receivedState, err := cs.WaitForCode(LoginTimeout)
+	if err != nil {
+		return err
+	}
+
+	// Step 11: Validate state match.
+	if receivedState != state {
+		return fmt.Errorf("OAuth callback state mismatch: possible CSRF attack")
+	}
+
+	// Step 12: Exchange code for credentials.
+	cbResp, err := login.ExchangeCode(resolvedHubURL, provider, code, redirectURI, expires, client)
+	if err != nil {
+		return err
+	}
+
+	// Step 13: Save credentials to config via atomic write.
+	// Store api_key.token (full composite key) as api_key (for Bearer auth).
+	// Store api_key.key_id as key_id.
+	cfg.HubURL = resolvedHubURL
+	cfg.UserID = cbResp.User.ID
+	cfg.APIKey = cbResp.APIKey.Token
+	cfg.KeyID = cbResp.APIKey.KeyID
+
+	if err := config.Save(cfgPath, cfg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// resolveHubURL resolves hub_url from flag > env > config, without requiring
+// user_id or api_key (which are not available pre-login).
+func resolveHubURL(flagVal string, cfg *config.Config) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if envVal := os.Getenv("AF_HUB_URL"); envVal != "" {
+		return envVal
+	}
+	return cfg.HubURL
 }
 
 // newKeysCmd creates the keys parent command with list, refresh, and revoke subcommands.

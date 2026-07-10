@@ -2,12 +2,19 @@
 package login
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
+
+	"github.com/pkg/browser"
 )
 
 // DefaultTimeout is the maximum time to wait for an OAuth callback.
@@ -21,9 +28,8 @@ var BrowserOpenFunc = openBrowser
 // replaced in tests to simulate port binding failures.
 var ListenFunc = net.Listen
 
-func openBrowser(url string) error {
-	// Stub: will be implemented with github.com/pkg/browser.
-	return fmt.Errorf("browser open not implemented")
+func openBrowser(u string) error {
+	return browser.OpenURL(u)
 }
 
 // GenerateState produces a cryptographically random CSRF state parameter
@@ -141,23 +147,149 @@ func (cs *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request)
 	cs.codeCh <- callbackResult{code: code, state: state}
 }
 
-// FetchProviders fetches the list of supported OAuth providers from the hub.
+// FetchProviders fetches the list of supported OAuth providers from the hub
+// by calling GET /api/v1/auth/providers. This is a public endpoint; the
+// apiKey parameter is included for consistency but is not required.
 // Returns an error if the request fails or returns a non-2xx response.
 func FetchProviders(hubURL, apiKey string, client *http.Client) ([]Provider, error) {
-	// Stub: not implemented yet.
-	return nil, fmt.Errorf("FetchProviders not implemented")
+	reqURL := strings.TrimRight(hubURL, "/") + "/api/v1/auth/providers"
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create providers request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch providers: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read providers response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Try to extract error message from JSON envelope.
+		var envelope struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
+			return nil, fmt.Errorf("failed to fetch providers: %s", envelope.Error.Message)
+		}
+		return nil, fmt.Errorf("failed to fetch providers: unexpected response (HTTP %d)", resp.StatusCode)
+	}
+
+	var providersResp ProvidersResponse
+	if err := json.Unmarshal(body, &providersResp); err != nil {
+		return nil, fmt.Errorf("failed to parse providers response: %w", err)
+	}
+
+	return providersResp.Providers, nil
 }
 
 // ExchangeCode exchanges an authorization code for user credentials by
-// calling POST /api/v1/auth/callback on the hub.
+// calling POST /api/v1/auth/callback on the hub. The payload contains
+// provider, code, redirect_uri, state (optional, forwarded for logging),
+// and expires as an integer.
 func ExchangeCode(hubURL string, provider, code, redirectURI string, expires int, client *http.Client) (*CallbackResponse, error) {
-	// Stub: not implemented yet.
-	return nil, fmt.Errorf("ExchangeCode not implemented")
+	reqURL := strings.TrimRight(hubURL, "/") + "/api/v1/auth/callback"
+
+	// Build the JSON payload per spec 05-REQ-6.5.
+	// Include state for completeness (spec 02 accepts it as an optional pass-through).
+	payload := map[string]any{
+		"provider":     provider,
+		"code":         code,
+		"redirect_uri": redirectURI,
+		"expires":      expires,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal callback payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create callback request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange authorization code: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read callback response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Try to extract error message from JSON envelope.
+		var envelope struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
+			return nil, fmt.Errorf("code exchange failed: %s", envelope.Error.Message)
+		}
+		return nil, fmt.Errorf("code exchange failed: unexpected response (HTTP %d)", resp.StatusCode)
+	}
+
+	var cbResp CallbackResponse
+	if err := json.Unmarshal(body, &cbResp); err != nil {
+		return nil, fmt.Errorf("failed to parse callback response: %w", err)
+	}
+
+	return &cbResp, nil
 }
 
 // BuildAuthorizationURL constructs the full authorization URL from a provider's
 // base authorize_url, adding state and redirect_uri query parameters.
+// Per the reviewer finding, the server's authorize_url already includes
+// client_id and scope; the CLI only appends state and redirect_uri.
 func BuildAuthorizationURL(baseURL, state, redirectURI string) string {
-	// Stub: not implemented yet - will add state and redirect_uri params.
-	return baseURL
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		// If the URL is unparseable, return it as-is; the browser will
+		// show an error.
+		return baseURL
+	}
+	q := u.Query()
+	q.Set("state", state)
+	q.Set("redirect_uri", redirectURI)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// ValidateProvider checks that the requested provider is in the list of
+// available providers. Returns a formatted error message listing available
+// providers if the requested one is not found.
+func ValidateProvider(requested string, providers []Provider) error {
+	names := make([]string, len(providers))
+	for i, p := range providers {
+		names[i] = p.Name
+		if p.Name == requested {
+			return nil
+		}
+	}
+	return fmt.Errorf("Error: unsupported provider: %s. Available: %s",
+		requested, strings.Join(names, ", "))
+}
+
+// FindProvider returns the Provider with the given name, or an error if not found.
+func FindProvider(name string, providers []Provider) (*Provider, error) {
+	for i := range providers {
+		if providers[i].Name == name {
+			return &providers[i], nil
+		}
+	}
+	return nil, fmt.Errorf("provider %q not found", name)
 }
