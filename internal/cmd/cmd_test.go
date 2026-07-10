@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	afccmd "github.com/agentfox/hub/internal/cmd"
+	afccmd "github.com/agent-fox-dev/hub/internal/cmd"
 )
 
 // ---------------------------------------------------------------------------

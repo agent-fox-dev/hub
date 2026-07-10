@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	afccmd "github.com/agentfox/hub/internal/cmd"
+	afccmd "github.com/agent-fox-dev/hub/internal/cmd"
 )
 
 // version is injected at build time via -ldflags.

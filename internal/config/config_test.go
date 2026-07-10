@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-	"github.com/agentfox/hub/internal/config"
+	"github.com/agent-fox-dev/hub/internal/config"
 )
 
 // ---------------------------------------------------------------------------
