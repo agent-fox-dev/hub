@@ -1117,7 +1117,7 @@
             "04-PATH-4",
             "04-PATH-5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1147,7 +1147,7 @@
             "04-PROP-2",
             "04-PROP-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1174,7 +1174,7 @@
             "04-PATH-4",
             "04-PATH-5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1197,7 +1197,7 @@
             "04-REQ-9.E1",
             "04-REQ-12.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1220,7 +1220,7 @@
             "04-REQ-12.4",
             "04-REQ-13.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1229,7 +1229,7 @@
           "details": [],
           "test_spec_refs": [],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
