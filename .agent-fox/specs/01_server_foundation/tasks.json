@@ -32,7 +32,7 @@
             "01-REQ-1.1",
             "01-REQ-1.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -56,7 +56,7 @@
             "01-REQ-1.4",
             "01-REQ-1.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -75,14 +75,14 @@
             "01-REQ-1.E2",
             "01-REQ-2.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
           "id": "1.4",
           "title": "Write integration tests for startup sequence ordering",
           "details": [
-            "Test: log entries appear in correct order \u2014 logging init before DB, DB before admin bootstrap, admin bootstrap before startup info",
+            "Test: log entries appear in correct order — logging init before DB, DB before admin bootstrap, admin bootstrap before startup info",
             "Test: fatal error during init steps 2-5 exits with code 1 before opening HTTP listener",
             "Use log timestamp ordering to verify sequential initialization"
           ],
@@ -94,7 +94,7 @@
             "01-REQ-2.1",
             "01-REQ-2.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -105,8 +105,7 @@
           "Test stubs exist and fail as expected (not yet implemented): go test ./internal/config/... -count=1 -v",
           "No linter errors in test files: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 2,
@@ -213,8 +212,7 @@
           "DB and health probe test stubs fail as expected (not yet implemented): go test ./internal/db/... ./internal/handler/... -count=1 -v",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 3,
@@ -298,8 +296,7 @@
           "Logging and shutdown test stubs fail as expected: go test ./internal/middleware/... -count=1 -v",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 4,
@@ -337,10 +334,10 @@
           "id": "4.2",
           "title": "Write integration tests for subsequent-boot token validation",
           "details": [
-            "Test: correct AF_HUB_ADMIN_TOKEN SHA-256 matches stored hash \u2192 server starts; wrong token \u2192 fatal exit code 1",
+            "Test: correct AF_HUB_ADMIN_TOKEN SHA-256 matches stored hash → server starts; wrong token → fatal exit code 1",
             "Test: admin_token file still present on subsequent boot emits warn security notice with path",
             "Test: admin_token file absent on subsequent boot emits no log entry about the file",
-            "Test: absent AF_HUB_ADMIN_TOKEN on subsequent boot \u2192 fatal exit code 1; no HTTP listener opened"
+            "Test: absent AF_HUB_ADMIN_TOKEN on subsequent boot → fatal exit code 1; no HTTP listener opened"
           ],
           "test_spec_refs": [
             "TS-01-29",
@@ -364,7 +361,7 @@
             "Test: --reset-admin-token bypasses AF_HUB_ADMIN_TOKEN; new token replaces old; file overwritten mode 0600; warn log with path",
             "Test: --reset-admin-token with empty admin_tokens behaves identically to first boot",
             "Test: --reset-admin-token + --config <path> processed independently; token file written to config directory",
-            "Test: unwritable token file destination during rotation \u2192 fatal exit code 1"
+            "Test: unwritable token file destination during rotation → fatal exit code 1"
           ],
           "test_spec_refs": [
             "TS-01-32",
@@ -389,8 +386,7 @@
           "Admin bootstrap test stubs fail as expected: go test ./internal/admin/... -count=1 -v",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 5,
@@ -425,9 +421,9 @@
           "id": "5.2",
           "title": "Write unit tests for custom error handler dispatch logic",
           "details": [
-            "Test: *echo.HTTPError with Code=422, Message=unprocessable entity \u2192 HTTP 422 with envelope",
-            "Test: plain Go error \u2192 HTTP 500 with {\"error\": {\"code\": 500, \"message\": \"internal server error\"}}",
-            "Test: panic in handler \u2192 Recover middleware \u2192 custom error handler \u2192 HTTP 500 envelope; no raw panic in body; X-Request-ID present"
+            "Test: *echo.HTTPError with Code=422, Message=unprocessable entity → HTTP 422 with envelope",
+            "Test: plain Go error → HTTP 500 with {\"error\": {\"code\": 500, \"message\": \"internal server error\"}}",
+            "Test: panic in handler → Recover middleware → custom error handler → HTTP 500 envelope; no raw panic in body; X-Request-ID present"
           ],
           "test_spec_refs": [
             "TS-01-38",
@@ -492,8 +488,7 @@
           "Route group and middleware test stubs fail as expected: go test ./internal/middleware/... ./internal/handler/... -count=1 -v",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 6,
@@ -504,8 +499,8 @@
           "id": "6.1",
           "title": "Write integration tests for admin token auth and user API key auth",
           "details": [
-            "Test: valid admin token \u2192 AuthContext{CredentialType=admin, IsAdmin=true, UserID=\"\", WorkspaceID=\"\"}",
-            "Test: valid user API key \u2192 AuthContext{CredentialType=api_key, UserID=<uuid>, IsAdmin=false, WorkspaceID=\"\"}",
+            "Test: valid admin token → AuthContext{CredentialType=admin, IsAdmin=true, UserID=\"\", WorkspaceID=\"\"}",
+            "Test: valid user API key → AuthContext{CredentialType=api_key, UserID=<uuid>, IsAdmin=false, WorkspaceID=\"\"}",
             "Test: all hash comparisons use crypto/subtle.ConstantTimeCompare (code review / static analysis assertion)",
             "Test: admin token auth with admin user row status=blocked still returns 2xx (admin bypasses blocked-user check)"
           ],
@@ -528,11 +523,11 @@
           "id": "6.2",
           "title": "Write integration tests for workspace token auth and token state edge cases",
           "details": [
-            "Test: valid workspace token \u2192 AuthContext{CredentialType=workspace_token, UserID=<uuid>, WorkspaceID=<uuid>, IsAdmin=false}",
-            "Test: malformed workspace tokens (too many parts, token_id <8, secret <32) \u2192 401 with zero DB queries",
-            "Test: malformed API key tokens (key_id too short, missing secret, secret <32) \u2192 401 with zero DB queries",
-            "Test: revoked token (revoked_at IS NOT NULL) \u2192 401; same response as expired",
-            "Test: expired token (expires_at < now) \u2192 401; token with expires_at == now is NOT expired (exclusive boundary)"
+            "Test: valid workspace token → AuthContext{CredentialType=workspace_token, UserID=<uuid>, WorkspaceID=<uuid>, IsAdmin=false}",
+            "Test: malformed workspace tokens (too many parts, token_id <8, secret <32) → 401 with zero DB queries",
+            "Test: malformed API key tokens (key_id too short, missing secret, secret <32) → 401 with zero DB queries",
+            "Test: revoked token (revoked_at IS NOT NULL) → 401; same response as expired",
+            "Test: expired token (expires_at < now) → 401; token with expires_at == now is NOT expired (exclusive boundary)"
           ],
           "test_spec_refs": [
             "TS-01-48",
@@ -555,8 +550,8 @@
           "id": "6.3",
           "title": "Write integration tests for auth middleware DB contention and blocked user",
           "details": [
-            "Test: DB lookup for api_keys during auth with write lock held \u2192 HTTP 503 {\"error\": {\"code\": 503, \"message\": \"service temporarily unavailable\"}}",
-            "Test: DB lookup for workspace_tokens with busy timeout \u2192 HTTP 503 with same envelope"
+            "Test: DB lookup for api_keys during auth with write lock held → HTTP 503 {\"error\": {\"code\": 503, \"message\": \"service temporarily unavailable\"}}",
+            "Test: DB lookup for workspace_tokens with busy timeout → HTTP 503 with same envelope"
           ],
           "test_spec_refs": [
             "TS-01-E15"
@@ -571,11 +566,11 @@
           "id": "6.4",
           "title": "Write property and correctness tests for hash invariants and expiry boundary",
           "details": [
-            "Property test: 100 random 64-char hex suffixes \u2192 stored hash == hex(sha256(suffix)); verification recomputes same hash",
-            "Property test: 100 random (key_id, secret) pairs \u2192 sha256 of secret only stored; constant-time compare used",
-            "Property test: 100 random (token_id, secret) pairs for workspace tokens \u2192 same as API key invariant",
-            "Property test: 20 admin_token file writes \u2192 mode always 0600; group/world bits always 0",
-            "Property test: 50 tokens spanning past/exact-now/future expires_at \u2192 exclusive UTC boundary enforced"
+            "Property test: 100 random 64-char hex suffixes → stored hash == hex(sha256(suffix)); verification recomputes same hash",
+            "Property test: 100 random (key_id, secret) pairs → sha256 of secret only stored; constant-time compare used",
+            "Property test: 100 random (token_id, secret) pairs for workspace tokens → same as API key invariant",
+            "Property test: 20 admin_token file writes → mode always 0600; group/world bits always 0",
+            "Property test: 50 tokens spanning past/exact-now/future expires_at → exclusive UTC boundary enforced"
           ],
           "test_spec_refs": [
             "TS-01-P1",
@@ -597,8 +592,7 @@
           "Property test files compile and skeletons run: go test ./internal/... -run 'TestProp' -count=1 -v",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 7,
@@ -609,11 +603,11 @@
           "id": "7.1",
           "title": "Write property tests for startup ordering, error envelope, and readyz goroutine safety",
           "details": [
-            "Property test: 50 admin token requests with varied users table state \u2192 IsAdmin=true, UserID=\"\", no users query, no 403",
-            "Property test: 200 random token strings \u2192 no DB query for structurally invalid tokens",
-            "Property test: 20 boot cycles (first boot, subsequent, reset flag) \u2192 HTTP listener never opens before DB init and admin bootstrap",
-            "Property test: 10 different error conditions on /api/v1/* \u2192 all bodies match envelope; code == HTTP status",
-            "Property test: 50 concurrent /readyz requests with -race \u2192 no data race on failure counter; no negative counter"
+            "Property test: 50 admin token requests with varied users table state → IsAdmin=true, UserID=\"\", no users query, no 403",
+            "Property test: 200 random token strings → no DB query for structurally invalid tokens",
+            "Property test: 20 boot cycles (first boot, subsequent, reset flag) → HTTP listener never opens before DB init and admin bootstrap",
+            "Property test: 10 different error conditions on /api/v1/* → all bodies match envelope; code == HTTP status",
+            "Property test: 50 concurrent /readyz requests with -race → no data race on failure counter; no negative counter"
           ],
           "test_spec_refs": [
             "TS-01-P4",
@@ -631,14 +625,14 @@
           "title": "Write smoke test harness stubs for all 8 execution paths",
           "details": [
             "Create internal/integration/smoke_test.go with test functions for all 8 smoke scenarios",
-            "SMOKE-1: first boot \u2014 DB created, tables/indexes exist, admin_token file mode 0600, /healthz 200, /readyz 200",
-            "SMOKE-2: subsequent boot \u2014 hash validation succeeds, security warn if file present, /healthz 200",
-            "SMOKE-3: --reset-admin-token \u2014 old hash replaced, file overwritten, old token rejected",
-            "SMOKE-4: admin token auth \u2014 AuthContext IsAdmin=true, X-Request-ID set, request log entry",
-            "SMOKE-5: blocked user rejection \u2014 HTTP 403 with envelope, log status=403",
-            "SMOKE-6: degraded readyz \u2014 HTTP 503, server still alive, error log on first failure",
-            "SMOKE-7: graceful SIGTERM shutdown \u2014 clean drain, info log, exit 0",
-            "SMOKE-8: oversized body \u2014 HTTP 413 envelope, log status=413, handler not invoked"
+            "SMOKE-1: first boot — DB created, tables/indexes exist, admin_token file mode 0600, /healthz 200, /readyz 200",
+            "SMOKE-2: subsequent boot — hash validation succeeds, security warn if file present, /healthz 200",
+            "SMOKE-3: --reset-admin-token — old hash replaced, file overwritten, old token rejected",
+            "SMOKE-4: admin token auth — AuthContext IsAdmin=true, X-Request-ID set, request log entry",
+            "SMOKE-5: blocked user rejection — HTTP 403 with envelope, log status=403",
+            "SMOKE-6: degraded readyz — HTTP 503, server still alive, error log on first failure",
+            "SMOKE-7: graceful SIGTERM shutdown — clean drain, info log, exit 0",
+            "SMOKE-8: oversized body — HTTP 413 envelope, log status=413, handler not invoked"
           ],
           "test_spec_refs": [
             "TS-01-SMOKE-1",
@@ -672,8 +666,7 @@
           "Property test skeletons compile: go build ./internal/...",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 8,
@@ -702,8 +695,8 @@
           "id": "8.2",
           "title": "Implement loadConfig using BurntSushi/toml with missing-file, unknown-field, and invalid-level handling",
           "details": [
-            "Use toml.DecodeFile; on os.IsNotExist error \u2192 apply all defaults silently",
-            "On TOML parse error \u2192 logrus.Fatalf with parse failure reason + os.Exit(1)",
+            "Use toml.DecodeFile; on os.IsNotExist error → apply all defaults silently",
+            "On TOML parse error → logrus.Fatalf with parse failure reason + os.Exit(1)",
             "Use md.Undecoded() to detect unrecognized fields; emit logrus.Warn per field with name/path",
             "Use logrus.ParseLevel for log.level; on error emit warn with invalid_value field and default to info",
             "Return (*Config, configDir string) where configDir is the directory of the resolved config path"
@@ -754,8 +747,7 @@
           "No linter errors: go vet ./internal/config/...",
           "go mod tidy confirms github.com/BurntSushi/toml is in go.mod"
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 9,
@@ -771,7 +763,7 @@
             "Call logrus.SetOutput(os.Stdout)",
             "Call logrus.SetLevel(parsedLevel) where parsedLevel comes from config (already validated)",
             "Ensure go.mod pins github.com/sirupsen/logrus v1.4.0 minimum",
-            "No stderr or file output \u2014 stdout only"
+            "No stderr or file output — stdout only"
           ],
           "test_spec_refs": [
             "TS-01-17",
@@ -789,8 +781,8 @@
           "title": "Implement request logger middleware with request ID generation and propagation",
           "details": [
             "Create internal/middleware/request_logger.go",
-            "On each request: check X-Request-ID header \u2014 validate non-empty, printable ASCII (0x20-0x7E), \u2264128 chars; discard invalid; generate uuid.New().String() if absent or invalid",
-            "Attach request_id to Echo context via c.Set(string(AuthContextKey), ...) \u2014 use a separate ContextKey for request ID",
+            "On each request: check X-Request-ID header — validate non-empty, printable ASCII (0x20-0x7E), ≤128 chars; discard invalid; generate uuid.New().String() if absent or invalid",
+            "Attach request_id to Echo context via c.Set(string(AuthContextKey), ...) — use a separate ContextKey for request ID",
             "Set X-Request-ID response header before returning",
             "After handler returns: log with logrus.WithFields{method, path, status, duration_ms, request_id}"
           ],
@@ -820,8 +812,7 @@
           "go mod tidy confirms logrus v1.4.0 pin in go.mod",
           "No linter errors: go vet ./internal/logging/... ./internal/middleware/..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 10,
@@ -833,10 +824,10 @@
           "title": "Implement database open with parent directory creation and PRAGMA application",
           "details": [
             "Create internal/db/db.go; import _ \"modernc.org/sqlite\"",
-            "os.MkdirAll(parentDir, 0755) before sql.Open; on error \u2192 logrus.Fatalf + os.Exit(1)",
-            "sql.Open(\"sqlite\", dbPath) then db.Ping(); on error \u2192 logrus.Fatalf + os.Exit(1)",
+            "os.MkdirAll(parentDir, 0755) before sql.Open; on error → logrus.Fatalf + os.Exit(1)",
+            "sql.Open(\"sqlite\", dbPath) then db.Ping(); on error → logrus.Fatalf + os.Exit(1)",
             "Apply pragmas in order: PRAGMA journal_mode = WAL, PRAGMA foreign_keys = ON, PRAGMA busy_timeout = 5000",
-            "On any PRAGMA exec error \u2192 logrus.Fatalf identifying the specific PRAGMA name + os.Exit(1)"
+            "On any PRAGMA exec error → logrus.Fatalf identifying the specific PRAGMA name + os.Exit(1)"
           ],
           "test_spec_refs": [
             "TS-01-8",
@@ -882,8 +873,8 @@
           "details": [
             "Create internal/handler/health.go",
             "healthzHandler: return c.JSON(200, map[string]string{\"status\": \"ok\"})",
-            "readyzHandler: ctx with 2s timeout; db.QueryRowContext(ctx, \"SELECT 1\"); on success: check counter > 0 \u2192 log info recovery + atomic.StoreInt64(&counter, 0); return 200 ready",
-            "On failure: atomic.AddInt64(&counter, 1); if counter==1 \u2192 error log; else \u2192 debug log; return 503 {\"status\": \"not ready\"}",
+            "readyzHandler: ctx with 2s timeout; db.QueryRowContext(ctx, \"SELECT 1\"); on success: check counter > 0 → log info recovery + atomic.StoreInt64(&counter, 0); return 200 ready",
+            "On failure: atomic.AddInt64(&counter, 1); if counter==1 → error log; else → debug log; return 503 {\"status\": \"not ready\"}",
             "package-level var readyzFailureCounter int64 accessed exclusively via sync/atomic"
           ],
           "test_spec_refs": [
@@ -914,8 +905,7 @@
           "TS-01-8 through TS-01-16 and TS-01-E4 through TS-01-E8 pass",
           "No linter errors: go vet ./internal/db/... ./internal/handler/..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 11,
@@ -927,9 +917,9 @@
           "title": "Implement token generation helpers and admin_token file write",
           "details": [
             "Create internal/admin/bootstrap.go",
-            "generateAdminToken(): use crypto/rand to generate 32 random bytes; hex.EncodeToString \u2192 64 hex chars; prepend af_admin_",
+            "generateAdminToken(): use crypto/rand to generate 32 random bytes; hex.EncodeToString → 64 hex chars; prepend af_admin_",
             "hashAdminTokenSuffix(suffix string) string: return hex.EncodeToString(sha256.Sum256([]byte(suffix)))",
-            "writeAdminTokenFile(path, token string): os.WriteFile with perm 0600; if file exists \u2192 warn log with path; if write fails \u2192 logrus.Fatalf + os.Exit(1)",
+            "writeAdminTokenFile(path, token string): os.WriteFile with perm 0600; if file exists → warn log with path; if write fails → logrus.Fatalf + os.Exit(1)",
             "Log absolute path of written file at warn level after successful write"
           ],
           "test_spec_refs": [
@@ -944,11 +934,11 @@
           "id": "11.2",
           "title": "Implement first-boot admin bootstrap flow",
           "details": [
-            "Count rows in admin_tokens; if 0 \u2192 first boot path",
-            "If AF_HUB_ADMIN_TOKEN env var is set \u2192 log info notice and ignore it",
+            "Count rows in admin_tokens; if 0 → first boot path",
+            "If AF_HUB_ADMIN_TOKEN env var is set → log info notice and ignore it",
             "Insert admin user row: id=uuid.New(), username=admin, email=admin@localhost, provider=local, provider_id=admin, status=active",
             "Generate token, compute hash, insert into admin_tokens, write plaintext to configDir/admin_token",
-            "On subsequent boot: check if admin user row missing \u2192 continue normally (admin token auth does no user lookup)"
+            "On subsequent boot: check if admin user row missing → continue normally (admin token auth does no user lookup)"
           ],
           "test_spec_refs": [
             "TS-01-26",
@@ -971,9 +961,9 @@
           "id": "11.3",
           "title": "Implement subsequent-boot token validation and --reset-admin-token rotation",
           "details": [
-            "Subsequent boot: read AF_HUB_ADMIN_TOKEN env; if absent \u2192 logrus.Fatalf + os.Exit(1)",
-            "Compute SHA-256 of env var value; compare to stored hash; mismatch \u2192 logrus.Fatalf + os.Exit(1)",
-            "Check if admin_token file exists at configDir/admin_token: if present \u2192 warn log with path and msg; if absent \u2192 silence",
+            "Subsequent boot: read AF_HUB_ADMIN_TOKEN env; if absent → logrus.Fatalf + os.Exit(1)",
+            "Compute SHA-256 of env var value; compare to stored hash; mismatch → logrus.Fatalf + os.Exit(1)",
+            "Check if admin_token file exists at configDir/admin_token: if present → warn log with path and msg; if absent → silence",
             "--reset-admin-token: skip validation entirely; delete existing admin_tokens row; generate new token; insert new hash; write file; log path; continue startup",
             "--reset-admin-token with empty admin_tokens: identical to first boot (no special-casing)"
           ],
@@ -1007,8 +997,7 @@
           "Property test TS-01-P1 and TS-01-P9 pass: go test ./internal/admin/... -run 'TestProp' -count=1 -v",
           "No linter errors: go vet ./internal/admin/..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 12,
@@ -1042,7 +1031,7 @@
           "details": [
             "Strip af_admin_ prefix; validate suffix is exactly 64 hex chars",
             "Compute sha256 of suffix; query admin_tokens for stored hash",
-            "Compare using subtle.ConstantTimeCompare; mismatch \u2192 HTTP 401",
+            "Compare using subtle.ConstantTimeCompare; mismatch → HTTP 401",
             "On match: set AuthContext{CredentialType=admin, IsAdmin=true, UserID=\"\", WorkspaceID=\"\"}; no users table lookup; blocked-user check bypassed entirely",
             "Store in Echo context: c.Set(string(AuthContextKey), &authCtx)"
           ],
@@ -1065,9 +1054,9 @@
           "title": "Implement user API key and workspace token verification in auth middleware",
           "details": [
             "API key: split on _ yielding 3 parts; validate key_id (8 alphanumeric), secret (32 alphanumeric); query api_keys by key_id; sha256(secret) vs secret_hash via subtle.ConstantTimeCompare",
-            "Check expires_at (exclusive UTC: expires_at < now \u2192 401) and revoked_at (IS NOT NULL \u2192 401); no distinction between expired/revoked in response",
+            "Check expires_at (exclusive UTC: expires_at < now → 401) and revoked_at (IS NOT NULL → 401); no distinction between expired/revoked in response",
             "Workspace token: strip af_wt_ prefix; split remainder on _ yielding 2 parts; validate token_id (8 alphanumeric), secret (32 alphanumeric); query workspace_tokens; same hash/expiry/revocation checks",
-            "After hash+state validation: query users table for status; if status=blocked \u2192 HTTP 403",
+            "After hash+state validation: query users table for status; if status=blocked → HTTP 403",
             "On success: set AuthContext with correct CredentialType, UserID from users row, WorkspaceID (workspace token only)"
           ],
           "test_spec_refs": [
@@ -1117,8 +1106,7 @@
           "Property tests TS-01-P2 through TS-01-P5 pass: go test ./internal/middleware/... -run 'TestProp' -count=1 -v",
           "No linter errors: go vet ./internal/middleware/..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 13,
@@ -1133,7 +1121,7 @@
             "customErrorHandler(err error, c echo.Context): type-switch on *echo.HTTPError vs generic error",
             "For *echo.HTTPError: use Code and Message.(string) for envelope; for other: HTTP 500 internal server error",
             "Assign to e.HTTPErrorHandler; skip envelope for /healthz and /readyz paths",
-            "Panic recovery via Echo's Recover middleware surfaces through this handler \u2192 HTTP 500 envelope"
+            "Panic recovery via Echo's Recover middleware surfaces through this handler → HTTP 500 envelope"
           ],
           "test_spec_refs": [
             "TS-01-37",
@@ -1160,8 +1148,8 @@
             "Create internal/server/server.go",
             "e.Use(middleware.Recover(), bodySizeLimitMiddleware(1<<20), requestLoggerMiddleware())",
             "Register GET and HEAD /healthz and /readyz on root Echo instance (no group)",
-            "authGroup := e.Group(\"/api/v1/auth\") \u2014 no auth middleware",
-            "protectedGroup := e.Group(\"/api/v1\", authMiddleware(db)) \u2014 auth middleware applied",
+            "authGroup := e.Group(\"/api/v1/auth\") — no auth middleware",
+            "protectedGroup := e.Group(\"/api/v1\", authMiddleware(db)) — auth middleware applied",
             "e.HTTPErrorHandler = customErrorHandler"
           ],
           "test_spec_refs": [
@@ -1187,7 +1175,7 @@
           "details": [
             "In main.go: signal.NotifyContext or signal.Notify for os.Interrupt and syscall.SIGTERM",
             "On signal: ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second); defer cancel()",
-            "Call e.Shutdown(ctx); if err == context.DeadlineExceeded \u2192 logrus.Warn fixed message; else \u2192 logrus.Info server shutdown complete",
+            "Call e.Shutdown(ctx); if err == context.DeadlineExceeded → logrus.Warn fixed message; else → logrus.Info server shutdown complete",
             "Delegates in-flight tracking entirely to net/http; no separate counter"
           ],
           "test_spec_refs": [
@@ -1214,8 +1202,7 @@
           "Graceful shutdown tests pass: go test ./internal/server/... -run 'TestShutdown' -count=1 -v",
           "No linter errors: go vet ./internal/server/... ./internal/handler/..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 14,
@@ -1228,7 +1215,7 @@
           "details": [
             "Create cmd/af-hub/main.go",
             "Step 1: flag.Parse() for --config and --reset-admin-token",
-            "Step 2: loadConfig(configPath) \u2192 cfg, configDir",
+            "Step 2: loadConfig(configPath) → cfg, configDir",
             "Step 3: initLogging(cfg.Log.Level)",
             "Step 4: db = initDatabase(cfg.Database.Path)",
             "Step 5: runAdminBootstrap(db, resetFlag, configDir) or validateAdminToken(db, configDir)",
@@ -1296,8 +1283,7 @@
           "go mod tidy produces no changes; go mod verify succeeds",
           "No linter errors: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 15,
@@ -1366,8 +1352,7 @@
           "No linter errors: go vet ./...",
           "Binary still builds: make build"
         ]
-      },
-      "traceability": []
+      }
     },
     {
       "id": 16,
@@ -1379,10 +1364,10 @@
           "title": "Trace all execution paths and verify no stubs remain",
           "details": [
             "Search codebase for stub markers: grep -r 'panic(\"not implemented\")' ./; grep -r 'TODO' ./ | grep -v '_test.go'",
-            "Trace PATH-1 (first boot): main \u2192 loadConfig \u2192 initLogging \u2192 initDatabase \u2192 runAdminBootstrap \u2192 registerRoutes \u2192 Start",
-            "Trace PATH-2 (subsequent boot): main \u2192 validateAdminToken \u2192 registerRoutes \u2192 Start",
-            "Trace PATH-3 (reset): main \u2192 --reset-admin-token flag \u2192 generateAndStoreNewToken \u2192 registerRoutes \u2192 Start",
-            "Trace PATH-4 (admin token auth): request \u2192 Recover \u2192 BodyLimit \u2192 RequestLogger \u2192 authMiddleware \u2192 handler \u2192 response"
+            "Trace PATH-1 (first boot): main → loadConfig → initLogging → initDatabase → runAdminBootstrap → registerRoutes → Start",
+            "Trace PATH-2 (subsequent boot): main → validateAdminToken → registerRoutes → Start",
+            "Trace PATH-3 (reset): main → --reset-admin-token flag → generateAndStoreNewToken → registerRoutes → Start",
+            "Trace PATH-4 (admin token auth): request → Recover → BodyLimit → RequestLogger → authMiddleware → handler → response"
           ],
           "test_spec_refs": [
             "TS-01-SMOKE-1",
@@ -1486,8 +1471,7 @@
           "Binary builds and starts cleanly in a fresh temp directory: make build && (cd /tmp/af-hub-test && $OLDPWD/bin/af-hub &) && sleep 1 && curl -sf http://localhost:8080/healthz",
           "No linter errors in any package: go vet ./..."
         ]
-      },
-      "traceability": []
+      }
     }
   ],
   "traceability": [
