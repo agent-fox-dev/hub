@@ -1,4 +1,4 @@
-.PHONY: check test lint build clean
+.PHONY: check test lint build clean web-dev web-build web-lint
 
 VERSION ?= 0.1.0
 
@@ -20,3 +20,13 @@ build:
 # Clean build artifacts
 clean:
 	rm -rf bin/
+
+# Web UI targets
+web-dev:
+	cd web && npm run dev
+
+web-build:
+	cd web && npm run build
+
+web-lint:
+	cd web && npm run lint
