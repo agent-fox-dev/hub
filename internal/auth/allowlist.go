@@ -64,10 +64,11 @@ func (a *Allowlist) checkDevMode(parsed *url.URL) error {
 	// Extract just the hostname (without port).
 	hostname := parsed.Hostname()
 
-	// The hostname must be exactly "localhost" — not "localhost.evil.com",
-	// not "mylocalhost", not any other hostname containing "localhost".
-	if hostname != "localhost" {
-		return fmt.Errorf("redirect_uri host must be localhost in dev mode, got %q", hostname)
+	// The hostname must be exactly "localhost" or "127.0.0.1" —
+	// not "localhost.evil.com" or any other hostname containing "localhost".
+	// Google OAuth requires 127.0.0.1 (RFC 8252); GitHub requires localhost.
+	if hostname != "localhost" && hostname != "127.0.0.1" {
+		return fmt.Errorf("redirect_uri host must be localhost or 127.0.0.1 in dev mode, got %q", hostname)
 	}
 
 	return nil

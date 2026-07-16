@@ -251,6 +251,16 @@ func ExchangeCode(hubURL string, provider, code, redirectURI string, expires int
 	return &cbResp, nil
 }
 
+// RedirectHost returns the hostname to use in the OAuth redirect URI.
+// Google requires 127.0.0.1 (RFC 8252 loopback) for Desktop-type OAuth
+// clients; GitHub requires "localhost" for its any-port matching.
+func RedirectHost(provider string) string {
+	if provider == "google" {
+		return "127.0.0.1"
+	}
+	return "localhost"
+}
+
 // BuildAuthorizationURL constructs the full authorization URL from a provider's
 // base authorize_url, adding state and redirect_uri query parameters.
 // Per the reviewer finding, the server's authorize_url already includes
@@ -263,6 +273,7 @@ func BuildAuthorizationURL(baseURL, state, redirectURI string) string {
 		return baseURL
 	}
 	q := u.Query()
+	q.Set("response_type", "code")
 	q.Set("state", state)
 	q.Set("redirect_uri", redirectURI)
 	u.RawQuery = q.Encode()

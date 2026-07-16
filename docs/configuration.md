@@ -113,7 +113,7 @@ click **Create Credentials → OAuth client ID**.
 
 | Field | Value |
 |-------|-------|
-| Application type | Web application |
+| Application type | Desktop application |
 | Name | af-hub (or any name you prefer) |
 
 Before you can create credentials you must configure the OAuth consent screen
@@ -133,21 +133,19 @@ For internal/testing use, select **Internal** (Google Workspace) or
 **External** with **Testing** status. Add any test users that need access
 while the app is in testing mode.
 
-#### 3. Set Authorized Redirect URIs
+#### 3. Authorized Redirect URIs
 
-In the OAuth client ID settings, add **Authorized redirect URIs**:
+Desktop-type OAuth clients use loopback redirect URIs automatically — you do
+**not** need to register a redirect URI in the Google Cloud Console.
 
-| Environment | Redirect URI |
-|-------------|-------------|
-| Development | `http://localhost/callback` |
-| Production | `https://your-domain.example.com/callback` |
+The `afc login` command starts a temporary local HTTP server on
+`127.0.0.1` with a random OS-assigned port. Google allows any port on loopback
+addresses (`127.0.0.1`, `::1`) per RFC 8252, so no manual redirect URI
+configuration is required for development.
 
-The `afc login` command starts a temporary local HTTP server on a random port.
-Google permits redirects to any port on `localhost` when `http://localhost` is
-registered, so `http://localhost/callback` covers all development use.
-
-For production, set `[server] external_url` in your config and register the
-matching callback URL in the Google Cloud Console.
+For production, set `[server] external_url` in your config and use a Web
+application client with the matching callback URL registered in the Google
+Cloud Console.
 
 #### 4. Configure the Hub
 

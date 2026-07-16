@@ -145,7 +145,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	defer cs.Shutdown()
 
 	// Step 7: Build authorization URL.
-	redirectURI := fmt.Sprintf("http://localhost:%d/callback", cs.Port())
+	redirectURI := fmt.Sprintf("http://%s:%d/callback", login.RedirectHost(provider), cs.Port())
 	authURL := login.BuildAuthorizationURL(
 		selectedProvider.AuthorizeURL, state, redirectURI,
 	)
