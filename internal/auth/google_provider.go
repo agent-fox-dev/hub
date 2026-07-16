@@ -2,7 +2,12 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // Default Google OAuth / OpenID Connect URLs.
@@ -27,38 +32,99 @@ type GoogleProvider struct {
 
 // NewGoogleProvider creates a new GoogleProvider from the given config.
 // URL fields default to Google's well-known OAuth URLs if not overridden.
-//
-// TODO(group-4): Implement default URL assignment and config override logic.
 func NewGoogleProvider(cfg ProviderConfig) *GoogleProvider {
-	return &GoogleProvider{}
+	p := &GoogleProvider{
+		authorizeURL: DefaultGoogleAuthorizeURL,
+		tokenURL:     DefaultGoogleTokenURL,
+		userInfoURL:  DefaultGoogleUserInfoURL,
+		scopes:       DefaultGoogleScopes,
+		clientID:     cfg.ClientID,
+		clientSecret: cfg.ClientSecret,
+		httpClient:   http.DefaultClient,
+	}
+
+	if cfg.AuthorizeURL != "" {
+		p.authorizeURL = cfg.AuthorizeURL
+	}
+	if cfg.TokenURL != "" {
+		p.tokenURL = cfg.TokenURL
+	}
+	if cfg.UserInfoURL != "" {
+		p.userInfoURL = cfg.UserInfoURL
+	}
+	if cfg.Scopes != "" {
+		p.scopes = cfg.Scopes
+	}
+
+	return p
 }
 
 // SetHTTPClient sets a custom HTTP client for outbound requests.
 // This is used in tests to inject httptest servers.
-//
-// TODO(group-4): Store the client for use in HTTP calls.
 func (p *GoogleProvider) SetHTTPClient(c *http.Client) {
+	p.httpClient = c
 }
 
 // AuthorizeURL returns the configured authorization URL for Google.
-//
-// TODO(group-4): Return p.authorizeURL.
 func (p *GoogleProvider) AuthorizeURL() string {
-	return ""
+	return p.authorizeURL
 }
 
 // Scopes returns the OAuth scopes requested from Google.
-//
-// TODO(group-4): Return p.scopes.
 func (p *GoogleProvider) Scopes() string {
-	return ""
+	return p.scopes
 }
 
 // ExchangeCode exchanges an authorization code for a Google access token.
-//
-// TODO(group-5): Implement token exchange with grant_type=authorization_code.
+// It POSTs to the token URL with the code, client_id, client_secret,
+// redirect_uri, and grant_type=authorization_code. The context deadline
+// is respected for timeout control.
 func (p *GoogleProvider) ExchangeCode(ctx context.Context, code, redirectURI string) (*TokenResponse, error) {
-	return nil, nil
+	data := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {p.clientID},
+		"client_secret": {p.clientSecret},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("building token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading token response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("parsing token response: %w", err)
+	}
+	if tokenResp.Error != "" {
+		return nil, fmt.Errorf("token exchange error: %s", tokenResp.Error)
+	}
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("token exchange returned empty access_token")
+	}
+
+	return &TokenResponse{AccessToken: tokenResp.AccessToken}, nil
 }
 
 // GetUserInfo retrieves the authenticated user's profile from Google.

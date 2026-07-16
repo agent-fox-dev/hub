@@ -389,10 +389,14 @@ func TestGoogleProvider_ExchangeCode_InvalidJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGoogleProvider_ExchangeCode_Timeout(t *testing.T) {
-	// Create a server that never responds (blocks until the test is done).
+	// Create a server that blocks longer than the client timeout.
+	// The select fallback ensures the handler goroutine exits promptly
+	// during test cleanup even if the server doesn't detect client disconnect.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Block until the request context is cancelled (the client times out).
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 	}))
 	defer ts.Close()
 
@@ -650,10 +654,14 @@ func TestGetUserInfo_InvalidJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetUserInfo_Timeout(t *testing.T) {
-	// Create a server that never responds (blocks until the request is done).
+	// Create a server that blocks longer than the client timeout.
+	// The select fallback ensures the handler goroutine exits promptly
+	// during test cleanup even if the server doesn't detect client disconnect.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Block until the request context is cancelled (the client times out).
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 	}))
 	defer ts.Close()
 
