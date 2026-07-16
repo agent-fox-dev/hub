@@ -160,10 +160,70 @@ func (p *GitHubProvider) GetUserInfo(ctx context.Context, token string) (*UserIn
 		return nil, fmt.Errorf("parsing userinfo response: %w", err)
 	}
 
+	email := ghUser.Email
+	if email == "" {
+		var err error
+		email, err = p.fetchPrimaryEmail(ctx, token)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &UserInfo{
 		ID:    ghUser.ID.String(),
 		Login: ghUser.Login,
-		Email: ghUser.Email,
+		Email: email,
 		Name:  ghUser.Name,
 	}, nil
+}
+
+// fetchPrimaryEmail calls GET /user/emails to find the user's primary
+// verified email. GitHub hides the email from /user when the user has
+// set their email to private, but the user:email scope grants access
+// to this endpoint.
+func (p *GitHubProvider) fetchPrimaryEmail(ctx context.Context, token string) (string, error) {
+	emailsURL := strings.TrimRight(p.userInfoURL, "/") + "/emails"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, emailsURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("building emails request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("emails request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading emails response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("emails endpoint returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var emails []struct {
+		Email    string `json:"email"`
+		Primary  bool   `json:"primary"`
+		Verified bool   `json:"verified"`
+	}
+	if err := json.Unmarshal(body, &emails); err != nil {
+		return "", fmt.Errorf("parsing emails response: %w", err)
+	}
+
+	for _, e := range emails {
+		if e.Primary && e.Verified {
+			return e.Email, nil
+		}
+	}
+	for _, e := range emails {
+		if e.Verified {
+			return e.Email, nil
+		}
+	}
+
+	return "", fmt.Errorf("no verified email found from GitHub")
 }

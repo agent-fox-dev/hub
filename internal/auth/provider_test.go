@@ -54,8 +54,8 @@ func TestProviderRegistry_GitHubDefaults(t *testing.T) {
 	if gh["name"] != "github" {
 		t.Errorf("expected name 'github', got %v", gh["name"])
 	}
-	if gh["authorize_url"] != "https://github.com/login/oauth/authorize" {
-		t.Errorf("expected default authorize_url, got %v", gh["authorize_url"])
+	if gh["authorize_url"] != "https://github.com/login/oauth/authorize?client_id=test-client-id&scope=user%3Aemail" {
+		t.Errorf("expected authorize_url with client_id and scope, got %v", gh["authorize_url"])
 	}
 	if gh["scopes"] != "user:email" {
 		t.Errorf("expected scopes 'user:email', got %v", gh["scopes"])
@@ -107,8 +107,8 @@ func TestProviderRegistry_URLOverrides(t *testing.T) {
 	}
 
 	gh := resp.Providers[0]
-	if gh["authorize_url"] != "https://custom.example.com/authorize" {
-		t.Errorf("expected custom authorize_url, got %v", gh["authorize_url"])
+	if gh["authorize_url"] != "https://custom.example.com/authorize?client_id=test-id&scope=user%3Aemail" {
+		t.Errorf("expected custom authorize_url with client_id and scope, got %v", gh["authorize_url"])
 	}
 }
 

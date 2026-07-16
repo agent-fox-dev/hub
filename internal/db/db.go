@@ -101,13 +101,14 @@ func createSchema(db *sql.DB) error {
 	);
 
 	CREATE TABLE IF NOT EXISTS api_keys (
-		id          TEXT PRIMARY KEY,
-		key_id      TEXT NOT NULL UNIQUE,
-		secret_hash TEXT NOT NULL,
-		user_id     TEXT NOT NULL REFERENCES users(id),
-		expires_at  TEXT,
-		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
-		revoked_at  TEXT
+		id              TEXT PRIMARY KEY,
+		key_id          TEXT NOT NULL UNIQUE,
+		secret_hash     TEXT NOT NULL,
+		user_id         TEXT NOT NULL REFERENCES users(id),
+		expires_at      TEXT,
+		created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'),
+		revoked_at      TEXT,
+		expires_in_days INTEGER
 	);
 
 	CREATE TABLE IF NOT EXISTS teams (

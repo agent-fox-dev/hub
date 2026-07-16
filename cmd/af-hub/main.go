@@ -119,9 +119,24 @@ func main() {
 	e.Group("/api/v1", middleware.AuthMiddleware(database))
 
 	// Register spec 02/04 routes (OAuth, users, keys, workspaces).
-	// Create an empty OAuth registry and allowlist since providers are
-	// configured via config and registered separately.
 	registry := auth.NewRegistry()
+	for _, p := range result.Config.OAuth.Providers {
+		cfg := auth.ProviderConfig{
+			Name:         p.Name,
+			ClientID:     p.ClientID,
+			ClientSecret: p.ClientSecret,
+			AuthorizeURL: p.AuthorizeURL,
+			TokenURL:     p.TokenURL,
+			UserInfoURL:  p.UserinfoURL,
+			Scopes:       "",
+		}
+		switch p.Name {
+		case "github":
+			registry.Register(p.Name, auth.NewGitHubProvider(cfg), cfg)
+		default:
+			log.WithField("provider", p.Name).Warn("unknown OAuth provider; skipping")
+		}
+	}
 	devMode := result.Config.Server.ExternalURL == ""
 	allowlist := auth.NewAllowlist(result.Config.Server.ExternalURL, devMode)
 	server.RegisterRoutes(e, database, registry, allowlist)

@@ -145,6 +145,17 @@ func mockGitHubUserInfoServer(t *testing.T, login, email string, providerID int)
 		json.NewEncoder(w).Encode(resp)
 	})
 
+	mux.HandleFunc("/userinfo/emails", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if email != "" {
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"email": email, "primary": true, "verified": true},
+			})
+		} else {
+			json.NewEncoder(w).Encode([]map[string]interface{}{})
+		}
+	})
+
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts
@@ -675,8 +686,8 @@ func TestCallback_EmptyEmail(t *testing.T) {
 	body := `{"provider":"github","code":"empty-email-code","redirect_uri":"http://localhost:3000/cb"}`
 	rec := doCallback(e, body)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected HTTP 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected HTTP 502, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// Verify no user created.

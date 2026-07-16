@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/url"
 )
 
 // TokenResponse holds the result of exchanging an authorization code with an
@@ -91,9 +92,19 @@ func (r *Registry) IsRegistered(name string) bool {
 func (r *Registry) List() []ProviderEntry {
 	entries := make([]ProviderEntry, 0, len(r.providers))
 	for name, p := range r.providers {
+		authorizeURL := p.AuthorizeURL()
+		if cfg, ok := r.configs[name]; ok {
+			if u, err := url.Parse(authorizeURL); err == nil {
+				q := u.Query()
+				q.Set("client_id", cfg.ClientID)
+				q.Set("scope", p.Scopes())
+				u.RawQuery = q.Encode()
+				authorizeURL = u.String()
+			}
+		}
 		entries = append(entries, ProviderEntry{
 			Name:         name,
-			AuthorizeURL: p.AuthorizeURL(),
+			AuthorizeURL: authorizeURL,
 			Scopes:       p.Scopes(),
 		})
 	}
