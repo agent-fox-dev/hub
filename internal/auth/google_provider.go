@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -127,9 +128,84 @@ func (p *GoogleProvider) ExchangeCode(ctx context.Context, code, redirectURI str
 	return &TokenResponse{AccessToken: tokenResp.AccessToken}, nil
 }
 
+// usernameAllowed matches characters valid in an af-hub username: [0-9A-Za-z-].
+var usernameAllowed = regexp.MustCompile(`[^0-9A-Za-z-]`)
+
+// maxUsernameLen is the maximum length of a derived username.
+const maxUsernameLen = 39
+
+// deriveUsername extracts a valid af-hub username from a Google email address.
+// It takes the local part (before @), removes all characters not matching
+// [0-9A-Za-z-], and truncates to 39 characters. Returns an error if the email
+// has no @ sign, an empty local part, or the sanitized result is empty.
+func deriveUsername(email string) (string, error) {
+	localPart, _, found := strings.Cut(email, "@")
+	if !found {
+		return "", fmt.Errorf("cannot derive username: email %q has no @ character", email)
+	}
+	if localPart == "" {
+		return "", fmt.Errorf("cannot derive username: email %q has empty local part", email)
+	}
+
+	// Remove all characters not in [0-9A-Za-z-].
+	sanitized := usernameAllowed.ReplaceAllString(localPart, "")
+	if sanitized == "" {
+		return "", fmt.Errorf("cannot derive username: email %q yields empty username after sanitization", email)
+	}
+
+	// Truncate to maxUsernameLen characters.
+	if len(sanitized) > maxUsernameLen {
+		sanitized = sanitized[:maxUsernameLen]
+	}
+
+	return sanitized, nil
+}
+
 // GetUserInfo retrieves the authenticated user's profile from Google.
-//
-// TODO(group-6): Implement userinfo retrieval and username derivation.
+// It sends a GET request to the userinfo URL with a Bearer token, decodes the
+// JSON response, and derives the Login field from the email's local part.
+// The context deadline is respected for timeout control.
 func (p *GoogleProvider) GetUserInfo(ctx context.Context, token string) (*UserInfo, error) {
-	return nil, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.userInfoURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building userinfo request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("userinfo request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading userinfo response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("google userinfo endpoint returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var googleUser struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &googleUser); err != nil {
+		return nil, fmt.Errorf("parsing userinfo response: %w", err)
+	}
+
+	login, err := deriveUsername(googleUser.Email)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UserInfo{
+		ID:    googleUser.ID,
+		Login: login,
+		Email: googleUser.Email,
+		Name:  googleUser.Name,
+	}, nil
 }
