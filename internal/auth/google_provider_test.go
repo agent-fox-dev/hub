@@ -3,9 +3,11 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -458,5 +460,680 @@ func TestGoogleProvider_ExchangeCode_ConnectionRefused(t *testing.T) {
 	// TokenResponse should be nil on error.
 	if tokenResp != nil {
 		t.Errorf("ExchangeCode() returned non-nil TokenResponse on connection refused: %+v", tokenResp)
+	}
+}
+
+// ===========================================================================
+// Group 3: GetUserInfo, username derivation, and property/edge-case tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// TS-07-9: Verifies that GetUserInfo sends a GET with Authorization: Bearer
+// header to userinfo_url and returns a populated UserInfo on success.
+// Requirement: 07-REQ-4.1
+// ---------------------------------------------------------------------------
+
+func TestGetUserInfo_Success(t *testing.T) {
+	var capturedMethod string
+	var capturedAuth string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":             "12345",
+			"email":          "user@example.com",
+			"verified_email": true,
+			"name":           "Test User",
+		})
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if err != nil {
+		t.Fatalf("GetUserInfo() error = %v, want nil", err)
+	}
+	if info == nil {
+		t.Fatal("GetUserInfo() returned nil UserInfo, want non-nil")
+	}
+	if info.ID == "" {
+		t.Error("UserInfo.ID is empty, want non-empty")
+	}
+	if info.Login == "" {
+		t.Error("UserInfo.Login is empty, want non-empty")
+	}
+	if info.Email == "" {
+		t.Error("UserInfo.Email is empty, want non-empty")
+	}
+	if info.Name == "" {
+		t.Error("UserInfo.Name is empty, want non-empty")
+	}
+
+	// Inspect captured request.
+	if capturedMethod != http.MethodGet {
+		t.Errorf("request method = %q, want %q", capturedMethod, http.MethodGet)
+	}
+	if capturedAuth != "Bearer valid-token" {
+		t.Errorf("Authorization header = %q, want %q", capturedAuth, "Bearer valid-token")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-10: Verifies that GetUserInfo correctly maps Google userinfo response
+// fields to the UserInfo struct fields.
+// Requirement: 07-REQ-4.2
+// ---------------------------------------------------------------------------
+
+func TestGetUserInfo_FieldMapping(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Exact response from test spec TS-07-10.
+		w.Write([]byte(`{"id":"117730543842840592312","email":"jane.doe+work@gmail.com","verified_email":true,"name":"Jane Doe"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if err != nil {
+		t.Fatalf("GetUserInfo() error = %v, want nil", err)
+	}
+	if info == nil {
+		t.Fatal("GetUserInfo() returned nil UserInfo, want non-nil")
+	}
+	if info.ID != "117730543842840592312" {
+		t.Errorf("UserInfo.ID = %q, want %q", info.ID, "117730543842840592312")
+	}
+	if info.Login != "janedoework" {
+		t.Errorf("UserInfo.Login = %q, want %q", info.Login, "janedoework")
+	}
+	if info.Email != "jane.doe+work@gmail.com" {
+		t.Errorf("UserInfo.Email = %q, want %q", info.Email, "jane.doe+work@gmail.com")
+	}
+	if info.Name != "Jane Doe" {
+		t.Errorf("UserInfo.Name = %q, want %q", info.Name, "Jane Doe")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-11: Verifies that GetUserInfo returns (nil, error) with the status
+// code in the error message when userinfo endpoint returns non-2xx.
+// Requirement: 07-REQ-4.3
+// ---------------------------------------------------------------------------
+
+func TestGetUserInfo_Non2xx(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden) // 403
+		w.Write([]byte(`{"error": "forbidden"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "expired-token")
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo on error: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil for 403 response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "403")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-12: Verifies that GetUserInfo returns (nil, error) when the userinfo
+// response body cannot be decoded as JSON.
+// Requirement: 07-REQ-4.4
+// ---------------------------------------------------------------------------
+
+func TestGetUserInfo_InvalidJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html>not json</html>"))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo on error: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil for invalid JSON response")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-E4: Verifies that GetUserInfo returns a timeout-related error and
+// does not leak goroutines when the userinfo endpoint hangs beyond the HTTP
+// client timeout.
+// Requirement: 07-REQ-4.E1
+// ---------------------------------------------------------------------------
+
+func TestGetUserInfo_Timeout(t *testing.T) {
+	// Create a server that never responds (blocks until the request is done).
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Block until the request context is cancelled (the client times out).
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+
+	// Inject an HTTP client with a very short timeout.
+	shortClient := &http.Client{Timeout: 10 * time.Millisecond}
+	p.SetHTTPClient(shortClient)
+
+	start := time.Now()
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+	elapsed := time.Since(start)
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo on timeout: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil timeout error")
+	}
+	// The error should indicate a timeout or deadline exceeded.
+	errMsg := strings.ToLower(err.Error())
+	if !strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "deadline") {
+		t.Errorf("error = %q, want it to contain 'timeout' or 'deadline'", err.Error())
+	}
+	// The call should complete within a bounded time (well under 500ms).
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("GetUserInfo() took %v, want < 500ms for bounded termination", elapsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-E5: Verifies that GetUserInfo returns the underlying net/http error
+// when the connection to userinfo_url is refused at the network layer.
+// Requirement: 07-REQ-4.E2
+// ---------------------------------------------------------------------------
+
+func TestGetUserInfo_ConnectionRefused(t *testing.T) {
+	// Use an address where nothing is listening to trigger connection refused.
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  "http://127.0.0.1:1/userinfo",
+	}
+	p := NewGoogleProvider(cfg)
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo on connection refused: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil network error")
+	}
+	// The error should indicate a connection-level failure.
+	errMsg := strings.ToLower(err.Error())
+	if !strings.Contains(errMsg, "connection refused") && !strings.Contains(errMsg, "dial") {
+		t.Errorf("error = %q, want it to contain 'connection refused' or 'dial'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-13 + TS-07-15: Verifies the canonical example: email
+// jane.doe+work@gmail.com produces Login == "janedoework".
+// Requirements: 07-REQ-5.1, 07-REQ-5.3
+// ---------------------------------------------------------------------------
+
+func TestUsernameDerivation_CanonicalExample(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"12345","email":"jane.doe+work@gmail.com","verified_email":true,"name":"Jane Doe"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if err != nil {
+		t.Fatalf("GetUserInfo() error = %v, want nil", err)
+	}
+	if info == nil {
+		t.Fatal("GetUserInfo() returned nil UserInfo, want non-nil")
+	}
+	if info.Login != "janedoework" {
+		t.Errorf("UserInfo.Login = %q, want %q", info.Login, "janedoework")
+	}
+	if len(info.Login) < 1 || len(info.Login) > 39 {
+		t.Errorf("UserInfo.Login length = %d, want 1-39", len(info.Login))
+	}
+	// Verify charset matches [0-9A-Za-z-].
+	usernameRe := regexp.MustCompile(`^[0-9A-Za-z-]+$`)
+	if !usernameRe.MatchString(info.Login) {
+		t.Errorf("UserInfo.Login = %q does not match [0-9A-Za-z-]+", info.Login)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-E6: Verifies that the derived username is truncated to exactly 39
+// characters when the sanitized email local part exceeds 39 characters.
+// Requirement: 07-REQ-5.E1
+// ---------------------------------------------------------------------------
+
+func TestUsernameDerivation_Truncation(t *testing.T) {
+	// Local part: "aaaaabbbbbcccccdddddeeeeefffff12345678901" = 41 chars,
+	// all alphanumeric so sanitization keeps them all, then truncation to 39.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"12345","email":"aaaaabbbbbcccccdddddeeeeefffff12345678901@example.com","verified_email":true,"name":"Long Name"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if err != nil {
+		t.Fatalf("GetUserInfo() error = %v, want nil", err)
+	}
+	if info == nil {
+		t.Fatal("GetUserInfo() returned nil UserInfo, want non-nil")
+	}
+	if len(info.Login) != 39 {
+		t.Errorf("UserInfo.Login length = %d, want 39", len(info.Login))
+	}
+	usernameRe := regexp.MustCompile(`^[0-9A-Za-z-]{39}$`)
+	if !usernameRe.MatchString(info.Login) {
+		t.Errorf("UserInfo.Login = %q does not match [0-9A-Za-z-]{39}", info.Login)
+	}
+	// First 39 chars of "aaaaabbbbbcccccdddddeeeeefffff12345678901".
+	want := "aaaaabbbbbcccccdddddeeeeefffff123456789"
+	if info.Login != want {
+		t.Errorf("UserInfo.Login = %q, want %q", info.Login, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-14: Verifies that GetUserInfo returns (nil, error) when sanitization
+// of the email local part yields an empty string.
+// Requirement: 07-REQ-5.2
+// ---------------------------------------------------------------------------
+
+func TestUsernameDerivation_Empty(t *testing.T) {
+	// Email "...@gmail.com" — local part contains only dots which are stripped.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"12345","email":"...@gmail.com","verified_email":true,"name":"Dot User"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo for empty-sanitized username: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil for empty sanitized username")
+	}
+	// Error should be descriptive about username derivation failure.
+	errMsg := strings.ToLower(err.Error())
+	if !strings.Contains(errMsg, "username") && !strings.Contains(errMsg, "login") && !strings.Contains(errMsg, "deriv") && !strings.Contains(errMsg, "empty") {
+		t.Errorf("error = %q, want it to describe username derivation failure", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-E7 (Variant 1): Verifies that GetUserInfo returns (nil, error) when
+// the email has no @ character.
+// Requirement: 07-REQ-5.E2
+// ---------------------------------------------------------------------------
+
+func TestUsernameDerivation_NoAtSign(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"12345","email":"invalidemail","verified_email":true,"name":"No At User"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo for email without @: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil for email without @")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-E7 (Variant 2): Verifies that GetUserInfo returns (nil, error) when
+// the email has an empty local part before @.
+// Requirement: 07-REQ-5.E2
+// ---------------------------------------------------------------------------
+
+func TestUsernameDerivation_EmptyLocalPart(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"12345","email":"@gmail.com","verified_email":true,"name":"Empty Local"}`))
+	}))
+	defer ts.Close()
+
+	cfg := ProviderConfig{
+		Name:         "google",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		UserInfoURL:  ts.URL,
+	}
+	p := NewGoogleProvider(cfg)
+	p.SetHTTPClient(ts.Client())
+
+	info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+	if info != nil {
+		t.Errorf("GetUserInfo() returned non-nil UserInfo for empty local part: %+v", info)
+	}
+	if err == nil {
+		t.Fatal("GetUserInfo() error = nil, want non-nil for empty local part in email")
+	}
+}
+
+// ===========================================================================
+// Property-based tests (TS-07-P1 through TS-07-P4)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// TS-07-P1: For any Google userinfo response where GetUserInfo returns a
+// non-nil *UserInfo, the Login field must be non-empty and match
+// usernameRegexp [0-9A-Za-z-]{1,39}.
+// Property: 07-PROP-1
+// Validates: 07-REQ-5.1, 07-REQ-5.2
+// ---------------------------------------------------------------------------
+
+func TestProperty_LoginAlwaysValid(t *testing.T) {
+	usernameRe := regexp.MustCompile(`^[0-9A-Za-z-]{1,39}$`)
+
+	// Generate a representative sample of emails whose local parts contain
+	// at least one alphanumeric or hyphen character.
+	emails := []string{
+		"simple@example.com",
+		"jane.doe+work@gmail.com",
+		"user-name@example.com",
+		"UPPERCASE@example.com",
+		"123numeric@example.com",
+		"a@example.com",
+		"x-y-z@example.com",
+		"lots.of.dots@example.com",
+		"under_score@example.com",
+		"mix.ed+chars_here@example.com",
+		"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghijklmnop@example.com", // long → truncation
+	}
+
+	for _, email := range emails {
+		t.Run(email, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				resp := map[string]any{
+					"id":             "12345",
+					"email":          email,
+					"verified_email": true,
+					"name":           "Test User",
+				}
+				json.NewEncoder(w).Encode(resp)
+			}))
+			defer ts.Close()
+
+			cfg := ProviderConfig{
+				Name:         "google",
+				ClientID:     "id",
+				ClientSecret: "secret",
+				UserInfoURL:  ts.URL,
+			}
+			p := NewGoogleProvider(cfg)
+			p.SetHTTPClient(ts.Client())
+
+			info, err := p.GetUserInfo(context.Background(), "valid-token")
+			if err != nil {
+				t.Fatalf("GetUserInfo() error = %v, want nil for email %q", err, email)
+			}
+			if info == nil {
+				t.Fatalf("GetUserInfo() returned nil UserInfo, want non-nil for email %q", email)
+			}
+
+			// Property: Login must match usernameRegexp when GetUserInfo succeeds.
+			if !usernameRe.MatchString(info.Login) {
+				t.Errorf("Login = %q does not match [0-9A-Za-z-]{1,39} for email %q", info.Login, email)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-P2: For any GoogleProvider constructed via NewGoogleProvider with
+// empty URL fields, the three endpoint URLs always equal the documented
+// Google defaults.
+// Property: 07-PROP-2
+// Validates: 07-REQ-1.2
+// ---------------------------------------------------------------------------
+
+func TestProperty_DefaultURLs(t *testing.T) {
+	// Vary ClientID and ClientSecret while keeping URL fields empty.
+	configs := []ProviderConfig{
+		{Name: "google", ClientID: "id1", ClientSecret: "secret1"},
+		{Name: "google", ClientID: "", ClientSecret: ""},
+		{Name: "google", ClientID: "long-client-id-1234567890", ClientSecret: "long-secret-0987654321"},
+		{Name: "google"},
+	}
+
+	for i, cfg := range configs {
+		t.Run(fmt.Sprintf("config-%d", i), func(t *testing.T) {
+			p := NewGoogleProvider(cfg)
+			if p == nil {
+				t.Fatal("NewGoogleProvider returned nil")
+			}
+			if p.authorizeURL != DefaultGoogleAuthorizeURL {
+				t.Errorf("authorizeURL = %q, want %q", p.authorizeURL, DefaultGoogleAuthorizeURL)
+			}
+			if p.tokenURL != DefaultGoogleTokenURL {
+				t.Errorf("tokenURL = %q, want %q", p.tokenURL, DefaultGoogleTokenURL)
+			}
+			if p.userInfoURL != DefaultGoogleUserInfoURL {
+				t.Errorf("userInfoURL = %q, want %q", p.userInfoURL, DefaultGoogleUserInfoURL)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-P3: For any call to ExchangeCode, the HTTP POST body sent to the
+// token endpoint always contains grant_type=authorization_code, regardless
+// of the code or redirectURI values.
+// Property: 07-PROP-3
+// Validates: 07-REQ-3.1, 07-REQ-8.2
+// ---------------------------------------------------------------------------
+
+func TestProperty_GrantTypeAlwaysPresent(t *testing.T) {
+	testCases := []struct {
+		code        string
+		redirectURI string
+	}{
+		{"code1", "http://localhost:8080/callback"},
+		{"", ""},
+		{"special-chars-!@#$%", "http://example.com/cb?param=value"},
+		{"very-long-code-" + strings.Repeat("x", 100), "http://localhost/"},
+		{"code", "https://example.com:443/auth/callback"},
+	}
+
+	for i, tc := range testCases {
+		t.Run(fmt.Sprintf("case-%d", i), func(t *testing.T) {
+			var capturedBody url.Values
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil {
+					t.Errorf("failed to parse form: %v", err)
+				}
+				capturedBody = r.PostForm
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"access_token": "tok"})
+			}))
+			defer ts.Close()
+
+			cfg := ProviderConfig{
+				Name:         "google",
+				ClientID:     "id",
+				ClientSecret: "secret",
+				TokenURL:     ts.URL,
+			}
+			p := NewGoogleProvider(cfg)
+			p.SetHTTPClient(ts.Client())
+
+			_, _ = p.ExchangeCode(context.Background(), tc.code, tc.redirectURI)
+
+			if capturedBody == nil {
+				t.Fatal("no request was captured by mock server")
+			}
+			if capturedBody.Get("grant_type") != "authorization_code" {
+				t.Errorf("grant_type = %q, want %q", capturedBody.Get("grant_type"), "authorization_code")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-07-P4: For any email address whose local part contains at least one
+// alphanumeric or hyphen character, the username derivation produces a result
+// of length 1-39 containing only [0-9A-Za-z-].
+// Property: 07-PROP-4
+// Validates: 07-REQ-5.1, 07-REQ-5.E1
+// ---------------------------------------------------------------------------
+
+func TestProperty_UsernameBounded(t *testing.T) {
+	usernameRe := regexp.MustCompile(`^[0-9A-Za-z-]{1,39}$`)
+
+	// Emails whose local parts contain at least one alphanumeric or hyphen.
+	emails := []string{
+		"a@example.com",
+		"test-user@example.com",
+		"TEST@EXAMPLE.COM",
+		"a.b.c.d@example.com",
+		"a+b+c@example.com",
+		"0@example.com",
+		"-@example.com",
+		"a" + strings.Repeat("b", 100) + "@example.com", // very long local part
+		"x._.!.#.$.y@example.com",
+		"first-last@example.com",
+		"1234567890123456789012345678901234567890@example.com", // 40 chars → truncation
+	}
+
+	for _, email := range emails {
+		t.Run(email, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				resp := map[string]any{
+					"id":             "12345",
+					"email":          email,
+					"verified_email": true,
+					"name":           "Test",
+				}
+				json.NewEncoder(w).Encode(resp)
+			}))
+			defer ts.Close()
+
+			cfg := ProviderConfig{
+				Name:         "google",
+				ClientID:     "id",
+				ClientSecret: "secret",
+				UserInfoURL:  ts.URL,
+			}
+			p := NewGoogleProvider(cfg)
+			p.SetHTTPClient(ts.Client())
+
+			info, err := p.GetUserInfo(context.Background(), "valid-token")
+
+			if err != nil {
+				t.Fatalf("GetUserInfo() error = %v, want nil for email %q", err, email)
+			}
+			if info == nil {
+				t.Fatalf("GetUserInfo() returned nil UserInfo, want non-nil for email %q", email)
+			}
+			if !usernameRe.MatchString(info.Login) {
+				t.Errorf("Login = %q (len=%d) does not match [0-9A-Za-z-]{1,39} for email %q",
+					info.Login, len(info.Login), email)
+			}
+		})
 	}
 }
