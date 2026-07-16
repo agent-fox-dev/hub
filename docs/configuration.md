@@ -40,6 +40,14 @@ client_secret = ""      # GitHub OAuth app client secret
 authorize_url = ""      # Override GitHub authorize URL (optional)
 token_url = ""          # Override GitHub token URL (optional)
 userinfo_url = ""       # Override GitHub user info URL (optional)
+
+[[oauth.providers]]
+name = "google"
+client_id = ""          # Google OAuth client ID
+client_secret = ""      # Google OAuth client secret
+authorize_url = ""      # Override Google authorize URL (optional)
+token_url = ""          # Override Google token URL (optional)
+userinfo_url = ""       # Override Google user info URL (optional)
 ```
 
 An invalid `log.level` defaults to `info` with a warning.
@@ -94,6 +102,74 @@ client_secret = "your_client_secret"
 The `authorize_url`, `token_url`, and `userinfo_url` fields default to
 GitHub's standard endpoints and only need to be set for GitHub Enterprise or
 other custom deployments.
+
+### Google OAuth
+
+#### 1. Create a Google OAuth 2.0 Client ID
+
+Open the [Google Cloud Console](https://console.cloud.google.com/) and create
+(or select) a project. Then navigate to **APIs & Services → Credentials** and
+click **Create Credentials → OAuth client ID**.
+
+| Field | Value |
+|-------|-------|
+| Application type | Web application |
+| Name | af-hub (or any name you prefer) |
+
+Before you can create credentials you must configure the OAuth consent screen
+(see step 2).
+
+#### 2. Configure the OAuth Consent Screen
+
+Go to **APIs & Services → OAuth consent screen** and fill in:
+
+| Field | Value |
+|-------|-------|
+| App name | af-hub (or your project name) |
+| User support email | your email |
+| Scopes | `openid`, `email`, `profile` |
+
+For internal/testing use, select **Internal** (Google Workspace) or
+**External** with **Testing** status. Add any test users that need access
+while the app is in testing mode.
+
+#### 3. Set Authorized Redirect URIs
+
+In the OAuth client ID settings, add **Authorized redirect URIs**:
+
+| Environment | Redirect URI |
+|-------------|-------------|
+| Development | `http://localhost/callback` |
+| Production | `https://your-domain.example.com/callback` |
+
+The `afc login` command starts a temporary local HTTP server on a random port.
+Google permits redirects to any port on `localhost` when `http://localhost` is
+registered, so `http://localhost/callback` covers all development use.
+
+For production, set `[server] external_url` in your config and register the
+matching callback URL in the Google Cloud Console.
+
+#### 4. Configure the Hub
+
+Copy the **Client ID** and **Client Secret** from the Google Cloud Console
+into your `config.toml`:
+
+```toml
+[[oauth.providers]]
+name = "google"
+client_id = "your_client_id.apps.googleusercontent.com"
+client_secret = "your_client_secret"
+```
+
+The `authorize_url`, `token_url`, and `userinfo_url` fields are optional.
+They default to Google's standard endpoints and only need to be set for custom
+or self-hosted OpenID Connect deployments:
+
+| Field | Default |
+|-------|---------|
+| `authorize_url` | `https://accounts.google.com/o/oauth2/v2/auth` |
+| `token_url` | `https://oauth2.googleapis.com/token` |
+| `userinfo_url` | `https://www.googleapis.com/oauth2/v2/userinfo` |
 
 ## Environment Variables
 

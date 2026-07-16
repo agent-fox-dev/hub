@@ -645,7 +645,7 @@
           "requirement_refs": [
             "07-REQ-7.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
