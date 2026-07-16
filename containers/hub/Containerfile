@@ -23,13 +23,16 @@ RUN CGO_ENABLED=0 go build \
 # ---------- runtime ----------
 FROM ${RUNTIME}
 
-ENV XDG_CONFIG_HOME=/config/af-hub
-ENV XDG_DATA_HOME=/data/af-hub
+ENV XDG_CONFIG_HOME=/config
+ENV XDG_DATA_HOME=/data
 
 EXPOSE 80
 EXPOSE 8080
 
 RUN mkdir -p /config/af-hub /data/af-hub
+
+# copy a default config (override at runtime by mounting /config/af-hub/config.toml)
+COPY containers/hub/config.toml /config/af-hub/config.toml
 
 # copy the run script
 COPY containers/hub/run /usr/local/bin/run

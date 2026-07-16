@@ -104,10 +104,12 @@ curl http://localhost:8080/readyz
 ## Development
 
 ```sh
-make check    # lint + tests
-make test     # tests only
-make lint     # go vet
-make clean    # remove bin/
+make check            # lint + tests
+make test             # tests only
+make lint             # go vet
+make build-container  # build af-hub image via containers/hub/Containerfile
+make run-container    # run image with bin/ mounted for /config and /data
+make clean            # remove bin/
 ```
 
 The web UI scaffold (Vite + React + TypeScript) lives in `web/`:

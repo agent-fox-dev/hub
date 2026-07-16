@@ -1,0 +1,10 @@
+[server]
+port = 8080
+
+[log]
+level = "info"
+
+# database.path and oauth.providers are omitted here.
+# database.path defaults to $XDG_DATA_HOME/af-hub/af-hub.db.
+# Mount a config file with your OAuth credentials at
+# /config/af-hub/config.toml to override these defaults.
