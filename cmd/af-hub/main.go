@@ -150,6 +150,8 @@ func main() {
 		switch p.Name {
 		case "github":
 			registry.Register(p.Name, auth.NewGitHubProvider(cfg), cfg)
+		case "google":
+			registry.Register(p.Name, auth.NewGoogleProvider(cfg), cfg)
 		default:
 			log.WithField("provider", p.Name).Warn("unknown OAuth provider; skipping")
 		}
