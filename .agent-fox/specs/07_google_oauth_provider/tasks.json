@@ -1,0 +1,946 @@
+{
+  "$schema": null,
+  "spec_id": "07",
+  "spec_name": "google_oauth_provider",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/auth/... -count=1 -v -run Google",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 8,
+      "to_group": 3,
+      "relationship": "Modifies the provider registration switch in main.go startup sequence (spec 01_server_foundation group 3)",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "02",
+      "from_group": 4,
+      "to_group": 1,
+      "relationship": "Implements the Provider interface and uses the Registry defined in spec 02_oauth_and_users",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write GoogleProvider unit tests — constructor, AuthorizeURL, and URL overrides",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Scaffold google_provider_test.go with package declaration and imports",
+          "details": [
+            "Create `internal/auth/google_provider_test.go` with package `auth` (or `auth_test`).",
+            "Import `net/http`, `net/http/httptest`, `testing`, and any internal packages needed.",
+            "Add a compile-time interface assertion: `var _ Provider = (*GoogleProvider)(nil)`.",
+            "Leave test function stubs (returning t.Skip or failing) to be filled in subsequent subtasks."
+          ],
+          "test_spec_refs": [
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for NewGoogleProvider defaults (TS-07-2) and URL overrides (TS-07-3)",
+          "details": [
+            "TestNewGoogleProvider_Defaults: call NewGoogleProvider with empty URL fields; assert AuthorizeURL, TokenURL, UserInfoURL, and Scopes match documented defaults.",
+            "TestNewGoogleProvider_URLOverrides: call NewGoogleProvider with all three URL overrides set; assert each overridden URL is preserved.",
+            "Use table-driven sub-tests where appropriate."
+          ],
+          "test_spec_refs": [
+            "TS-07-2",
+            "TS-07-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.2",
+            "07-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for SetHTTPClient injection (TS-07-4) and empty-credentials edge case (TS-07-E1)",
+          "details": [
+            "TestSetHTTPClient: create a mock httptest.Server, call SetHTTPClient with its client, trigger an HTTP method, and assert the mock server received the request.",
+            "TestNewGoogleProvider_EmptyCredentials: call NewGoogleProvider with empty ClientID and ClientSecret; assert non-nil provider is returned with defaults applied (no panic).",
+            "Confirm the provider compiles and is non-nil."
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-E1"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.4",
+            "07-REQ-1.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write test for AuthorizeURL query parameters (TS-07-5)",
+          "details": [
+            "TestAuthorizeURL: call p.AuthorizeURL(\"random-state-string\", \"http://localhost:8080/callback\").",
+            "Parse the returned URL string with `url.Parse`.",
+            "Assert scheme+host+path equals the default authorize URL.",
+            "Assert query params: response_type=code, client_id, redirect_uri, state, scope (contains openid, email, profile)."
+          ],
+          "test_spec_refs": [
+            "TS-07-5"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test stubs in `internal/auth/google_provider_test.go` compile without errors: `go build ./internal/auth/...`",
+          "Compile-time interface check `var _ Provider = (*GoogleProvider)(nil)` compiles (will fail until group 3 implementation, but file itself is syntactically valid)",
+          "Test file is properly formatted: `gofmt -l internal/auth/google_provider_test.go` produces no output",
+          "No linter issues in test file: `go vet ./internal/auth/...`"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write GoogleProvider unit tests — ExchangeCode happy path and error paths",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write ExchangeCode success test with grant_type assertion (TS-07-6, TS-07-20)",
+          "details": [
+            "TestExchangeCode_Success: create httptest.Server returning HTTP 200 with `{\"access_token\": \"tok123\"}`.",
+            "Capture incoming request inside the handler.",
+            "Assert: returned token == \"tok123\", err == nil.",
+            "Assert request: method == POST, Content-Type == application/x-www-form-urlencoded.",
+            "Assert body fields: grant_type=authorization_code, client_id, client_secret, code, redirect_uri."
+          ],
+          "test_spec_refs": [
+            "TS-07-6",
+            "TS-07-20"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write ExchangeCode error tests — non-2xx (TS-07-7) and invalid JSON (TS-07-8)",
+          "details": [
+            "TestExchangeCode_Non2xx: mock server returns HTTP 401; assert token==\"\" and err.Error() contains \"401\".",
+            "TestExchangeCode_InvalidJSON: mock server returns HTTP 200 with body \"not-json\"; assert token==\"\" and err!=nil.",
+            "Use table-driven tests if feasible."
+          ],
+          "test_spec_refs": [
+            "TS-07-7",
+            "TS-07-8"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.2",
+            "07-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write ExchangeCode network error edge case tests (TS-07-E2, TS-07-E3)",
+          "details": [
+            "TestExchangeCode_Timeout: configure httptest.Server that never responds; inject http.Client with 10ms timeout; assert ExchangeCode returns error containing \"timeout\" or \"deadline\" within bounded time.",
+            "TestExchangeCode_ConnectionRefused: configure TokenURL to an unused port (e.g. 127.0.0.1:1); assert error contains \"connection refused\" or \"dial\"."
+          ],
+          "test_spec_refs": [
+            "TS-07-E2",
+            "TS-07-E3"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.E1",
+            "07-REQ-3.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "Test functions compile without errors: `go build ./internal/auth/...`",
+          "No linter issues: `go vet ./internal/auth/...`",
+          "Test file is properly formatted: `gofmt -l internal/auth/google_provider_test.go` produces no output",
+          "Requirements 07-REQ-3.1, 07-REQ-3.2, 07-REQ-3.3, 07-REQ-8.2 acceptance criteria are covered by assertions in test stubs"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write GoogleProvider unit tests — GetUserInfo, username derivation, and property/edge-case tests",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write GetUserInfo success and field-mapping tests (TS-07-9, TS-07-10)",
+          "details": [
+            "TestGetUserInfo_Success: httptest.Server returns HTTP 200 with valid userinfo JSON; assert err==nil, info!=nil, all fields non-empty, Authorization header == \"Bearer valid-token\".",
+            "TestGetUserInfo_FieldMapping: server returns `{\"id\":\"117730543842840592312\",\"email\":\"jane.doe+work@gmail.com\",\"verified_email\":true,\"name\":\"Jane Doe\"}`; assert info.ID, info.Login, info.Email, info.Name exactly."
+          ],
+          "test_spec_refs": [
+            "TS-07-9",
+            "TS-07-10"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.1",
+            "07-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write GetUserInfo error path tests (TS-07-11, TS-07-12) and network edge cases (TS-07-E4, TS-07-E5)",
+          "details": [
+            "TestGetUserInfo_Non2xx: server returns HTTP 403; assert (nil, error) and error contains \"403\".",
+            "TestGetUserInfo_InvalidJSON: server returns HTTP 200 with \"<html>not json</html>\"; assert (nil, error).",
+            "TestGetUserInfo_Timeout: hanging server + 10ms client timeout; assert timeout/deadline error within bounded time.",
+            "TestGetUserInfo_ConnectionRefused: UserInfoURL pointed at unused port; assert network error."
+          ],
+          "test_spec_refs": [
+            "TS-07-11",
+            "TS-07-12",
+            "TS-07-E4",
+            "TS-07-E5"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.3",
+            "07-REQ-4.4",
+            "07-REQ-4.E1",
+            "07-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write username derivation tests (TS-07-13, TS-07-14, TS-07-15, TS-07-E6, TS-07-E7)",
+          "details": [
+            "TestUsernameDerivation_CanonicalExample: email \"jane.doe+work@gmail.com\" → Login==\"janedoework\".",
+            "TestUsernameDerivation_Truncation: email with 41+ alphanumeric local part chars → Login length == 39.",
+            "TestUsernameDerivation_Empty: email \"...@gmail.com\" → GetUserInfo returns (nil, error) with descriptive message.",
+            "TestUsernameDerivation_NoAtSign: email \"invalidemail\" → (nil, error).",
+            "TestUsernameDerivation_EmptyLocalPart: email \"@gmail.com\" → (nil, error).",
+            "Assert Login matches regexp `^[0-9A-Za-z-]+$` for all success cases."
+          ],
+          "test_spec_refs": [
+            "TS-07-13",
+            "TS-07-14",
+            "TS-07-15",
+            "TS-07-E6",
+            "TS-07-E7"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.1",
+            "07-REQ-5.2",
+            "07-REQ-5.3",
+            "07-REQ-5.E1",
+            "07-REQ-5.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write property-based tests for username derivation and URL defaults (TS-07-P1 through TS-07-P4)",
+          "details": [
+            "Use Go's `testing/quick` or a table-driven approach with representative email samples to cover TS-07-P1 (Login always valid when GetUserInfo succeeds).",
+            "TS-07-P2: generate OAuthProvider structs with empty URLs, assert defaults always applied.",
+            "TS-07-P3: generate arbitrary (code, redirectURI) pairs, assert grant_type always present in captured request.",
+            "TS-07-P4: apply sanitization helper to arbitrary emails with ≥1 alphanumeric/hyphen in local part; assert length 1–39 and charset."
+          ],
+          "test_spec_refs": [
+            "TS-07-P1",
+            "TS-07-P2",
+            "TS-07-P3",
+            "TS-07-P4"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.1",
+            "07-REQ-5.E1",
+            "07-REQ-1.2",
+            "07-REQ-3.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test functions in group 3 compile without errors: `go build ./internal/auth/...`",
+          "No linter issues: `go vet ./internal/auth/...`",
+          "Test file is properly formatted: `gofmt -l internal/auth/google_provider_test.go` produces no output",
+          "Requirements 07-REQ-4.1 through 07-REQ-5.E2 acceptance criteria are each covered by at least one test assertion"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement GoogleProvider struct, constructor, and SetHTTPClient",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Create internal/auth/google_provider.go with GoogleProvider struct and default constants",
+          "details": [
+            "Create `internal/auth/google_provider.go` in package `auth`.",
+            "Define constants: `googleDefaultAuthorizeURL`, `googleDefaultTokenURL`, `googleDefaultUserInfoURL`, `googleDefaultScopes`.",
+            "Define `GoogleProvider` struct with fields: `clientID`, `clientSecret`, `authorizeURL`, `tokenURL`, `userInfoURL`, `scopes string`, `httpClient *http.Client`.",
+            "Add compile-time interface assertion: `var _ Provider = (*GoogleProvider)(nil)`."
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-2"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-1.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement NewGoogleProvider constructor with URL defaulting logic",
+          "details": [
+            "Implement `func NewGoogleProvider(cfg OAuthProvider) *GoogleProvider`.",
+            "Apply defaults for AuthorizeURL, TokenURL, UserInfoURL when the config fields are empty strings.",
+            "Always set Scopes to `openid email profile`.",
+            "Set httpClient to `http.DefaultClient` initially.",
+            "Return the constructed `*GoogleProvider` without error regardless of empty credentials."
+          ],
+          "test_spec_refs": [
+            "TS-07-2",
+            "TS-07-3",
+            "TS-07-E1"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.2",
+            "07-REQ-1.3",
+            "07-REQ-1.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement SetHTTPClient and AuthorizeURL methods",
+          "details": [
+            "Implement `func (p *GoogleProvider) SetHTTPClient(client *http.Client)` that replaces `p.httpClient`.",
+            "Implement `func (p *GoogleProvider) AuthorizeURL(state, redirectURI string) string`.",
+            "Use `url.Values` to build query params: client_id, redirect_uri, response_type=code, scope, state.",
+            "Parse the base authorizeURL with `url.Parse`, attach query params, and return the full URL string."
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-5"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.4",
+            "07-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Package compiles without errors: `go build ./internal/auth/...`",
+          "Compile-time interface assertion `var _ Provider = (*GoogleProvider)(nil)` does not trigger a build error (will verify once all methods are stubbed/implemented)",
+          "No linter issues: `go vet ./internal/auth/...`",
+          "Tests TS-07-2, TS-07-3, TS-07-4, TS-07-5 pass: `go test ./internal/auth/... -count=1 -run 'TestNewGoogleProvider|TestSetHTTPClient|TestAuthorizeURL'`",
+          "Requirements 07-REQ-1.1 through 07-REQ-2.1 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement ExchangeCode method",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement ExchangeCode — build and POST form-encoded request body",
+          "details": [
+            "Implement `func (p *GoogleProvider) ExchangeCode(code, redirectURI string) (string, error)`.",
+            "Build `url.Values` with: grant_type=authorization_code, client_id, client_secret, code, redirect_uri.",
+            "POST to `p.tokenURL` using `p.httpClient` with `Content-Type: application/x-www-form-urlencoded`.",
+            "Ensure response body is closed with `defer resp.Body.Close()` in all paths."
+          ],
+          "test_spec_refs": [
+            "TS-07-6",
+            "TS-07-20"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement ExchangeCode — response parsing and error handling",
+          "details": [
+            "On non-2xx status, return `(\"\", fmt.Errorf(\"google token endpoint returned status %d\", resp.StatusCode))`.",
+            "Decode JSON response into a struct with `AccessToken string` field.",
+            "If JSON decode fails or access_token is empty, return `(\"\", error)` with descriptive message.",
+            "On HTTP client errors (network failure, timeout), propagate the error directly from `p.httpClient.Do`."
+          ],
+          "test_spec_refs": [
+            "TS-07-7",
+            "TS-07-8",
+            "TS-07-E2",
+            "TS-07-E3"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.2",
+            "07-REQ-3.3",
+            "07-REQ-3.E1",
+            "07-REQ-3.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Package compiles without errors: `go build ./internal/auth/...`",
+          "No linter issues: `go vet ./internal/auth/...`",
+          "ExchangeCode tests pass: `go test ./internal/auth/... -count=1 -run 'TestExchangeCode'`",
+          "Requirements 07-REQ-3.1 through 07-REQ-3.E2 acceptance criteria met",
+          "Property test TS-07-P3 passes confirming grant_type always present"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement username derivation helper and GetUserInfo method",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement deriveUsername helper function",
+          "details": [
+            "Implement `func deriveUsername(email string) (string, error)` (unexported helper).",
+            "Split on '@'; if no '@' or empty local part before '@', return error.",
+            "Remove all characters not matching `[0-9A-Za-z-]` using `regexp.MustCompile` or `strings.Map`.",
+            "If result is empty after sanitization, return descriptive error.",
+            "Truncate to 39 characters if longer.",
+            "Return sanitized string and nil error on success."
+          ],
+          "test_spec_refs": [
+            "TS-07-13",
+            "TS-07-14",
+            "TS-07-15",
+            "TS-07-E6",
+            "TS-07-E7"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.1",
+            "07-REQ-5.2",
+            "07-REQ-5.3",
+            "07-REQ-5.E1",
+            "07-REQ-5.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement GetUserInfo — HTTP request, response decoding, and field mapping",
+          "details": [
+            "Implement `func (p *GoogleProvider) GetUserInfo(accessToken string) (*UserInfo, error)`.",
+            "Build GET request to `p.userInfoURL` with `Authorization: Bearer <accessToken>` header.",
+            "Use `p.httpClient.Do(req)`; defer `resp.Body.Close()`.",
+            "On non-2xx status, return `(nil, fmt.Errorf(\"google userinfo endpoint returned status %d\", resp.StatusCode))`.",
+            "Decode JSON into a struct with fields: ID (`id`), Email (`email`), Name (`name`).",
+            "Call `deriveUsername(googleResp.Email)` to populate Login; propagate any error as `(nil, error)`.",
+            "Return `&UserInfo{ID: googleResp.ID, Login: login, Email: googleResp.Email, Name: googleResp.Name}, nil`."
+          ],
+          "test_spec_refs": [
+            "TS-07-9",
+            "TS-07-10",
+            "TS-07-11",
+            "TS-07-12",
+            "TS-07-E4",
+            "TS-07-E5"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.1",
+            "07-REQ-4.2",
+            "07-REQ-4.3",
+            "07-REQ-4.4",
+            "07-REQ-4.E1",
+            "07-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Package compiles without errors: `go build ./internal/auth/...`",
+          "No linter issues: `go vet ./internal/auth/...`",
+          "All GetUserInfo and username derivation tests pass: `go test ./internal/auth/... -count=1 -run 'TestGetUserInfo|TestUsername'`",
+          "Property tests TS-07-P1 and TS-07-P4 pass confirming Login invariants",
+          "Requirements 07-REQ-4.1 through 07-REQ-5.E2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "checkpoint",
+      "title": "Full internal/auth test suite green checkpoint",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Run complete google_provider_test.go suite and confirm all tests pass",
+          "details": [
+            "Run `go test ./internal/auth/... -count=1 -v` and confirm zero failures.",
+            "Confirm test coverage includes: successful token exchange, non-2xx token response, successful userinfo, non-2xx userinfo, username derivation (truncation and empty-result error), URL override via config.",
+            "Confirm grant_type=authorization_code assertion passes (TS-07-20)."
+          ],
+          "test_spec_refs": [
+            "TS-07-19",
+            "TS-07-20"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Run full repository test suite to confirm no regressions",
+          "details": [
+            "Run `go test ./... -count=1` from repository root.",
+            "Confirm all pre-existing tests still pass (no regressions introduced by new files).",
+            "Run `go vet ./...` and confirm zero warnings."
+          ],
+          "test_spec_refs": [
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "All tests in internal/auth pass: `go test ./internal/auth/... -count=1 -v` exits with code 0",
+          "Full test suite passes: `go test ./... -count=1` exits with code 0",
+          "No linter warnings: `go vet ./...` exits with code 0",
+          "Requirements 07-REQ-8.1 and 07-REQ-8.2 acceptance criteria fully met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Register GoogleProvider in server startup (cmd/af-hub/main.go)",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Add case \"google\" branch to provider registration switch in main.go",
+          "details": [
+            "Open `cmd/af-hub/main.go` and locate the provider registration switch statement.",
+            "Add `case \"google\": registry.Register(\"google\", auth.NewGoogleProvider(cfg))` (or equivalent pattern matching GitHubProvider registration).",
+            "Confirm the import of `internal/auth` is present (add if missing).",
+            "Run `go build ./cmd/af-hub/...` to confirm no compile errors."
+          ],
+          "test_spec_refs": [
+            "TS-07-16"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Verify integration test TS-07-16 (compile check) and TS-07-17 (providers API)",
+          "details": [
+            "Confirm `go build ./cmd/af-hub/...` exits with code 0.",
+            "If an integration test environment is available, start the server with a google provider config and assert GET /api/providers includes name==\"google\".",
+            "Verify source contains both `case \"google\"` and `auth.NewGoogleProvider` via grep or static inspection."
+          ],
+          "test_spec_refs": [
+            "TS-07-16",
+            "TS-07-17"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Binary builds without errors: `go build ./cmd/af-hub/...` exits with code 0",
+          "No linter issues in main.go: `go vet ./cmd/af-hub/...` exits with code 0",
+          "Source contains case \"google\" branch and call to auth.NewGoogleProvider",
+          "Full test suite still passes: `go test ./... -count=1`",
+          "Requirements 07-REQ-6.1 and 07-REQ-6.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Update docs/configuration.md with Google OAuth setup instructions",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Add Google OAuth section to docs/configuration.md",
+          "details": [
+            "Open `docs/configuration.md` and add a new section titled \"Google OAuth\".",
+            "Include: steps to create a Google OAuth 2.0 Client ID in Google Cloud Console.",
+            "Include: OAuth consent screen configuration (app name, scopes: openid, email, profile).",
+            "Include: Authorized redirect URIs setup (e.g. `http://localhost:8080/auth/callback/google` for dev mode).",
+            "Include: config.toml example with `[[oauth.providers]]`, `name = \"google\"`, `client_id = \"...\"`, `client_secret = \"...\"`.",
+            "Include: note about optional URL override fields."
+          ],
+          "test_spec_refs": [
+            "TS-07-18"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "docs/configuration.md contains a section with heading containing \"Google OAuth\"",
+          "File contains \"Google Cloud Console\"",
+          "File contains \"OAuth consent screen\"",
+          "File contains redirect URI guidance",
+          "File contains config.toml example with name = \"google\", client_id, and client_secret",
+          "Test TS-07-18 assertions pass when evaluated against the updated file"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "End-to-end wiring verification and smoke tests",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths — verify 07-PATH-1 (successful login) call chain has no stubs",
+          "details": [
+            "Verify that callback handler in `internal/auth/handlers.go` calls `ExchangeCode` and `GetUserInfo` on the registered provider (existing, provider-agnostic handler — no changes needed).",
+            "Confirm `GoogleProvider.ExchangeCode` calls `p.httpClient.Do` (not a stub `panic(\"not implemented\")`).",
+            "Confirm `GoogleProvider.GetUserInfo` calls `deriveUsername` and returns a fully-populated `*UserInfo`.",
+            "Grep for `panic(\"not implemented\")`, `// TODO`, and bare `return nil` in non-trivial paths within `google_provider.go` — confirm none remain."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-4.1",
+            "07-REQ-4.2",
+            "07-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Trace execution path 07-PATH-2 — empty username error propagation to HTTP 502",
+          "details": [
+            "Confirm that when `deriveUsername` returns an error, `GetUserInfo` returns `(nil, error)` (not a zero-value `UserInfo`).",
+            "Confirm that the callback handler maps a non-nil `GetUserInfo` error to HTTP 502 (existing handler behavior, no new code needed — verify by code inspection).",
+            "Run TS-07-SMOKE-2: provide mock servers for token (success) and userinfo (email==\"...@gmail.com\"); assert callback responds 502."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.2",
+            "07-REQ-5.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Trace execution path 07-PATH-3 — server startup wiring: config → switch → Registry",
+          "details": [
+            "Confirm `cmd/af-hub/main.go` iterates over `cfg.OAuth.Providers`, matches `name==\"google\"` in the switch, and calls `auth.NewGoogleProvider(cfg)` (not a stub).",
+            "Confirm the returned `*GoogleProvider` is registered in the `Registry` under key `\"google\"`.",
+            "Run TS-07-SMOKE-3: start server with google provider config; assert providers API response contains name==\"google\"; assert no connection to actual Google servers."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Verify return value propagation — access token and UserInfo flow through handler",
+          "details": [
+            "Confirm the access token string returned by `ExchangeCode` is passed as argument to `GetUserInfo` in the callback handler.",
+            "Confirm `UserInfo.Login`, `UserInfo.ID`, `UserInfo.Email`, `UserInfo.Name` returned by `GetUserInfo` are all used by the handler (user record creation/update).",
+            "Inspect handler code in `handlers.go` to verify no field is silently discarded."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.5",
+          "title": "Run all spec smoke tests and full test suite; confirm zero failures",
+          "details": [
+            "Run `go test ./... -count=1` — zero failures.",
+            "Run `go test ./internal/auth/... -count=1 -v` — all GoogleProvider tests pass.",
+            "Run `go build ./cmd/af-hub/...` — binary builds successfully.",
+            "Run `go vet ./...` — zero warnings.",
+            "Confirm no `panic(\"not implemented\")` or `// TODO` markers remain in `internal/auth/google_provider.go` or `cmd/af-hub/main.go`."
+          ],
+          "test_spec_refs": [
+            "TS-07-SMOKE-1",
+            "TS-07-SMOKE-2",
+            "TS-07-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All tests pass: `go test ./... -count=1` exits with code 0",
+          "Binary builds: `go build ./cmd/af-hub/...` exits with code 0",
+          "No linter warnings: `go vet ./...` exits with code 0",
+          "No stub markers remain: `grep -r 'panic(\"not implemented\")' internal/auth/google_provider.go` returns empty",
+          "Smoke test TS-07-SMOKE-1 passes: successful Google OAuth login end-to-end with mock servers",
+          "Smoke test TS-07-SMOKE-2 passes: empty-username path returns HTTP 502",
+          "Smoke test TS-07-SMOKE-3 passes: server starts with google provider and exposes it via providers API",
+          "07-PATH-1, 07-PATH-2, 07-PATH-3 are fully traced with no broken links in the call chain",
+          "All 07-REQ-* acceptance criteria are met as confirmed by passing tests"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "07-REQ-1.1",
+      "test_spec_id": "TS-07-1",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.2",
+      "test_spec_id": "TS-07-2",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.3",
+      "test_spec_id": "TS-07-3",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.4",
+      "test_spec_id": "TS-07-4",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.E1",
+      "test_spec_id": "TS-07-E1",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.1",
+      "test_spec_id": "TS-07-5",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.1",
+      "test_spec_id": "TS-07-6",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.2",
+      "test_spec_id": "TS-07-7",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.3",
+      "test_spec_id": "TS-07-8",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.E1",
+      "test_spec_id": "TS-07-E2",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.E2",
+      "test_spec_id": "TS-07-E3",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.1",
+      "test_spec_id": "TS-07-9",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.2",
+      "test_spec_id": "TS-07-10",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.3",
+      "test_spec_id": "TS-07-11",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.4",
+      "test_spec_id": "TS-07-12",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.E1",
+      "test_spec_id": "TS-07-E4",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.E2",
+      "test_spec_id": "TS-07-E5",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.1",
+      "test_spec_id": "TS-07-13",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.2",
+      "test_spec_id": "TS-07-14",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.3",
+      "test_spec_id": "TS-07-15",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.E1",
+      "test_spec_id": "TS-07-E6",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.E2",
+      "test_spec_id": "TS-07-E7",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.1",
+      "test_spec_id": "TS-07-16",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.2",
+      "test_spec_id": "TS-07-17",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.1",
+      "test_spec_id": "TS-07-18",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-8.1",
+      "test_spec_id": "TS-07-19",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-8.2",
+      "test_spec_id": "TS-07-20",
+      "task_id": "2.1",
+      "test_path": null
+    }
+  ]
+}
