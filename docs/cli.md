@@ -94,7 +94,14 @@ Output: JSON key object (including new secret) to stdout.
 ### `afc keys revoke`
 
 Revoke the current API key and clear local credentials (`api_key`, `key_id`,
-`user_id`) from the config file.
+`user_id`) from the config file. The `hub_url` is preserved.
+
+This also serves as a **logout** command — there is no separate `afc logout`.
+If the key was already revoked or deleted on the server (404), local
+credentials are still cleared.
+
+To switch users, run `afc login` again. The server revokes the old key during
+the OAuth callback and the CLI overwrites the config with new credentials.
 
 ```sh
 afc keys revoke
