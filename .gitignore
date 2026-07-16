@@ -20,3 +20,7 @@ bin/
 # own stuff
 hack/
 prompts.md
+
+# local test files
+admin_token
+

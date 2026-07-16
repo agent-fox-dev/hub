@@ -34,12 +34,54 @@ An invalid `log.level` defaults to `info` with a warning.
 
 ## OAuth Provider Setup
 
-Create a GitHub OAuth application at
-`https://github.com/settings/applications/new`. Set the callback URL to match
-where the CLI will listen during login:
+### 1. Create a GitHub OAuth App
 
-- **Development:** `http://localhost:<port>/callback` (any localhost port is accepted)
-- **Production:** Must match the `[server] external_url` value
+Go to `https://github.com/settings/applications/new` and fill in:
+
+| Field | Value |
+|-------|-------|
+| Application name | af-hub (or any name you prefer) |
+| Homepage URL | `http://localhost:8080` (or your production URL) |
+| Authorization callback URL | `http://localhost/callback` |
+
+### 2. Authorization Callback URL
+
+The `afc login` command starts a temporary local HTTP server on
+`127.0.0.1` with a **random OS-assigned port**. The actual redirect URI looks
+like `http://localhost:<random-port>/callback` — a different port each time.
+
+GitHub treats `http://localhost` specially: when a registered callback URL
+uses `localhost`, GitHub permits redirects to **any port** on localhost. This
+is why you register `http://localhost/callback` (no port) — it covers every
+`afc login` invocation regardless of the ephemeral port chosen.
+
+### 3. Dev Mode vs Production
+
+The hub server validates incoming redirect URIs against an allowlist:
+
+| Mode | Condition | Allowed redirect URIs |
+|------|-----------|----------------------|
+| Development | `external_url` is empty (default) | Any `http://localhost:*/callback` |
+| Production | `external_url` is set | Must match `external_url` exactly |
+
+In production, set `[server] external_url` in your config and register the
+matching callback URL in your GitHub OAuth app.
+
+### 4. Configure the Hub
+
+Copy the **Client ID** and **Client Secret** from GitHub into your
+`config.toml`:
+
+```toml
+[[oauth.providers]]
+name = "github"
+client_id = "your_client_id"
+client_secret = "your_client_secret"
+```
+
+The `authorize_url`, `token_url`, and `userinfo_url` fields default to
+GitHub's standard endpoints and only need to be set for GitHub Enterprise or
+other custom deployments.
 
 ## Environment Variables
 
