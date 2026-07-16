@@ -95,7 +95,16 @@ func main() {
 	defer database.Close()
 
 	// Step 5: Run admin bootstrap or token validation.
-	admin.Bootstrap(database, result.ConfigDir, *resetAdminToken)
+	bootstrapResult, bootstrapErr := admin.Bootstrap(database, result.ConfigDir, *resetAdminToken)
+	if bootstrapErr != nil {
+		log.WithError(bootstrapErr).Fatal("admin bootstrap failed")
+	}
+	if bootstrapResult.IsFirstBoot {
+		log.WithField("path", bootstrapResult.TokenFilePath).
+			Info("admin token generated; save it and set AF_HUB_ADMIN_TOKEN before restarting")
+		database.Close()
+		os.Exit(0)
+	}
 
 	// Step 6: Register HTTP routes and middleware, custom error handler.
 	e := echo.New()

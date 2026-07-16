@@ -1,4 +1,4 @@
-.PHONY: check test lint build build-container run-container clean web-dev web-build web-lint
+.PHONY: check test lint build build-container run-container web-dev web-build web-lint
 
 VERSION ?= 0.1.0
 
@@ -32,18 +32,30 @@ build-container:
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-f $(CONTAINERFILE) .
 
-# Run the af-hub container with bin/ mounted for config and data
-run-container:
-	mkdir -p bin/data bin/config/af-hub
+# Clear all data and config
+hub-reset:
+	rm -rf bin/data bin/config
+	mkdir -p bin/data/af-hub bin/config/af-hub
 	podman run --rm -it \
 		-p $(PORT):8080 \
+		-v $(CURDIR)/bin/config:/config \
+		-v $(CURDIR)/bin/data:/data \
+		$(IMAGE):$(IMAGE_TAG)
+	cp bin/config.toml bin/config/af-hub/config.toml
+
+# Run the af-hub container with bin/ mounted for config and data
+hub-run:
+	podman run --rm -it \
+		-p $(PORT):8080 \
+		-e AF_HUB_ADMIN_TOKEN=$$(cat bin/config/af-hub/admin_token) \
 		-v $(CURDIR)/bin/config:/config \
 		-v $(CURDIR)/bin/data:/data \
 		$(IMAGE):$(IMAGE_TAG)
 
 # Clean build artifacts
 clean:
-	rm -rf bin/
+	rm -rf bin/af-hub bin/afc
+	podman rmi $(IMAGE):$(IMAGE_TAG)
 
 # Web UI targets
 web-dev:
