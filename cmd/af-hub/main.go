@@ -47,12 +47,20 @@ var version = "0.1.0"
 
 func main() {
 	// Step 1: Parse CLI flags.
-	configPath := flag.String("config", "./config.toml", "path to config.toml")
+	configPath := flag.String("config", "", "path to config.toml (default: $XDG_CONFIG_HOME/af-hub/config.toml)")
 	resetAdminToken := flag.Bool("reset-admin-token", false, "bypass AF_HUB_ADMIN_TOKEN validation and generate a fresh admin token")
 	flag.Parse()
 
 	// Step 2: Load config.toml.
-	result, err := serverconfig.LoadConfig(*configPath)
+	// When --config is not provided, use XDG Base Directory paths for
+	// config and data. When explicitly provided, use CWD-relative defaults
+	// for backward compatibility.
+	useXDG := *configPath == ""
+	resolvedConfigPath := *configPath
+	if useXDG {
+		resolvedConfigPath = serverconfig.DefaultConfigPath()
+	}
+	result, err := serverconfig.LoadConfig(resolvedConfigPath, useXDG)
 	if err != nil {
 		log.WithError(err).Fatal("failed to load configuration")
 	}

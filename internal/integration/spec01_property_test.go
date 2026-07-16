@@ -108,7 +108,7 @@ level = "debug"
 				}
 			}
 
-			result, err := serverconfig.LoadConfig(configPath)
+			result, err := serverconfig.LoadConfig(configPath, false)
 			if err != nil {
 				t.Fatalf("iter %d: step 2 (config loading) failed: %v", i, err)
 			}

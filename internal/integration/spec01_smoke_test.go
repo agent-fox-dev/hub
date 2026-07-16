@@ -112,7 +112,7 @@ func TestSpec01_Smoke_FirstBoot(t *testing.T) {
 
 	// Step 2: Load config (no config.toml present — apply all defaults).
 	configPath := filepath.Join(tmpDir, "config.toml")
-	configResult, err := serverconfig.LoadConfig(configPath)
+	configResult, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("Config loading failed: %v", err)
 	}

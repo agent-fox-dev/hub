@@ -1,8 +1,20 @@
 # Server Configuration
 
-The `af-hub` server reads its configuration from a TOML file. By default it
-looks for `config.toml` in the working directory. Use `--config <path>` to
-specify an alternative location.
+The `af-hub` server reads its configuration from a TOML file. Use
+`--config <path>` to specify an explicit location.
+
+When `--config` is not provided, the server uses XDG Base Directory paths:
+
+| Item | Path | Fallback |
+|------|------|----------|
+| Config file | `$XDG_CONFIG_HOME/af-hub/config.toml` | `~/.config/af-hub/config.toml` |
+| Database | `$XDG_DATA_HOME/af-hub/af-hub.db` | `~/.local/share/af-hub/af-hub.db` |
+| Admin token | alongside config file | alongside config file |
+
+When `--config` IS provided, the database defaults to `./data/af-hub.db`
+(relative to the working directory) for backward compatibility. The
+`database.path` setting in config.toml always takes precedence over both
+defaults.
 
 A missing config file is non-fatal; all settings fall back to defaults.
 Unrecognized keys are logged as warnings but do not prevent startup.
@@ -16,7 +28,7 @@ bind = "0.0.0.0"        # Bind address (default: "0.0.0.0")
 external_url = ""       # Public URL, used for OAuth redirect URI allowlist in production
 
 [database]
-path = "./data/af-hub.db"   # SQLite database file path (default: "./data/af-hub.db")
+path = "./data/af-hub.db"   # SQLite database file path (default depends on --config; see above)
 
 [log]
 level = "info"          # Log level: trace, debug, info, warn, error, fatal, panic (default: "info")

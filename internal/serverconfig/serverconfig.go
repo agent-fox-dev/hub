@@ -15,6 +15,42 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// DefaultConfigPath returns the XDG-compliant default config file path.
+// It uses $XDG_CONFIG_HOME/af-hub/config.toml, falling back to
+// ~/.config/af-hub/config.toml when the env var is unset or empty.
+func DefaultConfigPath() string {
+	return filepath.Join(xdgConfigDir(), "af-hub", "config.toml")
+}
+
+// DefaultDataDir returns the XDG-compliant default data directory.
+// It uses $XDG_DATA_HOME/af-hub, falling back to
+// ~/.local/share/af-hub when the env var is unset or empty.
+func DefaultDataDir() string {
+	return filepath.Join(xdgDataDir(), "af-hub")
+}
+
+func xdgConfigDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".config")
+	}
+	return filepath.Join(home, ".config")
+}
+
+func xdgDataDir() string {
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".local", "share")
+	}
+	return filepath.Join(home, ".local", "share")
+}
+
 // Config represents the af-hub server configuration loaded from config.toml.
 //
 // Default values when fields are omitted:
@@ -100,7 +136,9 @@ var validLogLevels = map[string]bool{
 }
 
 // applyDefaults sets default values for any Config fields that are zero-valued.
-func applyDefaults(cfg *Config) {
+// When useXDG is true, the database path defaults to the XDG data directory
+// instead of a CWD-relative path.
+func applyDefaults(cfg *Config, useXDG bool) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
@@ -108,7 +146,11 @@ func applyDefaults(cfg *Config) {
 		cfg.Server.Bind = "0.0.0.0"
 	}
 	if cfg.Database.Path == "" {
-		cfg.Database.Path = "./data/af-hub.db"
+		if useXDG {
+			cfg.Database.Path = filepath.Join(DefaultDataDir(), "af-hub.db")
+		} else {
+			cfg.Database.Path = "./data/af-hub.db"
+		}
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
@@ -126,6 +168,9 @@ func resolveConfigDir(path string) (string, error) {
 
 // LoadConfig loads the server configuration from a TOML file at the given path.
 //
+// When useXDG is true, omitted database.path defaults to the XDG data
+// directory ($XDG_DATA_HOME/af-hub/af-hub.db) instead of ./data/af-hub.db.
+//
 // Behavior:
 //   - If the file does not exist, returns a Config with all defaults applied (non-fatal).
 //   - If the file contains invalid TOML syntax, returns an error.
@@ -133,7 +178,7 @@ func resolveConfigDir(path string) (string, error) {
 //   - If log.level is not in {trace,debug,info,warn,error,fatal,panic}, a warning is
 //     added to LoadResult.Warnings and the level defaults to "info".
 //   - ConfigDir is set to the absolute path of the directory containing the config file.
-func LoadConfig(path string) (*LoadResult, error) {
+func LoadConfig(path string, useXDG bool) (*LoadResult, error) {
 	configDir, err := resolveConfigDir(path)
 	if err != nil {
 		return nil, err
@@ -151,12 +196,12 @@ func LoadConfig(path string) (*LoadResult, error) {
 		var pathErr *os.PathError
 		if errors.As(err, &pathErr) && errors.Is(pathErr.Err, os.ErrNotExist) {
 			// File not found is non-fatal; apply all defaults.
-			applyDefaults(result.Config)
+			applyDefaults(result.Config, useXDG)
 			return result, nil
 		}
 		// Also handle the case where os.IsNotExist returns true.
 		if os.IsNotExist(err) {
-			applyDefaults(result.Config)
+			applyDefaults(result.Config, useXDG)
 			return result, nil
 		}
 		// Any other error (parse failure, permission error) is fatal.
@@ -177,7 +222,7 @@ func LoadConfig(path string) (*LoadResult, error) {
 	}
 
 	// Apply defaults for any omitted fields.
-	applyDefaults(result.Config)
+	applyDefaults(result.Config, useXDG)
 
 	return result, nil
 }

@@ -36,7 +36,7 @@ func TestSpec01_StartupSequenceConfigLoading(t *testing.T) {
 	// No config file — simulates a clean first-boot environment.
 
 	// Step 2: Load configuration.
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("Step 2 (config loading) should succeed with missing file: %v", err)
 	}
@@ -87,7 +87,7 @@ level = "debug"
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("Config loading should succeed: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestSpec01_FatalInitErrorInvalidTOML(t *testing.T) {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	_, err := serverconfig.LoadConfig(configPath)
+	_, err := serverconfig.LoadConfig(configPath, false)
 	if err == nil {
 		t.Fatal("LoadConfig should return error for invalid TOML (fatal init error at step 2); got nil")
 	}
@@ -148,7 +148,7 @@ path = "/root/noperm/af-hub.db"
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("Config loading should succeed (DB path validation is in step 4): %v", err)
 	}

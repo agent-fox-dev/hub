@@ -22,7 +22,7 @@ func TestSpec01_ConfigLoadDefaults(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.toml")
 	// No config.toml exists at this path — should use defaults.
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig with missing file should not return error: %v", err)
 	}
@@ -79,7 +79,7 @@ userinfo_url = "https://api.github.com/user"
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestSpec01_ConfigInvalidTOML(t *testing.T) {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	_, err := serverconfig.LoadConfig(configPath)
+	_, err := serverconfig.LoadConfig(configPath, false)
 	if err == nil {
 		t.Fatal("LoadConfig should return error for invalid TOML syntax, got nil")
 	}
@@ -167,7 +167,7 @@ foo = "bar"
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig should not error on unrecognized fields: %v", err)
 	}
@@ -214,7 +214,7 @@ level = "verbose"
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig should not error on invalid log level: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestSpec01_ConfigMissingFileNonFatal(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "nonexistent", "config.toml")
 	// Path does not exist and parent dir doesn't exist either.
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig should treat missing config as non-fatal, got error: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestSpec01_AdminTokenDirWithoutConfigFlag(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.toml")
 	// No config file created — simulates no --config flag with CWD = tmpDir.
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig should not error: %v", err)
 	}
@@ -324,7 +324,7 @@ port = 9191
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	result, err := serverconfig.LoadConfig(configPath)
+	result, err := serverconfig.LoadConfig(configPath, false)
 	if err != nil {
 		t.Fatalf("LoadConfig should not error: %v", err)
 	}
@@ -444,5 +444,99 @@ func TestSpec01_StartupInfoLogFieldTypes(t *testing.T) {
 		if _, ok := val.(string); !ok {
 			t.Errorf("%s field type = %T, want string", key, val)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// XDG Base Directory support
+// ---------------------------------------------------------------------------
+
+func TestDefaultConfigPath_WithXDGEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
+	got := serverconfig.DefaultConfigPath()
+	want := filepath.Join("/custom/config", "af-hub", "config.toml")
+	if got != want {
+		t.Errorf("DefaultConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultConfigPath_FallsBackToHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	got := serverconfig.DefaultConfigPath()
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".config", "af-hub", "config.toml")
+	if got != want {
+		t.Errorf("DefaultConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultDataDir_WithXDGEnv(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/custom/data")
+	got := serverconfig.DefaultDataDir()
+	want := filepath.Join("/custom/data", "af-hub")
+	if got != want {
+		t.Errorf("DefaultDataDir() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultDataDir_FallsBackToHome(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
+	got := serverconfig.DefaultDataDir()
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".local", "share", "af-hub")
+	if got != want {
+		t.Errorf("DefaultDataDir() = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfig_UseXDG_DefaultsDatabasePath(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/xdg/data")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	// No config file — LoadConfig will apply defaults.
+
+	result, err := serverconfig.LoadConfig(configPath, true)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	want := filepath.Join("/xdg/data", "af-hub", "af-hub.db")
+	if result.Config.Database.Path != want {
+		t.Errorf("Database.Path = %q, want %q", result.Config.Database.Path, want)
+	}
+}
+
+func TestLoadConfig_NoXDG_DefaultsCWDRelative(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	result, err := serverconfig.LoadConfig(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if result.Config.Database.Path != "./data/af-hub.db" {
+		t.Errorf("Database.Path = %q, want %q", result.Config.Database.Path, "./data/af-hub.db")
+	}
+}
+
+func TestLoadConfig_UseXDG_ConfigOverridesDefault(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/xdg/data")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	content := `[database]
+path = "/explicit/path/db.sqlite"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result, err := serverconfig.LoadConfig(configPath, true)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if result.Config.Database.Path != "/explicit/path/db.sqlite" {
+		t.Errorf("Database.Path = %q, want explicit override", result.Config.Database.Path)
 	}
 }
