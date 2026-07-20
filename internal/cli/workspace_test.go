@@ -843,6 +843,79 @@ func TestCLI_NoOsExitInLibrary(t *testing.T) {
 	}
 }
 
+// TS-01-E13: Verify that when org slug resolution returns a success status
+// but with a missing or null org UUID, the CLI treats it as a resolution
+// failure and exits 1 without making the workspace create API call.
+// Requirement: 01-REQ-11.E1
+func TestEdgeCLI_WorkspaceCreate_OrgNullUUID(t *testing.T) {
+	// Mock server that returns orgs with null/missing UUID for the requested slug.
+	var workspaceCreateCalled bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /user/orgs", func(w http.ResponseWriter, r *http.Request) {
+		// Return an org entry with the matching slug but empty/missing ID.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// ID is empty string — simulates null/missing UUID.
+		fmt.Fprintf(w, `[{"id":"","slug":"bad-org"}]`)
+	})
+	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		workspaceCreateCalled = true
+		w.WriteHeader(http.StatusCreated)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
+		"--org", "bad-org")
+
+	if err == nil {
+		t.Error("expected error for null org UUID; got nil")
+	}
+	if stderr == "" {
+		t.Error("stderr is empty; want error about resolution failure")
+	}
+	if workspaceCreateCalled {
+		t.Error("POST /api/v1/workspaces was called; want no API call when org UUID is null")
+	}
+}
+
+// TS-01-E14: Verify that when org slug resolution returns an unexpected data
+// shape, the CLI exits 1 with an error to stderr and does not make the
+// workspace create API call.
+// Requirement: 01-REQ-11.E2
+func TestEdgeCLI_WorkspaceCreate_OrgMalformedResponse(t *testing.T) {
+	// Mock server that returns a malformed response for /user/orgs.
+	var workspaceCreateCalled bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /user/orgs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Return malformed JSON that doesn't match the expected structure.
+		fmt.Fprintf(w, `{"unexpected":"shape","not":"an array"}`)
+	})
+	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		workspaceCreateCalled = true
+		w.WriteHeader(http.StatusCreated)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
+		"--org", "bad-org")
+
+	if err == nil {
+		t.Error("expected error for malformed org response; got nil")
+	}
+	if stderr == "" {
+		t.Error("stderr is empty; want error about unexpected response")
+	}
+	if workspaceCreateCalled {
+		t.Error("POST /api/v1/workspaces was called; want no API call when org response is malformed")
+	}
+}
+
 // findProjectRoot walks up from the current directory to find go.mod.
 func findProjectRoot(t *testing.T) string {
 	t.Helper()

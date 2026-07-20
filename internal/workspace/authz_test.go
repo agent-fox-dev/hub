@@ -134,6 +134,104 @@ func TestWorkspaceAuthz_MissingCredentials(t *testing.T) {
 	})
 }
 
+// TS-01-E6: Verify that a PAT with workspaces:read attempting to archive,
+// reactivate, or delete a workspace is rejected with HTTP 403.
+// Requirement: 01-REQ-4.E1
+func TestEdgeWorkspaceAuthz_PATReadCannotMutate(t *testing.T) {
+	env := newTestEnv(t)
+
+	env.seedWorkspace(t, &Workspace{
+		Slug:    "alice-ws",
+		GitURL:  "https://github.com/org/repo",
+		OwnerID: "alice-id",
+		Status:  "active",
+	})
+
+	auth := patAuth("alice-id", "workspaces:read")
+
+	t.Run("archive", func(t *testing.T) {
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("archive: status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("archive: error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("reactivate", func(t *testing.T) {
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("reactivate: status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("reactivate: error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("delete: status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("delete: error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
+}
+
+// TS-01-E7: Verify that a PAT with workspaces:create attempting to archive,
+// reactivate, or delete a workspace is rejected with HTTP 403.
+// Requirement: 01-REQ-4.E2
+func TestEdgeWorkspaceAuthz_PATCreateCannotMutate(t *testing.T) {
+	env := newTestEnv(t)
+
+	env.seedWorkspace(t, &Workspace{
+		Slug:    "alice-ws",
+		GitURL:  "https://github.com/org/repo",
+		OwnerID: "alice-id",
+		Status:  "active",
+	})
+
+	auth := patAuth("alice-id", "workspaces:create")
+
+	t.Run("archive", func(t *testing.T) {
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("archive: status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("archive: error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("reactivate", func(t *testing.T) {
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("reactivate: status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("reactivate: error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("delete: status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("delete: error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
+}
+
 // TS-01-24: Verify that a valid credential lacking the required permission
 // scope for an endpoint is rejected with HTTP 403.
 // Requirement: 01-REQ-4.8
