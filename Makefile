@@ -1,6 +1,15 @@
 .PHONY: check test lint build build-container run-container web-dev web-build web-lint
 
-VERSION ?= 0.1.0
+VERSION := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
+BUILD   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+
+LDFLAGS := -ldflags "\
+  -X github.com/txsvc/apikit.Version=$(VERSION) \
+  -X github.com/txsvc/apikit.Build=$(BUILD) \
+  -X github.com/txsvc/apikit/internal/cli.Version=$(VERSION) \
+  -X github.com/txsvc/apikit/internal/cli.Build=$(BUILD) \
+  -X github.com/txsvc/apikit.TokenPrefix=af \
+  -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af"
 
 CONTAINER_NAME ?= hub
 CONTAINERFILE := containers/$(CONTAINER_NAME)/Containerfile
@@ -22,8 +31,8 @@ lint:
 
 # Build all packages
 build:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/afc ./cmd/afc
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/af-hub ./cmd/af-hub
+	go build $(LDFLAGS) -o bin/afc ./cmd/afc
+	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 
 # Build the af-hub container locally (same context/file as CI)
 build-container:
@@ -57,12 +66,11 @@ clean:
 	rm -rf bin/af-hub bin/afc
 	podman rmi $(IMAGE):$(IMAGE_TAG)
 
-# Web UI targets
-web-dev:
-	cd web && npm run dev
+run-reset:
+	rm -rf bin/data
+	mkdir -p bin/data
+	cd bin && ./hub --admin-email=hello@micku.me
 
-web-build:
-	cd web && npm run build
-
-web-lint:
-	cd web && npm run lint
+run:
+	-mv bin/admin_token bin/token
+	cd bin && ADMIN_TOKEN=$$(cat token) ./hub

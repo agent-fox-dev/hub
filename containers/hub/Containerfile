@@ -14,10 +14,22 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 go build \
-    -ldflags "-s -w -X github.com/agent-fox-dev/hub/internal/server.Version=${VERSION}" \
-    -o af-hub ./cmd/af-hub
+    -ldflags "-s -w \
+      -X github.com/txsvc/apikit.Version=${VERSION} \
+      -X github.com/txsvc/apikit.Build=${VERSION} \
+      -X github.com/txsvc/apikit/internal/cli.Version=${VERSION} \
+      -X github.com/txsvc/apikit/internal/cli.Build=${VERSION} \
+      -X github.com/txsvc/apikit.TokenPrefix=af \
+      -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
+    -o hub ./cmd/af-hub
 RUN CGO_ENABLED=0 go build \
-    -ldflags "-s -w -X github.com/agent-fox-dev/hub/cmd/afc.Version=${VERSION}" \
+    -ldflags "-s -w \
+      -X github.com/txsvc/apikit.Version=${VERSION} \
+      -X github.com/txsvc/apikit.Build=${VERSION} \
+      -X github.com/txsvc/apikit/internal/cli.Version=${VERSION} \
+      -X github.com/txsvc/apikit/internal/cli.Build=${VERSION} \
+      -X github.com/txsvc/apikit.TokenPrefix=af \
+      -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
     -o afc ./cmd/afc
 
 # ---------- runtime ----------
@@ -41,10 +53,10 @@ COPY containers/hub/config.toml /config/af-hub/config.toml
 COPY containers/hub/run /usr/local/bin/run
 
 # copy the binaries
-COPY --from=build /build/af-hub /usr/bin/af-hub
+COPY --from=build /build/hub /usr/bin/hub
 COPY --from=build /build/afc /usr/bin/afc
 
-RUN chmod +x /usr/local/bin/run /usr/bin/af-hub
+RUN chmod +x /usr/local/bin/run /usr/bin/hub
 RUN chmod +x /usr/local/bin/run /usr/bin/afc
 
 VOLUME /config

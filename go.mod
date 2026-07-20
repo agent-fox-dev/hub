@@ -32,4 +32,4 @@ require (
 	modernc.org/sqlite v1.54.0 // indirect
 )
 
-replace github.com/txsvc/apikit => ../../../
+replace github.com/txsvc/apikit => ../../apikit

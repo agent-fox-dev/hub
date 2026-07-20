@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 
-/usr/bin/af-hub
+/usr/bin/hub
