@@ -2,6 +2,7 @@
 node_modules/
 
 # build output
+web/dist/
 
 # agent-fox
 .agent-fox/*
