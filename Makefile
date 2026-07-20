@@ -74,3 +74,15 @@ run-reset:
 run:
 	-mv bin/admin_token bin/token
 	cd bin && ADMIN_TOKEN=$$(cat token) ./hub
+
+# Start the Vite dev server with hot reload
+web-dev:
+	cd web && npm run dev
+
+# Run a Vite production build
+web-build:
+	cd web && npm run build
+
+# Run ESLint and TypeScript type checking
+web-lint:
+	cd web && npm run lint
