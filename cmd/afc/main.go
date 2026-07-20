@@ -1,38 +1,20 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/cli"
 )
 
 func main() {
-	rootCmd := apikit.RootCommand()
-	rootCmd.Use = "mycli"
-	rootCmd.Short = "My custom CLI built on apikit"
+	// Build the full command tree: apikit standard commands + workspace commands.
+	// BuildRootCommand calls apikit.RootCommand() which stores the root command
+	// internally, so CLIExecute() will operate on the fully-configured tree.
+	_ = cli.BuildRootCommand()
 
-	// Register all built-in commands.
-	rootCmd.AddCommand(
-		apikit.LoginCmd(),
-		apikit.UserCmd(),
-		apikit.KeysCmd(),
-		apikit.TokensCmd(),
-		apikit.OrgsCmd(),
-		apikit.AdminCmd(),
-	)
-
-	// Add your own commands alongside the built-in ones.
-	rootCmd.AddCommand(&cobra.Command{
-		Use:   "hello",
-		Short: "Print a greeting",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "Hello from mycli!")
-			return nil
-		},
-	})
-
+	// Execute the command tree using apikit's centralized execution.
 	err := apikit.CLIExecute()
 	if err != nil {
 		apikit.CLIPrintError(err)
