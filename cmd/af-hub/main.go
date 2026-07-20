@@ -7,6 +7,7 @@ import (
 
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
@@ -33,9 +34,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	server := apikit.NewServer(cfg, func() error {
-		return database.Ping(context.Background())
-	})
+	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace permission scopes registered.
