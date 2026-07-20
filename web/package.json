@@ -1,0 +1,14 @@
+{
+  "name": "af-hub-web-tests",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Test infrastructure for af-hub web scaffold (tests only - not the scaffold itself)",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.1",
+    "typescript": "~5.8.3",
+    "@types/node": "^22.15.0"
+  }
+}
