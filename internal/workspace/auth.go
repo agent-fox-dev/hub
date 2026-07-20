@@ -3,8 +3,10 @@ package workspace
 import (
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/labstack/echo/v4"
+	"github.com/txsvc/apikit"
 )
 
 // CredentialType identifies the type of credential used to authenticate a request.
@@ -19,7 +21,7 @@ const (
 	CredentialPAT CredentialType = "pat"
 )
 
-// authInfoKey is the echo context key for storing AuthInfo.
+// authInfoKey is the echo context key for storing AuthInfo in test environments.
 const authInfoKey = "workspace.auth"
 
 // AuthInfo holds the authenticated identity and permissions for a request.
@@ -30,25 +32,58 @@ type AuthInfo struct {
 }
 
 // getAuth retrieves the AuthInfo from the echo context.
-// Returns nil and an error if no auth information is present.
+// It checks two sources in order:
+//  1. Echo context (c.Get) — used by test middleware that injects AuthInfo directly.
+//  2. Apikit auth context (request context.Context) — used in production where
+//     apikit's auth middleware injects AuthInfo via context.WithValue.
+//
+// Returns nil and an error if no auth information is present in either source.
 func getAuth(c echo.Context) (*AuthInfo, error) {
+	// Source 1: echo context (test environment).
 	val := c.Get(authInfoKey)
-	if val == nil {
-		return nil, echo.NewHTTPError(http.StatusUnauthorized, "authentication required")
+	if val != nil {
+		info, ok := val.(*AuthInfo)
+		if ok {
+			return info, nil
+		}
 	}
-	info, ok := val.(*AuthInfo)
-	if !ok {
-		return nil, fmt.Errorf("invalid auth info type in context")
+
+	// Source 2: apikit auth context (production environment).
+	apikitInfo := apikit.GetAuthInfo(c)
+	if apikitInfo != nil {
+		return convertApikitAuth(apikitInfo), nil
 	}
-	return info, nil
+
+	return nil, echo.NewHTTPError(http.StatusUnauthorized, "authentication required")
+}
+
+// convertApikitAuth converts apikit's AuthInfo to the workspace package's
+// AuthInfo type, mapping credential types to the workspace domain model.
+func convertApikitAuth(info *apikit.AuthInfo) *AuthInfo {
+	credType := CredentialAPIKey
+	switch info.CredentialType {
+	case "admin_token":
+		credType = CredentialAdmin
+	case "pat":
+		credType = CredentialPAT
+	case "api_key":
+		credType = CredentialAPIKey
+	}
+
+	return &AuthInfo{
+		CredType:    credType,
+		UserID:      info.UserID,
+		Permissions: info.Permissions,
+	}
 }
 
 // hasPermission checks whether the AuthInfo contains a specific permission scope.
 func (a *AuthInfo) hasPermission(perm string) bool {
-	for _, p := range a.Permissions {
-		if p == perm {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.Permissions, perm)
+}
+
+// String returns a human-readable representation of the AuthInfo (for debugging).
+func (a *AuthInfo) String() string {
+	return fmt.Sprintf("AuthInfo{cred_type: %s, user_id: %s, permissions: %v}",
+		a.CredType, a.UserID, a.Permissions)
 }

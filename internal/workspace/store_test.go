@@ -9,12 +9,19 @@ import (
 )
 
 // openTestDB opens an in-memory SQLite database for test isolation.
+// It limits the pool to a single connection because SQLite :memory: databases
+// are per-connection — without this, concurrent goroutines would get separate
+// in-memory databases each missing the schema.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open in-memory database: %v", err)
 	}
+	// SQLite in-memory databases are per-connection. Restrict the pool to one
+	// connection so all goroutines share the same schema and data.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	t.Cleanup(func() { db.Close() })
 
 	// Initialize the workspaces table schema.

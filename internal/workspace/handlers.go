@@ -6,17 +6,14 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/txsvc/apikit"
 )
 
 // respondError writes a JSON error envelope {"error":{"code":N,"message":"..."}}
-// and sets the HTTP status code.
+// and sets the HTTP status code. Delegates to apikit.WriteAPIError for a
+// consistent error format across the platform.
 func respondError(c echo.Context, code int, message string) error {
-	return c.JSON(code, map[string]any{
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
-		},
-	})
+	return apikit.WriteAPIError(c, code, message)
 }
 
 // respondWorkspace writes a workspace JSON object as the response body.
@@ -145,6 +142,10 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		if err := insertWorkspace(db, ws); err != nil {
+			// Handle unique constraint violation (concurrent duplicate slug insert).
+			if isUniqueConstraintError(err) {
+				return respondError(c, http.StatusConflict, "workspace with slug '"+req.Slug+"' already exists")
+			}
 			return respondError(c, http.StatusInternalServerError, "failed to create workspace")
 		}
 

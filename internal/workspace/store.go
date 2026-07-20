@@ -2,9 +2,28 @@ package workspace
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
+
+// sqliteErrorCode is an interface that matches SQLite driver errors exposing
+// an integer error code. This avoids importing the concrete driver error type.
+type sqliteErrorCode interface {
+	error
+	Code() int
+}
+
+// isUniqueConstraintError checks whether err is a SQLite unique constraint
+// violation (SQLITE_CONSTRAINT_UNIQUE = 2067 or SQLITE_CONSTRAINT_PRIMARYKEY = 1555).
+func isUniqueConstraintError(err error) bool {
+	var sqlErr sqliteErrorCode
+	if errors.As(err, &sqlErr) {
+		code := sqlErr.Code()
+		return code == 2067 || code == 1555 // UNIQUE or PRIMARYKEY constraint
+	}
+	return false
+}
 
 // Workspace represents a workspace record in the workspaces table.
 type Workspace struct {
