@@ -1,6 +1,11 @@
 package workspace
 
-import "github.com/labstack/echo/v4"
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+)
 
 // CredentialType identifies the type of credential used to authenticate a request.
 type CredentialType string
@@ -27,5 +32,23 @@ type AuthInfo struct {
 // getAuth retrieves the AuthInfo from the echo context.
 // Returns nil and an error if no auth information is present.
 func getAuth(c echo.Context) (*AuthInfo, error) {
-	panic("not implemented")
+	val := c.Get(authInfoKey)
+	if val == nil {
+		return nil, echo.NewHTTPError(http.StatusUnauthorized, "authentication required")
+	}
+	info, ok := val.(*AuthInfo)
+	if !ok {
+		return nil, fmt.Errorf("invalid auth info type in context")
+	}
+	return info, nil
+}
+
+// hasPermission checks whether the AuthInfo contains a specific permission scope.
+func (a *AuthInfo) hasPermission(perm string) bool {
+	for _, p := range a.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
 }
