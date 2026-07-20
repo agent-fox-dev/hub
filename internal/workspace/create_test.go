@@ -80,6 +80,9 @@ func TestWorkspaceCreate_DuplicateSlug(t *testing.T) {
 func TestWorkspaceCreate_NonMemberOrg(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Seed the organization so it exists, but do NOT add alice as a member.
+	env.seedOrg(t, "other-org-uuid", "Other Org", "other-org")
+
 	auth := userAuth("alice-id")
 	body := `{"slug":"org-ws","git_url":"https://github.com/org/repo","org_id":"other-org-uuid"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)

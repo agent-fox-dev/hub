@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -108,6 +109,33 @@ func (env *testEnv) seedWorkspace(t *testing.T, ws *Workspace) {
 	t.Helper()
 	if err := insertWorkspace(env.db, ws); err != nil {
 		t.Fatalf("seedWorkspace(%q) returned error: %v", ws.Slug, err)
+	}
+}
+
+// seedOrg inserts an organization into the orgs table for test setup.
+// It does NOT add any members — use seedOrgMember for that.
+func (env *testEnv) seedOrg(t *testing.T, orgID, name, slug string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := env.db.Exec(
+		`INSERT INTO orgs (id, name, slug, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)`,
+		orgID, name, slug, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedOrg(%q) returned error: %v", orgID, err)
+	}
+}
+
+// seedOrgMember adds a user as a member of an organization.
+func (env *testEnv) seedOrgMember(t *testing.T, orgID, userID string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := env.db.Exec(
+		`INSERT INTO org_members (org_id, user_id, created_at) VALUES (?, ?, ?)`,
+		orgID, userID, now,
+	)
+	if err != nil {
+		t.Fatalf("seedOrgMember(%q, %q) returned error: %v", orgID, userID, err)
 	}
 }
 

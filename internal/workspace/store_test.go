@@ -28,6 +28,32 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err := initSchema(db); err != nil {
 		t.Fatalf("failed to initialize schema: %v", err)
 	}
+
+	// Create the apikit orgs and org_members tables so that org membership
+	// checks in handlers work correctly during integration tests.
+	orgSchemaSQL := []string{
+		`CREATE TABLE IF NOT EXISTS orgs (
+			id TEXT NOT NULL PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			slug TEXT NOT NULL UNIQUE,
+			url TEXT,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS org_members (
+			org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (org_id, user_id)
+		)`,
+	}
+	for _, stmt := range orgSchemaSQL {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("failed to create org schema: %v", err)
+		}
+	}
+
 	return db
 }
 

@@ -156,9 +156,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 // checkOrgMembership verifies that the org exists and the user is a member.
 // Returns (0, "") if the check passes, or (httpCode, message) on failure.
 func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string) {
-	// Try to query the organizations table.
+	// Try to query the orgs table (apikit schema uses 'orgs').
 	var exists int
-	err := db.QueryRow("SELECT COUNT(*) FROM organizations WHERE id = ?", orgID).Scan(&exists)
+	err := db.QueryRow("SELECT COUNT(*) FROM orgs WHERE id = ?", orgID).Scan(&exists)
 	if err != nil {
 		// Table might not exist or query failed — treat as org not found.
 		return http.StatusBadRequest, "organization not found"
