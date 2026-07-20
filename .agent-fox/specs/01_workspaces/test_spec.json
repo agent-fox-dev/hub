@@ -1,0 +1,1671 @@
+{
+  "$schema": null,
+  "spec_id": "01",
+  "spec_name": "workspaces",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-01-1",
+      "requirement_id": "01-REQ-1.1",
+      "kind": "unit",
+      "description": "Verify that a workspace record stores all required fields (slug, git_url, branch, owner_id, org_id, status, created_at, updated_at) in the workspaces table.",
+      "preconditions": [
+        "SQLite database is initialised with the workspaces table via CREATE TABLE IF NOT EXISTS",
+        "A valid authenticated user exists in the system"
+      ],
+      "input": {
+        "branch": "main",
+        "git_url": "https://github.com/org/repo",
+        "org_id": null,
+        "owner_id": "user-uuid-1234",
+        "slug": "my-workspace",
+        "status": "active"
+      },
+      "expected": "Row in workspaces table contains exactly: slug='my-workspace', git_url='https://github.com/org/repo', branch='main', owner_id='user-uuid-1234', org_id=NULL, status='active', created_at (non-empty RFC3339), updated_at (non-empty RFC3339)",
+      "assertion_pseudocode": "row = db.QueryRow('SELECT slug, git_url, branch, owner_id, org_id, status, created_at, updated_at FROM workspaces WHERE slug = ?', 'my-workspace'); assert row.slug == 'my-workspace'; assert row.git_url == 'https://github.com/org/repo'; assert row.branch == 'main'; assert row.owner_id == 'user-uuid-1234'; assert row.org_id == null; assert row.status == 'active'; assert isValidRFC3339(row.created_at); assert isValidRFC3339(row.updated_at)"
+    },
+    {
+      "id": "TS-01-2",
+      "requirement_id": "01-REQ-1.2",
+      "kind": "unit",
+      "description": "Verify that the slug validator accepts slugs that are 3–64 chars, lowercase alphanumeric + hyphens, start with a letter, have no trailing hyphen, and have no consecutive hyphens.",
+      "preconditions": [
+        "Slug validator function is available"
+      ],
+      "input": {
+        "valid_slugs": [
+          "abc",
+          "my-workspace",
+          "a1b2c3",
+          "workspace-one-two",
+          "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01"
+        ]
+      },
+      "expected": "All provided slugs pass validation without error",
+      "assertion_pseudocode": "for each slug in valid_slugs { result = validateSlug(slug); assert result.isValid == true; assert result.error == nil }"
+    },
+    {
+      "id": "TS-01-3",
+      "requirement_id": "01-REQ-1.3",
+      "kind": "unit",
+      "description": "Verify that the slug validator rejects slugs failing format, length, leading-character, trailing-hyphen, or consecutive-hyphen rules with HTTP 400.",
+      "preconditions": [
+        "Slug validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "invalid_slugs": [
+          "ab",
+          "MY-WORKSPACE",
+          "-bad-start",
+          "bad-end-",
+          "bad--consecutive",
+          "has space",
+          "has_underscore"
+        ]
+      },
+      "expected": "HTTP 400 response with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}} for each invalid slug",
+      "assertion_pseudocode": "for each slug in invalid_slugs { resp = POST('/api/v1/workspaces', {slug: slug, git_url: 'https://github.com/org/repo'}, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string }"
+    },
+    {
+      "id": "TS-01-4",
+      "requirement_id": "01-REQ-1.4",
+      "kind": "unit",
+      "description": "Verify that the git_url validator accepts valid HTTPS and SSH URLs with non-empty host and path.",
+      "preconditions": [
+        "git_url validator function is available"
+      ],
+      "input": {
+        "valid_urls": [
+          "https://github.com/org/repo",
+          "https://gitlab.com/team/project",
+          "git@github.com:org/repo",
+          "git@bitbucket.org:team/project.git"
+        ]
+      },
+      "expected": "All provided git_url values pass validation without error",
+      "assertion_pseudocode": "for each url in valid_urls { result = validateGitURL(url); assert result.isValid == true; assert result.error == nil }"
+    },
+    {
+      "id": "TS-01-5",
+      "requirement_id": "01-REQ-1.5",
+      "kind": "unit",
+      "description": "Verify that the git_url validator rejects empty URLs, plain HTTP URLs, URLs with empty host, and URLs with empty path with HTTP 400.",
+      "preconditions": [
+        "git_url validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "invalid_urls": [
+          "",
+          "http://github.com/org/repo",
+          "https:///repo",
+          "https://github.com/",
+          "git@:/org/repo",
+          "git@github.com:"
+        ]
+      },
+      "expected": "HTTP 400 response with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}} for each invalid git_url",
+      "assertion_pseudocode": "for each url in invalid_urls { resp = POST('/api/v1/workspaces', {slug: 'valid-slug', git_url: url}, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string }"
+    },
+    {
+      "id": "TS-01-6",
+      "requirement_id": "01-REQ-1.6",
+      "kind": "unit",
+      "description": "Verify that the branch validator accepts valid git ref names that comply with all git ref naming rules.",
+      "preconditions": [
+        "branch validator function is available"
+      ],
+      "input": {
+        "valid_branches": [
+          "main",
+          "feature/my-feature",
+          "release-1.0",
+          "hotfix/fix-123"
+        ]
+      },
+      "expected": "All provided branch values pass validation without error",
+      "assertion_pseudocode": "for each branch in valid_branches { result = validateBranch(branch); assert result.isValid == true; assert result.error == nil }"
+    },
+    {
+      "id": "TS-01-7",
+      "requirement_id": "01-REQ-1.7",
+      "kind": "unit",
+      "description": "Verify that the branch validator rejects branch values that violate git ref naming rules with HTTP 400.",
+      "preconditions": [
+        "branch validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "invalid_branches": [
+          "branch with space",
+          "branch~1",
+          "branch^2",
+          "branch:name",
+          "branch?q",
+          "branch*",
+          "branch[0]",
+          "branch\\path",
+          "branch..name",
+          "branch.lock",
+          "branch.",
+          ".branch"
+        ]
+      },
+      "expected": "HTTP 400 response with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}} for each invalid branch",
+      "assertion_pseudocode": "for each branch in invalid_branches { resp = POST('/api/v1/workspaces', {slug: 'valid-slug', git_url: 'https://github.com/org/repo', branch: branch}, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string }"
+    },
+    {
+      "id": "TS-01-8",
+      "requirement_id": "01-REQ-1.8",
+      "kind": "unit",
+      "description": "Verify that the same git_url can appear in multiple workspaces with different slugs.",
+      "preconditions": [
+        "SQLite database is initialised with the workspaces table",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "workspace_a": {
+          "git_url": "https://github.com/org/repo",
+          "slug": "ws-alice"
+        },
+        "workspace_b": {
+          "git_url": "https://github.com/org/repo",
+          "slug": "ws-bob"
+        }
+      },
+      "expected": "Both workspaces are created successfully with HTTP 201; the workspaces table contains two rows with the same git_url but different slugs",
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces', workspace_a, userApiKey); assert resp1.statusCode == 201; resp2 = POST('/api/v1/workspaces', workspace_b, userApiKey); assert resp2.statusCode == 201; rows = db.Query('SELECT slug FROM workspaces WHERE git_url = ?', 'https://github.com/org/repo'); assert len(rows) == 2; assert rows contains 'ws-alice' and 'ws-bob'"
+    },
+    {
+      "id": "TS-01-9",
+      "requirement_id": "01-REQ-1.9",
+      "kind": "unit",
+      "description": "Verify that the workspaces table stores status as 'active' or 'archived' only, and never writes 'deleted'.",
+      "preconditions": [
+        "SQLite database is initialised with the workspaces table",
+        "An archived workspace exists with slug 'ws-to-delete'"
+      ],
+      "input": {
+        "slug": "ws-to-delete"
+      },
+      "expected": "After DELETE /api/v1/workspaces/ws-to-delete, no row with slug 'ws-to-delete' exists in the workspaces table; no row with status='deleted' is present in the table at any time",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/ws-to-delete', ownerApiKey); assert resp.statusCode == 204; row = db.QueryRow('SELECT status FROM workspaces WHERE slug = ?', 'ws-to-delete'); assert row == nil; deletedRows = db.Query('SELECT * FROM workspaces WHERE status = ?', 'deleted'); assert len(deletedRows) == 0"
+    },
+    {
+      "id": "TS-01-10",
+      "requirement_id": "01-REQ-1.10",
+      "kind": "unit",
+      "description": "Verify that workspace records store created_at and updated_at as valid RFC 3339 strings in the workspaces table.",
+      "preconditions": [
+        "SQLite database is initialised with the workspaces table",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "git_url": "https://github.com/org/repo",
+        "slug": "ts-ws"
+      },
+      "expected": "Row in workspaces table has created_at and updated_at as non-empty strings parseable as RFC 3339 timestamps",
+      "assertion_pseudocode": "POST('/api/v1/workspaces', {slug: 'ts-ws', git_url: 'https://github.com/org/repo'}, userApiKey); row = db.QueryRow('SELECT created_at, updated_at FROM workspaces WHERE slug = ?', 'ts-ws'); assert parseRFC3339(row.created_at) != nil; assert parseRFC3339(row.updated_at) != nil"
+    },
+    {
+      "id": "TS-01-11",
+      "requirement_id": "01-REQ-2.1",
+      "kind": "integration",
+      "description": "Verify that on server boot, the workspaces table is created with the correct schema using CREATE TABLE IF NOT EXISTS via the apikit DB abstraction.",
+      "preconditions": [
+        "SQLite database file exists but the workspaces table does not",
+        "apikit.OpenDatabase returns a valid *apikit.DB"
+      ],
+      "input": {},
+      "expected": "After server boot sequence completes, the workspaces table exists with columns: slug (TEXT PRIMARY KEY), git_url (TEXT NOT NULL), branch (TEXT), owner_id (TEXT NOT NULL), org_id (TEXT), status (TEXT NOT NULL DEFAULT 'active'), created_at (TEXT NOT NULL), updated_at (TEXT NOT NULL)",
+      "assertion_pseudocode": "db = openTestDatabase(); initializeSchema(db); rows = db.Query(\"PRAGMA table_info(workspaces)\"); assert len(rows) == 8; assert columnExists(rows, 'slug', 'TEXT', isPrimaryKey=true); assert columnExists(rows, 'git_url', 'TEXT', notNull=true); assert columnExists(rows, 'branch', 'TEXT', notNull=false); assert columnExists(rows, 'owner_id', 'TEXT', notNull=true); assert columnExists(rows, 'org_id', 'TEXT', notNull=false); assert columnExists(rows, 'status', 'TEXT', notNull=true, default='active'); assert columnExists(rows, 'created_at', 'TEXT', notNull=true); assert columnExists(rows, 'updated_at', 'TEXT', notNull=true)"
+    },
+    {
+      "id": "TS-01-12",
+      "requirement_id": "01-REQ-2.2",
+      "kind": "integration",
+      "description": "Verify that when the workspaces table already exists at boot time, the server proceeds without error due to IF NOT EXISTS semantics.",
+      "preconditions": [
+        "SQLite database file has the workspaces table already created",
+        "Server boot sequence is invoked again"
+      ],
+      "input": {},
+      "expected": "Boot sequence returns nil error; server starts normally without any schema conflict error",
+      "assertion_pseudocode": "db = openTestDatabase(); initializeSchema(db); err = initializeSchema(db); assert err == nil"
+    },
+    {
+      "id": "TS-01-13",
+      "requirement_id": "01-REQ-3.1",
+      "kind": "integration",
+      "description": "Verify that MountHandlers registers the workspaces:read permission scope (Permission{Resource: 'workspaces', Action: 'read'}) with apikit's permission registry.",
+      "preconditions": [
+        "apikit server instance is created",
+        "SQLite database is initialised"
+      ],
+      "input": {},
+      "expected": "After MountHandlers is called, the permission 'workspaces:read' (Resource='workspaces', Action='read') is registered in apikit's PAT permission registry",
+      "assertion_pseudocode": "server = newTestServer(db); err = server.MountHandlers(db, workspacesReadPermission, workspacesCreatePermission); assert err == nil; registeredPerms = apikit.GetRegisteredPermissions(); assert registeredPerms contains Permission{Resource: 'workspaces', Action: 'read'}"
+    },
+    {
+      "id": "TS-01-14",
+      "requirement_id": "01-REQ-3.2",
+      "kind": "integration",
+      "description": "Verify that MountHandlers registers the workspaces:create permission scope (Permission{Resource: 'workspaces', Action: 'create'}) with apikit's permission registry.",
+      "preconditions": [
+        "apikit server instance is created",
+        "SQLite database is initialised"
+      ],
+      "input": {},
+      "expected": "After MountHandlers is called, the permission 'workspaces:create' (Resource='workspaces', Action='create') is registered in apikit's PAT permission registry",
+      "assertion_pseudocode": "server = newTestServer(db); err = server.MountHandlers(db, workspacesReadPermission, workspacesCreatePermission); assert err == nil; registeredPerms = apikit.GetRegisteredPermissions(); assert registeredPerms contains Permission{Resource: 'workspaces', Action: 'create'}"
+    },
+    {
+      "id": "TS-01-15",
+      "requirement_id": "01-REQ-3.3",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:read scope grants read-only access to list and view the PAT owner's workspaces.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with API key and two workspaces",
+        "PAT with workspaces:read scope issued for user 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:read"
+      },
+      "expected": "GET /api/v1/workspaces returns HTTP 200 with JSON array containing only alice's workspaces; GET /api/v1/workspaces/:slug returns HTTP 200 for alice's workspace",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', patReadToken); assert resp.statusCode == 200; assert all(w.owner_id == alice.id for w in resp.body); resp2 = GET('/api/v1/workspaces/alice-ws', patReadToken); assert resp2.statusCode == 200"
+    },
+    {
+      "id": "TS-01-16",
+      "requirement_id": "01-REQ-3.4",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:create scope can create workspaces and read the owner's own workspaces.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with API key",
+        "PAT with workspaces:create scope issued for user 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:create",
+        "git_url": "https://github.com/org/repo",
+        "slug": "new-ws"
+      },
+      "expected": "POST /api/v1/workspaces returns HTTP 201; GET /api/v1/workspaces returns HTTP 200 with alice's workspaces",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'new-ws', git_url: 'https://github.com/org/repo'}, patCreateToken); assert resp.statusCode == 201; resp2 = GET('/api/v1/workspaces', patCreateToken); assert resp2.statusCode == 200; assert any(w.slug == 'new-ws' for w in resp2.body)"
+    },
+    {
+      "id": "TS-01-17",
+      "requirement_id": "01-REQ-4.1",
+      "kind": "integration",
+      "description": "Verify that admin tokens have full read and write access to all workspaces (except creation).",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns workspace 'alice-ws' with status active",
+        "Admin token is available"
+      ],
+      "input": {
+        "credential": "admin token"
+      },
+      "expected": "GET /api/v1/workspaces returns HTTP 200 with all workspaces; GET /api/v1/workspaces/alice-ws returns HTTP 200; POST /api/v1/workspaces/alice-ws/archive returns HTTP 200",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', adminToken); assert resp.statusCode == 200; resp2 = GET('/api/v1/workspaces/alice-ws', adminToken); assert resp2.statusCode == 200; resp3 = POST('/api/v1/workspaces/alice-ws/archive', {}, adminToken); assert resp3.statusCode == 200"
+    },
+    {
+      "id": "TS-01-18",
+      "requirement_id": "01-REQ-4.2",
+      "kind": "integration",
+      "description": "Verify that using an admin token to create a workspace returns HTTP 403 because workspaces require a real user as owner.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Admin token is available"
+      ],
+      "input": {
+        "credential": "admin token",
+        "git_url": "https://github.com/org/repo",
+        "slug": "admin-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'admin-ws', git_url: 'https://github.com/org/repo'}, adminToken); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-19",
+      "requirement_id": "01-REQ-4.3",
+      "kind": "integration",
+      "description": "Verify that a user API key holder has full access to their own workspaces and can create workspaces.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with a valid API key"
+      ],
+      "input": {
+        "credential": "user API key"
+      },
+      "expected": "POST /api/v1/workspaces returns HTTP 201; all lifecycle operations on own workspace return appropriate success codes",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'alice-ws', git_url: 'https://github.com/org/repo'}, aliceApiKey); assert resp.statusCode == 201; resp2 = GET('/api/v1/workspaces/alice-ws', aliceApiKey); assert resp2.statusCode == 200; resp3 = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceApiKey); assert resp3.statusCode == 200"
+    },
+    {
+      "id": "TS-01-20",
+      "requirement_id": "01-REQ-4.4",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:read grants read-only access to the PAT owner's workspaces only.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns workspace 'alice-ws'",
+        "User 'bob' owns workspace 'bob-ws'",
+        "PAT with workspaces:read issued for 'alice'"
+      ],
+      "input": {
+        "credential": "alice's PAT with workspaces:read"
+      },
+      "expected": "GET /api/v1/workspaces returns HTTP 200 with only alice's workspaces; GET /api/v1/workspaces/bob-ws returns HTTP 404",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', aliceReadPAT); assert resp.statusCode == 200; assert all(w.owner_id == alice.id for w in resp.body); resp2 = GET('/api/v1/workspaces/bob-ws', aliceReadPAT); assert resp2.statusCode == 404"
+    },
+    {
+      "id": "TS-01-21",
+      "requirement_id": "01-REQ-4.5",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:create can create workspaces on behalf of the owner and read the owner's own workspaces.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with API key",
+        "PAT with workspaces:create issued for 'alice'"
+      ],
+      "input": {
+        "credential": "alice's PAT with workspaces:create",
+        "git_url": "https://github.com/org/repo",
+        "slug": "created-via-pat"
+      },
+      "expected": "POST /api/v1/workspaces returns HTTP 201 with owner_id set to alice's user ID; GET /api/v1/workspaces returns HTTP 200 with alice's workspaces",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'created-via-pat', git_url: 'https://github.com/org/repo'}, aliceCreatePAT); assert resp.statusCode == 201; assert resp.body.owner_id == alice.id; resp2 = GET('/api/v1/workspaces', aliceCreatePAT); assert resp2.statusCode == 200"
+    },
+    {
+      "id": "TS-01-22",
+      "requirement_id": "01-REQ-4.6",
+      "kind": "integration",
+      "description": "Verify that when a workspace exists but the requesting credential cannot access it, the API returns 404 (not 403) to prevent slug enumeration.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'bob' owns workspace 'bob-secret-ws'",
+        "User 'alice' exists with a valid API key and no access to 'bob-secret-ws'"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "bob-secret-ws"
+      },
+      "expected": "HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/bob-secret-ws', aliceApiKey); assert resp.statusCode == 404; assert resp.body.error.code == 404; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-23",
+      "requirement_id": "01-REQ-4.7",
+      "kind": "integration",
+      "description": "Verify that requests with missing, invalid, or expired credentials are rejected with HTTP 401.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted"
+      ],
+      "input": {
+        "credential": "missing / invalid / expired"
+      },
+      "expected": "HTTP 401 with JSON body {\"error\":{\"code\":401,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', noCredential); assert resp.statusCode == 401; assert resp.body.error.code == 401; resp2 = GET('/api/v1/workspaces', invalidToken); assert resp2.statusCode == 401; assert resp2.body.error.code == 401"
+    },
+    {
+      "id": "TS-01-24",
+      "requirement_id": "01-REQ-4.8",
+      "kind": "integration",
+      "description": "Verify that a valid credential lacking the required permission scope for an endpoint is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns workspace 'alice-ws'",
+        "PAT with workspaces:read issued for 'alice' (no archive/delete scope)"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:read only",
+        "operation": "archive"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceReadPAT); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-25",
+      "requirement_id": "01-REQ-5.1",
+      "kind": "integration",
+      "description": "Verify that POST /api/v1/workspaces creates a workspace with status active, sets owner_id to the creating user, and returns HTTP 201 with the workspace JSON object.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with a valid API key",
+        "SQLite database is initialised with the workspaces table"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "git_url": "https://github.com/org/repo",
+        "slug": "new-workspace"
+      },
+      "expected": "HTTP 201 with JSON body containing slug='new-workspace', git_url='https://github.com/org/repo', status='active', owner_id=alice.id, created_at (RFC3339), updated_at (RFC3339)",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'new-workspace', git_url: 'https://github.com/org/repo'}, aliceApiKey); assert resp.statusCode == 201; assert resp.body.slug == 'new-workspace'; assert resp.body.git_url == 'https://github.com/org/repo'; assert resp.body.status == 'active'; assert resp.body.owner_id == alice.id; assert parseRFC3339(resp.body.created_at) != nil; assert parseRFC3339(resp.body.updated_at) != nil"
+    },
+    {
+      "id": "TS-01-26",
+      "requirement_id": "01-REQ-5.2",
+      "kind": "integration",
+      "description": "Verify that creating a workspace with a duplicate slug returns HTTP 409.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Workspace with slug 'existing-ws' already exists",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "git_url": "https://github.com/org/repo2",
+        "slug": "existing-ws"
+      },
+      "expected": "HTTP 409 with JSON body {\"error\":{\"code\":409,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'existing-ws', git_url: 'https://github.com/org/repo2'}, userApiKey); assert resp.statusCode == 409; assert resp.body.error.code == 409; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-27",
+      "requirement_id": "01-REQ-5.3",
+      "kind": "integration",
+      "description": "Verify that providing an org_id when the creating user is not a member of that organization returns HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with API key but is NOT a member of organization 'other-org'",
+        "Organization 'other-org' exists"
+      ],
+      "input": {
+        "git_url": "https://github.com/org/repo",
+        "org_id": "other-org-uuid",
+        "slug": "org-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'org-ws', git_url: 'https://github.com/org/repo', org_id: 'other-org-uuid'}, aliceApiKey); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-28",
+      "requirement_id": "01-REQ-5.4",
+      "kind": "integration",
+      "description": "Verify that providing an org_id that references a non-existent organization returns HTTP 400.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "git_url": "https://github.com/org/repo",
+        "org_id": "nonexistent-org-uuid",
+        "slug": "org-ws"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'org-ws', git_url: 'https://github.com/org/repo', org_id: 'nonexistent-org-uuid'}, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-29",
+      "requirement_id": "01-REQ-5.5",
+      "kind": "integration",
+      "description": "Verify that a missing or malformed request body returns HTTP 400.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "body": "not valid json"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', malformedBody, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; resp2 = POST('/api/v1/workspaces', null, userApiKey); assert resp2.statusCode == 400; assert resp2.body.error.code == 400"
+    },
+    {
+      "id": "TS-01-30",
+      "requirement_id": "01-REQ-5.6",
+      "kind": "integration",
+      "description": "Verify that when a valid branch is provided in the create request, it is stored and returned in the workspace object.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "branch": "feature/my-feature",
+        "git_url": "https://github.com/org/repo",
+        "slug": "branched-ws"
+      },
+      "expected": "HTTP 201 with JSON body where branch='feature/my-feature'; workspaces table row has branch='feature/my-feature'",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'branched-ws', git_url: 'https://github.com/org/repo', branch: 'feature/my-feature'}, userApiKey); assert resp.statusCode == 201; assert resp.body.branch == 'feature/my-feature'; row = db.QueryRow('SELECT branch FROM workspaces WHERE slug = ?', 'branched-ws'); assert row.branch == 'feature/my-feature'"
+    },
+    {
+      "id": "TS-01-31",
+      "requirement_id": "01-REQ-5.7",
+      "kind": "integration",
+      "description": "Verify that when branch is omitted from the create request, the workspace stores NULL for branch and returns branch: null.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "git_url": "https://github.com/org/repo",
+        "slug": "no-branch-ws"
+      },
+      "expected": "HTTP 201 with JSON body where branch is null; workspaces table row has branch=NULL",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'no-branch-ws', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp.statusCode == 201; assert resp.body.branch == null; row = db.QueryRow('SELECT branch FROM workspaces WHERE slug = ?', 'no-branch-ws'); assert row.branch == null"
+    },
+    {
+      "id": "TS-01-32",
+      "requirement_id": "01-REQ-6.1",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces with admin token returns all workspaces across all users, excluding archived by default, ordered by created_at descending.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' (active), 'alice-archived' (archived)",
+        "User 'bob' owns 'bob-ws' (active)",
+        "Admin token is available"
+      ],
+      "input": {
+        "credential": "admin token"
+      },
+      "expected": "HTTP 200 with JSON array containing 'alice-ws' and 'bob-ws' but NOT 'alice-archived'; array ordered by created_at descending",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', adminToken); assert resp.statusCode == 200; slugs = [w.slug for w in resp.body]; assert 'alice-ws' in slugs; assert 'bob-ws' in slugs; assert 'alice-archived' not in slugs; assert isSortedByCreatedAtDesc(resp.body)"
+    },
+    {
+      "id": "TS-01-33",
+      "requirement_id": "01-REQ-6.2",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces with user API key or PAT returns only the authenticated user's workspaces, excluding archived by default.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' (active) and 'alice-archived' (archived)",
+        "User 'bob' owns 'bob-ws'",
+        "Alice's user API key and PAT with workspaces:read are available"
+      ],
+      "input": {
+        "credential": "alice's user API key"
+      },
+      "expected": "HTTP 200 with JSON array containing only 'alice-ws' (not 'alice-archived' or 'bob-ws'), ordered by created_at descending",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', aliceApiKey); assert resp.statusCode == 200; slugs = [w.slug for w in resp.body]; assert 'alice-ws' in slugs; assert 'alice-archived' not in slugs; assert 'bob-ws' not in slugs; assert isSortedByCreatedAtDesc(resp.body)"
+    },
+    {
+      "id": "TS-01-34",
+      "requirement_id": "01-REQ-6.3",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces?include_archived=true includes archived workspaces in the result set.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' (active) and 'alice-archived' (archived)",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "query": "include_archived=true"
+      },
+      "expected": "HTTP 200 with JSON array containing both 'alice-ws' and 'alice-archived'",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces?include_archived=true', aliceApiKey); assert resp.statusCode == 200; slugs = [w.slug for w in resp.body]; assert 'alice-ws' in slugs; assert 'alice-archived' in slugs"
+    },
+    {
+      "id": "TS-01-35",
+      "requirement_id": "01-REQ-6.4",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces returns an empty array when no workspaces match the query criteria.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with API key but owns no workspaces"
+      ],
+      "input": {
+        "credential": "alice's user API key"
+      },
+      "expected": "HTTP 200 with JSON body []",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', aliceApiKey); assert resp.statusCode == 200; assert resp.body == []"
+    },
+    {
+      "id": "TS-01-36",
+      "requirement_id": "01-REQ-7.1",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces/:slug returns the workspace record for an authorized credential.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 200 with JSON workspace object where slug='alice-ws'",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/alice-ws', aliceApiKey); assert resp.statusCode == 200; assert resp.body.slug == 'alice-ws'; assert resp.body.owner_id == alice.id"
+    },
+    {
+      "id": "TS-01-37",
+      "requirement_id": "01-REQ-7.2",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces/:slug returns HTTP 404 when no workspace exists with the given slug.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "No workspace with slug 'nonexistent-ws' exists",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "credential": "user API key",
+        "slug": "nonexistent-ws"
+      },
+      "expected": "HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/nonexistent-ws', userApiKey); assert resp.statusCode == 404; assert resp.body.error.code == 404; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-38",
+      "requirement_id": "01-REQ-7.3",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces/:slug returns HTTP 404 (not 403) when the workspace exists but the credential doesn't own it.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'bob' owns 'bob-ws'",
+        "User 'alice' exists with API key and does NOT own 'bob-ws'"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "bob-ws"
+      },
+      "expected": "HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/bob-ws', aliceApiKey); assert resp.statusCode == 404; assert resp.body.error.code == 404; assert resp.statusCode != 403"
+    },
+    {
+      "id": "TS-01-39",
+      "requirement_id": "01-REQ-8.1",
+      "kind": "integration",
+      "description": "Verify that POST /api/v1/workspaces/:slug/archive updates the workspace status to 'archived' and returns HTTP 200 with the updated object.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'active'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 200 with JSON workspace object where status='archived'; workspaces table row updated_at is updated",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceApiKey); assert resp.statusCode == 200; assert resp.body.status == 'archived'; assert resp.body.slug == 'alice-ws'; row = db.QueryRow('SELECT status FROM workspaces WHERE slug = ?', 'alice-ws'); assert row.status == 'archived'"
+    },
+    {
+      "id": "TS-01-40",
+      "requirement_id": "01-REQ-8.2",
+      "kind": "integration",
+      "description": "Verify that archiving an already-archived workspace returns HTTP 400, not a no-op.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'archived'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-41",
+      "requirement_id": "01-REQ-8.3",
+      "kind": "integration",
+      "description": "Verify that a PAT (workspaces:read or workspaces:create) attempting to archive a workspace is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'active'",
+        "PAT with workspaces:read issued for 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:read",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceReadPAT); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-42",
+      "requirement_id": "01-REQ-8.4",
+      "kind": "integration",
+      "description": "Verify that archiving a non-existent workspace or one the credential cannot access returns HTTP 404.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "No workspace with slug 'ghost-ws' exists",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "credential": "user API key",
+        "slug": "ghost-ws"
+      },
+      "expected": "HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/ghost-ws/archive', {}, userApiKey); assert resp.statusCode == 404; assert resp.body.error.code == 404; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-43",
+      "requirement_id": "01-REQ-9.1",
+      "kind": "integration",
+      "description": "Verify that POST /api/v1/workspaces/:slug/reactivate updates an archived workspace to 'active' and returns HTTP 200 with the updated object.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'archived'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 200 with JSON workspace object where status='active'; workspaces table row shows status='active'",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/reactivate', {}, aliceApiKey); assert resp.statusCode == 200; assert resp.body.status == 'active'; assert resp.body.slug == 'alice-ws'; row = db.QueryRow('SELECT status FROM workspaces WHERE slug = ?', 'alice-ws'); assert row.status == 'active'"
+    },
+    {
+      "id": "TS-01-44",
+      "requirement_id": "01-REQ-9.2",
+      "kind": "integration",
+      "description": "Verify that reactivating an already-active workspace returns HTTP 400, not a no-op.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'active'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/reactivate', {}, aliceApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-45",
+      "requirement_id": "01-REQ-9.3",
+      "kind": "integration",
+      "description": "Verify that a PAT attempting to reactivate a workspace is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'archived'",
+        "PAT with workspaces:create issued for 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:create",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/alice-ws/reactivate', {}, aliceCreatePAT); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-46",
+      "requirement_id": "01-REQ-9.4",
+      "kind": "integration",
+      "description": "Verify that reactivating a non-existent workspace or one the credential cannot access returns HTTP 404.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "No workspace with slug 'ghost-ws' exists",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "credential": "user API key",
+        "slug": "ghost-ws"
+      },
+      "expected": "HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/ghost-ws/reactivate', {}, userApiKey); assert resp.statusCode == 404; assert resp.body.error.code == 404; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-47",
+      "requirement_id": "01-REQ-10.1",
+      "kind": "integration",
+      "description": "Verify that DELETE /api/v1/workspaces/:slug physically removes the row from the workspaces table and returns HTTP 204 with empty body.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'archived'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 204 with empty body; no row with slug 'alice-ws' remains in the workspaces table",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/alice-ws', aliceApiKey); assert resp.statusCode == 204; assert resp.body == ''; row = db.QueryRow('SELECT * FROM workspaces WHERE slug = ?', 'alice-ws'); assert row == nil"
+    },
+    {
+      "id": "TS-01-48",
+      "requirement_id": "01-REQ-10.2",
+      "kind": "integration",
+      "description": "Verify that attempting to delete an active workspace returns HTTP 400.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'active'",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/alice-ws', aliceApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string; row = db.QueryRow('SELECT slug FROM workspaces WHERE slug = ?', 'alice-ws'); assert row != nil"
+    },
+    {
+      "id": "TS-01-49",
+      "requirement_id": "01-REQ-10.3",
+      "kind": "integration",
+      "description": "Verify that a PAT attempting to delete a workspace is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'archived'",
+        "PAT with workspaces:read issued for 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:read",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/alice-ws', aliceReadPAT); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-50",
+      "requirement_id": "01-REQ-10.4",
+      "kind": "integration",
+      "description": "Verify that DELETE /api/v1/workspaces/:slug returns HTTP 404 when the workspace does not exist or the credential cannot access it.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "No workspace with slug 'ghost-ws' exists",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "credential": "user API key",
+        "slug": "ghost-ws"
+      },
+      "expected": "HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/ghost-ws', userApiKey); assert resp.statusCode == 404; assert resp.body.error.code == 404; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-51",
+      "requirement_id": "01-REQ-10.5",
+      "kind": "unit",
+      "description": "Verify that workspace deletion performs a physical delete removing the row from the workspaces table with no soft-delete flag or audit record retained.",
+      "preconditions": [
+        "SQLite database is initialised with the workspaces table",
+        "An archived workspace row exists with slug 'to-delete'"
+      ],
+      "input": {
+        "slug": "to-delete"
+      },
+      "expected": "After DELETE, the workspaces table contains no row with slug 'to-delete' and no row with status='deleted'",
+      "assertion_pseudocode": "deleteWorkspace(db, 'to-delete'); rows = db.Query('SELECT * FROM workspaces WHERE slug = ?', 'to-delete'); assert len(rows) == 0; deletedRows = db.Query('SELECT * FROM workspaces WHERE status = ?', 'deleted'); assert len(deletedRows) == 0"
+    },
+    {
+      "id": "TS-01-52",
+      "requirement_id": "01-REQ-11.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace create --git-url <url> --slug <slug>' calls POST /api/v1/workspaces and prints the workspace JSON to stdout, exiting 0.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated with a valid API key"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/org/repo --slug my-ws"
+      },
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with slug='my-ws'; stderr is empty or contains no error",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'create', '--git-url', 'https://github.com/org/repo', '--slug', 'my-ws']); assert result.exitCode == 0; ws = parseJSON(result.stdout); assert ws.slug == 'my-ws'; assert ws.status == 'active'"
+    },
+    {
+      "id": "TS-01-53",
+      "requirement_id": "01-REQ-11.2",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace create --org <org-slug>' resolves the org slug to a UUID before calling the API and the workspace includes org_id.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated with a valid API key",
+        "Organization 'my-org' exists with UUID 'my-org-uuid'",
+        "User is a member of 'my-org'"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/org/repo --slug org-ws --org my-org"
+      },
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with org_id='my-org-uuid'",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'create', '--git-url', 'https://github.com/org/repo', '--slug', 'org-ws', '--org', 'my-org']); assert result.exitCode == 0; ws = parseJSON(result.stdout); assert ws.org_id == 'my-org-uuid'"
+    },
+    {
+      "id": "TS-01-54",
+      "requirement_id": "01-REQ-11.3",
+      "kind": "unit",
+      "description": "Verify that 'afc workspace create' with missing --git-url or --slug prints a usage hint to stderr and exits 1 without making an API call.",
+      "preconditions": [
+        "afc binary is built and available"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws"
+      },
+      "expected": "Exit code 1; stderr contains usage hint; no HTTP request made to POST /api/v1/workspaces",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'create', '--slug', 'my-ws']); assert result.exitCode == 1; assert result.stderr contains usage hint; assert noAPICallWasMade(POST, '/api/v1/workspaces')"
+    },
+    {
+      "id": "TS-01-55",
+      "requirement_id": "01-REQ-11.4",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace create --org <nonexistent-slug>' prints an error to stderr and exits 1 without making the workspace create API call.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/org/repo --slug my-ws --org nonexistent-org"
+      },
+      "expected": "Exit code 1; stderr contains error about org resolution failure; no POST /api/v1/workspaces call made",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'create', '--git-url', 'https://github.com/org/repo', '--slug', 'my-ws', '--org', 'nonexistent-org']); assert result.exitCode == 1; assert result.stderr contains error message; assert noAPICallWasMade(POST, '/api/v1/workspaces')"
+    },
+    {
+      "id": "TS-01-56",
+      "requirement_id": "01-REQ-11.5",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace create' prints the API error to stderr and exits 1 when the API call returns an error.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "A workspace with slug 'existing-ws' already exists",
+        "User is authenticated with a valid API key"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/org/repo --slug existing-ws"
+      },
+      "expected": "Exit code 1; stderr contains error message describing the conflict",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'create', '--git-url', 'https://github.com/org/repo', '--slug', 'existing-ws']); assert result.exitCode == 1; assert result.stderr contains error message about conflict or duplicate slug"
+    },
+    {
+      "id": "TS-01-57",
+      "requirement_id": "01-REQ-12.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace list' calls GET /api/v1/workspaces and prints the JSON array to stdout, exiting 0.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated with a valid API key and owns one or more workspaces"
+      ],
+      "input": {
+        "command": "afc workspace list"
+      },
+      "expected": "Exit code 0; stdout contains valid JSON array of workspace objects",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'list']); assert result.exitCode == 0; wsList = parseJSON(result.stdout); assert isArray(wsList)"
+    },
+    {
+      "id": "TS-01-58",
+      "requirement_id": "01-REQ-12.2",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace list --include-archived' passes ?include_archived=true to the API and the response includes archived workspaces.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and owns an active workspace 'active-ws' and an archived workspace 'archived-ws'"
+      ],
+      "input": {
+        "command": "afc workspace list --include-archived"
+      },
+      "expected": "Exit code 0; stdout JSON array contains both 'active-ws' and 'archived-ws'",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'list', '--include-archived']); assert result.exitCode == 0; wsList = parseJSON(result.stdout); slugs = [w.slug for w in wsList]; assert 'active-ws' in slugs; assert 'archived-ws' in slugs"
+    },
+    {
+      "id": "TS-01-59",
+      "requirement_id": "01-REQ-12.3",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace list' prints the error to stderr and exits 1 when the API call fails.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is unreachable or returns 401"
+      ],
+      "input": {
+        "command": "afc workspace list"
+      },
+      "expected": "Exit code 1; stderr contains error message",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'list'], withInvalidCredential); assert result.exitCode == 1; assert result.stderr contains error message"
+    },
+    {
+      "id": "TS-01-60",
+      "requirement_id": "01-REQ-13.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace get <slug>' calls GET /api/v1/workspaces/:slug and prints the workspace JSON to stdout, exiting 0.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and owns 'my-ws'"
+      ],
+      "input": {
+        "command": "afc workspace get my-ws"
+      },
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with slug='my-ws'",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'get', 'my-ws']); assert result.exitCode == 0; ws = parseJSON(result.stdout); assert ws.slug == 'my-ws'"
+    },
+    {
+      "id": "TS-01-61",
+      "requirement_id": "01-REQ-13.2",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace get <slug>' prints the error to stderr and exits 1 when the API returns an error (e.g. 404 or 401).",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "No workspace with slug 'nonexistent' exists"
+      ],
+      "input": {
+        "command": "afc workspace get nonexistent"
+      },
+      "expected": "Exit code 1; stderr contains error message",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'get', 'nonexistent']); assert result.exitCode == 1; assert result.stderr contains error message"
+    },
+    {
+      "id": "TS-01-62",
+      "requirement_id": "01-REQ-14.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace archive <slug>' calls POST /api/v1/workspaces/:slug/archive and prints the updated workspace JSON (status='archived') to stdout, exiting 0.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and owns 'my-ws' with status 'active'"
+      ],
+      "input": {
+        "command": "afc workspace archive my-ws"
+      },
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with status='archived'",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'archive', 'my-ws']); assert result.exitCode == 0; ws = parseJSON(result.stdout); assert ws.status == 'archived'"
+    },
+    {
+      "id": "TS-01-63",
+      "requirement_id": "01-REQ-14.2",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace archive <slug>' prints the error to stderr and exits 1 when the API call returns an error.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and 'my-ws' is already archived"
+      ],
+      "input": {
+        "command": "afc workspace archive my-ws"
+      },
+      "expected": "Exit code 1; stderr contains error message",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'archive', 'my-ws']); assert result.exitCode == 1; assert result.stderr contains error message"
+    },
+    {
+      "id": "TS-01-64",
+      "requirement_id": "01-REQ-15.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace reactivate <slug>' calls POST /api/v1/workspaces/:slug/reactivate and prints the updated workspace JSON (status='active') to stdout, exiting 0.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and owns 'my-ws' with status 'archived'"
+      ],
+      "input": {
+        "command": "afc workspace reactivate my-ws"
+      },
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with status='active'",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'reactivate', 'my-ws']); assert result.exitCode == 0; ws = parseJSON(result.stdout); assert ws.status == 'active'"
+    },
+    {
+      "id": "TS-01-65",
+      "requirement_id": "01-REQ-15.2",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace reactivate <slug>' prints the error to stderr and exits 1 when the API call returns an error.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and 'my-ws' is already active"
+      ],
+      "input": {
+        "command": "afc workspace reactivate my-ws"
+      },
+      "expected": "Exit code 1; stderr contains error message",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'reactivate', 'my-ws']); assert result.exitCode == 1; assert result.stderr contains error message"
+    },
+    {
+      "id": "TS-01-66",
+      "requirement_id": "01-REQ-16.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace delete <slug> --confirm' calls DELETE /api/v1/workspaces/:slug, prints a confirmation message to stderr, and exits 0.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and owns 'my-ws' with status 'archived'"
+      ],
+      "input": {
+        "command": "afc workspace delete my-ws --confirm"
+      },
+      "expected": "Exit code 0; stderr contains confirmation message; workspace row is removed from the database",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'delete', 'my-ws', '--confirm']); assert result.exitCode == 0; assert result.stderr contains confirmation message"
+    },
+    {
+      "id": "TS-01-67",
+      "requirement_id": "01-REQ-16.2",
+      "kind": "unit",
+      "description": "Verify that 'afc workspace delete <slug>' without --confirm prints a usage hint to stderr and exits 1 without making an API call.",
+      "preconditions": [
+        "afc binary is built and available"
+      ],
+      "input": {
+        "command": "afc workspace delete my-ws"
+      },
+      "expected": "Exit code 1; stderr contains usage hint about --confirm flag; no HTTP DELETE request made",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'delete', 'my-ws']); assert result.exitCode == 1; assert result.stderr contains '--confirm' or usage hint; assert noAPICallWasMade(DELETE, '/api/v1/workspaces/my-ws')"
+    },
+    {
+      "id": "TS-01-68",
+      "requirement_id": "01-REQ-16.3",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace delete <slug> --confirm' prints the error to stderr and exits 1 when the API call returns an error.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Server is running",
+        "User is authenticated and 'my-ws' exists with status 'active' (cannot be deleted)"
+      ],
+      "input": {
+        "command": "afc workspace delete my-ws --confirm"
+      },
+      "expected": "Exit code 1; stderr contains error message about workspace not being in archived state",
+      "assertion_pseudocode": "result = runCLI(['workspace', 'delete', 'my-ws', '--confirm']); assert result.exitCode == 1; assert result.stderr contains error message"
+    },
+    {
+      "id": "TS-01-69",
+      "requirement_id": "01-REQ-17.1",
+      "kind": "unit",
+      "description": "Verify that the afc CLI builds its command tree from RootCommand() and includes LoginCmd, UserCmd, KeysCmd, TokensCmd, OrgsCmd, AdminCmd, and the workspace subcommand group.",
+      "preconditions": [
+        "afc binary is built and available"
+      ],
+      "input": {
+        "command": "afc --help"
+      },
+      "expected": "Help output lists 'workspace' as a subcommand and includes all standard apikit commands (login, user, keys, tokens, orgs, admin)",
+      "assertion_pseudocode": "result = runCLI(['--help']); assert result.exitCode == 0; assert result.stdout contains 'workspace'; assert result.stdout contains 'login'; assert result.stdout contains 'user'; assert result.stdout contains 'keys'; assert result.stdout contains 'tokens'; assert result.stdout contains 'orgs'; assert result.stdout contains 'admin'"
+    },
+    {
+      "id": "TS-01-70",
+      "requirement_id": "01-REQ-17.2",
+      "kind": "unit",
+      "description": "Verify that the afc CLI uses CLIExecute() for execution, CLIPrintError() for errors, and CLIExitCode() to derive the process exit code, returning 0 on success and 1 on error.",
+      "preconditions": [
+        "afc binary source code is available for inspection",
+        "afc binary is built"
+      ],
+      "input": {
+        "scenario_error": "afc workspace get nonexistent-slug",
+        "scenario_success": "afc workspace list (authenticated)"
+      },
+      "expected": "Successful command exits with code 0; failed command exits with code 1; error output goes to stderr via CLIPrintError",
+      "assertion_pseudocode": "successResult = runCLI(['workspace', 'list']); assert successResult.exitCode == 0; errorResult = runCLI(['workspace', 'get', 'nonexistent-slug']); assert errorResult.exitCode == 1; assert errorResult.stderr is non-empty"
+    },
+    {
+      "id": "TS-01-71",
+      "requirement_id": "01-REQ-17.3",
+      "kind": "unit",
+      "description": "Verify that afc CLI library functions signal errors via return values using Go's (*T, error) idiom and never call os.Exit directly.",
+      "preconditions": [
+        "afc source code is available for static analysis"
+      ],
+      "input": {},
+      "expected": "No call to os.Exit appears in any library function (only in main()); all library functions return (*T, error) tuples for errors",
+      "assertion_pseudocode": "sourceFiles = getAllGoSourceFiles('internal/', 'pkg/'); for each file in sourceFiles { assert not containsPattern(file, 'os.Exit') }; mainFile = getGoSourceFile('cmd/afc/main.go'); assert containsPattern(mainFile, 'os.Exit') == allowed"
+    },
+    {
+      "id": "TS-01-72",
+      "requirement_id": "01-REQ-18.1",
+      "kind": "unit",
+      "description": "Verify that all error responses use apikit's standard JSON envelope format {\"error\":{\"code\":<HTTP_STATUS>,\"message\":\"Human-readable description\"}}.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "trigger": "request with invalid slug format"
+      },
+      "expected": "HTTP 400 response body is valid JSON with keys 'error.code' (integer matching HTTP status) and 'error.message' (non-empty string)",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'INVALID SLUG', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp.statusCode == 400; body = parseJSON(resp.body); assert body.error != nil; assert body.error.code == 400; assert isInt(body.error.code); assert isNonEmptyString(body.error.message)"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-01-P1",
+      "property_id": "01-PROP-1",
+      "validates": [
+        "01-REQ-1.1",
+        "01-REQ-5.2"
+      ],
+      "description": "For any set of workspace create requests with the same slug, only one can succeed; the slug is unique across all rows at any point in time.",
+      "for_any_strategy": "Generate N (2–10) concurrent or sequential POST /api/v1/workspaces requests all using the same slug but different git_urls from distinct authenticated users",
+      "invariant_check": "Exactly one request returns HTTP 201; all others return HTTP 409; at any checkpoint during or after execution, db.Query('SELECT COUNT(*) FROM workspaces WHERE slug = ?', slug) returns exactly 1"
+    },
+    {
+      "id": "TS-01-P2",
+      "property_id": "01-PROP-2",
+      "validates": [
+        "01-REQ-4.2",
+        "01-REQ-5.E1"
+      ],
+      "description": "For any workspace record in the workspaces table, the owner_id is always non-null and references a real user identity, never an admin-token identity.",
+      "for_any_strategy": "Generate arbitrary sequences of workspace create requests using user API keys and attempt creates with admin tokens; inspect all resulting rows",
+      "invariant_check": "For every row in the workspaces table: row.owner_id != nil AND row.owner_id is a valid user UUID AND row.owner_id does not match any known admin token identity; any admin-token create attempt results in HTTP 403 and no new row"
+    },
+    {
+      "id": "TS-01-P3",
+      "property_id": "01-PROP-3",
+      "validates": [
+        "01-REQ-1.9",
+        "01-REQ-10.5"
+      ],
+      "description": "For any workspace record in the workspaces table, the status column contains exactly 'active' or 'archived'; the value 'deleted' is never present.",
+      "for_any_strategy": "Generate arbitrary sequences of create, archive, reactivate, and delete operations on workspaces; after each operation, inspect all remaining rows",
+      "invariant_check": "For every row in the workspaces table at any point: row.status in {'active', 'archived'}; db.Query('SELECT COUNT(*) FROM workspaces WHERE status NOT IN (\"active\", \"archived\")') == 0"
+    },
+    {
+      "id": "TS-01-P4",
+      "property_id": "01-PROP-4",
+      "validates": [
+        "01-REQ-10.1",
+        "01-REQ-10.2"
+      ],
+      "description": "For any DELETE /api/v1/workspaces/:slug request, a workspace row is physically removed only when its status was 'archived' at the time of deletion; active workspace delete is always rejected.",
+      "for_any_strategy": "Generate arbitrary workspaces in active and archived states; for each, attempt DELETE and inspect the database before and after",
+      "invariant_check": "If workspace.status == 'archived' before DELETE: request returns HTTP 204, row is absent after; if workspace.status == 'active' before DELETE: request returns HTTP 400, row is still present after"
+    },
+    {
+      "id": "TS-01-P5",
+      "property_id": "01-PROP-5",
+      "validates": [
+        "01-REQ-6.2",
+        "01-REQ-4.6"
+      ],
+      "description": "For any GET /api/v1/workspaces response for a non-admin credential, all returned workspaces have owner_id equal to the authenticated user's ID.",
+      "for_any_strategy": "Create workspaces for multiple users (user-A, user-B, user-C); for each user, call GET /api/v1/workspaces with their API key or PAT",
+      "invariant_check": "For all workspace objects W in response for user U: W.owner_id == U.id; no W in response where W.owner_id != U.id"
+    },
+    {
+      "id": "TS-01-P6",
+      "property_id": "01-PROP-6",
+      "validates": [
+        "01-REQ-6.1",
+        "01-REQ-6.2"
+      ],
+      "description": "For any GET /api/v1/workspaces response when include_archived is absent or false, no archived workspace appears in the response array.",
+      "for_any_strategy": "Create arbitrary mixes of active and archived workspaces for a user; call GET /api/v1/workspaces without ?include_archived or with ?include_archived=false",
+      "invariant_check": "For all workspace objects W in response: W.status == 'active'; len([W for W in response if W.status == 'archived']) == 0"
+    },
+    {
+      "id": "TS-01-P7",
+      "property_id": "01-PROP-7",
+      "validates": [
+        "01-REQ-1.10",
+        "01-REQ-5.1"
+      ],
+      "description": "For any workspace record in the workspaces table, created_at and updated_at are always valid RFC 3339 timestamp strings and are never null or empty.",
+      "for_any_strategy": "Generate arbitrary workspace create, archive, and reactivate operations; after each operation, query all affected rows",
+      "invariant_check": "For every row in workspaces table: row.created_at != nil AND row.created_at != '' AND parseRFC3339(row.created_at) != error; row.updated_at != nil AND row.updated_at != '' AND parseRFC3339(row.updated_at) != error"
+    },
+    {
+      "id": "TS-01-P8",
+      "property_id": "01-PROP-8",
+      "validates": [
+        "01-REQ-4.6",
+        "01-REQ-7.3"
+      ],
+      "description": "For any request for a workspace the credential cannot access, the API always returns HTTP 404 regardless of whether the workspace exists, never HTTP 403.",
+      "for_any_strategy": "Generate pairs of (credential, slug) where the credential either has no access or the workspace doesn't exist; for each pair, issue GET, archive, reactivate, and delete requests",
+      "invariant_check": "For all such requests: response.statusCode == 404; response.statusCode != 403; response.body.error.code == 404"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-01-E1",
+      "requirement_id": "01-REQ-1.E1",
+      "kind": "unit",
+      "description": "Verify that the slug validator rejects slugs of exactly 2 characters (below minimum) and exactly 65 characters (above maximum) with HTTP 400.",
+      "preconditions": [
+        "Slug validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "too_long": "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz012",
+        "too_short": "ab"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}} for both the 2-char and 65-char slugs",
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces', {slug: 'ab', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp1.statusCode == 400; assert resp1.body.error.code == 400; resp2 = POST('/api/v1/workspaces', {slug: 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz012', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp2.statusCode == 400; assert resp2.body.error.code == 400"
+    },
+    {
+      "id": "TS-01-E2",
+      "requirement_id": "01-REQ-1.E2",
+      "kind": "unit",
+      "description": "Verify that the slug validator rejects slugs starting with a digit or hyphen with HTTP 400.",
+      "preconditions": [
+        "Slug validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "digit_start": "1workspace",
+        "hyphen_start": "-workspace"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}} for both digit-start and hyphen-start slugs",
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces', {slug: '1workspace', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp1.statusCode == 400; assert resp1.body.error.code == 400; resp2 = POST('/api/v1/workspaces', {slug: '-workspace', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp2.statusCode == 400; assert resp2.body.error.code == 400"
+    },
+    {
+      "id": "TS-01-E3",
+      "requirement_id": "01-REQ-1.E3",
+      "kind": "unit",
+      "description": "Verify that the branch validator rejects an explicitly provided empty string branch with HTTP 400.",
+      "preconditions": [
+        "branch validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "branch": "",
+        "git_url": "https://github.com/org/repo",
+        "slug": "my-ws"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/org/repo', branch: ''}, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-E4",
+      "requirement_id": "01-REQ-1.E4",
+      "kind": "unit",
+      "description": "Verify that the git_url validator rejects plain HTTP URLs (http://) with HTTP 400.",
+      "preconditions": [
+        "git_url validator is integrated with POST /api/v1/workspaces handler",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "git_url": "http://github.com/org/repo",
+        "slug": "my-ws"
+      },
+      "expected": "HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'http://github.com/org/repo'}, userApiKey); assert resp.statusCode == 400; assert resp.body.error.code == 400; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-E5",
+      "requirement_id": "01-REQ-2.E1",
+      "kind": "integration",
+      "description": "Verify that if the database is unavailable or the CREATE TABLE statement fails during boot, the boot sequence returns a non-nil error and the server does not start.",
+      "preconditions": [
+        "SQLite database path is configured to an inaccessible location or database is locked"
+      ],
+      "input": {
+        "db_path": "/invalid/path/to/db.sqlite"
+      },
+      "expected": "Boot function returns a non-nil error; server does not start and does not serve any requests",
+      "assertion_pseudocode": "err = initializeSchema(unavailableDB); assert err != nil; assert serverIsNotListening()"
+    },
+    {
+      "id": "TS-01-E6",
+      "requirement_id": "01-REQ-4.E1",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:read attempting to archive, reactivate, or delete a workspace is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'active'",
+        "PAT with workspaces:read issued for 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:read",
+        "operations": [
+          "archive",
+          "reactivate",
+          "delete"
+        ]
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}} for each of archive, reactivate, and delete",
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceReadPAT); assert resp1.statusCode == 403; assert resp1.body.error.code == 403; resp2 = POST('/api/v1/workspaces/alice-ws/reactivate', {}, aliceReadPAT); assert resp2.statusCode == 403; assert resp2.body.error.code == 403; resp3 = DELETE('/api/v1/workspaces/alice-ws', aliceReadPAT); assert resp3.statusCode == 403; assert resp3.body.error.code == 403"
+    },
+    {
+      "id": "TS-01-E7",
+      "requirement_id": "01-REQ-4.E2",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:create attempting to archive, reactivate, or delete a workspace is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'active'",
+        "PAT with workspaces:create issued for 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:create",
+        "operations": [
+          "archive",
+          "reactivate",
+          "delete"
+        ]
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}} for each of archive, reactivate, and delete",
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces/alice-ws/archive', {}, aliceCreatePAT); assert resp1.statusCode == 403; assert resp1.body.error.code == 403; resp2 = POST('/api/v1/workspaces/alice-ws/reactivate', {}, aliceCreatePAT); assert resp2.statusCode == 403; assert resp2.body.error.code == 403; resp3 = DELETE('/api/v1/workspaces/alice-ws', aliceCreatePAT); assert resp3.statusCode == 403; assert resp3.body.error.code == 403"
+    },
+    {
+      "id": "TS-01-E8",
+      "requirement_id": "01-REQ-5.E1",
+      "kind": "integration",
+      "description": "Verify that an admin token attempting to call POST /api/v1/workspaces is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Admin token is available"
+      ],
+      "input": {
+        "credential": "admin token",
+        "git_url": "https://github.com/org/repo",
+        "slug": "admin-created-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'admin-created-ws', git_url: 'https://github.com/org/repo'}, adminToken); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-E9",
+      "requirement_id": "01-REQ-5.E2",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:read (but not workspaces:create) attempting to create a workspace is rejected with HTTP 403.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' exists with API key",
+        "PAT with workspaces:read issued for 'alice'"
+      ],
+      "input": {
+        "credential": "PAT with workspaces:read",
+        "git_url": "https://github.com/org/repo",
+        "slug": "read-pat-ws"
+      },
+      "expected": "HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', {slug: 'read-pat-ws', git_url: 'https://github.com/org/repo'}, aliceReadPAT); assert resp.statusCode == 403; assert resp.body.error.code == 403; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-E10",
+      "requirement_id": "01-REQ-5.E3",
+      "kind": "unit",
+      "description": "Verify that a transient database insert failure after validation passes returns HTTP 500 with no partial workspace record retained.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "Database is configured to fail INSERT operations (mock/stub)",
+        "Authenticated user API key is available"
+      ],
+      "input": {
+        "git_url": "https://github.com/org/repo",
+        "slug": "db-fail-ws"
+      },
+      "expected": "HTTP 500 with JSON body {\"error\":{\"code\":500,\"message\":\"<descriptive message>\"}}; no row with slug 'db-fail-ws' in workspaces table",
+      "assertion_pseudocode": "mockDB.failNextInsert(); resp = POST('/api/v1/workspaces', {slug: 'db-fail-ws', git_url: 'https://github.com/org/repo'}, userApiKey); assert resp.statusCode == 500; assert resp.body.error.code == 500; row = db.QueryRow('SELECT * FROM workspaces WHERE slug = ?', 'db-fail-ws'); assert row == nil"
+    },
+    {
+      "id": "TS-01-E11",
+      "requirement_id": "01-REQ-6.E1",
+      "kind": "integration",
+      "description": "Verify that GET /api/v1/workspaces returns all matching workspaces without pagination, with no pagination headers or cursors in the response.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 25 active workspaces",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key"
+      },
+      "expected": "HTTP 200 with JSON array of exactly 25 workspace objects; no Link header, X-Next-Cursor, or pagination field in response",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces', aliceApiKey); assert resp.statusCode == 200; assert len(resp.body) == 25; assert resp.headers['Link'] == nil; assert resp.headers['X-Next-Cursor'] == nil; assert resp.body is array (not object with 'data'/'cursor')"
+    },
+    {
+      "id": "TS-01-E12",
+      "requirement_id": "01-REQ-10.E1",
+      "kind": "unit",
+      "description": "Verify that a database DELETE statement failure after authorization passes returns HTTP 500.",
+      "preconditions": [
+        "Server is running with workspace handlers mounted",
+        "User 'alice' owns 'alice-ws' with status 'archived'",
+        "Database is configured to fail DELETE operations (mock/stub)",
+        "Alice's user API key is available"
+      ],
+      "input": {
+        "credential": "alice's user API key",
+        "slug": "alice-ws"
+      },
+      "expected": "HTTP 500 with JSON body {\"error\":{\"code\":500,\"message\":\"<descriptive message>\"}}",
+      "assertion_pseudocode": "mockDB.failNextDelete(); resp = DELETE('/api/v1/workspaces/alice-ws', aliceApiKey); assert resp.statusCode == 500; assert resp.body.error.code == 500; assert resp.body.error.message is non-empty string"
+    },
+    {
+      "id": "TS-01-E13",
+      "requirement_id": "01-REQ-11.E1",
+      "kind": "unit",
+      "description": "Verify that when org slug resolution returns a success status but with a missing or null org UUID, the CLI treats it as a resolution failure and exits 1 without making the workspace create API call.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Org resolution API is mocked to return success with null/missing UUID"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/org/repo --slug my-ws --org bad-org"
+      },
+      "expected": "Exit code 1; stderr contains error message about resolution failure; no POST /api/v1/workspaces call made",
+      "assertion_pseudocode": "mockOrgResolution.returnNullUUID(); result = runCLI(['workspace', 'create', '--git-url', 'https://github.com/org/repo', '--slug', 'my-ws', '--org', 'bad-org']); assert result.exitCode == 1; assert result.stderr contains error message; assert noAPICallWasMade(POST, '/api/v1/workspaces')"
+    },
+    {
+      "id": "TS-01-E14",
+      "requirement_id": "01-REQ-11.E2",
+      "kind": "unit",
+      "description": "Verify that when org slug resolution returns an unexpected data shape, the CLI exits 1 with an error to stderr and does not make the workspace create API call.",
+      "preconditions": [
+        "afc binary is built and available",
+        "Org resolution API is mocked to return malformed response"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/org/repo --slug my-ws --org bad-org"
+      },
+      "expected": "Exit code 1; stderr contains error message about unexpected response; no POST /api/v1/workspaces call made",
+      "assertion_pseudocode": "mockOrgResolution.returnMalformedBody(); result = runCLI(['workspace', 'create', '--git-url', 'https://github.com/org/repo', '--slug', 'my-ws', '--org', 'bad-org']); assert result.exitCode == 1; assert result.stderr contains error message; assert noAPICallWasMade(POST, '/api/v1/workspaces')"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-01-SMOKE-1",
+      "execution_path_id": "01-PATH-1",
+      "description": "End-to-end smoke test: create a workspace via the afc CLI using HTTPS git_url and verify it is persisted in the workspaces table with correct fields.",
+      "trigger": "Run 'afc workspace create --git-url https://github.com/org/repo --slug my-workspace' with a valid user API key",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "apikit auth middleware",
+        "POST /api/v1/workspaces handler",
+        "SQLite workspaces table"
+      ],
+      "mockable": [
+        "apikit organization membership check (if org_id not provided)"
+      ],
+      "expected_effects": [
+        "afc CLI exits 0",
+        "stdout contains JSON workspace object with slug='my-workspace', status='active', owner_id matching alice's user ID",
+        "workspaces table contains exactly one row with slug='my-workspace' and status='active'",
+        "created_at and updated_at are valid RFC 3339 strings"
+      ]
+    },
+    {
+      "id": "TS-01-SMOKE-2",
+      "execution_path_id": "01-PATH-2",
+      "description": "End-to-end smoke test: archive then permanently delete a workspace via the afc CLI; verify the slug is freed and no row remains in the workspaces table.",
+      "trigger": "Run 'afc workspace archive my-workspace' followed by 'afc workspace delete my-workspace --confirm' with the workspace owner's API key",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "apikit auth middleware",
+        "POST /api/v1/workspaces/:slug/archive handler",
+        "DELETE /api/v1/workspaces/:slug handler",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "After archive: afc exits 0, stdout contains JSON with status='archived', workspaces table row has status='archived'",
+        "After delete: afc exits 0, stderr contains confirmation message, no row with slug 'my-workspace' exists in workspaces table",
+        "Slug 'my-workspace' can be reused: subsequent POST /api/v1/workspaces with same slug returns HTTP 201"
+      ]
+    },
+    {
+      "id": "TS-01-SMOKE-3",
+      "execution_path_id": "01-PATH-3",
+      "description": "End-to-end smoke test: list workspaces with --include-archived and verify both active and archived workspaces appear in the JSON array output.",
+      "trigger": "Run 'afc workspace list --include-archived' with the workspace owner's API key when the user has both active and archived workspaces",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "apikit auth middleware",
+        "GET /api/v1/workspaces handler",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "afc exits 0",
+        "stdout contains valid JSON array",
+        "Array includes workspaces with status='active' and status='archived'",
+        "Array contains only workspaces owned by the authenticated user",
+        "Array is ordered by created_at descending"
+      ]
+    },
+    {
+      "id": "TS-01-SMOKE-4",
+      "execution_path_id": "01-PATH-4",
+      "description": "End-to-end smoke test: create a workspace with org association via the afc CLI using --org slug; verify org UUID is resolved and stored in the workspace record.",
+      "trigger": "Run 'afc workspace create --git-url git@github.com:org/repo --slug team-ws --org my-org' with a user API key where the user is a member of 'my-org'",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "apikit auth middleware",
+        "apikit org membership check",
+        "POST /api/v1/workspaces handler",
+        "SQLite workspaces table"
+      ],
+      "mockable": [
+        "Org slug-to-UUID resolution API call (may use apikit SDK or direct HTTP)"
+      ],
+      "expected_effects": [
+        "afc exits 0",
+        "stdout contains JSON workspace object with org_id equal to 'my-org' UUID",
+        "workspaces table row has org_id set to 'my-org' UUID"
+      ]
+    },
+    {
+      "id": "TS-01-SMOKE-5",
+      "execution_path_id": "01-PATH-5",
+      "description": "End-to-end smoke test: a PAT with workspaces:read scope reads the PAT owner's workspaces and does not see workspaces belonging to other users.",
+      "trigger": "Call GET /api/v1/workspaces with a PAT carrying workspaces:read scope issued for user 'alice'",
+      "real_components": [
+        "af-hub HTTP server",
+        "apikit auth middleware (PAT validation and scope check)",
+        "GET /api/v1/workspaces handler",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 returned",
+        "Response JSON array contains only workspaces where owner_id matches alice's user ID",
+        "No workspace belonging to other users appears in the array",
+        "Archived workspaces are excluded by default"
+      ]
+    },
+    {
+      "id": "TS-01-SMOKE-6",
+      "execution_path_id": "01-PATH-6",
+      "description": "End-to-end smoke test: reactivate an archived workspace via the afc CLI and verify the workspace status is updated to 'active' in the database.",
+      "trigger": "Run 'afc workspace reactivate my-workspace' with the workspace owner's API key when 'my-workspace' has status 'archived'",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "apikit auth middleware",
+        "POST /api/v1/workspaces/:slug/reactivate handler",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "afc exits 0",
+        "stdout contains JSON workspace object with status='active'",
+        "workspaces table row for 'my-workspace' has status='active'",
+        "updated_at is updated to a time after the reactivate request"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

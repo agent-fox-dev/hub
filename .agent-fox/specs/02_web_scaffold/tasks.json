@@ -1,0 +1,979 @@
+{
+  "$schema": null,
+  "spec_id": "02",
+  "spec_name": "web_scaffold",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "npm run lint --prefix web && npm run build --prefix web",
+    "all_tests": "npm test --prefix web",
+    "linter": "eslint web/src"
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write spec tests: project initialization and toolchain checks",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write filesystem structure tests for project initialization (TS-02-1, TS-02-2, TS-02-3, TS-02-4)",
+          "details": [
+            "Write a test script (e.g., a shell script or Node.js script) that asserts web/package.json exists and is valid JSON with a 'name' field.",
+            "Assert web/package-lock.json exists; assert no yarn.lock or pnpm-lock.yaml in web/.",
+            "Assert web/tsconfig.json compilerOptions includes strict=true, moduleResolution='bundler', target='ESNext', jsx='react-jsx'.",
+            "Assert web/components.json exists and is valid JSON with 'style' or '$schema' keys confirming shadcn/ui init was run."
+          ],
+          "test_spec_refs": [
+            "TS-02-1",
+            "TS-02-2",
+            "TS-02-3",
+            "TS-02-4"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-1.2",
+            "02-REQ-1.3",
+            "02-REQ-1.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write dependency installation tests for toolchain packages (TS-02-5 through TS-02-9)",
+          "details": [
+            "Assert 'vite' in web/package.json devDependencies and web/node_modules/vite directory exists.",
+            "Assert 'react' and 'react-dom' in web/package.json dependencies and their node_modules directories exist.",
+            "Assert 'tailwindcss' in web/package.json deps and web/node_modules/tailwindcss exists.",
+            "Assert '@tanstack/react-query' in web/package.json deps and its node_modules directory exists.",
+            "Assert 'react-router-dom' or 'react-router' in web/package.json deps and its node_modules directory exists."
+          ],
+          "test_spec_refs": [
+            "TS-02-5",
+            "TS-02-6",
+            "TS-02-7",
+            "TS-02-8",
+            "TS-02-9"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.1",
+            "02-REQ-2.2",
+            "02-REQ-2.3",
+            "02-REQ-2.4",
+            "02-REQ-2.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write build and lint execution tests (TS-02-10, TS-02-11)",
+          "details": [
+            "Write a test that runs 'npm run build' from web/ and asserts exit code 0, web/dist/ exists, contains at least one .html file and one .js file.",
+            "Write a test that runs 'npm run lint' from web/ and asserts exit code 0 and no 'error' lines in output."
+          ],
+          "test_spec_refs": [
+            "TS-02-10",
+            "TS-02-11"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.6",
+            "02-REQ-2.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write dev proxy configuration tests (TS-02-12, TS-02-13)",
+          "details": [
+            "Write a test that starts a mock HTTP server on port 8080 returning a sentinel body, starts the Vite dev server, and asserts that requests to /api, /healthz, /readyz are forwarded and return the sentinel body.",
+            "Write a static test that reads the Vite config file in web/ and asserts it contains '/api', '/healthz', '/readyz', and 'http://localhost:8080'."
+          ],
+          "test_spec_refs": [
+            "TS-02-12",
+            "TS-02-13"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.1",
+            "02-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write ESLint configuration and Makefile target tests (TS-02-14, TS-02-15, TS-02-16, TS-02-17, TS-02-18)",
+          "details": [
+            "Read ESLint config file (eslint.config.js or .eslintrc.cjs) in web/ and assert it references '@typescript-eslint/recommended' or 'typescript-eslint'.",
+            "Assert that at least one of eslint.config.js, eslint.config.ts, eslint.config.mjs, or .eslintrc.cjs exists in web/.",
+            "Write a test that starts 'make web-dev' from repo root and asserts Vite dev server prints its URL within 15 seconds.",
+            "Write a test that runs 'make web-build' from repo root and asserts exit code 0 and web/dist/ populated with HTML and JS.",
+            "Write a test that runs 'make web-lint' from repo root and asserts exit code 0."
+          ],
+          "test_spec_refs": [
+            "TS-02-14",
+            "TS-02-15",
+            "TS-02-16",
+            "TS-02-17",
+            "TS-02-18"
+          ],
+          "requirement_refs": [
+            "02-REQ-4.1",
+            "02-REQ-4.2",
+            "02-REQ-5.1",
+            "02-REQ-5.2",
+            "02-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.6",
+          "title": "Write placeholder route and source file tests (TS-02-19 through TS-02-22)",
+          "details": [
+            "Assert web/index.html exists and contains 'src/main.tsx' or 'main.tsx' in a script tag.",
+            "Assert web/src/main.tsx exists, contains 'createRoot' or 'render', and references 'App'.",
+            "Assert web/src/App.tsx exists, contains '<h1>', and contains 'af-hub'.",
+            "Write a browser-based test (using playwright or similar) that navigates to the Vite dev server root URL and asserts exactly one <h1> element with text 'af-hub'."
+          ],
+          "test_spec_refs": [
+            "TS-02-19",
+            "TS-02-20",
+            "TS-02-21",
+            "TS-02-22"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.1",
+            "02-REQ-6.2",
+            "02-REQ-6.3",
+            "02-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test scripts/files are created and syntactically valid (no parse errors when loaded).",
+          "Test runner can discover and execute the spec tests without crashing: npm run lint --prefix web exits 0 on the test files themselves.",
+          "No implementation code has been written yet — only test scaffolding exists."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write edge case and property tests",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write edge case tests for missing project files (TS-02-E1, TS-02-E9, TS-02-E10)",
+          "details": [
+            "Write TS-02-E1: remove web/package.json, run 'npm run build' from web/, assert non-zero exit and error about missing package.json.",
+            "Write TS-02-E9: delete web/src/main.tsx, run 'npm run build', assert non-zero exit and output references 'main.tsx' or 'entry'.",
+            "Write TS-02-E10: delete web/index.html, run 'npm run build', assert non-zero exit and output references 'index.html'.",
+            "Each test must restore the deleted file after running to avoid polluting subsequent tests."
+          ],
+          "test_spec_refs": [
+            "TS-02-E1",
+            "TS-02-E9",
+            "TS-02-E10"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.E1",
+            "02-REQ-6.E1",
+            "02-REQ-6.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write edge case tests for type errors, lint violations, and missing node_modules (TS-02-E2, TS-02-E3, TS-02-E4)",
+          "details": [
+            "Write TS-02-E2: inject 'const x: number = \"bad_type\";' into App.tsx, run npm run build, assert non-zero exit and 'App.tsx' in output; restore original file.",
+            "Write TS-02-E3: inject 'const unused = 42;' into App.tsx, run npm run lint, assert non-zero exit and 'App.tsx' in output with line number; restore original file.",
+            "Write TS-02-E4: remove web/node_modules/, run npm run build and npm run lint, assert both exit non-zero with error referencing missing modules; restore node_modules after."
+          ],
+          "test_spec_refs": [
+            "TS-02-E2",
+            "TS-02-E3",
+            "TS-02-E4"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.E1",
+            "02-REQ-2.E2",
+            "02-REQ-2.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write edge case tests for proxy and ESLint plugin errors (TS-02-E5, TS-02-E6, TS-02-E7, TS-02-E8)",
+          "details": [
+            "Write TS-02-E5: with Go backend not running, send GET to Vite dev server /healthz, assert network error or 502/504 status and body does not contain 'af-hub'.",
+            "Write TS-02-E6: with Go backend not running, send GET to /some-other-path, assert 200 response with HTML content (SPA fallback).",
+            "Write TS-02-E7: remove web/node_modules/@typescript-eslint, run npm run lint, assert non-zero exit and 'typescript-eslint' or 'cannot find module' in output; restore after.",
+            "Write TS-02-E8: remove web/node_modules/, run 'make web-build' from repo root, assert non-zero exit and actionable error in output."
+          ],
+          "test_spec_refs": [
+            "TS-02-E5",
+            "TS-02-E6",
+            "TS-02-E7",
+            "TS-02-E8"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.E1",
+            "02-REQ-3.E2",
+            "02-REQ-4.E1",
+            "02-REQ-5.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write property tests for build reproducibility, lint baseline, and TypeScript strict mode (TS-02-P1, TS-02-P2, TS-02-P3)",
+          "details": [
+            "Write TS-02-P1: run 'npm run build' from web/, assert exit code 0, web/dist/ exists with at least one .html file, assert completion within 120 seconds.",
+            "Write TS-02-P2: for each .ts/.tsx file in web/src/, run ESLint targeting that file and assert exit code 0 and zero errors within 60 seconds.",
+            "Write TS-02-P3: run 'npx tsc --noEmit' from web/, assert exit code 0, no 'error TS' in stdout/stderr, and tsconfig compilerOptions.strict == true."
+          ],
+          "test_spec_refs": [
+            "TS-02-P1",
+            "TS-02-P2",
+            "TS-02-P3"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.6",
+            "02-REQ-5.2",
+            "02-REQ-2.7",
+            "02-REQ-4.1",
+            "02-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write property tests for proxy path coverage and placeholder route rendering (TS-02-P4, TS-02-P5)",
+          "details": [
+            "Write TS-02-P4: for each of /api, /api/anything, /api/v1/resource, /healthz, /healthz/details, /readyz, /readyz/status, start a mock backend on port 8080 returning 'BACKEND_SENTINEL', start Vite dev server, assert each proxied response body equals 'BACKEND_SENTINEL' and does not contain 'af-hub'.",
+            "Write TS-02-P5: for 3 consecutive browser navigations to Vite dev server root /, assert exactly one <h1> element with text content 'af-hub' each time."
+          ],
+          "test_spec_refs": [
+            "TS-02-P4",
+            "TS-02-P5"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.1",
+            "02-REQ-3.2",
+            "02-REQ-6.3",
+            "02-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All edge case and property test files are syntactically valid.",
+          "Test cleanup logic (file restoration, node_modules restoration) is present in each destructive test.",
+          "No implementation code introduced — only test files."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "standard",
+      "title": "Initialize the frontend project structure",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Create the web/ directory with package.json and scaffold Vite + React + TypeScript project",
+          "details": [
+            "Run 'npm create vite@latest web -- --template react-ts' from the repository root (or equivalent) to scaffold the project.",
+            "Ensure web/package.json is present, valid JSON, and has a 'name' field; no frontend package.json at the repository root.",
+            "Confirm react and react-dom are in dependencies, vite is in devDependencies."
+          ],
+          "test_spec_refs": [
+            "TS-02-1",
+            "TS-02-5",
+            "TS-02-6"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-2.1",
+            "02-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Configure web/tsconfig.json with required compiler options",
+          "details": [
+            "Open web/tsconfig.json and verify or set: strict=true, moduleResolution='bundler', target='ESNext', jsx='react-jsx'.",
+            "These are the Vite-recommended defaults; confirm the scaffold already includes them or add them explicitly.",
+            "Do not remove other Vite-generated tsconfig options."
+          ],
+          "test_spec_refs": [
+            "TS-02-3"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Install Tailwind CSS, TanStack Query, and React Router",
+          "details": [
+            "Run 'npm install tailwindcss @tailwindcss/vite' (or 'npm install -D tailwindcss postcss autoprefixer') inside web/ and initialize Tailwind config.",
+            "Run 'npm install @tanstack/react-query' inside web/.",
+            "Run 'npm install react-router-dom' inside web/.",
+            "Verify all three packages appear in web/package.json and web/node_modules/."
+          ],
+          "test_spec_refs": [
+            "TS-02-7",
+            "TS-02-8",
+            "TS-02-9"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.3",
+            "02-REQ-2.4",
+            "02-REQ-2.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Run npx shadcn-ui init and commit components.json",
+          "details": [
+            "Run 'npx shadcn-ui init' (or the current CLI equivalent such as 'npx shadcn@latest init') from within web/.",
+            "Answer the initialization prompts as appropriate (style, base color, CSS variables).",
+            "Confirm web/components.json is generated and contains 'style' or '$schema' keys.",
+            "Stage web/components.json for commit."
+          ],
+          "test_spec_refs": [
+            "TS-02-4"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Commit package-lock.json and verify npm is the package manager",
+          "details": [
+            "Run 'npm install' inside web/ to produce web/package-lock.json.",
+            "Confirm web/package-lock.json exists and is valid JSON.",
+            "Confirm no yarn.lock or pnpm-lock.yaml exists in web/.",
+            "Stage web/package-lock.json for commit."
+          ],
+          "test_spec_refs": [
+            "TS-02-2"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "TS-02-1 passes: web/package.json exists and is valid JSON with a 'name' field.",
+          "TS-02-2 passes: web/package-lock.json exists; no yarn.lock or pnpm-lock.yaml in web/.",
+          "TS-02-3 passes: web/tsconfig.json has strict=true, moduleResolution=bundler, target=ESNext, jsx=react-jsx.",
+          "TS-02-4 passes: web/components.json exists with shadcn/ui config keys.",
+          "TS-02-5, TS-02-6, TS-02-7, TS-02-8, TS-02-9 pass: all required packages present in package.json and node_modules.",
+          "npm run build --prefix web exits with code 0 (baseline build succeeds)."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement placeholder route source files",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Create web/index.html as the Vite HTML entry point",
+          "details": [
+            "Ensure web/index.html exists (Vite scaffold typically generates this).",
+            "Confirm it contains a <script type='module' src='/src/main.tsx'> tag referencing the application entry point.",
+            "The file should have a standard HTML5 doctype and a <div id='root'> mount point."
+          ],
+          "test_spec_refs": [
+            "TS-02-19"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Create web/src/main.tsx as the React application entry point",
+          "details": [
+            "Ensure web/src/main.tsx exists and imports React and ReactDOM.",
+            "Call ReactDOM.createRoot(document.getElementById('root')!).render(<App />) to mount the App component.",
+            "Import App from './App'.",
+            "File must be TypeScript-valid with strict mode enabled — no type errors."
+          ],
+          "test_spec_refs": [
+            "TS-02-20"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Create web/src/App.tsx with the placeholder <h1>af-hub</h1> heading",
+          "details": [
+            "Create web/src/App.tsx exporting a default React function component named App.",
+            "The component renders exactly one <h1>af-hub</h1> element and nothing else.",
+            "No navigation, no auth flow, no additional elements.",
+            "File must be TypeScript-valid with strict mode enabled — no type errors."
+          ],
+          "test_spec_refs": [
+            "TS-02-21"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "TS-02-19 passes: web/index.html exists and references 'src/main.tsx'.",
+          "TS-02-20 passes: web/src/main.tsx exists with createRoot and App reference.",
+          "TS-02-21 passes: web/src/App.tsx exists with <h1> and 'af-hub'.",
+          "npm run build --prefix web exits with code 0 and web/dist/ is populated.",
+          "npx tsc --noEmit (from web/) exits with code 0 — no TypeScript errors."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Configure Vite dev proxy and ESLint",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Add dev proxy configuration to Vite config for /api, /healthz, and /readyz",
+          "details": [
+            "Open the Vite configuration file (vite.config.ts or vite.config.js) in web/.",
+            "Add a server.proxy block mapping '/api', '/healthz', and '/readyz' each to target 'http://localhost:8080'.",
+            "Use defineConfig from 'vite' to wrap the configuration.",
+            "No CORS middleware changes needed on the Go backend — proxy handles this at the dev server level.",
+            "Verify the config file contains the string 'http://localhost:8080' and the three proxy paths."
+          ],
+          "test_spec_refs": [
+            "TS-02-12",
+            "TS-02-13"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.1",
+            "02-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Configure ESLint with @typescript-eslint/recommended ruleset",
+          "details": [
+            "Install @typescript-eslint/eslint-plugin and @typescript-eslint/parser if not already present: 'npm install -D @typescript-eslint/eslint-plugin @typescript-eslint/parser' inside web/.",
+            "Use the Vite-generated ESLint config as the starting point; extend or import '@typescript-eslint/recommended' ruleset.",
+            "Choose the config format (flat config eslint.config.js or legacy .eslintrc.cjs) based on the installed ESLint version.",
+            "Verify that 'npm run lint' script is defined in web/package.json."
+          ],
+          "test_spec_refs": [
+            "TS-02-14",
+            "TS-02-15"
+          ],
+          "requirement_refs": [
+            "02-REQ-4.1",
+            "02-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Verify npm run lint and npm run build scripts are defined in web/package.json",
+          "details": [
+            "Confirm web/package.json has a 'scripts' section with 'build' (runs vite build) and 'lint' (runs eslint + optional tsc --noEmit).",
+            "Confirm 'dev' script is also present (runs vite).",
+            "Run 'npm run build' from web/ and assert exit code 0 with web/dist/ populated.",
+            "Run 'npm run lint' from web/ and assert exit code 0 with no errors on scaffold sources."
+          ],
+          "test_spec_refs": [
+            "TS-02-10",
+            "TS-02-11"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.6",
+            "02-REQ-2.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "TS-02-13 passes: Vite config file contains '/api', '/healthz', '/readyz', and 'http://localhost:8080'.",
+          "TS-02-14 passes: ESLint config references '@typescript-eslint/recommended' or 'typescript-eslint'.",
+          "TS-02-15 passes: eslint.config.js or .eslintrc.cjs (or equivalent) exists in web/.",
+          "TS-02-10 passes: npm run build exits 0 and web/dist/ contains .html and .js files.",
+          "TS-02-11 passes: npm run lint exits 0 with no errors on scaffold sources.",
+          "eslint web/src reports no warnings or errors."
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Add Makefile targets for frontend operations",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Add make web-dev target to root Makefile",
+          "details": [
+            "Open the root Makefile and add a 'web-dev' target that runs 'npm run dev' inside web/.",
+            "The target should cd into web/ and invoke npm run dev (e.g., 'cd web && npm run dev').",
+            "Mark the target as .PHONY so make does not treat it as a file target."
+          ],
+          "test_spec_refs": [
+            "TS-02-16"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Add make web-build target to root Makefile",
+          "details": [
+            "Add a 'web-build' target that runs 'npm run build' inside web/ (e.g., 'cd web && npm run build').",
+            "Ensure the target propagates the exit code so 'make web-build' fails when 'npm run build' fails.",
+            "Mark the target as .PHONY."
+          ],
+          "test_spec_refs": [
+            "TS-02-17"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Add make web-lint target to root Makefile",
+          "details": [
+            "Add a 'web-lint' target that runs 'npm run lint' inside web/ (e.g., 'cd web && npm run lint').",
+            "Ensure the target propagates the exit code so 'make web-lint' fails when 'npm run lint' fails.",
+            "Mark the target as .PHONY.",
+            "Verify all three Makefile targets exist: web-dev, web-build, web-lint."
+          ],
+          "test_spec_refs": [
+            "TS-02-18"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "TS-02-16 passes: 'make web-dev' starts Vite dev server and prints its URL within 15 seconds.",
+          "TS-02-17 passes: 'make web-build' exits 0 and web/dist/ is populated with .html and .js files.",
+          "TS-02-18 passes: 'make web-lint' exits 0 with no error diagnostics.",
+          "Root Makefile contains .PHONY declarations for web-dev, web-build, and web-lint.",
+          "All three Makefile targets delegate correctly to npm scripts inside web/."
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "checkpoint",
+      "title": "Checkpoint: full scaffold integration gate",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Run complete build and lint pipeline and assert zero errors",
+          "details": [
+            "From the repository root, run 'make web-build' and assert exit code 0.",
+            "From the repository root, run 'make web-lint' and assert exit code 0.",
+            "From web/, run 'npx tsc --noEmit' and assert exit code 0 with no 'error TS' output.",
+            "Confirm web/dist/ exists and contains at least one .html and one .js file."
+          ],
+          "test_spec_refs": [
+            "TS-02-10",
+            "TS-02-11",
+            "TS-02-17",
+            "TS-02-18"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.6",
+            "02-REQ-2.7",
+            "02-REQ-5.2",
+            "02-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Run property tests for build reproducibility, lint baseline, and TypeScript strict mode",
+          "details": [
+            "Execute TS-02-P1: run npm run build from web/ and assert exit 0, dist populated, completion within 120s.",
+            "Execute TS-02-P2: for each .ts/.tsx file in web/src/, run ESLint and assert exit 0 with zero errors within 60s.",
+            "Execute TS-02-P3: run npx tsc --noEmit from web/, assert exit 0, no 'error TS', and tsconfig strict=true."
+          ],
+          "test_spec_refs": [
+            "TS-02-P1",
+            "TS-02-P2",
+            "TS-02-P3"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.6",
+            "02-REQ-5.2",
+            "02-REQ-2.7",
+            "02-REQ-4.1",
+            "02-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Verify all committed files are staged and no required files are missing",
+          "details": [
+            "Confirm all required files exist: web/package.json, web/package-lock.json, web/tsconfig.json, web/components.json, web/index.html, web/src/main.tsx, web/src/App.tsx.",
+            "Confirm web/package-lock.json and web/components.json are tracked by git (not gitignored).",
+            "Run 'git status' and confirm no required files are untracked or modified without staging."
+          ],
+          "test_spec_refs": [
+            "TS-02-1",
+            "TS-02-2",
+            "TS-02-4",
+            "TS-02-19",
+            "TS-02-20",
+            "TS-02-21"
+          ],
+          "requirement_refs": [
+            "02-REQ-1.1",
+            "02-REQ-1.2",
+            "02-REQ-1.4",
+            "02-REQ-6.1",
+            "02-REQ-6.2",
+            "02-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "make web-build exits with code 0 and web/dist/ is populated.",
+          "make web-lint exits with code 0 with zero errors.",
+          "npx tsc --noEmit (from web/) exits with code 0.",
+          "All seven required files (package.json, package-lock.json, tsconfig.json, components.json, index.html, src/main.tsx, src/App.tsx) exist in web/.",
+          "TS-02-P1, TS-02-P2, TS-02-P3 all pass."
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and stub audit",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Run smoke tests: dev server renders placeholder heading, production build succeeds, lint passes",
+          "details": [
+            "Execute TS-02-SMOKE-1: start make web-dev, navigate browser to Vite dev server URL, assert exactly one <h1> with text 'af-hub'.",
+            "Execute TS-02-SMOKE-2: run make web-build from repo root, assert exit 0, web/dist/ contains .html and .js, no errors in stderr.",
+            "Execute TS-02-SMOKE-3: run make web-lint from repo root, assert exit 0, no 'error' lines in output.",
+            "All three smoke tests must pass with real components — no mocks."
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-1",
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "02-REQ-6.4",
+            "02-REQ-5.1",
+            "02-REQ-5.2",
+            "02-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Run smoke test for dev proxy: verify /healthz request reaches Go backend through Vite proxy",
+          "details": [
+            "Execute TS-02-SMOKE-4: start a real or mock HTTP server on port 8080 returning a sentinel body for /healthz, start make web-dev, send GET to Vite dev server URL /healthz, assert response body matches sentinel and does not contain 'af-hub'.",
+            "Also verify /readyz and /api paths are forwarded (TS-02-P4 property test).",
+            "Confirm non-proxied paths (e.g., /some-other-path) are served by Vite directly (TS-02-E6)."
+          ],
+          "test_spec_refs": [
+            "TS-02-SMOKE-4",
+            "TS-02-12",
+            "TS-02-P4"
+          ],
+          "requirement_refs": [
+            "02-REQ-3.1",
+            "02-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Trace execution paths: verify wiring from Makefile targets through npm scripts to Vite and source files",
+          "details": [
+            "Trace 02-PATH-1: confirm make web-dev → npm run dev → Vite dev server → web/src/main.tsx → web/src/App.tsx → <h1>af-hub</h1> in browser.",
+            "Trace 02-PATH-2: confirm make web-build → npm run build → Vite build → web/dist/ populated.",
+            "Trace 02-PATH-3: confirm make web-lint → npm run lint → ESLint + tsc → exit 0.",
+            "Confirm each Makefile target delegates to npm in the correct working directory (web/) without hardcoded paths elsewhere."
+          ],
+          "test_spec_refs": [
+            "TS-02-16",
+            "TS-02-17",
+            "TS-02-18"
+          ],
+          "requirement_refs": [
+            "02-REQ-5.1",
+            "02-REQ-5.2",
+            "02-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.4",
+          "title": "Stub and dead-code audit: search for throw new Error('not implemented') and TODO stubs in web/src/",
+          "details": [
+            "Search web/src/ for 'throw new Error(\"not implemented\")', 'TODO', 'FIXME', and placeholder comments that indicate unfinished implementation.",
+            "Search web/src/ for empty function bodies, components that return null instead of the required JSX, or stub exports.",
+            "Confirm web/src/App.tsx returns <h1>af-hub</h1> and is not a stub.",
+            "Confirm web/src/main.tsx calls createRoot().render() and is not a stub.",
+            "No stub markers or dead code should remain in any file committed as part of the scaffold."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "02-REQ-6.2",
+            "02-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.5",
+          "title": "Verify return value propagation and call-site wiring for all acceptance-criteria-defined behaviors",
+          "details": [
+            "Confirm Makefile web-build target propagates the npm run build exit code to the make process (non-zero build failure causes make to fail).",
+            "Confirm Makefile web-lint target propagates the npm run lint exit code to the make process.",
+            "Confirm Vite proxy configuration is wired into the running dev server — proxy block is not defined but unused.",
+            "Confirm web/src/main.tsx is referenced from web/index.html's script tag — the entry point is actually wired into the HTML.",
+            "Confirm web/src/App.tsx is imported and rendered in web/src/main.tsx — the App component is not dead code."
+          ],
+          "test_spec_refs": [
+            "TS-02-10",
+            "TS-02-11",
+            "TS-02-SMOKE-2",
+            "TS-02-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "02-REQ-2.6",
+            "02-REQ-2.7",
+            "02-REQ-3.1",
+            "02-REQ-5.2",
+            "02-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "TS-02-SMOKE-1 passes: make web-dev renders <h1>af-hub</h1> in browser with real Vite dev server.",
+          "TS-02-SMOKE-2 passes: make web-build exits 0 and web/dist/ contains .html and .js files.",
+          "TS-02-SMOKE-3 passes: make web-lint exits 0 with no errors.",
+          "TS-02-SMOKE-4 passes: /healthz proxied to port 8080 returns sentinel body, not frontend content.",
+          "Stub audit clean: no 'throw new Error(\"not implemented\")', 'TODO', or empty stub bodies remain in web/src/.",
+          "All 22 acceptance tests (TS-02-1 through TS-02-22) pass.",
+          "All 5 property tests (TS-02-P1 through TS-02-P5) pass.",
+          "eslint web/src exits with code 0 and reports zero errors.",
+          "npm run build --prefix web exits with code 0."
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "02-REQ-1.1",
+      "test_spec_id": "TS-02-1",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-1.2",
+      "test_spec_id": "TS-02-2",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-1.3",
+      "test_spec_id": "TS-02-3",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-1.4",
+      "test_spec_id": "TS-02-4",
+      "task_id": "3.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.1",
+      "test_spec_id": "TS-02-5",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.2",
+      "test_spec_id": "TS-02-6",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.3",
+      "test_spec_id": "TS-02-7",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.4",
+      "test_spec_id": "TS-02-8",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.5",
+      "test_spec_id": "TS-02-9",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.6",
+      "test_spec_id": "TS-02-10",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-2.7",
+      "test_spec_id": "TS-02-11",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-3.1",
+      "test_spec_id": "TS-02-12",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-3.2",
+      "test_spec_id": "TS-02-13",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.1",
+      "test_spec_id": "TS-02-14",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-4.2",
+      "test_spec_id": "TS-02-15",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.1",
+      "test_spec_id": "TS-02-16",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.2",
+      "test_spec_id": "TS-02-17",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-5.3",
+      "test_spec_id": "TS-02-18",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.1",
+      "test_spec_id": "TS-02-19",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.2",
+      "test_spec_id": "TS-02-20",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.3",
+      "test_spec_id": "TS-02-21",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "02-REQ-6.4",
+      "test_spec_id": "TS-02-22",
+      "task_id": "4.3",
+      "test_path": null
+    }
+  ]
+}

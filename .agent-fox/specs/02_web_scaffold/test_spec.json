@@ -1,0 +1,584 @@
+{
+  "$schema": null,
+  "spec_id": "02",
+  "spec_name": "web_scaffold",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-02-1",
+      "requirement_id": "02-REQ-1.1",
+      "kind": "acceptance",
+      "description": "Verify that the web/ directory exists at the repository root and contains its own package.json cleanly separated from the Go backend.",
+      "preconditions": [
+        "Repository has been cloned and the scaffold has been applied",
+        "No package.json exists at the repository root for the frontend"
+      ],
+      "input": "Filesystem state of the repository root after scaffold setup",
+      "expected": "web/package.json exists and is a valid JSON file with a 'name' field; no frontend package.json exists at the repository root",
+      "assertion_pseudocode": "assert file_exists('web/package.json')\nassert parse_json('web/package.json') is valid\nassert 'name' in parse_json('web/package.json')\nassert NOT file_exists('./package.json') OR parse_json('./package.json') does not contain frontend devDependencies like 'vite'"
+    },
+    {
+      "id": "TS-02-2",
+      "requirement_id": "02-REQ-1.2",
+      "kind": "acceptance",
+      "description": "Verify that npm is used as the package manager and that package-lock.json is committed inside web/.",
+      "preconditions": [
+        "Scaffold has been applied and npm install has been run inside web/",
+        "package-lock.json has been committed to version control"
+      ],
+      "input": "Filesystem state of web/ directory",
+      "expected": "web/package-lock.json exists and is a valid JSON file; no yarn.lock or pnpm-lock.yaml exists inside web/",
+      "assertion_pseudocode": "assert file_exists('web/package-lock.json')\nassert parse_json('web/package-lock.json') is valid\nassert NOT file_exists('web/yarn.lock')\nassert NOT file_exists('web/pnpm-lock.yaml')"
+    },
+    {
+      "id": "TS-02-3",
+      "requirement_id": "02-REQ-1.3",
+      "kind": "acceptance",
+      "description": "Verify that web/tsconfig.json includes the four required compiler options: strict=true, moduleResolution=bundler, target=ESNext, and jsx=react-jsx.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "web/tsconfig.json exists"
+      ],
+      "input": "Contents of web/tsconfig.json",
+      "expected": "Parsed tsconfig.json compilerOptions contains strict=true, moduleResolution='bundler', target='ESNext', jsx='react-jsx'",
+      "assertion_pseudocode": "tsconfig = parse_json('web/tsconfig.json')\noptions = tsconfig['compilerOptions']\nassert options['strict'] == true\nassert options['moduleResolution'].lower() == 'bundler'\nassert options['target'] == 'ESNext'\nassert options['jsx'] == 'react-jsx'"
+    },
+    {
+      "id": "TS-02-4",
+      "requirement_id": "02-REQ-1.4",
+      "kind": "acceptance",
+      "description": "Verify that web/components.json exists and is committed, confirming that npx shadcn-ui init was run as part of scaffold setup.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npx shadcn-ui init was executed during setup"
+      ],
+      "input": "Filesystem state of web/ directory",
+      "expected": "web/components.json exists and is a valid JSON file containing shadcn/ui configuration keys",
+      "assertion_pseudocode": "assert file_exists('web/components.json')\nconfig = parse_json('web/components.json')\nassert config is not empty\nassert 'style' in config OR '$schema' in config"
+    },
+    {
+      "id": "TS-02-5",
+      "requirement_id": "02-REQ-2.1",
+      "kind": "acceptance",
+      "description": "Verify that Vite is listed as a dev dependency in web/package.json and is installed in web/node_modules.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/"
+      ],
+      "input": "web/package.json and web/node_modules contents",
+      "expected": "Vite appears in devDependencies of package.json and web/node_modules/vite directory exists",
+      "assertion_pseudocode": "pkg = parse_json('web/package.json')\nassert 'vite' in pkg.get('devDependencies', {})\nassert directory_exists('web/node_modules/vite')"
+    },
+    {
+      "id": "TS-02-6",
+      "requirement_id": "02-REQ-2.2",
+      "kind": "acceptance",
+      "description": "Verify that React is listed as a dependency in web/package.json and is installed in web/node_modules.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/"
+      ],
+      "input": "web/package.json and web/node_modules contents",
+      "expected": "react and react-dom appear in dependencies of package.json and their node_modules directories exist",
+      "assertion_pseudocode": "pkg = parse_json('web/package.json')\ndeps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}\nassert 'react' in deps\nassert 'react-dom' in deps\nassert directory_exists('web/node_modules/react')\nassert directory_exists('web/node_modules/react-dom')"
+    },
+    {
+      "id": "TS-02-7",
+      "requirement_id": "02-REQ-2.3",
+      "kind": "acceptance",
+      "description": "Verify that Tailwind CSS is listed as a dependency in web/package.json and is installed.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/"
+      ],
+      "input": "web/package.json and web/node_modules contents",
+      "expected": "tailwindcss appears in devDependencies of package.json and web/node_modules/tailwindcss directory exists",
+      "assertion_pseudocode": "pkg = parse_json('web/package.json')\ndeps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}\nassert 'tailwindcss' in deps\nassert directory_exists('web/node_modules/tailwindcss')"
+    },
+    {
+      "id": "TS-02-8",
+      "requirement_id": "02-REQ-2.4",
+      "kind": "acceptance",
+      "description": "Verify that TanStack Query is listed in web/package.json and installed in web/node_modules.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/"
+      ],
+      "input": "web/package.json and web/node_modules contents",
+      "expected": "@tanstack/react-query appears in dependencies of package.json and its node_modules directory exists",
+      "assertion_pseudocode": "pkg = parse_json('web/package.json')\ndeps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}\nassert '@tanstack/react-query' in deps\nassert directory_exists('web/node_modules/@tanstack/react-query')"
+    },
+    {
+      "id": "TS-02-9",
+      "requirement_id": "02-REQ-2.5",
+      "kind": "acceptance",
+      "description": "Verify that React Router is listed in web/package.json and installed in web/node_modules.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/"
+      ],
+      "input": "web/package.json and web/node_modules contents",
+      "expected": "react-router-dom (or react-router) appears in dependencies of package.json and its node_modules directory exists",
+      "assertion_pseudocode": "pkg = parse_json('web/package.json')\ndeps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}\nassert 'react-router-dom' in deps OR 'react-router' in deps\nassert directory_exists('web/node_modules/react-router-dom') OR directory_exists('web/node_modules/react-router')"
+    },
+    {
+      "id": "TS-02-10",
+      "requirement_id": "02-REQ-2.6",
+      "kind": "acceptance",
+      "description": "Verify that npm run build exits with code 0 and produces output in web/dist/ containing at least one HTML file and bundled assets.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "web/index.html, web/src/main.tsx, and web/src/App.tsx exist"
+      ],
+      "input": "Run 'npm run build' from within web/ directory",
+      "expected": "Process exits with code 0; web/dist/ directory exists and contains at least one .html file and at least one .js file",
+      "assertion_pseudocode": "result = run_command('npm run build', cwd='web/')\nassert result.exit_code == 0\nassert directory_exists('web/dist/')\nhtml_files = glob('web/dist/**/*.html')\njs_files = glob('web/dist/**/*.js')\nassert len(html_files) >= 1\nassert len(js_files) >= 1"
+    },
+    {
+      "id": "TS-02-11",
+      "requirement_id": "02-REQ-2.7",
+      "kind": "acceptance",
+      "description": "Verify that npm run lint exits with code 0 and reports zero errors against the @typescript-eslint/recommended ruleset for the scaffold source files.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "ESLint is configured with @typescript-eslint/recommended"
+      ],
+      "input": "Run 'npm run lint' from within web/ directory",
+      "expected": "Process exits with code 0; stdout/stderr contains no error messages",
+      "assertion_pseudocode": "result = run_command('npm run lint', cwd='web/')\nassert result.exit_code == 0\nassert 'error' not in result.stdout.lower() OR error_count_in_output(result.stdout) == 0"
+    },
+    {
+      "id": "TS-02-12",
+      "requirement_id": "02-REQ-3.1",
+      "kind": "acceptance",
+      "description": "Verify that the dev proxy forwards requests matching /api, /healthz, and /readyz to the Go backend at http://localhost:8080.",
+      "preconditions": [
+        "Scaffold has been applied and npm install has been run inside web/",
+        "Go backend is running and listening on port 8080",
+        "Vite dev server is running with the proxy configuration active"
+      ],
+      "input": "HTTP GET requests to /api, /healthz, and /readyz via the Vite dev server URL",
+      "expected": "Each proxied request reaches the Go backend; response received by client matches Go backend's response verbatim",
+      "assertion_pseudocode": "for path in ['/healthz', '/readyz', '/api']:\n  response = http_get(VITE_DEV_URL + path)\n  backend_response = http_get('http://localhost:8080' + path)\n  assert response.status_code == backend_response.status_code\n  assert response.body == backend_response.body"
+    },
+    {
+      "id": "TS-02-13",
+      "requirement_id": "02-REQ-3.2",
+      "kind": "acceptance",
+      "description": "Verify that the dev proxy is active by default whenever the Vite dev server runs without requiring additional developer steps.",
+      "preconditions": [
+        "Scaffold has been applied and npm install has been run inside web/",
+        "Vite dev server has been started with 'npm run dev' or 'make web-dev' with no additional flags"
+      ],
+      "input": "Vite configuration file in the web/ project",
+      "expected": "Vite config file contains a proxy configuration block mapping /api, /healthz, and /readyz to http://localhost:8080; no extra env vars or flags required",
+      "assertion_pseudocode": "vite_config_content = read_file(find_vite_config('web/'))\nassert '/api' in vite_config_content\nassert '/healthz' in vite_config_content\nassert '/readyz' in vite_config_content\nassert 'http://localhost:8080' in vite_config_content"
+    },
+    {
+      "id": "TS-02-14",
+      "requirement_id": "02-REQ-4.1",
+      "kind": "acceptance",
+      "description": "Verify that the ESLint configuration extends @typescript-eslint/recommended on top of the Vite-generated default.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "ESLint config file exists (eslint.config.js or .eslintrc.cjs)"
+      ],
+      "input": "Contents of ESLint config file in web/",
+      "expected": "ESLint config references '@typescript-eslint/recommended' as an extended or imported ruleset",
+      "assertion_pseudocode": "eslint_config = read_file(find_eslint_config('web/'))\nassert '@typescript-eslint/recommended' in eslint_config OR 'typescript-eslint' in eslint_config"
+    },
+    {
+      "id": "TS-02-15",
+      "requirement_id": "02-REQ-4.2",
+      "kind": "acceptance",
+      "description": "Verify that an ESLint config file exists in web/ in either flat config format or legacy format.",
+      "preconditions": [
+        "Scaffold has been applied"
+      ],
+      "input": "Filesystem state of web/ directory",
+      "expected": "Either web/eslint.config.js or web/.eslintrc.cjs exists",
+      "assertion_pseudocode": "assert file_exists('web/eslint.config.js') OR file_exists('web/.eslintrc.cjs') OR file_exists('web/eslint.config.ts') OR file_exists('web/eslint.config.mjs')"
+    },
+    {
+      "id": "TS-02-16",
+      "requirement_id": "02-REQ-5.1",
+      "kind": "acceptance",
+      "description": "Verify that 'make web-dev' starts the Vite dev server process in the web/ directory.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "Root Makefile contains the web-dev target"
+      ],
+      "input": "Run 'make web-dev' from the repository root",
+      "expected": "The Vite dev server process starts and prints its listening URL to stdout; process remains running (does not exit immediately)",
+      "assertion_pseudocode": "proc = start_process('make web-dev', cwd='repo_root')\nwait_for_output(proc, 'localhost', timeout=15)\nassert proc.is_running()\nassert 'localhost' in proc.stdout_so_far OR 'Local:' in proc.stdout_so_far\nproc.terminate()"
+    },
+    {
+      "id": "TS-02-17",
+      "requirement_id": "02-REQ-5.2",
+      "kind": "acceptance",
+      "description": "Verify that 'make web-build' runs a Vite production build and exits with code 0 with web/dist/ populated.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "Root Makefile contains the web-build target"
+      ],
+      "input": "Run 'make web-build' from the repository root",
+      "expected": "make exits with code 0; web/dist/ directory exists and contains bundled HTML, JS, and CSS assets",
+      "assertion_pseudocode": "result = run_command('make web-build', cwd='repo_root')\nassert result.exit_code == 0\nassert directory_exists('web/dist/')\nassert len(glob('web/dist/**/*.html')) >= 1\nassert len(glob('web/dist/**/*.js')) >= 1"
+    },
+    {
+      "id": "TS-02-18",
+      "requirement_id": "02-REQ-5.3",
+      "kind": "acceptance",
+      "description": "Verify that 'make web-lint' runs ESLint and TypeScript type checking via npm run lint in web/ and exits with code 0 for clean scaffold sources.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "Root Makefile contains the web-lint target"
+      ],
+      "input": "Run 'make web-lint' from the repository root",
+      "expected": "make exits with code 0; no error diagnostics are printed to stdout or stderr",
+      "assertion_pseudocode": "result = run_command('make web-lint', cwd='repo_root')\nassert result.exit_code == 0"
+    },
+    {
+      "id": "TS-02-19",
+      "requirement_id": "02-REQ-6.1",
+      "kind": "acceptance",
+      "description": "Verify that web/index.html exists and is Vite's required HTML entry point.",
+      "preconditions": [
+        "Scaffold has been applied"
+      ],
+      "input": "Filesystem state of web/ directory",
+      "expected": "web/index.html exists and contains a script tag referencing the main.tsx entry point",
+      "assertion_pseudocode": "assert file_exists('web/index.html')\ncontent = read_file('web/index.html')\nassert 'src/main.tsx' in content OR 'main.tsx' in content"
+    },
+    {
+      "id": "TS-02-20",
+      "requirement_id": "02-REQ-6.2",
+      "kind": "acceptance",
+      "description": "Verify that web/src/main.tsx exists and mounts the React app into the DOM.",
+      "preconditions": [
+        "Scaffold has been applied"
+      ],
+      "input": "Contents of web/src/main.tsx",
+      "expected": "web/src/main.tsx exists and contains a ReactDOM.createRoot or ReactDOM.render call mounting the App component",
+      "assertion_pseudocode": "assert file_exists('web/src/main.tsx')\ncontent = read_file('web/src/main.tsx')\nassert 'createRoot' in content OR 'render' in content\nassert 'App' in content"
+    },
+    {
+      "id": "TS-02-21",
+      "requirement_id": "02-REQ-6.3",
+      "kind": "acceptance",
+      "description": "Verify that web/src/App.tsx contains a root React component that renders an <h1> element with the text 'af-hub'.",
+      "preconditions": [
+        "Scaffold has been applied"
+      ],
+      "input": "Contents of web/src/App.tsx",
+      "expected": "web/src/App.tsx exists and its JSX contains an <h1> element with text content 'af-hub'",
+      "assertion_pseudocode": "assert file_exists('web/src/App.tsx')\ncontent = read_file('web/src/App.tsx')\nassert '<h1>' in content\nassert 'af-hub' in content"
+    },
+    {
+      "id": "TS-02-22",
+      "requirement_id": "02-REQ-6.4",
+      "kind": "acceptance",
+      "description": "Verify that navigating to the Vite dev server root URL renders a page with an <h1> element containing 'af-hub'.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "Vite dev server is running (via make web-dev or npm run dev)"
+      ],
+      "input": "HTTP GET request to the Vite dev server root URL (e.g., http://localhost:5173/)",
+      "expected": "Response body contains an <h1> element; when executed in a browser context with JavaScript, the rendered DOM has exactly one <h1> element with text content 'af-hub'",
+      "assertion_pseudocode": "page = browser_navigate(VITE_DEV_URL + '/')\nh1_elements = page.query_selector_all('h1')\nassert len(h1_elements) == 1\nassert h1_elements[0].inner_text().strip() == 'af-hub'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-02-P1",
+      "property_id": "02-PROP-1",
+      "validates": [
+        "02-REQ-2.6",
+        "02-REQ-5.2"
+      ],
+      "description": "Verify that npm run build always exits with code 0 and produces output in web/dist/ containing at least one HTML file, given the scaffold source files and committed package-lock.json.",
+      "for_any_strategy": "The scaffold source files in web/src/ in their committed state; npm install is performed using the committed web/package-lock.json before each build run",
+      "invariant_check": "result = run_command('npm run build', cwd='web/')\nassert result.exit_code == 0\nassert directory_exists('web/dist/')\nassert len(glob('web/dist/**/*.html')) >= 1\n# Termination: build must complete within a bounded time window\nassert result.duration_seconds <= 120"
+    },
+    {
+      "id": "TS-02-P2",
+      "property_id": "02-PROP-2",
+      "validates": [
+        "02-REQ-2.7",
+        "02-REQ-4.1",
+        "02-REQ-5.3"
+      ],
+      "description": "Verify that npm run lint exits with code 0 and reports zero errors for every source file shipped by the scaffold, confirming the lint-clean baseline.",
+      "for_any_strategy": "Each individual TypeScript source file in web/src/ as committed in the scaffold (App.tsx, main.tsx, and any generated files); ESLint is invoked targeting that file",
+      "invariant_check": "for each source_file in glob('web/src/**/*.tsx') + glob('web/src/**/*.ts'):\n  result = run_command('npm run lint -- ' + source_file, cwd='web/')\n  assert result.exit_code == 0\n  assert error_count_in_output(result.stdout + result.stderr) == 0\n# Termination: lint must complete within a bounded time window\nassert result.duration_seconds <= 60"
+    },
+    {
+      "id": "TS-02-P3",
+      "property_id": "02-PROP-3",
+      "validates": [
+        "02-REQ-1.3",
+        "02-REQ-2.7"
+      ],
+      "description": "Verify that web/tsconfig.json with strict=true produces zero type errors when checked against all scaffold source files.",
+      "for_any_strategy": "All TypeScript source files in web/src/ as shipped by the scaffold; tsc --noEmit is run against the entire project using web/tsconfig.json",
+      "invariant_check": "result = run_command('npx tsc --noEmit', cwd='web/')\nassert result.exit_code == 0\nassert 'error TS' not in result.stdout\nassert 'error TS' not in result.stderr\n# Verify strict mode is active by confirming tsconfig option\ntsconfig = parse_json('web/tsconfig.json')\nassert tsconfig['compilerOptions']['strict'] == true"
+    },
+    {
+      "id": "TS-02-P4",
+      "property_id": "02-PROP-4",
+      "validates": [
+        "02-REQ-3.1",
+        "02-REQ-3.2"
+      ],
+      "description": "Verify that for any request path beginning with /api, /healthz, or /readyz, the dev proxy forwards the request to http://localhost:8080 and never serves a local asset or SPA fallback.",
+      "for_any_strategy": "Request paths drawn from: /api, /api/anything, /api/v1/resource, /healthz, /healthz/details, /readyz, /readyz/status; Go backend running on port 8080 returning a known sentinel response body",
+      "invariant_check": "for each path in proxy_paths:\n  backend_mock_response = 'BACKEND_SENTINEL'\n  mock_backend_at(8080, path, response=backend_mock_response)\n  client_response = http_get(VITE_DEV_URL + path)\n  assert client_response.body == backend_mock_response\n  assert 'af-hub' not in client_response.body\n  assert client_response.status_code != 404 OR client_response reflects backend 404"
+    },
+    {
+      "id": "TS-02-P5",
+      "property_id": "02-PROP-5",
+      "validates": [
+        "02-REQ-6.3",
+        "02-REQ-6.4"
+      ],
+      "description": "Verify that for any browser navigation to the Vite dev server root URL /, the rendered DOM contains exactly one <h1> element with text content 'af-hub'.",
+      "for_any_strategy": "Browser navigation to the Vite dev server root URL / repeated across multiple browser contexts (e.g., fresh page load, hard reload, navigation from a different path)",
+      "invariant_check": "for each navigation_attempt in range(3):\n  page = browser_navigate(VITE_DEV_URL + '/')\n  h1_elements = page.query_selector_all('h1')\n  assert len(h1_elements) == 1\n  assert h1_elements[0].inner_text().strip() == 'af-hub'"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-02-E1",
+      "requirement_id": "02-REQ-1.E1",
+      "kind": "edge_case",
+      "description": "Verify that npm commands fail with a clear error when package.json is absent from web/ or located at the wrong path.",
+      "preconditions": [
+        "Repository is cloned but web/package.json does not exist (simulating missing frontend project initialization)"
+      ],
+      "input": "Run 'npm run build' from within web/ directory when web/package.json is absent",
+      "expected": "npm exits with non-zero exit code; stderr contains an error message indicating missing package.json or that the frontend project is not initialized",
+      "assertion_pseudocode": "remove_file('web/package.json')\nresult = run_command('npm run build', cwd='web/')\nassert result.exit_code != 0\nassert 'package.json' in result.stderr OR 'no such file' in result.stderr.lower() OR 'missing' in result.stderr.lower()"
+    },
+    {
+      "id": "TS-02-E2",
+      "requirement_id": "02-REQ-2.E1",
+      "kind": "edge_case",
+      "description": "Verify that npm run build fails with non-zero exit code and prints TypeScript error diagnostics when source files contain type errors.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "A TypeScript source file in web/src/ has been modified to introduce a deliberate type error (e.g., assigning a string to a number)"
+      ],
+      "input": "Run 'npm run build' from within web/ with a TypeScript error in web/src/App.tsx",
+      "expected": "Process exits with non-zero code; stderr or stdout contains TypeScript error diagnostics including the file name and error description",
+      "assertion_pseudocode": "write_file('web/src/App.tsx', 'const x: number = \"bad_type\"; export default function App() { return <h1>af-hub</h1>; }')\nresult = run_command('npm run build', cwd='web/')\nassert result.exit_code != 0\nassert 'error' in result.stderr.lower() OR 'error' in result.stdout.lower()\nassert 'App.tsx' in result.stderr OR 'App.tsx' in result.stdout"
+    },
+    {
+      "id": "TS-02-E3",
+      "requirement_id": "02-REQ-2.E2",
+      "kind": "edge_case",
+      "description": "Verify that npm run lint exits with non-zero code and reports ESLint violations with file name, line number, and rule name when source files violate ESLint rules.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "A TypeScript source file in web/src/ has been modified to introduce a deliberate ESLint violation (e.g., unused variable)"
+      ],
+      "input": "Run 'npm run lint' from within web/ with an ESLint violation in web/src/App.tsx",
+      "expected": "Process exits with non-zero code; stdout or stderr contains violation details including file path, line number, and ESLint rule name",
+      "assertion_pseudocode": "write_file('web/src/App.tsx', 'const unused = 42; export default function App() { return <h1>af-hub</h1>; }')\nresult = run_command('npm run lint', cwd='web/')\nassert result.exit_code != 0\noutput = result.stdout + result.stderr\nassert 'App.tsx' in output\nassert any(char.isdigit() for char in output)  # line number present\nassert 'error' in output.lower() OR 'warning' in output.lower()"
+    },
+    {
+      "id": "TS-02-E4",
+      "requirement_id": "02-REQ-2.E3",
+      "kind": "edge_case",
+      "description": "Verify that npm run build and npm run lint fail with a descriptive error referencing missing modules when node_modules/ is absent.",
+      "preconditions": [
+        "Scaffold has been applied with package.json present",
+        "node_modules/ directory has been removed or never created inside web/"
+      ],
+      "input": "Run 'npm run build' and 'npm run lint' from within web/ when web/node_modules/ is absent",
+      "expected": "Both commands exit with non-zero code; error output references missing modules or indicates that npm install must be run",
+      "assertion_pseudocode": "remove_directory('web/node_modules/')\nresult_build = run_command('npm run build', cwd='web/')\nassert result_build.exit_code != 0\nassert 'cannot find module' in result_build.stderr.lower() OR 'missing' in result_build.stderr.lower() OR 'not found' in result_build.stderr.lower()\nresult_lint = run_command('npm run lint', cwd='web/')\nassert result_lint.exit_code != 0"
+    },
+    {
+      "id": "TS-02-E5",
+      "requirement_id": "02-REQ-3.E1",
+      "kind": "edge_case",
+      "description": "Verify that when the Go backend is not running, proxied requests to /healthz fail at the network level with a connection error and no custom error wrapping.",
+      "preconditions": [
+        "Scaffold has been applied and npm install has been run inside web/",
+        "Vite dev server is running with proxy configuration active",
+        "Go backend is NOT running (port 8080 is not listening)"
+      ],
+      "input": "HTTP GET request to Vite dev server at /healthz when Go backend is not running",
+      "expected": "Browser or curl receives a network-level connection error (ECONNREFUSED or equivalent 502/504 from Vite proxy); no custom error page or application-level response body is returned",
+      "assertion_pseudocode": "ensure_port_not_listening(8080)\nresult = http_get_raw(VITE_DEV_URL + '/healthz', ignore_errors=True)\nassert result.network_error == True OR result.status_code in [502, 504]\nassert result.body is None OR result.body does not contain 'af-hub'"
+    },
+    {
+      "id": "TS-02-E6",
+      "requirement_id": "02-REQ-3.E2",
+      "kind": "edge_case",
+      "description": "Verify that requests to paths not matching /api, /healthz, or /readyz are served directly by Vite without proxying to the Go backend.",
+      "preconditions": [
+        "Scaffold has been applied and npm install has been run inside web/",
+        "Vite dev server is running with proxy configuration active",
+        "Go backend is NOT running (to confirm no proxy involvement)"
+      ],
+      "input": "HTTP GET request to Vite dev server at a non-proxied path such as /some-other-path",
+      "expected": "Vite handles the request normally, returning the SPA index.html (200 response) without attempting to proxy to port 8080",
+      "assertion_pseudocode": "ensure_port_not_listening(8080)\nresult = http_get(VITE_DEV_URL + '/some-other-path')\nassert result.status_code == 200\nassert 'af-hub' in result.body OR 'text/html' in result.headers.get('content-type', '')"
+    },
+    {
+      "id": "TS-02-E7",
+      "requirement_id": "02-REQ-4.E1",
+      "kind": "edge_case",
+      "description": "Verify that ESLint fails to start and reports a missing plugin error when the @typescript-eslint/recommended package is not installed.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "@typescript-eslint packages have been removed from node_modules/ but package.json and ESLint config still reference them"
+      ],
+      "input": "Run 'npm run lint' from within web/ when @typescript-eslint packages are missing from node_modules/",
+      "expected": "Process exits with non-zero code; error output identifies the missing @typescript-eslint package by name",
+      "assertion_pseudocode": "remove_directory('web/node_modules/@typescript-eslint')\nresult = run_command('npm run lint', cwd='web/')\nassert result.exit_code != 0\noutput = result.stdout + result.stderr\nassert 'typescript-eslint' in output.lower() OR 'cannot find module' in output.lower() OR 'plugin' in output.lower()"
+    },
+    {
+      "id": "TS-02-E8",
+      "requirement_id": "02-REQ-5.E1",
+      "kind": "edge_case",
+      "description": "Verify that 'make web-build' and 'make web-lint' fail with actionable error messages when npm dependencies in web/ are not installed.",
+      "preconditions": [
+        "Scaffold has been applied with package.json present",
+        "node_modules/ directory is absent inside web/"
+      ],
+      "input": "Run 'make web-build' from the repository root when web/node_modules/ is absent",
+      "expected": "make exits with non-zero code; error output references missing modules or directs the developer to run npm install in web/",
+      "assertion_pseudocode": "remove_directory('web/node_modules/')\nresult = run_command('make web-build', cwd='repo_root')\nassert result.exit_code != 0\noutput = result.stdout + result.stderr\nassert 'npm install' in output.lower() OR 'cannot find module' in output.lower() OR 'not found' in output.lower()"
+    },
+    {
+      "id": "TS-02-E9",
+      "requirement_id": "02-REQ-6.E1",
+      "kind": "edge_case",
+      "description": "Verify that 'npm run build' fails with a descriptive error when web/src/main.tsx or web/src/App.tsx is absent.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "web/src/main.tsx has been deleted"
+      ],
+      "input": "Run 'npm run build' from within web/ when web/src/main.tsx is absent",
+      "expected": "Process exits with non-zero code; error output references the missing entry point file (main.tsx or App.tsx)",
+      "assertion_pseudocode": "remove_file('web/src/main.tsx')\nresult = run_command('npm run build', cwd='web/')\nassert result.exit_code != 0\noutput = result.stdout + result.stderr\nassert 'main.tsx' in output OR 'entry' in output.lower() OR 'not found' in output.lower()"
+    },
+    {
+      "id": "TS-02-E10",
+      "requirement_id": "02-REQ-6.E2",
+      "kind": "edge_case",
+      "description": "Verify that 'npm run build' fails with a descriptive error identifying the missing HTML entry point when web/index.html is absent.",
+      "preconditions": [
+        "Scaffold has been applied",
+        "npm install has been run inside web/",
+        "web/index.html has been deleted"
+      ],
+      "input": "Run 'npm run build' from within web/ when web/index.html is absent",
+      "expected": "Process exits with non-zero code; error output references the missing index.html file",
+      "assertion_pseudocode": "remove_file('web/index.html')\nresult = run_command('npm run build', cwd='web/')\nassert result.exit_code != 0\noutput = result.stdout + result.stderr\nassert 'index.html' in output OR 'entry' in output.lower() OR 'not found' in output.lower()"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-02-SMOKE-1",
+      "execution_path_id": "02-PATH-1",
+      "description": "End-to-end smoke test: developer runs make web-dev, navigates to the Vite dev server URL, and verifies the placeholder <h1>af-hub</h1> heading is rendered in the browser.",
+      "trigger": "Run 'make web-dev' from the repository root; then navigate a browser to the Vite dev server URL",
+      "real_components": [
+        "Root Makefile (web-dev target)",
+        "Vite dev server",
+        "web/src/main.tsx",
+        "web/src/App.tsx",
+        "web/index.html"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "make web-dev starts the Vite dev server process without exiting immediately",
+        "Vite dev server prints its listening URL to stdout",
+        "HTTP GET to the Vite dev server root URL returns HTTP 200",
+        "Rendered DOM contains exactly one <h1> element with text content 'af-hub'"
+      ]
+    },
+    {
+      "id": "TS-02-SMOKE-2",
+      "execution_path_id": "02-PATH-2",
+      "description": "End-to-end smoke test: developer runs make web-build and verifies the production build completes successfully with web/dist/ populated.",
+      "trigger": "Run 'make web-build' from the repository root after npm install has been run in web/",
+      "real_components": [
+        "Root Makefile (web-build target)",
+        "Vite build",
+        "web/src/main.tsx",
+        "web/src/App.tsx",
+        "web/index.html",
+        "web/tsconfig.json"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "make web-build exits with code 0",
+        "web/dist/ directory is created",
+        "web/dist/ contains at least one .html file",
+        "web/dist/ contains at least one .js bundle file",
+        "No TypeScript or Vite build errors are printed to stderr"
+      ]
+    },
+    {
+      "id": "TS-02-SMOKE-3",
+      "execution_path_id": "02-PATH-3",
+      "description": "End-to-end smoke test: developer runs make web-lint and verifies ESLint and TypeScript type checking both pass with code 0 for the scaffold sources.",
+      "trigger": "Run 'make web-lint' from the repository root after npm install has been run in web/",
+      "real_components": [
+        "Root Makefile (web-lint target)",
+        "ESLint with @typescript-eslint/recommended",
+        "TypeScript type checker (tsc --noEmit or equivalent)",
+        "web/src/App.tsx",
+        "web/src/main.tsx",
+        "web/tsconfig.json"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "make web-lint exits with code 0",
+        "No ESLint rule violations are reported",
+        "No TypeScript type errors are reported",
+        "Output (stdout/stderr) contains no 'error' lines"
+      ]
+    },
+    {
+      "id": "TS-02-SMOKE-4",
+      "execution_path_id": "02-PATH-4",
+      "description": "End-to-end smoke test: developer starts the Go backend and Vite dev server, then makes a request to /healthz and verifies the response comes from the Go backend via the dev proxy.",
+      "trigger": "Start Go backend on port 8080, run make web-dev, then send HTTP GET to Vite dev server URL at /healthz",
+      "real_components": [
+        "Root Makefile (web-dev target)",
+        "Vite dev server with proxy configuration",
+        "Go backend (running on port 8080, exposing /healthz)"
+      ],
+      "mockable": [
+        "Go backend (can be replaced with any HTTP server on port 8080 returning a sentinel response to /healthz)"
+      ],
+      "expected_effects": [
+        "Vite dev server starts and proxy configuration is active",
+        "HTTP GET to Vite dev server URL at /healthz receives a response",
+        "Response body and status code match what the Go backend (or mock) returned",
+        "Response does not contain 'af-hub' or any frontend content"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

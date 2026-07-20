@@ -1,0 +1,1439 @@
+{
+  "$schema": null,
+  "spec_id": "01",
+  "spec_name": "workspaces",
+  "schema_version": 1,
+  "introduction": "This spec defines the workspace management capabilities of af-hub, the coordination hub for the agent-fox platform. Workspaces are git-repo-scoped execution contexts owned by users and optionally associated with organizations; af-hub manages their lifecycle, access control, storage, API endpoints, and CLI commands on top of the identity and infrastructure provided by apikit.",
+  "glossary": {
+    "APIGroup": "The apikit server method that returns the Echo router group for API endpoints. Signature: func (s *Server) APIGroup() *echo.Group.",
+    "Bootstrap": "The apikit function that bootstraps the server. Signature: func Bootstrap(ctx context.Context, database *DB, opts BootstrapOptions) error.",
+    "CLIExecute": "The apikit function that executes the CLI command tree. Signature: func CLIExecute() error.",
+    "CLIExitCode": "The apikit function that converts an error to a CLI exit code. Signature: func CLIExitCode(err error) int.",
+    "CLIPrintError": "The apikit function that prints a CLI error to stderr. Signature: func CLIPrintError(err error).",
+    "HealthChecker": "An apikit interface implemented by hub using a database ping to report server health.",
+    "LoadConfig": "The apikit function that loads server configuration. Signature: func LoadConfig() (*Config, error).",
+    "MountHandlers": "The apikit server method that registers route handlers and permission scopes. Signature: func (s *Server) MountHandlers(database *DB, permissions ...Permission) error.",
+    "NewServer": "The apikit function that creates a new server instance. Signature: func NewServer(cfg *Config, checker HealthChecker) *Server.",
+    "OpenDatabase": "The apikit function that opens the SQLite database. Signature: func OpenDatabase(path string) (*DB, error).",
+    "Organization": "An apikit-managed grouping of users. Workspaces can optionally be associated with an organization via org_id.",
+    "PAT": "Personal Access Token. An apikit credential type with fine-grained permission scopes. Hub extends the permission registry with workspace-specific scopes.",
+    "Permission": "An apikit type used to register permission scopes. Signature: type Permission struct { Resource, Action string }.",
+    "Physical delete": "Removal of a database row entirely. Used for workspace deletion — the slug is freed for reuse and no audit record is retained.",
+    "RootCommand": "The apikit function that returns the root cobra.Command embedding all standard apikit CLI subcommands. Signature: func RootCommand() *cobra.Command.",
+    "Slug": "A globally unique, URL-safe identifier for a workspace. Lowercase alphanumeric + hyphens, 3–64 chars, starts with a letter, no trailing hyphen, no consecutive hyphens.",
+    "Workspace": "A git-repo-scoped execution context where work is done. Maps to one git repository and optional branch. Owned by a user, optionally associated with an organization.",
+    "active": "The default workspace lifecycle state. The workspace is fully operational.",
+    "afc": "The agent-fox CLI binary that embeds apikit commands and adds workspace-specific subcommands under 'afc workspace'.",
+    "apikit": "The foundation library (github.com/txsvc/apikit) that provides server bootstrap, authentication, OAuth, user management, organization management, API keys, PATs, and CLI infrastructure.",
+    "archived": "A workspace lifecycle state in which the workspace is read-only and hidden from default listings but all state is preserved.",
+    "branch": "An optional git ref name specifying which branch of the repository the workspace targets. Null means the repository's default branch.",
+    "created_at": "An RFC 3339 timestamp string stored in the workspaces table recording when the workspace was created.",
+    "git_url": "The HTTPS or SSH URL of the git repository associated with a workspace, stored as metadata.",
+    "include_archived": "A query parameter (?include_archived=true) for the list workspaces endpoint that causes archived workspaces to be included in results.",
+    "org_id": "An optional UUID referencing an apikit-managed organization associated with a workspace.",
+    "owner_id": "The user ID of the user who created and owns a workspace.",
+    "status": "The lifecycle state of a workspace: active, archived. Deleted workspaces are physically removed and never written with the value 'deleted'.",
+    "updated_at": "An RFC 3339 timestamp string stored in the workspaces table recording when the workspace was last modified.",
+    "workspaces table": "The SQLite table managed by af-hub that stores workspace records with columns: slug, git_url, branch, owner_id, org_id, status, created_at, updated_at.",
+    "workspaces:create": "A PAT permission scope granting the ability to create workspaces on behalf of the PAT's owner, and to read own workspaces.",
+    "workspaces:read": "A PAT permission scope granting read-only access to list and view workspaces owned by the PAT's owner."
+  },
+  "requirements": [
+    {
+      "id": "01-REQ-1",
+      "title": "Workspace data model and field validation",
+      "user_story": {
+        "role": "platform developer",
+        "goal": "define a workspace with a unique slug, git_url, optional branch, owner_id, optional org_id, and status",
+        "benefit": "every workspace is unambiguously identified and associated with exactly one git repository"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace record",
+          "action": "stores slug, git_url, branch (nullable), owner_id, org_id (nullable), status, created_at, and updated_at in the workspaces table",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "slug validator",
+          "action": "accepts slugs that are 3–64 characters, lowercase alphanumeric plus hyphens, start with a letter, have no trailing hyphen, and have no consecutive hyphens",
+          "return_contract": "validation passes; slug is accepted"
+        },
+        {
+          "id": "01-REQ-1.3",
+          "ears_pattern": "unwanted",
+          "system": "slug validator",
+          "action": "rejects the slug",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "slug fails format, length, leading-character, trailing-hyphen, or consecutive-hyphen rules"
+        },
+        {
+          "id": "01-REQ-1.4",
+          "ears_pattern": "ubiquitous",
+          "system": "git_url validator",
+          "action": "accepts git_url values matching HTTPS format (https://<host>/<path>) or SSH format (git@<host>:<path>) where both host and path are non-empty; validates by pattern matching only without DNS resolution or protocol negotiation",
+          "return_contract": "validation passes; git_url is accepted"
+        },
+        {
+          "id": "01-REQ-1.5",
+          "ears_pattern": "unwanted",
+          "system": "git_url validator",
+          "action": "rejects the git_url",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "git_url is empty, uses plain HTTP, has an empty host, or has an empty path segment"
+        },
+        {
+          "id": "01-REQ-1.6",
+          "ears_pattern": "ubiquitous",
+          "system": "branch validator",
+          "action": "accepts branch values that are non-empty and follow git ref naming rules: no ASCII control characters, no space, no ~, ^, :, ?, *, [, or \\, no .. sequences, no trailing .lock, no trailing dot, no leading dot in any path component",
+          "return_contract": "validation passes; branch is accepted"
+        },
+        {
+          "id": "01-REQ-1.7",
+          "ears_pattern": "unwanted",
+          "system": "branch validator",
+          "action": "rejects the branch value",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "branch is provided but violates any git ref naming rule"
+        },
+        {
+          "id": "01-REQ-1.8",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace record",
+          "action": "allows the same git_url to appear in multiple workspaces with different slugs",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-1.9",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace record",
+          "action": "stores status as the string 'active' or 'archived' in the workspaces table; never writes the value 'deleted' because deleted workspaces are physically removed",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-1.10",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace record",
+          "action": "stores created_at and updated_at as RFC 3339 strings in the workspaces table",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "slug validator",
+          "action": "rejects the slug as out of range",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "slug is exactly 2 characters (below minimum) or exactly 65 characters (above maximum)"
+        },
+        {
+          "id": "01-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "slug validator",
+          "action": "rejects the slug",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "slug starts with a digit or hyphen instead of a letter"
+        },
+        {
+          "id": "01-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "branch validator",
+          "action": "rejects the branch as invalid",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "branch is provided as an empty string"
+        },
+        {
+          "id": "01-REQ-1.E4",
+          "ears_pattern": "unwanted",
+          "system": "git_url validator",
+          "action": "rejects the URL as invalid format",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "git_url uses plain HTTP (http://)"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-2",
+      "title": "Workspace table schema initialization",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "have the workspaces table created automatically on server boot",
+        "benefit": "no manual schema setup is required before the server accepts requests"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "executes CREATE TABLE IF NOT EXISTS for the workspaces table with columns slug (TEXT PRIMARY KEY), git_url (TEXT NOT NULL), branch (TEXT), owner_id (TEXT NOT NULL), org_id (TEXT), status (TEXT NOT NULL DEFAULT 'active'), created_at (TEXT NOT NULL), updated_at (TEXT NOT NULL), using the *apikit.DB abstraction",
+          "return_contract": null,
+          "trigger": "server boots"
+        },
+        {
+          "id": "01-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "proceeds without error due to IF NOT EXISTS semantics",
+          "return_contract": null,
+          "trigger": "workspaces table already exists at boot"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub server",
+          "action": "logs the error and returns a non-nil error from the boot sequence so the process exits rather than serving requests against an uninitialized schema",
+          "return_contract": "boot function returns a non-nil error; server does not start",
+          "error_condition": "database is unavailable or the CREATE TABLE statement fails during boot"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-3",
+      "title": "Workspace permission scope registration",
+      "user_story": {
+        "role": "platform developer",
+        "goal": "register workspace permission scopes with apikit's PAT permission registry",
+        "benefit": "PATs can be scoped to workspace operations without custom credential types"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "registers the Permission{Resource: \"workspaces\", Action: \"read\"} scope (workspaces:read) with apikit's permission registry",
+          "return_contract": null,
+          "trigger": "MountHandlers is called"
+        },
+        {
+          "id": "01-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "registers the Permission{Resource: \"workspaces\", Action: \"create\"} scope (workspaces:create) with apikit's permission registry",
+          "return_contract": null,
+          "trigger": "MountHandlers is called"
+        },
+        {
+          "id": "01-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "PAT with workspaces:read",
+          "action": "grants read-only access to list and view the workspaces owned by the PAT's owner, equivalent to what the owner could read with their API key",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-3.4",
+          "ears_pattern": "ubiquitous",
+          "system": "PAT with workspaces:create",
+          "action": "grants the ability to create workspaces on behalf of the PAT's owner and grants read access to the owner's own workspaces",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-4",
+      "title": "Workspace access control enforcement",
+      "user_story": {
+        "role": "workspace owner",
+        "goal": "ensure only authorized credentials can access or modify my workspaces",
+        "benefit": "workspaces are protected from unauthorized access or modification"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace authorization layer",
+          "action": "grants admin tokens full read and write access to all workspaces except workspace creation",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-4.2",
+          "ears_pattern": "unwanted",
+          "system": "workspace authorization layer",
+          "action": "rejects the request because workspaces require a real user as owner",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "admin token is used to create a workspace"
+        },
+        {
+          "id": "01-REQ-4.3",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace authorization layer",
+          "action": "grants user API key holders full access to their own workspaces and the ability to create workspaces",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-4.4",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace authorization layer",
+          "action": "grants PAT with workspaces:read read-only access to the PAT owner's workspaces only",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-4.5",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace authorization layer",
+          "action": "grants PAT with workspaces:create the ability to create workspaces on behalf of the owner and read the owner's own workspaces",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-4.6",
+          "ears_pattern": "unwanted",
+          "system": "workspace authorization layer",
+          "action": "returns 404 rather than 403 to prevent slug enumeration",
+          "return_contract": "returns HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "a workspace exists but the requesting credential does not have access to it"
+        },
+        {
+          "id": "01-REQ-4.7",
+          "ears_pattern": "unwanted",
+          "system": "workspace authorization layer",
+          "action": "rejects the request as unauthenticated",
+          "return_contract": "returns HTTP 401 with JSON body {\"error\":{\"code\":401,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "request has missing, invalid, or expired credential"
+        },
+        {
+          "id": "01-REQ-4.8",
+          "ears_pattern": "unwanted",
+          "system": "workspace authorization layer",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "credential is valid but does not have the required permission scope for the requested operation"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace authorization layer",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "PAT with workspaces:read attempts to archive, reactivate, or delete a workspace"
+        },
+        {
+          "id": "01-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace authorization layer",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "PAT with workspaces:create attempts to archive, reactivate, or delete a workspace"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-5",
+      "title": "Create workspace endpoint",
+      "user_story": {
+        "role": "authenticated user",
+        "goal": "register a new workspace by providing a slug, git_url, optional branch, and optional org_id",
+        "benefit": "I have a tracked execution context mapped to my git repository"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "creates the workspace record in the workspaces table with status active, sets owner_id to the creating user's ID, sets created_at and updated_at to the current UTC time as RFC 3339 strings, and returns the workspace object",
+          "return_contract": "returns HTTP 201 with JSON workspace object: {slug, git_url, branch, owner_id, org_id, status:\"active\", created_at, updated_at}",
+          "trigger": "authenticated user API key or PAT with workspaces:create submits a valid create workspace request"
+        },
+        {
+          "id": "01-REQ-5.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "rejects the request with a conflict error",
+          "return_contract": "returns HTTP 409 with JSON body {\"error\":{\"code\":409,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "slug is already used by an existing workspace"
+        },
+        {
+          "id": "01-REQ-5.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "org_id is provided but the creating user is not a member of that organization"
+        },
+        {
+          "id": "01-REQ-5.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "org_id is provided but does not reference an existing organization"
+        },
+        {
+          "id": "01-REQ-5.5",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "request body is missing or malformed"
+        },
+        {
+          "id": "01-REQ-5.6",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "stores the branch value in the workspaces table",
+          "return_contract": "returned workspace object includes branch field with the provided value",
+          "trigger": "request includes a valid optional branch"
+        },
+        {
+          "id": "01-REQ-5.7",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "stores NULL for branch in the workspaces table",
+          "return_contract": "returned workspace object includes branch: null",
+          "trigger": "request omits branch"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "rejects the request because workspaces require a real user as owner",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "admin token is used to call the create workspace endpoint"
+        },
+        {
+          "id": "01-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "PAT with workspaces:read (no workspaces:create) attempts to create a workspace"
+        },
+        {
+          "id": "01-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces handler",
+          "action": "returns an error to the caller; no partial workspace record is retained",
+          "return_contract": "returns HTTP 500 with JSON body {\"error\":{\"code\":500,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "database insert fails due to a transient error after validation passes"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-6",
+      "title": "List workspaces endpoint",
+      "user_story": {
+        "role": "authenticated user",
+        "goal": "retrieve a list of workspaces I have access to",
+        "benefit": "I can see all my workspaces in one call"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces handler",
+          "action": "returns all workspaces across all users, excluding archived workspaces by default, ordered by created_at descending",
+          "return_contract": "returns HTTP 200 with JSON array of workspace objects; empty array when none match",
+          "trigger": "admin token makes the request"
+        },
+        {
+          "id": "01-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces handler",
+          "action": "returns only the workspaces owned by the authenticated user, excluding archived workspaces by default, ordered by created_at descending",
+          "return_contract": "returns HTTP 200 with JSON array of workspace objects; empty array when none match",
+          "trigger": "user API key or PAT with workspaces:read or workspaces:create makes the request"
+        },
+        {
+          "id": "01-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces handler",
+          "action": "includes archived workspaces in the result set in addition to active workspaces",
+          "return_contract": "returns HTTP 200 with JSON array including both active and archived workspace objects",
+          "trigger": "request includes query parameter ?include_archived=true"
+        },
+        {
+          "id": "01-REQ-6.4",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces handler",
+          "action": "returns an empty array",
+          "return_contract": "returns HTTP 200 with JSON body []",
+          "trigger": "no workspaces match the query criteria"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-6.E1",
+          "ears_pattern": "ubiquitous",
+          "system": "GET /api/v1/workspaces handler",
+          "action": "returns results without pagination; the full matching set is returned in a single response",
+          "return_contract": "returns HTTP 200 with complete JSON array; no pagination headers or cursors"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-7",
+      "title": "Get workspace by slug endpoint",
+      "user_story": {
+        "role": "authenticated user",
+        "goal": "fetch details of a specific workspace by its slug",
+        "benefit": "I can inspect the full state of a workspace I have access to"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug handler",
+          "action": "retrieves the workspace record from the workspaces table and returns it",
+          "return_contract": "returns HTTP 200 with JSON workspace object",
+          "trigger": "authorized credential requests a workspace by slug"
+        },
+        {
+          "id": "01-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug handler",
+          "action": "returns not found",
+          "return_contract": "returns HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "no workspace exists with the given slug"
+        },
+        {
+          "id": "01-REQ-7.3",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug handler",
+          "action": "returns not found to prevent slug enumeration",
+          "return_contract": "returns HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace exists but the requesting credential does not own it and is not an admin"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-8",
+      "title": "Workspace lifecycle: archive",
+      "user_story": {
+        "role": "workspace owner or admin",
+        "goal": "archive a workspace to make it read-only and hide it from default listings",
+        "benefit": "I can preserve workspace state without it cluttering active workspace views"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/archive handler",
+          "action": "updates the workspace status to 'archived' in the workspaces table, sets updated_at to current time, and returns the updated workspace object",
+          "return_contract": "returns HTTP 200 with JSON workspace object where status is \"archived\"",
+          "trigger": "workspace owner or admin sends an archive request for an active workspace"
+        },
+        {
+          "id": "01-REQ-8.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/archive handler",
+          "action": "rejects the transition as an error, not a no-op",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace is already archived"
+        },
+        {
+          "id": "01-REQ-8.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/archive handler",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "requesting credential is a PAT (workspaces:read or workspaces:create) and not the owner API key or admin"
+        },
+        {
+          "id": "01-REQ-8.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/archive handler",
+          "action": "returns not found",
+          "return_contract": "returns HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace does not exist or credential cannot access it"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-9",
+      "title": "Workspace lifecycle: reactivate",
+      "user_story": {
+        "role": "workspace owner or admin",
+        "goal": "reactivate an archived workspace to restore it to active status",
+        "benefit": "I can resume work in a previously archived workspace without losing any state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/reactivate handler",
+          "action": "updates the workspace status to 'active' in the workspaces table, sets updated_at to current time, and returns the updated workspace object",
+          "return_contract": "returns HTTP 200 with JSON workspace object where status is \"active\"",
+          "trigger": "workspace owner or admin sends a reactivate request for an archived workspace"
+        },
+        {
+          "id": "01-REQ-9.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/reactivate handler",
+          "action": "rejects the transition as an error, not a no-op",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace is already active"
+        },
+        {
+          "id": "01-REQ-9.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/reactivate handler",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "requesting credential is a PAT and not the owner API key or admin"
+        },
+        {
+          "id": "01-REQ-9.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/reactivate handler",
+          "action": "returns not found",
+          "return_contract": "returns HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace does not exist or credential cannot access it"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-10",
+      "title": "Workspace lifecycle: delete",
+      "user_story": {
+        "role": "workspace owner or admin",
+        "goal": "permanently delete an archived workspace",
+        "benefit": "I can free the slug for reuse and remove stale workspace records"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "physically removes the workspace row from the workspaces table; the slug becomes available for reuse immediately",
+          "return_contract": "returns HTTP 204 with empty body",
+          "trigger": "workspace owner or admin sends a delete request for an archived workspace"
+        },
+        {
+          "id": "01-REQ-10.2",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "rejects the delete request; only archived workspaces can be deleted",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace is active (not archived)"
+        },
+        {
+          "id": "01-REQ-10.3",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "rejects the request as forbidden",
+          "return_contract": "returns HTTP 403 with JSON body {\"error\":{\"code\":403,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "requesting credential is a PAT and not the owner API key or admin"
+        },
+        {
+          "id": "01-REQ-10.4",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "returns not found",
+          "return_contract": "returns HTTP 404 with JSON body {\"error\":{\"code\":404,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "workspace does not exist or credential cannot access it"
+        },
+        {
+          "id": "01-REQ-10.5",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace deletion",
+          "action": "performs a physical delete by removing the row from the workspaces table; no soft-delete flag or audit record is retained",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "returns an error to the caller; workspace row is not guaranteed removed",
+          "return_contract": "returns HTTP 500 with JSON body {\"error\":{\"code\":500,\"message\":\"<descriptive message>\"}}",
+          "error_condition": "database DELETE statement fails after authorization passes"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-11",
+      "title": "CLI workspace create command",
+      "user_story": {
+        "role": "developer using afc",
+        "goal": "register a workspace from the CLI using --git-url and --slug flags",
+        "benefit": "I can create workspaces without writing API calls directly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace create command",
+          "action": "calls POST /api/v1/workspaces and prints the returned workspace object as JSON to stdout",
+          "return_contract": "exits 0; prints JSON workspace object to stdout",
+          "trigger": "user runs 'afc workspace create --git-url <url> --slug <slug>' with valid flags"
+        },
+        {
+          "id": "01-REQ-11.2",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace create command",
+          "action": "resolves the org slug to a UUID before calling the API; passes org_id in the request body",
+          "return_contract": "exits 0 on success; workspace object includes org_id",
+          "trigger": "user provides --org <org-slug>"
+        },
+        {
+          "id": "01-REQ-11.3",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace create command",
+          "action": "prints a usage hint to stderr and exits without making an API call",
+          "return_contract": "exits 1; usage hint printed to stderr; no API call made",
+          "error_condition": "--git-url or --slug flag is missing"
+        },
+        {
+          "id": "01-REQ-11.4",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace create command",
+          "action": "prints an error message to stderr and exits without making the workspace create API call",
+          "return_contract": "exits 1; error printed to stderr; no workspace create API call made",
+          "error_condition": "--org slug cannot be resolved (org not found or API error)"
+        },
+        {
+          "id": "01-REQ-11.5",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace create command",
+          "action": "prints the error to stderr",
+          "return_contract": "exits 1; error message printed to stderr",
+          "error_condition": "API call returns an error"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "01-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace create command",
+          "action": "treats the response as a resolution failure and prints an error to stderr without making the workspace create API call",
+          "return_contract": "exits 1; error printed to stderr",
+          "error_condition": "org slug resolution API call returns a success status but with a missing or null org UUID field"
+        },
+        {
+          "id": "01-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace create command",
+          "action": "treats the response as a resolution failure and prints an error to stderr",
+          "return_contract": "exits 1; error printed to stderr",
+          "error_condition": "org slug resolution API call returns an unexpected data shape"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-12",
+      "title": "CLI workspace list command",
+      "user_story": {
+        "role": "developer using afc",
+        "goal": "list my workspaces from the CLI",
+        "benefit": "I can quickly see all my workspaces without using the API directly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace list command",
+          "action": "calls GET /api/v1/workspaces and prints the resulting JSON array to stdout",
+          "return_contract": "exits 0; prints JSON array to stdout",
+          "trigger": "user runs 'afc workspace list'"
+        },
+        {
+          "id": "01-REQ-12.2",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace list command",
+          "action": "passes ?include_archived=true to GET /api/v1/workspaces",
+          "return_contract": "exits 0; response includes archived workspaces; prints JSON array to stdout",
+          "trigger": "user provides --include-archived flag"
+        },
+        {
+          "id": "01-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace list command",
+          "action": "prints the error to stderr",
+          "return_contract": "exits 1; error message printed to stderr",
+          "error_condition": "API call returns an error"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-13",
+      "title": "CLI workspace get command",
+      "user_story": {
+        "role": "developer using afc",
+        "goal": "fetch details of a specific workspace by slug from the CLI",
+        "benefit": "I can inspect a workspace's current state without using the API directly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace get command",
+          "action": "calls GET /api/v1/workspaces/:slug and prints the workspace object as JSON to stdout",
+          "return_contract": "exits 0; prints JSON workspace object to stdout",
+          "trigger": "user runs 'afc workspace get <slug>'"
+        },
+        {
+          "id": "01-REQ-13.2",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace get command",
+          "action": "prints the error to stderr",
+          "return_contract": "exits 1; error message printed to stderr",
+          "error_condition": "API call returns an error (e.g. 404 or 401)"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-14",
+      "title": "CLI workspace archive command",
+      "user_story": {
+        "role": "developer using afc",
+        "goal": "archive a workspace from the CLI",
+        "benefit": "I can preserve a workspace's state and hide it from default listings without writing API calls"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace archive command",
+          "action": "calls POST /api/v1/workspaces/:slug/archive and prints the updated workspace object as JSON to stdout",
+          "return_contract": "exits 0; prints JSON workspace object with status \"archived\" to stdout",
+          "trigger": "user runs 'afc workspace archive <slug>'"
+        },
+        {
+          "id": "01-REQ-14.2",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace archive command",
+          "action": "prints the error to stderr",
+          "return_contract": "exits 1; error message printed to stderr",
+          "error_condition": "API call returns an error"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-15",
+      "title": "CLI workspace reactivate command",
+      "user_story": {
+        "role": "developer using afc",
+        "goal": "reactivate an archived workspace from the CLI",
+        "benefit": "I can resume work in an archived workspace without writing API calls"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-15.1",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace reactivate command",
+          "action": "calls POST /api/v1/workspaces/:slug/reactivate and prints the updated workspace object as JSON to stdout",
+          "return_contract": "exits 0; prints JSON workspace object with status \"active\" to stdout",
+          "trigger": "user runs 'afc workspace reactivate <slug>'"
+        },
+        {
+          "id": "01-REQ-15.2",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace reactivate command",
+          "action": "prints the error to stderr",
+          "return_contract": "exits 1; error message printed to stderr",
+          "error_condition": "API call returns an error"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-16",
+      "title": "CLI workspace delete command",
+      "user_story": {
+        "role": "developer using afc",
+        "goal": "permanently delete an archived workspace from the CLI with an explicit confirmation flag",
+        "benefit": "I can clean up archived workspaces safely without risking accidental deletion"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-16.1",
+          "ears_pattern": "event_driven",
+          "system": "afc workspace delete command",
+          "action": "calls DELETE /api/v1/workspaces/:slug and prints a confirmation message to stderr on success",
+          "return_contract": "exits 0; confirmation message printed to stderr",
+          "trigger": "user runs 'afc workspace delete <slug> --confirm'"
+        },
+        {
+          "id": "01-REQ-16.2",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace delete command",
+          "action": "prints a usage hint to stderr and exits without making an API call",
+          "return_contract": "exits 1; usage hint printed to stderr; no API call made",
+          "error_condition": "--confirm flag is omitted"
+        },
+        {
+          "id": "01-REQ-16.3",
+          "ears_pattern": "unwanted",
+          "system": "afc workspace delete command",
+          "action": "prints the error to stderr",
+          "return_contract": "exits 1; error message printed to stderr",
+          "error_condition": "API call returns an error"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-17",
+      "title": "CLI command tree integration with apikit",
+      "user_story": {
+        "role": "platform developer",
+        "goal": "embed all apikit standard commands in the afc CLI alongside workspace commands",
+        "benefit": "users have a unified CLI with both platform management and workspace commands"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-17.1",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "builds the command tree by calling RootCommand() and adding workspace subcommands under the 'workspace' group; includes LoginCmd(), UserCmd(), KeysCmd(), TokensCmd(), OrgsCmd(), and AdminCmd() as registered subcommands",
+          "return_contract": null
+        },
+        {
+          "id": "01-REQ-17.2",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "uses CLIExecute() to execute the command tree, CLIPrintError() to print errors to stderr, and CLIExitCode() to derive the process exit code",
+          "return_contract": "exits 0 on success, 1 on any error"
+        },
+        {
+          "id": "01-REQ-17.3",
+          "ears_pattern": "ubiquitous",
+          "system": "afc CLI library code",
+          "action": "signals all errors via return values using the (*T, error) Go idiom; library functions never call os.Exit directly",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "01-REQ-18",
+      "title": "Error response envelope",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "receive a consistent JSON error envelope for all failure responses",
+        "benefit": "I can parse errors programmatically without special-casing each endpoint"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "01-REQ-18.1",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace API error handler",
+          "action": "formats all error responses using apikit's standard JSON envelope: {\"error\":{\"code\":<HTTP_STATUS>,\"message\":\"Human-readable description\"}}",
+          "return_contract": "JSON body with keys 'error.code' (integer) and 'error.message' (string)"
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "01-PROP-1",
+      "title": "Slug global uniqueness invariant",
+      "for_any": "workspace record in the workspaces table",
+      "invariant": "the slug column value is unique across all rows; no two workspace records share the same slug at any point in time",
+      "validates": [
+        "01-REQ-1.1",
+        "01-REQ-5.2"
+      ]
+    },
+    {
+      "id": "01-PROP-2",
+      "title": "Owner is always a real user invariant",
+      "for_any": "workspace record in the workspaces table",
+      "invariant": "the owner_id column is non-null and references a real user; no workspace record exists with an admin-token identity as its owner",
+      "validates": [
+        "01-REQ-4.2",
+        "01-REQ-5.E1"
+      ]
+    },
+    {
+      "id": "01-PROP-3",
+      "title": "Valid status values invariant",
+      "for_any": "workspace record in the workspaces table",
+      "invariant": "the status column contains exactly 'active' or 'archived'; the value 'deleted' is never written because deleted workspaces are physically removed",
+      "validates": [
+        "01-REQ-1.9",
+        "01-REQ-10.5"
+      ]
+    },
+    {
+      "id": "01-PROP-4",
+      "title": "Delete-only-from-archived invariant",
+      "for_any": "DELETE /api/v1/workspaces/:slug request",
+      "invariant": "a workspace row is physically removed only when its status is 'archived' at the time of deletion; deletion of an active workspace is always rejected",
+      "validates": [
+        "01-REQ-10.1",
+        "01-REQ-10.2"
+      ]
+    },
+    {
+      "id": "01-PROP-5",
+      "title": "Access scoping invariant",
+      "for_any": "GET /api/v1/workspaces response for a non-admin credential",
+      "invariant": "the returned workspace objects contain only workspaces whose owner_id matches the authenticated user's ID; workspaces belonging to other users are never included",
+      "validates": [
+        "01-REQ-6.2",
+        "01-REQ-4.6"
+      ]
+    },
+    {
+      "id": "01-PROP-6",
+      "title": "Archived exclusion from default listing invariant",
+      "for_any": "GET /api/v1/workspaces response when include_archived query parameter is absent or false",
+      "invariant": "no workspace object with status 'archived' appears in the response array",
+      "validates": [
+        "01-REQ-6.1",
+        "01-REQ-6.2"
+      ]
+    },
+    {
+      "id": "01-PROP-7",
+      "title": "RFC 3339 timestamp invariant",
+      "for_any": "workspace record in the workspaces table",
+      "invariant": "the created_at and updated_at columns always contain valid RFC 3339 timestamp strings; they are never null or empty",
+      "validates": [
+        "01-REQ-1.10",
+        "01-REQ-5.1"
+      ]
+    },
+    {
+      "id": "01-PROP-8",
+      "title": "Slug enumeration prevention invariant",
+      "for_any": "request for a workspace the credential cannot access",
+      "invariant": "the API returns HTTP 404 regardless of whether the workspace exists; HTTP 403 is never returned for workspace existence checks to prevent slug enumeration",
+      "validates": [
+        "01-REQ-4.6",
+        "01-REQ-7.3"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "01-PATH-1",
+      "title": "Create workspace — happy path",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs 'afc workspace create --git-url https://github.com/org/repo --slug my-workspace'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "validates flags are present, then calls POST /api/v1/workspaces with slug, git_url, and owner credentials"
+        },
+        {
+          "actor": "apikit auth middleware",
+          "action": "validates the user API key and injects the authenticated user identity into the request context"
+        },
+        {
+          "actor": "POST /api/v1/workspaces handler",
+          "action": "validates slug format, git_url format, and (if provided) branch and org_id; checks slug uniqueness in the workspaces table"
+        },
+        {
+          "actor": "POST /api/v1/workspaces handler",
+          "action": "inserts a new row into the workspaces table with status 'active', owner_id set to the authenticated user, and RFC 3339 created_at/updated_at timestamps"
+        },
+        {
+          "actor": "POST /api/v1/workspaces handler",
+          "action": "returns HTTP 201 with the workspace JSON object"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the workspace JSON object to stdout and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-2",
+      "title": "Archive then delete workspace — happy path",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs 'afc workspace archive my-workspace'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "calls POST /api/v1/workspaces/my-workspace/archive with owner credentials"
+        },
+        {
+          "actor": "apikit auth middleware",
+          "action": "validates the user API key and confirms the user is the workspace owner"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/archive handler",
+          "action": "confirms workspace status is 'active', updates status to 'archived' in the workspaces table, sets updated_at"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/archive handler",
+          "action": "returns HTTP 200 with the updated workspace JSON object (status: archived)"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the workspace JSON to stdout and exits 0"
+        },
+        {
+          "actor": "Developer",
+          "action": "runs 'afc workspace delete my-workspace --confirm'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "confirms --confirm flag is present, then calls DELETE /api/v1/workspaces/my-workspace"
+        },
+        {
+          "actor": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "confirms workspace status is 'archived', physically removes the row from the workspaces table"
+        },
+        {
+          "actor": "DELETE /api/v1/workspaces/:slug handler",
+          "action": "returns HTTP 204 with empty body"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints confirmation message to stderr and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-3",
+      "title": "List workspaces with archived included — happy path",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs 'afc workspace list --include-archived'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "calls GET /api/v1/workspaces?include_archived=true with user credentials"
+        },
+        {
+          "actor": "apikit auth middleware",
+          "action": "validates the credential and resolves the requesting user identity"
+        },
+        {
+          "actor": "GET /api/v1/workspaces handler",
+          "action": "queries the workspaces table for all workspaces owned by the authenticated user (both active and archived), ordered by created_at descending"
+        },
+        {
+          "actor": "GET /api/v1/workspaces handler",
+          "action": "returns HTTP 200 with a JSON array of workspace objects"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the JSON array to stdout and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-4",
+      "title": "Create workspace with org association — org membership check",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs 'afc workspace create --git-url git@github.com:org/repo --slug team-ws --org my-org'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "resolves the org slug 'my-org' to a UUID via the apikit SDK or a direct API call"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "calls POST /api/v1/workspaces with slug, git_url, and org_id (resolved UUID)"
+        },
+        {
+          "actor": "apikit auth middleware",
+          "action": "validates the user API key and injects the authenticated user identity"
+        },
+        {
+          "actor": "POST /api/v1/workspaces handler",
+          "action": "verifies the authenticated user is a member of the organization referenced by org_id"
+        },
+        {
+          "actor": "POST /api/v1/workspaces handler",
+          "action": "inserts workspace row with org_id set and returns HTTP 201 with the workspace JSON object"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the workspace JSON to stdout and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-5",
+      "title": "PAT with workspaces:read reads own workspaces",
+      "steps": [
+        {
+          "actor": "Automated tool",
+          "action": "calls GET /api/v1/workspaces with a PAT carrying workspaces:read scope"
+        },
+        {
+          "actor": "apikit auth middleware",
+          "action": "validates the PAT, resolves the PAT owner, and confirms the workspaces:read scope is present"
+        },
+        {
+          "actor": "GET /api/v1/workspaces handler",
+          "action": "scopes the query to workspaces owned by the PAT's owner, excluding archived workspaces by default"
+        },
+        {
+          "actor": "GET /api/v1/workspaces handler",
+          "action": "returns HTTP 200 with a JSON array of the owner's workspaces"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-6",
+      "title": "Reactivate archived workspace",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs 'afc workspace reactivate my-workspace'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "calls POST /api/v1/workspaces/my-workspace/reactivate with owner credentials"
+        },
+        {
+          "actor": "apikit auth middleware",
+          "action": "validates the user API key and confirms the user is the workspace owner"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/reactivate handler",
+          "action": "confirms workspace status is 'archived', updates status to 'active' in the workspaces table, sets updated_at"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/reactivate handler",
+          "action": "returns HTTP 200 with the updated workspace JSON object (status: active)"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the workspace JSON to stdout and exits 0"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "01-ERR-1",
+      "condition": "Request body is missing or cannot be parsed as JSON",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope {\"error\":{\"code\":400,\"message\":\"<descriptive message>\"}}",
+      "requirement_id": "01-REQ-5.5"
+    },
+    {
+      "id": "01-ERR-2",
+      "condition": "Slug fails format, length, start-character, trailing-hyphen, or consecutive-hyphen validation",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope describing the specific slug rule violation",
+      "requirement_id": "01-REQ-1.3"
+    },
+    {
+      "id": "01-ERR-3",
+      "condition": "git_url is empty, uses plain HTTP, has empty host, or has empty path",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope describing the invalid git_url format",
+      "requirement_id": "01-REQ-1.5"
+    },
+    {
+      "id": "01-ERR-4",
+      "condition": "branch is provided but violates git ref naming rules",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope describing the invalid branch format",
+      "requirement_id": "01-REQ-1.7"
+    },
+    {
+      "id": "01-ERR-5",
+      "condition": "org_id is provided but does not reference an existing organization",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope",
+      "requirement_id": "01-REQ-5.4"
+    },
+    {
+      "id": "01-ERR-6",
+      "condition": "Workspace is active and a delete request is received",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope stating only archived workspaces can be deleted",
+      "requirement_id": "01-REQ-10.2"
+    },
+    {
+      "id": "01-ERR-7",
+      "condition": "Archive is requested on an already-archived workspace",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope stating the workspace is already archived",
+      "requirement_id": "01-REQ-8.2"
+    },
+    {
+      "id": "01-ERR-8",
+      "condition": "Reactivate is requested on an already-active workspace",
+      "behavior": "Hub returns HTTP 400 with JSON error envelope stating the workspace is already active",
+      "requirement_id": "01-REQ-9.2"
+    },
+    {
+      "id": "01-ERR-9",
+      "condition": "Request credential is missing, invalid, or expired",
+      "behavior": "Hub returns HTTP 401 with JSON error envelope; apikit auth middleware handles credential validation",
+      "requirement_id": "01-REQ-4.7"
+    },
+    {
+      "id": "01-ERR-10",
+      "condition": "Credential is valid but lacks the required permission scope for the endpoint",
+      "behavior": "Hub returns HTTP 403 with JSON error envelope",
+      "requirement_id": "01-REQ-4.8"
+    },
+    {
+      "id": "01-ERR-11",
+      "condition": "org_id is provided and the creating user is not a member of that organization",
+      "behavior": "Hub returns HTTP 403 with JSON error envelope",
+      "requirement_id": "01-REQ-5.3"
+    },
+    {
+      "id": "01-ERR-12",
+      "condition": "Workspace slug is not found or exists but credential cannot access it",
+      "behavior": "Hub returns HTTP 404 with JSON error envelope; the 404 is returned in both cases to prevent slug enumeration",
+      "requirement_id": "01-REQ-4.6"
+    },
+    {
+      "id": "01-ERR-13",
+      "condition": "Duplicate slug on workspace creation",
+      "behavior": "Hub returns HTTP 409 with JSON error envelope indicating slug conflict",
+      "requirement_id": "01-REQ-5.2"
+    },
+    {
+      "id": "01-ERR-14",
+      "condition": "Admin token attempts to create a workspace",
+      "behavior": "Hub returns HTTP 403 with JSON error envelope stating admin tokens cannot create workspaces",
+      "requirement_id": "01-REQ-4.2"
+    },
+    {
+      "id": "01-ERR-15",
+      "condition": "CLI --confirm flag is omitted from 'afc workspace delete'",
+      "behavior": "afc prints a usage hint to stderr and exits 1 without making any API call",
+      "requirement_id": "01-REQ-16.2"
+    },
+    {
+      "id": "01-ERR-16",
+      "condition": "CLI --org slug resolution fails (org not found or API returns unexpected shape)",
+      "behavior": "afc prints an error message to stderr and exits 1 without making the workspace create API call",
+      "requirement_id": "01-REQ-11.4"
+    },
+    {
+      "id": "01-ERR-17",
+      "condition": "Database boot-time schema initialization fails",
+      "behavior": "Hub boot sequence returns a non-nil error; the server does not start and does not serve requests",
+      "requirement_id": "01-REQ-2.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "v0.0.0",
+      "symbols": [
+        {
+          "name": "LoadConfig",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func LoadConfig() (*Config, error)",
+          "notes": "Loads server configuration."
+        },
+        {
+          "name": "OpenDatabase",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func OpenDatabase(path string) (*DB, error)",
+          "notes": "Opens the SQLite database. Hub uses *DB for workspaces table operations."
+        },
+        {
+          "name": "Bootstrap",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func Bootstrap(ctx context.Context, database *DB, opts BootstrapOptions) error",
+          "notes": "Bootstraps the apikit server."
+        },
+        {
+          "name": "NewServer",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func NewServer(cfg *Config, checker HealthChecker) *Server",
+          "notes": "Hub passes a database-ping HealthChecker implementation."
+        },
+        {
+          "name": "Server.Start",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func (s *Server) Start() error",
+          "notes": "Starts the HTTP server."
+        },
+        {
+          "name": "Server.APIGroup",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func (s *Server) APIGroup() *echo.Group",
+          "notes": "Returns the Echo router group for mounting workspace handlers under /api/v1."
+        },
+        {
+          "name": "Server.MountHandlers",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func (s *Server) MountHandlers(database *DB, permissions ...Permission) error",
+          "notes": "Hub calls this to register workspace permission scopes (workspaces:read, workspaces:create) and mount handlers."
+        },
+        {
+          "name": "Permission",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type Permission struct { Resource, Action string }",
+          "notes": "Used to declare workspace permission scopes passed to MountHandlers."
+        },
+        {
+          "name": "RootCommand",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func RootCommand() *cobra.Command",
+          "notes": "Returns the root CLI command. Hub adds workspace subcommands to this."
+        },
+        {
+          "name": "LoginCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func LoginCmd() *cobra.Command",
+          "notes": "Standard apikit login command included in afc."
+        },
+        {
+          "name": "UserCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func UserCmd() *cobra.Command",
+          "notes": "Standard apikit user management command included in afc."
+        },
+        {
+          "name": "KeysCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func KeysCmd() *cobra.Command",
+          "notes": "Standard apikit API key management command included in afc."
+        },
+        {
+          "name": "TokensCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func TokensCmd() *cobra.Command",
+          "notes": "Standard apikit PAT management command included in afc."
+        },
+        {
+          "name": "OrgsCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func OrgsCmd() *cobra.Command",
+          "notes": "Standard apikit organization management command included in afc."
+        },
+        {
+          "name": "AdminCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func AdminCmd() *cobra.Command",
+          "notes": "Standard apikit admin command included in afc."
+        },
+        {
+          "name": "CLIExecute",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func CLIExecute() error",
+          "notes": "Executes the CLI command tree."
+        },
+        {
+          "name": "CLIPrintError",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func CLIPrintError(err error)",
+          "notes": "Prints a CLI error to stderr."
+        },
+        {
+          "name": "CLIExitCode",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func CLIExitCode(err error) int",
+          "notes": "Converts an error to a process exit code (0 for nil, 1 for non-nil)."
+        }
+      ]
+    }
+  ]
+}

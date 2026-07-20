@@ -1,0 +1,192 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"workspaces\" PRD is thorough, well-structured, and covers all required dimensions at a high level of quality. Intent is crisp and well-motivated. Goals are concrete and scoped. Non-goals are explicit and comprehensive. Background/context is woven into the Intent and Design Decisions sections. The external API surface (apikit) is fully documented with a verified symbol table. Functional requirements, error handling, access control, lifecycle transitions, CLI behavior, and response schemas are all specified in detail. One minor cross-spec observation: the `web_scaffold` active spec explicitly names \"workspace management pages\" as a future capability, which means the Web UI that will eventually surface this spec's data likely depends on the workspace API defined here. This is not a blocking gap since the PRD already explicitly excludes Web UI from its own scope, but the dependency relationship is worth acknowledging. No blocking gaps are identified; the PRD is ready to proceed to artifact generation.",
+      "gaps": [
+        "The `web_scaffold` active spec lists 'workspace management pages' as a future deliverable, meaning it will depend on the workspace API defined in this spec. The dependency is not declared in either spec's Dependencies section, creating a potential coordination gap when the web_scaffold spec evolves to add workspace UI.",
+        "The Verified External API table documents symbols but does not capture expected failure modes or error types returned by apikit functions (e.g., what errors does `Bootstrap` or `MountHandlers` return on failure?). This is a minor gap for implementers relying solely on the PRD.",
+        "No pagination strategy is mentioned for `GET /api/v1/workspaces` beyond 'no pagination in this iteration' \u2014 there is no note about anticipated volume limits or a plan for when pagination will be introduced, which could matter for production readiness signoff."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The active `web_scaffold` spec lists 'workspace management pages' as a future capability. Should the `web_scaffold` spec declare a dependency on this `workspaces` spec, or should this spec note `web_scaffold` as a downstream consumer in its own documentation?",
+          "context": "The web_scaffold spec's intent explicitly names workspace management pages as a future deliverable, meaning it will consume the workspace API defined here. Formalizing this relationship prevents the two specs from diverging independently.",
+          "options": [
+            "Add `web_scaffold` as a downstream consumer note in this spec's Dependencies section",
+            "Update `web_scaffold` to declare a dependency on `workspaces`",
+            "Both",
+            "No action needed \u2014 the relationship is implicit and the specs are decoupled enough"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "The Verified External API table lists apikit symbols and signatures but does not document their failure modes (e.g., error types or sentinel errors returned by `Bootstrap`, `MountHandlers`, `OpenDatabase`). Are the failure modes of these apikit functions already understood by the implementation team, or should they be documented here?",
+          "context": "Implementers relying solely on the PRD may need to know what errors apikit surfaces in order to write correct error-handling and startup logic. If this is already captured in apikit's own documentation or team knowledge, no PRD change is needed.",
+          "options": [
+            "Document failure modes in the Verified External API table",
+            "Add a separate apikit error-handling section",
+            "No action needed \u2014 apikit failure modes are known to the team and documented elsewhere"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "The list endpoint (`GET /api/v1/workspaces`) explicitly defers pagination to a future iteration. Is there an expected upper bound on the number of workspaces per user or admin that should inform a soft limit or warning threshold for this iteration?",
+          "context": "Without any guard, an admin listing all workspaces could return an unbounded result set. Knowing the anticipated scale helps decide whether a hard cap or a note about future pagination is sufficient for this iteration.",
+          "options": [
+            "Add a maximum result cap (e.g., 1000 records) with a note in the spec",
+            "No cap needed \u2014 data volume is expected to be small in this iteration",
+            "Document expected scale in the Background or Technical Boundaries section"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured, detailed, and covers the core workspace management domain thoroughly. It clearly defines lifecycle states, access control, API endpoints, CLI commands, and integration with apikit. The non-goals are well-scoped. However, several gaps remain: the data persistence/storage layer for workspaces is not specified, idempotency behavior for repeated lifecycle transitions is unclear, the `afc workspace` archive/reactivate/delete CLI commands are missing, the response shape for lifecycle action endpoints is unspecified, and soft-delete semantics (physical vs logical removal) need clarification.",
+      "gaps": [
+        "Storage/persistence layer for workspace data is not specified \u2014 it is implied to use apikit's SQLite storage but no schema, table name, migration strategy, or storage abstraction is mentioned.",
+        "CLI commands for archive, reactivate, and delete workspace operations are absent \u2014 only create, list, and get are documented.",
+        "Response body for lifecycle action endpoints (archive, reactivate, delete) is unspecified \u2014 it is unclear whether they return the updated workspace object, a 204 No Content, or some other shape.",
+        "Idempotency behavior for repeated lifecycle transitions is undefined \u2014 e.g., archiving an already-archived workspace, or reactivating an already-active workspace.",
+        "Soft-delete vs hard-delete semantics for the deleted state are ambiguous \u2014 it is stated deletion is permanent and irreversible, but it is not clear whether the row is physically removed from the database or logically flagged.",
+        "The `afc workspace list` command has no flags documented (e.g., --include-archived) despite the API supporting that filter parameter.",
+        "No contract is defined for how hub discovers or resolves org slugs to UUIDs for the --org CLI flag \u2014 the CLI resolves the slug but the mechanism (apikit SDK call, separate endpoint) is not stated.",
+        "There is no mention of health check implementation \u2014 NewServer requires a HealthChecker but hub's implementation of it is not addressed.",
+        "Maximum result set size for the unpaginated listing endpoint is not bounded, leaving open questions about performance thresholds before pagination must be introduced."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the storage strategy for workspace data? Does hub define its own SQLite table(s) via apikit's DB abstraction, and if so, what are the key fields/columns? Is there a migration mechanism?",
+          "context": "The PRD mentions apikit provides SQLite storage but says nothing about how workspace records are persisted \u2014 table schema, migrations, and the storage abstraction used by hub are all unspecified, which will block implementation.",
+          "options": [
+            "Hub defines its own workspace table using apikit's DB abstraction; schema and migrations are hub's responsibility.",
+            "Hub uses an apikit-provided generic entity store and maps workspace fields to it.",
+            "Storage details are intentionally deferred to a separate data-layer spec."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What do the archive, reactivate, and delete endpoints return on success?",
+          "context": "The response schema section only covers the workspace object shape but does not specify what the lifecycle action endpoints (POST /:slug/archive, POST /:slug/reactivate, DELETE /:slug) return. Implementers and API consumers need this to be explicit.",
+          "options": [
+            "Return the updated workspace object (HTTP 200) with the new status reflected.",
+            "Return HTTP 204 No Content with an empty body.",
+            "Return a minimal status object, e.g. {\"slug\": \"...\", \"status\": \"archived\"}."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What happens when a lifecycle transition is requested on a workspace already in the target state? For example, archiving an already-archived workspace, or reactivating an already-active workspace.",
+          "context": "The PRD specifies allowed transitions in the lifecycle table but does not define the API behavior for idempotent or invalid repeat transitions. This matters for CLI scripting and automated tooling.",
+          "options": [
+            "Return HTTP 400 with a descriptive error message (same as deleting an active workspace).",
+            "Return HTTP 409 Conflict.",
+            "Treat it as a no-op and return HTTP 200/204 with the current state."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "When a workspace is deleted, is the database row physically removed or is it logically flagged with status=deleted and retained for audit purposes?",
+          "context": "The PRD says deletion is permanent and irreversible but does not clarify the underlying storage behavior. This affects schema design, data retention, and whether deleted slugs can be reused.",
+          "options": [
+            "Physical delete \u2014 the row is removed from the database. The slug becomes available for reuse.",
+            "Logical delete \u2014 the row is retained with status=deleted and the slug remains reserved (cannot be reused).",
+            "Logical delete \u2014 the row is retained but the slug is released for reuse after a grace period."
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should the `afc workspace` CLI include commands for archive, reactivate, and delete operations? If yes, what are their signatures?",
+          "context": "The CLI section documents create, list, and get but omits commands for the three lifecycle-change operations that exist in the API. This looks like an oversight.",
+          "options": [
+            "Yes \u2014 add: afc workspace archive <slug>, afc workspace reactivate <slug>, afc workspace delete <slug> (with a --confirm flag for delete).",
+            "Yes \u2014 add archive and reactivate but defer delete to a future iteration (too destructive for CLI in v1).",
+            "No \u2014 lifecycle operations are admin/API-only in this iteration."
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Should `afc workspace list` support a --include-archived flag mirroring the API's ?include_archived=true query parameter?",
+          "context": "The API supports listing archived workspaces via a query parameter, but the CLI command has no documented flags. Omitting this from the CLI creates a gap where archived workspaces cannot be accessed via the CLI at all.",
+          "options": [
+            "Yes \u2014 add --include-archived flag to afc workspace list.",
+            "No \u2014 archived workspaces are accessible only via the API in this iteration."
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "How does the CLI resolve an org slug to a UUID for the --org flag? Does apikit's SDK expose an org-lookup-by-slug function, or does hub call a specific API endpoint?",
+          "context": "The PRD states the CLI resolves the org slug to a UUID before the API call but does not specify the mechanism. This is needed for implementation.",
+          "options": [
+            "Use an apikit SDK function (e.g., apikit.LookupOrg(slug)) if one exists.",
+            "Call GET /api/v1/orgs/:slug directly using the apikit HTTP client.",
+            "The resolution mechanism is left to the implementer's discretion."
+          ],
+          "required": false
+        },
+        {
+          "id": "q8",
+          "text": "How does hub implement the HealthChecker interface required by apikit's NewServer? What constitutes a healthy hub instance?",
+          "context": "NewServer requires a HealthChecker but hub's implementation of this interface is not mentioned. A minimal spec note is needed so the implementation team knows what checks to perform.",
+          "options": [
+            "Hub implements a simple HealthChecker that verifies the database connection is alive.",
+            "Hub passes a no-op HealthChecker (always returns healthy) since apikit handles infrastructure health.",
+            "Health check details are out of scope for this spec."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The PRD is now comprehensive and implementation-ready. All previously identified gaps have been resolved: the storage layer is fully specified with a concrete schema and boot-time DDL strategy; lifecycle action response shapes are explicit (HTTP 200 with updated workspace object for archive/reactivate, HTTP 204 for delete); invalid and repeated lifecycle transitions are clearly defined as HTTP 400 errors; physical-delete semantics are stated unambiguously with slug-reuse implications; the CLI now covers all six workspace operations including archive, reactivate, and delete with a --confirm guard; afc workspace list has a --include-archived flag; the HealthChecker implementation is documented; and design decisions are fully aligned with all answers provided. The spec is well-structured, internally consistent, and free of material ambiguity.",
+      "gaps": [],
+      "questions": []
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "No action needed \u2014 the relationship is implicit and the specs are decoupled enough. The web scaffold is a project scaffold only; workspace pages will be a future spec.",
+        "q2": "No action needed \u2014 apikit failure modes are known to the team and documented in apikit's own docs. The PRD captures the happy-path signatures.",
+        "q3": "No cap needed \u2014 data volume is expected to be small in this iteration. Pagination will be added when workspace counts grow."
+      },
+      "timestamp": "2026-07-20T16:19:54.371971+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Hub defines its own workspace table using apikit's DB abstraction; schema is applied via CREATE TABLE IF NOT EXISTS on boot (same pattern as apikit). No migration tooling \u2014 pre-production, schema changes are DDL updates.",
+        "q2": "Return the updated workspace object (HTTP 200) with the new status reflected. DELETE returns HTTP 204 No Content with an empty body.",
+        "q3": "Return HTTP 400 with a descriptive error message. Archiving an already-archived workspace or reactivating an already-active workspace is an error, not a no-op.",
+        "q4": "Physical delete \u2014 the row is removed from the database. The slug becomes available for reuse.",
+        "q5": "Yes \u2014 add: afc workspace archive <slug>, afc workspace reactivate <slug>, afc workspace delete <slug>. Delete requires a --confirm flag.",
+        "q6": "Yes \u2014 add --include-archived flag to afc workspace list.",
+        "q7": "The resolution mechanism is left to the implementer's discretion. apikit's SDK or a direct API call are both acceptable.",
+        "q8": "Hub passes the database ping as HealthChecker \u2014 this is already implemented in cmd/af-hub/main.go."
+      },
+      "timestamp": "2026-07-20T16:22:16.640859+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

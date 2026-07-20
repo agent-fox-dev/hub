@@ -1,0 +1,352 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `web_scaffold` PRD is well-structured and thorough for a scaffolding spec. It clearly states its intent, defines measurable goals, explicitly bounds scope with non-goals, and enumerates functional requirements at an appropriate level of detail. There are no external API dependencies to document (the dev proxy simply forwards to the local Go backend). One cross-spec relationship worth noting: the `workspaces` active spec describes workspace management pages, which will presumably be built on top of this scaffold \u2014 a dependency relationship that should be declared explicitly.",
+      "gaps": [
+        "No `owner` field is set in the spec metadata \u2014 accountability is unclear.",
+        "The `Dependencies` section lists only npm packages, not the relationship to the `workspaces` active spec that will build on this scaffold. A spec-level dependency or note on how future specs consume this scaffold is absent.",
+        "ESLint configuration specifics (ruleset, plugins, e.g. `eslint-plugin-react`, `@typescript-eslint`) are not mentioned, leaving `make web-lint` / `npm run lint` ambiguously defined.",
+        "No version constraints or minimum version requirements are specified for any of the toolchain packages (Vite, React, Tailwind, shadcn/ui, etc.), which could cause reproducibility issues.",
+        "There is no acceptance criteria or definition of 'done' \u2014 e.g., what constitutes a passing end-to-end verification of the scaffold (CI check, smoke test command, etc.).",
+        "The `Background` section is absent \u2014 there is no context explaining why this scaffold is being created now, what existed before, or what problem it solves beyond the intent statement."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The `workspaces` active spec describes workspace management UI pages that will likely be built on top of this scaffold. Should `web_scaffold` be declared as a dependency of `workspaces`, or should `workspaces` be updated to reference this spec explicitly?",
+          "context": "Cross-spec awareness: the `workspaces` spec's intent covers workspace management pages, which implies a direct dependency on the frontend scaffold being established here. Clarifying the relationship prevents duplicate or conflicting frontend setup work.",
+          "options": [
+            "Declare `web_scaffold` as a dependency inside the `workspaces` spec.",
+            "Add a note in `web_scaffold` that it is a prerequisite for `workspaces` and any future UI specs.",
+            "Keep the specs independent for now; the relationship is implicit."
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "What ESLint configuration will be used? Which plugins and rulesets should be enforced (e.g., `@typescript-eslint/recommended`, `eslint-plugin-react`, `eslint-plugin-react-hooks`)?",
+          "context": "`make web-lint` and `npm run lint` are specified as running ESLint + TypeScript type checking, but the ESLint configuration details are absent. Without this, the requirement is ambiguous and implementers may make inconsistent choices.",
+          "options": [
+            "Use the Vite-generated default ESLint config with `@typescript-eslint/recommended`.",
+            "Add `eslint-plugin-react` and `eslint-plugin-react-hooks` on top of the TypeScript defaults.",
+            "Define a custom flat config \u2014 specify rules in the PRD or link to a config file."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should the PRD specify minimum or pinned versions for the core toolchain packages (Vite, React, Tailwind CSS, shadcn/ui)?",
+          "context": "Without version constraints, different implementers or CI runs may resolve different versions, potentially causing reproducibility issues. This is especially relevant for shadcn/ui, which has had breaking changes between major versions.",
+          "options": [
+            "Pin exact versions in the PRD.",
+            "Specify minimum major versions only (e.g., Vite 5.x, React 18.x).",
+            "Leave version selection to the implementer; `package-lock.json` will lock them after initial install."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What is the acceptance criterion for 'the scaffold works end-to-end'? Is there a specific command or CI check that must pass before this spec is considered complete?",
+          "context": "The PRD mentions 'a single placeholder route to verify the scaffold works end-to-end' but does not define what verification looks like \u2014 e.g., `npm run build` exits 0, a smoke test URL check, or a CI pipeline step.",
+          "options": [
+            "`npm run build` and `npm run lint` both exit 0 in CI.",
+            "A developer can run `make web-dev` and see the `<h1>af-hub</h1>` heading in a browser.",
+            "Both of the above are required.",
+            "No formal acceptance criterion needed for a scaffold spec."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Who is the owner of this spec? The `owner` field in the metadata is currently empty.",
+          "context": "An empty owner field makes it unclear who is responsible for decisions, reviews, and sign-off on this spec.",
+          "options": [],
+          "required": true
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and clearly written. It defines scope, goals, non-goals, functional requirements, acceptance criteria, and design decisions with good precision. The scaffold-only intent is communicated clearly, and the non-goals section does an excellent job of preventing scope creep. A few gaps remain: the Go backend serving strategy for the SPA in production is unspecified, the `web/` directory structure is not described, there is no mention of how the TypeScript `tsconfig.json` should be structured beyond \"strict mode,\" and there is no CI/test hook mentioned. These are worth clarifying to avoid implementation ambiguity.",
+      "gaps": [
+        "No specification of how the Go backend serves the built SPA in production (e.g., embedded via go:embed, reverse proxy, or left entirely to a future spec).",
+        "The expected directory structure inside `web/` is not described (e.g., src/, components/, pages/ layout), which may lead to inconsistent scaffolding.",
+        "The TypeScript configuration is only described as 'strict mode enabled' \u2014 no guidance on which tsconfig base (`bundler`, `dom`, etc.) or notable compiler options (e.g., `moduleResolution`, `target`, `jsx`) is provided.",
+        "No mention of CI integration \u2014 it is unclear whether `make web-build` and `make web-lint` are expected to run in CI pipelines as part of this spec or deferred to a future spec.",
+        "The Vite config file (`vite.config.ts`) structure is referenced implicitly via the dev proxy requirements but is never explicitly called out as a deliverable.",
+        "No error or edge-case behavior is described for the dev proxy (e.g., what happens when the Go backend is not running during `make web-dev`)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How should the Go backend serve the built frontend SPA (`web/dist/`) in production \u2014 or is this explicitly deferred to a future spec?",
+          "context": "Without this decision, implementers may make conflicting assumptions (e.g., go:embed vs. a separate static file server vs. a CDN deployment). If it is deferred, the PRD should explicitly say so in Non-goals.",
+          "options": [
+            "Serve via go:embed in the Go binary (to be specified in a future spec)",
+            "Serve via a separate static file server or CDN (future spec)",
+            "Explicitly out of scope for all scaffold-related specs \u2014 deployment strategy TBD",
+            "Define the serving strategy now as part of this spec"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Should the PRD specify a recommended directory layout inside `web/` (e.g., `src/pages/`, `src/components/`, `src/lib/`), or is the internal structure left entirely to the implementer?",
+          "context": "Defining at least a top-level source layout now prevents future specs from having to restructure files when adding pages, routing, or shared components.",
+          "options": [
+            "Specify a minimal but opinionated layout (e.g., src/pages/, src/components/, src/lib/)",
+            "Leave the internal structure entirely to the implementer",
+            "Only specify what is strictly needed for the placeholder route (e.g., src/App.tsx, src/main.tsx)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Should `make web-build` and `make web-lint` be wired into CI as part of this spec, or is CI integration deferred?",
+          "context": "If CI is expected to gate merges on a passing frontend build and lint, it should be called out now. If deferred, the PRD should note this explicitly to avoid ambiguity.",
+          "options": [
+            "Wire into CI as part of this spec",
+            "Explicitly defer CI integration to a future spec",
+            "No CI pipeline exists yet \u2014 this is not applicable"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Are there any notable `tsconfig.json` settings beyond `strict: true` that should be mandated (e.g., `moduleResolution: bundler`, `target: ESNext`, `jsx: react-jsx`)?",
+          "context": "Vite projects typically require specific tsconfig settings to work correctly (e.g., `moduleResolution: bundler`). Leaving this fully open risks implementers using incompatible settings that cause build failures.",
+          "options": [
+            "Mandate the Vite-recommended tsconfig defaults (moduleResolution: bundler, target: ESNext, jsx: react-jsx) plus strict: true",
+            "Only mandate strict: true and leave everything else to the implementer",
+            "Include a tsconfig snippet in the spec"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the PRD explicitly state that `vite.config.ts` is a required deliverable and describe its minimum expected contents (proxy config, React plugin)?",
+          "context": "The dev proxy requirements imply a specific vite.config.ts, but the file is never called out as a named deliverable. Explicit callout reduces ambiguity for reviewers and implementers.",
+          "options": [
+            "Yes \u2014 explicitly list vite.config.ts as a deliverable with minimum contents described",
+            "No \u2014 the proxy requirements are sufficient; implementers can infer the config file",
+            "Add a short example snippet to the spec for clarity"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This PRD is well-structured, precise, and implementation-ready. It clearly scopes the frontend scaffold for af-hub, defines the toolchain, mandates specific TypeScript compiler options, specifies Make targets and npm scripts, lists acceptance criteria, and explicitly defers out-of-scope concerns. The document is internally consistent and leaves very little ambiguity for an implementer. Only a handful of minor clarifications could further strengthen it.",
+      "gaps": [
+        "The dev proxy configuration does not specify the Vite config file name or location (e.g., `web/vite.config.ts`), which could leave an implementer uncertain about where to place proxy settings.",
+        "The ESLint configuration section references 'the Vite-generated default ESLint config' but does not specify the ESLint config file name or format (e.g., `eslint.config.js` flat config vs. `.eslintrc.cjs`), which varies across Vite versions and could lead to inconsistency.",
+        "`make web-lint` is described as running both ESLint and TypeScript type checking, but the TypeScript type-checking command (`tsc --noEmit`) is not explicitly mentioned, leaving the implementer to infer it.",
+        "The `web/index.html` entry point required by Vite is not mentioned in the source layout section, even though it is a mandatory file for any Vite project.",
+        "The proxy target port (`http://localhost:8080`) is stated without confirming this matches the Go backend's actual default port \u2014 if the backend port is configurable, a note on how to override it during development would be helpful.",
+        "No `.gitignore` guidance is provided for the `web/` directory (e.g., excluding `node_modules/` and `web/dist/` from version control), which is a common omission that can cause issues."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should the Vite configuration file be explicitly specified as `web/vite.config.ts`, and should the PRD include a minimal outline of its required contents (e.g., the `server.proxy` block)?",
+          "context": "The dev proxy requirements are clear, but the PRD doesn't mention the Vite config file by name or location. Implementers familiar with Vite will infer it, but making it explicit eliminates any ambiguity and makes the acceptance criteria more verifiable.",
+          "options": [
+            "Yes \u2014 name the file `web/vite.config.ts` and include a minimal required structure in the PRD.",
+            "No \u2014 leave it to the implementer; the proxy behavior is already specified in the acceptance criteria.",
+            "Partially \u2014 name the file but do not prescribe its internal structure."
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Which ESLint config format should be used: the new flat config (`eslint.config.js`, default in ESLint 9+) or the legacy format (`.eslintrc.cjs`)? Vite's scaffold output differs depending on the Vite version.",
+          "context": "ESLint 9 introduced a breaking flat config format. Vite 5+ scaffolds use it by default, but the PRD currently says 'Vite-generated default ESLint config' without locking in the format. This could cause confusion if team members use different Vite versions.",
+          "options": [
+            "Flat config (`eslint.config.js`) \u2014 modern default, compatible with ESLint 9+.",
+            "Legacy format (`.eslintrc.cjs`) \u2014 broader compatibility with older tooling.",
+            "Leave it unspecified \u2014 the implementer decides based on the installed Vite version."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should `make web-lint` explicitly run `tsc --noEmit` for TypeScript type checking, and should this command be listed in `package.json` as a separate `npm run typecheck` script or bundled into `npm run lint`?",
+          "context": "The PRD states `make web-lint` runs 'ESLint and TypeScript type checking' but does not specify the tsc command or whether it is a separate npm script. Making this explicit ensures the acceptance criterion ('exits with code 0 with no errors') is unambiguous.",
+          "options": [
+            "Bundle both into `npm run lint` (e.g., `eslint . && tsc --noEmit`).",
+            "Add a separate `npm run typecheck` script and have `make web-lint` call both.",
+            "Leave it to the implementer \u2014 the outcome (exit code 0, no errors) is what matters."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should `web/index.html` be explicitly listed as a required file in the source layout section, given that it is Vite's mandatory entry point?",
+          "context": "Vite requires an `index.html` at the project root (i.e., `web/index.html`) as the application entry point. The PRD currently only mentions `web/src/main.tsx` and `web/src/App.tsx`. Adding `index.html` to the required files list makes the acceptance criteria complete and verifiable.",
+          "options": [
+            "Yes \u2014 add `web/index.html` to the list of required source files.",
+            "No \u2014 it is an obvious Vite convention and does not need to be stated."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the PRD include a `.gitignore` specification for the `web/` directory to explicitly exclude `node_modules/` and `web/dist/` from version control?",
+          "context": "Without a `.gitignore` entry for `web/node_modules/` and `web/dist/`, developers may accidentally commit large generated directories. The PRD already specifies that `package-lock.json` is committed, so clarifying what is *not* committed would complete the picture.",
+          "options": [
+            "Yes \u2014 add a note that `web/node_modules/` and `web/dist/` must be listed in `.gitignore`.",
+            "No \u2014 this is standard developer hygiene and does not need to be in a PRD."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for a frontend scaffold. It demonstrates strong spec discipline: clear intent, explicit non-goals, precise acceptance criteria, and well-reasoned design decisions. The document is appropriately minimal for a scaffold iteration, avoids over-specifying implementation details, and defers future concerns cleanly. Only a few minor gaps exist, none of which are blockers for implementation.",
+      "gaps": [
+        "The dev server URL (host and port) exposed by `make web-dev` is not specified. Vite defaults to `http://localhost:5173`, but this is not stated, which could cause confusion if a developer expects a different port or if port conflicts arise.",
+        "The `make web-dev` target behavior when the `web/` directory or `node_modules/` doesn't exist yet is unspecified \u2014 no guidance on whether the Makefile should guard against or auto-run `npm install` before starting the dev server.",
+        "The root Makefile integration is mentioned (add make targets) but the scope of changes is not described \u2014 e.g., whether a `web-install` or `web-setup` target is expected, or how the targets relate to any existing top-level targets (e.g., `make all`, `make build`).",
+        "The shadcn/ui initialization method is unspecified. Since shadcn/ui copies components into the project tree via a CLI (`npx shadcn-ui@latest init`), the spec does not clarify what baseline components (if any) should be initialized at scaffold time, or if just the config/init step is sufficient.",
+        "There is no mention of a `web/index.html` entry point, which is required by Vite. While this is implied by the Vite scaffold, its absence from the source layout section could create ambiguity."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What port and host should the Vite dev server bind to? Should the spec explicitly state the default (`http://localhost:5173`), or is leaving it as Vite's default intentional?",
+          "context": "Acceptance criterion #3 says 'navigate to the dev server URL' but does not specify what that URL is. Explicitly documenting the default port avoids confusion and port-conflict issues for developers.",
+          "options": [
+            "Explicitly state the default: http://localhost:5173",
+            "Leave it unspecified \u2014 Vite's default is well-known and the implementer may configure it",
+            "Make the port configurable via an environment variable (e.g., VITE_PORT)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should the root Makefile include a `make web-install` (or `make web-setup`) target that runs `npm install` inside `web/`? And should existing top-level targets like `make all` or `make build` be updated to include the frontend build?",
+          "context": "The spec mentions adding make targets but does not describe the full scope of Makefile changes. A missing `web-install` target is a common friction point when onboarding new developers, and it is unclear whether `make build` or `make all` should encompass the frontend.",
+          "options": [
+            "Yes \u2014 add `make web-install` and wire `make web-build` into `make all`/`make build`",
+            "Yes \u2014 add `make web-install` only; keep top-level targets backend-only for now",
+            "No \u2014 developers are expected to run `npm install` manually; document it in a README instead",
+            "Leave it to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "For shadcn/ui initialization, should the scaffold run `npx shadcn-ui init` and commit the resulting config, or is it sufficient to just install the underlying Radix UI dependencies and defer the shadcn init to the first spec that uses a component?",
+          "context": "shadcn/ui works differently from a normal npm package \u2014 components are copied into the project tree via a CLI. The spec states it 'provides component primitives (copied into the project tree)' but does not clarify whether the CLI init step is part of this scaffold or deferred.",
+          "options": [
+            "Run `npx shadcn-ui init` as part of the scaffold and commit the config file (components.json)",
+            "Only install Radix UI dependencies; defer shadcn init to the first spec that needs a component",
+            "Leave it to the implementer"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This PRD is exceptionally well-crafted and essentially ready for implementation. It establishes a clear, minimal frontend scaffold for af-hub with precise acceptance criteria, thoughtful non-goals, and well-reasoned design decisions. The document strikes an excellent balance between prescriptiveness (mandating specific tsconfig options, proxy paths, make targets) and flexibility (leaving file structure, config formats, and package versions to the implementer). The non-goals section is unusually thorough, proactively eliminating ambiguity in areas that often cause debate during implementation. A few minor gaps exist around testing toolchain expectations and monorepo tooling conventions, but none block implementation.",
+      "gaps": [
+        "No mention of whether a test framework (e.g., Vitest) should be scaffolded or is explicitly out of scope. Future specs adding components may assume a test harness exists.",
+        "The `make web-dev` target's behavior when `node_modules/` is absent is unspecified \u2014 it is unclear whether the target should auto-run `npm install` or fail explicitly, which could trip up new contributors.",
+        "No guidance on whether `web/dist/` should be added to the root `.gitignore` or the `web/.gitignore`. The PRD defers `.gitignore` contents to 'standard developer hygiene' but this is a concrete file the implementer must commit or exclude.",
+        "The shadcn/ui CLI invocation references `npx shadcn-ui init` but the current package name has changed to `shadcn` (i.e., `npx shadcn@latest init`). This could cause implementer confusion.",
+        "No explicit statement that `web/node_modules/` should be excluded from the Go build or that the Go toolchain will not attempt to process files under `web/`. This is a minor but real concern in a mixed-language monorepo."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should a test framework such as Vitest be included in the scaffold, or is testing toolchain setup explicitly out of scope for this iteration?",
+          "context": "Future specs adding React components or utility functions will likely need a test harness. If Vitest is not scaffolded now, future specs will need to re-open build toolchain decisions, which this scaffold is intended to prevent.",
+          "options": [
+            "Include Vitest in the scaffold (add `npm run test` and `make web-test`)",
+            "Explicitly defer testing toolchain to a future spec (add to Non-goals)",
+            "No opinion \u2014 leave it to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should `make web-dev` and `make web-build` automatically run `npm install` if `node_modules/` is absent, or should they fail fast and require the developer to install dependencies manually first?",
+          "context": "In a mixed Go/Node monorepo, contributors cloning the repo for the first time may run `make web-dev` without realizing they need to `cd web && npm install` first. Specifying this prevents a common friction point.",
+          "options": [
+            "Auto-run `npm install` as a prerequisite in the Makefile targets",
+            "Fail fast with a clear error message pointing to the install step",
+            "Leave this behavior to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "The PRD references `npx shadcn-ui init` but the shadcn/ui CLI package has been renamed to `shadcn` (invoked as `npx shadcn@latest init`). Should the spec be updated to reference the current CLI invocation, or remain package-name-agnostic?",
+          "context": "Using the outdated `shadcn-ui` package name may cause the implementer to install a deprecated CLI version, leading to an incompatible `components.json` or failed init. Clarifying this prevents a subtle but real setup failure.",
+          "options": [
+            "Update the spec to reference `npx shadcn@latest init`",
+            "Keep the spec package-name-agnostic (just say 'run the shadcn/ui init CLI')",
+            "Leave it to the implementer to use the current CLI"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Keep the specs independent for now; the relationship is implicit. The web scaffold is a standalone build toolchain setup.",
+        "q2": "Use the Vite-generated default ESLint config with @typescript-eslint/recommended. Minimal config, extend later.",
+        "q3": "Leave version selection to the implementer; package-lock.json will lock them after initial install.",
+        "q4": "Both: npm run build and npm run lint exit 0, and a developer can run make web-dev and see the af-hub heading.",
+        "q5": "candlekeep"
+      },
+      "timestamp": "2026-07-20T16:24:46.106967+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Explicitly out of scope for all scaffold-related specs \u2014 deployment strategy TBD. Production serving will be addressed separately.",
+        "q2": "Only specify what is strictly needed for the placeholder route (e.g., src/App.tsx, src/main.tsx). Future specs define the layout as pages are added.",
+        "q3": "No CI pipeline exists yet \u2014 this is not applicable. CI integration is a separate concern.",
+        "q4": "Mandate the Vite-recommended tsconfig defaults (moduleResolution: bundler, target: ESNext, jsx: react-jsx) plus strict: true.",
+        "q5": "No \u2014 the proxy requirements are sufficient; implementers can infer the config file."
+      },
+      "timestamp": "2026-07-20T16:25:52.111702+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "No \u2014 leave it to the implementer; the proxy behavior is already specified in the acceptance criteria.",
+        "q2": "Leave it unspecified \u2014 the implementer decides based on the installed Vite version.",
+        "q3": "Leave it to the implementer \u2014 the outcome (exit code 0, no errors) is what matters.",
+        "q4": "No \u2014 it is an obvious Vite convention and does not need to be stated.",
+        "q5": "No \u2014 this is standard developer hygiene and does not need to be in a PRD."
+      },
+      "timestamp": "2026-07-20T16:27:11.254017+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "Leave it unspecified \u2014 Vite's default is well-known and the implementer may configure it.",
+        "q2": "Leave it to the implementer.",
+        "q3": "Run npx shadcn-ui init as part of the scaffold and commit the config file (components.json). This is what 'copied into tree' means."
+      },
+      "timestamp": "2026-07-20T16:28:38.029140+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

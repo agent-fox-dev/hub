@@ -1,0 +1,1853 @@
+{
+  "$schema": null,
+  "spec_id": "01",
+  "spec_name": "workspaces",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/... -count=1 -v -run TestWorkspace",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: workspace data model and field validation",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for slug validator",
+          "details": [
+            "Create test file internal/workspace/validate_test.go.",
+            "TS-01-2: table-driven test for valid slugs (3-char, 64-char, alphanumeric+hyphen, starts-with-letter).",
+            "TS-01-3: table-driven test for invalid slugs (too short, uppercase, leading digit, trailing hyphen, consecutive hyphens, space, underscore).",
+            "TS-01-E1: assert slugs of length 2 and 65 return non-nil error.",
+            "TS-01-E2: assert slugs starting with digit or hyphen return non-nil error.",
+            "Use t.Run for each sub-case; call validateSlug(s string) error (not yet implemented — use panic(\"not implemented\"))."
+          ],
+          "test_spec_refs": [
+            "TS-01-2",
+            "TS-01-3",
+            "TS-01-E1",
+            "TS-01-E2"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.2",
+            "01-REQ-1.3",
+            "01-REQ-1.E1",
+            "01-REQ-1.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write unit tests for git_url validator",
+          "details": [
+            "TS-01-4: table-driven test asserting HTTPS and SSH URLs pass validateGitURL.",
+            "TS-01-5: table-driven test asserting empty, plain-HTTP, empty-host, empty-path URLs return non-nil error.",
+            "TS-01-E4: assert http:// URLs specifically return non-nil error.",
+            "Place in internal/workspace/validate_test.go alongside slug tests.",
+            "Stub validateGitURL(url string) error with panic(\"not implemented\")."
+          ],
+          "test_spec_refs": [
+            "TS-01-4",
+            "TS-01-5",
+            "TS-01-E4"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.4",
+            "01-REQ-1.5",
+            "01-REQ-1.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write unit tests for branch validator",
+          "details": [
+            "TS-01-6: table-driven test for valid git ref names (main, feature/my-feature, release-1.0).",
+            "TS-01-7: table-driven test asserting refs with space, ~, ^, :, ?, *, [, \\, .., trailing .lock, trailing dot, leading dot return non-nil error.",
+            "TS-01-E3: assert empty string branch returns non-nil error.",
+            "Stub validateBranch(branch string) error with panic(\"not implemented\")."
+          ],
+          "test_spec_refs": [
+            "TS-01-6",
+            "TS-01-7",
+            "TS-01-E3"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.6",
+            "01-REQ-1.7",
+            "01-REQ-1.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write unit tests for workspace storage layer",
+          "details": [
+            "Create test file internal/workspace/store_test.go.",
+            "TS-01-1: insert workspace record and assert all columns via PRAGMA table query.",
+            "TS-01-8: insert two workspaces with the same git_url, different slugs; assert both rows exist.",
+            "TS-01-9: delete an archived workspace row; assert no row with slug remains and no status='deleted' row exists.",
+            "TS-01-10: insert workspace; assert created_at and updated_at parse as valid RFC 3339 via time.Parse(time.RFC3339, ...).",
+            "Use in-memory SQLite via apikit.OpenDatabase(':memory:') for isolation.",
+            "Store functions (insertWorkspace, deleteWorkspace) use panic(\"not implemented\") stubs."
+          ],
+          "test_spec_refs": [
+            "TS-01-1",
+            "TS-01-8",
+            "TS-01-9",
+            "TS-01-10"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.1",
+            "01-REQ-1.8",
+            "01-REQ-1.9",
+            "01-REQ-1.10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write integration tests for schema initialization",
+          "details": [
+            "Create test file internal/workspace/schema_test.go.",
+            "TS-01-11: open in-memory DB, call initSchema(db), assert PRAGMA table_info(workspaces) returns 8 columns with correct names, types, and constraints.",
+            "TS-01-12: call initSchema(db) twice on same DB; assert second call returns nil error.",
+            "TS-01-E5: pass a nil or closed *apikit.DB to initSchema; assert non-nil error returned.",
+            "initSchema(db *apikit.DB) error stub uses panic(\"not implemented\")."
+          ],
+          "test_spec_refs": [
+            "TS-01-11",
+            "TS-01-12",
+            "TS-01-E5"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-2.2",
+            "01-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files in internal/workspace/*_test.go compile without errors: go build ./internal/workspace/...",
+          "Test stubs (panic(\"not implemented\")) cause expected test failures confirming tests are wired: go test ./internal/workspace/... -count=1 lists FAIL with panic output.",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 01-REQ-1.2, 01-REQ-1.3, 01-REQ-1.4, 01-REQ-1.5, 01-REQ-1.6, 01-REQ-1.7, 01-REQ-2.1 acceptance criteria are represented by failing tests."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: permission registration, access control, and create workspace endpoint",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write integration tests for permission scope registration",
+          "details": [
+            "Create test file internal/workspace/permissions_test.go.",
+            "TS-01-13: call server.MountHandlers(db, ...); assert Permission{Resource:'workspaces', Action:'read'} is in registered permissions.",
+            "TS-01-14: assert Permission{Resource:'workspaces', Action:'create'} is in registered permissions.",
+            "TS-01-15: use PAT with workspaces:read to GET /api/v1/workspaces and GET /api/v1/workspaces/:slug; assert HTTP 200.",
+            "TS-01-16: use PAT with workspaces:create to POST /api/v1/workspaces; assert HTTP 201; then GET; assert HTTP 200.",
+            "Use httptest.NewRecorder and echo test utilities for handler-level tests."
+          ],
+          "test_spec_refs": [
+            "TS-01-13",
+            "TS-01-14",
+            "TS-01-15",
+            "TS-01-16"
+          ],
+          "requirement_refs": [
+            "01-REQ-3.1",
+            "01-REQ-3.2",
+            "01-REQ-3.3",
+            "01-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write integration tests for access control enforcement",
+          "details": [
+            "Create test file internal/workspace/authz_test.go.",
+            "TS-01-17: admin token on GET /api/v1/workspaces, GET /:slug, POST /:slug/archive → assert 200 each.",
+            "TS-01-18: admin token on POST /api/v1/workspaces → assert 403.",
+            "TS-01-19: user API key on POST /api/v1/workspaces, GET /:slug, POST /:slug/archive → assert 201, 200, 200.",
+            "TS-01-23: missing credential on GET /api/v1/workspaces → assert 401.",
+            "TS-01-24: PAT with workspaces:read on POST /:slug/archive → assert 403.",
+            "Use table-driven subtests with credential variants."
+          ],
+          "test_spec_refs": [
+            "TS-01-17",
+            "TS-01-18",
+            "TS-01-19",
+            "TS-01-23",
+            "TS-01-24"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.1",
+            "01-REQ-4.2",
+            "01-REQ-4.3",
+            "01-REQ-4.7",
+            "01-REQ-4.8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write integration tests for slug enumeration prevention and scoping",
+          "details": [
+            "TS-01-20: PAT workspaces:read for alice; GET /api/v1/workspaces returns only alice's workspaces; GET bob's slug returns 404.",
+            "TS-01-21: PAT workspaces:create for alice; POST workspace returns 201 with owner_id=alice.id; GET workspaces returns 200.",
+            "TS-01-22: alice's API key requests bob's slug; assert HTTP 404 not 403.",
+            "Add to authz_test.go or separate file internal/workspace/scoping_test.go."
+          ],
+          "test_spec_refs": [
+            "TS-01-20",
+            "TS-01-21",
+            "TS-01-22"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.4",
+            "01-REQ-4.5",
+            "01-REQ-4.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write integration tests for create workspace endpoint",
+          "details": [
+            "Create test file internal/workspace/create_test.go.",
+            "TS-01-25: POST /api/v1/workspaces with user API key; assert 201, slug, git_url, status='active', owner_id, RFC3339 timestamps.",
+            "TS-01-26: POST with duplicate slug; assert 409.",
+            "TS-01-27: POST with org_id where user is not a member; assert 403.",
+            "TS-01-28: POST with non-existent org_id; assert 400.",
+            "TS-01-29: POST with missing/malformed body; assert 400."
+          ],
+          "test_spec_refs": [
+            "TS-01-25",
+            "TS-01-26",
+            "TS-01-27",
+            "TS-01-28",
+            "TS-01-29"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1",
+            "01-REQ-5.2",
+            "01-REQ-5.3",
+            "01-REQ-5.4",
+            "01-REQ-5.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write integration tests for create workspace optional fields and edge cases",
+          "details": [
+            "TS-01-30: POST with valid branch; assert response includes branch value; DB row has branch.",
+            "TS-01-31: POST without branch; assert response branch==null; DB row branch=NULL.",
+            "TS-01-E8: admin token POST; assert 403.",
+            "TS-01-E9: PAT workspaces:read POST; assert 403.",
+            "TS-01-E10: mock DB insert failure; assert 500 and no partial row in DB.",
+            "Add to create_test.go."
+          ],
+          "test_spec_refs": [
+            "TS-01-30",
+            "TS-01-31",
+            "TS-01-E8",
+            "TS-01-E9",
+            "TS-01-E10"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.6",
+            "01-REQ-5.7",
+            "01-REQ-5.E1",
+            "01-REQ-5.E2",
+            "01-REQ-5.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile: go build ./internal/workspace/...",
+          "Tests fail with panic/stub errors confirming coverage: go test ./internal/workspace/... -count=1 2>&1 | grep -E 'FAIL|panic'",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "Requirements 01-REQ-3.1 through 01-REQ-5.7 acceptance criteria are represented by failing tests."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: list, get, lifecycle, CLI, and error envelope",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write integration tests for list and get workspace endpoints",
+          "details": [
+            "Create test file internal/workspace/list_get_test.go.",
+            "TS-01-32: admin token GET /api/v1/workspaces; assert all active workspaces returned, archived excluded, ordered by created_at desc.",
+            "TS-01-33: user API key GET; assert only own active workspaces returned.",
+            "TS-01-34: GET with ?include_archived=true; assert both active and archived included.",
+            "TS-01-35: user with no workspaces GET; assert 200 with [].",
+            "TS-01-36: GET /:slug for own workspace; assert 200 and correct fields.",
+            "TS-01-37: GET /nonexistent-slug; assert 404.",
+            "TS-01-38: GET bob's slug as alice; assert 404 not 403.",
+            "TS-01-E11: 25-workspace list; assert no pagination headers present."
+          ],
+          "test_spec_refs": [
+            "TS-01-32",
+            "TS-01-33",
+            "TS-01-34",
+            "TS-01-35",
+            "TS-01-36",
+            "TS-01-37",
+            "TS-01-38",
+            "TS-01-E11"
+          ],
+          "requirement_refs": [
+            "01-REQ-6.1",
+            "01-REQ-6.2",
+            "01-REQ-6.3",
+            "01-REQ-6.4",
+            "01-REQ-7.1",
+            "01-REQ-7.2",
+            "01-REQ-7.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write integration tests for workspace lifecycle: archive, reactivate, delete",
+          "details": [
+            "Create test file internal/workspace/lifecycle_test.go.",
+            "TS-01-39: POST /:slug/archive on active workspace; assert 200, status='archived', updated_at updated.",
+            "TS-01-40: POST /:slug/archive on already-archived workspace; assert 400.",
+            "TS-01-41: PAT workspaces:read POST /:slug/archive; assert 403.",
+            "TS-01-42: POST /:slug/archive on nonexistent slug; assert 404.",
+            "TS-01-43: POST /:slug/reactivate on archived workspace; assert 200, status='active'.",
+            "TS-01-44: POST /:slug/reactivate on already-active workspace; assert 400."
+          ],
+          "test_spec_refs": [
+            "TS-01-39",
+            "TS-01-40",
+            "TS-01-41",
+            "TS-01-42",
+            "TS-01-43",
+            "TS-01-44"
+          ],
+          "requirement_refs": [
+            "01-REQ-8.1",
+            "01-REQ-8.2",
+            "01-REQ-8.3",
+            "01-REQ-8.4",
+            "01-REQ-9.1",
+            "01-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration tests for workspace lifecycle: reactivate and delete continued",
+          "details": [
+            "TS-01-45: PAT workspaces:create POST /:slug/reactivate; assert 403.",
+            "TS-01-46: POST /:slug/reactivate on nonexistent slug; assert 404.",
+            "TS-01-47: DELETE /:slug on archived workspace; assert 204 empty body; DB row absent.",
+            "TS-01-48: DELETE /:slug on active workspace; assert 400; row still present.",
+            "TS-01-49: PAT workspaces:read DELETE /:slug; assert 403.",
+            "TS-01-50: DELETE /nonexistent-slug; assert 404.",
+            "TS-01-51: physical delete: call deleteWorkspace directly; assert no status='deleted' row remains.",
+            "TS-01-E12: mock DB DELETE failure; assert 500.",
+            "Add to lifecycle_test.go."
+          ],
+          "test_spec_refs": [
+            "TS-01-45",
+            "TS-01-46",
+            "TS-01-47",
+            "TS-01-48",
+            "TS-01-49",
+            "TS-01-50",
+            "TS-01-51",
+            "TS-01-E12"
+          ],
+          "requirement_refs": [
+            "01-REQ-9.3",
+            "01-REQ-9.4",
+            "01-REQ-10.1",
+            "01-REQ-10.2",
+            "01-REQ-10.3",
+            "01-REQ-10.4",
+            "01-REQ-10.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write unit and integration tests for CLI workspace commands",
+          "details": [
+            "Create test file internal/cli/workspace_test.go.",
+            "TS-01-52: run afc workspace create --git-url ... --slug ...; assert exit 0, valid JSON stdout.",
+            "TS-01-53: run with --org my-org; assert org_id resolved UUID in JSON output.",
+            "TS-01-54: run with missing --git-url; assert exit 1, usage hint in stderr, no HTTP call.",
+            "TS-01-55: run with --org nonexistent; assert exit 1, error in stderr, no workspace POST.",
+            "TS-01-56: POST returns 409; assert exit 1, conflict error in stderr.",
+            "TS-01-57: afc workspace list; assert exit 0, JSON array stdout.",
+            "TS-01-58: afc workspace list --include-archived; assert both active and archived in output.",
+            "TS-01-59: list with bad credential; assert exit 1, error stderr.",
+            "Use exec.Command or cobra test helpers; mock HTTP server with httptest.NewServer."
+          ],
+          "test_spec_refs": [
+            "TS-01-52",
+            "TS-01-53",
+            "TS-01-54",
+            "TS-01-55",
+            "TS-01-56",
+            "TS-01-57",
+            "TS-01-58",
+            "TS-01-59"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.1",
+            "01-REQ-11.2",
+            "01-REQ-11.3",
+            "01-REQ-11.4",
+            "01-REQ-11.5",
+            "01-REQ-12.1",
+            "01-REQ-12.2",
+            "01-REQ-12.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests for remaining CLI commands and error envelope",
+          "details": [
+            "TS-01-60: afc workspace get my-ws; assert exit 0, JSON with slug.",
+            "TS-01-61: afc workspace get nonexistent; assert exit 1, error stderr.",
+            "TS-01-62: afc workspace archive my-ws; assert exit 0, JSON status='archived'.",
+            "TS-01-63: afc workspace archive already-archived; assert exit 1, error stderr.",
+            "TS-01-64: afc workspace reactivate my-ws; assert exit 0, JSON status='active'.",
+            "TS-01-65: afc workspace reactivate active ws; assert exit 1.",
+            "TS-01-66: afc workspace delete my-ws --confirm; assert exit 0, confirmation stderr.",
+            "TS-01-67: afc workspace delete my-ws (no --confirm); assert exit 1, usage hint.",
+            "TS-01-68: delete on active ws with --confirm; assert exit 1, error stderr.",
+            "TS-01-69: afc --help; assert all subcommands listed.",
+            "TS-01-70: success exits 0; error exits 1 via CLIExitCode.",
+            "TS-01-71: grep source files for os.Exit outside cmd/afc/main.go; assert none.",
+            "TS-01-72: invalid slug POST returns 400 JSON envelope with error.code and error.message."
+          ],
+          "test_spec_refs": [
+            "TS-01-60",
+            "TS-01-61",
+            "TS-01-62",
+            "TS-01-63",
+            "TS-01-64",
+            "TS-01-65",
+            "TS-01-66",
+            "TS-01-67",
+            "TS-01-68",
+            "TS-01-69",
+            "TS-01-70",
+            "TS-01-71",
+            "TS-01-72"
+          ],
+          "requirement_refs": [
+            "01-REQ-13.1",
+            "01-REQ-13.2",
+            "01-REQ-14.1",
+            "01-REQ-14.2",
+            "01-REQ-15.1",
+            "01-REQ-15.2",
+            "01-REQ-16.1",
+            "01-REQ-16.2",
+            "01-REQ-16.3",
+            "01-REQ-17.1",
+            "01-REQ-17.2",
+            "01-REQ-17.3",
+            "01-REQ-18.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile: go build ./internal/... ./cmd/...",
+          "Tests produce expected failures (stubs not implemented): go test ./... -count=1 2>&1 | grep FAIL",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 01-REQ-6 through 01-REQ-18 acceptance criteria are represented by failing tests."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write property tests and edge case tests",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write property tests for slug uniqueness and owner invariants",
+          "details": [
+            "Create test file internal/workspace/property_test.go.",
+            "TS-01-P1: use testing/quick or manual loop; attempt N concurrent POST requests with same slug from distinct users; assert exactly one 201 and remainder 409; assert DB count=1.",
+            "TS-01-P2: generate arbitrary user-key creates and admin-token creates; assert all rows have valid non-null owner_id; admin attempts all return 403."
+          ],
+          "test_spec_refs": [
+            "TS-01-P1",
+            "TS-01-P2"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.1",
+            "01-REQ-5.2",
+            "01-REQ-4.2",
+            "01-REQ-5.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write property tests for status, delete-from-archived, and access scoping invariants",
+          "details": [
+            "TS-01-P3: after arbitrary create/archive/reactivate/delete sequences, assert all rows have status IN ('active','archived'); assert no status='deleted' row.",
+            "TS-01-P4: for each workspace in active/archived state, attempt DELETE; assert 204+row-absent for archived, 400+row-present for active.",
+            "TS-01-P5: create workspaces for users A, B, C; each GET /api/v1/workspaces returns only own workspaces.",
+            "Add to property_test.go."
+          ],
+          "test_spec_refs": [
+            "TS-01-P3",
+            "TS-01-P4",
+            "TS-01-P5"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.9",
+            "01-REQ-10.5",
+            "01-REQ-10.1",
+            "01-REQ-10.2",
+            "01-REQ-6.2",
+            "01-REQ-4.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write property tests for archived exclusion, timestamps, and slug enumeration prevention",
+          "details": [
+            "TS-01-P6: with mixed active/archived workspaces, GET without include_archived; assert zero archived in response.",
+            "TS-01-P7: after any create/archive/reactivate, query all rows; assert created_at and updated_at parse as valid RFC3339 with time.Parse.",
+            "TS-01-P8: for credential lacking access, GET /:slug, POST /:slug/archive, POST /:slug/reactivate, DELETE /:slug all return 404 never 403.",
+            "Add to property_test.go."
+          ],
+          "test_spec_refs": [
+            "TS-01-P6",
+            "TS-01-P7",
+            "TS-01-P8"
+          ],
+          "requirement_refs": [
+            "01-REQ-6.1",
+            "01-REQ-6.2",
+            "01-REQ-1.10",
+            "01-REQ-5.1",
+            "01-REQ-4.6",
+            "01-REQ-7.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write remaining edge case tests",
+          "details": [
+            "TS-01-E6: PAT workspaces:read attempts archive, reactivate, delete; assert 403 each.",
+            "TS-01-E7: PAT workspaces:create attempts archive, reactivate, delete; assert 403 each.",
+            "TS-01-E13: mock org resolution returning null UUID; CLI exits 1, no workspace POST made.",
+            "TS-01-E14: mock org resolution returning malformed body; CLI exits 1, no workspace POST.",
+            "Add to authz_test.go (E6/E7) and cli/workspace_test.go (E13/E14)."
+          ],
+          "test_spec_refs": [
+            "TS-01-E6",
+            "TS-01-E7",
+            "TS-01-E13",
+            "TS-01-E14"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.E1",
+            "01-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All property and edge case test files compile: go build ./...",
+          "Property and edge case tests fail at stub boundaries: go test ./internal/workspace/... -count=1 -run 'TestProp|TestEdge' 2>&1 | grep FAIL",
+          "No linter warnings: go vet ./...",
+          "All 8 property tests (TS-01-P1 through TS-01-P8) and all 14 edge case tests (TS-01-E1 through TS-01-E14) are represented."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement workspace data model, validators, and schema initialization",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Define Workspace struct and implement slug, git_url, and branch validators",
+          "details": [
+            "Create internal/workspace/model.go with Workspace struct: Slug, GitURL, Branch *string, OwnerID, OrgID *string, Status, CreatedAt, UpdatedAt string.",
+            "Create internal/workspace/validate.go implementing validateSlug(s string) error using regexp and manual checks.",
+            "Implement validateGitURL(url string) error: accept https://<host>/<path> and git@<host>:<path>; reject plain http://, empty host, empty path using regexp only.",
+            "Implement validateBranch(b string) error: reject empty string, ASCII control chars, space, ~, ^, :, ?, *, [, \\, '..' sequences, trailing '.lock', trailing dot, leading dot in any component.",
+            "Export types following Go conventions; all validators return descriptive errors."
+          ],
+          "test_spec_refs": [
+            "TS-01-1",
+            "TS-01-2",
+            "TS-01-3",
+            "TS-01-4",
+            "TS-01-5",
+            "TS-01-6",
+            "TS-01-7"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.1",
+            "01-REQ-1.2",
+            "01-REQ-1.3",
+            "01-REQ-1.4",
+            "01-REQ-1.5",
+            "01-REQ-1.6",
+            "01-REQ-1.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement schema initialization",
+          "details": [
+            "Create internal/workspace/schema.go implementing initSchema(db *apikit.DB) error.",
+            "Execute CREATE TABLE IF NOT EXISTS workspaces with exact DDL from PRD: slug TEXT PRIMARY KEY, git_url TEXT NOT NULL, branch TEXT, owner_id TEXT NOT NULL, org_id TEXT, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL.",
+            "Return wrapped error if DB is nil or statement execution fails.",
+            "Call initSchema from the server boot sequence (cmd/af-hub/main.go) before MountHandlers."
+          ],
+          "test_spec_refs": [
+            "TS-01-11",
+            "TS-01-12",
+            "TS-01-E5"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-2.2",
+            "01-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement workspace storage layer (insert, query, update, delete)",
+          "details": [
+            "Create internal/workspace/store.go with Store struct wrapping *apikit.DB.",
+            "Implement Create(ctx, w *Workspace) error: INSERT with RFC3339 created_at/updated_at using time.Now().UTC().Format(time.RFC3339).",
+            "Implement GetBySlug(ctx, slug string) (*Workspace, error): SELECT; return nil, nil if not found.",
+            "Implement ListByOwner(ctx, ownerID string, includeArchived bool) ([]*Workspace, error): ORDER BY created_at DESC.",
+            "Implement ListAll(ctx, includeArchived bool) ([]*Workspace, error) for admin.",
+            "Implement UpdateStatus(ctx, slug, status string) (*Workspace, error): UPDATE status and updated_at.",
+            "Implement Delete(ctx, slug string) error: DELETE FROM workspaces WHERE slug = ?; return error if 0 rows affected.",
+            "Never write status='deleted'; deleted rows are physically removed."
+          ],
+          "test_spec_refs": [
+            "TS-01-8",
+            "TS-01-9",
+            "TS-01-10",
+            "TS-01-51"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.8",
+            "01-REQ-1.9",
+            "01-REQ-1.10",
+            "01-REQ-5.1",
+            "01-REQ-10.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Unit tests for validators pass: go test ./internal/workspace/... -count=1 -run 'TestValidate' -v",
+          "Schema tests pass: go test ./internal/workspace/... -count=1 -run 'TestSchema' -v",
+          "Store tests pass: go test ./internal/workspace/... -count=1 -run 'TestStore' -v",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "Requirements 01-REQ-1 (all ACs), 01-REQ-2 (all ACs) acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement permission registration and access control middleware",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Register workspace permission scopes via MountHandlers",
+          "details": [
+            "In internal/workspace/handler.go (or hub.go), define MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB) error.",
+            "Call s.MountHandlers(db, apikit.Permission{Resource: \"workspaces\", Action: \"read\"}, apikit.Permission{Resource: \"workspaces\", Action: \"create\"}).",
+            "Register all six workspace routes on s.APIGroup() after MountHandlers succeeds.",
+            "Call MountWorkspaceHandlers from cmd/af-hub/main.go after initSchema."
+          ],
+          "test_spec_refs": [
+            "TS-01-13",
+            "TS-01-14"
+          ],
+          "requirement_refs": [
+            "01-REQ-3.1",
+            "01-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement workspace authorization middleware",
+          "details": [
+            "Create internal/workspace/authz.go.",
+            "requireUserKey(next echo.HandlerFunc) echo.HandlerFunc: reject admin tokens with 403; require valid user identity; 401 if unauthenticated.",
+            "requireOwnerOrAdmin(store *Store) echo.HandlerFunc middleware: fetch workspace by slug; return 404 if not found OR if credential is non-admin non-owner (slug enumeration prevention per 01-REQ-4.6).",
+            "requireOwnerOrAdminStrict: same but do NOT fall through to 404 for PATs — return 403 for PAT on lifecycle mutation endpoints.",
+            "checkScope(required string) middleware: inspect PAT scopes; return 403 if scope absent.",
+            "Implement per the access control matrix in PRD: admin cannot create; PATs cannot archive/reactivate/delete."
+          ],
+          "test_spec_refs": [
+            "TS-01-17",
+            "TS-01-18",
+            "TS-01-19",
+            "TS-01-20",
+            "TS-01-21",
+            "TS-01-22",
+            "TS-01-23",
+            "TS-01-24"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.1",
+            "01-REQ-4.2",
+            "01-REQ-4.3",
+            "01-REQ-4.4",
+            "01-REQ-4.5",
+            "01-REQ-4.6",
+            "01-REQ-4.7",
+            "01-REQ-4.8",
+            "01-REQ-4.E1",
+            "01-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement error response envelope helper",
+          "details": [
+            "Create internal/workspace/errors.go.",
+            "Define apiError struct { Code int `json:\"code\"`; Message string `json:\"message\"` } and envelope struct { Error apiError `json:\"error\"` }.",
+            "Implement respondError(c echo.Context, status int, message string) error: return c.JSON(status, envelope{Error: apiError{Code: status, Message: message}}).",
+            "Use respondError consistently in all handlers; never return raw HTTP errors."
+          ],
+          "test_spec_refs": [
+            "TS-01-72"
+          ],
+          "requirement_refs": [
+            "01-REQ-18.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Permission registration tests pass: go test ./internal/workspace/... -count=1 -run 'TestPermission' -v",
+          "Access control tests pass: go test ./internal/workspace/... -count=1 -run 'TestAuthz|TestScoping' -v",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "Requirements 01-REQ-3.1, 01-REQ-3.2, 01-REQ-4 (all ACs), 01-REQ-18.1 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement API handlers: create, list, and get workspace",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement POST /api/v1/workspaces handler",
+          "details": [
+            "In internal/workspace/handler.go, implement createWorkspaceHandler(store *Store) echo.HandlerFunc.",
+            "Parse JSON body into CreateWorkspaceRequest{Slug, GitURL, Branch *string, OrgID *string}; return 400 on parse error.",
+            "Validate slug, git_url, branch (if provided) using validators; return 400 with descriptive message on failure.",
+            "If OrgID provided: verify org exists (400 if not); verify user is member (403 if not).",
+            "Reject admin token: return 403. Reject PAT without workspaces:create: return 403.",
+            "Call store.Create; map UNIQUE constraint error to 409; map other DB errors to 500.",
+            "Return HTTP 201 with workspace JSON object."
+          ],
+          "test_spec_refs": [
+            "TS-01-25",
+            "TS-01-26",
+            "TS-01-27",
+            "TS-01-28",
+            "TS-01-29",
+            "TS-01-30",
+            "TS-01-31"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1",
+            "01-REQ-5.2",
+            "01-REQ-5.3",
+            "01-REQ-5.4",
+            "01-REQ-5.5",
+            "01-REQ-5.6",
+            "01-REQ-5.7",
+            "01-REQ-5.E1",
+            "01-REQ-5.E2",
+            "01-REQ-5.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement GET /api/v1/workspaces handler",
+          "details": [
+            "Implement listWorkspacesHandler(store *Store) echo.HandlerFunc.",
+            "Parse ?include_archived=true query param.",
+            "If admin: call store.ListAll(ctx, includeArchived). Else: call store.ListByOwner(ctx, userID, includeArchived).",
+            "Return HTTP 200 with JSON array; return [] (not null) when no results.",
+            "No pagination headers or cursor fields; full result set returned.",
+            "Results ordered by created_at descending (enforced in store layer SQL)."
+          ],
+          "test_spec_refs": [
+            "TS-01-32",
+            "TS-01-33",
+            "TS-01-34",
+            "TS-01-35",
+            "TS-01-E11"
+          ],
+          "requirement_refs": [
+            "01-REQ-6.1",
+            "01-REQ-6.2",
+            "01-REQ-6.3",
+            "01-REQ-6.4",
+            "01-REQ-6.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement GET /api/v1/workspaces/:slug handler",
+          "details": [
+            "Implement getWorkspaceHandler(store *Store) echo.HandlerFunc.",
+            "Extract :slug path param; call store.GetBySlug(ctx, slug).",
+            "If workspace not found: return 404.",
+            "If workspace found but credential is non-admin non-owner: return 404 (not 403) to prevent enumeration.",
+            "If authorized: return HTTP 200 with workspace JSON object."
+          ],
+          "test_spec_refs": [
+            "TS-01-36",
+            "TS-01-37",
+            "TS-01-38"
+          ],
+          "requirement_refs": [
+            "01-REQ-7.1",
+            "01-REQ-7.2",
+            "01-REQ-7.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Create workspace integration tests pass: go test ./internal/workspace/... -count=1 -run 'TestCreate' -v",
+          "List and get workspace integration tests pass: go test ./internal/workspace/... -count=1 -run 'TestList|TestGet' -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Requirements 01-REQ-5 (all ACs), 01-REQ-6 (all ACs), 01-REQ-7 (all ACs) acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement API handlers: archive, reactivate, and delete workspace",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement POST /api/v1/workspaces/:slug/archive handler",
+          "details": [
+            "Implement archiveWorkspaceHandler(store *Store) echo.HandlerFunc.",
+            "Extract :slug; apply requireOwnerOrAdmin middleware; return 404 if not found/accessible.",
+            "Reject PAT credentials (workspaces:read or workspaces:create) with 403.",
+            "Fetch current status; if status != 'active' return 400 with message 'workspace is already archived'.",
+            "Call store.UpdateStatus(ctx, slug, 'archived'); return HTTP 200 with updated workspace JSON."
+          ],
+          "test_spec_refs": [
+            "TS-01-39",
+            "TS-01-40",
+            "TS-01-41",
+            "TS-01-42"
+          ],
+          "requirement_refs": [
+            "01-REQ-8.1",
+            "01-REQ-8.2",
+            "01-REQ-8.3",
+            "01-REQ-8.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement POST /api/v1/workspaces/:slug/reactivate handler",
+          "details": [
+            "Implement reactivateWorkspaceHandler(store *Store) echo.HandlerFunc.",
+            "Extract :slug; apply requireOwnerOrAdmin middleware; return 404 if not found/accessible.",
+            "Reject PAT credentials with 403.",
+            "Fetch current status; if status != 'archived' return 400 with message 'workspace is not archived'.",
+            "Call store.UpdateStatus(ctx, slug, 'active'); return HTTP 200 with updated workspace JSON."
+          ],
+          "test_spec_refs": [
+            "TS-01-43",
+            "TS-01-44",
+            "TS-01-45",
+            "TS-01-46"
+          ],
+          "requirement_refs": [
+            "01-REQ-9.1",
+            "01-REQ-9.2",
+            "01-REQ-9.3",
+            "01-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement DELETE /api/v1/workspaces/:slug handler",
+          "details": [
+            "Implement deleteWorkspaceHandler(store *Store) echo.HandlerFunc.",
+            "Extract :slug; apply requireOwnerOrAdmin middleware; return 404 if not found/accessible.",
+            "Reject PAT credentials with 403.",
+            "Fetch current status; if status != 'archived' return 400 ('only archived workspaces can be deleted').",
+            "Call store.Delete(ctx, slug); if DB error return 500.",
+            "Return HTTP 204 with empty body on success; do not write status='deleted'."
+          ],
+          "test_spec_refs": [
+            "TS-01-47",
+            "TS-01-48",
+            "TS-01-49",
+            "TS-01-50",
+            "TS-01-51",
+            "TS-01-E12"
+          ],
+          "requirement_refs": [
+            "01-REQ-10.1",
+            "01-REQ-10.2",
+            "01-REQ-10.3",
+            "01-REQ-10.4",
+            "01-REQ-10.5",
+            "01-REQ-10.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Lifecycle integration tests pass: go test ./internal/workspace/... -count=1 -run 'TestLifecycle|TestArchive|TestReactivate|TestDelete' -v",
+          "Property tests for delete-from-archived invariant pass: go test ./internal/workspace/... -count=1 -run 'TestProp' -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Requirements 01-REQ-8 (all ACs), 01-REQ-9 (all ACs), 01-REQ-10 (all ACs) acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Checkpoint: API layer complete",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run full API test suite and review coverage",
+          "details": [
+            "Run go test ./internal/workspace/... -count=1 -v and confirm all handler, storage, and validator tests pass.",
+            "Verify HTTP response codes and JSON envelope shape for 201, 200, 204, 400, 401, 403, 404, 409 responses.",
+            "Confirm no status='deleted' rows appear in any test DB after any test run.",
+            "Confirm all RFC 3339 timestamp assertions pass."
+          ],
+          "test_spec_refs": [
+            "TS-01-25",
+            "TS-01-32",
+            "TS-01-39",
+            "TS-01-47"
+          ],
+          "requirement_refs": [
+            "01-REQ-1.1",
+            "01-REQ-5.1",
+            "01-REQ-6.1",
+            "01-REQ-8.1",
+            "01-REQ-10.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Verify slug enumeration prevention and access scoping",
+          "details": [
+            "Confirm cross-user GET /:slug returns 404 not 403 in all handler tests.",
+            "Confirm property test TS-01-P5 passes: list only shows own workspaces.",
+            "Confirm property test TS-01-P8 passes: inaccessible workspace always 404.",
+            "Review authz.go logic to confirm no code path returns 403 for workspace existence checks."
+          ],
+          "test_spec_refs": [
+            "TS-01-22",
+            "TS-01-38",
+            "TS-01-P5",
+            "TS-01-P8"
+          ],
+          "requirement_refs": [
+            "01-REQ-4.6",
+            "01-REQ-7.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Validate error envelope consistency across all endpoints",
+          "details": [
+            "Run TS-01-72: trigger 400, 401, 403, 404, 409 responses; parse JSON and assert error.code matches HTTP status and error.message is non-empty string.",
+            "Grep handler code for any c.JSON calls that bypass respondError helper; fix any found.",
+            "Confirm no endpoint returns plain text or empty body for error conditions."
+          ],
+          "test_spec_refs": [
+            "TS-01-72"
+          ],
+          "requirement_refs": [
+            "01-REQ-18.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All API tests pass: go test ./internal/workspace/... -count=1",
+          "All tests pass: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Zero workspace rows with status='deleted' appear in any test database after full test suite run.",
+          "Requirements 01-REQ-4.6, 01-REQ-18.1 verified by passing tests."
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement afc CLI workspace commands",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Scaffold afc CLI command tree with apikit integration",
+          "details": [
+            "Create cmd/afc/main.go: call apikit.RootCommand(); add workspace subcommand group; add LoginCmd, UserCmd, KeysCmd, TokensCmd, OrgsCmd, AdminCmd.",
+            "Execute via apikit.CLIExecute(); handle error with apikit.CLIPrintError(err); exit via os.Exit(apikit.CLIExitCode(err)).",
+            "os.Exit is called ONLY in main(); all library functions in internal/cli/ return (*T, error) — never os.Exit.",
+            "Create internal/cli/workspace.go with WorkspaceCmd() *cobra.Command returning the workspace subcommand tree.",
+            "Ensure go vet finds no os.Exit in internal/ or pkg/ source files."
+          ],
+          "test_spec_refs": [
+            "TS-01-69",
+            "TS-01-70",
+            "TS-01-71"
+          ],
+          "requirement_refs": [
+            "01-REQ-17.1",
+            "01-REQ-17.2",
+            "01-REQ-17.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement afc workspace create and list commands",
+          "details": [
+            "Implement createCmd: --git-url (required), --slug (required), --branch (optional), --org (optional slug).",
+            "If --git-url or --slug missing: print usage hint to stderr, exit 1, no API call.",
+            "If --org provided: resolve org slug to UUID; if resolution fails or returns null/malformed UUID, print error to stderr, exit 1, no workspace POST.",
+            "On success: POST /api/v1/workspaces; print workspace JSON to stdout; exit 0.",
+            "Implement listCmd: --include-archived flag passes ?include_archived=true; print JSON array to stdout; exit 0 on success, exit 1 on error (error to stderr)."
+          ],
+          "test_spec_refs": [
+            "TS-01-52",
+            "TS-01-53",
+            "TS-01-54",
+            "TS-01-55",
+            "TS-01-56",
+            "TS-01-57",
+            "TS-01-58",
+            "TS-01-59"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.1",
+            "01-REQ-11.2",
+            "01-REQ-11.3",
+            "01-REQ-11.4",
+            "01-REQ-11.5",
+            "01-REQ-12.1",
+            "01-REQ-12.2",
+            "01-REQ-12.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement afc workspace get, archive, reactivate, and delete commands",
+          "details": [
+            "getCmd: GET /api/v1/workspaces/:slug; print JSON to stdout; exit 0 on success, exit 1 with error to stderr on failure.",
+            "archiveCmd: POST /api/v1/workspaces/:slug/archive; print JSON with status='archived' to stdout.",
+            "reactivateCmd: POST /api/v1/workspaces/:slug/reactivate; print JSON with status='active' to stdout.",
+            "deleteCmd: requires --confirm flag; if missing print usage hint to stderr, exit 1, no API call.",
+            "deleteCmd on success: print confirmation message to stderr, exit 0.",
+            "All commands: exit 1 with error to stderr on any API error; JSON to stdout, human messages to stderr."
+          ],
+          "test_spec_refs": [
+            "TS-01-60",
+            "TS-01-61",
+            "TS-01-62",
+            "TS-01-63",
+            "TS-01-64",
+            "TS-01-65",
+            "TS-01-66",
+            "TS-01-67",
+            "TS-01-68"
+          ],
+          "requirement_refs": [
+            "01-REQ-13.1",
+            "01-REQ-13.2",
+            "01-REQ-14.1",
+            "01-REQ-14.2",
+            "01-REQ-15.1",
+            "01-REQ-15.2",
+            "01-REQ-16.1",
+            "01-REQ-16.2",
+            "01-REQ-16.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Implement org slug resolution for workspace create --org flag",
+          "details": [
+            "Create internal/cli/orgresolve.go implementing resolveOrgSlug(ctx context.Context, slug string) (string, error).",
+            "Use apikit SDK or direct HTTP GET to look up org by slug; extract UUID.",
+            "If org not found (404) or API error: return non-nil error.",
+            "If response body missing/null UUID or unexpected shape: return non-nil error.",
+            "resolveOrgSlug never calls os.Exit; returns (*string, error) tuple."
+          ],
+          "test_spec_refs": [
+            "TS-01-53",
+            "TS-01-55",
+            "TS-01-E13",
+            "TS-01-E14"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.2",
+            "01-REQ-11.4",
+            "01-REQ-11.E1",
+            "01-REQ-11.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "CLI unit tests pass: go test ./internal/cli/... -count=1 -v",
+          "CLI integration tests pass (with mock HTTP server): go test ./internal/cli/... -count=1 -run 'TestCLI' -v",
+          "afc --help lists workspace, login, user, keys, tokens, orgs, admin subcommands",
+          "No os.Exit in library code: grep -rn 'os.Exit' internal/ pkg/ should return no results",
+          "No linter warnings: go vet ./...",
+          "Requirements 01-REQ-11 through 01-REQ-17 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Wire up server bootstrap and health check",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Integrate schema init and workspace handlers into server boot sequence",
+          "details": [
+            "In cmd/af-hub/main.go: call apikit.LoadConfig(), apikit.OpenDatabase(path), apikit.Bootstrap(ctx, db, opts).",
+            "Call initSchema(db); if error, log and return non-nil error causing process exit.",
+            "Call apikit.NewServer(cfg, dbHealthChecker{db}).",
+            "Call MountWorkspaceHandlers(s, db) which internally calls s.MountHandlers(db, workspacesReadPerm, workspacesCreatePerm).",
+            "Call s.Start(); propagate error to os.Exit."
+          ],
+          "test_spec_refs": [
+            "TS-01-11",
+            "TS-01-13",
+            "TS-01-14"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-3.1",
+            "01-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement HealthChecker via database ping",
+          "details": [
+            "Create internal/health/checker.go implementing apikit.HealthChecker interface with a DB ping.",
+            "dbHealthChecker.Check(ctx) error: execute a trivial SQL (SELECT 1) against *apikit.DB; return error if ping fails.",
+            "Pass dbHealthChecker instance to apikit.NewServer(cfg, checker) in main.go.",
+            "Confirm existing main.go health check is replaced or aligned with this implementation."
+          ],
+          "test_spec_refs": [
+            "TS-01-E5"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Server boots successfully against an in-memory test DB: go test ./cmd/af-hub/... -count=1 -run 'TestBoot'",
+          "initSchema is called before MountHandlers in boot sequence: inspect main.go call order",
+          "Health check returns nil on healthy DB and non-nil on unreachable DB: go test ./internal/health/... -count=1",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and smoke tests",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Trace execution paths and verify call chains are complete",
+          "details": [
+            "Verify 01-PATH-1 (create workspace): main.go → MountWorkspaceHandlers → createWorkspaceHandler → store.Create → respondJSON; no stub remains.",
+            "Verify 01-PATH-2 (archive then delete): archiveWorkspaceHandler → store.UpdateStatus; deleteWorkspaceHandler → store.Delete; both call real DB, no panic(\"not implemented\").",
+            "Search all .go files for panic(\"not implemented\"): grep -rn 'panic(\"not implemented\")' . should return zero results.",
+            "Run TS-01-SMOKE-1: afc workspace create with real server; assert exit 0 and DB row present.",
+            "Run TS-01-SMOKE-2: afc workspace archive then delete; assert slug freed, no row remains."
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-1",
+            "TS-01-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1",
+            "01-REQ-6.1",
+            "01-REQ-8.1",
+            "01-REQ-10.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Verify return value propagation through handler and store layers",
+          "details": [
+            "Confirm createWorkspaceHandler propagates store.Create error to respondError(c, 500, ...) not discarded.",
+            "Confirm archiveWorkspaceHandler propagates store.UpdateStatus (*Workspace, error) — both return values used.",
+            "Confirm deleteWorkspaceHandler propagates store.Delete error to 500 response.",
+            "Confirm list handler returns [] not null when store returns empty slice.",
+            "Run TS-01-SMOKE-3 (list with --include-archived) and TS-01-SMOKE-6 (reactivate): assert correct status transitions in JSON output."
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-3",
+            "TS-01-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "01-REQ-5.1",
+            "01-REQ-8.1",
+            "01-REQ-9.1",
+            "01-REQ-10.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Run all smoke tests with real components",
+          "details": [
+            "Run TS-01-SMOKE-4: create workspace with --org flag; verify org_id UUID in DB row.",
+            "Run TS-01-SMOKE-5: PAT workspaces:read reads only own workspaces; no other user's workspace visible.",
+            "All six smoke tests use real afc CLI binary, real af-hub server, real SQLite DB (test instance).",
+            "Confirm each smoke test exits 0 with correct JSON output and correct DB state after execution.",
+            "Run: go test ./internal/integration/... -count=1 -run 'TestSmoke' -v"
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-1",
+            "TS-01-SMOKE-2",
+            "TS-01-SMOKE-3",
+            "TS-01-SMOKE-4",
+            "TS-01-SMOKE-5",
+            "TS-01-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "01-REQ-11.1",
+            "01-REQ-11.2",
+            "01-REQ-12.1",
+            "01-REQ-16.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.4",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Search for panic(\"not implemented\"): grep -rn 'panic(\"not implemented\")' . — must return zero results.",
+            "Search for bare TODO stubs: grep -rn '// TODO' . — review each; none may be unimplemented required logic.",
+            "Search for os.Exit outside cmd/: grep -rn 'os.Exit' internal/ pkg/ — must return zero results.",
+            "Confirm all store methods (Create, GetBySlug, ListByOwner, ListAll, UpdateStatus, Delete) have real SQL implementations, not stubs.",
+            "Confirm resolveOrgSlug returns real data from apikit SDK or HTTP, not a hardcoded stub.",
+            "Run TS-01-71: source audit via go test confirming no os.Exit in library code."
+          ],
+          "test_spec_refs": [
+            "TS-01-71"
+          ],
+          "requirement_refs": [
+            "01-REQ-17.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.5",
+          "title": "Verify call-site wiring for all production entry points",
+          "details": [
+            "Confirm initSchema(db) is called in cmd/af-hub/main.go before server start (inspect AST or grep).",
+            "Confirm MountWorkspaceHandlers is called and its return error is checked in main.go.",
+            "Confirm WorkspaceCmd() is added to the cobra root command in cmd/afc/main.go.",
+            "Confirm apikit.CLIExecute(), apikit.CLIPrintError(), and apikit.CLIExitCode() are all called in cmd/afc/main.go — not just defined.",
+            "Confirm all six API routes (POST /workspaces, GET /workspaces, GET /workspaces/:slug, POST /:slug/archive, POST /:slug/reactivate, DELETE /:slug) are registered in MountWorkspaceHandlers and reachable from the live server.",
+            "Run full test suite: go test ./... -count=1 — all tests must pass."
+          ],
+          "test_spec_refs": [
+            "TS-01-SMOKE-1",
+            "TS-01-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "01-REQ-2.1",
+            "01-REQ-3.1",
+            "01-REQ-3.2",
+            "01-REQ-17.1",
+            "01-REQ-17.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "All smoke tests pass with real components: go test ./internal/integration/... -count=1 -run 'TestSmoke' -v",
+          "Full test suite passes: go test ./... -count=1",
+          "Zero panic(\"not implemented\") stubs remain: grep -rn 'panic(\"not implemented\")' . returns no output",
+          "Zero os.Exit calls outside cmd/: grep -rn 'os.Exit' internal/ pkg/ returns no output",
+          "No linter warnings: go vet ./...",
+          "All six HTTP routes respond correctly in integration: TS-01-SMOKE-1 through TS-01-SMOKE-6 all exit 0",
+          "Requirements 01-REQ-1 through 01-REQ-18 acceptance criteria all met as evidenced by passing test suite."
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "01-REQ-1.1",
+      "test_spec_id": "TS-01-1",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.2",
+      "test_spec_id": "TS-01-2",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.3",
+      "test_spec_id": "TS-01-3",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.4",
+      "test_spec_id": "TS-01-4",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.5",
+      "test_spec_id": "TS-01-5",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.6",
+      "test_spec_id": "TS-01-6",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.7",
+      "test_spec_id": "TS-01-7",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.8",
+      "test_spec_id": "TS-01-8",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.9",
+      "test_spec_id": "TS-01-9",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-1.10",
+      "test_spec_id": "TS-01-10",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-2.1",
+      "test_spec_id": "TS-01-11",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-2.2",
+      "test_spec_id": "TS-01-12",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.1",
+      "test_spec_id": "TS-01-13",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.2",
+      "test_spec_id": "TS-01-14",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.3",
+      "test_spec_id": "TS-01-15",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-3.4",
+      "test_spec_id": "TS-01-16",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.1",
+      "test_spec_id": "TS-01-17",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.2",
+      "test_spec_id": "TS-01-18",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.3",
+      "test_spec_id": "TS-01-19",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.4",
+      "test_spec_id": "TS-01-20",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.5",
+      "test_spec_id": "TS-01-21",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.6",
+      "test_spec_id": "TS-01-22",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.7",
+      "test_spec_id": "TS-01-23",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-4.8",
+      "test_spec_id": "TS-01-24",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.1",
+      "test_spec_id": "TS-01-25",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.2",
+      "test_spec_id": "TS-01-26",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.3",
+      "test_spec_id": "TS-01-27",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.4",
+      "test_spec_id": "TS-01-28",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.5",
+      "test_spec_id": "TS-01-29",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.6",
+      "test_spec_id": "TS-01-30",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-5.7",
+      "test_spec_id": "TS-01-31",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.1",
+      "test_spec_id": "TS-01-32",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.2",
+      "test_spec_id": "TS-01-33",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.3",
+      "test_spec_id": "TS-01-34",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-6.4",
+      "test_spec_id": "TS-01-35",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.1",
+      "test_spec_id": "TS-01-36",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.2",
+      "test_spec_id": "TS-01-37",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-7.3",
+      "test_spec_id": "TS-01-38",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.1",
+      "test_spec_id": "TS-01-39",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.2",
+      "test_spec_id": "TS-01-40",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.3",
+      "test_spec_id": "TS-01-41",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-8.4",
+      "test_spec_id": "TS-01-42",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.1",
+      "test_spec_id": "TS-01-43",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.2",
+      "test_spec_id": "TS-01-44",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.3",
+      "test_spec_id": "TS-01-45",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-9.4",
+      "test_spec_id": "TS-01-46",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.1",
+      "test_spec_id": "TS-01-47",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.2",
+      "test_spec_id": "TS-01-48",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.3",
+      "test_spec_id": "TS-01-49",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.4",
+      "test_spec_id": "TS-01-50",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-10.5",
+      "test_spec_id": "TS-01-51",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.1",
+      "test_spec_id": "TS-01-52",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.2",
+      "test_spec_id": "TS-01-53",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.3",
+      "test_spec_id": "TS-01-54",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.4",
+      "test_spec_id": "TS-01-55",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-11.5",
+      "test_spec_id": "TS-01-56",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.1",
+      "test_spec_id": "TS-01-57",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.2",
+      "test_spec_id": "TS-01-58",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-12.3",
+      "test_spec_id": "TS-01-59",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-13.1",
+      "test_spec_id": "TS-01-60",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-13.2",
+      "test_spec_id": "TS-01-61",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.1",
+      "test_spec_id": "TS-01-62",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-14.2",
+      "test_spec_id": "TS-01-63",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-15.1",
+      "test_spec_id": "TS-01-64",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-15.2",
+      "test_spec_id": "TS-01-65",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-16.1",
+      "test_spec_id": "TS-01-66",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-16.2",
+      "test_spec_id": "TS-01-67",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-16.3",
+      "test_spec_id": "TS-01-68",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-17.1",
+      "test_spec_id": "TS-01-69",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-17.2",
+      "test_spec_id": "TS-01-70",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-17.3",
+      "test_spec_id": "TS-01-71",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "01-REQ-18.1",
+      "test_spec_id": "TS-01-72",
+      "task_id": "6.3",
+      "test_path": null
+    }
+  ]
+}
