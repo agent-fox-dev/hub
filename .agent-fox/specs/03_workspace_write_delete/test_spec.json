@@ -1,0 +1,988 @@
+{
+  "$schema": null,
+  "spec_id": "03",
+  "spec_name": "workspace_write_delete",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-03-1",
+      "requirement_id": "03-REQ-1.1",
+      "kind": "unit",
+      "description": "Verify that the workspaces table DDL includes display_name and description columns as TEXT NOT NULL DEFAULT ''.",
+      "preconditions": [
+        "SQLite database is initialised using the CREATE TABLE IF NOT EXISTS DDL defined in the spec",
+        "No prior workspaces table exists"
+      ],
+      "input": "Execute the workspace table DDL and inspect the schema via PRAGMA table_info('workspaces')",
+      "expected": "PRAGMA table_info returns columns 'display_name' (type TEXT, notnull=1, dflt_value='') and 'description' (type TEXT, notnull=1, dflt_value='')",
+      "assertion_pseudocode": "cols = db.pragma('table_info', 'workspaces')\nassert any(c.name=='display_name' and c.type=='TEXT' and c.notnull==1 and c.dflt_value=='' for c in cols)\nassert any(c.name=='description' and c.type=='TEXT' and c.notnull==1 and c.dflt_value=='' for c in cols)"
+    },
+    {
+      "id": "TS-03-2",
+      "requirement_id": "03-REQ-1.2",
+      "kind": "integration",
+      "description": "Verify that creating a workspace without display_name causes the server to set display_name equal to the slug.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'",
+        "No workspace with slug 'test-slug' exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"test-slug\", \"git_url\": \"https://git.example.com/repo\"} (no display_name field)",
+      "expected": "HTTP 201; response JSON field display_name equals 'test-slug'",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'test-slug', git_url:'https://git.example.com/repo'}, auth=ownerAPIKey)\nassert resp.status == 201\nassert resp.json['display_name'] == 'test-slug'"
+    },
+    {
+      "id": "TS-03-3",
+      "requirement_id": "03-REQ-1.3",
+      "kind": "integration",
+      "description": "Verify that creating a workspace without description causes the server to set description to empty string.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'",
+        "No workspace with slug 'test-slug-2' exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"test-slug-2\", \"git_url\": \"https://git.example.com/repo\"} (no description field)",
+      "expected": "HTTP 201; response JSON field description equals ''",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'test-slug-2', git_url:'https://git.example.com/repo'}, auth=ownerAPIKey)\nassert resp.status == 201\nassert resp.json['description'] == ''"
+    },
+    {
+      "id": "TS-03-4",
+      "requirement_id": "03-REQ-1.4",
+      "kind": "integration",
+      "description": "Verify that display_name and description are present as non-null strings in every workspace response operation (create, list, get, update, archive, reactivate).",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'",
+        "Workspace 'ws-all-ops' exists and is active"
+      ],
+      "input": "Perform create, list, GET, PATCH, archive, and reactivate operations on the workspace",
+      "expected": "Each response JSON object contains display_name as a non-null string and description as a non-null string",
+      "assertion_pseudocode": "for resp in [createResp, listResp[0], getResp, patchResp, archiveResp, reactivateResp]:\n  assert resp.json['display_name'] is not None\n  assert isinstance(resp.json['display_name'], str)\n  assert resp.json['description'] is not None\n  assert isinstance(resp.json['description'], str)"
+    },
+    {
+      "id": "TS-03-5",
+      "requirement_id": "03-REQ-1.5",
+      "kind": "integration",
+      "description": "Verify that a non-empty display_name up to 128 characters provided at creation is stored and returned unchanged.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'",
+        "No workspace with slug 'named-ws' exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"named-ws\", \"git_url\": \"https://git.example.com/repo\", \"display_name\": \"My Named Workspace\"}",
+      "expected": "HTTP 201; response JSON field display_name equals 'My Named Workspace'",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'named-ws', git_url:'https://git.example.com/repo', display_name:'My Named Workspace'}, auth=ownerAPIKey)\nassert resp.status == 201\nassert resp.json['display_name'] == 'My Named Workspace'"
+    },
+    {
+      "id": "TS-03-6",
+      "requirement_id": "03-REQ-1.6",
+      "kind": "integration",
+      "description": "Verify that a non-empty description up to 1024 characters provided at creation is stored and returned unchanged.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'",
+        "No workspace with slug 'desc-ws' exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"desc-ws\", \"git_url\": \"https://git.example.com/repo\", \"description\": \"A detailed description of this workspace.\"}",
+      "expected": "HTTP 201; response JSON field description equals 'A detailed description of this workspace.'",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'desc-ws', git_url:'https://git.example.com/repo', description:'A detailed description of this workspace.'}, auth=ownerAPIKey)\nassert resp.status == 201\nassert resp.json['description'] == 'A detailed description of this workspace.'"
+    },
+    {
+      "id": "TS-03-7",
+      "requirement_id": "03-REQ-2.1",
+      "kind": "unit",
+      "description": "Verify that MountHandlers registers the 'workspaces:write' scope via apikit.Permission.",
+      "preconditions": [
+        "af-hub source code is compiled",
+        "apikit permission registry is accessible for inspection"
+      ],
+      "input": "Call MountHandlers and inspect the registered permissions in the apikit permission registry",
+      "expected": "The registry contains a permission entry with name 'workspaces:write'",
+      "assertion_pseudocode": "registry = captureRegisteredPermissions(MountHandlers)\nassert 'workspaces:write' in registry"
+    },
+    {
+      "id": "TS-03-8",
+      "requirement_id": "03-REQ-2.2",
+      "kind": "unit",
+      "description": "Verify that MountHandlers registers the 'workspaces:delete' scope via apikit.Permission.",
+      "preconditions": [
+        "af-hub source code is compiled",
+        "apikit permission registry is accessible for inspection"
+      ],
+      "input": "Call MountHandlers and inspect the registered permissions in the apikit permission registry",
+      "expected": "The registry contains a permission entry with name 'workspaces:delete'",
+      "assertion_pseudocode": "registry = captureRegisteredPermissions(MountHandlers)\nassert 'workspaces:delete' in registry"
+    },
+    {
+      "id": "TS-03-9",
+      "requirement_id": "03-REQ-2.3",
+      "kind": "integration",
+      "description": "Verify that adding the new scopes does not change the behaviour of workspaces:read and workspaces:create PATs.",
+      "preconditions": [
+        "Server is running with workspaces:write and workspaces:delete registered",
+        "PAT-read scoped to workspaces:read exists for user 'u1'",
+        "PAT-create scoped to workspaces:create exists for user 'u1'",
+        "Workspace 'existing-ws' owned by 'u1' exists"
+      ],
+      "input": "Use PAT-read to GET /api/v1/workspaces/existing-ws; use PAT-create to POST /api/v1/workspaces",
+      "expected": "PAT-read GET returns HTTP 200 with workspace JSON; PAT-create POST returns HTTP 201 with workspace JSON; no regression in status codes or response shape",
+      "assertion_pseudocode": "readResp = GET('/api/v1/workspaces/existing-ws', auth=patRead)\nassert readResp.status == 200\ncreateResp = POST('/api/v1/workspaces', body={slug:'new-compat-ws', git_url:'https://git.example.com/repo'}, auth=patCreate)\nassert createResp.status == 201"
+    },
+    {
+      "id": "TS-03-10",
+      "requirement_id": "03-REQ-2.4",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:write can list and get the PAT owner's workspaces (implied read access).",
+      "preconditions": [
+        "Server is running",
+        "PAT-write scoped to workspaces:write exists for user 'u1'",
+        "Workspace 'write-ws' owned by 'u1' exists"
+      ],
+      "input": "GET /api/v1/workspaces and GET /api/v1/workspaces/write-ws using PAT-write",
+      "expected": "Both requests return HTTP 200 with workspace data",
+      "assertion_pseudocode": "listResp = GET('/api/v1/workspaces', auth=patWrite)\nassert listResp.status == 200\ngetResp = GET('/api/v1/workspaces/write-ws', auth=patWrite)\nassert getResp.status == 200"
+    },
+    {
+      "id": "TS-03-11",
+      "requirement_id": "03-REQ-2.5",
+      "kind": "integration",
+      "description": "Verify that a PAT with only workspaces:delete does not grant list or get access to workspaces.",
+      "preconditions": [
+        "Server is running",
+        "PAT-delete scoped to workspaces:delete exists for user 'u1' (no workspaces:read or workspaces:write)",
+        "Workspace 'delete-only-ws' owned by 'u1' exists"
+      ],
+      "input": "GET /api/v1/workspaces and GET /api/v1/workspaces/delete-only-ws using PAT-delete",
+      "expected": "Both requests return HTTP 404 (anti-enumeration)",
+      "assertion_pseudocode": "listResp = GET('/api/v1/workspaces', auth=patDelete)\nassert listResp.status == 404\ngetResp = GET('/api/v1/workspaces/delete-only-ws', auth=patDelete)\nassert getResp.status == 404"
+    },
+    {
+      "id": "TS-03-12",
+      "requirement_id": "03-REQ-3.1",
+      "kind": "integration",
+      "description": "Verify that an admin token can call update, archive, reactivate, and delete on any workspace and receive HTTP 200.",
+      "preconditions": [
+        "Server is running",
+        "Admin token exists",
+        "Workspace 'admin-target-ws' owned by user 'u2' exists and is active"
+      ],
+      "input": "Admin token performs PATCH, archive, reactivate, and DELETE operations on 'admin-target-ws'",
+      "expected": "Each operation returns HTTP 200",
+      "assertion_pseudocode": "patchResp = PATCH('/api/v1/workspaces/admin-target-ws', body={description:'admin update'}, auth=adminToken)\nassert patchResp.status == 200\narchiveResp = POST('/api/v1/workspaces/admin-target-ws/archive', auth=adminToken)\nassert archiveResp.status == 200\nreactivateResp = POST('/api/v1/workspaces/admin-target-ws/reactivate', auth=adminToken)\nassert reactivateResp.status == 200\narchiveResp2 = POST('/api/v1/workspaces/admin-target-ws/archive', auth=adminToken)\nassert archiveResp2.status == 200\ndeleteResp = DELETE('/api/v1/workspaces/admin-target-ws', auth=adminToken)\nassert deleteResp.status == 200"
+    },
+    {
+      "id": "TS-03-13",
+      "requirement_id": "03-REQ-3.2",
+      "kind": "integration",
+      "description": "Verify that a workspace owner using their own API key can update, archive, reactivate, and delete their own workspace.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Workspace 'owner-ws' owned by 'u1' exists and is active"
+      ],
+      "input": "User 'u1' API key performs PATCH, archive, reactivate, and DELETE on 'owner-ws'",
+      "expected": "Each operation returns HTTP 200",
+      "assertion_pseudocode": "patchResp = PATCH('/api/v1/workspaces/owner-ws', body={description:'owner update'}, auth=u1APIKey)\nassert patchResp.status == 200\narchiveResp = POST('/api/v1/workspaces/owner-ws/archive', auth=u1APIKey)\nassert archiveResp.status == 200\nreactivateResp = POST('/api/v1/workspaces/owner-ws/reactivate', auth=u1APIKey)\nassert reactivateResp.status == 200\narchiveResp2 = POST('/api/v1/workspaces/owner-ws/archive', auth=u1APIKey)\nassert archiveResp2.status == 200\ndeleteResp = DELETE('/api/v1/workspaces/owner-ws', auth=u1APIKey)\nassert deleteResp.status == 200"
+    },
+    {
+      "id": "TS-03-14",
+      "requirement_id": "03-REQ-3.3",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:write can update, archive, and reactivate workspaces owned by the PAT's user.",
+      "preconditions": [
+        "Server is running",
+        "PAT-write scoped to workspaces:write exists for user 'u1'",
+        "Workspace 'write-target-ws' owned by 'u1' exists and is active"
+      ],
+      "input": "PAT-write performs PATCH, archive, and reactivate operations on 'write-target-ws'",
+      "expected": "Each operation returns HTTP 200",
+      "assertion_pseudocode": "patchResp = PATCH('/api/v1/workspaces/write-target-ws', body={description:'write pat update'}, auth=patWrite)\nassert patchResp.status == 200\narchiveResp = POST('/api/v1/workspaces/write-target-ws/archive', auth=patWrite)\nassert archiveResp.status == 200\nreactivateResp = POST('/api/v1/workspaces/write-target-ws/reactivate', auth=patWrite)\nassert reactivateResp.status == 200"
+    },
+    {
+      "id": "TS-03-15",
+      "requirement_id": "03-REQ-3.4",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:write is denied when attempting to delete a workspace, returning HTTP 404 (anti-enumeration).",
+      "preconditions": [
+        "Server is running",
+        "PAT-write scoped to workspaces:write exists for user 'u1'",
+        "Archived workspace 'write-del-ws' owned by 'u1' exists"
+      ],
+      "input": "DELETE /api/v1/workspaces/write-del-ws using PAT-write",
+      "expected": "HTTP 404 with JSON body {\"error\": string}",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/write-del-ws', auth=patWrite)\nassert resp.status == 404\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)"
+    },
+    {
+      "id": "TS-03-16",
+      "requirement_id": "03-REQ-3.5",
+      "kind": "integration",
+      "description": "Verify that a PAT with workspaces:delete can delete an archived workspace owned by the PAT's user.",
+      "preconditions": [
+        "Server is running",
+        "PAT-delete scoped to workspaces:delete exists for user 'u1'",
+        "Workspace 'archived-del-ws' owned by 'u1' exists with status 'archived'"
+      ],
+      "input": "DELETE /api/v1/workspaces/archived-del-ws using PAT-delete",
+      "expected": "HTTP 200 confirming deletion",
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/archived-del-ws', auth=patDelete)\nassert resp.status == 200"
+    },
+    {
+      "id": "TS-03-17",
+      "requirement_id": "03-REQ-3.6",
+      "kind": "integration",
+      "description": "Verify that PATs with workspaces:read or workspaces:create are denied when attempting update, archive, reactivate, or delete, returning HTTP 404.",
+      "preconditions": [
+        "Server is running",
+        "PAT-read scoped to workspaces:read for user 'u1' exists",
+        "PAT-create scoped to workspaces:create for user 'u1' exists",
+        "Workspace 'acl-test-ws' owned by 'u1' exists and is active"
+      ],
+      "input": "PAT-read and PAT-create each attempt PATCH, archive, reactivate on 'acl-test-ws'",
+      "expected": "All operations return HTTP 404 with JSON body {\"error\": string}",
+      "assertion_pseudocode": "for pat in [patRead, patCreate]:\n  for op in [PATCH('/api/v1/workspaces/acl-test-ws', body={description:'x'}, auth=pat),\n             POST('/api/v1/workspaces/acl-test-ws/archive', auth=pat),\n             POST('/api/v1/workspaces/acl-test-ws/reactivate', auth=pat),\n             DELETE('/api/v1/workspaces/acl-test-ws', auth=pat)]:\n    assert op.status == 404\n    assert 'error' in op.json"
+    },
+    {
+      "id": "TS-03-18",
+      "requirement_id": "03-REQ-3.7",
+      "kind": "integration",
+      "description": "Verify that an admin token attempting to create a workspace receives HTTP 403.",
+      "preconditions": [
+        "Server is running",
+        "Admin token exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"admin-create-ws\", \"git_url\": \"https://git.example.com/repo\"} using admin token",
+      "expected": "HTTP 403 with JSON body {\"error\": string}",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'admin-create-ws', git_url:'https://git.example.com/repo'}, auth=adminToken)\nassert resp.status == 403\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)"
+    },
+    {
+      "id": "TS-03-19",
+      "requirement_id": "03-REQ-4.1",
+      "kind": "integration",
+      "description": "Verify that a valid PATCH on an active workspace updates provided fields, sets updated_at, and returns HTTP 200 with the full workspace object.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'patch-ws' owned by 'u1' exists with description 'old description'",
+        "Record the initial updated_at value from the workspace"
+      ],
+      "input": "PATCH /api/v1/workspaces/patch-ws with body {\"description\": \"new description\"} using u1 API key",
+      "expected": "HTTP 200; response JSON has description='new description'; updated_at is a valid RFC 3339 timestamp strictly greater than the initial updated_at; all other workspace fields are present",
+      "assertion_pseudocode": "initialUpdatedAt = getWorkspace('patch-ws').updated_at\nresp = PATCH('/api/v1/workspaces/patch-ws', body={description:'new description'}, auth=u1APIKey)\nassert resp.status == 200\nassert resp.json['description'] == 'new description'\nassert parseRFC3339(resp.json['updated_at']) > parseRFC3339(initialUpdatedAt)\nassert all(field in resp.json for field in ['slug','git_url','branch','display_name','description','owner_id','org_id','status','created_at','updated_at'])"
+    },
+    {
+      "id": "TS-03-20",
+      "requirement_id": "03-REQ-4.2",
+      "kind": "integration",
+      "description": "Verify that PATCH with only display_name does not alter description or org_id in the workspaces table.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'partial-ws' owned by 'u1' exists with description='keep me' and org_id=null"
+      ],
+      "input": "PATCH /api/v1/workspaces/partial-ws with body {\"display_name\": \"New Name\"} using u1 API key",
+      "expected": "HTTP 200; response JSON has display_name='New Name'; description='keep me' unchanged; org_id=null unchanged",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/partial-ws', body={display_name:'New Name'}, auth=u1APIKey)\nassert resp.status == 200\nassert resp.json['display_name'] == 'New Name'\nassert resp.json['description'] == 'keep me'\nassert resp.json['org_id'] is None"
+    },
+    {
+      "id": "TS-03-21",
+      "requirement_id": "03-REQ-4.3",
+      "kind": "integration",
+      "description": "Verify that setting display_name to null or empty string in a PATCH normalizes it to the workspace slug.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'norm-ws' owned by 'u1' exists with display_name='Custom Name'"
+      ],
+      "input": "PATCH /api/v1/workspaces/norm-ws with body {\"display_name\": null}; then repeat with {\"display_name\": \"\"}",
+      "expected": "Both PATCH responses return HTTP 200; response display_name equals 'norm-ws' (the slug) in both cases",
+      "assertion_pseudocode": "resp1 = PATCH('/api/v1/workspaces/norm-ws', body={display_name:null}, auth=u1APIKey)\nassert resp1.status == 200\nassert resp1.json['display_name'] == 'norm-ws'\nresp2 = PATCH('/api/v1/workspaces/norm-ws', body={display_name:''}, auth=u1APIKey)\nassert resp2.status == 200\nassert resp2.json['display_name'] == 'norm-ws'"
+    },
+    {
+      "id": "TS-03-22",
+      "requirement_id": "03-REQ-4.4",
+      "kind": "integration",
+      "description": "Verify that setting description to null or empty string in a PATCH normalizes it to empty string.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'desc-norm-ws' owned by 'u1' exists with description='Some description'"
+      ],
+      "input": "PATCH /api/v1/workspaces/desc-norm-ws with body {\"description\": null}; then repeat with {\"description\": \"\"}",
+      "expected": "Both PATCH responses return HTTP 200; response description equals '' in both cases",
+      "assertion_pseudocode": "resp1 = PATCH('/api/v1/workspaces/desc-norm-ws', body={description:null}, auth=u1APIKey)\nassert resp1.status == 200\nassert resp1.json['description'] == ''\nresp2 = PATCH('/api/v1/workspaces/desc-norm-ws', body={description:''}, auth=u1APIKey)\nassert resp2.status == 200\nassert resp2.json['description'] == ''"
+    },
+    {
+      "id": "TS-03-23",
+      "requirement_id": "03-REQ-4.5",
+      "kind": "integration",
+      "description": "Verify that setting org_id to null in a PATCH removes the organization association and returns org_id as null.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'org-ws' owned by 'u1' exists with org_id='org-uuid-123'",
+        "User 'u1' is a member of org 'org-uuid-123'"
+      ],
+      "input": "PATCH /api/v1/workspaces/org-ws with body {\"org_id\": null} using u1 API key",
+      "expected": "HTTP 200; response JSON org_id is null; database row for 'org-ws' has org_id = NULL",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/org-ws', body={org_id:null}, auth=u1APIKey)\nassert resp.status == 200\nassert resp.json['org_id'] is None\ndbRow = db.queryOne('SELECT org_id FROM workspaces WHERE slug=?', 'org-ws')\nassert dbRow.org_id is None"
+    },
+    {
+      "id": "TS-03-24",
+      "requirement_id": "03-REQ-4.6",
+      "kind": "integration",
+      "description": "Verify that setting org_id to a non-null value when the owner is a member of that organization updates org_id and returns HTTP 200.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'orgset-ws' owned by 'u1' exists with org_id=null",
+        "User 'u1' is a member of org 'org-uuid-456'"
+      ],
+      "input": "PATCH /api/v1/workspaces/orgset-ws with body {\"org_id\": \"org-uuid-456\"} using u1 API key",
+      "expected": "HTTP 200; response JSON org_id equals 'org-uuid-456'",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/orgset-ws', body={org_id:'org-uuid-456'}, auth=u1APIKey)\nassert resp.status == 200\nassert resp.json['org_id'] == 'org-uuid-456'"
+    },
+    {
+      "id": "TS-03-25",
+      "requirement_id": "03-REQ-4.7",
+      "kind": "integration",
+      "description": "Verify that PATCH requests including immutable fields (slug, git_url, branch, owner_id) are rejected with HTTP 400.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'immutable-ws' owned by 'u1' exists"
+      ],
+      "input": "PATCH /api/v1/workspaces/immutable-ws with body {\"slug\": \"new-slug\", \"description\": \"ok\"} using u1 API key; repeat with git_url, branch, owner_id",
+      "expected": "HTTP 400 for each request that includes an immutable field; JSON body has 'error' string",
+      "assertion_pseudocode": "for immutableBody in [{slug:'new-slug'}, {git_url:'https://other.com/repo'}, {branch:'new-branch'}, {owner_id:'other-user'}]:\n  resp = PATCH('/api/v1/workspaces/immutable-ws', body=immutableBody, auth=u1APIKey)\n  assert resp.status == 400\n  assert 'error' in resp.json"
+    },
+    {
+      "id": "TS-03-26",
+      "requirement_id": "03-REQ-5.1",
+      "kind": "integration",
+      "description": "Verify that the workspace response serializer always includes display_name and description as non-null strings in all workspace operations.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Workspace 'resp-schema-ws' owned by 'u1' exists and is active",
+        "display_name and description are set to known values"
+      ],
+      "input": "Perform create, list, GET, PATCH, archive, and reactivate operations and inspect each response",
+      "expected": "Every response JSON contains display_name as a string (not null) and description as a string (not null)",
+      "assertion_pseudocode": "responses = [createResp, listResp, getResp, patchResp, archiveResp, reactivateResp]\nfor resp in responses:\n  ws = resp.json if not isinstance(resp.json, list) else resp.json[0]\n  assert ws.get('display_name') is not None and isinstance(ws['display_name'], str)\n  assert ws.get('description') is not None and isinstance(ws['description'], str)"
+    },
+    {
+      "id": "TS-03-27",
+      "requirement_id": "03-REQ-5.2",
+      "kind": "integration",
+      "description": "Verify that all required fields appear in workspace response objects alongside the new display_name and description fields.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Workspace 'full-schema-ws' owned by 'u1' exists"
+      ],
+      "input": "GET /api/v1/workspaces/full-schema-ws using u1 API key",
+      "expected": "Response JSON contains all fields: slug, git_url, branch, display_name, description, owner_id, org_id, status, created_at, updated_at",
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/full-schema-ws', auth=u1APIKey)\nassert resp.status == 200\nrequiredFields = ['slug','git_url','branch','display_name','description','owner_id','org_id','status','created_at','updated_at']\nfor field in requiredFields:\n  assert field in resp.json"
+    },
+    {
+      "id": "TS-03-28",
+      "requirement_id": "03-REQ-6.1",
+      "kind": "integration",
+      "description": "Verify that POST /api/v1/workspaces with display_name and description stores and returns those values.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "No workspace with slug 'create-meta-ws' exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"create-meta-ws\", \"git_url\": \"https://git.example.com/repo\", \"display_name\": \"Meta WS\", \"description\": \"A workspace with meta\"}",
+      "expected": "HTTP 201; response JSON display_name='Meta WS'; description='A workspace with meta'",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'create-meta-ws', git_url:'https://git.example.com/repo', display_name:'Meta WS', description:'A workspace with meta'}, auth=u1APIKey)\nassert resp.status == 201\nassert resp.json['display_name'] == 'Meta WS'\nassert resp.json['description'] == 'A workspace with meta'"
+    },
+    {
+      "id": "TS-03-29",
+      "requirement_id": "03-REQ-6.2",
+      "kind": "integration",
+      "description": "Verify that POST /api/v1/workspaces without display_name and description remains backward-compatible and returns server-side defaults.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "No workspace with slug 'compat-ws' exists"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"compat-ws\", \"git_url\": \"https://git.example.com/repo\"} (no display_name, no description)",
+      "expected": "HTTP 201; response JSON display_name='compat-ws'; description=''",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'compat-ws', git_url:'https://git.example.com/repo'}, auth=u1APIKey)\nassert resp.status == 201\nassert resp.json['display_name'] == 'compat-ws'\nassert resp.json['description'] == ''"
+    },
+    {
+      "id": "TS-03-30",
+      "requirement_id": "03-REQ-7.1",
+      "kind": "integration",
+      "description": "Verify that 'afc workspace update <slug> --display-name' calls PATCH, prints the updated workspace JSON to stdout, and exits 0.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server is running",
+        "PAT-write scoped to workspaces:write is configured in afc credentials",
+        "Active workspace 'cli-update-ws' owned by the PAT user exists"
+      ],
+      "input": "Run: afc workspace update cli-update-ws --display-name 'CLI Updated'",
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with display_name='CLI Updated'; no stderr output",
+      "assertion_pseudocode": "result = runCLI(['afc', 'workspace', 'update', 'cli-update-ws', '--display-name', 'CLI Updated'])\nassert result.exitCode == 0\nws = parseJSON(result.stdout)\nassert ws['display_name'] == 'CLI Updated'\nassert result.stderr == ''"
+    },
+    {
+      "id": "TS-03-31",
+      "requirement_id": "03-REQ-7.2",
+      "kind": "unit",
+      "description": "Verify that --clear-display-name maps to display_name:null, --clear-description to description:null, --clear-org to org_id:null in the PATCH body.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server mock is available that captures the request body"
+      ],
+      "input": "Run: afc workspace update some-ws --clear-display-name --clear-description --clear-org with request body capture",
+      "expected": "Captured PATCH body JSON contains display_name:null, description:null, org_id:null",
+      "assertion_pseudocode": "capturedBody = captureRequest(lambda: runCLI(['afc', 'workspace', 'update', 'some-ws', '--clear-display-name', '--clear-description', '--clear-org']))\nassert capturedBody['display_name'] is None\nassert capturedBody['description'] is None\nassert capturedBody['org_id'] is None"
+    },
+    {
+      "id": "TS-03-32",
+      "requirement_id": "03-REQ-7.3",
+      "kind": "unit",
+      "description": "Verify that afc workspace update only includes in the PATCH body the fields corresponding to flags that were explicitly provided.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server mock is available that captures the request body"
+      ],
+      "input": "Run: afc workspace update some-ws --display-name 'Only This' (no other flags)",
+      "expected": "Captured PATCH body JSON contains only display_name; description and org_id keys are absent",
+      "assertion_pseudocode": "capturedBody = captureRequest(lambda: runCLI(['afc', 'workspace', 'update', 'some-ws', '--display-name', 'Only This']))\nassert 'display_name' in capturedBody\nassert capturedBody['display_name'] == 'Only This'\nassert 'description' not in capturedBody\nassert 'org_id' not in capturedBody"
+    },
+    {
+      "id": "TS-03-33",
+      "requirement_id": "03-REQ-8.1",
+      "kind": "integration",
+      "description": "Verify that afc workspace create with --display-name and --description flags includes those values in the POST body and returns workspace JSON with those values.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server is running",
+        "PAT-create scoped to workspaces:create is configured in afc credentials"
+      ],
+      "input": "Run: afc workspace create --slug create-cli-ws --git-url https://git.example.com/repo --display-name 'CLI Created' --description 'Created via CLI'",
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with display_name='CLI Created' and description='Created via CLI'",
+      "assertion_pseudocode": "result = runCLI(['afc', 'workspace', 'create', '--slug', 'create-cli-ws', '--git-url', 'https://git.example.com/repo', '--display-name', 'CLI Created', '--description', 'Created via CLI'])\nassert result.exitCode == 0\nws = parseJSON(result.stdout)\nassert ws['display_name'] == 'CLI Created'\nassert ws['description'] == 'Created via CLI'"
+    },
+    {
+      "id": "TS-03-34",
+      "requirement_id": "03-REQ-8.2",
+      "kind": "integration",
+      "description": "Verify that afc workspace create without --display-name and --description remains backward-compatible and receives server-side defaults.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server is running",
+        "PAT-create scoped to workspaces:create is configured in afc credentials"
+      ],
+      "input": "Run: afc workspace create --slug compat-cli-ws --git-url https://git.example.com/repo (no display-name, no description flags)",
+      "expected": "Exit code 0; stdout contains valid JSON workspace object with display_name='compat-cli-ws' and description=''",
+      "assertion_pseudocode": "result = runCLI(['afc', 'workspace', 'create', '--slug', 'compat-cli-ws', '--git-url', 'https://git.example.com/repo'])\nassert result.exitCode == 0\nws = parseJSON(result.stdout)\nassert ws['display_name'] == 'compat-cli-ws'\nassert ws['description'] == ''"
+    },
+    {
+      "id": "TS-03-35",
+      "requirement_id": "03-REQ-9.1",
+      "kind": "unit",
+      "description": "Verify that docs/api.md covers all workspace endpoints (create, list, get, update, archive, reactivate, delete) with auth, request/response schemas, permission scopes, and error codes.",
+      "preconditions": [
+        "docs/api.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/api.md",
+      "expected": "docs/api.md contains documented sections for each of the seven workspace endpoints, each including: authentication requirements, request body schema, response schema, permission scope requirements, and HTTP error codes",
+      "assertion_pseudocode": "content = readFile('docs/api.md')\nfor endpoint in ['POST /api/v1/workspaces', 'GET /api/v1/workspaces', 'GET /api/v1/workspaces/:slug', 'PATCH /api/v1/workspaces/:slug', 'archive', 'reactivate', 'DELETE /api/v1/workspaces/:slug']:\n  assert endpoint in content or endpointAlias(endpoint) in content"
+    },
+    {
+      "id": "TS-03-36",
+      "requirement_id": "03-REQ-9.2",
+      "kind": "unit",
+      "description": "Verify that docs/api.md documents PATCH /api/v1/workspaces/:slug with partial-update semantics, field constraints, and all error conditions from this spec.",
+      "preconditions": [
+        "docs/api.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/api.md",
+      "expected": "docs/api.md contains a section for PATCH /api/v1/workspaces/:slug covering: partial update semantics, display_name max 128 chars, description max 1024 chars, archived workspace returns 400, empty body returns 400, org membership 403, not found 404, anti-enumeration 404",
+      "assertion_pseudocode": "content = readFile('docs/api.md')\nassert 'PATCH /api/v1/workspaces' in content\nassert '128' in content\nassert '1024' in content\nassert 'archived' in content\nassert 'partial' in content or 'omitted fields' in content\nassert '400' in content\nassert '403' in content\nassert '404' in content"
+    },
+    {
+      "id": "TS-03-37",
+      "requirement_id": "03-REQ-9.3",
+      "kind": "unit",
+      "description": "Verify that docs/api.md documents workspaces:write and workspaces:delete scopes, their implied permissions, and which endpoints they authorize.",
+      "preconditions": [
+        "docs/api.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/api.md",
+      "expected": "docs/api.md contains mentions of 'workspaces:write' and 'workspaces:delete' with descriptions of implied permissions and authorized endpoints",
+      "assertion_pseudocode": "content = readFile('docs/api.md')\nassert 'workspaces:write' in content\nassert 'workspaces:delete' in content\nassert 'implied' in content or 'implies' in content or 'read access' in content"
+    },
+    {
+      "id": "TS-03-38",
+      "requirement_id": "03-REQ-9.4",
+      "kind": "unit",
+      "description": "Verify that docs/api.md covers non-workspace apikit-provided endpoints (login, user, keys, tokens, orgs, admin) at the same level of detail.",
+      "preconditions": [
+        "docs/api.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/api.md",
+      "expected": "docs/api.md contains sections or references for login, user, keys, tokens, orgs, and admin endpoints",
+      "assertion_pseudocode": "content = readFile('docs/api.md')\nfor section in ['login', 'user', 'keys', 'tokens', 'orgs', 'admin']:\n  assert section in content.lower()"
+    },
+    {
+      "id": "TS-03-39",
+      "requirement_id": "03-REQ-10.1",
+      "kind": "unit",
+      "description": "Verify that docs/cli.md covers all workspace subcommands (create, list, get, update, archive, reactivate, delete) with all flags, argument formats, and exit codes.",
+      "preconditions": [
+        "docs/cli.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/cli.md",
+      "expected": "docs/cli.md contains a section for each workspace subcommand with flags, argument formats, and exit codes documented",
+      "assertion_pseudocode": "content = readFile('docs/cli.md')\nfor cmd in ['create', 'list', 'get', 'update', 'archive', 'reactivate', 'delete']:\n  assert f'workspace {cmd}' in content or f'afc workspace {cmd}' in content"
+    },
+    {
+      "id": "TS-03-40",
+      "requirement_id": "03-REQ-10.2",
+      "kind": "unit",
+      "description": "Verify that docs/cli.md documents afc workspace update with all flags and exit-1 behavior when no flags are provided.",
+      "preconditions": [
+        "docs/cli.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/cli.md",
+      "expected": "docs/cli.md documents --display-name, --description, --org, --clear-display-name, --clear-description, --clear-org flags and states that no flags results in exit code 1 with usage hint",
+      "assertion_pseudocode": "content = readFile('docs/cli.md')\nassert '--display-name' in content\nassert '--description' in content\nassert '--org' in content\nassert '--clear-display-name' in content\nassert '--clear-description' in content\nassert '--clear-org' in content\nassert 'exit' in content and '1' in content"
+    },
+    {
+      "id": "TS-03-41",
+      "requirement_id": "03-REQ-10.3",
+      "kind": "unit",
+      "description": "Verify that docs/cli.md covers all apikit-provided afc commands (login, user, keys, tokens, orgs, admin) at the same level of detail as workspace commands.",
+      "preconditions": [
+        "docs/cli.md file exists in the repository"
+      ],
+      "input": "Read and parse docs/cli.md",
+      "expected": "docs/cli.md contains sections or references for afc login, afc user, afc keys, afc tokens, afc orgs, and afc admin commands",
+      "assertion_pseudocode": "content = readFile('docs/cli.md')\nfor cmd in ['login', 'user', 'keys', 'tokens', 'orgs', 'admin']:\n  assert cmd in content.lower()"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-03-P1",
+      "property_id": "03-PROP-1",
+      "validates": [
+        "03-REQ-1.2",
+        "03-REQ-1.4",
+        "03-REQ-4.3",
+        "03-REQ-5.1"
+      ],
+      "description": "For any workspace response from create, list, get, update, archive, or reactivate, display_name is always a non-null, non-empty string equal to user-supplied value or the workspace slug.",
+      "for_any_strategy": "Generate arbitrary workspace slugs (URL-safe strings 1-50 chars) and optionally arbitrary display_name values (strings up to 128 chars, including null and empty string); for each combination, perform the creation and subsequent operations",
+      "invariant_check": "assert response.display_name is not None\nassert isinstance(response.display_name, str)\nassert len(response.display_name) > 0\nif providedDisplayName is not None and len(providedDisplayName) > 0:\n  assert response.display_name == providedDisplayName\nelse:\n  assert response.display_name == slug"
+    },
+    {
+      "id": "TS-03-P2",
+      "property_id": "03-PROP-2",
+      "validates": [
+        "03-REQ-1.3",
+        "03-REQ-1.4",
+        "03-REQ-4.4",
+        "03-REQ-5.1"
+      ],
+      "description": "For any workspace response from create, list, get, update, archive, or reactivate, description is always a non-null string (may be empty).",
+      "for_any_strategy": "Generate arbitrary workspace slugs and optionally arbitrary description values (strings up to 1024 chars, including null and empty string); for each combination, perform creation and subsequent operations",
+      "invariant_check": "assert response.description is not None\nassert isinstance(response.description, str)\nif providedDescription is not None:\n  assert response.description == providedDescription\nelse:\n  assert response.description == ''"
+    },
+    {
+      "id": "TS-03-P3",
+      "property_id": "03-PROP-3",
+      "validates": [
+        "03-REQ-4.2"
+      ],
+      "description": "For any successful PATCH that omits one or more of display_name, description, org_id, the omitted fields in the workspaces table are identical before and after the update.",
+      "for_any_strategy": "Generate arbitrary subsets of {display_name, description, org_id} to include in PATCH body (at least one, at most two); record pre-update database state; apply PATCH; verify omitted fields",
+      "invariant_check": "prePatch = db.queryOne('SELECT display_name, description, org_id FROM workspaces WHERE slug=?', slug)\nresp = PATCH(slug, body=partialFields)\nassert resp.status == 200\npostPatch = db.queryOne('SELECT display_name, description, org_id FROM workspaces WHERE slug=?', slug)\nfor field in ['display_name', 'description', 'org_id']:\n  if field not in partialFields:\n    assert getattr(postPatch, field) == getattr(prePatch, field)"
+    },
+    {
+      "id": "TS-03-P4",
+      "property_id": "03-PROP-4",
+      "validates": [
+        "03-REQ-4.1"
+      ],
+      "description": "For any successful PATCH to PATCH /api/v1/workspaces/:slug, the updated_at in the response is strictly greater than the updated_at that existed before the request.",
+      "for_any_strategy": "Generate arbitrary valid PATCH bodies (non-empty, non-archived workspace); record initial updated_at; submit PATCH; compare timestamps",
+      "invariant_check": "initialUpdatedAt = parseRFC3339(getWorkspace(slug).updated_at)\nresp = PATCH('/api/v1/workspaces/' + slug, body=validBody)\nassert resp.status == 200\nnewUpdatedAt = parseRFC3339(resp.json['updated_at'])\nassert newUpdatedAt > initialUpdatedAt"
+    },
+    {
+      "id": "TS-03-P5",
+      "property_id": "03-PROP-5",
+      "validates": [
+        "03-REQ-4.7"
+      ],
+      "description": "For any PATCH to PATCH /api/v1/workspaces/:slug (successful or not), the immutable fields slug, git_url, branch, owner_id, created_at, and status in the workspaces table are unchanged after the operation.",
+      "for_any_strategy": "Generate arbitrary PATCH bodies (including those with immutable fields to test rejection, and valid partial bodies); record pre-PATCH values of immutable fields; submit PATCH; compare",
+      "invariant_check": "pre = db.queryOne('SELECT slug, git_url, branch, owner_id, created_at, status FROM workspaces WHERE slug=?', slug)\nPATCH('/api/v1/workspaces/' + slug, body=anyBody)\npost = db.queryOne('SELECT slug, git_url, branch, owner_id, created_at, status FROM workspaces WHERE slug=?', slug)\nfor field in ['slug', 'git_url', 'branch', 'owner_id', 'created_at', 'status']:\n  assert getattr(pre, field) == getattr(post, field)"
+    },
+    {
+      "id": "TS-03-P6",
+      "property_id": "03-PROP-6",
+      "validates": [
+        "03-REQ-2.5",
+        "03-REQ-2.E1"
+      ],
+      "description": "For any PAT holding only workspaces:delete (without workspaces:read or workspaces:write), list and get workspace requests are always denied with HTTP 404.",
+      "for_any_strategy": "Generate arbitrary workspace slugs owned by the PAT user; issue list and get requests using a PAT scoped to only workspaces:delete",
+      "invariant_check": "for slug in arbitrarySlugs:\n  listResp = GET('/api/v1/workspaces', auth=patDeleteOnly)\n  assert listResp.status == 404\n  getResp = GET('/api/v1/workspaces/' + slug, auth=patDeleteOnly)\n  assert getResp.status == 404"
+    },
+    {
+      "id": "TS-03-P7",
+      "property_id": "03-PROP-7",
+      "validates": [
+        "03-REQ-2.3"
+      ],
+      "description": "For any PAT holding workspaces:read or workspaces:create, the set of accessible endpoints and returned responses are identical to those accessible before the introduction of workspaces:write and workspaces:delete.",
+      "for_any_strategy": "Generate arbitrary workspaces and arbitrary read/create PAT credentials; compare HTTP status codes and response shapes for list and get operations against a baseline recorded without the new scopes registered",
+      "invariant_check": "for pat in [patRead, patCreate]:\n  listResp = GET('/api/v1/workspaces', auth=pat)\n  assert listResp.status == 200\n  getResp = GET('/api/v1/workspaces/' + ownedSlug, auth=pat)\n  assert getResp.status == 200\n  // Mutation endpoints must still be denied\n  for mutationResp in [PATCH('/api/v1/workspaces/' + ownedSlug, body={description:'x'}, auth=pat),\n                        POST('/api/v1/workspaces/' + ownedSlug + '/archive', auth=pat)]:\n    assert mutationResp.status == 404"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-03-E1",
+      "requirement_id": "03-REQ-1.E1",
+      "kind": "integration",
+      "description": "Verify that creating a workspace with display_name exceeding 128 characters returns HTTP 400 and does not create the workspace.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"long-dn-ws\", \"git_url\": \"https://git.example.com/repo\", \"display_name\": \"a\" * 129}",
+      "expected": "HTTP 400; JSON body {\"error\": string}; no workspace row created in workspaces table",
+      "assertion_pseudocode": "longName = 'a' * 129\nresp = POST('/api/v1/workspaces', body={slug:'long-dn-ws', git_url:'https://git.example.com/repo', display_name:longName}, auth=u1APIKey)\nassert resp.status == 400\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\ndbRow = db.queryOne('SELECT slug FROM workspaces WHERE slug=?', 'long-dn-ws')\nassert dbRow is None"
+    },
+    {
+      "id": "TS-03-E2",
+      "requirement_id": "03-REQ-1.E2",
+      "kind": "integration",
+      "description": "Verify that creating a workspace with description exceeding 1024 characters returns HTTP 400 and does not create the workspace.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"long-desc-ws\", \"git_url\": \"https://git.example.com/repo\", \"description\": \"b\" * 1025}",
+      "expected": "HTTP 400; JSON body {\"error\": string}; no workspace row created in workspaces table",
+      "assertion_pseudocode": "longDesc = 'b' * 1025\nresp = POST('/api/v1/workspaces', body={slug:'long-desc-ws', git_url:'https://git.example.com/repo', description:longDesc}, auth=u1APIKey)\nassert resp.status == 400\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\ndbRow = db.queryOne('SELECT slug FROM workspaces WHERE slug=?', 'long-desc-ws')\nassert dbRow is None"
+    },
+    {
+      "id": "TS-03-E3",
+      "requirement_id": "03-REQ-1.E3",
+      "kind": "integration",
+      "description": "Verify that setting display_name to null or empty string at workspace creation normalizes it to the slug value.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"norm-create-ws\", \"git_url\": \"https://git.example.com/repo\", \"display_name\": null}; repeat with display_name: \"\"",
+      "expected": "HTTP 201 both times; response display_name equals 'norm-create-ws' in both cases",
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces', body={slug:'norm-create-ws', git_url:'https://git.example.com/repo', display_name:null}, auth=u1APIKey)\nassert resp1.status == 201\nassert resp1.json['display_name'] == 'norm-create-ws'\ndeleteWorkspace('norm-create-ws')\nresp2 = POST('/api/v1/workspaces', body={slug:'norm-create-ws', git_url:'https://git.example.com/repo', display_name:''}, auth=u1APIKey)\nassert resp2.status == 201\nassert resp2.json['display_name'] == 'norm-create-ws'"
+    },
+    {
+      "id": "TS-03-E4",
+      "requirement_id": "03-REQ-1.E4",
+      "kind": "integration",
+      "description": "Verify that setting description to null at workspace creation normalizes it to empty string.",
+      "preconditions": [
+        "Server is running with an initialised workspaces table",
+        "A valid user API key exists for user 'u1'"
+      ],
+      "input": "POST /api/v1/workspaces with body {\"slug\": \"nulldesc-ws\", \"git_url\": \"https://git.example.com/repo\", \"description\": null}",
+      "expected": "HTTP 201; response description equals ''",
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces', body={slug:'nulldesc-ws', git_url:'https://git.example.com/repo', description:null}, auth=u1APIKey)\nassert resp.status == 201\nassert resp.json['description'] == ''"
+    },
+    {
+      "id": "TS-03-E5",
+      "requirement_id": "03-REQ-2.E1",
+      "kind": "integration",
+      "description": "Verify that a PAT with only workspaces:delete is denied list and get access with HTTP 404 (anti-enumeration).",
+      "preconditions": [
+        "Server is running",
+        "PAT-delete scoped to workspaces:delete only exists for user 'u1'",
+        "Workspace 'delete-scope-ws' owned by 'u1' exists"
+      ],
+      "input": "GET /api/v1/workspaces using PAT-delete; GET /api/v1/workspaces/delete-scope-ws using PAT-delete",
+      "expected": "Both return HTTP 404; JSON body {\"error\": string}",
+      "assertion_pseudocode": "listResp = GET('/api/v1/workspaces', auth=patDeleteOnly)\nassert listResp.status == 404\nassert 'error' in listResp.json\ngetResp = GET('/api/v1/workspaces/delete-scope-ws', auth=patDeleteOnly)\nassert getResp.status == 404\nassert 'error' in getResp.json"
+    },
+    {
+      "id": "TS-03-E6",
+      "requirement_id": "03-REQ-3.E1",
+      "kind": "integration",
+      "description": "Verify that a requester attempting any workspace operation on a workspace they do not own receives HTTP 404 (anti-enumeration).",
+      "preconditions": [
+        "Server is running",
+        "User 'u2' API key exists",
+        "Workspace 'other-user-ws' is owned by user 'u1' (not 'u2')"
+      ],
+      "input": "User 'u2' performs GET, PATCH, archive, and DELETE on 'other-user-ws'",
+      "expected": "All operations return HTTP 404; JSON body {\"error\": string}; existence of 'other-user-ws' is not disclosed",
+      "assertion_pseudocode": "for op in [GET('/api/v1/workspaces/other-user-ws', auth=u2APIKey),\n            PATCH('/api/v1/workspaces/other-user-ws', body={description:'x'}, auth=u2APIKey),\n            POST('/api/v1/workspaces/other-user-ws/archive', auth=u2APIKey),\n            DELETE('/api/v1/workspaces/other-user-ws', auth=u2APIKey)]:\n  assert op.status == 404\n  assert 'error' in op.json"
+    },
+    {
+      "id": "TS-03-E7",
+      "requirement_id": "03-REQ-4.E1",
+      "kind": "integration",
+      "description": "Verify that a PATCH with an empty body (no fields) returns HTTP 400 and performs no database write.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'empty-patch-ws' owned by 'u1' exists",
+        "Record initial updated_at of 'empty-patch-ws'"
+      ],
+      "input": "PATCH /api/v1/workspaces/empty-patch-ws with empty JSON body {} using u1 API key",
+      "expected": "HTTP 400; JSON body {\"error\": string}; updated_at in workspaces table unchanged",
+      "assertion_pseudocode": "initialUpdatedAt = getWorkspace('empty-patch-ws').updated_at\nresp = PATCH('/api/v1/workspaces/empty-patch-ws', body={}, auth=u1APIKey)\nassert resp.status == 400\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\nassert getWorkspace('empty-patch-ws').updated_at == initialUpdatedAt"
+    },
+    {
+      "id": "TS-03-E8",
+      "requirement_id": "03-REQ-4.E2",
+      "kind": "integration",
+      "description": "Verify that attempting to PATCH an archived workspace returns HTTP 400 with an error indicating it must be reactivated.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Workspace 'archived-patch-ws' owned by 'u1' exists with status='archived'"
+      ],
+      "input": "PATCH /api/v1/workspaces/archived-patch-ws with body {\"description\": \"should fail\"} using u1 API key",
+      "expected": "HTTP 400; JSON body {\"error\": string}; no changes written to workspaces table",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/archived-patch-ws', body={description:'should fail'}, auth=u1APIKey)\nassert resp.status == 400\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\ndbRow = db.queryOne('SELECT description FROM workspaces WHERE slug=?', 'archived-patch-ws')\nassert dbRow.description != 'should fail'"
+    },
+    {
+      "id": "TS-03-E9",
+      "requirement_id": "03-REQ-4.E3",
+      "kind": "integration",
+      "description": "Verify that a PATCH with display_name exceeding 128 characters returns HTTP 400 and performs no database write.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'dn-limit-ws' owned by 'u1' exists"
+      ],
+      "input": "PATCH /api/v1/workspaces/dn-limit-ws with body {\"display_name\": \"a\" * 129} using u1 API key",
+      "expected": "HTTP 400; JSON body {\"error\": string}; display_name in workspaces table unchanged",
+      "assertion_pseudocode": "longName = 'a' * 129\norigDN = getWorkspace('dn-limit-ws').display_name\nresp = PATCH('/api/v1/workspaces/dn-limit-ws', body={display_name:longName}, auth=u1APIKey)\nassert resp.status == 400\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\nassert getWorkspace('dn-limit-ws').display_name == origDN"
+    },
+    {
+      "id": "TS-03-E10",
+      "requirement_id": "03-REQ-4.E4",
+      "kind": "integration",
+      "description": "Verify that a PATCH with description exceeding 1024 characters returns HTTP 400 and performs no database write.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'desc-limit-ws' owned by 'u1' exists"
+      ],
+      "input": "PATCH /api/v1/workspaces/desc-limit-ws with body {\"description\": \"b\" * 1025} using u1 API key",
+      "expected": "HTTP 400; JSON body {\"error\": string}; description in workspaces table unchanged",
+      "assertion_pseudocode": "longDesc = 'b' * 1025\norigDesc = getWorkspace('desc-limit-ws').description\nresp = PATCH('/api/v1/workspaces/desc-limit-ws', body={description:longDesc}, auth=u1APIKey)\nassert resp.status == 400\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\nassert getWorkspace('desc-limit-ws').description == origDesc"
+    },
+    {
+      "id": "TS-03-E11",
+      "requirement_id": "03-REQ-4.E5",
+      "kind": "integration",
+      "description": "Verify that setting org_id to an org where the workspace owner is not a member returns HTTP 403 and does not update org_id.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'non-member-org-ws' owned by 'u1' exists with org_id=null",
+        "User 'u1' is NOT a member of org 'org-uuid-forbidden'"
+      ],
+      "input": "PATCH /api/v1/workspaces/non-member-org-ws with body {\"org_id\": \"org-uuid-forbidden\"} using u1 API key",
+      "expected": "HTTP 403; JSON body {\"error\": string}; org_id in workspaces table remains null",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/non-member-org-ws', body={org_id:'org-uuid-forbidden'}, auth=u1APIKey)\nassert resp.status == 403\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\ndbRow = db.queryOne('SELECT org_id FROM workspaces WHERE slug=?', 'non-member-org-ws')\nassert dbRow.org_id is None"
+    },
+    {
+      "id": "TS-03-E12",
+      "requirement_id": "03-REQ-4.E6",
+      "kind": "integration",
+      "description": "Verify that PATCH on a non-existent slug returns HTTP 404 with error body.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "No workspace with slug 'nonexistent-ws' exists"
+      ],
+      "input": "PATCH /api/v1/workspaces/nonexistent-ws with body {\"description\": \"test\"} using u1 API key",
+      "expected": "HTTP 404; JSON body {\"error\": string}",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/nonexistent-ws', body={description:'test'}, auth=u1APIKey)\nassert resp.status == 404\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)"
+    },
+    {
+      "id": "TS-03-E13",
+      "requirement_id": "03-REQ-4.E7",
+      "kind": "integration",
+      "description": "Verify that PATCH on an existing workspace by a non-owner (who is not admin) returns HTTP 404 (anti-enumeration).",
+      "preconditions": [
+        "Server is running",
+        "User 'u2' API key exists",
+        "Active workspace 'owned-by-u1-ws' exists and is owned by user 'u1'"
+      ],
+      "input": "PATCH /api/v1/workspaces/owned-by-u1-ws with body {\"description\": \"hacked\"} using u2 API key",
+      "expected": "HTTP 404; JSON body {\"error\": string}; workspace data unchanged",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/owned-by-u1-ws', body={description:'hacked'}, auth=u2APIKey)\nassert resp.status == 404\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)"
+    },
+    {
+      "id": "TS-03-E14",
+      "requirement_id": "03-REQ-4.E8",
+      "kind": "integration",
+      "description": "Verify that when the organization membership check service times out or errors, PATCH returns HTTP 500 and no partial state is written.",
+      "preconditions": [
+        "Server is running",
+        "User 'u1' API key exists",
+        "Active workspace 'org-timeout-ws' owned by 'u1' exists with org_id=null",
+        "Organization membership service is configured to time out or return error for org 'org-uuid-timeout'"
+      ],
+      "input": "PATCH /api/v1/workspaces/org-timeout-ws with body {\"org_id\": \"org-uuid-timeout\"} using u1 API key",
+      "expected": "HTTP 500; JSON body {\"error\": string}; org_id in workspaces table remains null (no partial write)",
+      "assertion_pseudocode": "resp = PATCH('/api/v1/workspaces/org-timeout-ws', body={org_id:'org-uuid-timeout'}, auth=u1APIKey)\nassert resp.status == 500\nassert 'error' in resp.json\nassert isinstance(resp.json['error'], str)\ndbRow = db.queryOne('SELECT org_id FROM workspaces WHERE slug=?', 'org-timeout-ws')\nassert dbRow.org_id is None"
+    },
+    {
+      "id": "TS-03-E15",
+      "requirement_id": "03-REQ-7.E1",
+      "kind": "integration",
+      "description": "Verify that running afc workspace update without any update flags prints a usage hint to stderr and exits with code 1 without making an HTTP call.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Network request capture/mock is active to detect any outgoing HTTP calls"
+      ],
+      "input": "Run: afc workspace update some-ws (no flags)",
+      "expected": "Exit code 1; stderr contains usage hint message; no HTTP request was made",
+      "assertion_pseudocode": "capturedRequests = []\nresult = runCLI(['afc', 'workspace', 'update', 'some-ws'], captureHTTP=capturedRequests)\nassert result.exitCode == 1\nassert len(result.stderr) > 0\nassert 'usage' in result.stderr.lower() or 'flag' in result.stderr.lower()\nassert len(capturedRequests) == 0"
+    },
+    {
+      "id": "TS-03-E16",
+      "requirement_id": "03-REQ-7.E2",
+      "kind": "integration",
+      "description": "Verify that when the API returns a non-2xx status, afc workspace update prints the error message to stderr and exits with code 1.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server (or mock) returns HTTP 404 with body {\"error\": \"workspace not found\"} for the target slug",
+        "PAT-write configured in afc credentials"
+      ],
+      "input": "Run: afc workspace update missing-ws --display-name 'x'",
+      "expected": "Exit code 1; stderr contains 'workspace not found' or equivalent API error message; stdout is empty",
+      "assertion_pseudocode": "result = runCLI(['afc', 'workspace', 'update', 'missing-ws', '--display-name', 'x'])\nassert result.exitCode == 1\nassert 'workspace not found' in result.stderr or 'not found' in result.stderr.lower()\nassert result.stdout.strip() == ''"
+    },
+    {
+      "id": "TS-03-E17",
+      "requirement_id": "03-REQ-7.E3",
+      "kind": "integration",
+      "description": "Verify that afc workspace update exits within the configured client timeout when the API call times out or fails, without hanging indefinitely.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Network is configured to drop connections or simulate timeout for the workspace update endpoint",
+        "Client timeout is configured (e.g., 5 seconds)"
+      ],
+      "input": "Run: afc workspace update timeout-ws --display-name 'x' with network timeout simulated",
+      "expected": "Exit code 1 within the configured timeout period; stderr contains a timeout or connection error message",
+      "assertion_pseudocode": "startTime = now()\nresult = runCLI(['afc', 'workspace', 'update', 'timeout-ws', '--display-name', 'x'], timeout=30)\nendTime = now()\nassert result.exitCode == 1\nassert (endTime - startTime) < configuredClientTimeout + 2  // within timeout + 2s buffer\nassert 'timeout' in result.stderr.lower() or 'connection' in result.stderr.lower() or len(result.stderr) > 0"
+    },
+    {
+      "id": "TS-03-E18",
+      "requirement_id": "03-REQ-7.E4",
+      "kind": "integration",
+      "description": "Verify that afc workspace update prints a descriptive parse error to stderr and exits 1 when the API returns success with malformed/unexpected response body.",
+      "preconditions": [
+        "afc binary is built and on PATH",
+        "Server mock returns HTTP 200 with body 'not-json' or missing required fields",
+        "PAT-write configured in afc credentials"
+      ],
+      "input": "Run: afc workspace update malformed-ws --display-name 'x' against mock returning malformed JSON",
+      "expected": "Exit code 1; stderr contains a parse error description; stdout is empty or not a valid workspace JSON",
+      "assertion_pseudocode": "result = runCLI(['afc', 'workspace', 'update', 'malformed-ws', '--display-name', 'x'])\nassert result.exitCode == 1\nassert len(result.stderr) > 0\nassert 'parse' in result.stderr.lower() or 'invalid' in result.stderr.lower() or 'unexpected' in result.stderr.lower()"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-03-SMOKE-1",
+      "execution_path_id": "03-PATH-1",
+      "description": "End-to-end smoke test: PAT with workspaces:write updates workspace display_name via CLI (afc workspace update) and API.",
+      "trigger": "Developer runs 'afc workspace update my-project --display-name My Project' with a PAT scoped to workspaces:write",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "workspace update handler",
+        "apikit PAT auth middleware",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "afc constructs PATCH body {\"display_name\": \"My Project\"} and sends to PATCH /api/v1/workspaces/my-project",
+        "Auth middleware authenticates the PAT, verifies workspaces:write scope, and confirms ownership",
+        "Update handler validates display_name length (<=128 chars), confirms workspace is active",
+        "workspaces table row for 'my-project' has display_name updated to 'My Project' and updated_at set to current server time",
+        "HTTP 200 returned with full workspace JSON including display_name='My Project'",
+        "afc prints updated workspace JSON to stdout and exits 0"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-2",
+      "execution_path_id": "03-PATH-2",
+      "description": "End-to-end smoke test: PAT with workspaces:delete deletes an archived workspace by knowing the slug directly.",
+      "trigger": "Developer calls DELETE /api/v1/workspaces/old-project with a PAT scoped to workspaces:delete",
+      "real_components": [
+        "af-hub HTTP server",
+        "workspace delete handler",
+        "apikit PAT auth middleware",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Auth middleware authenticates the PAT, verifies workspaces:delete scope, and confirms ownership without requiring workspaces:read",
+        "Delete handler confirms workspace status is 'archived'",
+        "Workspace row 'old-project' is removed from the workspaces table",
+        "HTTP 200 returned confirming deletion"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-3",
+      "execution_path_id": "03-PATH-3",
+      "description": "End-to-end smoke test: Workspace creation with display_name and description via CLI (afc workspace create).",
+      "trigger": "Developer runs 'afc workspace create --display-name My Project --description A test workspace' with a PAT holding workspaces:create",
+      "real_components": [
+        "afc CLI binary",
+        "af-hub HTTP server",
+        "workspace creation handler",
+        "apikit PAT auth middleware",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "afc includes display_name and description in the POST /api/v1/workspaces request body",
+        "Creation handler validates field lengths and stores display_name and description in workspaces table",
+        "HTTP 201 returned with full workspace JSON including display_name='My Project' and description='A test workspace'",
+        "afc prints created workspace JSON to stdout and exits 0"
+      ]
+    },
+    {
+      "id": "TS-03-SMOKE-4",
+      "execution_path_id": "03-PATH-4",
+      "description": "End-to-end smoke test: PATCH on an archived workspace is rejected with HTTP 400 and no changes are written.",
+      "trigger": "Developer sends PATCH /api/v1/workspaces/archived-ws with valid owner API key and body {\"description\": \"new text\"}",
+      "real_components": [
+        "af-hub HTTP server",
+        "workspace update handler",
+        "apikit auth middleware",
+        "SQLite workspaces table"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Auth middleware authenticates the request and confirms ownership",
+        "Update handler retrieves workspace from workspaces table and detects status='archived'",
+        "Update is aborted without writing any changes to the workspaces table",
+        "HTTP 400 returned with JSON error body indicating workspace must be reactivated before updating"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

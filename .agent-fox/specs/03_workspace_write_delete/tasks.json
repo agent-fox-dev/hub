@@ -1,0 +1,1780 @@
+{
+  "$schema": null,
+  "spec_id": "03",
+  "spec_name": "workspace_write_delete",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/... -count=1 -v -run 'TestSpec03'",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 7,
+      "to_group": 1,
+      "relationship": "Requires fully implemented workspace infrastructure (table, handlers, routes, permissions, CLI, auth) from spec 01_workspaces",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: workspace schema DDL and new metadata fields (REQ-1)",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write DDL schema test for display_name and description columns",
+          "details": [
+            "Create test file internal/workspace/schema_test.go (or similar).",
+            "Test executes the workspaces CREATE TABLE DDL and runs PRAGMA table_info('workspaces').",
+            "Assert columns 'display_name' (TEXT NOT NULL DEFAULT '') and 'description' (TEXT NOT NULL DEFAULT '') are present.",
+            "Use go test table-driven style; test must compile and fail before implementation."
+          ],
+          "test_spec_refs": [
+            "TS-03-1"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write integration tests: display_name defaults to slug when omitted or cleared at creation",
+          "details": [
+            "POST /api/v1/workspaces without display_name → assert response display_name == slug.",
+            "POST with display_name: null and display_name: '' → assert response display_name == slug (normalization).",
+            "Confirm no workspace row created on 400 error path.",
+            "Use httptest.NewServer or similar Go test infrastructure."
+          ],
+          "test_spec_refs": [
+            "TS-03-2",
+            "TS-03-E3"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.2",
+            "03-REQ-1.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write integration tests: description defaults to empty string when omitted or null at creation",
+          "details": [
+            "POST /api/v1/workspaces without description → assert response description == ''.",
+            "POST with description: null → assert response description == ''.",
+            "Confirm backward-compatible creation still succeeds."
+          ],
+          "test_spec_refs": [
+            "TS-03-3",
+            "TS-03-E4"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.3",
+            "03-REQ-1.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write integration tests: display_name and description non-null across all response operations",
+          "details": [
+            "For create, list, GET, PATCH, archive, reactivate: assert display_name and description are present non-null strings.",
+            "Assert all required fields (slug, git_url, branch, display_name, description, owner_id, org_id, status, created_at, updated_at) present in every response.",
+            "Table-driven test iterating over operation types."
+          ],
+          "test_spec_refs": [
+            "TS-03-4",
+            "TS-03-26",
+            "TS-03-27"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.4",
+            "03-REQ-5.1",
+            "03-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write integration tests: provided display_name and description stored and returned at creation",
+          "details": [
+            "POST with non-empty display_name (<=128 chars) → assert response display_name equals input.",
+            "POST with non-empty description (<=1024 chars) → assert response description equals input.",
+            "POST with both fields populated → assert both values in response.",
+            "POST without either field → assert server-side defaults (slug / '')."
+          ],
+          "test_spec_refs": [
+            "TS-03-5",
+            "TS-03-6",
+            "TS-03-28",
+            "TS-03-29"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.5",
+            "03-REQ-1.6",
+            "03-REQ-6.1",
+            "03-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.6",
+          "title": "Write edge-case tests: field length validation at creation",
+          "details": [
+            "POST with display_name of 129 chars → expect HTTP 400 + JSON {error: string}, no DB row created.",
+            "POST with description of 1025 chars → expect HTTP 400 + JSON {error: string}, no DB row created.",
+            "Boundary tests: exactly 128 chars and exactly 1024 chars must succeed (HTTP 201)."
+          ],
+          "test_spec_refs": [
+            "TS-03-E1",
+            "TS-03-E2"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.E1",
+            "03-REQ-1.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files in this group compile: go build ./...",
+          "Tests fail as expected (red) before implementation: go test ./internal/workspace/... -count=1 -v -run 'TestSpec03_Group1'",
+          "No linter warnings introduced: go vet ./...",
+          "Test IDs TS-03-1 through TS-03-6, TS-03-26 through TS-03-29, TS-03-E1 through TS-03-E4 are all present and named correctly"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: permission scope registration and access control matrix (REQ-2, REQ-3)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write unit tests: MountHandlers registers workspaces:write and workspaces:delete",
+          "details": [
+            "Call MountHandlers in a test context and capture registered apikit.Permission entries.",
+            "Assert 'workspaces:write' and 'workspaces:delete' are present in the registry.",
+            "Assert 'workspaces:read' and 'workspaces:create' are still present and unchanged.",
+            "Verify existing PATs (read/create) still receive HTTP 200 for their permitted operations."
+          ],
+          "test_spec_refs": [
+            "TS-03-7",
+            "TS-03-8",
+            "TS-03-9"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.1",
+            "03-REQ-2.2",
+            "03-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write integration tests: workspaces:write implies read; workspaces:delete does not",
+          "details": [
+            "PAT with workspaces:write: GET /api/v1/workspaces and GET /api/v1/workspaces/:slug → HTTP 200.",
+            "PAT with only workspaces:delete: GET /api/v1/workspaces → HTTP 404 (anti-enumeration).",
+            "PAT with only workspaces:delete: GET /api/v1/workspaces/:slug → HTTP 404.",
+            "Response JSON must contain {error: string} on 404 paths."
+          ],
+          "test_spec_refs": [
+            "TS-03-10",
+            "TS-03-11",
+            "TS-03-E5"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.4",
+            "03-REQ-2.5",
+            "03-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write integration tests: admin token access matrix (update, archive, reactivate, delete)",
+          "details": [
+            "Admin token: PATCH, archive, reactivate, DELETE on any workspace → HTTP 200 for each.",
+            "Admin token: POST /api/v1/workspaces → HTTP 403 with {error: string}.",
+            "Use a workspace owned by a different user to confirm cross-user admin access."
+          ],
+          "test_spec_refs": [
+            "TS-03-12",
+            "TS-03-18"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.1",
+            "03-REQ-3.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write integration tests: owner API key access matrix",
+          "details": [
+            "Workspace owner API key: PATCH, archive, reactivate, DELETE own workspace → HTTP 200 each.",
+            "Sequence: PATCH → archive → reactivate → archive → DELETE.",
+            "Confirm final DELETE removes the row from workspaces table."
+          ],
+          "test_spec_refs": [
+            "TS-03-13"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write integration tests: workspaces:write PAT access and workspaces:delete PAT access",
+          "details": [
+            "PAT workspaces:write: PATCH, archive, reactivate → HTTP 200 each.",
+            "PAT workspaces:write: DELETE → HTTP 404 (anti-enumeration, no delete allowed).",
+            "PAT workspaces:delete on archived workspace: DELETE → HTTP 200."
+          ],
+          "test_spec_refs": [
+            "TS-03-14",
+            "TS-03-15",
+            "TS-03-16"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.3",
+            "03-REQ-3.4",
+            "03-REQ-3.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.6",
+          "title": "Write integration tests: read/create PAT denied on mutation endpoints; anti-enumeration on unowned workspaces",
+          "details": [
+            "PAT workspaces:read and workspaces:create: PATCH, archive, reactivate, DELETE → HTTP 404 each.",
+            "Non-owner user (u2) attempts GET, PATCH, archive, DELETE on workspace owned by u1 → HTTP 404 each.",
+            "Confirm {error: string} in all 404 responses."
+          ],
+          "test_spec_refs": [
+            "TS-03-17",
+            "TS-03-E6"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.6",
+            "03-REQ-3.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files in this group compile: go build ./...",
+          "Tests fail as expected (red) before implementation: go test ./internal/... -count=1 -v -run 'TestSpec03_Group2'",
+          "No linter warnings introduced: go vet ./...",
+          "Test IDs TS-03-7 through TS-03-18, TS-03-E5, TS-03-E6 are all present and named correctly"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: workspace update endpoint PATCH /api/v1/workspaces/:slug (REQ-4)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write integration tests: valid PATCH updates fields and sets updated_at",
+          "details": [
+            "PATCH with {description: 'new'} → HTTP 200, description updated, updated_at strictly greater than initial.",
+            "PATCH with only display_name → description and org_id unchanged in DB.",
+            "All workspace fields present in HTTP 200 response.",
+            "Use RFC 3339 timestamp parsing to compare updated_at values."
+          ],
+          "test_spec_refs": [
+            "TS-03-19",
+            "TS-03-20"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write integration tests: normalization of null/empty display_name and description in PATCH",
+          "details": [
+            "PATCH with display_name: null → response display_name == slug.",
+            "PATCH with display_name: '' → response display_name == slug.",
+            "PATCH with description: null → response description == ''.",
+            "PATCH with description: '' → response description == ''."
+          ],
+          "test_spec_refs": [
+            "TS-03-21",
+            "TS-03-22"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.3",
+            "03-REQ-4.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration tests: org_id update and removal in PATCH",
+          "details": [
+            "PATCH with org_id: null → response org_id is null, DB row org_id = NULL.",
+            "PATCH with valid org_id (owner is member) → response org_id equals new value, HTTP 200.",
+            "Verify DB state directly after each operation."
+          ],
+          "test_spec_refs": [
+            "TS-03-23",
+            "TS-03-24"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.5",
+            "03-REQ-4.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write integration tests: immutable field rejection in PATCH",
+          "details": [
+            "PATCH bodies including slug, git_url, branch, or owner_id each return HTTP 400 + {error: string}.",
+            "Table-driven test over {slug, git_url, branch, owner_id} → assert 400 for each.",
+            "Confirm no mutation to workspaces table on rejection."
+          ],
+          "test_spec_refs": [
+            "TS-03-25"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write edge-case tests: PATCH error conditions (empty body, archived, field length, org membership, not found, anti-enumeration)",
+          "details": [
+            "Empty body {} → HTTP 400, updated_at unchanged in DB.",
+            "Archived workspace → HTTP 400, no changes written.",
+            "display_name > 128 chars → HTTP 400, display_name unchanged in DB.",
+            "description > 1024 chars → HTTP 400, description unchanged in DB.",
+            "Owner not member of new org → HTTP 403, org_id unchanged.",
+            "Non-existent slug → HTTP 404.",
+            "Existing workspace, non-owner non-admin → HTTP 404 (anti-enumeration)."
+          ],
+          "test_spec_refs": [
+            "TS-03-E7",
+            "TS-03-E8",
+            "TS-03-E9",
+            "TS-03-E10",
+            "TS-03-E11",
+            "TS-03-E12",
+            "TS-03-E13"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.E1",
+            "03-REQ-4.E2",
+            "03-REQ-4.E3",
+            "03-REQ-4.E4",
+            "03-REQ-4.E5",
+            "03-REQ-4.E6",
+            "03-REQ-4.E7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.6",
+          "title": "Write edge-case test: org membership service timeout returns HTTP 500 with no partial write",
+          "details": [
+            "Configure mock org membership service to return error/timeout.",
+            "PATCH with non-null org_id → HTTP 500 + {error: string}.",
+            "Assert org_id in workspaces table remains NULL (no partial write).",
+            "Use context timeout or mock error injection."
+          ],
+          "test_spec_refs": [
+            "TS-03-E14"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.E8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files in this group compile: go build ./...",
+          "Tests fail as expected (red) before implementation: go test ./internal/... -count=1 -v -run 'TestSpec03_Group3'",
+          "No linter warnings introduced: go vet ./...",
+          "Test IDs TS-03-19 through TS-03-25, TS-03-E7 through TS-03-E14 are all present and named correctly"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: CLI commands afc workspace update and afc workspace create flags (REQ-7, REQ-8)",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write integration tests: afc workspace update success path and PATCH body construction",
+          "details": [
+            "Run afc workspace update <slug> --display-name 'CLI Updated' → exit 0, stdout valid JSON with display_name='CLI Updated'.",
+            "--clear-display-name, --clear-description, --clear-org → captured PATCH body has null values for corresponding fields.",
+            "Only --display-name provided → PATCH body contains only display_name key; description and org_id absent.",
+            "Use subprocess execution and HTTP mock server to capture request bodies."
+          ],
+          "test_spec_refs": [
+            "TS-03-30",
+            "TS-03-31",
+            "TS-03-32"
+          ],
+          "requirement_refs": [
+            "03-REQ-7.1",
+            "03-REQ-7.2",
+            "03-REQ-7.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write edge-case tests: afc workspace update error handling",
+          "details": [
+            "No flags provided → exit 1, usage hint on stderr, zero HTTP requests made.",
+            "API returns non-2xx → exit 1, API error message on stderr, stdout empty.",
+            "Network timeout → exit 1 within configured timeout, error on stderr, no hang.",
+            "API returns HTTP 200 with malformed JSON → exit 1, parse error description on stderr."
+          ],
+          "test_spec_refs": [
+            "TS-03-E15",
+            "TS-03-E16",
+            "TS-03-E17",
+            "TS-03-E18"
+          ],
+          "requirement_refs": [
+            "03-REQ-7.E1",
+            "03-REQ-7.E2",
+            "03-REQ-7.E3",
+            "03-REQ-7.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write integration tests: afc workspace create --display-name and --description flags",
+          "details": [
+            "afc workspace create --slug ws --git-url url --display-name 'CLI Created' --description 'Created via CLI' → exit 0, stdout JSON with both values.",
+            "afc workspace create without --display-name and --description → exit 0, stdout JSON with slug as display_name and '' as description.",
+            "Confirm backward compatibility: existing flags unchanged."
+          ],
+          "test_spec_refs": [
+            "TS-03-33",
+            "TS-03-34"
+          ],
+          "requirement_refs": [
+            "03-REQ-8.1",
+            "03-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All CLI test files compile: go build ./...",
+          "Tests fail as expected (red) before implementation: go test ./internal/... -count=1 -v -run 'TestSpec03_Group4'",
+          "No linter warnings introduced: go vet ./...",
+          "Test IDs TS-03-30 through TS-03-34, TS-03-E15 through TS-03-E18 are all present"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write tests: property-based invariants (PROP-1 through PROP-7)",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write property tests: display_name and description never null in any response",
+          "details": [
+            "Use go-fuzz or rapid (Go property test library) to generate arbitrary slug and display_name/description values.",
+            "For each generated input: create workspace, perform list/get/update/archive/reactivate, assert display_name is non-null non-empty string and description is non-null string.",
+            "Cover null and empty-string inputs to verify normalization invariant."
+          ],
+          "test_spec_refs": [
+            "TS-03-P1",
+            "TS-03-P2"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.2",
+            "03-REQ-1.3",
+            "03-REQ-1.4",
+            "03-REQ-4.3",
+            "03-REQ-4.4",
+            "03-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write property tests: partial update does not clobber omitted fields; updated_at advances",
+          "details": [
+            "Generate arbitrary subsets of {display_name, description, org_id} for PATCH body.",
+            "Record pre-PATCH DB state; apply PATCH; assert omitted fields unchanged in DB.",
+            "Assert updated_at in response strictly greater than pre-PATCH updated_at (RFC 3339 comparison)."
+          ],
+          "test_spec_refs": [
+            "TS-03-P3",
+            "TS-03-P4"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write property tests: immutable fields unchanged; workspaces:delete no read; existing scopes stable",
+          "details": [
+            "For any PATCH (valid or invalid): assert slug, git_url, branch, owner_id, created_at, status unchanged in DB.",
+            "For any PAT with only workspaces:delete: list and get always return HTTP 404.",
+            "For any PAT with workspaces:read or workspaces:create: list/get return 200; mutation endpoints return 404 — unchanged from pre-feature baseline."
+          ],
+          "test_spec_refs": [
+            "TS-03-P5",
+            "TS-03-P6",
+            "TS-03-P7"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.7",
+            "03-REQ-2.3",
+            "03-REQ-2.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All property test files compile: go build ./...",
+          "Property tests fail as expected (red) before implementation: go test ./internal/... -count=1 -v -run 'TestSpec03_Group5'",
+          "No linter warnings introduced: go vet ./...",
+          "Test IDs TS-03-P1 through TS-03-P7 are all present"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "tests",
+      "title": "Write tests: documentation existence and content (REQ-9, REQ-10)",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Write unit tests: docs/api.md covers all workspace endpoints and PATCH details",
+          "details": [
+            "Open docs/api.md and assert presence of sections for all 7 workspace endpoints.",
+            "Assert docs/api.md contains 'PATCH /api/v1/workspaces', '128', '1024', 'archived', 'partial' or 'omitted fields', '400', '403', '404'.",
+            "Use Go file I/O (os.ReadFile) in test; assert string containment.",
+            "Test must fail if docs/api.md does not exist."
+          ],
+          "test_spec_refs": [
+            "TS-03-35",
+            "TS-03-36"
+          ],
+          "requirement_refs": [
+            "03-REQ-9.1",
+            "03-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Write unit tests: docs/api.md covers new scopes and non-workspace apikit endpoints",
+          "details": [
+            "Assert docs/api.md contains 'workspaces:write', 'workspaces:delete', and implied read access documentation.",
+            "Assert docs/api.md contains sections for login, user, keys, tokens, orgs, and admin endpoints."
+          ],
+          "test_spec_refs": [
+            "TS-03-37",
+            "TS-03-38"
+          ],
+          "requirement_refs": [
+            "03-REQ-9.3",
+            "03-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Write unit tests: docs/cli.md covers all workspace subcommands and new update flags",
+          "details": [
+            "Open docs/cli.md and assert presence of 'afc workspace create/list/get/update/archive/reactivate/delete'.",
+            "Assert docs/cli.md contains '--display-name', '--description', '--org', '--clear-display-name', '--clear-description', '--clear-org', exit code 1 behavior.",
+            "Test must fail if docs/cli.md does not exist."
+          ],
+          "test_spec_refs": [
+            "TS-03-39",
+            "TS-03-40"
+          ],
+          "requirement_refs": [
+            "03-REQ-10.1",
+            "03-REQ-10.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Write unit tests: docs/cli.md covers apikit-provided afc commands",
+          "details": [
+            "Assert docs/cli.md contains sections for afc login, afc user, afc keys, afc tokens, afc orgs, afc admin.",
+            "String containment check (case-insensitive) using Go testing."
+          ],
+          "test_spec_refs": [
+            "TS-03-41"
+          ],
+          "requirement_refs": [
+            "03-REQ-10.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "All documentation test files compile: go build ./...",
+          "Documentation tests fail as expected (red) before docs are written: go test ./internal/... -count=1 -v -run 'TestSpec03_Group6'",
+          "No linter warnings introduced: go vet ./...",
+          "Test IDs TS-03-35 through TS-03-41 are all present"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement workspace schema changes: DDL update and model struct",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Update workspaces table DDL to add display_name and description columns",
+          "details": [
+            "Locate the CREATE TABLE IF NOT EXISTS workspaces DDL (pre-production; no migration framework).",
+            "Add 'display_name TEXT NOT NULL DEFAULT \"\"' and 'description TEXT NOT NULL DEFAULT \"\"' columns.",
+            "No ALTER TABLE logic — recreate schema for pre-production databases.",
+            "Ensure DDL matches the spec exactly including column order."
+          ],
+          "test_spec_refs": [
+            "TS-03-1"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Update Workspace Go struct and JSON serializer to include display_name and description",
+          "details": [
+            "Add DisplayName string and Description string fields to the Workspace struct (internal/workspace/workspace.go or equivalent).",
+            "Add json tags: `json:\"display_name\"` and `json:\"description\"`.",
+            "Ensure fields are always serialized as strings (never null/omitempty).",
+            "Update all SQL SELECT queries that scan workspace rows to include new columns."
+          ],
+          "test_spec_refs": [
+            "TS-03-4",
+            "TS-03-26",
+            "TS-03-27"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.4",
+            "03-REQ-5.1",
+            "03-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement server-side normalization of display_name and description",
+          "details": [
+            "Write normalizeDisplayName(slug, input *string) string: returns slug if input is nil or empty, else input value.",
+            "Write normalizeDescription(input *string) string: returns '' if input is nil, else input value.",
+            "Functions are called in both creation and update handlers before any DB write.",
+            "Use pointer semantics (*string) for optional JSON fields to distinguish null from absent."
+          ],
+          "test_spec_refs": [
+            "TS-03-2",
+            "TS-03-3",
+            "TS-03-E3",
+            "TS-03-E4"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.2",
+            "03-REQ-1.3",
+            "03-REQ-1.E3",
+            "03-REQ-1.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Schema tests pass: go test ./internal/workspace/... -count=1 -v -run 'TestSpec03_Group1'",
+          "03-REQ-1.1, 03-REQ-1.2, 03-REQ-1.3, 03-REQ-1.4 acceptance criteria met",
+          "No linter warnings: go vet ./...",
+          "All existing tests still pass: go test ./... -count=1"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement new permission scopes and access control enforcement",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Register workspaces:write and workspaces:delete scopes via apikit.Permission in MountHandlers",
+          "details": [
+            "Locate MountHandlers in the af-hub codebase.",
+            "Add apikit.Permission(\"workspaces:write\", ...) registration alongside existing workspaces:read and workspaces:create.",
+            "Add apikit.Permission(\"workspaces:delete\", ...) registration.",
+            "Verify exact apikit.Permission signature against the installed library version before implementation.",
+            "Do not alter existing workspaces:read or workspaces:create registrations."
+          ],
+          "test_spec_refs": [
+            "TS-03-7",
+            "TS-03-8",
+            "TS-03-9"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.1",
+            "03-REQ-2.2",
+            "03-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement workspaces:write implied read access in auth middleware",
+          "details": [
+            "Update auth middleware/permission check: PAT with workspaces:write is permitted on list and get endpoints (same as workspaces:read).",
+            "PAT with only workspaces:delete: list and get endpoints return HTTP 404 (anti-enumeration) — no implied read.",
+            "Ensure scope-check helper hasReadAccess(pat) returns true for workspaces:read, workspaces:create, workspaces:write but false for workspaces:delete-only."
+          ],
+          "test_spec_refs": [
+            "TS-03-10",
+            "TS-03-11",
+            "TS-03-E5"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.4",
+            "03-REQ-2.5",
+            "03-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Update endpoint auth guards for update, archive, reactivate, delete per access control matrix",
+          "details": [
+            "PATCH /api/v1/workspaces/:slug: allow admin, owner API key, PAT workspaces:write (own). Deny all others with HTTP 404.",
+            "Archive/reactivate: same rule as PATCH.",
+            "DELETE: allow admin, owner API key, PAT workspaces:delete (own). Deny PAT workspaces:write with HTTP 404.",
+            "POST /api/v1/workspaces: deny admin token with HTTP 403.",
+            "Anti-enumeration: non-owner, non-admin → HTTP 404 regardless of resource existence."
+          ],
+          "test_spec_refs": [
+            "TS-03-12",
+            "TS-03-13",
+            "TS-03-14",
+            "TS-03-15",
+            "TS-03-16",
+            "TS-03-17",
+            "TS-03-18",
+            "TS-03-E6"
+          ],
+          "requirement_refs": [
+            "03-REQ-3.1",
+            "03-REQ-3.2",
+            "03-REQ-3.3",
+            "03-REQ-3.4",
+            "03-REQ-3.5",
+            "03-REQ-3.6",
+            "03-REQ-3.7",
+            "03-REQ-3.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Permission scope tests pass: go test ./internal/... -count=1 -v -run 'TestSpec03_Group2'",
+          "03-REQ-2.1 through 03-REQ-2.5, 03-REQ-3.1 through 03-REQ-3.7 acceptance criteria met",
+          "No linter warnings: go vet ./...",
+          "All existing tests still pass: go test ./... -count=1"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement PATCH /api/v1/workspaces/:slug update endpoint",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement workspace update handler: partial update, validation, and DB write",
+          "details": [
+            "Create internal/workspace/update.go (or equivalent): func UpdateWorkspaceHandler(w http.ResponseWriter, r *http.Request).",
+            "Decode JSON body into a struct with pointer fields (*string DisplayName, *string Description, *string OrgID) to distinguish null from absent.",
+            "Reject immutable fields (slug, git_url, branch, owner_id) with HTTP 400 if present in body.",
+            "Apply normalizeDisplayName and normalizeDescription before DB write.",
+            "Build partial SQL UPDATE using only provided fields; set updated_at = now().",
+            "Return HTTP 200 with full updated workspace JSON."
+          ],
+          "test_spec_refs": [
+            "TS-03-19",
+            "TS-03-20",
+            "TS-03-21",
+            "TS-03-22",
+            "TS-03-23",
+            "TS-03-24",
+            "TS-03-25"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-4.2",
+            "03-REQ-4.3",
+            "03-REQ-4.4",
+            "03-REQ-4.5",
+            "03-REQ-4.6",
+            "03-REQ-4.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement update endpoint error handling: empty body, archived workspace, field length, org membership",
+          "details": [
+            "Empty body (no fields provided): HTTP 400 before any DB read.",
+            "Archived workspace: HTTP 400 after loading workspace from DB.",
+            "display_name > 128 chars: HTTP 400, no DB write.",
+            "description > 1024 chars: HTTP 400, no DB write.",
+            "org_id non-null: call org membership service; if not member → HTTP 403; if service error/timeout → HTTP 500 with no partial write.",
+            "Use apikit's standard JSON error envelope for all error responses."
+          ],
+          "test_spec_refs": [
+            "TS-03-E7",
+            "TS-03-E8",
+            "TS-03-E9",
+            "TS-03-E10",
+            "TS-03-E11",
+            "TS-03-E14"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.E1",
+            "03-REQ-4.E2",
+            "03-REQ-4.E3",
+            "03-REQ-4.E4",
+            "03-REQ-4.E5",
+            "03-REQ-4.E8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Register PATCH /api/v1/workspaces/:slug route in MountHandlers",
+          "details": [
+            "Add route registration for PATCH /api/v1/workspaces/:slug in MountHandlers.",
+            "Wire the route to UpdateWorkspaceHandler with the correct auth middleware chain.",
+            "Confirm route does not conflict with existing workspace routes.",
+            "Verify slug parameter extraction matches the existing routing convention (e.g., chi, gorilla/mux, or stdlib)."
+          ],
+          "test_spec_refs": [
+            "TS-03-19"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-2.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Update endpoint tests pass: go test ./internal/... -count=1 -v -run 'TestSpec03_Group3'",
+          "03-REQ-4.1 through 03-REQ-4.7 and all edge cases (03-REQ-4.E1 through 03-REQ-4.E8) acceptance criteria met",
+          "No linter warnings: go vet ./...",
+          "All existing tests still pass: go test ./... -count=1"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Update workspace creation handler to accept display_name and description",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Update POST /api/v1/workspaces request parsing to accept display_name and description",
+          "details": [
+            "Update workspace creation request struct to include optional *string DisplayName and *string Description fields.",
+            "Apply normalizeDisplayName(slug, input) and normalizeDescription(input) before DB insert.",
+            "Apply length validation: display_name <= 128 chars, description <= 1024 chars → HTTP 400 if exceeded.",
+            "Existing requests without these fields must continue to return HTTP 201 with defaults."
+          ],
+          "test_spec_refs": [
+            "TS-03-28",
+            "TS-03-29"
+          ],
+          "requirement_refs": [
+            "03-REQ-6.1",
+            "03-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Update workspace creation SQL INSERT to persist display_name and description",
+          "details": [
+            "Modify the INSERT INTO workspaces statement to include display_name and description columns.",
+            "Pass normalized values to the SQL statement parameters.",
+            "Confirm all existing workspace creation tests still pass after the change."
+          ],
+          "test_spec_refs": [
+            "TS-03-5",
+            "TS-03-6"
+          ],
+          "requirement_refs": [
+            "03-REQ-1.5",
+            "03-REQ-1.6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Creation handler tests pass: go test ./internal/... -count=1 -v -run 'TestSpec03_Group1|TestSpec03_Group6'",
+          "03-REQ-6.1, 03-REQ-6.2, 03-REQ-1.5, 03-REQ-1.6 acceptance criteria met",
+          "No linter warnings: go vet ./...",
+          "All existing tests still pass: go test ./... -count=1"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement afc workspace update CLI command and update afc workspace create flags",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Implement afc workspace update subcommand with all flags",
+          "details": [
+            "Create cmd/workspace_update.go (or equivalent) implementing 'afc workspace update <slug>'.",
+            "Flags: --display-name string, --description string, --org string, --clear-display-name bool, --clear-description bool, --clear-org bool.",
+            "Validate: if no flags provided → print usage hint to stderr, exit 1, no HTTP call.",
+            "Build PATCH body including only explicitly-set flags; --clear-* flags send null values.",
+            "On success: print updated workspace JSON to stdout, exit 0.",
+            "Use pointer fields to track which flags were explicitly provided vs. absent."
+          ],
+          "test_spec_refs": [
+            "TS-03-30",
+            "TS-03-31",
+            "TS-03-32"
+          ],
+          "requirement_refs": [
+            "03-REQ-7.1",
+            "03-REQ-7.2",
+            "03-REQ-7.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement afc workspace update error handling: API errors, timeout, malformed response",
+          "details": [
+            "Non-2xx HTTP response: extract error field from JSON body, print to stderr, exit 1.",
+            "Network timeout or connection failure: print timeout/connection error to stderr, exit 1 within configured client timeout.",
+            "HTTP 200 with malformed/missing-field response body: print parse error description to stderr, exit 1.",
+            "Use configured HTTP client timeout (context deadline); do not hang indefinitely."
+          ],
+          "test_spec_refs": [
+            "TS-03-E15",
+            "TS-03-E16",
+            "TS-03-E17",
+            "TS-03-E18"
+          ],
+          "requirement_refs": [
+            "03-REQ-7.E1",
+            "03-REQ-7.E2",
+            "03-REQ-7.E3",
+            "03-REQ-7.E4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Add --display-name and --description flags to afc workspace create",
+          "details": [
+            "Add optional --display-name and --description flags to the existing afc workspace create command.",
+            "When provided, include in POST /api/v1/workspaces request body.",
+            "When omitted, do not include in request body (server applies defaults).",
+            "All existing workspace create flags and behavior remain unchanged."
+          ],
+          "test_spec_refs": [
+            "TS-03-33",
+            "TS-03-34"
+          ],
+          "requirement_refs": [
+            "03-REQ-8.1",
+            "03-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "CLI tests pass: go test ./internal/... -count=1 -v -run 'TestSpec03_Group4'",
+          "03-REQ-7.1 through 03-REQ-7.3 and 03-REQ-8.1, 03-REQ-8.2 acceptance criteria met",
+          "No linter warnings: go vet ./...",
+          "All existing tests still pass: go test ./... -count=1"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "standard",
+      "title": "Create docs/api.md and docs/cli.md reference documentation",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Write docs/api.md: workspace endpoints, new PATCH endpoint, permission scopes",
+          "details": [
+            "Create docs/api.md covering all 7 workspace endpoints: create, list, get, update, archive, reactivate, delete.",
+            "For each endpoint: authentication requirements, request body schema, response schema, permission scope requirements, HTTP error codes.",
+            "PATCH /api/v1/workspaces/:slug: document partial-update semantics, display_name max 128 chars, description max 1024 chars, all error conditions (400, 403, 404, 500).",
+            "Document workspaces:write and workspaces:delete scopes, their implied permissions, and which endpoints they authorize."
+          ],
+          "test_spec_refs": [
+            "TS-03-35",
+            "TS-03-36",
+            "TS-03-37"
+          ],
+          "requirement_refs": [
+            "03-REQ-9.1",
+            "03-REQ-9.2",
+            "03-REQ-9.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Extend docs/api.md: non-workspace apikit endpoints",
+          "details": [
+            "Add sections for all apikit-provided endpoints: login, user, keys, tokens, orgs, admin.",
+            "Each section includes authentication requirements, request/response schemas, and error codes at the same level of detail as workspace endpoints."
+          ],
+          "test_spec_refs": [
+            "TS-03-38"
+          ],
+          "requirement_refs": [
+            "03-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Write docs/cli.md: all afc workspace subcommands and afc workspace update flags",
+          "details": [
+            "Create docs/cli.md covering all workspace subcommands: create, list, get, update, archive, reactivate, delete.",
+            "For each subcommand: all flags, argument formats, and exit codes.",
+            "afc workspace update: document --display-name, --description, --org, --clear-display-name, --clear-description, --clear-org and exit-1 behavior when no flags provided."
+          ],
+          "test_spec_refs": [
+            "TS-03-39",
+            "TS-03-40"
+          ],
+          "requirement_refs": [
+            "03-REQ-10.1",
+            "03-REQ-10.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.4",
+          "title": "Extend docs/cli.md: apikit-provided afc commands",
+          "details": [
+            "Add sections for afc login, afc user, afc keys, afc tokens, afc orgs, afc admin.",
+            "Each section at the same level of detail as workspace commands: flags, argument formats, exit codes."
+          ],
+          "test_spec_refs": [
+            "TS-03-41"
+          ],
+          "requirement_refs": [
+            "03-REQ-10.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "Documentation tests pass: go test ./internal/... -count=1 -v -run 'TestSpec03_Group6'",
+          "03-REQ-9.1 through 03-REQ-9.4 and 03-REQ-10.1 through 03-REQ-10.3 acceptance criteria met",
+          "docs/api.md and docs/cli.md both exist and are non-empty",
+          "No linter warnings: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "checkpoint",
+      "title": "Checkpoint: full spec test suite and property tests pass",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Run complete spec test suite across all requirement groups",
+          "details": [
+            "Execute the full Go test suite for spec 03: go test ./... -count=1 -v",
+            "Confirm all unit and integration tests pass (green).",
+            "Confirm no test is skipped due to missing infrastructure."
+          ],
+          "test_spec_refs": [
+            "TS-03-1",
+            "TS-03-2",
+            "TS-03-3",
+            "TS-03-4",
+            "TS-03-5",
+            "TS-03-6",
+            "TS-03-7",
+            "TS-03-8",
+            "TS-03-9",
+            "TS-03-10"
+          ],
+          "requirement_refs": [
+            "03-REQ-1",
+            "03-REQ-2",
+            "03-REQ-3",
+            "03-REQ-4",
+            "03-REQ-5",
+            "03-REQ-6",
+            "03-REQ-7",
+            "03-REQ-8",
+            "03-REQ-9",
+            "03-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Run property tests and edge-case tests",
+          "details": [
+            "Run property-based tests with sufficient iterations (e.g., 100+) to catch edge cases.",
+            "Run all edge-case tests (TS-03-E1 through TS-03-E18).",
+            "Confirm all invariants hold: display_name never null, description never null, partial updates don't clobber fields, updated_at advances."
+          ],
+          "test_spec_refs": [
+            "TS-03-P1",
+            "TS-03-P2",
+            "TS-03-P3",
+            "TS-03-P4",
+            "TS-03-P5",
+            "TS-03-P6",
+            "TS-03-P7",
+            "TS-03-E1",
+            "TS-03-E2",
+            "TS-03-E3"
+          ],
+          "requirement_refs": [
+            "03-REQ-4",
+            "03-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Confirm no regression in upstream workspaces:read and workspaces:create behavior",
+          "details": [
+            "Run integration tests for existing workspaces:read and workspaces:create PAT behavior.",
+            "Confirm HTTP status codes and response shapes are unchanged from pre-feature baseline.",
+            "Run property test TS-03-P7 confirming scope stability."
+          ],
+          "test_spec_refs": [
+            "TS-03-9",
+            "TS-03-P7"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "All spec tests pass: go test ./... -count=1 -v",
+          "All property tests pass with 100+ iterations",
+          "All edge-case tests pass: go test ./internal/... -count=1 -v -run 'TestSpec03_E'",
+          "No linter warnings: go vet ./...",
+          "03-PROP-1 through 03-PROP-7 invariants verified"
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration, stub audit, and smoke tests",
+      "subtasks": [
+        {
+          "id": "14.1",
+          "title": "Trace execution paths: verify each path's entry point calls the next function in the chain",
+          "details": [
+            "03-PATH-1: Confirm afc workspace update → PATCH /api/v1/workspaces/:slug → auth middleware → UpdateWorkspaceHandler → DB write. Each function in the chain calls the next — no stubs.",
+            "03-PATH-2: Confirm DELETE /api/v1/workspaces/:slug → auth middleware (workspaces:delete check) → delete handler → DB row removal.",
+            "03-PATH-3: Confirm afc workspace create --display-name → POST /api/v1/workspaces → creation handler with normalization → DB insert.",
+            "03-PATH-4: Confirm PATCH on archived workspace → update handler → HTTP 400 returned, no DB write."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-2.1",
+            "03-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.2",
+          "title": "Verify return value propagation: callers receive and use return values from update handler and auth middleware",
+          "details": [
+            "Confirm UpdateWorkspaceHandler returns the full workspace struct to the HTTP response writer (not just a status code).",
+            "Confirm auth middleware's permission-check return value is used to gate handler invocation — not silently discarded.",
+            "Confirm org membership check result is used to set HTTP 403 vs. proceed with DB write — error is not swallowed.",
+            "Confirm updated_at from DB is included in the response (not the pre-update value)."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.3",
+          "title": "Run smoke tests with all real components",
+          "details": [
+            "TS-03-SMOKE-1: PAT workspaces:write updates display_name via afc CLI → HTTP 200, DB updated, afc exits 0.",
+            "TS-03-SMOKE-2: PAT workspaces:delete deletes archived workspace by slug → HTTP 200, row removed from DB.",
+            "TS-03-SMOKE-3: afc workspace create --display-name --description → HTTP 201, both fields in response.",
+            "TS-03-SMOKE-4: PATCH on archived workspace with valid owner API key → HTTP 400, no DB changes.",
+            "Run with go test ./... -count=1 -v -run 'TestSmoke03' using real server, real DB, real afc binary."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2",
+            "TS-03-SMOKE-3",
+            "TS-03-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-3.5",
+            "03-REQ-6.1",
+            "03-REQ-4.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.4",
+          "title": "Stub and dead-code audit: search for panic(\"not implemented\"), bare returns, and TODO markers",
+          "details": [
+            "Search codebase for Go stub markers: panic(\"not implemented\"), // TODO, bare 'return nil' in non-trivial handler paths.",
+            "Run: grep -rn 'panic(\"not implemented\")\\|// TODO\\|// FIXME' internal/ cmd/ to surface unfinished code.",
+            "Confirm UpdateWorkspaceHandler, normalizeDisplayName, normalizeDescription, and all new CLI commands are fully implemented with no stubs.",
+            "Confirm the PATCH route is registered in MountHandlers — not just defined as a handler function."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.5",
+          "title": "Cross-spec entry point verification: confirm upstream workspace infrastructure wires into new handlers",
+          "details": [
+            "Verify that MountHandlers (from spec 01_workspaces infrastructure) includes the PATCH /api/v1/workspaces/:slug route alongside existing routes.",
+            "Verify apikit.Permission registrations for workspaces:write and workspaces:delete are called within MountHandlers (not dead code).",
+            "Verify afc workspace update command is registered in the root CLI command group (not just defined in isolation).",
+            "Run go test ./... -count=1 -v and confirm no test references a nil handler or unregistered route."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-1",
+            "TS-03-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "03-REQ-2.1",
+            "03-REQ-4.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.6",
+          "title": "Call-site verification: confirm new functions are called from production code, not just tested",
+          "details": [
+            "Confirm normalizeDisplayName is called from both the creation handler and the update handler in production code paths.",
+            "Confirm normalizeDescription is called from both the creation handler and the update handler in production code paths.",
+            "Confirm UpdateWorkspaceHandler is wired as the HTTP handler for PATCH /api/v1/workspaces/:slug in production (MountHandlers), not only in tests.",
+            "Use grep or Go AST analysis to verify call sites exist in non-test files: grep -n 'normalizeDisplayName\\|normalizeDescription\\|UpdateWorkspaceHandler' internal/ cmd/ (excluding _test.go files)."
+          ],
+          "test_spec_refs": [
+            "TS-03-SMOKE-3",
+            "TS-03-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "03-REQ-4.1",
+            "03-REQ-1.2",
+            "03-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "14.V",
+        "checks": [
+          "All smoke tests pass with real components: go test ./... -count=1 -v -run 'TestSmoke03'",
+          "All spec tests pass: go test ./... -count=1",
+          "No stub markers found: grep -rn 'panic(\"not implemented\")' internal/ cmd/ returns zero results",
+          "No TODO/FIXME markers in new code: grep -rn '// TODO\\|// FIXME' internal/workspace/ cmd/ returns zero results or only pre-existing non-spec-03 items",
+          "No linter warnings: go vet ./...",
+          "03-PATH-1 through 03-PATH-4 fully traced with no gaps in the call chain",
+          "All traceability links (requirements → test specs → tasks) verified complete"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "03-REQ-1.1",
+      "test_spec_id": "TS-03-1",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.2",
+      "test_spec_id": "TS-03-2",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.3",
+      "test_spec_id": "TS-03-3",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.4",
+      "test_spec_id": "TS-03-4",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.5",
+      "test_spec_id": "TS-03-5",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.6",
+      "test_spec_id": "TS-03-6",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.E1",
+      "test_spec_id": "TS-03-E1",
+      "task_id": "1.6",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.E2",
+      "test_spec_id": "TS-03-E2",
+      "task_id": "1.6",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.E3",
+      "test_spec_id": "TS-03-E3",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-1.E4",
+      "test_spec_id": "TS-03-E4",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.1",
+      "test_spec_id": "TS-03-7",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.2",
+      "test_spec_id": "TS-03-8",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.3",
+      "test_spec_id": "TS-03-9",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.4",
+      "test_spec_id": "TS-03-10",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.5",
+      "test_spec_id": "TS-03-11",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-2.E1",
+      "test_spec_id": "TS-03-E5",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.1",
+      "test_spec_id": "TS-03-12",
+      "task_id": "2.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.2",
+      "test_spec_id": "TS-03-13",
+      "task_id": "2.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.3",
+      "test_spec_id": "TS-03-14",
+      "task_id": "2.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.4",
+      "test_spec_id": "TS-03-15",
+      "task_id": "2.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.5",
+      "test_spec_id": "TS-03-16",
+      "task_id": "2.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.6",
+      "test_spec_id": "TS-03-17",
+      "task_id": "2.6",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.7",
+      "test_spec_id": "TS-03-18",
+      "task_id": "2.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-3.E1",
+      "test_spec_id": "TS-03-E6",
+      "task_id": "2.6",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.1",
+      "test_spec_id": "TS-03-19",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.2",
+      "test_spec_id": "TS-03-20",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.3",
+      "test_spec_id": "TS-03-21",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.4",
+      "test_spec_id": "TS-03-22",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.5",
+      "test_spec_id": "TS-03-23",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.6",
+      "test_spec_id": "TS-03-24",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.7",
+      "test_spec_id": "TS-03-25",
+      "task_id": "3.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E1",
+      "test_spec_id": "TS-03-E7",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E2",
+      "test_spec_id": "TS-03-E8",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E3",
+      "test_spec_id": "TS-03-E9",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E4",
+      "test_spec_id": "TS-03-E10",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E5",
+      "test_spec_id": "TS-03-E11",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E6",
+      "test_spec_id": "TS-03-E12",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E7",
+      "test_spec_id": "TS-03-E13",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-4.E8",
+      "test_spec_id": "TS-03-E14",
+      "task_id": "3.6",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-5.1",
+      "test_spec_id": "TS-03-26",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-5.2",
+      "test_spec_id": "TS-03-27",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-6.1",
+      "test_spec_id": "TS-03-28",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-6.2",
+      "test_spec_id": "TS-03-29",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.1",
+      "test_spec_id": "TS-03-30",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.2",
+      "test_spec_id": "TS-03-31",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.3",
+      "test_spec_id": "TS-03-32",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.E1",
+      "test_spec_id": "TS-03-E15",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.E2",
+      "test_spec_id": "TS-03-E16",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.E3",
+      "test_spec_id": "TS-03-E17",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-7.E4",
+      "test_spec_id": "TS-03-E18",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-8.1",
+      "test_spec_id": "TS-03-33",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-8.2",
+      "test_spec_id": "TS-03-34",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-9.1",
+      "test_spec_id": "TS-03-35",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-9.2",
+      "test_spec_id": "TS-03-36",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-9.3",
+      "test_spec_id": "TS-03-37",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-9.4",
+      "test_spec_id": "TS-03-38",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-10.1",
+      "test_spec_id": "TS-03-39",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-10.2",
+      "test_spec_id": "TS-03-40",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "03-REQ-10.3",
+      "test_spec_id": "TS-03-41",
+      "task_id": "6.4",
+      "test_path": null
+    }
+  ]
+}
