@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/txsvc/apikit"
@@ -100,6 +101,9 @@ func WorkspaceCmd(baseURL, apiKey string) *cobra.Command {
 	client := &wsClient{
 		baseURL: baseURL,
 		apiKey:  apiKey,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
 
 	cmd := &cobra.Command{
@@ -113,6 +117,7 @@ func WorkspaceCmd(baseURL, apiKey string) *cobra.Command {
 		newCreateCmd(client),
 		newListCmd(client),
 		newGetCmd(client),
+		newUpdateCmd(client),
 		newArchiveCmd(client),
 		newReactivateCmd(client),
 		newDeleteCmd(client),
@@ -145,10 +150,12 @@ func BuildRootCommand() *cobra.Command {
 // newCreateCmd returns the 'workspace create' subcommand.
 func newCreateCmd(client *wsClient) *cobra.Command {
 	var (
-		gitURL string
-		slug   string
-		branch string
-		org    string
+		gitURL      string
+		slug        string
+		branch      string
+		org         string
+		displayName string
+		description string
 	)
 
 	cmd := &cobra.Command{
@@ -174,6 +181,12 @@ func newCreateCmd(client *wsClient) *cobra.Command {
 			}
 			if branch != "" {
 				body["branch"] = branch
+			}
+			if cmd.Flags().Changed("display-name") {
+				body["display_name"] = displayName
+			}
+			if cmd.Flags().Changed("description") {
+				body["description"] = description
 			}
 
 			// Resolve org slug if provided.
@@ -202,6 +215,105 @@ func newCreateCmd(client *wsClient) *cobra.Command {
 	cmd.Flags().StringVar(&slug, "slug", "", "Workspace slug (required)")
 	cmd.Flags().StringVar(&branch, "branch", "", "Git branch (optional)")
 	cmd.Flags().StringVar(&org, "org", "", "Organization slug (optional)")
+	cmd.Flags().StringVar(&displayName, "display-name", "", "Workspace display name (optional)")
+	cmd.Flags().StringVar(&description, "description", "", "Workspace description (optional)")
+
+	return cmd
+}
+
+// newUpdateCmd returns the 'workspace update' subcommand.
+// It sends a PATCH request to /api/v1/workspaces/:slug with only the
+// explicitly provided fields in the body.
+func newUpdateCmd(client *wsClient) *cobra.Command {
+	var (
+		displayName      string
+		description      string
+		org              string
+		clearDisplayName bool
+		clearDescription bool
+		clearOrg         bool
+	)
+
+	cmd := &cobra.Command{
+		Use:           "update <slug>",
+		Short:         "Update workspace properties",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+
+			// Check if at least one update flag was provided.
+			hasDisplayName := cmd.Flags().Changed("display-name")
+			hasDescription := cmd.Flags().Changed("description")
+			hasOrg := cmd.Flags().Changed("org")
+
+			if !hasDisplayName && !hasDescription && !hasOrg &&
+				!clearDisplayName && !clearDescription && !clearOrg {
+				fmt.Fprintln(cmd.ErrOrStderr(), "Error: at least one update flag must be provided (--display-name, --description, --org, --clear-display-name, --clear-description, --clear-org)")
+				return fmt.Errorf("at least one update flag is required")
+			}
+
+			// Use a context with timeout to avoid hanging indefinitely.
+			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+			defer cancel()
+
+			// Build PATCH body with only explicitly-set fields.
+			// --clear-* flags send null; value flags send the provided string.
+			body := make(map[string]any)
+
+			if clearDisplayName {
+				body["display_name"] = nil
+			} else if hasDisplayName {
+				body["display_name"] = displayName
+			}
+
+			if clearDescription {
+				body["description"] = nil
+			} else if hasDescription {
+				body["description"] = description
+			}
+
+			if clearOrg {
+				body["org_id"] = nil
+			} else if hasOrg {
+				orgID, err := resolveOrgSlug(ctx, client, org)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+					return err
+				}
+				body["org_id"] = orgID
+			}
+
+			// Send PATCH request.
+			respBody, _, err := client.doAPI(ctx, http.MethodPatch, "/workspaces/"+slug, body)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+				return err
+			}
+
+			// Validate response is parseable JSON with expected shape.
+			var ws map[string]any
+			if err := json.Unmarshal(respBody, &ws); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Error: unexpected response format: %v\n", err)
+				return fmt.Errorf("unexpected response format: %w", err)
+			}
+			if _, ok := ws["slug"]; !ok {
+				fmt.Fprintln(cmd.ErrOrStderr(), "Error: unexpected response format: missing required field 'slug'")
+				return fmt.Errorf("unexpected response format: missing required field 'slug'")
+			}
+
+			fmt.Fprint(cmd.OutOrStdout(), string(respBody))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&displayName, "display-name", "", "Set workspace display name")
+	cmd.Flags().StringVar(&description, "description", "", "Set workspace description")
+	cmd.Flags().StringVar(&org, "org", "", "Set organization (by slug)")
+	cmd.Flags().BoolVar(&clearDisplayName, "clear-display-name", false, "Clear display name to default (slug)")
+	cmd.Flags().BoolVar(&clearDescription, "clear-description", false, "Clear description to default (empty)")
+	cmd.Flags().BoolVar(&clearOrg, "clear-org", false, "Remove organization association")
 
 	return cmd
 }
