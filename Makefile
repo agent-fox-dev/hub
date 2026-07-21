@@ -45,19 +45,21 @@ build-container:
 # Clear all data and config
 hub-reset:
 	rm -rf bin/data bin/config
-	mkdir -p bin/data/af-hub bin/config/af-hub
+	mkdir -p bin/data bin/config
+	cp bin/config.toml bin/config/config.toml
 	podman run --rm -it \
 		-p $(PORT):8080 \
 		-v $(CURDIR)/bin/config:/config \
 		-v $(CURDIR)/bin/data:/data \
-		$(IMAGE):$(IMAGE_TAG)
-	cp bin/config.toml bin/config/af-hub/config.toml
+		$(IMAGE):$(IMAGE_TAG) \
+		/usr/bin/hub --admin-email=hello@micku.me
 
 # Run the af-hub container with bin/ mounted for config and data
 hub-run:
+	-mv bin/config/admin_token bin/config/token
 	podman run --rm -it \
 		-p $(PORT):8080 \
-		-e AF_HUB_ADMIN_TOKEN=$$(cat bin/config/af-hub/admin_token) \
+		-e ADMIN_TOKEN=$$(cat bin/config/token) \
 		-v $(CURDIR)/bin/config:/config \
 		-v $(CURDIR)/bin/data:/data \
 		$(IMAGE):$(IMAGE_TAG)

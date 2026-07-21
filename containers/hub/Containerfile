@@ -5,6 +5,7 @@ ARG RUNTIME=registry.access.redhat.com/ubi10/ubi-micro:latest
 FROM ${BUILDER} AS build
 
 ARG VERSION=dev
+ARG BUILD=dev
 
 USER root
 WORKDIR /build
@@ -18,18 +19,18 @@ COPY . .
 RUN CGO_ENABLED=0 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \
-      -X github.com/txsvc/apikit.Build=${VERSION} \
+      -X github.com/txsvc/apikit.Build=${BUILD} \
       -X github.com/txsvc/apikit/internal/cli.Version=${VERSION} \
-      -X github.com/txsvc/apikit/internal/cli.Build=${VERSION} \
+      -X github.com/txsvc/apikit/internal/cli.Build=${BUILD} \
       -X github.com/txsvc/apikit.TokenPrefix=af \
       -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
     -o hub ./cmd/af-hub
 RUN CGO_ENABLED=0 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \
-      -X github.com/txsvc/apikit.Build=${VERSION} \
+      -X github.com/txsvc/apikit.Build=${BUILD} \
       -X github.com/txsvc/apikit/internal/cli.Version=${VERSION} \
-      -X github.com/txsvc/apikit/internal/cli.Build=${VERSION} \
+      -X github.com/txsvc/apikit/internal/cli.Build=${BUILD} \
       -X github.com/txsvc/apikit.TokenPrefix=af \
       -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
     -o afc ./cmd/afc

@@ -1,10 +1,12 @@
 [server]
-port = 8080
+port = 8080              # Listen port (0 = ephemeral, range: 0-65535)
+bind = "0.0.0.0"         # Bind address
+external_url = "http://localhost:8080"        # External URL for OAuth redirect validation
+mount_point = "/api/v1"  # API route prefix
+max_body_size = "1MB"    # Max request body (format: <int><KB|MB|GB>)
 
-[log]
-level = "info"
+[database]
+path = "afhub.db"        # SQLite database path (see resolution below)
 
-# database.path and oauth.providers are omitted here.
-# database.path defaults to $XDG_DATA_HOME/af-hub/af-hub.db.
-# Mount a config file with your OAuth credentials at
-# /config/af-hub/config.toml to override these defaults.
+[logging]
+level = "info"           # trace, debug, info, warn, error, fatal, panic
