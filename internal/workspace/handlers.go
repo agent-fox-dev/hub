@@ -221,11 +221,11 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PAT must have at least workspaces:read or workspaces:create scope.
-		if auth.CredType == CredentialPAT {
-			if !auth.hasPermission("workspaces:read") && !auth.hasPermission("workspaces:create") {
-				return respondError(c, http.StatusForbidden, "PAT requires workspaces:read or workspaces:create scope")
-			}
+		// PAT must have a scope that implies read access.
+		// workspaces:read, workspaces:create, and workspaces:write imply read.
+		// workspaces:delete does NOT imply read — return 404 (anti-enumeration).
+		if auth.CredType == CredentialPAT && !auth.hasReadAccess() {
+			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		includeArchived := c.QueryParam("include_archived") == "true"
@@ -259,11 +259,11 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PAT must have at least workspaces:read or workspaces:create scope.
-		if auth.CredType == CredentialPAT {
-			if !auth.hasPermission("workspaces:read") && !auth.hasPermission("workspaces:create") {
-				return respondError(c, http.StatusForbidden, "PAT requires workspaces:read or workspaces:create scope")
-			}
+		// PAT must have a scope that implies read access.
+		// workspaces:read, workspaces:create, and workspaces:write imply read.
+		// workspaces:delete does NOT imply read — return 404 (anti-enumeration).
+		if auth.CredType == CredentialPAT && !auth.hasReadAccess() {
+			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		slug := c.Param("slug")
@@ -284,9 +284,10 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs cannot archive workspaces.
-		if auth.CredType == CredentialPAT {
-			return respondError(c, http.StatusForbidden, "PATs cannot archive workspaces")
+		// PATs require workspaces:write scope to archive.
+		// PATs without write access get 404 (anti-enumeration).
+		if auth.CredType == CredentialPAT && !auth.hasWriteAccess() {
+			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		slug := c.Param("slug")
@@ -316,9 +317,10 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs cannot reactivate workspaces.
-		if auth.CredType == CredentialPAT {
-			return respondError(c, http.StatusForbidden, "PATs cannot reactivate workspaces")
+		// PATs require workspaces:write scope to reactivate.
+		// PATs without write access get 404 (anti-enumeration).
+		if auth.CredType == CredentialPAT && !auth.hasWriteAccess() {
+			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		slug := c.Param("slug")
@@ -348,9 +350,10 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs cannot delete workspaces.
-		if auth.CredType == CredentialPAT {
-			return respondError(c, http.StatusForbidden, "PATs cannot delete workspaces")
+		// PATs require workspaces:delete scope to delete.
+		// PATs without delete access (including workspaces:write) get 404 (anti-enumeration).
+		if auth.CredType == CredentialPAT && !auth.hasDeleteAccess() {
+			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		slug := c.Param("slug")

@@ -79,8 +79,11 @@ func TestWorkspaceArchive_AlreadyArchived(t *testing.T) {
 }
 
 // TS-01-41: Verify that a PAT (workspaces:read or workspaces:create)
-// attempting to archive a workspace is rejected with HTTP 403.
+// attempting to archive a workspace is rejected.
 // Requirement: 01-REQ-8.3
+//
+// Updated for spec 03: PATs without workspaces:write now receive HTTP 404
+// (anti-enumeration) instead of 403, reflecting scope-based access control.
 func TestWorkspaceArchive_PATForbidden(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -95,12 +98,12 @@ func TestWorkspaceArchive_PATForbidden(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "",
 			patAuth("alice-id", "workspaces:read"))
 
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("status = %d; want %d", rec.Code, http.StatusForbidden)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
 		}
 		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusForbidden {
-			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		if resp.Error.Code != http.StatusNotFound {
+			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
 		}
 		if resp.Error.Message == "" {
 			t.Error("error.message is empty; want non-empty descriptive message")
@@ -111,8 +114,8 @@ func TestWorkspaceArchive_PATForbidden(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "",
 			patAuth("alice-id", "workspaces:create"))
 
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("status = %d; want %d", rec.Code, http.StatusForbidden)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
 		}
 	})
 }
@@ -224,9 +227,11 @@ func TestWorkspaceReactivate_AlreadyActive(t *testing.T) {
 	}
 }
 
-// TS-01-45: Verify that a PAT attempting to reactivate a workspace is rejected
-// with HTTP 403.
+// TS-01-45: Verify that a PAT attempting to reactivate a workspace is rejected.
 // Requirement: 01-REQ-9.3
+//
+// Updated for spec 03: PATs without workspaces:write now receive HTTP 404
+// (anti-enumeration) instead of 403, reflecting scope-based access control.
 func TestWorkspaceReactivate_PATForbidden(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -241,12 +246,12 @@ func TestWorkspaceReactivate_PATForbidden(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "",
 			patAuth("alice-id", "workspaces:create"))
 
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("status = %d; want %d", rec.Code, http.StatusForbidden)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
 		}
 		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusForbidden {
-			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		if resp.Error.Code != http.StatusNotFound {
+			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
 		}
 		if resp.Error.Message == "" {
 			t.Error("error.message is empty; want non-empty descriptive message")
@@ -257,8 +262,8 @@ func TestWorkspaceReactivate_PATForbidden(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "",
 			patAuth("alice-id", "workspaces:read"))
 
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("status = %d; want %d", rec.Code, http.StatusForbidden)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
 		}
 	})
 }
@@ -356,9 +361,11 @@ func TestWorkspaceDelete_ActiveRejected(t *testing.T) {
 	}
 }
 
-// TS-01-49: Verify that a PAT attempting to delete a workspace is rejected
-// with HTTP 403.
+// TS-01-49: Verify that a PAT attempting to delete a workspace is rejected.
 // Requirement: 01-REQ-10.3
+//
+// Updated for spec 03: PATs without workspaces:delete now receive HTTP 404
+// (anti-enumeration) instead of 403, reflecting scope-based access control.
 func TestWorkspaceDelete_PATForbidden(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -372,12 +379,12 @@ func TestWorkspaceDelete_PATForbidden(t *testing.T) {
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "",
 		patAuth("alice-id", "workspaces:read"))
 
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d; want %d", rec.Code, http.StatusForbidden)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
 	}
 	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusForbidden {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
 	}
 	if resp.Error.Message == "" {
 		t.Error("error.message is empty; want non-empty descriptive message")

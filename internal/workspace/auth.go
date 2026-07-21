@@ -82,6 +82,36 @@ func (a *AuthInfo) hasPermission(perm string) bool {
 	return slices.Contains(a.Permissions, perm)
 }
 
+// hasReadAccess reports whether the PAT has any scope that implies workspace
+// read access. The read-implying scopes are: workspaces:read, workspaces:create,
+// and workspaces:write. workspaces:delete does NOT grant read access.
+func (a *AuthInfo) hasReadAccess() bool {
+	return a.hasPermission("workspaces:read") ||
+		a.hasPermission("workspaces:create") ||
+		a.hasPermission("workspaces:write")
+}
+
+// hasWriteAccess reports whether the credential can perform mutation operations
+// (update, archive, reactivate) on owned workspaces.
+// Admin and API key credentials always have write access.
+// PATs require the workspaces:write scope.
+func (a *AuthInfo) hasWriteAccess() bool {
+	if a.CredType == CredentialAdmin || a.CredType == CredentialAPIKey {
+		return true
+	}
+	return a.hasPermission("workspaces:write")
+}
+
+// hasDeleteAccess reports whether the credential can delete workspaces.
+// Admin and API key credentials always have delete access.
+// PATs require the workspaces:delete scope.
+func (a *AuthInfo) hasDeleteAccess() bool {
+	if a.CredType == CredentialAdmin || a.CredType == CredentialAPIKey {
+		return true
+	}
+	return a.hasPermission("workspaces:delete")
+}
+
 // String returns a human-readable representation of the AuthInfo (for debugging).
 func (a *AuthInfo) String() string {
 	return fmt.Sprintf("AuthInfo{cred_type: %s, user_id: %s, permissions: %v}",
