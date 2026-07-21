@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: af-hub
+  labels:
+    app.kubernetes.io/name: af-hub
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: af-hub
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: af-hub
+        app.kubernetes.io/component: server
+    spec:
+      containers:
+        - name: hub
+          image: quay.io/agentfox/hub:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              if [ -f /config/af-hub/admin_token ]; then
+                echo "$(cat /config/af-hub/admin_token)" && mv /config/af-hub/admin_token /config/af-hub/token
+              else
+                ADMIN_TOKEN=$(cat /config/af-hub/token) /usr/bin/hub --admin-email="$ADMIN_EMAIL"
+              fi
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: XDG_DATA_HOME
+              value: /data/af-hub
+            - name: XDG_CONFIG_HOME
+              value: /config/af-hub
+            - name: ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: af-hub-secrets
+                  key: admin-email
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: af-hub-secrets
+                  key: admin-token
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: af-hub-secrets
+                  key: github-client-id
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: af-hub-secrets
+                  key: github-client-secret
+          volumeMounts:
+            - name: config-volume
+              mountPath: /config/af-hub/config.toml
+              subPath: config.toml
+              readOnly: true
+            - name: config-pvc
+              mountPath: /config/af-hub
+            - name: data-pvc
+              mountPath: /data/af-hub
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config-volume
+          configMap:
+            name: af-hub-config
+        - name: config-pvc
+          persistentVolumeClaim:
+            claimName: af-hub-config
+        - name: data-pvc
+          persistentVolumeClaim:
+            claimName: af-hub-data

@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: hub
+  labels:
+    app.kubernetes.io/name: af-hub
+    app.kubernetes.io/component: server
+spec:
+  to:
+    kind: Service
+    name: af-hub
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
