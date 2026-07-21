@@ -10,7 +10,7 @@ USER root
 WORKDIR /build
 
 RUN git clone https://github.com/txsvc/apikit.git apikit
-WORKDIR /build/apikit
+WORKDIR /build/hub
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -55,8 +55,8 @@ COPY containers/hub/config.toml /config/af-hub/config.toml
 COPY containers/hub/run /usr/local/bin/run
 
 # copy the binaries
-COPY --from=build /build/hub /usr/bin/hub
-COPY --from=build /build/afc /usr/bin/afc
+COPY --from=build /build/hub/hub /usr/bin/hub
+COPY --from=build /build/hub/afc /usr/bin/afc
 
 RUN chmod +x /usr/local/bin/run /usr/bin/hub
 RUN chmod +x /usr/local/bin/run /usr/bin/afc
