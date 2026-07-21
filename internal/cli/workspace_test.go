@@ -175,8 +175,8 @@ func mockAPIServer(t *testing.T, workspaces map[string]workspaceResp, orgs map[s
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// GET /user/orgs — list user orgs (used by CLI for org slug resolution).
-	mux.HandleFunc("GET /user/orgs", func(w http.ResponseWriter, r *http.Request) {
+	// GET /api/v1/user/orgs — list user orgs (used by CLIResolveOrgSlug).
+	mux.HandleFunc("GET /api/v1/user/orgs", func(w http.ResponseWriter, r *http.Request) {
 		var result []orgResp
 		for _, org := range orgs {
 			result = append(result, org)
@@ -196,15 +196,35 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
 }
 
-// runWorkspaceCmd executes a workspace subcommand and captures stdout/stderr.
+// setupTestEnv isolates tests from the user's real config directory by
+// pointing $HOME at a temp dir and creating a minimal config.toml.
+func setupTestEnv(t *testing.T) {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	configDir := filepath.Join(tmpHome, ".ak")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"),
+		[]byte("endpoint_url = \"\"\nuser_id = \"\"\napi_key = \"\"\n"), 0600); err != nil {
+		t.Fatalf("failed to write config.toml: %v", err)
+	}
+}
+
+// runWorkspaceCmd executes a workspace subcommand through the full root
+// command tree (with PersistentPreRunE credential resolution) and captures
+// stdout/stderr.
 func runWorkspaceCmd(t *testing.T, baseURL, apiKey string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	cmd := WorkspaceCmd(baseURL, apiKey)
+	setupTestEnv(t)
+	root := BuildRootCommand()
 	var outBuf, errBuf bytes.Buffer
-	cmd.SetOut(&outBuf)
-	cmd.SetErr(&errBuf)
-	cmd.SetArgs(args)
-	err = cmd.Execute()
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	fullArgs := append([]string{"--endpoint-url", baseURL, "--api-key", apiKey, "workspace"}, args...)
+	root.SetArgs(fullArgs)
+	err = root.Execute()
 	return outBuf.String(), errBuf.String(), err
 }
 
@@ -220,6 +240,29 @@ func runRootCmd(t *testing.T, args ...string) (stdout, stderr string, err error)
 	return outBuf.String(), errBuf.String(), err
 }
 
+// hasErrorEnvelope returns true if stdout contains a JSON error envelope.
+func hasErrorEnvelope(stdout string) bool {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	return json.Unmarshal([]byte(stdout), &env) == nil && env.Error.Message != ""
+}
+
+// errorMessage extracts the error message from a JSON error envelope.
+func errorMessage(stdout string) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(stdout), &env) == nil {
+		return env.Error.Message
+	}
+	return ""
+}
+
 // --- CLI workspace create tests ---
 
 // TS-01-52: Verify that 'afc workspace create --git-url <url> --slug <slug>'
@@ -230,11 +273,11 @@ func TestCLI_WorkspaceCreate_Success(t *testing.T) {
 	server := mockAPIServer(t, make(map[string]workspaceResp), nil)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws workspaceResp
@@ -259,11 +302,11 @@ func TestCLI_WorkspaceCreate_WithOrg(t *testing.T) {
 	server := mockAPIServer(t, make(map[string]workspaceResp), orgs)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/org/repo", "--slug", "org-ws", "--org", "my-org")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws workspaceResp
@@ -276,64 +319,70 @@ func TestCLI_WorkspaceCreate_WithOrg(t *testing.T) {
 }
 
 // TS-01-54: Verify that 'afc workspace create' with missing --git-url or
-// --slug prints a usage hint to stderr and exits 1 without making an API call.
+// --slug prints an error envelope to stdout and exits 1 without making an
+// API call.
 // Requirement: 01-REQ-11.3
 func TestCLI_WorkspaceCreate_MissingFlags(t *testing.T) {
 	server := mockAPIServer(t, make(map[string]workspaceResp), nil)
 	defer server.Close()
 
 	t.Run("missing --git-url", func(t *testing.T) {
-		_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+		stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 			"create", "--slug", "my-ws")
 
 		if err == nil {
 			t.Error("expected error for missing --git-url; got nil")
 		}
-		if !strings.Contains(stderr, "git-url") && !strings.Contains(stderr, "usage") &&
-			!strings.Contains(stderr, "required") {
-			t.Errorf("stderr should contain usage hint; got: %s", stderr)
+		if !hasErrorEnvelope(stdout) {
+			t.Errorf("stdout should contain error envelope; got: %s", stdout)
+		}
+		msg := errorMessage(stdout)
+		if !strings.Contains(msg, "git-url") && !strings.Contains(msg, "required") {
+			t.Errorf("error message should mention git-url; got: %s", msg)
 		}
 	})
 
 	t.Run("missing --slug", func(t *testing.T) {
-		_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+		stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 			"create", "--git-url", "https://github.com/org/repo")
 
 		if err == nil {
 			t.Error("expected error for missing --slug; got nil")
 		}
-		if !strings.Contains(stderr, "slug") && !strings.Contains(stderr, "usage") &&
-			!strings.Contains(stderr, "required") {
-			t.Errorf("stderr should contain usage hint; got: %s", stderr)
+		if !hasErrorEnvelope(stdout) {
+			t.Errorf("stdout should contain error envelope; got: %s", stdout)
+		}
+		msg := errorMessage(stdout)
+		if !strings.Contains(msg, "slug") && !strings.Contains(msg, "required") {
+			t.Errorf("error message should mention slug; got: %s", msg)
 		}
 	})
 }
 
 // TS-01-55: Verify that 'afc workspace create --org <nonexistent-slug>' prints
-// an error to stderr and exits 1 without making the workspace create API call.
+// an error envelope to stdout and exits 1 without making the workspace create
+// API call.
 // Requirement: 01-REQ-11.4
 func TestCLI_WorkspaceCreate_OrgNotFound(t *testing.T) {
-	// No orgs registered in the mock server.
 	server := mockAPIServer(t, make(map[string]workspaceResp), make(map[string]orgResp))
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
 		"--org", "nonexistent-org")
 
 	if err == nil {
 		t.Error("expected error for nonexistent org; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error about org resolution failure")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
-// TS-01-56: Verify that 'afc workspace create' prints the API error to stderr
-// and exits 1 when the API call returns an error.
+// TS-01-56: Verify that 'afc workspace create' prints the API error envelope
+// to stdout and exits 1 when the API call returns an error.
 // Requirement: 01-REQ-11.5
 func TestCLI_WorkspaceCreate_APIError(t *testing.T) {
-	// Pre-seed a workspace so the create call returns 409 conflict.
 	workspaces := map[string]workspaceResp{
 		"existing-ws": {
 			Slug:      "existing-ws",
@@ -347,14 +396,14 @@ func TestCLI_WorkspaceCreate_APIError(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/org/repo", "--slug", "existing-ws")
 
 	if err == nil {
 		t.Error("expected error for duplicate slug; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error message about conflict or duplicate slug")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
@@ -377,10 +426,10 @@ func TestCLI_WorkspaceList_Success(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key", "list")
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key", "list")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var wsList []workspaceResp
@@ -418,11 +467,11 @@ func TestCLI_WorkspaceList_IncludeArchived(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"list", "--include-archived")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var wsList []workspaceResp
@@ -442,11 +491,10 @@ func TestCLI_WorkspaceList_IncludeArchived(t *testing.T) {
 	}
 }
 
-// TS-01-59: Verify that 'afc workspace list' prints the error to stderr and
-// exits 1 when the API call fails.
+// TS-01-59: Verify that 'afc workspace list' prints the error envelope to
+// stdout and exits 1 when the API call fails.
 // Requirement: 01-REQ-12.3
 func TestCLI_WorkspaceList_APIError(t *testing.T) {
-	// Use a server that always returns 401 to simulate bad credentials.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -459,13 +507,13 @@ func TestCLI_WorkspaceList_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "bad-key", "list")
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "bad-key", "list")
 
 	if err == nil {
 		t.Error("expected error for bad credentials; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error message")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
@@ -488,11 +536,11 @@ func TestCLI_WorkspaceGet_Success(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"get", "my-ws")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws workspaceResp
@@ -504,21 +552,21 @@ func TestCLI_WorkspaceGet_Success(t *testing.T) {
 	}
 }
 
-// TS-01-61: Verify that 'afc workspace get <slug>' prints the error to stderr
-// and exits 1 when the API returns an error (e.g. 404 or 401).
+// TS-01-61: Verify that 'afc workspace get <slug>' prints the error envelope
+// to stdout and exits 1 when the API returns an error (e.g. 404 or 401).
 // Requirement: 01-REQ-13.2
 func TestCLI_WorkspaceGet_NotFound(t *testing.T) {
 	server := mockAPIServer(t, make(map[string]workspaceResp), nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"get", "nonexistent")
 
 	if err == nil {
 		t.Error("expected error for nonexistent workspace; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error message")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
@@ -542,11 +590,11 @@ func TestCLI_WorkspaceArchive_Success(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"archive", "my-ws")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws workspaceResp
@@ -558,11 +606,10 @@ func TestCLI_WorkspaceArchive_Success(t *testing.T) {
 	}
 }
 
-// TS-01-63: Verify that 'afc workspace archive <slug>' prints the error to
-// stderr and exits 1 when the API call returns an error.
+// TS-01-63: Verify that 'afc workspace archive <slug>' prints the error
+// envelope to stdout and exits 1 when the API call returns an error.
 // Requirement: 01-REQ-14.2
 func TestCLI_WorkspaceArchive_Error(t *testing.T) {
-	// Workspace is already archived.
 	workspaces := map[string]workspaceResp{
 		"my-ws": {
 			Slug:      "my-ws",
@@ -576,14 +623,14 @@ func TestCLI_WorkspaceArchive_Error(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"archive", "my-ws")
 
 	if err == nil {
 		t.Error("expected error for already-archived workspace; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error message")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
@@ -607,11 +654,11 @@ func TestCLI_WorkspaceReactivate_Success(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"reactivate", "my-ws")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws workspaceResp
@@ -623,11 +670,10 @@ func TestCLI_WorkspaceReactivate_Success(t *testing.T) {
 	}
 }
 
-// TS-01-65: Verify that 'afc workspace reactivate <slug>' prints the error to
-// stderr and exits 1 when the API call returns an error.
+// TS-01-65: Verify that 'afc workspace reactivate <slug>' prints the error
+// envelope to stdout and exits 1 when the API call returns an error.
 // Requirement: 01-REQ-15.2
 func TestCLI_WorkspaceReactivate_Error(t *testing.T) {
-	// Workspace is already active.
 	workspaces := map[string]workspaceResp{
 		"my-ws": {
 			Slug:      "my-ws",
@@ -641,14 +687,14 @@ func TestCLI_WorkspaceReactivate_Error(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"reactivate", "my-ws")
 
 	if err == nil {
 		t.Error("expected error for already-active workspace; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error message")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
@@ -684,28 +730,28 @@ func TestCLI_WorkspaceDelete_Success(t *testing.T) {
 }
 
 // TS-01-67: Verify that 'afc workspace delete <slug>' without --confirm prints
-// a usage hint to stderr and exits 1 without making an API call.
+// an error envelope to stdout and exits 1 without making an API call.
 // Requirement: 01-REQ-16.2
 func TestCLI_WorkspaceDelete_NoConfirm(t *testing.T) {
 	server := mockAPIServer(t, make(map[string]workspaceResp), nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"delete", "my-ws")
 
 	if err == nil {
 		t.Error("expected error when --confirm is omitted; got nil")
 	}
-	if !strings.Contains(stderr, "confirm") && !strings.Contains(stderr, "--confirm") {
-		t.Errorf("stderr should contain --confirm usage hint; got: %s", stderr)
+	msg := errorMessage(stdout)
+	if !strings.Contains(msg, "confirm") && !strings.Contains(msg, "--confirm") {
+		t.Errorf("error message should contain --confirm usage hint; got: %s", msg)
 	}
 }
 
 // TS-01-68: Verify that 'afc workspace delete <slug> --confirm' prints the
-// error to stderr and exits 1 when the API call returns an error.
+// error envelope to stdout and exits 1 when the API call returns an error.
 // Requirement: 01-REQ-16.3
 func TestCLI_WorkspaceDelete_Error(t *testing.T) {
-	// Workspace is active, so delete will fail with 400.
 	workspaces := map[string]workspaceResp{
 		"my-ws": {
 			Slug:      "my-ws",
@@ -719,14 +765,14 @@ func TestCLI_WorkspaceDelete_Error(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"delete", "my-ws", "--confirm")
 
 	if err == nil {
 		t.Error("expected error for deleting active workspace; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error message about workspace not being archived")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 }
 
@@ -743,7 +789,6 @@ func TestCLI_CommandTree_AllSubcommands(t *testing.T) {
 		t.Fatalf("--help returned error: %v", err)
 	}
 
-	// The help output should list all expected subcommands.
 	expectedSubcommands := []string{
 		"workspace",
 		"login",
@@ -789,13 +834,13 @@ func TestCLI_ExitCodes(t *testing.T) {
 		server := mockAPIServer(t, make(map[string]workspaceResp), nil)
 		defer server.Close()
 
-		_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+		stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 			"get", "nonexistent-slug")
 		if err == nil {
 			t.Error("expected non-nil error (exit 1); got nil")
 		}
-		if stderr == "" {
-			t.Error("stderr is empty; error output should go to stderr via CLIPrintError")
+		if !hasErrorEnvelope(stdout) {
+			t.Error("stdout should contain error envelope via CLIHandleError")
 		}
 	})
 }
@@ -804,10 +849,6 @@ func TestCLI_ExitCodes(t *testing.T) {
 // values using Go's (*T, error) idiom and never call os.Exit directly.
 // Requirement: 01-REQ-17.3
 func TestCLI_NoOsExitInLibrary(t *testing.T) {
-	// Scan all Go source files in internal/ and verify none contain os.Exit.
-	// Only cmd/afc/main.go is allowed to call os.Exit.
-
-	// Find the project root by looking for go.mod relative to the test file.
 	root := findProjectRoot(t)
 
 	internalDir := filepath.Join(root, "internal")
@@ -822,7 +863,6 @@ func TestCLI_NoOsExitInLibrary(t *testing.T) {
 		if info.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		// Skip test files — they're not library code.
 		if strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
@@ -848,14 +888,11 @@ func TestCLI_NoOsExitInLibrary(t *testing.T) {
 // failure and exits 1 without making the workspace create API call.
 // Requirement: 01-REQ-11.E1
 func TestEdgeCLI_WorkspaceCreate_OrgNullUUID(t *testing.T) {
-	// Mock server that returns orgs with null/missing UUID for the requested slug.
 	var workspaceCreateCalled bool
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /user/orgs", func(w http.ResponseWriter, r *http.Request) {
-		// Return an org entry with the matching slug but empty/missing ID.
+	mux.HandleFunc("GET /api/v1/user/orgs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		// ID is empty string — simulates null/missing UUID.
 		fmt.Fprintf(w, `[{"id":"","slug":"bad-org"}]`)
 	})
 	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
@@ -865,15 +902,15 @@ func TestEdgeCLI_WorkspaceCreate_OrgNullUUID(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
 		"--org", "bad-org")
 
 	if err == nil {
 		t.Error("expected error for null org UUID; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error about resolution failure")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 	if workspaceCreateCalled {
 		t.Error("POST /api/v1/workspaces was called; want no API call when org UUID is null")
@@ -881,17 +918,15 @@ func TestEdgeCLI_WorkspaceCreate_OrgNullUUID(t *testing.T) {
 }
 
 // TS-01-E14: Verify that when org slug resolution returns an unexpected data
-// shape, the CLI exits 1 with an error to stderr and does not make the
-// workspace create API call.
+// shape, the CLI exits 1 with an error envelope on stdout and does not make
+// the workspace create API call.
 // Requirement: 01-REQ-11.E2
 func TestEdgeCLI_WorkspaceCreate_OrgMalformedResponse(t *testing.T) {
-	// Mock server that returns a malformed response for /user/orgs.
 	var workspaceCreateCalled bool
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /user/orgs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/user/orgs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		// Return malformed JSON that doesn't match the expected structure.
 		fmt.Fprintf(w, `{"unexpected":"shape","not":"an array"}`)
 	})
 	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
@@ -901,15 +936,15 @@ func TestEdgeCLI_WorkspaceCreate_OrgMalformedResponse(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
 		"--org", "bad-org")
 
 	if err == nil {
 		t.Error("expected error for malformed org response; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want error about unexpected response")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
 	if workspaceCreateCalled {
 		t.Error("POST /api/v1/workspaces was called; want no API call when org response is malformed")

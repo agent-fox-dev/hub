@@ -199,14 +199,12 @@ func TestSpec03_Group4_UpdateDisplayName_TS0330(t *testing.T) {
 // in the PATCH body.
 // Requirement: 03-REQ-7.2
 func TestSpec03_Group4_ClearFlagsMapToNull_TS0331(t *testing.T) {
-	// Custom mock that captures the PATCH request body.
 	var capturedBody []byte
 	var capturedMethod string
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /api/v1/workspaces/{slug}", func(w http.ResponseWriter, r *http.Request) {
 		capturedMethod = r.Method
 		capturedBody, _ = io.ReadAll(r.Body)
-		// Return a valid workspace response.
 		writeJSON(w, http.StatusOK, spec03WorkspaceResp{
 			Slug:        "some-ws",
 			GitURL:      "https://github.com/org/repo",
@@ -232,27 +230,23 @@ func TestSpec03_Group4_ClearFlagsMapToNull_TS0331(t *testing.T) {
 		t.Fatalf("expected PATCH request; got %q", capturedMethod)
 	}
 
-	// Parse captured body as raw JSON to check for null values.
 	var body map[string]any
 	if jsonErr := json.Unmarshal(capturedBody, &body); jsonErr != nil {
 		t.Fatalf("captured body is not valid JSON: %v\nbody: %s", jsonErr, capturedBody)
 	}
 
-	// display_name should be null (not absent).
 	if v, ok := body["display_name"]; !ok {
 		t.Error("display_name key is absent from PATCH body; want null")
 	} else if v != nil {
 		t.Errorf("display_name = %v; want null", v)
 	}
 
-	// description should be null (not absent).
 	if v, ok := body["description"]; !ok {
 		t.Error("description key is absent from PATCH body; want null")
 	} else if v != nil {
 		t.Errorf("description = %v; want null", v)
 	}
 
-	// org_id should be null (not absent).
 	if v, ok := body["org_id"]; !ok {
 		t.Error("org_id key is absent from PATCH body; want null")
 	} else if v != nil {
@@ -264,7 +258,6 @@ func TestSpec03_Group4_ClearFlagsMapToNull_TS0331(t *testing.T) {
 // the fields corresponding to flags that were explicitly provided.
 // Requirement: 03-REQ-7.3
 func TestSpec03_Group4_OnlyProvidedFieldsInBody_TS0332(t *testing.T) {
-	// Custom mock that captures the PATCH request body.
 	var capturedBody []byte
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /api/v1/workspaces/{slug}", func(w http.ResponseWriter, r *http.Request) {
@@ -295,14 +288,12 @@ func TestSpec03_Group4_OnlyProvidedFieldsInBody_TS0332(t *testing.T) {
 		t.Fatalf("captured body is not valid JSON: %v\nbody: %s", jsonErr, capturedBody)
 	}
 
-	// display_name should be present with the provided value.
 	if v, ok := body["display_name"]; !ok {
 		t.Error("display_name key is absent from PATCH body")
 	} else if s, ok := v.(string); !ok || s != "Only This" {
 		t.Errorf("display_name = %v; want %q", v, "Only This")
 	}
 
-	// description and org_id should be absent (not provided).
 	if _, ok := body["description"]; ok {
 		t.Error("description key is present in PATCH body; want absent")
 	}
@@ -317,10 +308,10 @@ func TestSpec03_Group4_OnlyProvidedFieldsInBody_TS0332(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TS-03-E15: Verify that running afc workspace update without any update flags
-// prints a usage hint to stderr and exits with code 1 without making an HTTP call.
+// prints an error envelope to stdout and exits with code 1 without making an
+// HTTP call.
 // Requirement: 03-REQ-7.E1
 func TestSpec03_Group4_UpdateNoFlags_TS03E15(t *testing.T) {
-	// Track whether any HTTP request was made.
 	var requestMade bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -330,19 +321,19 @@ func TestSpec03_Group4_UpdateNoFlags_TS03E15(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"update", "some-ws")
 
 	if err == nil {
 		t.Error("expected error when no update flags provided; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want usage hint about required flags")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
-	lower := strings.ToLower(stderr)
-	if !strings.Contains(lower, "flag") && !strings.Contains(lower, "usage") &&
-		!strings.Contains(lower, "at least one") {
-		t.Errorf("stderr should contain usage hint about flags; got: %s", stderr)
+	msg := errorMessage(stdout)
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "flag") && !strings.Contains(lower, "at least one") {
+		t.Errorf("error message should contain usage hint about flags; got: %s", msg)
 	}
 	if requestMade {
 		t.Error("HTTP request was made; want no request when no flags provided")
@@ -350,10 +341,9 @@ func TestSpec03_Group4_UpdateNoFlags_TS03E15(t *testing.T) {
 }
 
 // TS-03-E16: Verify that when the API returns a non-2xx status, afc workspace
-// update prints the error message to stderr and exits with code 1.
+// update prints the error envelope to stdout and exits with code 1.
 // Requirement: 03-REQ-7.E2
 func TestSpec03_Group4_UpdateAPIError_TS03E16(t *testing.T) {
-	// Mock server returns 404 for any PATCH request.
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /api/v1/workspaces/{slug}", func(w http.ResponseWriter, r *http.Request) {
 		respondSpec03Error(w, http.StatusNotFound, "workspace not found")
@@ -361,21 +351,19 @@ func TestSpec03_Group4_UpdateAPIError_TS03E16(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"update", "missing-ws", "--display-name", "x")
 
 	if err == nil {
 		t.Error("expected error for non-2xx API response; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want API error message")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
-	lower := strings.ToLower(stderr)
+	msg := errorMessage(stdout)
+	lower := strings.ToLower(msg)
 	if !strings.Contains(lower, "not found") && !strings.Contains(lower, "workspace") {
-		t.Errorf("stderr should contain API error message; got: %s", stderr)
-	}
-	if strings.TrimSpace(stdout) != "" {
-		t.Errorf("stdout should be empty on error; got: %s", stdout)
+		t.Errorf("error message should contain API error; got: %s", msg)
 	}
 }
 
@@ -384,46 +372,41 @@ func TestSpec03_Group4_UpdateAPIError_TS03E16(t *testing.T) {
 // indefinitely.
 // Requirement: 03-REQ-7.E3
 func TestSpec03_Group4_UpdateTimeout_TS03E17(t *testing.T) {
-	// Mock server that hangs until the request context is cancelled.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
-			// Client disconnected.
-		case <-time.After(60 * time.Second):
-			// Fallback — should not be reached during normal test execution.
+		case <-time.After(15 * time.Second):
 		}
 	}))
 	defer server.Close()
 
 	start := time.Now()
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"update", "timeout-ws", "--display-name", "x")
 	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Error("expected error for timeout; got nil")
 	}
-	// The command should not hang for more than 15 seconds.
 	if elapsed > 15*time.Second {
 		t.Errorf("command took %v; want less than 15s (should not hang indefinitely)", elapsed)
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want timeout or connection error message")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
-	// The error should mention timeout/connection/deadline (not just "unknown command").
-	lower := strings.ToLower(stderr)
+	msg := errorMessage(stdout)
+	lower := strings.ToLower(msg)
 	if !strings.Contains(lower, "timeout") && !strings.Contains(lower, "connection") &&
 		!strings.Contains(lower, "deadline") {
-		t.Errorf("stderr should contain timeout/connection/deadline error; got: %s", stderr)
+		t.Errorf("error message should contain timeout/connection/deadline; got: %s", msg)
 	}
 }
 
-// TS-03-E18: Verify that afc workspace update prints a descriptive parse error
-// to stderr and exits 1 when the API returns success with malformed/unexpected
-// response body.
+// TS-03-E18: Verify that afc workspace update prints a descriptive error
+// envelope to stdout and exits 1 when the API returns success with
+// malformed/unexpected response body.
 // Requirement: 03-REQ-7.E4
 func TestSpec03_Group4_UpdateMalformedResponse_TS03E18(t *testing.T) {
-	// Mock server returns HTTP 200 with non-JSON body.
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /api/v1/workspaces/{slug}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -433,22 +416,20 @@ func TestSpec03_Group4_UpdateMalformedResponse_TS03E18(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"update", "malformed-ws", "--display-name", "x")
 
 	if err == nil {
 		t.Error("expected error for malformed response; got nil")
 	}
-	if stderr == "" {
-		t.Error("stderr is empty; want parse error description")
+	if !hasErrorEnvelope(stdout) {
+		t.Errorf("stdout should contain error envelope; got: %s", stdout)
 	}
-	lower := strings.ToLower(stderr)
-	if !strings.Contains(lower, "parse") && !strings.Contains(lower, "invalid") &&
+	msg := errorMessage(stdout)
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "decode") && !strings.Contains(lower, "invalid") &&
 		!strings.Contains(lower, "unexpected") && !strings.Contains(lower, "unmarshal") {
-		t.Errorf("stderr should describe a parse/invalid/unexpected error; got: %s", stderr)
-	}
-	if strings.TrimSpace(stdout) != "" {
-		t.Errorf("stdout should be empty on parse error; got: %s", stdout)
+		t.Errorf("error message should describe a parse/decode error; got: %s", msg)
 	}
 }
 
@@ -465,14 +446,14 @@ func TestSpec03_Group4_CreateWithDisplayNameDescription_TS0333(t *testing.T) {
 	server := mockSpec03Server(t, make(map[string]spec03WorkspaceResp))
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--slug", "create-cli-ws",
 		"--git-url", "https://git.example.com/repo",
 		"--display-name", "CLI Created",
 		"--description", "Created via CLI")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws spec03WorkspaceResp
@@ -494,12 +475,12 @@ func TestSpec03_Group4_CreateBackwardCompatible_TS0334(t *testing.T) {
 	server := mockSpec03Server(t, make(map[string]spec03WorkspaceResp))
 	defer server.Close()
 
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--slug", "compat-cli-ws",
 		"--git-url", "https://git.example.com/repo")
 
 	if err != nil {
-		t.Fatalf("command returned error: %v\nstderr: %s", err, stderr)
+		t.Fatalf("command returned error: %v", err)
 	}
 
 	var ws spec03WorkspaceResp
