@@ -139,6 +139,15 @@ func (env *testEnv) seedOrgMember(t *testing.T, orgID, userID string) {
 	}
 }
 
+// deleteWorkspaceBySlug removes a workspace row directly from the database.
+func (env *testEnv) deleteWorkspaceBySlug(t *testing.T, slug string) {
+	t.Helper()
+	_, err := env.db.Exec("DELETE FROM workspaces WHERE slug = ?", slug)
+	if err != nil {
+		t.Fatalf("deleteWorkspaceBySlug(%q) returned error: %v", slug, err)
+	}
+}
+
 // errorEnvelope represents the JSON error response envelope.
 type errorEnvelope struct {
 	Error struct {
@@ -149,14 +158,16 @@ type errorEnvelope struct {
 
 // workspaceJSON represents the JSON workspace object in API responses.
 type workspaceJSON struct {
-	Slug      string  `json:"slug"`
-	GitURL    string  `json:"git_url"`
-	Branch    *string `json:"branch"`
-	OwnerID   string  `json:"owner_id"`
-	OrgID     *string `json:"org_id"`
-	Status    string  `json:"status"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
+	Slug        string  `json:"slug"`
+	GitURL      string  `json:"git_url"`
+	Branch      *string `json:"branch"`
+	DisplayName string  `json:"display_name"`
+	Description string  `json:"description"`
+	OwnerID     string  `json:"owner_id"`
+	OrgID       *string `json:"org_id"`
+	Status      string  `json:"status"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
 }
 
 // parseErrorEnvelope parses the response body as a JSON error envelope.
