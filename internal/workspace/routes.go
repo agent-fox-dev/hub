@@ -52,6 +52,7 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.POST("/workspaces", handleCreateWorkspace(db))
 	api.GET("/workspaces", handleListWorkspaces(db))
 	api.GET("/workspaces/:slug", handleGetWorkspace(db))
+	api.PATCH("/workspaces/:slug", handleUpdateWorkspace(db))
 	api.POST("/workspaces/:slug/archive", handleArchiveWorkspace(db))
 	api.POST("/workspaces/:slug/reactivate", handleReactivateWorkspace(db))
 	api.DELETE("/workspaces/:slug", handleDeleteWorkspace(db))

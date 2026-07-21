@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -685,23 +686,22 @@ func TestSpec03_Group3_PatchNonOwnerReturns404AntiEnumeration(t *testing.T) {
 // out or errors, PATCH returns HTTP 500 and no partial state is written.
 // Requirement: 03-REQ-4.E8
 //
-// Strategy: Use an org_id that does not exist in the orgs table. The
-// checkOrgMembership function returns an error (org not found) which the PATCH
-// handler should treat as an error condition. Since the current
-// checkOrgMembership returns 400 for "org not found", the test validates the
-// broader requirement: no partial state is written when org validation fails.
-//
-// For a true timeout simulation, we would need a mock org membership service
-// that returns errors. Since this is a "write failing tests" phase, we test
-// the observable behavior: PATCH with an invalid org should not partially
-// write any state.
-//
-// NOTE: This test expects HTTP 500 per the spec (03-REQ-4.E8) for service
-// timeouts/errors. The implementation may use a different mechanism to
-// simulate the timeout scenario. The test will need to be adjusted once the
-// implementation defines how org membership errors are handled.
+// Uses the injectable orgMembershipCheckFn to simulate a service error for a
+// specific org_id ("org-uuid-timeout"). The injected checker returns HTTP 500
+// for this org, mimicking a timeout or upstream failure. All other org checks
+// delegate to the real checkOrgMembership implementation.
 func TestSpec03_Group3_PatchOrgMembershipServiceErrorReturns500(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Inject a failing org membership checker for "org-uuid-timeout".
+	origCheck := orgMembershipCheckFn
+	orgMembershipCheckFn = func(db *sql.DB, userID, orgID string) (int, string) {
+		if orgID == "org-uuid-timeout" {
+			return http.StatusInternalServerError, "organization membership check timed out"
+		}
+		return origCheck(db, userID, orgID)
+	}
+	t.Cleanup(func() { orgMembershipCheckFn = origCheck })
 
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "org-timeout-ws",
@@ -710,18 +710,9 @@ func TestSpec03_Group3_PatchOrgMembershipServiceErrorReturns500(t *testing.T) {
 		Status:  "active",
 	})
 
-	// Use an org_id that will trigger a membership check error/timeout.
-	// The implementation should provide a way to inject a failing org service.
-	// For now, we use a non-existent org. The implementation group will need to
-	// provide proper error injection, which may change the HTTP status from
-	// 400 (org not found) to 500 (service error). The test asserts the core
-	// invariant: org_id must remain NULL (no partial write).
 	body := `{"org_id":"org-uuid-timeout"}`
 	rec := env.doRequest(t, http.MethodPatch, "/api/v1/workspaces/org-timeout-ws", body, userAuth("u1-id"))
 
-	// The spec requires HTTP 500 for service timeout/error. The current
-	// checkOrgMembership may return different codes. We check for a non-success
-	// status first, then verify the specific code.
 	if rec.Code == http.StatusOK {
 		t.Fatalf("PATCH status = %d; want non-200 (org membership check should fail)", rec.Code)
 	}

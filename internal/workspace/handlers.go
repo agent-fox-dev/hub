@@ -9,6 +9,15 @@ import (
 	"github.com/txsvc/apikit"
 )
 
+// OrgMembershipCheckFunc is the signature for org membership checks.
+// Returns (0, "") on success, or (httpCode, message) on failure.
+type OrgMembershipCheckFunc func(db *sql.DB, userID, orgID string) (int, string)
+
+// orgMembershipCheckFn is the function used to check org membership.
+// Defaults to checkOrgMembership. Tests can replace it to inject service
+// errors or timeouts — see TS-03-E14.
+var orgMembershipCheckFn OrgMembershipCheckFunc = checkOrgMembership
+
 // respondError writes a JSON error envelope {"error":{"code":N,"message":"..."}}
 // and sets the HTTP status code. Delegates to apikit.WriteAPIError for a
 // consistent error format across the platform.
@@ -150,7 +159,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// Validate org_id if provided.
 		if req.OrgID != nil && *req.OrgID != "" {
-			orgCode, orgMsg := checkOrgMembership(db, auth.UserID, *req.OrgID)
+			orgCode, orgMsg := orgMembershipCheckFn(db, auth.UserID, *req.OrgID)
 			if orgCode != 0 {
 				return respondError(c, orgCode, orgMsg)
 			}
@@ -191,13 +200,15 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 // checkOrgMembership verifies that the org exists and the user is a member.
 // Returns (0, "") if the check passes, or (httpCode, message) on failure.
+// Returns 500 on actual database/service errors (query failure, table missing),
+// 400 if the org does not exist, and 403 if the user is not a member.
 func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string) {
 	// Try to query the orgs table (apikit schema uses 'orgs').
 	var exists int
 	err := db.QueryRow("SELECT COUNT(*) FROM orgs WHERE id = ?", orgID).Scan(&exists)
 	if err != nil {
-		// Table might not exist or query failed — treat as org not found.
-		return http.StatusBadRequest, "organization not found"
+		// Table might not exist or query failed — this is a service error.
+		return http.StatusInternalServerError, "organization membership check failed"
 	}
 	if exists == 0 {
 		return http.StatusBadRequest, "organization not found"
@@ -206,11 +217,162 @@ func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string) {
 	// Check membership.
 	var isMember int
 	err = db.QueryRow("SELECT COUNT(*) FROM org_members WHERE org_id = ? AND user_id = ?", orgID, userID).Scan(&isMember)
-	if err != nil || isMember == 0 {
+	if err != nil {
+		// Query failed — this is a service error.
+		return http.StatusInternalServerError, "organization membership check failed"
+	}
+	if isMember == 0 {
 		return http.StatusForbidden, "user is not a member of the specified organization"
 	}
 
 	return 0, ""
+}
+
+// updatePatchFields tracks which mutable fields were included in a PATCH body.
+// It uses explicit "set" flags to distinguish absent fields from provided ones
+// (including null values). This allows partial updates where absent fields
+// remain unchanged while null values are normalized to defaults.
+type updatePatchFields struct {
+	SetDisplayName bool
+	DisplayName    *string // nil = JSON null, non-nil = provided value
+	SetDescription bool
+	Description    *string // nil = JSON null, non-nil = provided value
+	SetOrgID       bool
+	OrgID          *string // nil = JSON null, non-nil = provided value
+}
+
+// handleUpdateWorkspace handles PATCH /api/v1/workspaces/:slug.
+// It supports partial updates of mutable workspace fields (display_name,
+// description, org_id) while rejecting attempts to modify immutable fields
+// (slug, git_url, branch, owner_id).
+func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+
+		// PATs require workspaces:write scope to update.
+		// PATs without write access get 404 (anti-enumeration).
+		if auth.CredType == CredentialPAT && !auth.hasWriteAccess() {
+			return respondError(c, http.StatusNotFound, "workspace not found")
+		}
+
+		slug := c.Param("slug")
+
+		// Parse request body as raw JSON to detect present vs absent fields.
+		if c.Request().Body == nil {
+			return respondError(c, http.StatusBadRequest, "request body is required")
+		}
+		var rawBody map[string]json.RawMessage
+		if err := json.NewDecoder(c.Request().Body).Decode(&rawBody); err != nil {
+			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
+		}
+
+		// Reject immutable fields in the PATCH body.
+		immutableFields := []string{"slug", "git_url", "branch", "owner_id"}
+		for _, field := range immutableFields {
+			if _, present := rawBody[field]; present {
+				return respondError(c, http.StatusBadRequest, field+" is immutable and cannot be updated")
+			}
+		}
+
+		// Parse mutable fields from the raw body.
+		var fields updatePatchFields
+		mutableCount := 0
+
+		if raw, ok := rawBody["display_name"]; ok {
+			fields.SetDisplayName = true
+			mutableCount++
+			if string(raw) != "null" {
+				var s string
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return respondError(c, http.StatusBadRequest, "invalid display_name value")
+				}
+				fields.DisplayName = &s
+			}
+		}
+
+		if raw, ok := rawBody["description"]; ok {
+			fields.SetDescription = true
+			mutableCount++
+			if string(raw) != "null" {
+				var s string
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return respondError(c, http.StatusBadRequest, "invalid description value")
+				}
+				fields.Description = &s
+			}
+		}
+
+		if raw, ok := rawBody["org_id"]; ok {
+			fields.SetOrgID = true
+			mutableCount++
+			if string(raw) != "null" {
+				var s string
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return respondError(c, http.StatusBadRequest, "invalid org_id value")
+				}
+				fields.OrgID = &s
+			}
+		}
+
+		// Reject empty body (no mutable fields provided).
+		if mutableCount == 0 {
+			return respondError(c, http.StatusBadRequest, "request body must contain at least one updatable field")
+		}
+
+		// Look up workspace and verify ownership / anti-enumeration.
+		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		if ws == nil {
+			return nil // Response already written by lookupWorkspaceForAuth.
+		}
+
+		// Archived workspace cannot be updated — must be reactivated first.
+		if ws.Status == "archived" {
+			return respondError(c, http.StatusBadRequest, "workspace is archived and must be reactivated before updating")
+		}
+
+		// Validate and normalize provided fields, applying them to the loaded workspace.
+		if fields.SetDisplayName {
+			dn := normalizeDisplayName(slug, fields.DisplayName)
+			if len(dn) > 128 {
+				return respondError(c, http.StatusBadRequest, "display_name must not exceed 128 characters")
+			}
+			ws.DisplayName = dn
+		}
+
+		if fields.SetDescription {
+			desc := normalizeDescription(fields.Description)
+			if len(desc) > 1024 {
+				return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
+			}
+			ws.Description = desc
+		}
+
+		if fields.SetOrgID {
+			if fields.OrgID != nil && *fields.OrgID != "" {
+				// Verify org membership before updating.
+				orgCode, orgMsg := orgMembershipCheckFn(db, auth.UserID, *fields.OrgID)
+				if orgCode != 0 {
+					return respondError(c, orgCode, orgMsg)
+				}
+				ws.OrgID = fields.OrgID
+			} else {
+				// null or empty → remove org association.
+				ws.OrgID = nil
+			}
+		}
+
+		// Persist the update: write all mutable fields (unchanged ones retain
+		// their loaded values) and refresh updated_at.
+		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
+		}
+
+		return respondWorkspace(c, http.StatusOK, updated)
+	}
 }
 
 // handleListWorkspaces handles GET /api/v1/workspaces.

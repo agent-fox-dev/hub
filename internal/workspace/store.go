@@ -42,7 +42,7 @@ type Workspace struct {
 // insertWorkspace inserts a new workspace record into the workspaces table.
 // It sets created_at and updated_at to the current time in RFC 3339 format.
 func insertWorkspace(db *sql.DB, ws *Workspace) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	ws.CreatedAt = now
 	ws.UpdatedAt = now
 
@@ -121,7 +121,7 @@ func listAllWorkspaces(db *sql.DB, includeArchived bool) ([]*Workspace, error) {
 // updateWorkspaceStatus updates the status of a workspace and refreshes updated_at.
 // Returns the updated workspace, or nil if no workspace with the given slug exists.
 func updateWorkspaceStatus(db *sql.DB, slug, status string) (*Workspace, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := db.Exec(
 		`UPDATE workspaces SET status = ?, updated_at = ? WHERE slug = ?`,
 		status, now, slug,
@@ -135,6 +135,22 @@ func updateWorkspaceStatus(db *sql.DB, slug, status string) (*Workspace, error) 
 	}
 	if affected == 0 {
 		return nil, nil
+	}
+	return getWorkspaceBySlug(db, slug)
+}
+
+// updateWorkspaceRow updates all mutable fields of a workspace and refreshes
+// updated_at. This is used by the PATCH handler after loading the current state
+// and applying only the provided field changes to the in-memory struct.
+// Returns the updated workspace, or an error if the update fails.
+func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID *string) (*Workspace, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`UPDATE workspaces SET display_name = ?, description = ?, org_id = ?, updated_at = ? WHERE slug = ?`,
+		displayName, description, orgID, now, slug,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update workspace %q: %w", slug, err)
 	}
 	return getWorkspaceBySlug(db, slug)
 }
