@@ -24,23 +24,45 @@ func respondWorkspace(c echo.Context, code int, ws *Workspace) error {
 // workspaceResponse converts a Workspace to a JSON-serializable map.
 func workspaceResponse(ws *Workspace) map[string]any {
 	return map[string]any{
-		"slug":       ws.Slug,
-		"git_url":    ws.GitURL,
-		"branch":     ws.Branch,
-		"owner_id":   ws.OwnerID,
-		"org_id":     ws.OrgID,
-		"status":     ws.Status,
-		"created_at": ws.CreatedAt,
-		"updated_at": ws.UpdatedAt,
+		"slug":         ws.Slug,
+		"git_url":      ws.GitURL,
+		"branch":       ws.Branch,
+		"owner_id":     ws.OwnerID,
+		"org_id":       ws.OrgID,
+		"status":       ws.Status,
+		"display_name": ws.DisplayName,
+		"description":  ws.Description,
+		"created_at":   ws.CreatedAt,
+		"updated_at":   ws.UpdatedAt,
 	}
 }
 
 // createWorkspaceRequest represents the JSON body of a create workspace request.
 type createWorkspaceRequest struct {
-	Slug   string  `json:"slug"`
-	GitURL string  `json:"git_url"`
-	Branch *string `json:"branch"`
-	OrgID  *string `json:"org_id"`
+	Slug        string  `json:"slug"`
+	GitURL      string  `json:"git_url"`
+	Branch      *string `json:"branch"`
+	OrgID       *string `json:"org_id"`
+	DisplayName *string `json:"display_name"` // nullable: nil or empty → slug
+	Description *string `json:"description"`  // nullable: nil → ""
+}
+
+// normalizeDisplayName returns the display name to store. If input is nil or
+// empty, returns the slug value as the default.
+func normalizeDisplayName(slug string, input *string) string {
+	if input == nil || *input == "" {
+		return slug
+	}
+	return *input
+}
+
+// normalizeDescription returns the description to store. If input is nil,
+// returns empty string as the default.
+func normalizeDescription(input *string) string {
+	if input == nil {
+		return ""
+	}
+	return *input
 }
 
 // lookupWorkspaceForAuth retrieves a workspace and enforces ownership-based access.
@@ -114,6 +136,18 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		// Validate display_name length if provided.
+		displayName := normalizeDisplayName(req.Slug, req.DisplayName)
+		if len(displayName) > 128 {
+			return respondError(c, http.StatusBadRequest, "display_name must not exceed 128 characters")
+		}
+
+		// Validate description length if provided.
+		description := normalizeDescription(req.Description)
+		if len(description) > 1024 {
+			return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
+		}
+
 		// Validate org_id if provided.
 		if req.OrgID != nil && *req.OrgID != "" {
 			orgCode, orgMsg := checkOrgMembership(db, auth.UserID, *req.OrgID)
@@ -133,12 +167,14 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// Create workspace.
 		ws := &Workspace{
-			Slug:    req.Slug,
-			GitURL:  req.GitURL,
-			Branch:  req.Branch,
-			OwnerID: auth.UserID,
-			OrgID:   req.OrgID,
-			Status:  "active",
+			Slug:        req.Slug,
+			GitURL:      req.GitURL,
+			Branch:      req.Branch,
+			OwnerID:     auth.UserID,
+			OrgID:       req.OrgID,
+			Status:      "active",
+			DisplayName: displayName,
+			Description: description,
 		}
 
 		if err := insertWorkspace(db, ws); err != nil {

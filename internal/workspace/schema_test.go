@@ -61,8 +61,8 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 		t.Fatalf("rows iteration error: %v", err)
 	}
 
-	if len(columns) != 8 {
-		t.Errorf("got %d columns; want 8", len(columns))
+	if len(columns) != 10 {
+		t.Errorf("got %d columns; want 10", len(columns))
 	}
 
 	// Verify each column's properties.
@@ -79,6 +79,8 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 		{"owner_id", "TEXT", true, "", false},
 		{"org_id", "TEXT", false, "", false},
 		{"status", "TEXT", true, "'active'", false},
+		{"display_name", "TEXT", true, "''", false},
+		{"description", "TEXT", true, "''", false},
 		{"created_at", "TEXT", true, "", false},
 		{"updated_at", "TEXT", true, "", false},
 	}

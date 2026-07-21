@@ -8,14 +8,16 @@ import (
 // createTableSQL is the DDL for the workspaces table.
 const createTableSQL = `
 CREATE TABLE IF NOT EXISTS workspaces (
-	slug       TEXT PRIMARY KEY,
-	git_url    TEXT NOT NULL,
-	branch     TEXT,
-	owner_id   TEXT NOT NULL,
-	org_id     TEXT,
-	status     TEXT NOT NULL DEFAULT 'active',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
+	slug         TEXT PRIMARY KEY,
+	git_url      TEXT NOT NULL,
+	branch       TEXT,
+	owner_id     TEXT NOT NULL,
+	org_id       TEXT,
+	status       TEXT NOT NULL DEFAULT 'active',
+	display_name TEXT NOT NULL DEFAULT '',
+	description  TEXT NOT NULL DEFAULT '',
+	created_at   TEXT NOT NULL,
+	updated_at   TEXT NOT NULL
 )`
 
 // initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS.
