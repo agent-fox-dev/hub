@@ -38,6 +38,7 @@ build:
 build-container:
 	podman build \
 		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD=$(BUILD) \
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-f $(CONTAINERFILE) .
 
