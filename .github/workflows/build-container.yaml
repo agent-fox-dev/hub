@@ -1,16 +1,13 @@
-name: build af-hub container
+name: build the hub container
+
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
-#  pull_request:
-#    branches:
-#      - 'main'
-#  push:
-#    branches:
-#      - 'main'
-
 jobs:
-  build-af-hub-container:
+  build-hub-container:
     uses: ./.github/workflows/build.yaml
     with:
       container_name: hub

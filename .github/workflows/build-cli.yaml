@@ -1,0 +1,108 @@
+name: build CLI binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_tag: ${{ steps.version.outputs.is_tag }}
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: get version
+        id: version
+        run: |
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            VERSION=$(git describe --tags --exact-match HEAD)
+            IS_TAG=true
+          elif git describe --tags 2>/dev/null; then
+            VERSION=$(git describe --tags)
+            IS_TAG=false
+          else
+            VERSION="$(git rev-parse --short HEAD)"
+            IS_TAG=false
+          fi
+          VERSION=${VERSION#v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_tag=${IS_TAG}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: clone apikit dependency
+        run: git clone https://github.com/txsvc/apikit.git ../apikit
+
+      - name: build afc
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build \
+            -ldflags "-s -w \
+              -X github.com/txsvc/apikit.Version=${{ needs.prepare.outputs.version }} \
+              -X github.com/txsvc/apikit.Build=$(git rev-parse --short HEAD) \
+              -X github.com/txsvc/apikit/internal/cli.Version=${{ needs.prepare.outputs.version }} \
+              -X github.com/txsvc/apikit/internal/cli.Build=$(git rev-parse --short HEAD) \
+              -X github.com/txsvc/apikit.TokenPrefix=af \
+              -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
+            -o afc-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/afc
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: afc-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: afc-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: create checksums
+        run: sha256sum afc-* > checksums.txt
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            afc-*
+            checksums.txt
