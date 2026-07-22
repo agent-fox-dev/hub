@@ -1,4 +1,4 @@
-name: build CLI binaries
+name: CLI build
 
 on:
   push:

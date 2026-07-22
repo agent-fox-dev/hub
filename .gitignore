@@ -20,6 +20,8 @@ bin/
 hack/
 prompts.md
 
-# local test files
+# local test files and secrets
 admin_token
 **/config.toml
+.env
+secrets/

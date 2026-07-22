@@ -27,7 +27,7 @@ spec:
               if [ -f /config/af-hub/admin_token ]; then
                 echo "$(cat /config/af-hub/admin_token)" && mv /config/af-hub/admin_token /config/af-hub/token
               else
-                ADMIN_TOKEN=$(cat /config/af-hub/token) /usr/bin/hub --admin-email="$ADMIN_EMAIL"
+                /usr/bin/hub --admin-email="$ADMIN_EMAIL"
               fi
           ports:
             - name: http
@@ -43,11 +43,6 @@ spec:
                 secretKeyRef:
                   name: af-hub-secrets
                   key: admin-email
-            - name: ADMIN_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: af-hub-secrets
-                  key: admin-token
             - name: GITHUB_CLIENT_ID
               valueFrom:
                 secretKeyRef:

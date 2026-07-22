@@ -42,6 +42,11 @@ build-container:
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-f $(CONTAINERFILE) .
 
+# Clean build artifacts
+clean:
+	rm -rf bin/af-hub bin/afc
+	podman rmi $(IMAGE):$(IMAGE_TAG)
+
 # Clear all data and config
 hub-reset:
 	rm -rf bin/data bin/config
@@ -63,20 +68,6 @@ hub-run:
 		-v $(CURDIR)/bin/config:/config \
 		-v $(CURDIR)/bin/data:/data \
 		$(IMAGE):$(IMAGE_TAG)
-
-# Clean build artifacts
-clean:
-	rm -rf bin/af-hub bin/afc
-	podman rmi $(IMAGE):$(IMAGE_TAG)
-
-run-reset:
-	rm -rf bin/data
-	mkdir -p bin/data
-	cd bin && ./hub --admin-email=hello@micku.me
-
-run:
-	-mv bin/admin_token bin/token
-	cd bin && ADMIN_TOKEN=$$(cat token) ./hub
 
 # Start the Vite dev server with hot reload
 web-dev:

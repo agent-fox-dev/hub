@@ -1,4 +1,4 @@
-name: build the hub container
+name: container build
 
 on:
   push:
