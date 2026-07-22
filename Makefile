@@ -36,8 +36,8 @@ build:
 	go build $(LDFLAGS) -o bin/afc ./cmd/afc
 	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 
-# Build the af-hub container locally (same context/file as CI)
-build-container:
+# Build the af-hub container locally 
+build-container: build
 	podman build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg BUILD=$(COMMIT) \
