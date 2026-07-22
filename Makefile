@@ -1,13 +1,15 @@
 .PHONY: check test lint build build-container run-container web-dev web-build web-lint
 
-VERSION := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
-BUILD   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
+COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 LDFLAGS := -ldflags "\
   -X github.com/txsvc/apikit.Version=$(VERSION) \
-  -X github.com/txsvc/apikit.Build=$(BUILD) \
+  -X github.com/txsvc/apikit.Commit=$(COMMIT) \
+  -X github.com/txsvc/apikit.BuildTime=$(BUILD_TIME) \
   -X github.com/txsvc/apikit/internal/cli.Version=$(VERSION) \
-  -X github.com/txsvc/apikit/internal/cli.Build=$(BUILD) \
+  -X github.com/txsvc/apikit/internal/cli.Build=$(COMMIT) \
   -X github.com/txsvc/apikit.TokenPrefix=af \
   -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af"
 
@@ -38,7 +40,8 @@ build:
 build-container:
 	podman build \
 		--build-arg VERSION=$(VERSION) \
-		--build-arg BUILD=$(BUILD) \
+		--build-arg BUILD=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-f $(CONTAINERFILE) .
 
