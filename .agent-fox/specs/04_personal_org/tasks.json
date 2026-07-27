@@ -389,7 +389,7 @@
             "04-REQ-8.E1",
             "04-REQ-8.E2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -413,7 +413,7 @@
             "04-REQ-10.1",
             "04-REQ-10.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -433,7 +433,7 @@
             "04-REQ-2.1",
             "04-REQ-2.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
