@@ -1,0 +1,1075 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "workspace_checkout",
+  "schema_version": 1,
+  "introduction": "This spec defines the workspace code checkout system for af-hub: when a workspace is created, the upstream git repository is cloned asynchronously into a local directory; archiving pushes local commits and removes the clone; reactivating re-clones; and deleting cleans up any remaining files.",
+  "glossary": {
+    "CloneOptions": "The go-git struct configuring a clone operation, including URL, Depth, SingleBranch, and ReferenceName fields.",
+    "DELETE /api/v1/workspaces/:slug": "The HTTP endpoint for deleting an archived workspace.",
+    "NewBranchReferenceName": "The go-git/plumbing function func NewBranchReferenceName(name string) ReferenceName that returns refs/heads/<name>.",
+    "NoErrAlreadyUpToDate": "A sentinel error value from go-git indicating the remote already has all local commits; treated as success during push.",
+    "POST /api/v1/workspaces": "The HTTP endpoint for creating a new workspace.",
+    "POST /api/v1/workspaces/:slug/archive": "The HTTP endpoint for archiving an existing workspace.",
+    "POST /api/v1/workspaces/:slug/reactivate": "The HTTP endpoint for reactivating an archived workspace.",
+    "PlainCloneContext": "The go-git function func PlainCloneContext(ctx context.Context, path string, isBare bool, o *CloneOptions) (*Repository, error) used to perform a shallow git clone with context cancellation support.",
+    "PlainOpen": "The go-git function func PlainOpen(path string) (*Repository, error) used to open an existing local git repository.",
+    "PushOptions": "The go-git struct configuring a push operation, including RemoteName.",
+    "WORKSPACE_ROOT": "The resolved root directory under which all workspace subdirectories are stored, derived from the [workspace] path config value.",
+    "WorkspaceConfig": "A Go struct added to apikit's config package holding workspace-specific configuration: Path and Workers.",
+    "XDG_DATA_HOME": "An environment variable specifying the base directory for user-specific data files, used during workspace path resolution.",
+    "afc workspace create": "The CLI command that calls POST /api/v1/workspaces to create a new workspace.",
+    "afc workspace get": "The CLI command that calls GET /api/v1/workspaces/:slug to retrieve workspace details including clone_status.",
+    "branch": "A nullable TEXT column on the workspaces table storing the git branch to clone; NULL means clone the remote's default branch.",
+    "clone job": "A unit of work enqueued on the job queue representing a shallow git clone operation for a specific workspace.",
+    "clone_error": "A nullable TEXT column on the workspaces table storing the error message from the most recent failed clone attempt.",
+    "clone_status": "A TEXT column on the workspaces table tracking the state of the local git clone: pending, cloning, ready, failed, or archived.",
+    "config.toml": "The TOML configuration file read by apikit's Load() function to configure the hub server.",
+    "git_url": "A TEXT column on the workspaces table storing the upstream git repository URL to clone from.",
+    "head_sha": "A nullable TEXT column on the workspaces table storing the 40-character hex SHA of the HEAD commit of the local clone.",
+    "job queue": "An in-memory FIFO channel-backed queue of clone and reclone jobs consumed by worker goroutines.",
+    "reclone job": "A clone job enqueued during workspace reactivation; performs the same operation as an initial clone job.",
+    "resolveDataPath": "An internal apikit config function that resolves a bare path name against XDG_DATA_HOME or a default fallback.",
+    "trunk": "The subdirectory within a workspace's directory that holds the shallow git clone of the upstream repository.",
+    "workers": "The number of goroutine workers consuming jobs from the job queue, configured via [workspace] workers in config.toml.",
+    "workspace slug": "The primary key TEXT identifier for a workspace, used as the subdirectory name under WORKSPACE_ROOT."
+  },
+  "requirements": [
+    {
+      "id": "05-REQ-1",
+      "title": "WorkspaceConfig added to apikit Config struct",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "configure the workspace root directory and worker count in config.toml",
+        "benefit": "the server knows where to store workspace clones and how many concurrent clone workers to run"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit config package",
+          "action": "defines a WorkspaceConfig struct with fields Path (string, toml:\"path\") and Workers (int, toml:\"workers\") and embeds it in the Config struct as field Workspace (toml:\"workspace\")",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "apikit Load() function",
+          "action": "resolves cfg.Workspace.Path using the same resolveDataPath logic as cfg.Database.Path and sets Workers to 4 if the configured value is 0 or omitted",
+          "return_contract": "returns (*Config, nil) with Workspace.Path set to the resolved absolute or relative path and Workspace.Workers >= 1",
+          "trigger": "Load() is called"
+        },
+        {
+          "id": "05-REQ-1.3",
+          "ears_pattern": "complex_event",
+          "system": "apikit Load() function",
+          "action": "sets cfg.Workspace.Path to \"./workspace\" (directory component present, used as-is) and cfg.Workspace.Workers to 4",
+          "return_contract": "returns (*Config, nil) with Workspace.Path = \"./workspace\" and Workspace.Workers = 4",
+          "trigger": "Load() is called",
+          "condition": "config.toml contains [workspace] path = \"./workspace\" and workers = 4"
+        },
+        {
+          "id": "05-REQ-1.4",
+          "ears_pattern": "complex_event",
+          "system": "apikit Load() function",
+          "action": "resolves Workspace.Path using resolveDataPath with an empty string input and sets Workers to 4",
+          "return_contract": "returns (*Config, nil) with Workspace.Workers = 4 and Workspace.Path resolved per the empty-path rule",
+          "trigger": "Load() is called",
+          "condition": "config.toml omits the [workspace] section entirely"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-1.E1",
+          "ears_pattern": "complex_event",
+          "system": "apikit Load() function",
+          "action": "resolves Workspace.Path to $XDG_DATA_HOME/<bare-name>",
+          "return_contract": "returns (*Config, nil) with Workspace.Path = \"$XDG_DATA_HOME/<bare-name>\"",
+          "trigger": "Load() is called",
+          "condition": "XDG_DATA_HOME is set and workspace path is a bare name (no directory component)"
+        },
+        {
+          "id": "05-REQ-1.E2",
+          "ears_pattern": "complex_event",
+          "system": "apikit Load() function",
+          "action": "defaults Workspace.Path to \"./data/workspaces\"",
+          "return_contract": "returns (*Config, nil) with Workspace.Path = \"./data/workspaces\"",
+          "trigger": "Load() is called",
+          "condition": "workspace path is empty and XDG_DATA_HOME is not set"
+        },
+        {
+          "id": "05-REQ-1.E3",
+          "ears_pattern": "complex_event",
+          "system": "apikit Load() function",
+          "action": "defaults Workspace.Path to \"$XDG_DATA_HOME/workspaces\"",
+          "return_contract": "returns (*Config, nil) with Workspace.Path = \"$XDG_DATA_HOME/workspaces\"",
+          "trigger": "Load() is called",
+          "condition": "workspace path is empty and XDG_DATA_HOME is set"
+        },
+        {
+          "id": "05-REQ-1.E4",
+          "ears_pattern": "complex_event",
+          "system": "apikit Load() function",
+          "action": "overrides Workers to 4",
+          "return_contract": "returns (*Config, nil) with Workspace.Workers = 4",
+          "trigger": "Load() is called",
+          "condition": "workers is set to 0 in config.toml"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-2",
+      "title": "WORKSPACE_ROOT directory created on server boot",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have the workspace root directory created automatically when the server starts",
+        "benefit": "workspace clone operations succeed without manual directory setup"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "creates the WORKSPACE_ROOT directory (and any missing parent directories) if it does not already exist",
+          "return_contract": null,
+          "trigger": "the server boots"
+        },
+        {
+          "id": "05-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "hub server",
+          "action": "logs a fatal error and exits the process",
+          "return_contract": "process exits with a non-zero exit code and a fatal log message describing the failure",
+          "error_condition": "the WORKSPACE_ROOT directory cannot be created due to insufficient permissions or other OS error"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-2.E1",
+          "ears_pattern": "complex_event",
+          "system": "hub server",
+          "action": "proceeds without error and does not modify the existing directory",
+          "return_contract": null,
+          "trigger": "the server boots",
+          "condition": "WORKSPACE_ROOT already exists"
+        },
+        {
+          "id": "05-REQ-2.E2",
+          "ears_pattern": "complex_event",
+          "system": "hub server",
+          "action": "creates all missing parent directories using os.MkdirAll semantics",
+          "return_contract": null,
+          "trigger": "the server boots",
+          "condition": "WORKSPACE_ROOT path contains multiple missing parent directories"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-3",
+      "title": "New workspace fields added to schema and response",
+      "user_story": {
+        "role": "developer",
+        "goal": "see clone_status, head_sha, and clone_error on every workspace response",
+        "benefit": "I can monitor clone progress and diagnose failures without additional API calls"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-3.1",
+          "ears_pattern": "ubiquitous",
+          "system": "workspaces table",
+          "action": "includes columns clone_status (TEXT NOT NULL DEFAULT 'pending'), head_sha (TEXT nullable), and clone_error (TEXT nullable) as defined in the updated DDL",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-3.2",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace API response",
+          "action": "includes clone_status, head_sha, and clone_error fields in all workspace response objects returned by create, list, get, update, archive, and reactivate endpoints",
+          "return_contract": "JSON object contains clone_status (string), head_sha (string | null), clone_error (string | null)"
+        },
+        {
+          "id": "05-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "workspaces table",
+          "action": "enforces that clone_status is one of: pending, cloning, ready, failed, archived",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-3.E1",
+          "ears_pattern": "event_driven",
+          "system": "workspace API",
+          "action": "sets clone_status to \"pending\", head_sha to NULL, and clone_error to NULL in the database row and response",
+          "return_contract": "JSON response contains clone_status = \"pending\", head_sha = null, clone_error = null",
+          "trigger": "a workspace is first created"
+        },
+        {
+          "id": "05-REQ-3.E2",
+          "ears_pattern": "event_driven",
+          "system": "workspace API",
+          "action": "returns clone_status = \"ready\" and a non-null head_sha containing a 40-character hex SHA",
+          "return_contract": "JSON response contains clone_status = \"ready\", head_sha = 40-char hex string, clone_error = null",
+          "trigger": "afc workspace get is called for a workspace whose clone has succeeded"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-4",
+      "title": "Async clone job queue with configurable workers",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have git clones execute asynchronously in the background",
+        "benefit": "workspace creation returns immediately without blocking on potentially slow network operations"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "initializes an in-memory FIFO job queue backed by a Go channel and starts workers goroutines (count = Workspace.Workers, default 4) that consume jobs from the queue",
+          "return_contract": null,
+          "trigger": "the server starts"
+        },
+        {
+          "id": "05-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "job queue",
+          "action": "a worker goroutine picks up the job, sets clone_status to \"cloning\" on the workspace record, creates the workspace directory under WORKSPACE_ROOT, and performs a shallow clone (Depth: 1) of git_url into <WORKSPACE_ROOT>/<slug>/trunk/ using PlainCloneContext with a context derived from the server's root context",
+          "return_contract": null,
+          "trigger": "a clone job or reclone job is enqueued"
+        },
+        {
+          "id": "05-REQ-4.3",
+          "ears_pattern": "complex_event",
+          "system": "job queue worker",
+          "action": "sets clone_status to \"ready\", records the HEAD commit SHA in head_sha via repo.Head().Hash().String(), and clears clone_error to NULL",
+          "return_contract": null,
+          "trigger": "a clone job completes",
+          "condition": "the clone succeeded"
+        },
+        {
+          "id": "05-REQ-4.4",
+          "ears_pattern": "unwanted",
+          "system": "job queue worker",
+          "action": "sets clone_status to \"failed\", records the error message in clone_error, and removes any partially created workspace directory",
+          "return_contract": "clone_status is set to \"failed\" in the database, clone_error contains the error message, and any partial workspace directory is removed from disk",
+          "error_condition": "PlainCloneContext returns a non-nil error"
+        },
+        {
+          "id": "05-REQ-4.5",
+          "ears_pattern": "complex_event",
+          "system": "job queue worker",
+          "action": "skips the clone and sets clone_status to \"ready\" without calling PlainCloneContext",
+          "return_contract": null,
+          "trigger": "a clone job starts",
+          "condition": "the workspace directory already exists under WORKSPACE_ROOT"
+        },
+        {
+          "id": "05-REQ-4.6",
+          "ears_pattern": "complex_event",
+          "system": "job queue worker",
+          "action": "clones the specified branch by setting SingleBranch to true and ReferenceName to NewBranchReferenceName(branch) in CloneOptions",
+          "return_contract": null,
+          "trigger": "a clone job is picked up",
+          "condition": "branch is non-null on the workspace record"
+        },
+        {
+          "id": "05-REQ-4.7",
+          "ears_pattern": "complex_event",
+          "system": "job queue worker",
+          "action": "clones the remote's default branch by omitting ReferenceName from CloneOptions",
+          "return_contract": null,
+          "trigger": "a clone job is picked up",
+          "condition": "branch is null on the workspace record"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-4.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "cancels the server's root context, causing in-progress PlainCloneContext calls to be interrupted and pending jobs in the queue to be discarded without processing",
+          "return_contract": null,
+          "trigger": "a graceful shutdown signal is received"
+        },
+        {
+          "id": "05-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "job queue worker",
+          "action": "the clone is interrupted when the server's root context is cancelled; the worker sets clone_status to \"failed\" and removes any partially created workspace directory",
+          "return_contract": "clone_status is set to \"failed\" in the database and any partial workspace directory is removed from disk",
+          "error_condition": "PlainCloneContext does not return within a reasonable time (network hang or unresponsive remote)"
+        },
+        {
+          "id": "05-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "job queue worker",
+          "action": "removes the partially created workspace directory using os.RemoveAll before setting clone_status to \"failed\"",
+          "return_contract": "the partial workspace directory is removed from disk and clone_status is set to \"failed\" in the database",
+          "error_condition": "the workspace directory was partially created before the error occurred"
+        },
+        {
+          "id": "05-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "job queue worker",
+          "action": "sets clone_status to \"failed\" and records the error message in clone_error; does not retry",
+          "return_contract": "clone_status is set to \"failed\" in the database and clone_error contains the network or remote error message",
+          "error_condition": "git_url is unreachable or returns an error"
+        },
+        {
+          "id": "05-REQ-4.E5",
+          "ears_pattern": "unwanted",
+          "system": "job queue worker",
+          "action": "PlainCloneContext returns an error; worker sets clone_status to \"failed\" and records the error in clone_error",
+          "return_contract": "clone_status is set to \"failed\" in the database and clone_error contains the branch-not-found error message",
+          "error_condition": "the specified branch does not exist on the remote"
+        },
+        {
+          "id": "05-REQ-4.E6",
+          "ears_pattern": "unwanted",
+          "system": "job queue worker",
+          "action": "sets clone_status to \"failed\" and records the error in clone_error; removes the workspace directory",
+          "return_contract": "clone_status is set to \"failed\" in the database, clone_error contains the Head() error message, and the workspace directory is removed from disk",
+          "error_condition": "repo.Head() returns an error after a successful clone"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-5",
+      "title": "Workspace creation enqueues clone job and returns immediately",
+      "user_story": {
+        "role": "developer",
+        "goal": "create a workspace via POST /api/v1/workspaces and get an immediate response",
+        "benefit": "I don't have to wait for the git clone to complete before the API responds"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace create handler",
+          "action": "inserts the workspace metadata row with clone_status = \"pending\", enqueues a clone job on the job queue, and returns HTTP 201 with the workspace JSON immediately without waiting for the clone to complete",
+          "return_contract": "returns HTTP 201 with JSON workspace object containing clone_status = \"pending\", head_sha = null, clone_error = null",
+          "trigger": "a POST /api/v1/workspaces request is received"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace create handler",
+          "action": "returns an error response without enqueuing a clone job",
+          "return_contract": "returns HTTP 500 with JSON error body",
+          "error_condition": "the database insert fails"
+        },
+        {
+          "id": "05-REQ-5.E2",
+          "ears_pattern": "complex_event",
+          "system": "workspace create handler",
+          "action": "the enqueue operation blocks until a worker frees capacity or uses a non-blocking send that logs a warning; the HTTP 201 response is still returned to the caller",
+          "return_contract": "returns HTTP 201 with JSON workspace object containing clone_status = \"pending\"",
+          "trigger": "a POST /api/v1/workspaces request is received",
+          "condition": "the job queue channel is full"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-6",
+      "title": "Archive workspace pushes local commits and removes clone",
+      "user_story": {
+        "role": "developer",
+        "goal": "archive a workspace and have local commits pushed to upstream before the clone is deleted",
+        "benefit": "no local work is lost when the workspace is archived and disk space is reclaimed"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-6.1",
+          "ears_pattern": "complex_event",
+          "system": "workspace archive handler",
+          "action": "opens the local repository at <WORKSPACE_ROOT>/<slug>/trunk/ via PlainOpen, pushes to origin via repo.Push(&PushOptions{RemoteName: \"origin\"}), records the HEAD SHA in head_sha, deletes the workspace directory, sets clone_status to \"archived\", sets status to \"archived\", and updates updated_at",
+          "return_contract": "returns HTTP 200 with JSON workspace object containing status = \"archived\", clone_status = \"archived\", and the recorded head_sha",
+          "trigger": "POST /api/v1/workspaces/:slug/archive is received",
+          "condition": "clone_status is \"ready\""
+        },
+        {
+          "id": "05-REQ-6.2",
+          "ears_pattern": "complex_event",
+          "system": "workspace archive handler",
+          "action": "removes any partial workspace directory if it exists, sets clone_status to \"archived\", sets status to \"archived\", and updates updated_at without attempting any git push",
+          "return_contract": "returns HTTP 200 with JSON workspace object containing status = \"archived\", clone_status = \"archived\"",
+          "trigger": "POST /api/v1/workspaces/:slug/archive is received",
+          "condition": "clone_status is \"pending\" or \"failed\""
+        },
+        {
+          "id": "05-REQ-6.3",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "rejects the archive request with HTTP 409 and message \"clone in progress; try again after it completes\"",
+          "return_contract": "returns HTTP 409 with JSON error body containing message \"clone in progress; try again after it completes\"",
+          "error_condition": "clone_status is \"cloning\""
+        },
+        {
+          "id": "05-REQ-6.4",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "aborts the archive, does not delete the workspace directory, and returns HTTP 500 with the push error message",
+          "return_contract": "returns HTTP 500 with JSON error body containing the push error message; workspace status and clone_status remain unchanged",
+          "error_condition": "repo.Push returns an error other than NoErrAlreadyUpToDate"
+        },
+        {
+          "id": "05-REQ-6.5",
+          "ears_pattern": "complex_event",
+          "system": "workspace archive handler",
+          "action": "treats the push as successful and continues with recording head_sha, deleting the workspace directory, and setting clone_status to \"archived\"",
+          "return_contract": "returns HTTP 200 with JSON workspace object containing status = \"archived\", clone_status = \"archived\", and the recorded head_sha",
+          "trigger": "POST /api/v1/workspaces/:slug/archive is received",
+          "condition": "repo.Push returns NoErrAlreadyUpToDate"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "returns HTTP 500 with the error message; does not modify clone_status or status",
+          "return_contract": "returns HTTP 500 with JSON error body",
+          "error_condition": "PlainOpen fails because the trunk directory is missing despite clone_status being \"ready\""
+        },
+        {
+          "id": "05-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "returns HTTP 500 with the error message; does not delete the workspace directory",
+          "return_contract": "returns HTTP 500 with JSON error body",
+          "error_condition": "repo.Head() returns an error after a successful push"
+        },
+        {
+          "id": "05-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "logs a warning but still sets clone_status to \"archived\" and status to \"archived\" in the database",
+          "return_contract": "returns HTTP 200 with JSON workspace object containing status = \"archived\", clone_status = \"archived\"",
+          "error_condition": "deletion of the workspace directory fails after a successful push and head_sha recording"
+        },
+        {
+          "id": "05-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "returns HTTP 404",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the workspace does not exist"
+        },
+        {
+          "id": "05-REQ-6.E5",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "returns HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is not the workspace owner or an admin"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-7",
+      "title": "Reactivate workspace enqueues reclone job",
+      "user_story": {
+        "role": "developer",
+        "goal": "reactivate an archived workspace and have it automatically re-cloned",
+        "benefit": "I can resume work on a previously archived workspace without manual git operations"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace reactivate handler",
+          "action": "sets status to \"active\", sets clone_status to \"pending\", clears clone_error to NULL, enqueues a reclone job using the workspace's git_url and branch, and returns HTTP 200 immediately",
+          "return_contract": "returns HTTP 200 with JSON workspace object containing status = \"active\", clone_status = \"pending\", clone_error = null",
+          "trigger": "POST /api/v1/workspaces/:slug/reactivate is received"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace reactivate handler",
+          "action": "returns HTTP 404",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the workspace does not exist"
+        },
+        {
+          "id": "05-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace reactivate handler",
+          "action": "returns HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is not the workspace owner or an admin"
+        },
+        {
+          "id": "05-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace reactivate handler",
+          "action": "returns HTTP 409 indicating the workspace is not archived",
+          "return_contract": "returns HTTP 409 with JSON error body",
+          "error_condition": "the workspace is not in archived status"
+        },
+        {
+          "id": "05-REQ-7.E4",
+          "ears_pattern": "unwanted",
+          "system": "workspace reactivate handler",
+          "action": "returns HTTP 500 without enqueuing a reclone job",
+          "return_contract": "returns HTTP 500 with JSON error body",
+          "error_condition": "the database update fails"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-8",
+      "title": "Delete workspace cleans up remaining local files",
+      "user_story": {
+        "role": "developer",
+        "goal": "delete an archived workspace and have any remaining local files removed",
+        "benefit": "no orphaned directories are left on disk after workspace deletion"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace delete handler",
+          "action": "checks whether the workspace directory exists under WORKSPACE_ROOT and, if so, deletes it; then deletes the database row; logs a warning if directory deletion fails but proceeds with the database row deletion",
+          "return_contract": "returns HTTP 204 on success",
+          "trigger": "DELETE /api/v1/workspaces/:slug is received"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-8.E1",
+          "ears_pattern": "complex_event",
+          "system": "workspace delete handler",
+          "action": "skips directory deletion and proceeds directly to deleting the database row",
+          "return_contract": "returns HTTP 204",
+          "trigger": "DELETE /api/v1/workspaces/:slug is received",
+          "condition": "the workspace directory does not exist under WORKSPACE_ROOT"
+        },
+        {
+          "id": "05-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace delete handler",
+          "action": "returns HTTP 409 indicating the workspace must be archived before deletion",
+          "return_contract": "returns HTTP 409 with JSON error body",
+          "error_condition": "the workspace status is not \"archived\""
+        },
+        {
+          "id": "05-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace delete handler",
+          "action": "returns HTTP 404",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the workspace does not exist"
+        },
+        {
+          "id": "05-REQ-8.E4",
+          "ears_pattern": "unwanted",
+          "system": "workspace delete handler",
+          "action": "returns HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is not the workspace owner or an admin"
+        },
+        {
+          "id": "05-REQ-8.E5",
+          "ears_pattern": "unwanted",
+          "system": "workspace delete handler",
+          "action": "logs a warning and proceeds to delete the database row; does not return an error to the caller",
+          "return_contract": "returns HTTP 204",
+          "error_condition": "directory deletion fails (e.g., permission denied)"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-9",
+      "title": "Clone status state machine transitions",
+      "user_story": {
+        "role": "developer",
+        "goal": "have clone_status transition correctly through its defined states",
+        "benefit": "I can rely on clone_status to accurately reflect the state of the local clone"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "05-REQ-9.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub workspace subsystem",
+          "action": "enforces that clone_status transitions follow the defined state machine: pending→cloning, cloning→ready, cloning→failed, ready→archived, pending→archived, failed→archived, archived→pending",
+          "return_contract": null
+        },
+        {
+          "id": "05-REQ-9.2",
+          "ears_pattern": "state_driven",
+          "system": "hub workspace subsystem",
+          "action": "only allows transition to \"pending\" via the reactivate endpoint",
+          "return_contract": null,
+          "state": "clone_status is \"archived\""
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "05-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub workspace subsystem",
+          "action": "rejects the transition with HTTP 409",
+          "return_contract": "returns HTTP 409 with JSON error body containing message \"clone in progress; try again after it completes\"",
+          "error_condition": "clone_status is \"cloning\" when an archive operation is attempted"
+        },
+        {
+          "id": "05-REQ-9.E2",
+          "ears_pattern": "complex_event",
+          "system": "hub workspace subsystem",
+          "action": "leaves those workspaces in their current clone_status; no automatic recovery is performed; the user must delete and recreate the workspace",
+          "return_contract": null,
+          "trigger": "the server restarts",
+          "condition": "workspaces exist with clone_status of \"pending\" or \"cloning\""
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "05-PROP-1",
+      "title": "Clone status always reflects terminal or in-progress state",
+      "for_any": "workspace record in the database",
+      "invariant": "clone_status is one of: pending, cloning, ready, failed, archived",
+      "validates": [
+        "05-REQ-3.3",
+        "05-REQ-9.1"
+      ]
+    },
+    {
+      "id": "05-PROP-2",
+      "title": "head_sha is set if and only if clone succeeded or archive completed",
+      "for_any": "workspace record in the database",
+      "invariant": "head_sha is non-null if and only if clone_status is \"ready\" or clone_status is \"archived\" (and the archive was preceded by a successful clone)",
+      "validates": [
+        "05-REQ-4.3",
+        "05-REQ-6.1"
+      ]
+    },
+    {
+      "id": "05-PROP-3",
+      "title": "clone_error is null when clone_status is not failed",
+      "for_any": "workspace record in the database",
+      "invariant": "clone_error is null whenever clone_status is pending, cloning, ready, or archived",
+      "validates": [
+        "05-REQ-4.3",
+        "05-REQ-4.4",
+        "05-REQ-7.1"
+      ]
+    },
+    {
+      "id": "05-PROP-4",
+      "title": "Workspace directory exists if and only if clone_status is ready or cloning",
+      "for_any": "workspace slug",
+      "invariant": "the directory <WORKSPACE_ROOT>/<slug>/ exists on disk if and only if clone_status is \"cloning\" or \"ready\"; it does not exist when clone_status is pending, failed, or archived",
+      "validates": [
+        "05-REQ-4.4",
+        "05-REQ-6.1",
+        "05-REQ-6.2"
+      ]
+    },
+    {
+      "id": "05-PROP-5",
+      "title": "Workers config defaults to 4 when unset or zero",
+      "for_any": "config.toml with workers = 0 or omitted [workspace] section",
+      "invariant": "Workspace.Workers is always >= 1 after Load() returns",
+      "validates": [
+        "05-REQ-1.2",
+        "05-REQ-1.E4"
+      ]
+    },
+    {
+      "id": "05-PROP-6",
+      "title": "Archive of cloning workspace always returns 409",
+      "for_any": "workspace with clone_status = \"cloning\"",
+      "invariant": "POST /api/v1/workspaces/:slug/archive always returns HTTP 409 and never modifies clone_status or status",
+      "validates": [
+        "05-REQ-6.3",
+        "05-REQ-9.E1"
+      ]
+    },
+    {
+      "id": "05-PROP-7",
+      "title": "Shallow clone depth is always 1",
+      "for_any": "clone job or reclone job",
+      "invariant": "CloneOptions.Depth is always set to 1; deep clones are never performed",
+      "validates": [
+        "05-REQ-4.2"
+      ]
+    },
+    {
+      "id": "05-PROP-8",
+      "title": "head_sha is a valid 40-character hex SHA when non-null",
+      "for_any": "workspace record with non-null head_sha",
+      "invariant": "head_sha matches the pattern [0-9a-f]{40}",
+      "validates": [
+        "05-REQ-4.3",
+        "05-REQ-6.1",
+        "05-REQ-3.E2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "05-PATH-1",
+      "title": "Happy path: workspace create to clone ready",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls afc workspace create with a git_url and optional branch"
+        },
+        {
+          "actor": "CLI (afc)",
+          "action": "sends POST /api/v1/workspaces with git_url, branch, and other metadata"
+        },
+        {
+          "actor": "Workspace create handler",
+          "action": "inserts workspace row with clone_status = \"pending\" and returns HTTP 201 immediately"
+        },
+        {
+          "actor": "Workspace create handler",
+          "action": "enqueues a clone job on the in-memory job queue"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "picks up the clone job and sets clone_status to \"cloning\" in the database"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "creates the workspace directory under WORKSPACE_ROOT and calls PlainCloneContext to shallow-clone git_url into <WORKSPACE_ROOT>/<slug>/trunk/"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "on success, calls repo.Head().Hash().String() to get the HEAD SHA, sets clone_status to \"ready\" and head_sha to the SHA in the database"
+        },
+        {
+          "actor": "Developer",
+          "action": "calls afc workspace get to observe clone_status = \"ready\" and the recorded head_sha"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-2",
+      "title": "Happy path: archive workspace with local commits",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls POST /api/v1/workspaces/:slug/archive on a workspace with clone_status = \"ready\""
+        },
+        {
+          "actor": "Workspace archive handler",
+          "action": "verifies clone_status is \"ready\" and opens the local repository via PlainOpen at <WORKSPACE_ROOT>/<slug>/trunk/"
+        },
+        {
+          "actor": "Workspace archive handler",
+          "action": "calls repo.Push with PushOptions{RemoteName: \"origin\"} to push local commits to upstream"
+        },
+        {
+          "actor": "Workspace archive handler",
+          "action": "calls repo.Head().Hash().String() and records the SHA in head_sha"
+        },
+        {
+          "actor": "Workspace archive handler",
+          "action": "deletes the workspace directory under WORKSPACE_ROOT, sets clone_status to \"archived\" and status to \"archived\", updates updated_at in the database"
+        },
+        {
+          "actor": "Workspace archive handler",
+          "action": "returns HTTP 200 with the updated workspace JSON"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-3",
+      "title": "Happy path: reactivate archived workspace",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls POST /api/v1/workspaces/:slug/reactivate on an archived workspace"
+        },
+        {
+          "actor": "Workspace reactivate handler",
+          "action": "sets status to \"active\", clone_status to \"pending\", clears clone_error, and updates the database row"
+        },
+        {
+          "actor": "Workspace reactivate handler",
+          "action": "enqueues a reclone job on the job queue using the workspace's git_url and branch"
+        },
+        {
+          "actor": "Workspace reactivate handler",
+          "action": "returns HTTP 200 with workspace JSON containing status = \"active\" and clone_status = \"pending\""
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "picks up the reclone job and performs the same shallow clone operation as initial creation"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "sets clone_status to \"ready\" and records head_sha on success"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-4",
+      "title": "Happy path: delete archived workspace with cleanup",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls DELETE /api/v1/workspaces/:slug on an archived workspace"
+        },
+        {
+          "actor": "Workspace delete handler",
+          "action": "checks whether the workspace directory exists under WORKSPACE_ROOT"
+        },
+        {
+          "actor": "Workspace delete handler",
+          "action": "if the directory exists, deletes it using os.RemoveAll; logs a warning if deletion fails but continues"
+        },
+        {
+          "actor": "Workspace delete handler",
+          "action": "deletes the workspace database row and returns HTTP 204"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-5",
+      "title": "End-to-end: full workspace lifecycle from create to delete",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls afc workspace create with git_url and branch; receives HTTP 201 with clone_status = \"pending\""
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "clones the repository into <WORKSPACE_ROOT>/<slug>/trunk/ and sets clone_status to \"ready\""
+        },
+        {
+          "actor": "Developer",
+          "action": "calls afc workspace get and observes clone_status = \"ready\" and a valid head_sha"
+        },
+        {
+          "actor": "Developer",
+          "action": "calls POST /api/v1/workspaces/:slug/archive; handler pushes to upstream, records head_sha, deletes local clone, sets clone_status = \"archived\""
+        },
+        {
+          "actor": "Developer",
+          "action": "calls POST /api/v1/workspaces/:slug/reactivate; handler sets clone_status = \"pending\" and enqueues reclone job"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "re-clones the repository and sets clone_status to \"ready\""
+        },
+        {
+          "actor": "Developer",
+          "action": "calls POST /api/v1/workspaces/:slug/archive again to archive the workspace"
+        },
+        {
+          "actor": "Developer",
+          "action": "calls DELETE /api/v1/workspaces/:slug; handler removes any remaining directory and deletes the database row; returns HTTP 204"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-6",
+      "title": "Failure path: clone fails and workspace enters failed state",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls POST /api/v1/workspaces with an invalid or unreachable git_url; receives HTTP 201 with clone_status = \"pending\""
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "picks up the clone job, sets clone_status to \"cloning\", and calls PlainCloneContext"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "PlainCloneContext returns an error; worker removes any partial workspace directory"
+        },
+        {
+          "actor": "Job queue worker",
+          "action": "sets clone_status to \"failed\" and records the error message in clone_error"
+        },
+        {
+          "actor": "Developer",
+          "action": "calls afc workspace get and observes clone_status = \"failed\" and clone_error containing the error message"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "05-ERR-1",
+      "condition": "WORKSPACE_ROOT directory cannot be created on server boot",
+      "behavior": "server logs a fatal error and exits with a non-zero exit code",
+      "requirement_id": "05-REQ-2.2"
+    },
+    {
+      "id": "05-ERR-2",
+      "condition": "PlainCloneContext returns a non-nil error during a clone job",
+      "behavior": "worker sets clone_status to \"failed\", records error in clone_error, and removes any partially created workspace directory",
+      "requirement_id": "05-REQ-4.4"
+    },
+    {
+      "id": "05-ERR-3",
+      "condition": "Archive attempted while clone_status is \"cloning\"",
+      "behavior": "returns HTTP 409 with message \"clone in progress; try again after it completes\"",
+      "requirement_id": "05-REQ-6.3"
+    },
+    {
+      "id": "05-ERR-4",
+      "condition": "repo.Push returns an error other than NoErrAlreadyUpToDate during archive",
+      "behavior": "archive fails with HTTP 500; workspace directory is not deleted; clone_status and status remain unchanged",
+      "requirement_id": "05-REQ-6.4"
+    },
+    {
+      "id": "05-ERR-5",
+      "condition": "PlainOpen fails because trunk directory is missing during archive of a ready workspace",
+      "behavior": "returns HTTP 500 with the error message; clone_status and status are not modified",
+      "requirement_id": "05-REQ-6.E1"
+    },
+    {
+      "id": "05-ERR-6",
+      "condition": "repo.Head() returns an error after a successful push during archive",
+      "behavior": "returns HTTP 500; workspace directory is not deleted",
+      "requirement_id": "05-REQ-6.E2"
+    },
+    {
+      "id": "05-ERR-7",
+      "condition": "Workspace directory deletion fails during archive after successful push and head_sha recording",
+      "behavior": "logs a warning but still sets clone_status to \"archived\" and status to \"archived\"; returns HTTP 200",
+      "requirement_id": "05-REQ-6.E3"
+    },
+    {
+      "id": "05-ERR-8",
+      "condition": "Workspace directory deletion fails during DELETE /api/v1/workspaces/:slug",
+      "behavior": "logs a warning and proceeds to delete the database row; returns HTTP 204",
+      "requirement_id": "05-REQ-8.E5"
+    },
+    {
+      "id": "05-ERR-9",
+      "condition": "Clone context is cancelled due to server shutdown while a clone is in progress",
+      "behavior": "PlainCloneContext returns a context cancellation error; worker sets clone_status to \"failed\" and removes any partial workspace directory",
+      "requirement_id": "05-REQ-4.E1"
+    },
+    {
+      "id": "05-ERR-10",
+      "condition": "repo.Head() returns an error after a successful PlainCloneContext call",
+      "behavior": "worker sets clone_status to \"failed\", records the error in clone_error, and removes the workspace directory",
+      "requirement_id": "05-REQ-4.E6"
+    },
+    {
+      "id": "05-ERR-11",
+      "condition": "Database update fails during reactivate before reclone job is enqueued",
+      "behavior": "returns HTTP 500 without enqueuing a reclone job; workspace state is unchanged",
+      "requirement_id": "05-REQ-7.E4"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5",
+      "symbols": [
+        {
+          "name": "PlainClone",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainClone(path string, isBare bool, o *CloneOptions) (*Repository, error)",
+          "notes": "Synchronous clone; prefer PlainCloneContext for cancellation support"
+        },
+        {
+          "name": "PlainCloneContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainCloneContext(ctx context.Context, path string, isBare bool, o *CloneOptions) (*Repository, error)",
+          "notes": "Preferred; supports context cancellation for graceful shutdown"
+        },
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)",
+          "notes": "Opens an existing local git repository"
+        },
+        {
+          "name": "CloneOptions",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "type CloneOptions struct { URL string; Depth int; SingleBranch bool; ReferenceName plumbing.ReferenceName }",
+          "notes": "Set Depth=1 for shallow clone; omit ReferenceName for default branch"
+        },
+        {
+          "name": "Repository.Push",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) Push(o *PushOptions) error",
+          "notes": "Returns NoErrAlreadyUpToDate if nothing to push; treat as success"
+        },
+        {
+          "name": "Repository.Head",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) Head() (*plumbing.Reference, error)",
+          "notes": "Returns the HEAD reference of the repository"
+        },
+        {
+          "name": "NoErrAlreadyUpToDate",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "var NoErrAlreadyUpToDate error",
+          "notes": "Sentinel value; not a real error; treat as push success"
+        },
+        {
+          "name": "NewBranchReferenceName",
+          "import_path": "github.com/go-git/go-git/v5/plumbing",
+          "signature": "func NewBranchReferenceName(name string) ReferenceName",
+          "notes": "Returns refs/heads/<name>; use when branch is non-null"
+        },
+        {
+          "name": "Reference.Hash",
+          "import_path": "github.com/go-git/go-git/v5/plumbing",
+          "signature": "func (r *Reference) Hash() Hash",
+          "notes": "Returns the commit hash of the reference"
+        },
+        {
+          "name": "Hash.String",
+          "import_path": "github.com/go-git/go-git/v5/plumbing",
+          "signature": "func (h Hash) String() string",
+          "notes": "Returns the 40-character lowercase hex SHA"
+        }
+      ]
+    },
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "v0.0.0",
+      "symbols": [
+        {
+          "name": "Config",
+          "import_path": "github.com/txsvc/apikit/config",
+          "signature": "type Config struct { Server ServerConfig; Database DatabaseConfig; Logging LoggingConfig; OAuth OAuthConfig; Workspace WorkspaceConfig }",
+          "notes": "Workspace field must be added by this spec"
+        },
+        {
+          "name": "WorkspaceConfig",
+          "import_path": "github.com/txsvc/apikit/config",
+          "signature": "type WorkspaceConfig struct { Path string `toml:\"path\"`; Workers int `toml:\"workers\"` }",
+          "notes": "NOT FOUND in upstream — must be added by this spec"
+        },
+        {
+          "name": "resolveDataPath",
+          "import_path": "github.com/txsvc/apikit/config",
+          "signature": "func resolveDataPath(dbPath string) string",
+          "notes": "Internal function; reused for workspace path resolution"
+        },
+        {
+          "name": "Load",
+          "import_path": "github.com/txsvc/apikit/config",
+          "signature": "func Load() (*Config, error)",
+          "notes": "Must be extended to resolve cfg.Workspace.Path and default Workers"
+        },
+        {
+          "name": "LoadConfig",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func LoadConfig() (*Config, error)",
+          "notes": "Public entry point; delegates to config.Load()"
+        }
+      ]
+    }
+  ]
+}

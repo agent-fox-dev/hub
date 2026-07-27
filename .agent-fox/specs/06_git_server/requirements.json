@@ -1,0 +1,870 @@
+{
+  "$schema": null,
+  "spec_id": "06",
+  "spec_name": "git_server",
+  "schema_version": 1,
+  "introduction": "The git_server spec implements an internal git smart HTTP server for af-hub, exposing workspace repositories over HTTP at `/git/<org-slug>/<workspace-slug>.git/` on the same port as the REST API. Note: requirements referencing go-git transport/server APIs are based on PRD descriptions and should be cross-checked against the installed go-git v5 library before implementation.",
+  "glossary": {
+    "MountHandlers": "The function convention used across af-hub specs to register HTTP route handlers on the Echo server instance.",
+    "PlainOpen": "The go-git function `git.PlainOpen(path string)` that opens an existing git repository at the given filesystem path.",
+    "ReceivePackSession": "A go-git server transport session that handles push protocol negotiation.",
+    "UploadPackSession": "A go-git server transport session that handles fetch/clone protocol negotiation.",
+    "WORKSPACE_ROOT": "The filesystem root directory under which all workspace local clones are stored, one subdirectory per workspace slug.",
+    "WWW-Authenticate": "The HTTP response header sent with 401 responses to prompt git clients to supply Basic auth credentials.",
+    "af_admin_": "The credential prefix identifying a hub admin token.",
+    "af_key_": "The credential prefix identifying a hub API key.",
+    "af_pat_": "The credential prefix identifying a hub Personal Access Token.",
+    "apikit": "The `github.com/txsvc/apikit` foundation library providing auth middleware and permission registration for af-hub.",
+    "apikit.Permission": "The type in apikit used to register named permission scopes for PATs.",
+    "clone_status": "A field on the workspace database row tracking the state of the local git clone; valid values include 'ready', 'cloning', 'failed', and 'archived'.",
+    "git-receive-pack": "The git service that handles push data transfer from client to server.",
+    "git-upload-pack": "The git service that handles fetch and clone data transfer from server to client.",
+    "git:read": "A PAT permission scope granting clone and fetch access to workspace repositories the PAT owner has access to.",
+    "git:write": "A PAT permission scope granting push access to workspace repositories the PAT owner has access to, implying read access.",
+    "head_sha": "A database column on the workspace row storing the SHA of the HEAD commit of the local clone.",
+    "info/refs": "The git smart HTTP discovery endpoint that advertises available refs for a repository, parameterized by service name.",
+    "org-slug": "The URL-safe identifier for an organization, used as the first path segment in git URLs.",
+    "org_id": "The database foreign key on a workspace row referencing the organization that owns the workspace.",
+    "pkt-line": "The git binary framing format used in the smart HTTP protocol to encode variable-length records in ref advertisements and pack negotiation.",
+    "server.Loader": "The go-git interface `transport/server.Loader` that resolves a transport endpoint to a repository storer.",
+    "storer.Storer": "The go-git interface representing a repository's storage backend, returned by the custom Loader.",
+    "transport.Endpoint": "The go-git type representing a parsed git remote URL, used by the server transport to identify the target repository.",
+    "transport.ErrRepositoryNotFound": "The go-git sentinel error returned by a Loader when the requested repository cannot be found or is not ready.",
+    "trunk": "The subdirectory within a workspace's local clone directory that contains the bare or working git repository, at path `<WORKSPACE_ROOT>/<slug>/trunk/`.",
+    "workspace-slug": "The URL-safe identifier for a workspace, used as the second path segment in git URLs.",
+    "workspaces:read": "An existing PAT permission scope granting read access to the workspace REST API.",
+    "workspaces:write": "An existing PAT permission scope granting write access to the workspace REST API.",
+    "/git/:org/:slug.git/info/refs": "Git smart HTTP ref advertisement endpoint; returns available refs for the given repository.",
+    "/git/:org/:slug.git/git-upload-pack": "Git smart HTTP endpoint that handles fetch/clone data transfer.",
+    "/git/:org/:slug.git/git-receive-pack": "Git smart HTTP endpoint that handles push data transfer.",
+    "service=git-upload-pack": "Query parameter on info/refs GET requests requesting the upload-pack (fetch) ref advertisement.",
+    "service=git-receive-pack": "Query parameter on info/refs GET requests requesting the receive-pack (push) ref advertisement.",
+    "service": "The query parameter on info/refs GET requests specifying which git service to invoke (git-upload-pack or git-receive-pack).",
+    ".git": "The required suffix on git repository URLs in the path scheme (e.g. /git/org/repo.git).",
+    "Authorization: Basic": "HTTP Basic authentication header format used by git clients to pass credentials (username:password base64-encoded).",
+    "Authorization": "The HTTP header carrying authentication credentials (Basic or Bearer).",
+    "ready": "The clone_status value indicating a workspace's local git clone is complete and the repository is available for git operations.",
+    "<WORKSPACE_ROOT>/<slug>/trunk/": "The filesystem path to a workspace's local git clone, composed of the workspace root, the workspace slug, and the trunk subdirectory.",
+    ":org": "URL path parameter representing the organization slug in the git server URL scheme.",
+    ":slug": "URL path parameter representing the workspace slug in the git server URL scheme.",
+    "Load(ep transport.Endpoint)": "The method on the server.Loader interface that resolves a transport.Endpoint to a storer.Storer for a git repository.",
+    "server.NewServer(loader)": "The go-git function that creates a transport.Transport implementing git server protocol logic using the given Loader.",
+    "AdvertisedReferences()": "A method on go-git's Session interface that returns the set of refs (branches, tags) available in the repository.",
+    "WWW-Authenticate: Basic realm=\"af-hub\"": "The HTTP response header sent with 401 to prompt git clients for Basic auth credentials."
+  },
+  "requirements": [
+    {
+      "id": "06-REQ-1",
+      "title": "Register git smart HTTP routes",
+      "user_story": {
+        "role": "developer or agent",
+        "goal": "access workspace repositories using standard git commands over HTTP",
+        "benefit": "I can clone, fetch, and push without depending on the upstream remote or leaving the platform"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "git server",
+          "action": "register four routes on the Echo instance: GET `/git/:org/:slug.git/info/refs`, POST `/git/:org/:slug.git/git-upload-pack`, POST `/git/:org/:slug.git/git-receive-pack`, and a shared auth middleware applied to all four routes",
+          "return_contract": null,
+          "trigger": "the HTTP server starts up via `MountHandlers`"
+        },
+        {
+          "id": "06-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "git server",
+          "action": "respond with the ref advertisement for fetch/clone using the git smart HTTP protocol",
+          "return_contract": "returns HTTP 200 with Content-Type `application/x-git-upload-pack-advertisement` and a pkt-line encoded ref advertisement body",
+          "trigger": "a GET request arrives at `/git/:org/:slug.git/info/refs` with `service=git-upload-pack`"
+        },
+        {
+          "id": "06-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "git server",
+          "action": "respond with the ref advertisement for push using the git smart HTTP protocol",
+          "return_contract": "returns HTTP 200 with Content-Type `application/x-git-receive-pack-advertisement` and a pkt-line encoded ref advertisement body",
+          "trigger": "a GET request arrives at `/git/:org/:slug.git/info/refs` with `service=git-receive-pack`"
+        },
+        {
+          "id": "06-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "git server",
+          "action": "stream the fetch/clone pack negotiation between the git client and the `UploadPackSession`",
+          "return_contract": "returns HTTP 200 with Content-Type `application/x-git-upload-pack-result` and a streaming pack response body",
+          "trigger": "a POST request arrives at `/git/:org/:slug.git/git-upload-pack`"
+        },
+        {
+          "id": "06-REQ-1.5",
+          "ears_pattern": "event_driven",
+          "system": "git server",
+          "action": "stream the push pack data between the git client and the `ReceivePackSession`",
+          "return_contract": "returns HTTP 200 with Content-Type `application/x-git-receive-pack-result` and a streaming pack response body",
+          "trigger": "a POST request arrives at `/git/:org/:slug.git/git-receive-pack`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "git server",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with a pkt-line error body per the git smart HTTP specification",
+          "error_condition": "the `service` query parameter on `info/refs` is absent or is not `git-upload-pack` or `git-receive-pack`"
+        },
+        {
+          "id": "06-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "git server",
+          "action": "not match any registered git route, falling through to the default 404 handler",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "a request arrives at a git endpoint without the `.git` suffix in the path"
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-2",
+      "title": "HTTP Basic authentication for git clients",
+      "user_story": {
+        "role": "git client (agent or developer)",
+        "goal": "authenticate to the git server using a hub credential as the HTTP Basic auth password",
+        "benefit": "I can use standard git tooling and credential helpers without custom configuration"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "git auth middleware",
+          "action": "resolve the credential to the associated user or admin identity and attach it to the request context; ignore the username field",
+          "return_contract": "passes the request to the next handler with the resolved identity in context",
+          "trigger": "a git request arrives with an `Authorization: Basic` header whose password field contains a valid hub credential (prefixed `af_key_`, `af_pat_`, or `af_admin_`)"
+        },
+        {
+          "id": "06-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "git auth middleware",
+          "action": "halt the request and return an authentication challenge",
+          "return_contract": "returns HTTP 401 with header `WWW-Authenticate: Basic realm=\"af-hub\"` and no body",
+          "error_condition": "a git request arrives with no `Authorization` header"
+        },
+        {
+          "id": "06-REQ-2.3",
+          "ears_pattern": "unwanted",
+          "system": "git auth middleware",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 401 with no `WWW-Authenticate` header",
+          "error_condition": "a git request arrives with an `Authorization: Basic` header whose password does not match any known hub credential"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "git auth middleware",
+          "action": "reject the request as invalid credentials",
+          "return_contract": "returns HTTP 401",
+          "error_condition": "the `Authorization` header is present but malformed (not valid Base64 or missing the colon separator)"
+        },
+        {
+          "id": "06-REQ-2.E2",
+          "ears_pattern": "ubiquitous",
+          "system": "git auth middleware",
+          "action": "accept any non-empty string as the username field in HTTP Basic auth and use only the password field for credential resolution",
+          "return_contract": null
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-3",
+      "title": "Register git:read and git:write PAT permission scopes",
+      "user_story": {
+        "role": "platform administrator",
+        "goal": "issue PATs with fine-grained git access scopes",
+        "benefit": "agents and CI bots can be granted only the git permissions they need without broader workspace API access"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "git server initialization",
+          "action": "register `git:read` and `git:write` as named `apikit.Permission` scopes with apikit so they are available for PAT issuance and validation",
+          "return_contract": null,
+          "trigger": "the git server module is initialized"
+        },
+        {
+          "id": "06-REQ-3.2",
+          "ears_pattern": "ubiquitous",
+          "system": "permission model",
+          "action": "treat `git:write` as implying read access, so a PAT with only `git:write` may perform both fetch and push operations",
+          "return_contract": null
+        },
+        {
+          "id": "06-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "permission model",
+          "action": "keep `git:read` and `git:write` independent from `workspaces:read` and `workspaces:write`; a PAT may hold git scopes without workspace API scopes and vice versa",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "git auth middleware",
+          "action": "reject the push operation",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "a PAT with `git:read` scope attempts a push (POST to `git-receive-pack`)"
+        },
+        {
+          "id": "06-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "git auth middleware",
+          "action": "reject the request as unauthorized",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "a PAT with neither `git:read` nor `git:write` scope attempts any git operation"
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-4",
+      "title": "Repository resolution from URL path",
+      "user_story": {
+        "role": "git server",
+        "goal": "resolve the correct workspace repository from the request URL",
+        "benefit": "git clients are routed to the right local clone and enumeration of workspaces is prevented"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "git server repository resolver",
+          "action": "look up the workspace by `workspace-slug` in the database, verify the workspace's `org_id` matches the organization identified by `org-slug`, verify `clone_status` equals `ready`, then open the repository at `<WORKSPACE_ROOT>/<slug>/trunk/` via `PlainOpen` and return its `storer.Storer` to the go-git server transport",
+          "return_contract": "on success, the repository storer is passed to the transport session; no HTTP response is produced at this stage",
+          "trigger": "a git request arrives with `:org` and `:slug` path parameters"
+        },
+        {
+          "id": "06-REQ-4.2",
+          "ears_pattern": "unwanted",
+          "system": "git server repository resolver",
+          "action": "return `transport.ErrRepositoryNotFound` from the `server.Loader`, causing the handler to respond with a not-found error",
+          "return_contract": "returns HTTP 404 with a pkt-line error body",
+          "error_condition": "no workspace with the given `workspace-slug` exists in the database"
+        },
+        {
+          "id": "06-REQ-4.3",
+          "ears_pattern": "unwanted",
+          "system": "git server repository resolver",
+          "action": "return `transport.ErrRepositoryNotFound` to prevent workspace enumeration",
+          "return_contract": "returns HTTP 404 with a pkt-line error body",
+          "error_condition": "the workspace's `org_id` does not match the organization identified by `org-slug`"
+        },
+        {
+          "id": "06-REQ-4.4",
+          "ears_pattern": "unwanted",
+          "system": "git server repository resolver",
+          "action": "return `transport.ErrRepositoryNotFound` from the `server.Loader`",
+          "return_contract": "returns HTTP 404 with a pkt-line error body indicating the workspace is not servable",
+          "error_condition": "the workspace's `clone_status` is not `ready`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "git server repository resolver",
+          "action": "log the error and return an internal server error response",
+          "return_contract": "returns HTTP 500",
+          "error_condition": "`PlainOpen` fails due to a filesystem error (missing directory, permission denied, corrupted repository)"
+        },
+        {
+          "id": "06-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "git server repository resolver",
+          "action": "return HTTP 404 to prevent enumeration of workspaces the requester does not own",
+          "return_contract": "returns HTTP 404 with a pkt-line error body",
+          "error_condition": "the authenticated user is not the workspace owner and is not an admin"
+        },
+        {
+          "id": "06-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "git server repository resolver",
+          "action": "return an internal server error and not expose database error details to the client",
+          "return_contract": "returns HTTP 500",
+          "error_condition": "the database query for the workspace times out or returns an unexpected error"
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-5",
+      "title": "Authorization access control matrix enforcement",
+      "user_story": {
+        "role": "git server",
+        "goal": "enforce the access control matrix for clone/fetch and push operations",
+        "benefit": "only authorized users and agents can read or write workspace repositories"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-5.1",
+          "ears_pattern": "state_driven",
+          "system": "git authorization middleware",
+          "action": "permit both fetch/clone and push operations on any workspace",
+          "return_contract": "passes the request to the next handler",
+          "state": "the resolved identity is an admin token"
+        },
+        {
+          "id": "06-REQ-5.2",
+          "ears_pattern": "complex_event",
+          "system": "git authorization middleware",
+          "action": "permit the fetch/clone operation",
+          "return_contract": "passes the request to the next handler",
+          "trigger": "a fetch or clone request arrives",
+          "condition": "the resolved identity is the workspace owner's API key"
+        },
+        {
+          "id": "06-REQ-5.3",
+          "ears_pattern": "complex_event",
+          "system": "git authorization middleware",
+          "action": "permit the push operation",
+          "return_contract": "passes the request to the next handler",
+          "trigger": "a push request arrives",
+          "condition": "the resolved identity is the workspace owner's API key"
+        },
+        {
+          "id": "06-REQ-5.4",
+          "ears_pattern": "complex_event",
+          "system": "git authorization middleware",
+          "action": "permit the fetch/clone operation",
+          "return_contract": "passes the request to the next handler",
+          "trigger": "a fetch or clone request arrives",
+          "condition": "the resolved identity is a PAT with `git:read` or `git:write` scope belonging to the workspace owner"
+        },
+        {
+          "id": "06-REQ-5.5",
+          "ears_pattern": "complex_event",
+          "system": "git authorization middleware",
+          "action": "permit the push operation",
+          "return_contract": "passes the request to the next handler",
+          "trigger": "a push request arrives",
+          "condition": "the resolved identity is a PAT with `git:write` scope belonging to the workspace owner"
+        },
+        {
+          "id": "06-REQ-5.6",
+          "ears_pattern": "unwanted",
+          "system": "git authorization middleware",
+          "action": "reject the push",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "a push request arrives from a PAT with only `git:read` scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "git authorization middleware",
+          "action": "return HTTP 404 to prevent enumeration",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "a valid PAT with `git:read` or `git:write` scope belongs to a user who is not the workspace owner and is not an admin"
+        },
+        {
+          "id": "06-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "git authorization middleware",
+          "action": "return HTTP 404 to prevent enumeration",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "a valid API key belongs to a user who is not the workspace owner and is not an admin"
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-6",
+      "title": "Update head_sha after successful push",
+      "user_story": {
+        "role": "git server",
+        "goal": "persist the new HEAD commit SHA to the database after a push completes",
+        "benefit": "the hub database reflects the current state of the workspace's local clone"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "git server push handler",
+          "action": "read the new HEAD commit SHA from the repository and update the `head_sha` column on the workspace database row",
+          "return_contract": "the database row's `head_sha` reflects the SHA of the new HEAD commit; the HTTP response to the git client is unaffected",
+          "trigger": "a `ReceivePackSession` completes successfully (the client's pack has been written to the local clone)"
+        },
+        {
+          "id": "06-REQ-6.2",
+          "ears_pattern": "ubiquitous",
+          "system": "git server push handler",
+          "action": "not propagate the pushed commits to the upstream remote; the local clone at `<WORKSPACE_ROOT>/<slug>/trunk/` diverges from upstream until the next archive operation",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "git server push handler",
+          "action": "log the error but do not fail the git push response; the push is already committed to the local clone",
+          "return_contract": "the git client receives a successful push response; the `head_sha` database update failure is logged as an error",
+          "error_condition": "the database update of `head_sha` fails after the pack has been written to disk"
+        },
+        {
+          "id": "06-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "git server push handler",
+          "action": "log the error and skip the `head_sha` update without failing the push response",
+          "return_contract": "the git client receives a successful push response; the error is logged",
+          "error_condition": "reading the new HEAD SHA from the repository after the push fails (e.g., detached HEAD or empty repository edge case)"
+        },
+        {
+          "id": "06-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "git server push handler",
+          "action": "not update `head_sha` and return an error to the git client via the pkt-line protocol",
+          "return_contract": "returns HTTP 200 with a pkt-line error body (per git smart HTTP protocol); `head_sha` is unchanged",
+          "error_condition": "the `ReceivePackSession` itself fails (pack data is corrupt or the session errors out)"
+        },
+        {
+          "id": "06-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "git server push handler",
+          "action": "serialize writes via the go-git repository storer's locking semantics; the second push either succeeds after the first or fails with a conflict error returned to the client",
+          "return_contract": "at most one push succeeds atomically; the other receives a pkt-line error response",
+          "error_condition": "two concurrent push requests arrive for the same workspace"
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-7",
+      "title": "Custom server.Loader implementation",
+      "user_story": {
+        "role": "go-git server transport",
+        "goal": "resolve a transport.Endpoint to a repository storer for the requested workspace",
+        "benefit": "the go-git transport layer can serve the correct repository without knowing hub's workspace model"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "custom `server.Loader`",
+          "action": "extract the `workspace-slug` from the endpoint path, look up the workspace in the database, verify `clone_status` is `ready`, open the repository via `PlainOpen` at `<WORKSPACE_ROOT>/<slug>/trunk/`, and return the repository's `storer.Storer`",
+          "return_contract": "returns `(storer.Storer, nil)` on success",
+          "trigger": "the go-git transport calls `Load(ep transport.Endpoint)` on the custom loader"
+        },
+        {
+          "id": "06-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "custom `server.Loader`",
+          "action": "return `transport.ErrRepositoryNotFound` so the go-git transport produces a standard not-found error",
+          "return_contract": "returns `(nil, transport.ErrRepositoryNotFound)`",
+          "error_condition": "the workspace is not found, not ready, or the org check fails"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "custom `server.Loader`",
+          "action": "return the underlying error wrapped with context rather than `transport.ErrRepositoryNotFound`, so the HTTP handler can distinguish a 500 from a 404",
+          "return_contract": "returns `(nil, wrappedErr)` where `wrappedErr` is not `transport.ErrRepositoryNotFound`",
+          "error_condition": "`PlainOpen` returns an error other than repository-not-found (e.g., I/O error)"
+        },
+        {
+          "id": "06-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "custom `server.Loader`",
+          "action": "return `transport.ErrRepositoryNotFound`",
+          "return_contract": "returns `(nil, transport.ErrRepositoryNotFound)`",
+          "error_condition": "the endpoint path does not contain a recognizable `workspace-slug` segment"
+        }
+      ]
+    },
+    {
+      "id": "06-REQ-8",
+      "title": "go-git server transport session bridging",
+      "user_story": {
+        "role": "git server HTTP handler",
+        "goal": "bridge HTTP request/response bodies to go-git upload-pack and receive-pack sessions",
+        "benefit": "standard git clients can communicate with the hub git server using the smart HTTP protocol without modification"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "06-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "git HTTP handler",
+          "action": "create an `UploadPackSession` or `ReceivePackSession` from `server.NewServer(loader)`, call `AdvertisedReferences()` on the session, encode the result as a pkt-line ref advertisement with the appropriate capability flush, and write it to the HTTP response",
+          "return_contract": "returns HTTP 200 with the correct Content-Type and a well-formed pkt-line ref advertisement body",
+          "trigger": "a valid `info/refs` GET request arrives"
+        },
+        {
+          "id": "06-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "git HTTP handler",
+          "action": "stream the HTTP request body as input to the session and stream the session output back as the HTTP response body, flushing as data becomes available",
+          "return_contract": "returns HTTP 200 with the correct Content-Type and a streaming pack response body",
+          "trigger": "a valid POST request arrives at `git-upload-pack` or `git-receive-pack`"
+        },
+        {
+          "id": "06-REQ-8.3",
+          "ears_pattern": "event_driven",
+          "system": "git HTTP handler",
+          "action": "encode the error message in pkt-line error format and write it to the response body if headers have not yet been sent; if headers were already sent, close the connection",
+          "return_contract": "returns HTTP 200 with a pkt-line `ERR <message>` body if headers were not yet sent, or closes the connection abruptly if streaming was already in progress",
+          "trigger": "the go-git session returns an error during streaming"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "06-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "git HTTP handler",
+          "action": "detect the closed connection, abort the session, and release all resources (session, open file handles) without leaving partial state",
+          "return_contract": "no response is sent; resources are cleaned up and the error is logged",
+          "error_condition": "the git client disconnects mid-stream during a push or fetch"
+        },
+        {
+          "id": "06-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "git HTTP handler",
+          "action": "apply a request-scoped context deadline so the session is cancelled and the connection is closed after the timeout elapses",
+          "return_contract": "the HTTP connection is closed; the session context is cancelled; resources are released",
+          "error_condition": "the go-git session hangs and does not return within a reasonable time"
+        },
+        {
+          "id": "06-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "git HTTP handler",
+          "action": "the go-git session returns an error which is encoded as a pkt-line error response",
+          "return_contract": "returns HTTP 200 with a pkt-line `ERR <message>` body",
+          "error_condition": "the request body for a POST pack operation is empty or truncated"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "06-PROP-1",
+      "title": "Only ready workspaces are served",
+      "for_any": "workspace with `clone_status` not equal to `ready`",
+      "invariant": "all four git endpoints return HTTP 404 and never open the repository filesystem",
+      "validates": [
+        "06-REQ-4.4",
+        "06-REQ-4.1"
+      ]
+    },
+    {
+      "id": "06-PROP-2",
+      "title": "Unauthenticated requests always receive a 401 challenge",
+      "for_any": "git request with no `Authorization` header",
+      "invariant": "the response is HTTP 401 with `WWW-Authenticate: Basic realm=\"af-hub\"` and the repository is never accessed",
+      "validates": [
+        "06-REQ-2.2"
+      ]
+    },
+    {
+      "id": "06-PROP-3",
+      "title": "Anti-enumeration: non-owner access returns 404 not 403",
+      "for_any": "authenticated request where the credential owner is not the workspace owner and is not an admin",
+      "invariant": "the response is HTTP 404 regardless of whether the workspace exists",
+      "validates": [
+        "06-REQ-4.E2",
+        "06-REQ-5.E1",
+        "06-REQ-5.E2"
+      ]
+    },
+    {
+      "id": "06-PROP-4",
+      "title": "git:write implies read access",
+      "for_any": "PAT with `git:write` scope and no explicit `git:read` scope",
+      "invariant": "both fetch/clone and push operations are permitted on workspaces the PAT owner owns",
+      "validates": [
+        "06-REQ-3.2",
+        "06-REQ-5.4",
+        "06-REQ-5.5"
+      ]
+    },
+    {
+      "id": "06-PROP-5",
+      "title": "head_sha is updated after every successful push",
+      "for_any": "successful `ReceivePackSession` completion",
+      "invariant": "the `head_sha` column in the database equals the SHA of the HEAD commit in the local clone at `<WORKSPACE_ROOT>/<slug>/trunk/`",
+      "validates": [
+        "06-REQ-6.1"
+      ]
+    },
+    {
+      "id": "06-PROP-6",
+      "title": "Org slug mismatch always returns 404",
+      "for_any": "request where the `org-slug` in the URL does not match the `org_id` of the workspace identified by `workspace-slug`",
+      "invariant": "the response is HTTP 404 regardless of whether the workspace exists under a different org",
+      "validates": [
+        "06-REQ-4.3"
+      ]
+    },
+    {
+      "id": "06-PROP-7",
+      "title": "Response Content-Type matches the git smart HTTP specification",
+      "for_any": "successful response from any of the four git endpoints",
+      "invariant": "the Content-Type header exactly matches the git smart HTTP specification for that endpoint (upload-pack advertisement, receive-pack advertisement, upload-pack result, or receive-pack result)",
+      "validates": [
+        "06-REQ-1.2",
+        "06-REQ-1.3",
+        "06-REQ-1.4",
+        "06-REQ-1.5"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "06-PATH-1",
+      "title": "git clone happy path (end-to-end)",
+      "steps": [
+        {
+          "actor": "developer or agent",
+          "action": "runs `git clone http://x-token-auth:<af_pat_...>@<hub-host>:<port>/git/<org-slug>/<workspace-slug>.git`"
+        },
+        {
+          "actor": "Echo HTTP server",
+          "action": "receives GET `/git/<org-slug>/<workspace-slug>.git/info/refs?service=git-upload-pack` and routes it to the git info/refs handler after applying the auth middleware"
+        },
+        {
+          "actor": "git auth middleware",
+          "action": "extracts the `af_pat_...` credential from the Basic auth password field, resolves it to a PAT identity with `git:read` scope via apikit, and attaches the identity to the request context"
+        },
+        {
+          "actor": "git authorization middleware",
+          "action": "verifies the PAT owner matches the workspace owner and the PAT has `git:read` scope; permits the request"
+        },
+        {
+          "actor": "git server repository resolver",
+          "action": "extracts `org-slug` and `workspace-slug` from the path, queries the database to find the workspace, verifies `org_id` matches the org, verifies `clone_status` is `ready`"
+        },
+        {
+          "actor": "custom `server.Loader`",
+          "action": "calls `PlainOpen` on `<WORKSPACE_ROOT>/<workspace-slug>/trunk/` and returns the `storer.Storer` to the go-git transport"
+        },
+        {
+          "actor": "git HTTP handler",
+          "action": "creates an `UploadPackSession`, calls `AdvertisedReferences()`, encodes the result as a pkt-line ref advertisement, and writes it to the HTTP response with Content-Type `application/x-git-upload-pack-advertisement`"
+        },
+        {
+          "actor": "git client (git binary)",
+          "action": "receives the ref advertisement, then sends a POST to `/git/<org-slug>/<workspace-slug>.git/git-upload-pack` with the pack negotiation request"
+        },
+        {
+          "actor": "git HTTP handler",
+          "action": "streams the POST body into the `UploadPackSession` and streams the pack data response back to the client with Content-Type `application/x-git-upload-pack-result`"
+        },
+        {
+          "actor": "developer or agent",
+          "action": "receives the complete pack and the local clone is created on disk"
+        }
+      ]
+    },
+    {
+      "id": "06-PATH-2",
+      "title": "git push happy path with head_sha update",
+      "steps": [
+        {
+          "actor": "developer or agent",
+          "action": "runs `git push` from a local clone of the workspace repository"
+        },
+        {
+          "actor": "Echo HTTP server",
+          "action": "receives GET `/git/<org-slug>/<workspace-slug>.git/info/refs?service=git-receive-pack` and routes it to the git info/refs handler"
+        },
+        {
+          "actor": "git auth middleware",
+          "action": "resolves the credential to a PAT identity with `git:write` scope"
+        },
+        {
+          "actor": "git authorization middleware",
+          "action": "verifies the PAT owner matches the workspace owner and the PAT has `git:write` scope; permits the request"
+        },
+        {
+          "actor": "git HTTP handler",
+          "action": "creates a `ReceivePackSession`, advertises refs, and returns the ref advertisement to the client"
+        },
+        {
+          "actor": "git client (git binary)",
+          "action": "sends a POST to `/git/<org-slug>/<workspace-slug>.git/git-receive-pack` with the pack data"
+        },
+        {
+          "actor": "git HTTP handler",
+          "action": "streams the pack data into the `ReceivePackSession`; the session writes the new objects and updates refs in the local clone at `<WORKSPACE_ROOT>/<workspace-slug>/trunk/`"
+        },
+        {
+          "actor": "git server push handler",
+          "action": "reads the new HEAD commit SHA from the repository and updates the `head_sha` column on the workspace database row"
+        },
+        {
+          "actor": "git HTTP handler",
+          "action": "streams the receive-pack result back to the client with Content-Type `application/x-git-receive-pack-result`"
+        },
+        {
+          "actor": "developer or agent",
+          "action": "receives a successful push confirmation; the local hub clone and database `head_sha` reflect the new commits"
+        }
+      ]
+    },
+    {
+      "id": "06-PATH-3",
+      "title": "Unauthenticated git request rejected with Basic auth challenge",
+      "steps": [
+        {
+          "actor": "developer or agent",
+          "action": "runs `git clone http://<hub-host>:<port>/git/<org-slug>/<workspace-slug>.git` without credentials"
+        },
+        {
+          "actor": "Echo HTTP server",
+          "action": "receives GET `/git/<org-slug>/<workspace-slug>.git/info/refs?service=git-upload-pack` with no `Authorization` header"
+        },
+        {
+          "actor": "git auth middleware",
+          "action": "detects the missing `Authorization` header and returns HTTP 401 with `WWW-Authenticate: Basic realm=\"af-hub\"`"
+        },
+        {
+          "actor": "git client (git binary)",
+          "action": "prompts the user for credentials or fails if running non-interactively"
+        }
+      ]
+    },
+    {
+      "id": "06-PATH-4",
+      "title": "Push rejected for read-only PAT",
+      "steps": [
+        {
+          "actor": "developer or agent",
+          "action": "runs `git push` using a PAT that has only `git:read` scope"
+        },
+        {
+          "actor": "Echo HTTP server",
+          "action": "receives GET `/git/<org-slug>/<workspace-slug>.git/info/refs?service=git-receive-pack`"
+        },
+        {
+          "actor": "git auth middleware",
+          "action": "resolves the credential to a PAT identity with only `git:read` scope"
+        },
+        {
+          "actor": "git authorization middleware",
+          "action": "detects that the PAT lacks `git:write` scope for a receive-pack operation and rejects the request"
+        },
+        {
+          "actor": "Echo HTTP server",
+          "action": "returns HTTP 403 to the git client"
+        },
+        {
+          "actor": "git client (git binary)",
+          "action": "reports a permission error to the user; no data is transferred"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "06-ERR-1",
+      "condition": "No `Authorization` header present on a git request",
+      "behavior": "Return HTTP 401 with `WWW-Authenticate: Basic realm=\"af-hub\"` header and no body",
+      "requirement_id": "06-REQ-2.2"
+    },
+    {
+      "id": "06-ERR-2",
+      "condition": "Invalid or unrecognized credential in the Basic auth password field",
+      "behavior": "Return HTTP 401 with no `WWW-Authenticate` header",
+      "requirement_id": "06-REQ-2.3"
+    },
+    {
+      "id": "06-ERR-3",
+      "condition": "Valid credentials but the authenticated user does not own the workspace and is not an admin",
+      "behavior": "Return HTTP 404 to prevent workspace enumeration",
+      "requirement_id": "06-REQ-4.E2"
+    },
+    {
+      "id": "06-ERR-4",
+      "condition": "Workspace not found in the database",
+      "behavior": "Return HTTP 404 with a pkt-line error body",
+      "requirement_id": "06-REQ-4.2"
+    },
+    {
+      "id": "06-ERR-5",
+      "condition": "`org-slug` in the URL does not match the workspace's `org_id`",
+      "behavior": "Return HTTP 404 with a pkt-line error body (anti-enumeration)",
+      "requirement_id": "06-REQ-4.3"
+    },
+    {
+      "id": "06-ERR-6",
+      "condition": "Workspace `clone_status` is not `ready`",
+      "behavior": "Return HTTP 404 with a pkt-line error body indicating the workspace is not servable",
+      "requirement_id": "06-REQ-4.4"
+    },
+    {
+      "id": "06-ERR-7",
+      "condition": "Push attempted by a PAT with only `git:read` scope",
+      "behavior": "Return HTTP 403",
+      "requirement_id": "06-REQ-5.6"
+    },
+    {
+      "id": "06-ERR-8",
+      "condition": "Invalid or unsupported `service` query parameter on `info/refs`",
+      "behavior": "Return HTTP 403 with a pkt-line error body per the git smart HTTP specification",
+      "requirement_id": "06-REQ-1.E1"
+    },
+    {
+      "id": "06-ERR-9",
+      "condition": "`PlainOpen` fails due to a filesystem error when opening the repository",
+      "behavior": "Log the error and return HTTP 500",
+      "requirement_id": "06-REQ-4.E1"
+    },
+    {
+      "id": "06-ERR-10",
+      "condition": "go-git session error during streaming (corrupt pack, protocol error)",
+      "behavior": "Encode the error in pkt-line `ERR <message>` format and write to the response body if headers have not been sent; otherwise close the connection",
+      "requirement_id": "06-REQ-8.3"
+    },
+    {
+      "id": "06-ERR-11",
+      "condition": "Git client disconnects mid-stream",
+      "behavior": "Abort the session, release all resources (session, file handles), and log the disconnection without leaving partial state",
+      "requirement_id": "06-REQ-8.E1"
+    },
+    {
+      "id": "06-ERR-12",
+      "condition": "Database update of `head_sha` fails after a successful push",
+      "behavior": "Log the error but return a successful push response to the git client; the push is already committed to the local clone",
+      "requirement_id": "06-REQ-6.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5.x",
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)",
+          "notes": "Opens an existing git repository at the given path. Returns an error if the path does not contain a valid git repository."
+        },
+        {
+          "name": "NewServer",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/transport/server",
+          "signature": "func NewServer(loader Loader) transport.Transport",
+          "notes": "Creates a go-git server transport that uses the provided Loader to resolve repository endpoints."
+        },
+        {
+          "name": "Loader",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/transport/server",
+          "signature": "type Loader interface { Load(ep *transport.Endpoint) (storer.Storer, error) }",
+          "notes": "Interface that the custom hub loader must implement to resolve workspace slugs to repository storers."
+        },
+        {
+          "name": "ErrRepositoryNotFound",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/transport",
+          "signature": "var ErrRepositoryNotFound = errors.New(\"repository not found\")",
+          "notes": "Sentinel error returned by a Loader when the requested repository cannot be found. The server transport maps this to a git protocol not-found error."
+        }
+      ]
+    }
+  ]
+}

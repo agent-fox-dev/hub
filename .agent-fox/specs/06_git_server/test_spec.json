@@ -1,0 +1,850 @@
+{
+  "$schema": null,
+  "spec_id": "06",
+  "spec_name": "git_server",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-06-1",
+      "requirement_id": "06-REQ-1.1",
+      "kind": "unit",
+      "description": "MountHandlers registers all four git smart HTTP routes on the Echo instance at startup.",
+      "preconditions": [
+        "Echo HTTP server instance is initialized",
+        "git server module MountHandlers function is available"
+      ],
+      "input": "Call MountHandlers(e) on a fresh Echo instance",
+      "expected": "Echo router has routes: GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack, POST /git/:org/:slug.git/git-receive-pack, all with auth middleware applied",
+      "assertion_pseudocode": "e = echo.New(); MountHandlers(e); routes = e.Routes(); assert routes contains GET '/git/:org/:slug.git/info/refs'; assert routes contains POST '/git/:org/:slug.git/git-upload-pack'; assert routes contains POST '/git/:org/:slug.git/git-receive-pack'; assert each route has auth middleware in its middleware chain"
+    },
+    {
+      "id": "TS-06-2",
+      "requirement_id": "06-REQ-1.2",
+      "kind": "unit",
+      "description": "GET info/refs with service=git-upload-pack returns HTTP 200 with the correct Content-Type and a pkt-line ref advertisement body.",
+      "preconditions": [
+        "Workspace exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/<slug>/trunk/",
+        "Request is authenticated with a valid credential having git:read scope",
+        "Org slug matches workspace org_id"
+      ],
+      "input": "GET /git/<org-slug>/<workspace-slug>.git/info/refs?service=git-upload-pack with valid Authorization: Basic header",
+      "expected": "HTTP 200, Content-Type: application/x-git-upload-pack-advertisement, body is a valid pkt-line encoded ref advertisement starting with the service line '# service=git-upload-pack'",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-advertisement'; assert resp.body starts with pktLine('# service=git-upload-pack\\n'); assert resp.body contains flush packet (0000)"
+    },
+    {
+      "id": "TS-06-3",
+      "requirement_id": "06-REQ-1.3",
+      "kind": "unit",
+      "description": "GET info/refs with service=git-receive-pack returns HTTP 200 with the correct Content-Type and a pkt-line ref advertisement body.",
+      "preconditions": [
+        "Workspace exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/<slug>/trunk/",
+        "Request is authenticated with a valid credential having git:write scope",
+        "Org slug matches workspace org_id"
+      ],
+      "input": "GET /git/<org-slug>/<workspace-slug>.git/info/refs?service=git-receive-pack with valid Authorization: Basic header",
+      "expected": "HTTP 200, Content-Type: application/x-git-receive-pack-advertisement, body is a valid pkt-line encoded ref advertisement starting with '# service=git-receive-pack'",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-receive-pack', headers={'Authorization': basicAuth}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-receive-pack-advertisement'; assert resp.body starts with pktLine('# service=git-receive-pack\\n'); assert resp.body contains flush packet (0000)"
+    },
+    {
+      "id": "TS-06-4",
+      "requirement_id": "06-REQ-1.4",
+      "kind": "unit",
+      "description": "POST to git-upload-pack returns HTTP 200 with Content-Type application/x-git-upload-pack-result and a streaming pack response.",
+      "preconditions": [
+        "Workspace exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/<slug>/trunk/ with at least one commit",
+        "Request is authenticated with a valid credential having git:read scope",
+        "Org slug matches workspace org_id"
+      ],
+      "input": "POST /git/<org-slug>/<workspace-slug>.git/git-upload-pack with valid Authorization: Basic header and a valid git upload-pack request body (want lines + flush)",
+      "expected": "HTTP 200, Content-Type: application/x-git-upload-pack-result, body contains a valid git pack stream",
+      "assertion_pseudocode": "body = buildUploadPackRequest(wantSHA); resp = httpClient.post('/git/myorg/myws.git/git-upload-pack', body=body, headers={'Authorization': basicAuth, 'Content-Type': 'application/x-git-upload-pack-request'}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-result'; assert resp.body contains PACK signature bytes"
+    },
+    {
+      "id": "TS-06-5",
+      "requirement_id": "06-REQ-1.5",
+      "kind": "unit",
+      "description": "POST to git-receive-pack returns HTTP 200 with Content-Type application/x-git-receive-pack-result and a streaming pack response.",
+      "preconditions": [
+        "Workspace exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/<slug>/trunk/",
+        "Request is authenticated with a valid credential having git:write scope",
+        "Org slug matches workspace org_id"
+      ],
+      "input": "POST /git/<org-slug>/<workspace-slug>.git/git-receive-pack with valid Authorization: Basic header and a valid git receive-pack request body",
+      "expected": "HTTP 200, Content-Type: application/x-git-receive-pack-result, body contains a valid git receive-pack result stream with unpack ok",
+      "assertion_pseudocode": "body = buildReceivePackRequest(oldSHA, newSHA, packData); resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=body, headers={'Authorization': basicAuth, 'Content-Type': 'application/x-git-receive-pack-request'}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-receive-pack-result'; assert resp.body contains pktLine('unpack ok\\n')"
+    },
+    {
+      "id": "TS-06-6",
+      "requirement_id": "06-REQ-2.1",
+      "kind": "unit",
+      "description": "A request with a valid af_pat_ credential in the Basic auth password field is resolved to the PAT identity and passed to the next handler; the username field is ignored.",
+      "preconditions": [
+        "A PAT with token 'af_pat_abc123' exists in the database with git:read scope",
+        "apikit credential resolution is configured"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('anyusername:af_pat_abc123')",
+      "expected": "Auth middleware resolves the PAT identity and attaches it to the request context; the next handler is called; no 401 or 403 is returned at the auth stage",
+      "assertion_pseudocode": "nextCalled = false; middleware = gitAuthMiddleware(next=func(ctx){ nextCalled=true }); req = newRequest('GET', '/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': 'Basic ' + base64('anyusername:af_pat_abc123')}); middleware(req); assert nextCalled == true; assert ctx.identity != nil; assert ctx.identity.type == 'pat'"
+    },
+    {
+      "id": "TS-06-7",
+      "requirement_id": "06-REQ-2.2",
+      "kind": "unit",
+      "description": "A git request with no Authorization header receives HTTP 401 with WWW-Authenticate: Basic realm='af-hub' and no body.",
+      "preconditions": [
+        "Git auth middleware is configured on the route"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with no Authorization header",
+      "expected": "HTTP 401, header WWW-Authenticate: Basic realm=\"af-hub\", empty response body",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack'); assert resp.status == 401; assert resp.headers['WWW-Authenticate'] == 'Basic realm=\"af-hub\"'; assert resp.body == ''"
+    },
+    {
+      "id": "TS-06-8",
+      "requirement_id": "06-REQ-2.3",
+      "kind": "unit",
+      "description": "A git request with an unrecognized credential in the Basic auth password field returns HTTP 401 without a WWW-Authenticate header.",
+      "preconditions": [
+        "Git auth middleware is configured",
+        "The credential 'af_key_invalid999' does not exist in the database"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('user:af_key_invalid999')",
+      "expected": "HTTP 401, no WWW-Authenticate header in the response",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': 'Basic ' + base64('user:af_key_invalid999')}); assert resp.status == 401; assert resp.headers['WWW-Authenticate'] == nil"
+    },
+    {
+      "id": "TS-06-9",
+      "requirement_id": "06-REQ-3.1",
+      "kind": "unit",
+      "description": "Git server initialization registers git:read and git:write as named apikit.Permission scopes.",
+      "preconditions": [
+        "apikit permission registry is initialized",
+        "git server module Init or MountHandlers is called"
+      ],
+      "input": "Call git server module initialization function",
+      "expected": "apikit permission registry contains both 'git:read' and 'git:write' as registered permissions",
+      "assertion_pseudocode": "initGitServer(); perms = apikit.RegisteredPermissions(); assert perms contains 'git:read'; assert perms contains 'git:write'"
+    },
+    {
+      "id": "TS-06-10",
+      "requirement_id": "06-REQ-3.2",
+      "kind": "unit",
+      "description": "A PAT with only git:write scope is permitted to perform both fetch and push operations.",
+      "preconditions": [
+        "Workspace exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_writeonly' exists with git:write scope only, belonging to user A",
+        "Local repository exists at <WORKSPACE_ROOT>/<slug>/trunk/"
+      ],
+      "input": "First: GET /git/myorg/myws.git/info/refs?service=git-upload-pack with af_pat_writeonly; Second: GET /git/myorg/myws.git/info/refs?service=git-receive-pack with af_pat_writeonly",
+      "expected": "Both requests are permitted (HTTP 200); the PAT with git:write is not rejected for fetch operations",
+      "assertion_pseudocode": "auth = basicAuth('x-token-auth', 'af_pat_writeonly'); fetchResp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={auth}); assert fetchResp.status == 200; pushResp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-receive-pack', headers={auth}); assert pushResp.status == 200"
+    },
+    {
+      "id": "TS-06-11",
+      "requirement_id": "06-REQ-3.3",
+      "kind": "unit",
+      "description": "A PAT with git:read scope but no workspaces:read scope can still perform git fetch operations.",
+      "preconditions": [
+        "Workspace exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_gitonly' exists with git:read scope only (no workspaces:read), belonging to user A",
+        "Local repository exists at <WORKSPACE_ROOT>/<slug>/trunk/"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with af_pat_gitonly",
+      "expected": "HTTP 200; git:read scope alone is sufficient for fetch without workspaces:read",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('x', 'af_pat_gitonly')}); assert resp.status == 200"
+    },
+    {
+      "id": "TS-06-12",
+      "requirement_id": "06-REQ-4.1",
+      "kind": "unit",
+      "description": "Repository resolver extracts org and slug from the URL, verifies org_id, verifies clone_status=ready, opens the repository via PlainOpen, and returns the storer to the transport.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', org_id matching org 'myorg'",
+        "Directory <WORKSPACE_ROOT>/myws/trunk/ exists and is a valid git repository",
+        "Authenticated identity is the workspace owner"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack",
+      "expected": "Loader.Load() is called with endpoint path '/myorg/myws.git', returns (storer.Storer, nil); HTTP 200 is returned to the client",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = parseEndpoint('http://hub/git/myorg/myws.git'); storer, err = loader.Load(ep); assert err == nil; assert storer != nil"
+    },
+    {
+      "id": "TS-06-13",
+      "requirement_id": "06-REQ-4.2",
+      "kind": "unit",
+      "description": "Repository resolver returns transport.ErrRepositoryNotFound and HTTP 404 when no workspace with the given slug exists.",
+      "preconditions": [
+        "No workspace with slug 'nonexistent' exists in the database",
+        "Authenticated identity is a valid user"
+      ],
+      "input": "GET /git/myorg/nonexistent.git/info/refs?service=git-upload-pack with valid auth",
+      "expected": "Loader.Load() returns (nil, transport.ErrRepositoryNotFound); HTTP handler returns HTTP 404 with a pkt-line error body",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = parseEndpoint('http://hub/git/myorg/nonexistent.git'); storer, err = loader.Load(ep); assert err == transport.ErrRepositoryNotFound; assert storer == nil; resp = httpClient.get('/git/myorg/nonexistent.git/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-06-14",
+      "requirement_id": "06-REQ-4.3",
+      "kind": "unit",
+      "description": "Repository resolver returns transport.ErrRepositoryNotFound and HTTP 404 when the org slug does not match the workspace's org_id.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with org_id matching org 'myorg'",
+        "Org 'wrongorg' exists but does not own workspace 'myws'",
+        "Authenticated identity is a valid user"
+      ],
+      "input": "GET /git/wrongorg/myws.git/info/refs?service=git-upload-pack with valid auth",
+      "expected": "Loader.Load() returns (nil, transport.ErrRepositoryNotFound); HTTP handler returns HTTP 404",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = parseEndpoint('http://hub/git/wrongorg/myws.git'); storer, err = loader.Load(ep); assert err == transport.ErrRepositoryNotFound; resp = httpClient.get('/git/wrongorg/myws.git/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-06-15",
+      "requirement_id": "06-REQ-4.4",
+      "kind": "unit",
+      "description": "Repository resolver returns transport.ErrRepositoryNotFound and HTTP 404 when the workspace clone_status is not 'ready'.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='cloning', org_id matching org 'myorg'",
+        "Authenticated identity is the workspace owner"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with valid auth",
+      "expected": "Loader.Load() returns (nil, transport.ErrRepositoryNotFound); HTTP handler returns HTTP 404 with a pkt-line error body indicating the workspace is not servable",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = parseEndpoint('http://hub/git/myorg/myws.git'); storer, err = loader.Load(ep); assert err == transport.ErrRepositoryNotFound; resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 404; assert resp.body contains pkt-line error message"
+    },
+    {
+      "id": "TS-06-16",
+      "requirement_id": "06-REQ-5.1",
+      "kind": "unit",
+      "description": "An admin token is permitted to perform both fetch and push on any workspace regardless of ownership.",
+      "preconditions": [
+        "Workspace 'otherws' exists in database with clone_status='ready', owned by user B",
+        "Admin token 'af_admin_supertoken' exists",
+        "Local repository exists at <WORKSPACE_ROOT>/otherws/trunk/"
+      ],
+      "input": "GET /git/myorg/otherws.git/info/refs?service=git-upload-pack and GET /git/myorg/otherws.git/info/refs?service=git-receive-pack, both with Authorization: Basic base64('admin:af_admin_supertoken')",
+      "expected": "Both requests return HTTP 200; admin is not restricted to owned workspaces",
+      "assertion_pseudocode": "auth = basicAuth('admin', 'af_admin_supertoken'); fetchResp = httpClient.get('/git/myorg/otherws.git/info/refs?service=git-upload-pack', headers={auth}); assert fetchResp.status == 200; pushResp = httpClient.get('/git/myorg/otherws.git/info/refs?service=git-receive-pack', headers={auth}); assert pushResp.status == 200"
+    },
+    {
+      "id": "TS-06-17",
+      "requirement_id": "06-REQ-5.2",
+      "kind": "unit",
+      "description": "The workspace owner's API key is permitted to perform fetch/clone operations.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "API key 'af_key_userA' belongs to user A",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('user:af_key_userA')",
+      "expected": "HTTP 200 with Content-Type application/x-git-upload-pack-advertisement",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('user', 'af_key_userA')}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-advertisement'"
+    },
+    {
+      "id": "TS-06-18",
+      "requirement_id": "06-REQ-5.3",
+      "kind": "unit",
+      "description": "The workspace owner's API key is permitted to perform push operations.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "API key 'af_key_userA' belongs to user A",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-receive-pack with Authorization: Basic base64('user:af_key_userA')",
+      "expected": "HTTP 200 with Content-Type application/x-git-receive-pack-advertisement",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-receive-pack', headers={'Authorization': basicAuth('user', 'af_key_userA')}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-receive-pack-advertisement'"
+    },
+    {
+      "id": "TS-06-19",
+      "requirement_id": "06-REQ-5.4",
+      "kind": "unit",
+      "description": "A PAT with git:read scope belonging to the workspace owner is permitted to perform fetch/clone operations.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_readpat' exists with git:read scope, belonging to user A",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('x:af_pat_readpat')",
+      "expected": "HTTP 200 with Content-Type application/x-git-upload-pack-advertisement",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('x', 'af_pat_readpat')}); assert resp.status == 200"
+    },
+    {
+      "id": "TS-06-20",
+      "requirement_id": "06-REQ-5.5",
+      "kind": "unit",
+      "description": "A PAT with git:write scope belonging to the workspace owner is permitted to perform push operations.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_writepat' exists with git:write scope, belonging to user A",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-receive-pack with Authorization: Basic base64('x:af_pat_writepat')",
+      "expected": "HTTP 200 with Content-Type application/x-git-receive-pack-advertisement",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-receive-pack', headers={'Authorization': basicAuth('x', 'af_pat_writepat')}); assert resp.status == 200"
+    },
+    {
+      "id": "TS-06-21",
+      "requirement_id": "06-REQ-5.6",
+      "kind": "unit",
+      "description": "A push request from a PAT with only git:read scope is rejected with HTTP 403.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_readonly' exists with git:read scope only, belonging to user A"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-receive-pack with Authorization: Basic base64('x:af_pat_readonly')",
+      "expected": "HTTP 403; the push is rejected before any repository access occurs",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-receive-pack', headers={'Authorization': basicAuth('x', 'af_pat_readonly')}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-06-22",
+      "requirement_id": "06-REQ-6.1",
+      "kind": "unit",
+      "description": "After a successful ReceivePackSession, the head_sha column on the workspace database row is updated to the new HEAD commit SHA.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', head_sha='oldsha111'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/ with HEAD at 'oldsha111'",
+        "Authenticated identity is the workspace owner with git:write scope"
+      ],
+      "input": "POST /git/myorg/myws.git/git-receive-pack with a valid pack containing a new commit with SHA 'newsha222'",
+      "expected": "HTTP 200 with unpack ok; database workspace row head_sha equals 'newsha222' after the push completes",
+      "assertion_pseudocode": "resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=packData, headers={auth}); assert resp.status == 200; assert resp.body contains pktLine('unpack ok\\n'); ws = db.queryWorkspace('myws'); assert ws.head_sha == 'newsha222'"
+    },
+    {
+      "id": "TS-06-23",
+      "requirement_id": "06-REQ-6.2",
+      "kind": "unit",
+      "description": "After a successful push, the local clone is updated but no propagation to the upstream remote occurs.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/",
+        "Upstream remote is configured but not reachable (or mocked to detect calls)",
+        "Authenticated identity is the workspace owner with git:write scope"
+      ],
+      "input": "POST /git/myorg/myws.git/git-receive-pack with a valid pack",
+      "expected": "HTTP 200; local clone at <WORKSPACE_ROOT>/myws/trunk/ contains the new commit; no git push to the upstream remote is performed",
+      "assertion_pseudocode": "upstreamPushCalled = false; mockUpstream = func(){ upstreamPushCalled = true }; resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=packData, headers={auth}); assert resp.status == 200; assert upstreamPushCalled == false; localRepo = git.PlainOpen('<WORKSPACE_ROOT>/myws/trunk/'); assert localRepo.HEAD().SHA == newSHA"
+    },
+    {
+      "id": "TS-06-24",
+      "requirement_id": "06-REQ-7.1",
+      "kind": "unit",
+      "description": "Loader.Load() extracts the workspace slug from the endpoint path, verifies clone_status=ready, opens the repository via PlainOpen, and returns (storer.Storer, nil).",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', org_id matching 'myorg'",
+        "Directory <WORKSPACE_ROOT>/myws/trunk/ exists and is a valid git repository"
+      ],
+      "input": "loader.Load(endpoint) where endpoint.Path = '/git/myorg/myws.git'",
+      "expected": "Returns (storer.Storer, nil); the storer is non-nil and represents the repository at <WORKSPACE_ROOT>/myws/trunk/",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = &transport.Endpoint{Path: '/git/myorg/myws.git'}; s, err = loader.Load(ep); assert err == nil; assert s != nil; assert s implements storer.Storer"
+    },
+    {
+      "id": "TS-06-25",
+      "requirement_id": "06-REQ-7.2",
+      "kind": "unit",
+      "description": "Loader.Load() returns (nil, transport.ErrRepositoryNotFound) when the workspace is not found, not ready, or org check fails.",
+      "preconditions": [
+        "No workspace with slug 'ghost' exists in the database"
+      ],
+      "input": "loader.Load(endpoint) where endpoint.Path = '/git/myorg/ghost.git'",
+      "expected": "Returns (nil, transport.ErrRepositoryNotFound)",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = &transport.Endpoint{Path: '/git/myorg/ghost.git'}; s, err = loader.Load(ep); assert err == transport.ErrRepositoryNotFound; assert s == nil"
+    },
+    {
+      "id": "TS-06-26",
+      "requirement_id": "06-REQ-8.1",
+      "kind": "unit",
+      "description": "A valid info/refs GET request causes the handler to create a session, call AdvertisedReferences(), encode the result as pkt-line, and write it to the HTTP response with the correct Content-Type.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/ with at least one ref",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack",
+      "expected": "HTTP 200, Content-Type: application/x-git-upload-pack-advertisement, body is a well-formed pkt-line ref advertisement with capability flush (0000)",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-advertisement'; body = resp.body; assert parsePktLine(body) contains service line and at least one ref line; assert body ends with flush packet"
+    },
+    {
+      "id": "TS-06-27",
+      "requirement_id": "06-REQ-8.2",
+      "kind": "unit",
+      "description": "A valid POST to git-upload-pack or git-receive-pack streams the request body to the session and streams the session output back as the HTTP response body.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/ with commits",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "POST /git/myorg/myws.git/git-upload-pack with a valid upload-pack negotiation body",
+      "expected": "HTTP 200, Content-Type: application/x-git-upload-pack-result, body is a streaming pack response containing PACK data",
+      "assertion_pseudocode": "body = buildUploadPackNegotiation(wantSHA); resp = httpClient.post('/git/myorg/myws.git/git-upload-pack', body=body, headers={auth, 'Content-Type': 'application/x-git-upload-pack-request'}); assert resp.status == 200; assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-result'; assert resp.body contains PACK magic bytes (0x5041434b)"
+    },
+    {
+      "id": "TS-06-28",
+      "requirement_id": "06-REQ-8.3",
+      "kind": "unit",
+      "description": "When the go-git session returns an error during streaming, the handler encodes the error in pkt-line ERR format and writes it to the response body if headers have not yet been sent.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "go-git session is mocked to return an error immediately",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "POST /git/myorg/myws.git/git-upload-pack with a request body that triggers a session error",
+      "expected": "HTTP 200 with a pkt-line body containing 'ERR <message>' where message describes the session error",
+      "assertion_pseudocode": "mockSession = sessionThatErrors('pack negotiation failed'); resp = httpClient.post('/git/myorg/myws.git/git-upload-pack', body=validBody, headers={auth}); assert resp.status == 200; assert resp.body contains pktLine('ERR pack negotiation failed\\n')"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-06-P1",
+      "property_id": "06-PROP-1",
+      "validates": [
+        "06-REQ-4.4",
+        "06-REQ-4.1"
+      ],
+      "description": "For any workspace with clone_status not equal to 'ready', all four git endpoints return HTTP 404 and never open the repository filesystem.",
+      "for_any_strategy": "Sample workspaces with clone_status in {'cloning', 'failed', 'archived', 'pending'} by inserting rows with each status into the test database; for each status, send requests to all four git endpoints (GET info/refs?service=git-upload-pack, GET info/refs?service=git-receive-pack, POST git-upload-pack, POST git-receive-pack) with a valid owner credential",
+      "invariant_check": "for each (status, endpoint) pair: assert resp.status == 404; assert PlainOpen was never called (verified via mock/spy on PlainOpen); assert no file handle was opened under <WORKSPACE_ROOT>/<slug>/trunk/"
+    },
+    {
+      "id": "TS-06-P2",
+      "property_id": "06-PROP-2",
+      "validates": [
+        "06-REQ-2.2"
+      ],
+      "description": "For any git request with no Authorization header, the response is always HTTP 401 with WWW-Authenticate: Basic realm='af-hub' and the repository is never accessed.",
+      "for_any_strategy": "Generate random valid workspace slugs and org slugs (existing and non-existing); for each combination, send all four git endpoint requests with no Authorization header",
+      "invariant_check": "for each request: assert resp.status == 401; assert resp.headers['WWW-Authenticate'] == 'Basic realm=\"af-hub\"'; assert Loader.Load was never called (verified via mock/spy)"
+    },
+    {
+      "id": "TS-06-P3",
+      "property_id": "06-PROP-3",
+      "validates": [
+        "06-REQ-4.E2",
+        "06-REQ-5.E1",
+        "06-REQ-5.E2"
+      ],
+      "description": "For any authenticated request where the credential owner is not the workspace owner and not an admin, the response is always HTTP 404 regardless of whether the workspace exists.",
+      "for_any_strategy": "Generate pairs of (workspace, credential) where the credential belongs to a different user than the workspace owner; include cases where the workspace exists and where it does not; use API keys and PATs with various git scopes",
+      "invariant_check": "for each (workspace, credential) pair: assert resp.status == 404; assert resp.status != 403; assert resp.body does not reveal workspace existence"
+    },
+    {
+      "id": "TS-06-P4",
+      "property_id": "06-PROP-4",
+      "validates": [
+        "06-REQ-3.2",
+        "06-REQ-5.4",
+        "06-REQ-5.5"
+      ],
+      "description": "For any PAT with git:write scope and no explicit git:read scope, both fetch/clone and push operations are permitted on workspaces the PAT owner owns.",
+      "for_any_strategy": "Generate PATs with only git:write scope (no git:read) belonging to workspace owners; for each PAT, attempt both GET info/refs?service=git-upload-pack and GET info/refs?service=git-receive-pack against owned workspaces with clone_status='ready'",
+      "invariant_check": "for each PAT: fetchResp.status == 200; pushResp.status == 200; neither request is rejected with 403"
+    },
+    {
+      "id": "TS-06-P5",
+      "property_id": "06-PROP-5",
+      "validates": [
+        "06-REQ-6.1"
+      ],
+      "description": "After every successful ReceivePackSession completion, the head_sha column in the database equals the SHA of the HEAD commit in the local clone.",
+      "for_any_strategy": "Generate a sequence of N valid pushes (N between 1 and 10) to the same workspace, each adding one or more commits; after each push, read both the database head_sha and the actual HEAD SHA from the local repository",
+      "invariant_check": "after each successful push: dbHeadSHA = db.queryWorkspace(slug).head_sha; repoHeadSHA = git.PlainOpen('<WORKSPACE_ROOT>/<slug>/trunk/').Head().Hash().String(); assert dbHeadSHA == repoHeadSHA; assert len(dbHeadSHA) == 40"
+    },
+    {
+      "id": "TS-06-P6",
+      "property_id": "06-PROP-6",
+      "validates": [
+        "06-REQ-4.3"
+      ],
+      "description": "For any request where the org-slug in the URL does not match the org_id of the workspace identified by workspace-slug, the response is always HTTP 404.",
+      "for_any_strategy": "Generate pairs of (workspace, org-slug) where the org-slug is a valid org slug but does not match the workspace's org_id; include cases where the org-slug belongs to a different existing org and cases where it does not exist at all; use valid owner credentials",
+      "invariant_check": "for each (workspace, wrong-org-slug) pair: assert resp.status == 404; assert resp.status != 200; assert resp.status != 403"
+    },
+    {
+      "id": "TS-06-P7",
+      "property_id": "06-PROP-7",
+      "validates": [
+        "06-REQ-1.2",
+        "06-REQ-1.3",
+        "06-REQ-1.4",
+        "06-REQ-1.5"
+      ],
+      "description": "For any successful response from any of the four git endpoints, the Content-Type header exactly matches the git smart HTTP specification for that endpoint.",
+      "for_any_strategy": "Generate valid requests for all four endpoints (info/refs?service=git-upload-pack, info/refs?service=git-receive-pack, POST git-upload-pack, POST git-receive-pack) across multiple workspaces with clone_status='ready' and valid owner credentials",
+      "invariant_check": "for GET info/refs?service=git-upload-pack: assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-advertisement'; for GET info/refs?service=git-receive-pack: assert resp.headers['Content-Type'] == 'application/x-git-receive-pack-advertisement'; for POST git-upload-pack: assert resp.headers['Content-Type'] == 'application/x-git-upload-pack-result'; for POST git-receive-pack: assert resp.headers['Content-Type'] == 'application/x-git-receive-pack-result'"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-06-E1",
+      "requirement_id": "06-REQ-1.E1",
+      "kind": "unit",
+      "description": "A GET to info/refs with an absent or invalid service query parameter returns HTTP 403 with a pkt-line error body.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs (no service param) and GET /git/myorg/myws.git/info/refs?service=git-dumb-pack",
+      "expected": "HTTP 403 for both requests; response body contains a pkt-line error message per the git smart HTTP specification",
+      "assertion_pseudocode": "resp1 = httpClient.get('/git/myorg/myws.git/info/refs', headers={auth}); assert resp1.status == 403; assert resp1.body contains pkt-line error; resp2 = httpClient.get('/git/myorg/myws.git/info/refs?service=git-dumb-pack', headers={auth}); assert resp2.status == 403; assert resp2.body contains pkt-line error"
+    },
+    {
+      "id": "TS-06-E2",
+      "requirement_id": "06-REQ-1.E2",
+      "kind": "unit",
+      "description": "A request to a git path without the .git suffix does not match any registered git route and returns HTTP 404.",
+      "preconditions": [
+        "Echo HTTP server is running with git routes registered",
+        "Authenticated identity has git:read scope"
+      ],
+      "input": "GET /git/myorg/myws/info/refs?service=git-upload-pack (no .git suffix)",
+      "expected": "HTTP 404 from the default Echo not-found handler; no git handler is invoked",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-06-E3",
+      "requirement_id": "06-REQ-2.E1",
+      "kind": "unit",
+      "description": "A malformed Authorization header (not valid Base64 or missing colon separator) returns HTTP 401.",
+      "preconditions": [
+        "Git auth middleware is configured on the route"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic !!!notbase64!!! and Authorization: Basic dXNlcg== (base64 of 'user' with no colon)",
+      "expected": "HTTP 401 for both malformed cases",
+      "assertion_pseudocode": "resp1 = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': 'Basic !!!notbase64!!!'}); assert resp1.status == 401; resp2 = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': 'Basic ' + base64('usernocodon')}); assert resp2.status == 401"
+    },
+    {
+      "id": "TS-06-E4",
+      "requirement_id": "06-REQ-2.E2",
+      "kind": "unit",
+      "description": "Any non-empty string in the username field of HTTP Basic auth is accepted; only the password field is used for credential resolution.",
+      "preconditions": [
+        "PAT 'af_pat_valid' exists with git:read scope, belonging to user A",
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('randomusername:af_pat_valid') and with base64('x-token-auth:af_pat_valid') and with base64('anything:af_pat_valid')",
+      "expected": "All three requests return HTTP 200; the username field does not affect authentication outcome",
+      "assertion_pseudocode": "for username in ['randomusername', 'x-token-auth', 'anything']: resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': 'Basic ' + base64(username + ':af_pat_valid')}); assert resp.status == 200"
+    },
+    {
+      "id": "TS-06-E5",
+      "requirement_id": "06-REQ-3.E1",
+      "kind": "unit",
+      "description": "A PAT with git:read scope attempting a push (POST to git-receive-pack) is rejected with HTTP 403.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_readonly' exists with git:read scope only, belonging to user A"
+      ],
+      "input": "POST /git/myorg/myws.git/git-receive-pack with Authorization: Basic base64('x:af_pat_readonly') and a valid pack body",
+      "expected": "HTTP 403; no data is written to the repository",
+      "assertion_pseudocode": "resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=packData, headers={'Authorization': basicAuth('x', 'af_pat_readonly')}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-06-E6",
+      "requirement_id": "06-REQ-3.E2",
+      "kind": "unit",
+      "description": "A PAT with neither git:read nor git:write scope attempting any git operation is rejected with HTTP 403.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_noscope' exists with workspaces:read scope only (no git scopes), belonging to user A"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('x:af_pat_noscope')",
+      "expected": "HTTP 403; the request is rejected at the authorization middleware",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('x', 'af_pat_noscope')}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-06-E7",
+      "requirement_id": "06-REQ-4.E1",
+      "kind": "unit",
+      "description": "When PlainOpen fails due to a filesystem error, the handler logs the error and returns HTTP 500.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', org_id matching 'myorg'",
+        "Directory <WORKSPACE_ROOT>/myws/trunk/ does not exist or has permission denied",
+        "Authenticated identity is the workspace owner with git:read scope"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with valid auth",
+      "expected": "HTTP 500; error is logged; no repository data is returned to the client",
+      "assertion_pseudocode": "removeDir('<WORKSPACE_ROOT>/myws/trunk/'); resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 500; assert logContains('PlainOpen error') or logContains('filesystem error')"
+    },
+    {
+      "id": "TS-06-E8",
+      "requirement_id": "06-REQ-4.E2",
+      "kind": "unit",
+      "description": "An authenticated user who is not the workspace owner and not an admin receives HTTP 404 (anti-enumeration) for any git operation.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "API key 'af_key_userB' belongs to user B (not the owner, not an admin)"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('userB:af_key_userB')",
+      "expected": "HTTP 404; the response does not reveal whether the workspace exists",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('userB', 'af_key_userB')}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-06-E9",
+      "requirement_id": "06-REQ-4.E3",
+      "kind": "unit",
+      "description": "When the database query for the workspace times out or returns an unexpected error, the handler returns HTTP 500 without exposing database error details.",
+      "preconditions": [
+        "Database is configured to simulate a timeout or unexpected error for workspace queries",
+        "Authenticated identity is a valid user"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with valid auth",
+      "expected": "HTTP 500; response body does not contain database error details (no SQL error messages, no stack traces)",
+      "assertion_pseudocode": "mockDB = dbThatTimesOut(); loader = newWorkspaceLoader(mockDB, workspaceRoot); resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={auth}); assert resp.status == 500; assert resp.body does not contain 'sql' or 'database' or 'timeout' in detail"
+    },
+    {
+      "id": "TS-06-E10",
+      "requirement_id": "06-REQ-5.E1",
+      "kind": "unit",
+      "description": "A valid PAT with git:read scope belonging to a non-owner non-admin user receives HTTP 404 for any git operation (anti-enumeration).",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "PAT 'af_pat_userB_read' exists with git:read scope, belonging to user B (not owner, not admin)"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('x:af_pat_userB_read')",
+      "expected": "HTTP 404; the response does not reveal whether the workspace exists",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('x', 'af_pat_userB_read')}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-06-E11",
+      "requirement_id": "06-REQ-5.E2",
+      "kind": "unit",
+      "description": "A valid API key belonging to a non-owner non-admin user receives HTTP 404 for any git operation (anti-enumeration).",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', owned by user A",
+        "API key 'af_key_userC' belongs to user C (not owner, not admin)"
+      ],
+      "input": "GET /git/myorg/myws.git/info/refs?service=git-upload-pack with Authorization: Basic base64('userC:af_key_userC')",
+      "expected": "HTTP 404; the response does not reveal whether the workspace exists",
+      "assertion_pseudocode": "resp = httpClient.get('/git/myorg/myws.git/info/refs?service=git-upload-pack', headers={'Authorization': basicAuth('userC', 'af_key_userC')}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-06-E12",
+      "requirement_id": "06-REQ-6.E1",
+      "kind": "unit",
+      "description": "When the database update of head_sha fails after a successful push, the git client receives a successful push response and the error is logged.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/",
+        "Database is configured to fail on UPDATE of head_sha",
+        "Authenticated identity is the workspace owner with git:write scope"
+      ],
+      "input": "POST /git/myorg/myws.git/git-receive-pack with a valid pack",
+      "expected": "HTTP 200 with unpack ok in the response body; error about head_sha update failure is logged; the pack data is written to the local clone",
+      "assertion_pseudocode": "mockDB = dbThatFailsOnUpdate('head_sha'); resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=packData, headers={auth}); assert resp.status == 200; assert resp.body contains pktLine('unpack ok\\n'); assert logContains('head_sha update failed')"
+    },
+    {
+      "id": "TS-06-E13",
+      "requirement_id": "06-REQ-6.E2",
+      "kind": "unit",
+      "description": "When reading the new HEAD SHA from the repository after a push fails, the error is logged and the push response is still successful.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/ in a state where HEAD resolution fails (e.g., detached HEAD)",
+        "Authenticated identity is the workspace owner with git:write scope"
+      ],
+      "input": "POST /git/myorg/myws.git/git-receive-pack with a valid pack",
+      "expected": "HTTP 200 with unpack ok; head_sha is not updated in the database; error is logged",
+      "assertion_pseudocode": "mockRepo = repoWithDetachedHEAD(); resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=packData, headers={auth}); assert resp.status == 200; assert resp.body contains pktLine('unpack ok\\n'); assert logContains('HEAD SHA read error'); ws = db.queryWorkspace('myws'); assert ws.head_sha == originalSHA"
+    },
+    {
+      "id": "TS-06-E14",
+      "requirement_id": "06-REQ-6.E3",
+      "kind": "unit",
+      "description": "When the ReceivePackSession itself fails (corrupt pack), head_sha is not updated and a pkt-line error is returned to the git client.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready', head_sha='originalsha'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/",
+        "Authenticated identity is the workspace owner with git:write scope"
+      ],
+      "input": "POST /git/myorg/myws.git/git-receive-pack with a corrupt/truncated pack body",
+      "expected": "HTTP 200 with a pkt-line ERR body; head_sha in the database remains 'originalsha'",
+      "assertion_pseudocode": "resp = httpClient.post('/git/myorg/myws.git/git-receive-pack', body=corruptPackData, headers={auth}); assert resp.status == 200; assert resp.body contains pktLine('ERR '); ws = db.queryWorkspace('myws'); assert ws.head_sha == 'originalsha'"
+    },
+    {
+      "id": "TS-06-E15",
+      "requirement_id": "06-REQ-6.E4",
+      "kind": "unit",
+      "description": "Two concurrent push requests for the same workspace are serialized; at most one succeeds atomically and the other receives a pkt-line error response.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/",
+        "Two authenticated identities (or same identity) both have git:write scope"
+      ],
+      "input": "Two simultaneous POST /git/myorg/myws.git/git-receive-pack requests with different pack data",
+      "expected": "Exactly one push succeeds (HTTP 200 with unpack ok); the other either succeeds sequentially or receives a pkt-line error; head_sha reflects exactly one of the two pushes; no data corruption occurs",
+      "assertion_pseudocode": "results = concurrentRequests(2, func(){ return httpClient.post('/git/myorg/myws.git/git-receive-pack', body=packData, headers={auth}) }); successCount = count(r for r in results if r.body contains 'unpack ok'); assert successCount >= 1; assert successCount <= 2; ws = db.queryWorkspace('myws'); assert ws.head_sha is a valid SHA"
+    },
+    {
+      "id": "TS-06-E16",
+      "requirement_id": "06-REQ-7.E1",
+      "kind": "unit",
+      "description": "When PlainOpen returns an I/O error (not repository-not-found), the Loader returns a wrapped error (not transport.ErrRepositoryNotFound) so the HTTP handler can return HTTP 500.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Directory <WORKSPACE_ROOT>/myws/trunk/ exists but has a permission error causing PlainOpen to fail with an I/O error"
+      ],
+      "input": "loader.Load(endpoint) where endpoint.Path = '/git/myorg/myws.git' and PlainOpen returns an I/O error",
+      "expected": "Returns (nil, wrappedErr) where wrappedErr is not transport.ErrRepositoryNotFound; HTTP handler maps this to HTTP 500",
+      "assertion_pseudocode": "mockPlainOpen = func(path){ return nil, errors.New('permission denied') }; loader = newWorkspaceLoaderWithPlainOpen(db, workspaceRoot, mockPlainOpen); ep = &transport.Endpoint{Path: '/git/myorg/myws.git'}; s, err = loader.Load(ep); assert err != nil; assert err != transport.ErrRepositoryNotFound; assert s == nil"
+    },
+    {
+      "id": "TS-06-E17",
+      "requirement_id": "06-REQ-7.E2",
+      "kind": "unit",
+      "description": "When the endpoint path does not contain a recognizable workspace-slug segment, the Loader returns transport.ErrRepositoryNotFound.",
+      "preconditions": [
+        "Loader is initialized with a valid database and workspace root"
+      ],
+      "input": "loader.Load(endpoint) where endpoint.Path = '/git/' (no slug segment)",
+      "expected": "Returns (nil, transport.ErrRepositoryNotFound)",
+      "assertion_pseudocode": "loader = newWorkspaceLoader(db, workspaceRoot); ep = &transport.Endpoint{Path: '/git/'}; s, err = loader.Load(ep); assert err == transport.ErrRepositoryNotFound; assert s == nil"
+    },
+    {
+      "id": "TS-06-E18",
+      "requirement_id": "06-REQ-8.E1",
+      "kind": "unit",
+      "description": "When the git client disconnects mid-stream, the handler aborts the session, releases all resources, and logs the disconnection without leaving partial state.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "POST /git/myorg/myws.git/git-upload-pack where the client closes the connection after sending partial data",
+      "expected": "No response is sent; session is aborted; all file handles and session resources are released; error is logged; no partial state is left in the repository",
+      "assertion_pseudocode": "conn = openConnection('/git/myorg/myws.git/git-upload-pack', headers={auth}); conn.writePartialData(partialPack); conn.close(); waitForHandlerCompletion(); assert openFileHandles() == 0; assert logContains('client disconnected'); assert repoIntegrity('<WORKSPACE_ROOT>/myws/trunk/') == true"
+    },
+    {
+      "id": "TS-06-E19",
+      "requirement_id": "06-REQ-8.E2",
+      "kind": "unit",
+      "description": "When the go-git session hangs, a request-scoped context deadline cancels the session and closes the connection after the timeout elapses.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "go-git session is mocked to block indefinitely",
+        "Request timeout is configured to 100ms for testing",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "POST /git/myorg/myws.git/git-upload-pack where the session never returns",
+      "expected": "HTTP connection is closed after the timeout; session context is cancelled; resources are released; the handler does not block indefinitely",
+      "assertion_pseudocode": "mockSession = sessionThatBlocks(); start = now(); resp = httpClient.postWithTimeout('/git/myorg/myws.git/git-upload-pack', body=validBody, headers={auth}, timeout=500ms); elapsed = now() - start; assert elapsed < 500ms; assert resp is connection closed or timeout error; assert sessionContextCancelled == true"
+    },
+    {
+      "id": "TS-06-E20",
+      "requirement_id": "06-REQ-8.E3",
+      "kind": "unit",
+      "description": "When the request body for a POST pack operation is empty or truncated, the go-git session returns an error encoded as a pkt-line ERR response.",
+      "preconditions": [
+        "Workspace 'myws' exists in database with clone_status='ready'",
+        "Local repository exists at <WORKSPACE_ROOT>/myws/trunk/",
+        "Authenticated identity has git:read scope and owns the workspace"
+      ],
+      "input": "POST /git/myorg/myws.git/git-upload-pack with an empty body",
+      "expected": "HTTP 200 with a pkt-line ERR <message> body",
+      "assertion_pseudocode": "resp = httpClient.post('/git/myorg/myws.git/git-upload-pack', body='', headers={auth, 'Content-Type': 'application/x-git-upload-pack-request'}); assert resp.status == 200; assert resp.body contains pktLine('ERR ')"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-06-SMOKE-1",
+      "execution_path_id": "06-PATH-1",
+      "description": "End-to-end git clone happy path: a developer clones a workspace repository using a PAT with git:read scope via the smart HTTP protocol.",
+      "trigger": "Run `git clone http://x-token-auth:<af_pat_readpat>@<hub-host>:<port>/git/<org-slug>/<workspace-slug>.git` against a running hub instance",
+      "real_components": [
+        "Echo HTTP server with git routes registered via MountHandlers",
+        "git auth middleware (credential resolution via apikit)",
+        "git authorization middleware (scope and ownership check)",
+        "git server repository resolver (database lookup, org_id verification, clone_status check)",
+        "custom server.Loader (PlainOpen, storer.Storer resolution)",
+        "go-git server transport (UploadPackSession, AdvertisedReferences)",
+        "git HTTP handler (pkt-line encoding, streaming)",
+        "SQLite database (workspace table with clone_status, org_id)",
+        "local filesystem at <WORKSPACE_ROOT>/<slug>/trunk/"
+      ],
+      "mockable": [
+        "upstream git remote (not accessed during clone from hub)"
+      ],
+      "expected_effects": [
+        "GET /git/<org-slug>/<workspace-slug>.git/info/refs?service=git-upload-pack returns HTTP 200 with Content-Type application/x-git-upload-pack-advertisement",
+        "POST /git/<org-slug>/<workspace-slug>.git/git-upload-pack returns HTTP 200 with Content-Type application/x-git-upload-pack-result",
+        "git clone completes successfully and creates a local directory with the repository contents",
+        "The cloned repository contains the same commits as the workspace's local clone at <WORKSPACE_ROOT>/<slug>/trunk/"
+      ]
+    },
+    {
+      "id": "TS-06-SMOKE-2",
+      "execution_path_id": "06-PATH-2",
+      "description": "End-to-end git push happy path: a developer pushes commits to a workspace repository using a PAT with git:write scope, and head_sha is updated in the database.",
+      "trigger": "Run `git push` from a local clone of the workspace repository against a running hub instance using a PAT with git:write scope",
+      "real_components": [
+        "Echo HTTP server with git routes registered via MountHandlers",
+        "git auth middleware (credential resolution via apikit)",
+        "git authorization middleware (scope and ownership check)",
+        "git server repository resolver (database lookup, org_id verification, clone_status check)",
+        "custom server.Loader (PlainOpen, storer.Storer resolution)",
+        "go-git server transport (ReceivePackSession)",
+        "git HTTP handler (pkt-line encoding, streaming)",
+        "git server push handler (head_sha update)",
+        "SQLite database (workspace table with head_sha column)",
+        "local filesystem at <WORKSPACE_ROOT>/<slug>/trunk/"
+      ],
+      "mockable": [
+        "upstream git remote (not accessed during push to hub)"
+      ],
+      "expected_effects": [
+        "GET /git/<org-slug>/<workspace-slug>.git/info/refs?service=git-receive-pack returns HTTP 200 with Content-Type application/x-git-receive-pack-advertisement",
+        "POST /git/<org-slug>/<workspace-slug>.git/git-receive-pack returns HTTP 200 with Content-Type application/x-git-receive-pack-result",
+        "git push completes successfully with 'unpack ok' in the response",
+        "The local clone at <WORKSPACE_ROOT>/<slug>/trunk/ contains the new commits",
+        "The workspace database row head_sha equals the SHA of the new HEAD commit",
+        "No git push to the upstream remote is performed"
+      ]
+    },
+    {
+      "id": "TS-06-SMOKE-3",
+      "execution_path_id": "06-PATH-3",
+      "description": "Unauthenticated git clone is rejected with HTTP 401 and a Basic auth challenge, prompting the git client for credentials.",
+      "trigger": "Run `git clone http://<hub-host>:<port>/git/<org-slug>/<workspace-slug>.git` without any credentials against a running hub instance",
+      "real_components": [
+        "Echo HTTP server with git routes registered via MountHandlers",
+        "git auth middleware (missing Authorization header detection)",
+        "git client (git binary)"
+      ],
+      "mockable": [
+        "local filesystem (repository not accessed)",
+        "SQLite database (not queried)"
+      ],
+      "expected_effects": [
+        "GET /git/<org-slug>/<workspace-slug>.git/info/refs?service=git-upload-pack returns HTTP 401",
+        "Response includes header WWW-Authenticate: Basic realm=\"af-hub\"",
+        "Response body is empty",
+        "git client prompts for credentials or reports authentication failure if running non-interactively",
+        "No repository data is returned to the client"
+      ]
+    },
+    {
+      "id": "TS-06-SMOKE-4",
+      "execution_path_id": "06-PATH-4",
+      "description": "A git push using a read-only PAT (git:read scope only) is rejected with HTTP 403 at the authorization middleware.",
+      "trigger": "Run `git push` using a PAT with only git:read scope against a running hub instance",
+      "real_components": [
+        "Echo HTTP server with git routes registered via MountHandlers",
+        "git auth middleware (credential resolution via apikit)",
+        "git authorization middleware (scope check for receive-pack)",
+        "git client (git binary)"
+      ],
+      "mockable": [
+        "local filesystem (repository not accessed)",
+        "SQLite database (workspace not queried for repository open)"
+      ],
+      "expected_effects": [
+        "GET /git/<org-slug>/<workspace-slug>.git/info/refs?service=git-receive-pack returns HTTP 403",
+        "No pack data is transferred",
+        "No changes are made to the local clone at <WORKSPACE_ROOT>/<slug>/trunk/",
+        "git client reports a permission error to the user"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

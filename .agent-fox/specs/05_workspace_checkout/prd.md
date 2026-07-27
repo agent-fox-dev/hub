@@ -1,3 +1,14 @@
+---
+spec_id: '05'
+spec_name: workspace_checkout
+title: Workspace Checkout
+status: draft
+created_at: '2026-07-27T14:37:27.974707+00:00'
+updated_at: '2026-07-27T14:37:27.974707+00:00'
+owner: ''
+source: docs/prd/prd4.md
+schema_version: 1
+---
 # Workspace Code Checkout
 
 ## Intent
@@ -34,6 +45,7 @@ A new `[workspace]` section is added to apikit's `Config` struct and `config.tom
 ```toml
 [workspace]
 path = "./workspace"
+workers = 4
 ```
 
 Path resolution follows the same logic as the database path (`resolveDataPath` in apikit's config package):
@@ -43,13 +55,14 @@ Path resolution follows the same logic as the database path (`resolveDataPath` i
 3. If `path` is empty and `XDG_DATA_HOME` is set, it defaults to `$XDG_DATA_HOME/workspaces`.
 4. If `path` is empty and `XDG_DATA_HOME` is not set, it defaults to `./data/workspaces`.
 
-The resolved path is the **WORKSPACE_ROOT** — the parent directory for all workspace subdirectories. The directory is created on server boot if it does not exist.
+The resolved path is the **WORKSPACE_ROOT** — the parent directory for all workspace subdirectories. The directory is created on server boot if it does not exist. If the directory cannot be created (e.g., insufficient permissions), the server exits with a fatal error — workspace operations are a core function and cannot be deferred.
 
 apikit's `Config` struct gains a new field:
 
 ```go
 type WorkspaceConfig struct {
-    Path string `toml:"path"`
+    Path    string `toml:"path"`
+    Workers int    `toml:"workers"`
 }
 ```
 
@@ -63,7 +76,7 @@ type Config struct {
 }
 ```
 
-The `Load()` function resolves `cfg.Workspace.Path` using the same resolution logic as `cfg.Database.Path`.
+The `Load()` function resolves `cfg.Workspace.Path` using the same resolution logic as `cfg.Database.Path`. The `Workers` field defaults to 4 if omitted or set to 0.
 
 ### Workspace directory structure
 
@@ -95,7 +108,7 @@ When a workspace is created via `POST /api/v1/workspaces`:
 
 The job queue is an in-memory FIFO queue backed by a Go channel.
 
-- **Workers:** A configurable number of goroutines (default: 4) consume jobs from the channel concurrently.
+- **Workers:** The number of goroutines consuming jobs is set by `[workspace] workers` in `config.toml` (default: 4).
 - **Job types:** `clone` (initial workspace creation) and `reclone` (workspace reactivation). Both perform the same clone operation.
 - **Context:** Each job receives a context derived from the server's root context. On graceful shutdown, the context is cancelled, in-progress clones are interrupted, and pending jobs are discarded.
 - **No persistence:** Jobs are not saved to disk. If the server restarts, workspaces with `clone_status = "pending"` or `"cloning"` remain in that state. Recovery requires deleting and recreating the workspace.
@@ -182,7 +195,7 @@ When archiving a workspace (`POST /api/v1/workspaces/:slug/archive`), the existi
 **If `clone_status` is `ready`:**
 
 1. Open the local git repository at `<WORKSPACE_ROOT>/<slug>/trunk/` via `git.PlainOpen`.
-2. Push local commits to the upstream remote via `repo.Push`. If the remote is already up-to-date (`git.NoErrAlreadyUpToDate`), treat as success. If the push fails for any other reason, the archive fails with HTTP 500 and the error message.
+2. Push local commits to the upstream remote via `repo.Push(&git.PushOptions{RemoteName: "origin"})`. No `Auth` field — relies on system-level git credentials or public repo access. If the remote is already up-to-date (`git.NoErrAlreadyUpToDate`), treat as success. If the push fails for any other reason, the archive fails with HTTP 500 and the error message.
 3. Record the HEAD commit SHA in `head_sha` via `repo.Head().Hash().String()`.
 4. Delete the workspace directory (`<WORKSPACE_ROOT>/<slug>/`) from disk.
 5. Set `clone_status = "archived"`.
@@ -292,4 +305,9 @@ Additional error conditions, using apikit's standard JSON envelope:
 
 9. **Archive rejects workspaces mid-clone (HTTP 409).** Archiving a workspace while a clone is in progress would require cancelling the job and handling partial state. Returning 409 is simpler and safer — the user waits for the clone to finish or fail, then archives.
 
-10. **Four default workers.** The job queue defaults to 4 concurrent workers. This provides reasonable parallelism for multiple workspace creates without overwhelming a single-node server's disk I/O or network bandwidth.
+10. **Configurable worker count.** The job queue worker count is configurable via `[workspace] workers` in `config.toml` (default: 4). This lets operators tune concurrency based on their server's I/O and network capacity.
+
+11. **Lifecycle handlers extended in-place.** The archive, reactivate, and delete handlers from spec 03 are modified in-place to add git operations. This spec layers on top of the existing handler logic (authorization checks, state validation) rather than replacing it. All changes land in the same `internal/workspace/` package.
+
+12. **WORKSPACE_ROOT creation is fatal on failure.** If the server cannot create the workspace root directory on boot, it exits with a fatal error. Starting without workspace support would produce confusing behavior — every workspace create would fail with an opaque filesystem error.
+

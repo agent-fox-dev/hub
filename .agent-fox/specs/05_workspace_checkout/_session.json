@@ -1,0 +1,81 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `workspace_checkout` PRD is exceptionally thorough and well-structured. It covers intent, goals, non-goals, functional requirements, schema changes, state machines, API surface, tech stack, dependencies, and design decisions with a high level of specificity. The document is suitable for artifact generation with only a few minor clarifications worth noting. One potential overlap exists with the active `workspace_write_delete` spec (which owns archive/reactivate/delete endpoints), but the PRD explicitly declares a dependency on it, suggesting intent to extend rather than supersede \u2014 a quick confirmation would be ideal. No blocking gaps were found.",
+      "gaps": [
+        "Overlap with active spec `workspace_write_delete`: that spec owns the archive, reactivate, and delete lifecycle endpoints. This PRD extends those same endpoints with git-related behavior. While a dependency is declared, it is not explicitly stated whether this spec modifies the existing handlers in-place, wraps them, or supersedes them \u2014 creating potential implementation ambiguity.",
+        "Worker count (default: 4) is described as a constant default but it is unclear whether this is configurable via `config.toml` (e.g., a `workers` field under `[workspace]`) or hardcoded. The `WorkspaceConfig` struct definition shown only has `Path`.",
+        "No mention of filesystem permission requirements or error handling if `WORKSPACE_ROOT` cannot be created on server boot (e.g., insufficient permissions). Only creation is mentioned, not the failure path.",
+        "The `PushOptions` struct used in `repo.Push(o *PushOptions)` is listed in the Verified External API table only at the call site \u2014 its fields (e.g., `RemoteName`, auth options) are not documented, which could matter for non-default remote names.",
+        "No test strategy or test tooling is mentioned (unit tests, integration tests, mocks for go-git). The tech stack names the language and framework but omits test tooling."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "This PRD extends the archive, reactivate, and delete endpoints that are owned by the active `workspace_write_delete` spec. Should `workspace_checkout` be treated as an extension layered on top of `workspace_write_delete` (modifying the same handlers), or should it supersede/replace those lifecycle behaviors entirely? And is the implementation expected to land in the same codebase location as `workspace_write_delete`'s handlers?",
+          "context": "The `workspace_write_delete` spec is active and owns these endpoints. Without clarification, implementers may introduce conflicting handler registrations or duplicate route logic.",
+          "options": [
+            "Extend (modify existing handlers in-place, with workspace_write_delete as a prerequisite)",
+            "Supersede (workspace_checkout replaces workspace_write_delete's lifecycle logic)",
+            "Compose (workspace_checkout wraps workspace_write_delete handlers as middleware)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Is the worker count (default: 4) hardcoded, or should it be configurable via a field in the `[workspace]` section of `config.toml` (e.g., `workers = 4`)? The `WorkspaceConfig` struct shown in the PRD only includes `Path`.",
+          "context": "If the worker count is meant to be operator-tunable, it needs to be added to the `WorkspaceConfig` struct and documented. If hardcoded, that should be stated explicitly to avoid implementers adding an undocumented field.",
+          "options": [
+            "Hardcoded constant (no config field needed)",
+            "Configurable via [workspace] workers field in config.toml"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "What should happen if the server cannot create the `WORKSPACE_ROOT` directory on boot (e.g., due to a permissions error)? Should it be a fatal startup error (server refuses to start) or a logged warning that allows the server to start degraded?",
+          "context": "The PRD says the directory is created on server boot if it does not exist, but does not specify the failure path. This affects server initialization and error handling code.",
+          "options": [
+            "Fatal: server exits with an error if WORKSPACE_ROOT cannot be created",
+            "Degraded: server logs a warning and starts without workspace support",
+            "Fatal only if [workspace] path is explicitly set; ignored if using defaults"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "The `repo.Push` call uses `*PushOptions` but the Verified External API table does not document the `PushOptions` fields being used (e.g., `RemoteName`, authentication). What remote name should be used (e.g., `origin`), and is any `Auth` field required for the push given that this spec assumes public repos or pre-configured system-level credentials?",
+          "context": "Leaving PushOptions fields undocumented could lead to implementers using wrong defaults (e.g., pushing to the wrong remote or omitting required fields). Documenting the expected struct initialization ensures consistent behavior.",
+          "options": [
+            "Use RemoteName: \"origin\" with no Auth field (relies on system git credentials)",
+            "Use RemoteName: \"origin\" with Auth field populated from system credential helper",
+            "Leave to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "The PRD does not specify test tooling or a testing strategy. What testing approach is expected for this spec (e.g., Go standard `testing` package, testify, integration tests with real git repos, mocked go-git interfaces)?",
+          "context": "Missing test tooling information can lead to inconsistent test patterns across the codebase and may block CI setup. Other specs in this project may already have an established test convention.",
+          "options": [
+            "Go standard testing package + testify/assert",
+            "Go standard testing package only",
+            "Integration tests against real git repos (e.g., local bare repos)",
+            "Follow existing test conventions in the hub repo (no change needed)"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

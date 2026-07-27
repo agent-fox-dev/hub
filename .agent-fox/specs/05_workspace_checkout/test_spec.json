@@ -1,0 +1,1415 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "workspace_checkout",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-05-1",
+      "requirement_id": "05-REQ-1.1",
+      "kind": "unit",
+      "description": "WorkspaceConfig struct exists with Path and Workers fields and is embedded in Config as Workspace with correct TOML tags.",
+      "preconditions": [
+        "apikit config package source is available",
+        "Go toolchain is installed"
+      ],
+      "input": "Inspect the Config and WorkspaceConfig type definitions in the apikit config package",
+      "expected": {
+        "Config.Workspace": "field of type WorkspaceConfig with toml tag \"workspace\"",
+        "WorkspaceConfig": "struct with fields Path string (toml:\"path\") and Workers int (toml:\"workers\")"
+      },
+      "assertion_pseudocode": "cfg_type = reflect(Config); assert cfg_type has field 'Workspace' of type WorkspaceConfig with toml tag 'workspace'; ws_type = reflect(WorkspaceConfig); assert ws_type has field 'Path' of type string with toml tag 'path'; assert ws_type has field 'Workers' of type int with toml tag 'workers'"
+    },
+    {
+      "id": "TS-05-2",
+      "requirement_id": "05-REQ-1.2",
+      "kind": "unit",
+      "description": "Load() resolves Workspace.Path via resolveDataPath and defaults Workers to 4 when configured value is 0.",
+      "preconditions": [
+        "config.toml is written with [workspace] path = \"./workspace\" and workers = 0",
+        "apikit config package is available"
+      ],
+      "input": {
+        "config_toml": "[workspace]\npath = \"./workspace\"\nworkers = 0"
+      },
+      "expected": {
+        "Workspace.Path": "./workspace",
+        "Workspace.Workers": 4
+      },
+      "assertion_pseudocode": "cfg, err = Load(); assert err == nil; assert cfg.Workspace.Path == './workspace'; assert cfg.Workspace.Workers == 4"
+    },
+    {
+      "id": "TS-05-3",
+      "requirement_id": "05-REQ-1.3",
+      "kind": "unit",
+      "description": "Load() sets Workspace.Path to './workspace' and Workers to 4 when config.toml specifies those exact values.",
+      "preconditions": [
+        "config.toml contains [workspace] path = \"./workspace\" and workers = 4"
+      ],
+      "input": {
+        "config_toml": "[workspace]\npath = \"./workspace\"\nworkers = 4"
+      },
+      "expected": {
+        "Workspace.Path": "./workspace",
+        "Workspace.Workers": 4
+      },
+      "assertion_pseudocode": "cfg, err = Load(); assert err == nil; assert cfg.Workspace.Path == './workspace'; assert cfg.Workspace.Workers == 4"
+    },
+    {
+      "id": "TS-05-4",
+      "requirement_id": "05-REQ-1.4",
+      "kind": "unit",
+      "description": "Load() applies empty-path resolution rules and defaults Workers to 4 when the [workspace] section is entirely omitted from config.toml.",
+      "preconditions": [
+        "config.toml does not contain a [workspace] section",
+        "XDG_DATA_HOME environment variable is unset"
+      ],
+      "input": {
+        "config_toml": "# no [workspace] section"
+      },
+      "expected": {
+        "Workspace.Path": "./data/workspaces",
+        "Workspace.Workers": 4
+      },
+      "assertion_pseudocode": "unset_env('XDG_DATA_HOME'); cfg, err = Load(); assert err == nil; assert cfg.Workspace.Workers == 4; assert cfg.Workspace.Path == './data/workspaces'"
+    },
+    {
+      "id": "TS-05-5",
+      "requirement_id": "05-REQ-2.1",
+      "kind": "integration",
+      "description": "Server boot creates the WORKSPACE_ROOT directory (including missing parents) when it does not already exist.",
+      "preconditions": [
+        "WORKSPACE_ROOT directory does not exist on the filesystem",
+        "hub server binary is available",
+        "config.toml points Workspace.Path to a non-existent directory"
+      ],
+      "input": {
+        "workspace_path": "/tmp/test-ws-root-new"
+      },
+      "expected": {
+        "directory_exists": true,
+        "server_starts": true
+      },
+      "assertion_pseudocode": "remove_dir_if_exists('/tmp/test-ws-root-new'); start_server(config); assert dir_exists('/tmp/test-ws-root-new') == true; assert server_is_running() == true"
+    },
+    {
+      "id": "TS-05-6",
+      "requirement_id": "05-REQ-2.2",
+      "kind": "integration",
+      "description": "Server exits with a non-zero exit code and logs a fatal error when WORKSPACE_ROOT cannot be created due to insufficient permissions.",
+      "preconditions": [
+        "A parent directory exists with permissions 000 (no write access)",
+        "config.toml points Workspace.Path to a subdirectory of that unwritable parent"
+      ],
+      "input": {
+        "workspace_path": "/root/no-permission/workspaces"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "log_output": "contains fatal error message about workspace directory creation failure"
+      },
+      "assertion_pseudocode": "create_unwritable_dir('/tmp/no-perm'); cfg.Workspace.Path = '/tmp/no-perm/workspaces'; result = start_server_and_wait(cfg); assert result.exit_code != 0; assert result.stderr contains 'fatal' or result.log contains 'fatal'"
+    },
+    {
+      "id": "TS-05-7",
+      "requirement_id": "05-REQ-3.1",
+      "kind": "unit",
+      "description": "The workspaces SQLite table includes clone_status (TEXT NOT NULL DEFAULT 'pending'), head_sha (TEXT nullable), and clone_error (TEXT nullable) columns.",
+      "preconditions": [
+        "SQLite database is initialized with the workspaces table DDL from this spec"
+      ],
+      "input": "PRAGMA table_info(workspaces)",
+      "expected": {
+        "clone_error": "TEXT nullable",
+        "clone_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "head_sha": "TEXT nullable"
+      },
+      "assertion_pseudocode": "db = open_sqlite(db_path); cols = db.query('PRAGMA table_info(workspaces)'); clone_status_col = find_col(cols, 'clone_status'); assert clone_status_col.type == 'TEXT'; assert clone_status_col.notnull == 1; assert clone_status_col.dflt_value == \"'pending'\"; head_sha_col = find_col(cols, 'head_sha'); assert head_sha_col.notnull == 0; clone_error_col = find_col(cols, 'clone_error'); assert clone_error_col.notnull == 0"
+    },
+    {
+      "id": "TS-05-8",
+      "requirement_id": "05-REQ-3.2",
+      "kind": "integration",
+      "description": "All workspace API endpoints (create, list, get, update, archive, reactivate) include clone_status, head_sha, and clone_error fields in their JSON responses.",
+      "preconditions": [
+        "hub server is running with a valid config",
+        "A workspace exists in the database with known clone_status, head_sha, and clone_error values",
+        "Valid authentication token is available"
+      ],
+      "input": {
+        "endpoints": [
+          "POST /api/v1/workspaces",
+          "GET /api/v1/workspaces",
+          "GET /api/v1/workspaces/:slug",
+          "PATCH /api/v1/workspaces/:slug",
+          "POST /api/v1/workspaces/:slug/archive",
+          "POST /api/v1/workspaces/:slug/reactivate"
+        ]
+      },
+      "expected": {
+        "all_responses": "JSON object contains clone_status (string), head_sha (string or null), clone_error (string or null)"
+      },
+      "assertion_pseudocode": "for each endpoint in endpoints: resp = call(endpoint); assert resp.body has key 'clone_status'; assert resp.body has key 'head_sha'; assert resp.body has key 'clone_error'; assert type(resp.body.clone_status) == string"
+    },
+    {
+      "id": "TS-05-9",
+      "requirement_id": "05-REQ-3.3",
+      "kind": "unit",
+      "description": "The workspaces table enforces that clone_status is one of the five valid values: pending, cloning, ready, failed, archived.",
+      "preconditions": [
+        "SQLite database is initialized with the workspaces table"
+      ],
+      "input": {
+        "invalid_clone_status": "unknown_state"
+      },
+      "expected": {
+        "invalid_insert": "either rejected by CHECK constraint or application-level validation prevents it",
+        "valid_values": [
+          "pending",
+          "cloning",
+          "ready",
+          "failed",
+          "archived"
+        ]
+      },
+      "assertion_pseudocode": "for status in ['pending','cloning','ready','failed','archived']: insert_workspace(clone_status=status); assert no error; try: insert_workspace(clone_status='invalid_state'); assert error or application rejects it"
+    },
+    {
+      "id": "TS-05-10",
+      "requirement_id": "05-REQ-4.1",
+      "kind": "integration",
+      "description": "On server start, an in-memory FIFO job queue is initialized and the configured number of worker goroutines (default 4) are started to consume jobs.",
+      "preconditions": [
+        "hub server is configured with workers = 4 in [workspace]",
+        "Server starts successfully"
+      ],
+      "input": {
+        "workers_config": 4
+      },
+      "expected": {
+        "queue_initialized": true,
+        "workers_running": 4
+      },
+      "assertion_pseudocode": "start_server(config_with_workers=4); enqueue_N_clone_jobs(8); observe_concurrent_processing_count(); assert max_concurrent_workers <= 4; assert all_jobs_eventually_processed == true"
+    },
+    {
+      "id": "TS-05-11",
+      "requirement_id": "05-REQ-4.2",
+      "kind": "integration",
+      "description": "When a clone job is picked up by a worker, it sets clone_status to 'cloning', creates the workspace directory, and performs a shallow clone (Depth=1) into <WORKSPACE_ROOT>/<slug>/trunk/.",
+      "preconditions": [
+        "hub server is running with a valid WORKSPACE_ROOT",
+        "A workspace record exists with clone_status = 'pending'",
+        "A valid git repository URL is accessible"
+      ],
+      "input": {
+        "git_url": "https://github.com/example/repo.git",
+        "slug": "test-ws"
+      },
+      "expected": {
+        "clone_depth": 1,
+        "clone_status_during": "cloning",
+        "directory_created": "<WORKSPACE_ROOT>/test-ws/trunk/"
+      },
+      "assertion_pseudocode": "enqueue_clone_job(slug='test-ws', git_url='https://github.com/example/repo.git'); wait_for_status_change(slug='test-ws', from='pending', to='cloning'); assert dir_exists(WORKSPACE_ROOT + '/test-ws') == true; wait_for_status_change(slug='test-ws', from='cloning', to='ready'); assert dir_exists(WORKSPACE_ROOT + '/test-ws/trunk') == true; git_log = run_git(['log', '--oneline'], cwd=WORKSPACE_ROOT+'/test-ws/trunk'); assert len(git_log) == 1"
+    },
+    {
+      "id": "TS-05-12",
+      "requirement_id": "05-REQ-4.3",
+      "kind": "integration",
+      "description": "On successful clone, the worker sets clone_status to 'ready', records the HEAD commit SHA in head_sha, and clears clone_error to NULL.",
+      "preconditions": [
+        "hub server is running",
+        "A clone job has been enqueued for a valid git repository",
+        "PlainCloneContext completes successfully"
+      ],
+      "input": {
+        "git_url": "https://github.com/example/repo.git",
+        "slug": "test-ws-success"
+      },
+      "expected": {
+        "clone_error": null,
+        "clone_status": "ready",
+        "head_sha": "non-null 40-character hex string"
+      },
+      "assertion_pseudocode": "enqueue_clone_job(slug='test-ws-success', git_url=valid_url); wait_for_clone_complete(slug='test-ws-success'); ws = db.query('SELECT clone_status, head_sha, clone_error FROM workspaces WHERE slug = ?', 'test-ws-success'); assert ws.clone_status == 'ready'; assert ws.head_sha != null; assert len(ws.head_sha) == 40; assert ws.clone_error == null"
+    },
+    {
+      "id": "TS-05-13",
+      "requirement_id": "05-REQ-4.4",
+      "kind": "integration",
+      "description": "When PlainCloneContext returns a non-nil error, the worker sets clone_status to 'failed', records the error message in clone_error, and removes any partially created workspace directory.",
+      "preconditions": [
+        "hub server is running",
+        "A clone job is enqueued with an invalid or unreachable git URL"
+      ],
+      "input": {
+        "git_url": "https://invalid.example.com/nonexistent.git",
+        "slug": "test-ws-fail"
+      },
+      "expected": {
+        "clone_error": "non-null string containing the error message",
+        "clone_status": "failed",
+        "workspace_directory": "does not exist on disk"
+      },
+      "assertion_pseudocode": "enqueue_clone_job(slug='test-ws-fail', git_url='https://invalid.example.com/nonexistent.git'); wait_for_clone_complete(slug='test-ws-fail'); ws = db.query('SELECT clone_status, clone_error FROM workspaces WHERE slug = ?', 'test-ws-fail'); assert ws.clone_status == 'failed'; assert ws.clone_error != null; assert len(ws.clone_error) > 0; assert dir_exists(WORKSPACE_ROOT + '/test-ws-fail') == false"
+    },
+    {
+      "id": "TS-05-14",
+      "requirement_id": "05-REQ-4.5",
+      "kind": "unit",
+      "description": "When the workspace directory already exists under WORKSPACE_ROOT, the clone job skips PlainCloneContext and sets clone_status to 'ready' directly.",
+      "preconditions": [
+        "hub server is running",
+        "The workspace directory <WORKSPACE_ROOT>/<slug>/ already exists on disk",
+        "A clone job is enqueued for that workspace"
+      ],
+      "input": {
+        "directory_exists": true,
+        "slug": "pre-existing-ws"
+      },
+      "expected": {
+        "PlainCloneContext_called": false,
+        "clone_status": "ready"
+      },
+      "assertion_pseudocode": "create_dir(WORKSPACE_ROOT + '/pre-existing-ws'); enqueue_clone_job(slug='pre-existing-ws', git_url=any_url); wait_for_clone_complete(slug='pre-existing-ws'); ws = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'pre-existing-ws'); assert ws.clone_status == 'ready'; assert PlainCloneContext_was_not_called()"
+    },
+    {
+      "id": "TS-05-15",
+      "requirement_id": "05-REQ-4.6",
+      "kind": "unit",
+      "description": "When branch is non-null on the workspace record, the clone job sets SingleBranch=true and ReferenceName=NewBranchReferenceName(branch) in CloneOptions.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace record exists with branch = 'feature/my-branch'",
+        "A clone job is enqueued for that workspace"
+      ],
+      "input": {
+        "branch": "feature/my-branch",
+        "slug": "test-ws-branch"
+      },
+      "expected": {
+        "CloneOptions.ReferenceName": "refs/heads/feature/my-branch",
+        "CloneOptions.SingleBranch": true
+      },
+      "assertion_pseudocode": "captured_opts = capture_clone_options(); enqueue_clone_job(slug='test-ws-branch', git_url=valid_url, branch='feature/my-branch'); wait_for_clone_complete(slug='test-ws-branch'); assert captured_opts.SingleBranch == true; assert captured_opts.ReferenceName == 'refs/heads/feature/my-branch'"
+    },
+    {
+      "id": "TS-05-16",
+      "requirement_id": "05-REQ-4.7",
+      "kind": "unit",
+      "description": "When branch is null on the workspace record, the clone job omits ReferenceName from CloneOptions to clone the remote's default branch.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace record exists with branch = NULL",
+        "A clone job is enqueued for that workspace"
+      ],
+      "input": {
+        "branch": null,
+        "slug": "test-ws-default-branch"
+      },
+      "expected": {
+        "CloneOptions.ReferenceName": "zero value / omitted"
+      },
+      "assertion_pseudocode": "captured_opts = capture_clone_options(); enqueue_clone_job(slug='test-ws-default-branch', git_url=valid_url, branch=null); wait_for_clone_complete(slug='test-ws-default-branch'); assert captured_opts.ReferenceName == '' or captured_opts.ReferenceName == zero_value"
+    },
+    {
+      "id": "TS-05-17",
+      "requirement_id": "05-REQ-5.1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces returns HTTP 201 immediately with clone_status='pending', head_sha=null, clone_error=null without waiting for the clone to complete.",
+      "preconditions": [
+        "hub server is running",
+        "Valid authentication token is available",
+        "Job queue workers are running"
+      ],
+      "input": {
+        "display_name": "Test Workspace",
+        "git_url": "https://github.com/example/repo.git"
+      },
+      "expected": {
+        "body.clone_error": null,
+        "body.clone_status": "pending",
+        "body.head_sha": null,
+        "http_status": 201,
+        "response_time": "immediate (before clone completes)"
+      },
+      "assertion_pseudocode": "start_time = now(); resp = http_post('/api/v1/workspaces', {git_url: 'https://github.com/example/repo.git', display_name: 'Test Workspace'}); elapsed = now() - start_time; assert resp.status == 201; assert resp.body.clone_status == 'pending'; assert resp.body.head_sha == null; assert resp.body.clone_error == null; assert elapsed < 2_seconds"
+    },
+    {
+      "id": "TS-05-18",
+      "requirement_id": "05-REQ-6.1",
+      "kind": "integration",
+      "description": "Archiving a workspace with clone_status='ready' pushes to origin, records head_sha, deletes the workspace directory, and returns HTTP 200 with status='archived' and clone_status='archived'.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'ready' and a local clone at <WORKSPACE_ROOT>/<slug>/trunk/",
+        "The upstream remote is accessible and accepts pushes",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "ready-ws"
+      },
+      "expected": {
+        "body.clone_status": "archived",
+        "body.head_sha": "non-null 40-char hex string",
+        "body.status": "archived",
+        "http_status": 200,
+        "workspace_directory": "deleted from disk"
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ready-ws/archive'); assert resp.status == 200; assert resp.body.status == 'archived'; assert resp.body.clone_status == 'archived'; assert resp.body.head_sha != null; assert len(resp.body.head_sha) == 40; assert dir_exists(WORKSPACE_ROOT + '/ready-ws') == false"
+    },
+    {
+      "id": "TS-05-19",
+      "requirement_id": "05-REQ-6.2",
+      "kind": "integration",
+      "description": "Archiving a workspace with clone_status='pending' or 'failed' cleans up any partial directory, sets clone_status='archived' and status='archived' without attempting a git push, and returns HTTP 200.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'pending' or 'failed'",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "clone_status": "pending",
+        "slug": "pending-ws"
+      },
+      "expected": {
+        "body.clone_status": "archived",
+        "body.status": "archived",
+        "git_push_called": false,
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/pending-ws/archive'); assert resp.status == 200; assert resp.body.status == 'archived'; assert resp.body.clone_status == 'archived'; assert git_push_was_not_called()"
+    },
+    {
+      "id": "TS-05-20",
+      "requirement_id": "05-REQ-6.3",
+      "kind": "integration",
+      "description": "Archiving a workspace with clone_status='cloning' returns HTTP 409 with message 'clone in progress; try again after it completes'.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'cloning' (clone is in progress)",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "cloning-ws"
+      },
+      "expected": {
+        "body.message": "clone in progress; try again after it completes",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "set_workspace_clone_status(slug='cloning-ws', status='cloning'); resp = http_post('/api/v1/workspaces/cloning-ws/archive'); assert resp.status == 409; assert resp.body.message == 'clone in progress; try again after it completes' or resp.body.error contains 'clone in progress'"
+    },
+    {
+      "id": "TS-05-21",
+      "requirement_id": "05-REQ-6.4",
+      "kind": "integration",
+      "description": "When repo.Push returns an error other than NoErrAlreadyUpToDate during archive, the handler returns HTTP 500 and leaves workspace status and clone_status unchanged.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'ready'",
+        "The upstream remote is configured to reject pushes (e.g., read-only or network error)"
+      ],
+      "input": {
+        "slug": "push-fail-ws"
+      },
+      "expected": {
+        "body": "JSON error body containing push error message",
+        "http_status": 500,
+        "workspace.clone_status": "unchanged (ready)",
+        "workspace.status": "unchanged (active)",
+        "workspace_directory": "still exists on disk"
+      },
+      "assertion_pseudocode": "mock_push_to_return_error('push rejected'); resp = http_post('/api/v1/workspaces/push-fail-ws/archive'); assert resp.status == 500; assert resp.body.error != null; ws = db.query('SELECT status, clone_status FROM workspaces WHERE slug = ?', 'push-fail-ws'); assert ws.status == 'active'; assert ws.clone_status == 'ready'; assert dir_exists(WORKSPACE_ROOT + '/push-fail-ws') == true"
+    },
+    {
+      "id": "TS-05-22",
+      "requirement_id": "05-REQ-6.5",
+      "kind": "integration",
+      "description": "When repo.Push returns NoErrAlreadyUpToDate during archive, the handler treats it as success and proceeds to record head_sha, delete the directory, and return HTTP 200.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'ready'",
+        "The upstream remote is already up-to-date (no new local commits)"
+      ],
+      "input": {
+        "slug": "already-up-to-date-ws"
+      },
+      "expected": {
+        "body.clone_status": "archived",
+        "body.head_sha": "non-null 40-char hex string",
+        "body.status": "archived",
+        "http_status": 200,
+        "workspace_directory": "deleted from disk"
+      },
+      "assertion_pseudocode": "mock_push_to_return(NoErrAlreadyUpToDate); resp = http_post('/api/v1/workspaces/already-up-to-date-ws/archive'); assert resp.status == 200; assert resp.body.status == 'archived'; assert resp.body.clone_status == 'archived'; assert resp.body.head_sha != null; assert dir_exists(WORKSPACE_ROOT + '/already-up-to-date-ws') == false"
+    },
+    {
+      "id": "TS-05-23",
+      "requirement_id": "05-REQ-7.1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/reactivate sets status='active', clone_status='pending', clears clone_error, enqueues a reclone job, and returns HTTP 200 immediately.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'archived' and clone_status = 'archived'",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "archived-ws"
+      },
+      "expected": {
+        "body.clone_error": null,
+        "body.clone_status": "pending",
+        "body.status": "active",
+        "http_status": 200,
+        "reclone_job_enqueued": true
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/archived-ws/reactivate'); assert resp.status == 200; assert resp.body.status == 'active'; assert resp.body.clone_status == 'pending'; assert resp.body.clone_error == null; assert reclone_job_was_enqueued(slug='archived-ws') == true"
+    },
+    {
+      "id": "TS-05-24",
+      "requirement_id": "05-REQ-8.1",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug checks for and deletes the workspace directory if it exists, then deletes the database row, returning HTTP 204; logs a warning if directory deletion fails but still deletes the row.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'archived'",
+        "The workspace directory exists under WORKSPACE_ROOT",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "archived-ws-to-delete"
+      },
+      "expected": {
+        "database_row": "deleted",
+        "http_status": 204,
+        "workspace_directory": "deleted from disk"
+      },
+      "assertion_pseudocode": "create_dir(WORKSPACE_ROOT + '/archived-ws-to-delete'); resp = http_delete('/api/v1/workspaces/archived-ws-to-delete'); assert resp.status == 204; assert dir_exists(WORKSPACE_ROOT + '/archived-ws-to-delete') == false; ws = db.query('SELECT * FROM workspaces WHERE slug = ?', 'archived-ws-to-delete'); assert ws == null"
+    },
+    {
+      "id": "TS-05-25",
+      "requirement_id": "05-REQ-9.1",
+      "kind": "unit",
+      "description": "The clone_status state machine enforces all valid transitions: pending→cloning, cloning→ready, cloning→failed, ready→archived, pending→archived, failed→archived, archived→pending.",
+      "preconditions": [
+        "hub server is running with a SQLite database",
+        "Workspace records exist in each valid clone_status state"
+      ],
+      "input": {
+        "transitions": [
+          [
+            "pending",
+            "cloning"
+          ],
+          [
+            "cloning",
+            "ready"
+          ],
+          [
+            "cloning",
+            "failed"
+          ],
+          [
+            "ready",
+            "archived"
+          ],
+          [
+            "pending",
+            "archived"
+          ],
+          [
+            "failed",
+            "archived"
+          ],
+          [
+            "archived",
+            "pending"
+          ]
+        ]
+      },
+      "expected": {
+        "all_valid_transitions": "succeed without error",
+        "invalid_transitions": "rejected"
+      },
+      "assertion_pseudocode": "for [from, to] in valid_transitions: set_clone_status(slug, from); trigger_transition(slug, to); assert get_clone_status(slug) == to; for [from, to] in invalid_transitions: set_clone_status(slug, from); result = trigger_transition(slug, to); assert result.error != null"
+    },
+    {
+      "id": "TS-05-26",
+      "requirement_id": "05-REQ-9.2",
+      "kind": "integration",
+      "description": "The only way to transition clone_status from 'archived' to 'pending' is via the reactivate endpoint.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'archived'",
+        "Valid authentication token is available"
+      ],
+      "input": {
+        "endpoint": "POST /api/v1/workspaces/:slug/reactivate",
+        "slug": "archived-ws"
+      },
+      "expected": {
+        "clone_status_after_reactivate": "pending",
+        "no_other_path_to_pending": true
+      },
+      "assertion_pseudocode": "set_workspace(slug='archived-ws', clone_status='archived', status='archived'); resp = http_post('/api/v1/workspaces/archived-ws/reactivate'); assert resp.status == 200; assert resp.body.clone_status == 'pending'; ws = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'archived-ws'); assert ws.clone_status == 'pending'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-05-P1",
+      "property_id": "05-PROP-1",
+      "validates": [
+        "05-REQ-3.3",
+        "05-REQ-9.1"
+      ],
+      "description": "For any workspace record in the database, clone_status is always one of the five valid values: pending, cloning, ready, failed, archived.",
+      "for_any_strategy": "Sample all workspace records from the SQLite database after any sequence of create, archive, reactivate, and delete operations; also generate random workspace records via table-driven tests covering all state transitions",
+      "invariant_check": "for each workspace in db.query('SELECT clone_status FROM workspaces'): assert workspace.clone_status in {'pending', 'cloning', 'ready', 'failed', 'archived'}"
+    },
+    {
+      "id": "TS-05-P2",
+      "property_id": "05-PROP-2",
+      "validates": [
+        "05-REQ-4.3",
+        "05-REQ-6.1"
+      ],
+      "description": "For any workspace record, head_sha is non-null if and only if clone_status is 'ready' or clone_status is 'archived' (following a successful clone).",
+      "for_any_strategy": "Sample all workspace records from the SQLite database after running through create, clone, archive, and reactivate operations; use table-driven tests covering all clone_status values",
+      "invariant_check": "for each workspace in db.query('SELECT clone_status, head_sha FROM workspaces'): if workspace.clone_status in {'ready', 'archived'} and workspace_had_successful_clone: assert workspace.head_sha != null; if workspace.clone_status in {'pending', 'cloning', 'failed'}: assert workspace.head_sha == null"
+    },
+    {
+      "id": "TS-05-P3",
+      "property_id": "05-PROP-3",
+      "validates": [
+        "05-REQ-4.3",
+        "05-REQ-4.4",
+        "05-REQ-7.1"
+      ],
+      "description": "For any workspace record, clone_error is null whenever clone_status is pending, cloning, ready, or archived.",
+      "for_any_strategy": "Sample all workspace records from the SQLite database after any sequence of operations; use table-driven tests that exercise each non-failed clone_status value",
+      "invariant_check": "for each workspace in db.query('SELECT clone_status, clone_error FROM workspaces'): if workspace.clone_status in {'pending', 'cloning', 'ready', 'archived'}: assert workspace.clone_error == null"
+    },
+    {
+      "id": "TS-05-P4",
+      "property_id": "05-PROP-4",
+      "validates": [
+        "05-REQ-4.4",
+        "05-REQ-6.1",
+        "05-REQ-6.2"
+      ],
+      "description": "For any workspace slug, the workspace directory exists on disk if and only if clone_status is 'cloning' or 'ready'; it does not exist when clone_status is pending, failed, or archived.",
+      "for_any_strategy": "After each state transition (clone start, clone success, clone failure, archive, reactivate), check filesystem state against database clone_status for a set of 10 test workspaces with varying slugs",
+      "invariant_check": "for each workspace in db.query('SELECT slug, clone_status FROM workspaces'): dir_path = WORKSPACE_ROOT + '/' + workspace.slug; if workspace.clone_status in {'cloning', 'ready'}: assert dir_exists(dir_path) == true; if workspace.clone_status in {'pending', 'failed', 'archived'}: assert dir_exists(dir_path) == false"
+    },
+    {
+      "id": "TS-05-P5",
+      "property_id": "05-PROP-5",
+      "validates": [
+        "05-REQ-1.2",
+        "05-REQ-1.E4"
+      ],
+      "description": "For any config.toml with workers=0 or omitted [workspace] section, Workspace.Workers is always >= 1 after Load() returns.",
+      "for_any_strategy": "Generate config.toml variants with workers values of 0, -1, omitted, and various positive integers; call Load() for each and check the resulting Workers value",
+      "invariant_check": "for workers_value in [0, -1, null, 1, 2, 4, 8, 100]: write_config(workers=workers_value); cfg, err = Load(); assert err == nil; assert cfg.Workspace.Workers >= 1; if workers_value <= 0 or workers_value == null: assert cfg.Workspace.Workers == 4"
+    },
+    {
+      "id": "TS-05-P6",
+      "property_id": "05-PROP-6",
+      "validates": [
+        "05-REQ-6.3",
+        "05-REQ-9.E1"
+      ],
+      "description": "For any workspace with clone_status='cloning', POST /api/v1/workspaces/:slug/archive always returns HTTP 409 and never modifies clone_status or status.",
+      "for_any_strategy": "Create 5 workspaces, force each to clone_status='cloning' via direct database update, then call the archive endpoint for each; verify response and database state",
+      "invariant_check": "for each workspace with clone_status='cloning': resp = http_post('/api/v1/workspaces/' + slug + '/archive'); assert resp.status == 409; ws = db.query('SELECT clone_status, status FROM workspaces WHERE slug = ?', slug); assert ws.clone_status == 'cloning'; assert ws.status == 'active'"
+    },
+    {
+      "id": "TS-05-P7",
+      "property_id": "05-PROP-7",
+      "validates": [
+        "05-REQ-4.2"
+      ],
+      "description": "For any clone job or reclone job, CloneOptions.Depth is always set to 1; deep clones are never performed.",
+      "for_any_strategy": "Intercept all PlainCloneContext calls across 10 clone and reclone operations with varying git URLs and branches; capture and inspect CloneOptions for each call",
+      "invariant_check": "captured_calls = intercept_plain_clone_context_calls(); for each call in captured_calls: assert call.options.Depth == 1"
+    },
+    {
+      "id": "TS-05-P8",
+      "property_id": "05-PROP-8",
+      "validates": [
+        "05-REQ-4.3",
+        "05-REQ-6.1",
+        "05-REQ-3.E2"
+      ],
+      "description": "For any workspace record with a non-null head_sha, head_sha matches the pattern [0-9a-f]{40}.",
+      "for_any_strategy": "Query all workspace records with non-null head_sha from the SQLite database after running 10 successful clone and archive operations; validate each head_sha value",
+      "invariant_check": "for each workspace in db.query('SELECT head_sha FROM workspaces WHERE head_sha IS NOT NULL'): assert len(workspace.head_sha) == 40; assert workspace.head_sha matches regex '^[0-9a-f]{40}$'"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-05-E1",
+      "requirement_id": "05-REQ-1.E1",
+      "kind": "unit",
+      "description": "When XDG_DATA_HOME is set and workspace path is a bare name (no directory component), Load() resolves Workspace.Path to $XDG_DATA_HOME/<bare-name>.",
+      "preconditions": [
+        "XDG_DATA_HOME environment variable is set to '/home/user/.local/share'",
+        "config.toml contains [workspace] path = \"myworkspace\" (bare name, no slash)"
+      ],
+      "input": {
+        "XDG_DATA_HOME": "/home/user/.local/share",
+        "workspace_path": "myworkspace"
+      },
+      "expected": {
+        "Workspace.Path": "/home/user/.local/share/myworkspace"
+      },
+      "assertion_pseudocode": "set_env('XDG_DATA_HOME', '/home/user/.local/share'); write_config('[workspace]\\npath = \"myworkspace\"'); cfg, err = Load(); assert err == nil; assert cfg.Workspace.Path == '/home/user/.local/share/myworkspace'"
+    },
+    {
+      "id": "TS-05-E2",
+      "requirement_id": "05-REQ-1.E2",
+      "kind": "unit",
+      "description": "When workspace path is empty and XDG_DATA_HOME is not set, Load() defaults Workspace.Path to './data/workspaces'.",
+      "preconditions": [
+        "XDG_DATA_HOME environment variable is unset",
+        "config.toml contains [workspace] path = \"\" or omits path"
+      ],
+      "input": {
+        "XDG_DATA_HOME": null,
+        "workspace_path": ""
+      },
+      "expected": {
+        "Workspace.Path": "./data/workspaces"
+      },
+      "assertion_pseudocode": "unset_env('XDG_DATA_HOME'); write_config('[workspace]\\npath = \"\"'); cfg, err = Load(); assert err == nil; assert cfg.Workspace.Path == './data/workspaces'"
+    },
+    {
+      "id": "TS-05-E3",
+      "requirement_id": "05-REQ-1.E3",
+      "kind": "unit",
+      "description": "When workspace path is empty and XDG_DATA_HOME is set, Load() defaults Workspace.Path to '$XDG_DATA_HOME/workspaces'.",
+      "preconditions": [
+        "XDG_DATA_HOME environment variable is set to '/home/user/.local/share'",
+        "config.toml contains [workspace] path = \"\" or omits path"
+      ],
+      "input": {
+        "XDG_DATA_HOME": "/home/user/.local/share",
+        "workspace_path": ""
+      },
+      "expected": {
+        "Workspace.Path": "/home/user/.local/share/workspaces"
+      },
+      "assertion_pseudocode": "set_env('XDG_DATA_HOME', '/home/user/.local/share'); write_config('[workspace]\\npath = \"\"'); cfg, err = Load(); assert err == nil; assert cfg.Workspace.Path == '/home/user/.local/share/workspaces'"
+    },
+    {
+      "id": "TS-05-E4",
+      "requirement_id": "05-REQ-1.E4",
+      "kind": "unit",
+      "description": "When workers is set to 0 in config.toml, Load() overrides it to 4.",
+      "preconditions": [
+        "config.toml contains [workspace] workers = 0"
+      ],
+      "input": {
+        "workers_config": 0
+      },
+      "expected": {
+        "Workspace.Workers": 4
+      },
+      "assertion_pseudocode": "write_config('[workspace]\\nworkers = 0'); cfg, err = Load(); assert err == nil; assert cfg.Workspace.Workers == 4"
+    },
+    {
+      "id": "TS-05-E5",
+      "requirement_id": "05-REQ-2.E1",
+      "kind": "integration",
+      "description": "When WORKSPACE_ROOT already exists on server boot, the server proceeds without error and does not modify the existing directory.",
+      "preconditions": [
+        "WORKSPACE_ROOT directory already exists on the filesystem",
+        "hub server is configured to use that directory"
+      ],
+      "input": {
+        "workspace_root_exists": true
+      },
+      "expected": {
+        "directory_modified": false,
+        "exit_code": 0,
+        "server_starts": true
+      },
+      "assertion_pseudocode": "create_dir(WORKSPACE_ROOT); original_mtime = get_mtime(WORKSPACE_ROOT); start_server(config); assert server_is_running() == true; assert get_mtime(WORKSPACE_ROOT) == original_mtime"
+    },
+    {
+      "id": "TS-05-E6",
+      "requirement_id": "05-REQ-2.E2",
+      "kind": "integration",
+      "description": "When WORKSPACE_ROOT path contains multiple missing parent directories, the server creates all of them using os.MkdirAll semantics.",
+      "preconditions": [
+        "None of the parent directories in the WORKSPACE_ROOT path exist",
+        "The process has write permission to the base directory"
+      ],
+      "input": {
+        "workspace_path": "/tmp/test-deep/a/b/c/workspaces"
+      },
+      "expected": {
+        "all_parent_dirs_created": true,
+        "server_starts": true
+      },
+      "assertion_pseudocode": "remove_dir_if_exists('/tmp/test-deep'); cfg.Workspace.Path = '/tmp/test-deep/a/b/c/workspaces'; start_server(cfg); assert dir_exists('/tmp/test-deep/a/b/c/workspaces') == true; assert server_is_running() == true"
+    },
+    {
+      "id": "TS-05-E7",
+      "requirement_id": "05-REQ-3.E1",
+      "kind": "integration",
+      "description": "When a workspace is first created, the API response contains clone_status='pending', head_sha=null, and clone_error=null.",
+      "preconditions": [
+        "hub server is running",
+        "Valid authentication token is available"
+      ],
+      "input": {
+        "display_name": "New Workspace",
+        "git_url": "https://github.com/example/repo.git"
+      },
+      "expected": {
+        "body.clone_error": null,
+        "body.clone_status": "pending",
+        "body.head_sha": null,
+        "http_status": 201
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces', {git_url: 'https://github.com/example/repo.git', display_name: 'New Workspace'}); assert resp.status == 201; assert resp.body.clone_status == 'pending'; assert resp.body.head_sha == null; assert resp.body.clone_error == null"
+    },
+    {
+      "id": "TS-05-E8",
+      "requirement_id": "05-REQ-3.E2",
+      "kind": "integration",
+      "description": "After a successful clone, GET /api/v1/workspaces/:slug returns clone_status='ready' and a non-null head_sha containing a 40-character hex SHA.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists whose clone has completed successfully",
+        "Valid authentication token is available"
+      ],
+      "input": {
+        "slug": "ready-workspace"
+      },
+      "expected": {
+        "body.clone_error": null,
+        "body.clone_status": "ready",
+        "body.head_sha": "40-character lowercase hex string matching [0-9a-f]{40}"
+      },
+      "assertion_pseudocode": "wait_for_clone_status(slug='ready-workspace', status='ready'); resp = http_get('/api/v1/workspaces/ready-workspace'); assert resp.body.clone_status == 'ready'; assert resp.body.head_sha != null; assert len(resp.body.head_sha) == 40; assert resp.body.head_sha matches regex '[0-9a-f]{40}'; assert resp.body.clone_error == null"
+    },
+    {
+      "id": "TS-05-E9",
+      "requirement_id": "05-REQ-4.E1",
+      "kind": "integration",
+      "description": "On graceful shutdown, the server cancels the root context, causing in-progress PlainCloneContext calls to be interrupted and pending jobs to be discarded.",
+      "preconditions": [
+        "hub server is running with a slow or hanging clone in progress",
+        "Additional jobs are pending in the queue"
+      ],
+      "input": {
+        "shutdown_signal": "SIGTERM"
+      },
+      "expected": {
+        "in_progress_clone": "interrupted (context cancelled)",
+        "pending_jobs": "discarded without processing",
+        "server_exits": true
+      },
+      "assertion_pseudocode": "enqueue_slow_clone_job(slug='slow-ws'); enqueue_pending_job(slug='pending-ws'); wait_for_clone_status(slug='slow-ws', status='cloning'); send_signal(server, SIGTERM); wait_for_server_exit(); ws_slow = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'slow-ws'); assert ws_slow.clone_status == 'failed'; ws_pending = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'pending-ws'); assert ws_pending.clone_status == 'pending'"
+    },
+    {
+      "id": "TS-05-E10",
+      "requirement_id": "05-REQ-4.E2",
+      "kind": "integration",
+      "description": "When a clone is interrupted by context cancellation (server shutdown), the worker sets clone_status to 'failed' and removes any partially created workspace directory.",
+      "preconditions": [
+        "hub server is running",
+        "A clone is in progress (clone_status = 'cloning')",
+        "The server's root context is cancelled"
+      ],
+      "input": {
+        "slug": "interrupted-ws"
+      },
+      "expected": {
+        "clone_status": "failed",
+        "workspace_directory": "does not exist on disk"
+      },
+      "assertion_pseudocode": "enqueue_slow_clone_job(slug='interrupted-ws'); wait_for_clone_status(slug='interrupted-ws', status='cloning'); cancel_server_context(); wait_for_worker_to_finish(); ws = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'interrupted-ws'); assert ws.clone_status == 'failed'; assert dir_exists(WORKSPACE_ROOT + '/interrupted-ws') == false"
+    },
+    {
+      "id": "TS-05-E11",
+      "requirement_id": "05-REQ-4.E3",
+      "kind": "unit",
+      "description": "When the workspace directory was partially created before a clone error, the worker removes it using os.RemoveAll before setting clone_status to 'failed'.",
+      "preconditions": [
+        "hub server is running",
+        "A clone job is in progress and the workspace directory was partially created",
+        "PlainCloneContext returns an error mid-clone"
+      ],
+      "input": {
+        "slug": "partial-ws"
+      },
+      "expected": {
+        "clone_status": "failed",
+        "workspace_directory": "removed from disk"
+      },
+      "assertion_pseudocode": "simulate_partial_clone_failure(slug='partial-ws'); wait_for_clone_complete(slug='partial-ws'); assert dir_exists(WORKSPACE_ROOT + '/partial-ws') == false; ws = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'partial-ws'); assert ws.clone_status == 'failed'"
+    },
+    {
+      "id": "TS-05-E12",
+      "requirement_id": "05-REQ-4.E4",
+      "kind": "integration",
+      "description": "When git_url is unreachable, the worker sets clone_status to 'failed' and records the network error message in clone_error without retrying.",
+      "preconditions": [
+        "hub server is running",
+        "A clone job is enqueued with an unreachable git URL"
+      ],
+      "input": {
+        "git_url": "https://unreachable.example.invalid/repo.git",
+        "slug": "unreachable-ws"
+      },
+      "expected": {
+        "clone_error": "non-null string containing network or remote error",
+        "clone_status": "failed",
+        "retry_count": 0
+      },
+      "assertion_pseudocode": "enqueue_clone_job(slug='unreachable-ws', git_url='https://unreachable.example.invalid/repo.git'); wait_for_clone_complete(slug='unreachable-ws'); ws = db.query('SELECT clone_status, clone_error FROM workspaces WHERE slug = ?', 'unreachable-ws'); assert ws.clone_status == 'failed'; assert ws.clone_error != null; assert clone_attempt_count(slug='unreachable-ws') == 1"
+    },
+    {
+      "id": "TS-05-E13",
+      "requirement_id": "05-REQ-4.E5",
+      "kind": "integration",
+      "description": "When the specified branch does not exist on the remote, PlainCloneContext returns an error and the worker sets clone_status to 'failed' with the branch-not-found error in clone_error.",
+      "preconditions": [
+        "hub server is running",
+        "A clone job is enqueued with a valid git URL but a non-existent branch"
+      ],
+      "input": {
+        "branch": "nonexistent-branch-xyz",
+        "git_url": "https://github.com/example/repo.git",
+        "slug": "bad-branch-ws"
+      },
+      "expected": {
+        "clone_error": "non-null string containing branch-not-found error message",
+        "clone_status": "failed"
+      },
+      "assertion_pseudocode": "enqueue_clone_job(slug='bad-branch-ws', git_url=valid_url, branch='nonexistent-branch-xyz'); wait_for_clone_complete(slug='bad-branch-ws'); ws = db.query('SELECT clone_status, clone_error FROM workspaces WHERE slug = ?', 'bad-branch-ws'); assert ws.clone_status == 'failed'; assert ws.clone_error != null; assert ws.clone_error contains 'branch' or 'reference' or 'not found'"
+    },
+    {
+      "id": "TS-05-E14",
+      "requirement_id": "05-REQ-4.E6",
+      "kind": "unit",
+      "description": "When repo.Head() returns an error after a successful PlainCloneContext call, the worker sets clone_status to 'failed', records the Head() error in clone_error, and removes the workspace directory.",
+      "preconditions": [
+        "hub server is running",
+        "PlainCloneContext succeeds but repo.Head() is mocked to return an error"
+      ],
+      "input": {
+        "slug": "head-error-ws"
+      },
+      "expected": {
+        "clone_error": "non-null string containing Head() error message",
+        "clone_status": "failed",
+        "workspace_directory": "removed from disk"
+      },
+      "assertion_pseudocode": "mock_repo_head_to_return_error('head error'); enqueue_clone_job(slug='head-error-ws', git_url=valid_url); wait_for_clone_complete(slug='head-error-ws'); ws = db.query('SELECT clone_status, clone_error FROM workspaces WHERE slug = ?', 'head-error-ws'); assert ws.clone_status == 'failed'; assert ws.clone_error contains 'head error'; assert dir_exists(WORKSPACE_ROOT + '/head-error-ws') == false"
+    },
+    {
+      "id": "TS-05-E15",
+      "requirement_id": "05-REQ-5.E1",
+      "kind": "integration",
+      "description": "When the database insert fails during workspace creation, the handler returns HTTP 500 without enqueuing a clone job.",
+      "preconditions": [
+        "hub server is running",
+        "The database is configured to fail on insert (e.g., disk full or locked)"
+      ],
+      "input": {
+        "display_name": "Failing Workspace",
+        "git_url": "https://github.com/example/repo.git"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "clone_job_enqueued": false,
+        "http_status": 500
+      },
+      "assertion_pseudocode": "mock_db_insert_to_fail(); resp = http_post('/api/v1/workspaces', {git_url: 'https://github.com/example/repo.git', display_name: 'Failing Workspace'}); assert resp.status == 500; assert resp.body.error != null; assert clone_job_was_not_enqueued() == true"
+    },
+    {
+      "id": "TS-05-E16",
+      "requirement_id": "05-REQ-5.E2",
+      "kind": "integration",
+      "description": "When the job queue channel is full, the create handler still returns HTTP 201 with clone_status='pending' to the caller.",
+      "preconditions": [
+        "hub server is running",
+        "The job queue channel is at capacity (all workers are busy and buffer is full)"
+      ],
+      "input": {
+        "display_name": "Queued Workspace",
+        "git_url": "https://github.com/example/repo.git"
+      },
+      "expected": {
+        "body.clone_status": "pending",
+        "http_status": 201
+      },
+      "assertion_pseudocode": "fill_job_queue_to_capacity(); resp = http_post('/api/v1/workspaces', {git_url: 'https://github.com/example/repo.git', display_name: 'Queued Workspace'}); assert resp.status == 201; assert resp.body.clone_status == 'pending'"
+    },
+    {
+      "id": "TS-05-E17",
+      "requirement_id": "05-REQ-6.E1",
+      "kind": "integration",
+      "description": "When PlainOpen fails because the trunk directory is missing despite clone_status being 'ready', the archive handler returns HTTP 500 without modifying clone_status or status.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'ready' but the trunk directory has been manually deleted"
+      ],
+      "input": {
+        "slug": "missing-trunk-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 500,
+        "workspace.clone_status": "ready (unchanged)",
+        "workspace.status": "active (unchanged)"
+      },
+      "assertion_pseudocode": "set_workspace(slug='missing-trunk-ws', clone_status='ready'); remove_dir(WORKSPACE_ROOT + '/missing-trunk-ws/trunk'); resp = http_post('/api/v1/workspaces/missing-trunk-ws/archive'); assert resp.status == 500; assert resp.body.error != null; ws = db.query('SELECT clone_status, status FROM workspaces WHERE slug = ?', 'missing-trunk-ws'); assert ws.clone_status == 'ready'; assert ws.status == 'active'"
+    },
+    {
+      "id": "TS-05-E18",
+      "requirement_id": "05-REQ-6.E2",
+      "kind": "integration",
+      "description": "When repo.Head() returns an error after a successful push during archive, the handler returns HTTP 500 and does not delete the workspace directory.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'ready'",
+        "Push succeeds but repo.Head() is mocked to return an error"
+      ],
+      "input": {
+        "slug": "head-fail-archive-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 500,
+        "workspace_directory": "still exists on disk"
+      },
+      "assertion_pseudocode": "mock_repo_head_to_return_error('head error after push'); resp = http_post('/api/v1/workspaces/head-fail-archive-ws/archive'); assert resp.status == 500; assert resp.body.error != null; assert dir_exists(WORKSPACE_ROOT + '/head-fail-archive-ws') == true"
+    },
+    {
+      "id": "TS-05-E19",
+      "requirement_id": "05-REQ-6.E3",
+      "kind": "integration",
+      "description": "When workspace directory deletion fails after a successful push and head_sha recording, the handler logs a warning but still sets clone_status='archived' and status='archived', returning HTTP 200.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'ready'",
+        "Push and Head() succeed but os.RemoveAll is mocked to fail"
+      ],
+      "input": {
+        "slug": "dir-delete-fail-ws"
+      },
+      "expected": {
+        "body.clone_status": "archived",
+        "body.status": "archived",
+        "http_status": 200,
+        "log_output": "contains warning about directory deletion failure"
+      },
+      "assertion_pseudocode": "mock_remove_all_to_fail(); resp = http_post('/api/v1/workspaces/dir-delete-fail-ws/archive'); assert resp.status == 200; assert resp.body.status == 'archived'; assert resp.body.clone_status == 'archived'; assert log_contains_warning('delete') or log_contains_warning('remove')"
+    },
+    {
+      "id": "TS-05-E20",
+      "requirement_id": "05-REQ-6.E4",
+      "kind": "integration",
+      "description": "Archiving a workspace that does not exist returns HTTP 404.",
+      "preconditions": [
+        "hub server is running",
+        "No workspace with the given slug exists in the database"
+      ],
+      "input": {
+        "slug": "nonexistent-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/nonexistent-ws/archive'); assert resp.status == 404; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E21",
+      "requirement_id": "05-REQ-6.E5",
+      "kind": "integration",
+      "description": "Archiving a workspace when the caller is not the owner or an admin returns HTTP 403.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists owned by user A",
+        "Authentication token belongs to user B (non-admin)"
+      ],
+      "input": {
+        "caller": "non-owner user",
+        "slug": "other-user-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/other-user-ws/archive', auth_token=non_owner_token); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E22",
+      "requirement_id": "05-REQ-7.E1",
+      "kind": "integration",
+      "description": "Reactivating a workspace that does not exist returns HTTP 404.",
+      "preconditions": [
+        "hub server is running",
+        "No workspace with the given slug exists"
+      ],
+      "input": {
+        "slug": "nonexistent-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/nonexistent-ws/reactivate'); assert resp.status == 404; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E23",
+      "requirement_id": "05-REQ-7.E2",
+      "kind": "integration",
+      "description": "Reactivating a workspace when the caller is not the owner or an admin returns HTTP 403.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists owned by user A with status = 'archived'",
+        "Authentication token belongs to user B (non-admin)"
+      ],
+      "input": {
+        "caller": "non-owner user",
+        "slug": "other-user-archived-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/other-user-archived-ws/reactivate', auth_token=non_owner_token); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E24",
+      "requirement_id": "05-REQ-7.E3",
+      "kind": "integration",
+      "description": "Reactivating a workspace that is not in archived status returns HTTP 409.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'active' (not archived)",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "active-ws"
+      },
+      "expected": {
+        "body": "JSON error body indicating workspace is not archived",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "set_workspace(slug='active-ws', status='active'); resp = http_post('/api/v1/workspaces/active-ws/reactivate'); assert resp.status == 409; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E25",
+      "requirement_id": "05-REQ-7.E4",
+      "kind": "integration",
+      "description": "When the database update fails during reactivate, the handler returns HTTP 500 without enqueuing a reclone job.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'archived'",
+        "The database update is mocked to fail"
+      ],
+      "input": {
+        "slug": "db-fail-reactivate-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 500,
+        "reclone_job_enqueued": false
+      },
+      "assertion_pseudocode": "mock_db_update_to_fail(); resp = http_post('/api/v1/workspaces/db-fail-reactivate-ws/reactivate'); assert resp.status == 500; assert resp.body.error != null; assert reclone_job_was_not_enqueued() == true"
+    },
+    {
+      "id": "TS-05-E26",
+      "requirement_id": "05-REQ-8.E1",
+      "kind": "integration",
+      "description": "When the workspace directory does not exist under WORKSPACE_ROOT during delete, the handler skips directory deletion and proceeds directly to deleting the database row, returning HTTP 204.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'archived' but no directory under WORKSPACE_ROOT",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "no-dir-ws"
+      },
+      "expected": {
+        "database_row": "deleted",
+        "http_status": 204
+      },
+      "assertion_pseudocode": "assert dir_exists(WORKSPACE_ROOT + '/no-dir-ws') == false; resp = http_delete('/api/v1/workspaces/no-dir-ws'); assert resp.status == 204; ws = db.query('SELECT * FROM workspaces WHERE slug = ?', 'no-dir-ws'); assert ws == null"
+    },
+    {
+      "id": "TS-05-E27",
+      "requirement_id": "05-REQ-8.E2",
+      "kind": "integration",
+      "description": "Deleting a workspace that is not archived returns HTTP 409.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'active'",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "active-ws-delete"
+      },
+      "expected": {
+        "body": "JSON error body indicating workspace must be archived before deletion",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "set_workspace(slug='active-ws-delete', status='active'); resp = http_delete('/api/v1/workspaces/active-ws-delete'); assert resp.status == 409; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E28",
+      "requirement_id": "05-REQ-8.E3",
+      "kind": "integration",
+      "description": "Deleting a workspace that does not exist returns HTTP 404.",
+      "preconditions": [
+        "hub server is running",
+        "No workspace with the given slug exists"
+      ],
+      "input": {
+        "slug": "nonexistent-delete-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = http_delete('/api/v1/workspaces/nonexistent-delete-ws'); assert resp.status == 404; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E29",
+      "requirement_id": "05-REQ-8.E4",
+      "kind": "integration",
+      "description": "Deleting a workspace when the caller is not the owner or an admin returns HTTP 403.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'archived' owned by user A",
+        "Authentication token belongs to user B (non-admin)"
+      ],
+      "input": {
+        "caller": "non-owner user",
+        "slug": "other-user-archived-delete-ws"
+      },
+      "expected": {
+        "body": "JSON error body",
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_delete('/api/v1/workspaces/other-user-archived-delete-ws', auth_token=non_owner_token); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-05-E30",
+      "requirement_id": "05-REQ-8.E5",
+      "kind": "integration",
+      "description": "When workspace directory deletion fails during DELETE, the handler logs a warning and proceeds to delete the database row, returning HTTP 204.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with status = 'archived' and a directory under WORKSPACE_ROOT",
+        "os.RemoveAll is mocked to fail with permission denied"
+      ],
+      "input": {
+        "slug": "dir-fail-delete-ws"
+      },
+      "expected": {
+        "database_row": "deleted",
+        "http_status": 204,
+        "log_output": "contains warning about directory deletion failure"
+      },
+      "assertion_pseudocode": "mock_remove_all_to_fail(); resp = http_delete('/api/v1/workspaces/dir-fail-delete-ws'); assert resp.status == 204; ws = db.query('SELECT * FROM workspaces WHERE slug = ?', 'dir-fail-delete-ws'); assert ws == null; assert log_contains_warning('delete') or log_contains_warning('remove')"
+    },
+    {
+      "id": "TS-05-E31",
+      "requirement_id": "05-REQ-9.E1",
+      "kind": "integration",
+      "description": "Attempting to archive a workspace with clone_status='cloning' returns HTTP 409 with message 'clone in progress; try again after it completes'.",
+      "preconditions": [
+        "hub server is running",
+        "A workspace exists with clone_status = 'cloning'",
+        "Valid authentication token for the workspace owner is available"
+      ],
+      "input": {
+        "slug": "cloning-ws-archive"
+      },
+      "expected": {
+        "body.message": "clone in progress; try again after it completes",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "set_workspace_clone_status(slug='cloning-ws-archive', status='cloning'); resp = http_post('/api/v1/workspaces/cloning-ws-archive/archive'); assert resp.status == 409; assert resp.body.message == 'clone in progress; try again after it completes' or resp.body.error contains 'clone in progress'"
+    },
+    {
+      "id": "TS-05-E32",
+      "requirement_id": "05-REQ-9.E2",
+      "kind": "integration",
+      "description": "After a server restart, workspaces with clone_status='pending' or 'cloning' remain in their current state with no automatic recovery performed.",
+      "preconditions": [
+        "hub server has been restarted",
+        "Workspaces exist in the database with clone_status = 'pending' and clone_status = 'cloning'"
+      ],
+      "input": {
+        "server_restart": true
+      },
+      "expected": {
+        "automatic_recovery": false,
+        "cloning_workspace.clone_status": "cloning (unchanged)",
+        "pending_workspace.clone_status": "pending (unchanged)"
+      },
+      "assertion_pseudocode": "insert_workspace(slug='stuck-pending', clone_status='pending'); insert_workspace(slug='stuck-cloning', clone_status='cloning'); restart_server(); wait_for_server_ready(); ws_pending = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'stuck-pending'); assert ws_pending.clone_status == 'pending'; ws_cloning = db.query('SELECT clone_status FROM workspaces WHERE slug = ?', 'stuck-cloning'); assert ws_cloning.clone_status == 'cloning'"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-05-SMOKE-1",
+      "execution_path_id": "05-PATH-1",
+      "description": "Happy path: workspace is created via POST /api/v1/workspaces, returns HTTP 201 with clone_status='pending', and the job queue worker clones the repository and sets clone_status='ready' with a valid head_sha.",
+      "trigger": "Developer calls POST /api/v1/workspaces with a valid git_url and optional branch",
+      "real_components": [
+        "workspace create handler",
+        "job queue",
+        "job queue worker",
+        "SQLite database",
+        "WORKSPACE_ROOT filesystem"
+      ],
+      "mockable": [
+        "git remote (PlainCloneContext network call)"
+      ],
+      "expected_effects": [
+        "POST /api/v1/workspaces returns HTTP 201 with clone_status='pending', head_sha=null, clone_error=null",
+        "A clone job is enqueued on the in-memory job queue",
+        "The workspace record in SQLite transitions from clone_status='pending' to 'cloning' to 'ready'",
+        "The directory <WORKSPACE_ROOT>/<slug>/trunk/ is created on disk",
+        "head_sha is set to a 40-character hex SHA in the database",
+        "GET /api/v1/workspaces/:slug returns clone_status='ready' and a valid head_sha"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-2",
+      "execution_path_id": "05-PATH-2",
+      "description": "Happy path: archiving a workspace with clone_status='ready' pushes local commits to upstream, records head_sha, deletes the local clone directory, and returns HTTP 200 with status='archived'.",
+      "trigger": "Developer calls POST /api/v1/workspaces/:slug/archive on a workspace with clone_status='ready'",
+      "real_components": [
+        "workspace archive handler",
+        "SQLite database",
+        "WORKSPACE_ROOT filesystem"
+      ],
+      "mockable": [
+        "git remote (repo.Push network call)"
+      ],
+      "expected_effects": [
+        "PlainOpen opens the repository at <WORKSPACE_ROOT>/<slug>/trunk/",
+        "repo.Push is called with RemoteName='origin'",
+        "head_sha is recorded in the database from repo.Head().Hash().String()",
+        "The workspace directory <WORKSPACE_ROOT>/<slug>/ is deleted from disk",
+        "clone_status is set to 'archived' in the database",
+        "status is set to 'archived' in the database",
+        "HTTP 200 is returned with status='archived', clone_status='archived', and the recorded head_sha"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-3",
+      "execution_path_id": "05-PATH-3",
+      "description": "Happy path: reactivating an archived workspace sets status='active', clone_status='pending', enqueues a reclone job, and the worker re-clones the repository setting clone_status='ready'.",
+      "trigger": "Developer calls POST /api/v1/workspaces/:slug/reactivate on an archived workspace",
+      "real_components": [
+        "workspace reactivate handler",
+        "job queue",
+        "job queue worker",
+        "SQLite database",
+        "WORKSPACE_ROOT filesystem"
+      ],
+      "mockable": [
+        "git remote (PlainCloneContext network call)"
+      ],
+      "expected_effects": [
+        "HTTP 200 is returned immediately with status='active', clone_status='pending', clone_error=null",
+        "A reclone job is enqueued on the in-memory job queue",
+        "The workspace record transitions from clone_status='pending' to 'cloning' to 'ready'",
+        "The directory <WORKSPACE_ROOT>/<slug>/trunk/ is re-created on disk",
+        "head_sha is updated to the new HEAD SHA in the database"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-4",
+      "execution_path_id": "05-PATH-4",
+      "description": "Happy path: deleting an archived workspace removes any remaining workspace directory and deletes the database row, returning HTTP 204.",
+      "trigger": "Developer calls DELETE /api/v1/workspaces/:slug on an archived workspace",
+      "real_components": [
+        "workspace delete handler",
+        "SQLite database",
+        "WORKSPACE_ROOT filesystem"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "The workspace directory <WORKSPACE_ROOT>/<slug>/ is checked for existence",
+        "If the directory exists, it is deleted using os.RemoveAll",
+        "The workspace database row is deleted from SQLite",
+        "HTTP 204 is returned"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-5",
+      "execution_path_id": "05-PATH-5",
+      "description": "End-to-end full workspace lifecycle: create → clone → archive → reactivate → reclone → archive → delete, verifying correct state transitions and HTTP responses at each step.",
+      "trigger": "Developer executes the full workspace lifecycle sequence via the API",
+      "real_components": [
+        "workspace create handler",
+        "workspace archive handler",
+        "workspace reactivate handler",
+        "workspace delete handler",
+        "job queue",
+        "job queue worker",
+        "SQLite database",
+        "WORKSPACE_ROOT filesystem"
+      ],
+      "mockable": [
+        "git remote (PlainCloneContext and repo.Push network calls)"
+      ],
+      "expected_effects": [
+        "POST /api/v1/workspaces returns HTTP 201 with clone_status='pending'",
+        "Worker clones repository; clone_status transitions to 'ready' with valid head_sha",
+        "GET /api/v1/workspaces/:slug returns clone_status='ready' and valid head_sha",
+        "POST /api/v1/workspaces/:slug/archive returns HTTP 200 with clone_status='archived'; directory deleted",
+        "POST /api/v1/workspaces/:slug/reactivate returns HTTP 200 with clone_status='pending'",
+        "Worker re-clones; clone_status transitions to 'ready'",
+        "Second archive returns HTTP 200 with clone_status='archived'",
+        "DELETE /api/v1/workspaces/:slug returns HTTP 204; database row deleted; no directory remains"
+      ]
+    },
+    {
+      "id": "TS-05-SMOKE-6",
+      "execution_path_id": "05-PATH-6",
+      "description": "Failure path: workspace is created with an invalid git URL, returns HTTP 201 with clone_status='pending', and the worker sets clone_status='failed' with the error in clone_error after PlainCloneContext fails.",
+      "trigger": "Developer calls POST /api/v1/workspaces with an invalid or unreachable git_url",
+      "real_components": [
+        "workspace create handler",
+        "job queue",
+        "job queue worker",
+        "SQLite database",
+        "WORKSPACE_ROOT filesystem"
+      ],
+      "mockable": [
+        "git remote (PlainCloneContext network call — returns error)"
+      ],
+      "expected_effects": [
+        "POST /api/v1/workspaces returns HTTP 201 with clone_status='pending'",
+        "Worker picks up the clone job and sets clone_status='cloning'",
+        "PlainCloneContext returns a non-nil error",
+        "Any partially created workspace directory is removed from disk",
+        "clone_status is set to 'failed' in the database",
+        "clone_error contains the error message in the database",
+        "GET /api/v1/workspaces/:slug returns clone_status='failed' and a non-null clone_error"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

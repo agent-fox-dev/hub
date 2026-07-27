@@ -1,0 +1,918 @@
+{
+  "$schema": null,
+  "spec_id": "06",
+  "spec_name": "git_server",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/gitserver/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "05",
+      "from_group": 6,
+      "to_group": 1,
+      "relationship": "Requires local workspace clones and clone_status tracking from workspace_checkout spec",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "04",
+      "from_group": 3,
+      "to_group": 1,
+      "relationship": "Requires every workspace to have an org association for URL namespacing from personal_org spec",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "01",
+      "from_group": 8,
+      "to_group": 1,
+      "relationship": "Requires workspace infrastructure from workspaces spec",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: route registration and PAT scope registration",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for git smart HTTP route registration (REQ-1)",
+          "details": [
+            "Create `internal/gitserver/routes_test.go`",
+            "Test that GET `/git/:org/:slug.git/info/refs` is registered on the Echo instance",
+            "Test that POST `/git/:org/:slug.git/git-upload-pack` is registered",
+            "Test that POST `/git/:org/:slug.git/git-receive-pack` is registered",
+            "Test that the `.git` suffix is required in the URL pattern",
+            "Assert correct Content-Type headers are set per git smart HTTP spec"
+          ],
+          "test_spec_refs": [
+            "TS-06-1",
+            "TS-06-2",
+            "TS-06-3",
+            "TS-06-4",
+            "TS-06-5"
+          ],
+          "requirement_refs": [
+            "06-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for git:read and git:write PAT scope registration (REQ-3)",
+          "details": [
+            "Create `internal/gitserver/permissions_test.go`",
+            "Test that `git:read` permission is registered with apikit",
+            "Test that `git:write` permission is registered with apikit",
+            "Test that `git:write` implies read access (push-capable PAT can also fetch)",
+            "Assert scopes are independent from `workspaces:read` and `workspaces:write`"
+          ],
+          "test_spec_refs": [
+            "TS-06-9",
+            "TS-06-10",
+            "TS-06-11"
+          ],
+          "requirement_refs": [
+            "06-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for HTTP Basic authentication (REQ-2)",
+          "details": [
+            "Create `internal/gitserver/auth_test.go`",
+            "Test that missing Authorization header returns HTTP 401 with `WWW-Authenticate: Basic realm=\"af-hub\"` header",
+            "Test that invalid credentials (bad token format or unknown token) return HTTP 401",
+            "Test that valid credentials with insufficient permissions return HTTP 403",
+            "Test that username field is ignored and any value is accepted alongside a valid password"
+          ],
+          "test_spec_refs": [
+            "TS-06-6",
+            "TS-06-7",
+            "TS-06-8"
+          ],
+          "requirement_refs": [
+            "06-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: `go build ./internal/gitserver/...`",
+          "Tests in group 1 are skipped/fail-fast (stubs not yet implemented): `go test ./internal/gitserver/... -count=1 -v`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-1, 06-REQ-2, 06-REQ-3 test coverage is declared"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: repository resolution and authorization matrix",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for repository resolution from URL path (REQ-4)",
+          "details": [
+            "Create `internal/gitserver/resolver_test.go`",
+            "Test that org slug and workspace slug are correctly extracted from URL path",
+            "Test that a workspace with mismatched org_id returns HTTP 404 (anti-enumeration)",
+            "Test that a workspace with `clone_status != 'ready'` returns HTTP 404",
+            "Test that a non-existent workspace slug returns HTTP 404",
+            "Test that a ready workspace opens the repo at `<WORKSPACE_ROOT>/<slug>/trunk/` via `git.PlainOpen`"
+          ],
+          "test_spec_refs": [
+            "TS-06-12",
+            "TS-06-13",
+            "TS-06-14",
+            "TS-06-15"
+          ],
+          "requirement_refs": [
+            "06-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for authorization access control matrix (REQ-5)",
+          "details": [
+            "Create `internal/gitserver/authz_test.go`",
+            "Test that admin token can clone/fetch any workspace",
+            "Test that admin token can push to any workspace",
+            "Test that owner API key can clone/fetch own workspace",
+            "Test that owner API key can push to own workspace",
+            "Test that PAT with `git:read` can clone/fetch own workspace but cannot push (returns HTTP 403)",
+            "Test that PAT with `git:write` can push and also fetch own workspace"
+          ],
+          "test_spec_refs": [
+            "TS-06-16",
+            "TS-06-17",
+            "TS-06-18",
+            "TS-06-19",
+            "TS-06-20",
+            "TS-06-21"
+          ],
+          "requirement_refs": [
+            "06-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: `go build ./internal/gitserver/...`",
+          "Tests in group 2 are declared and fail-fast against stubs: `go test ./internal/gitserver/... -run TestResolver -count=1 -v`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-4, 06-REQ-5 test coverage is declared"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: push head_sha update, custom Loader, and session bridging",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for head_sha update after successful push (REQ-6)",
+          "details": [
+            "Create `internal/gitserver/push_test.go`",
+            "Test that after a successful receive-pack, `head_sha` in the database is updated to the new HEAD commit SHA",
+            "Test that a failed or rejected push does not update `head_sha`",
+            "Use a test git repository with a known commit SHA to assert the DB update"
+          ],
+          "test_spec_refs": [
+            "TS-06-22",
+            "TS-06-23"
+          ],
+          "requirement_refs": [
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for custom server.Loader implementation (REQ-7)",
+          "details": [
+            "Create `internal/gitserver/loader_test.go`",
+            "Test that the Loader resolves a valid workspace slug to a `storer.Storer` via `git.PlainOpen`",
+            "Test that the Loader returns `transport.ErrRepositoryNotFound` for a non-existent or non-ready workspace",
+            "Test that the Loader extracts the workspace slug from the `transport.Endpoint` path correctly"
+          ],
+          "test_spec_refs": [
+            "TS-06-24",
+            "TS-06-25"
+          ],
+          "requirement_refs": [
+            "06-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for go-git server transport session bridging (REQ-8)",
+          "details": [
+            "Create `internal/gitserver/bridge_test.go`",
+            "Test that `info/refs?service=git-upload-pack` GET returns pkt-line ref advertisement with correct Content-Type",
+            "Test that `info/refs?service=git-receive-pack` GET returns pkt-line ref advertisement with correct Content-Type",
+            "Test that POST to `git-upload-pack` streams pack data and returns correct Content-Type",
+            "Test that an invalid `service` query parameter on `info/refs` returns HTTP 403"
+          ],
+          "test_spec_refs": [
+            "TS-06-26",
+            "TS-06-27",
+            "TS-06-28"
+          ],
+          "requirement_refs": [
+            "06-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile without errors: `go build ./internal/gitserver/...`",
+          "Tests in group 3 are declared and fail-fast against stubs: `go test ./internal/gitserver/... -run 'TestPush|TestLoader|TestBridge' -count=1 -v`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-6, 06-REQ-7, 06-REQ-8 test coverage is declared"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement PAT permission scopes and route registration scaffold",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Register git:read and git:write PAT permission scopes with apikit",
+          "details": [
+            "Create `internal/gitserver/permissions.go`",
+            "Define `const GitReadScope apikit.Permission = \"git:read\"` and `const GitWriteScope apikit.Permission = \"git:write\"`",
+            "Register both scopes during server initialization so apikit recognizes them for PAT validation",
+            "Document that `git:write` implies read access in code comments"
+          ],
+          "test_spec_refs": [
+            "TS-06-9",
+            "TS-06-10",
+            "TS-06-11"
+          ],
+          "requirement_refs": [
+            "06-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Create MountHandlers function and register git smart HTTP routes on Echo",
+          "details": [
+            "Create `internal/gitserver/handlers.go` with a `MountHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string)` function",
+            "Register GET `/git/:org/:slug.git/info/refs` route",
+            "Register POST `/git/:org/:slug.git/git-upload-pack` route",
+            "Register POST `/git/:org/:slug.git/git-receive-pack` route",
+            "Apply auth middleware to all git routes",
+            "Stub handler bodies with `panic(\"not implemented\")` for now"
+          ],
+          "test_spec_refs": [
+            "TS-06-1",
+            "TS-06-2",
+            "TS-06-3",
+            "TS-06-4",
+            "TS-06-5"
+          ],
+          "requirement_refs": [
+            "06-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement HTTP Basic auth middleware for git endpoints",
+          "details": [
+            "Create `internal/gitserver/auth.go`",
+            "Extract `Authorization: Basic` header; if absent return HTTP 401 with `WWW-Authenticate: Basic realm=\"af-hub\"` header",
+            "Decode Base64 credentials; treat the password field as the hub credential (`af_key_...`, `af_pat_...`, `af_admin_...`); ignore username",
+            "Validate credential against apikit auth layer; return HTTP 401 on invalid credentials",
+            "Attach resolved identity (user ID, token type, scopes) to Echo context for downstream handlers"
+          ],
+          "test_spec_refs": [
+            "TS-06-6",
+            "TS-06-7",
+            "TS-06-8"
+          ],
+          "requirement_refs": [
+            "06-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Spec tests for REQ-1, REQ-2, REQ-3 pass: `go test ./internal/gitserver/... -run 'TestRoutes|TestPermissions|TestAuth' -count=1 -v`",
+          "All existing tests still pass: `go test ./... -count=1`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-1.1\u201306-REQ-1.5, 06-REQ-2.1\u201306-REQ-2.3, 06-REQ-3.1\u201306-REQ-3.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement repository resolution and authorization enforcement",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement workspace resolver: extract org/slug from URL and validate against DB",
+          "details": [
+            "Create `internal/gitserver/resolver.go` with a `resolveWorkspace(ctx echo.Context, db *sql.DB) (*Workspace, error)` function",
+            "Extract `:org` and `:slug` path parameters from the Echo context",
+            "Query the database for the workspace by slug; return HTTP 404 if not found",
+            "Verify the workspace's `org_id` matches an org with the given org slug; return HTTP 404 if mismatch (anti-enumeration)",
+            "Verify `clone_status = 'ready'`; return HTTP 404 with git pkt-line error format if not ready"
+          ],
+          "test_spec_refs": [
+            "TS-06-12",
+            "TS-06-13",
+            "TS-06-14",
+            "TS-06-15"
+          ],
+          "requirement_refs": [
+            "06-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement authorization access control matrix enforcement",
+          "details": [
+            "Create `internal/gitserver/authz.go` with an `authorizeGitOp(identity *Identity, workspace *Workspace, op string) error` function",
+            "For `op = \"read\"`: allow admin tokens (any workspace), owner API keys (own workspace), PATs with `git:read` or `git:write` (own workspace)",
+            "For `op = \"write\"`: allow admin tokens (any workspace), owner API keys (own workspace), PATs with `git:write` (own workspace); return HTTP 403 for `git:read`-only PATs",
+            "Non-owner, non-admin identities without matching scopes return HTTP 404 (anti-enumeration)",
+            "Wire `authorizeGitOp` into each handler after `resolveWorkspace`"
+          ],
+          "test_spec_refs": [
+            "TS-06-16",
+            "TS-06-17",
+            "TS-06-18",
+            "TS-06-19",
+            "TS-06-20",
+            "TS-06-21"
+          ],
+          "requirement_refs": [
+            "06-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Spec tests for REQ-4 and REQ-5 pass: `go test ./internal/gitserver/... -run 'TestResolver|TestAuthz' -count=1 -v`",
+          "All existing tests still pass: `go test ./... -count=1`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-4.1\u201306-REQ-4.4, 06-REQ-5.1\u201306-REQ-5.6 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement custom server.Loader and go-git transport integration",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement custom server.Loader that resolves workspace slugs to repository storers",
+          "details": [
+            "Create `internal/gitserver/loader.go` defining `type WorkspaceLoader struct { db *sql.DB; workspaceRoot string }`",
+            "Implement `Load(ep transport.Endpoint) (storer.Storer, error)` method on `WorkspaceLoader`",
+            "Extract workspace slug from `ep.Path` (strip `/git/<org>/` prefix and `.git` suffix)",
+            "Look up workspace in DB and verify `clone_status = 'ready'`; return `transport.ErrRepositoryNotFound` if not",
+            "Open repository via `git.PlainOpen(filepath.Join(workspaceRoot, slug, \"trunk\"))` and return `repo.Storer`"
+          ],
+          "test_spec_refs": [
+            "TS-06-24",
+            "TS-06-25"
+          ],
+          "requirement_refs": [
+            "06-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement go-git server transport and HTTP handler bridging for upload-pack",
+          "details": [
+            "In `internal/gitserver/handlers.go`, implement `handleInfoRefs` for GET `/info/refs`",
+            "Parse `service` query parameter; return HTTP 403 for invalid service values",
+            "For `git-upload-pack`: create `UploadPackSession` via `server.NewServer(loader).NewUploadPackSession(ep, auth)`",
+            "Call `session.AdvertisedReferences()` and write pkt-line framed response with Content-Type `application/x-git-upload-pack-advertisement`",
+            "Implement `handleUploadPack` for POST: decode request body, call `session.UploadPack(ctx, req)`, stream result with Content-Type `application/x-git-upload-pack-result`"
+          ],
+          "test_spec_refs": [
+            "TS-06-26",
+            "TS-06-27"
+          ],
+          "requirement_refs": [
+            "06-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement go-git server transport and HTTP handler bridging for receive-pack",
+          "details": [
+            "Implement `handleInfoRefsReceivePack` for GET `/info/refs?service=git-receive-pack`",
+            "Create `ReceivePackSession` via `server.NewServer(loader).NewReceivePackSession(ep, auth)`",
+            "Write pkt-line framed ref advertisement with Content-Type `application/x-git-receive-pack-advertisement`",
+            "Implement `handleReceivePack` for POST: decode request body, call `session.ReceivePack(ctx, req)`, stream result with Content-Type `application/x-git-receive-pack-result`",
+            "After successful receive-pack, trigger `head_sha` update (call into push post-processor)"
+          ],
+          "test_spec_refs": [
+            "TS-06-28",
+            "TS-06-22"
+          ],
+          "requirement_refs": [
+            "06-REQ-8",
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Spec tests for REQ-7 and REQ-8 pass: `go test ./internal/gitserver/... -run 'TestLoader|TestBridge' -count=1 -v`",
+          "All existing tests still pass: `go test ./... -count=1`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-7.1\u201306-REQ-7.2, 06-REQ-8.1\u201306-REQ-8.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement head_sha update after successful push",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement post-push head_sha database update",
+          "details": [
+            "Create `internal/gitserver/push.go` with `updateHeadSHA(ctx context.Context, db *sql.DB, workspaceSlug string, repoPath string) error`",
+            "After receive-pack completes successfully, open the repository via `git.PlainOpen(repoPath)`",
+            "Resolve HEAD reference to get the new HEAD commit SHA",
+            "Execute `UPDATE workspaces SET head_sha = $1 WHERE slug = $2` with the resolved SHA",
+            "Return error if the DB update fails; log but do not fail the HTTP response if SHA resolution fails on an empty repo"
+          ],
+          "test_spec_refs": [
+            "TS-06-22",
+            "TS-06-23"
+          ],
+          "requirement_refs": [
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Wire updateHeadSHA into the receive-pack handler and handle error cases",
+          "details": [
+            "Call `updateHeadSHA` from `handleReceivePack` after a successful `session.ReceivePack` call",
+            "Ensure `updateHeadSHA` is NOT called if `ReceivePack` returns an error",
+            "Log errors from `updateHeadSHA` at WARN level without surfacing them to the git client",
+            "Add integration test asserting DB row reflects new SHA after a real push to a test repository"
+          ],
+          "test_spec_refs": [
+            "TS-06-22",
+            "TS-06-23"
+          ],
+          "requirement_refs": [
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Spec tests for REQ-6 pass: `go test ./internal/gitserver/... -run 'TestPush' -count=1 -v`",
+          "All existing tests still pass: `go test ./... -count=1`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Requirements 06-REQ-6.1\u201306-REQ-6.2 acceptance criteria met",
+          "DB update is verified by querying `head_sha` column after push in integration test"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "checkpoint",
+      "title": "Integration checkpoint: end-to-end git clone and push with real credentials",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Write integration test: git clone via HTTP Basic auth with API key",
+          "details": [
+            "Create `internal/gitserver/integration_test.go` with build tag `//go:build integration`",
+            "Spin up an in-process Echo server with `MountHandlers` wired",
+            "Create a test workspace with `clone_status = 'ready'` and a real git repo at `<WORKSPACE_ROOT>/<slug>/trunk/`",
+            "Run `git clone http://x-token-auth:<api-key>@localhost:<port>/git/<org>/<slug>.git` via `exec.Command`",
+            "Assert clone succeeds and working tree matches the test repository content"
+          ],
+          "test_spec_refs": [
+            "TS-06-1",
+            "TS-06-6",
+            "TS-06-12",
+            "TS-06-16"
+          ],
+          "requirement_refs": [
+            "06-REQ-1",
+            "06-REQ-2",
+            "06-REQ-4",
+            "06-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Write integration test: git push updates head_sha in DB",
+          "details": [
+            "Extend `internal/gitserver/integration_test.go`",
+            "Clone the test workspace, add a commit, and push via `git push`",
+            "Assert HTTP 200 response from receive-pack",
+            "Query the database and assert `head_sha` equals the new commit SHA",
+            "Assert that a PAT with only `git:read` scope receives HTTP 403 on push attempt"
+          ],
+          "test_spec_refs": [
+            "TS-06-20",
+            "TS-06-22"
+          ],
+          "requirement_refs": [
+            "06-REQ-5",
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Write integration test: error cases (non-ready workspace, bad credentials, org mismatch)",
+          "details": [
+            "Test that a workspace with `clone_status = 'cloning'` returns HTTP 404",
+            "Test that a request with no Authorization header returns HTTP 401 with `WWW-Authenticate` header",
+            "Test that an org slug that doesn't match the workspace's org returns HTTP 404",
+            "Test that an invalid service parameter on `info/refs` returns HTTP 403"
+          ],
+          "test_spec_refs": [
+            "TS-06-7",
+            "TS-06-13",
+            "TS-06-14"
+          ],
+          "requirement_refs": [
+            "06-REQ-2",
+            "06-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Integration tests pass: `go test ./internal/gitserver/... -tags integration -count=1 -v`",
+          "All unit tests still pass: `go test ./internal/gitserver/... -count=1`",
+          "All existing tests still pass: `go test ./... -count=1`",
+          "No linter warnings introduced: `go vet ./...`",
+          "Clone and push round-trip verified against a real git repository"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and stub audit",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Trace execution paths: verify MountHandlers is called from production server entry point",
+          "details": [
+            "Confirm `gitserver.MountHandlers` is called from the main server setup (e.g., `cmd/hub/main.go` or equivalent `MountHandlers` aggregator)",
+            "Verify the Echo instance passed to `gitserver.MountHandlers` is the same instance serving HTTP traffic",
+            "Confirm `WorkspaceLoader` is instantiated with the production `db` and `workspaceRoot` values",
+            "Check that `server.NewServer(loader)` is called once at startup, not per-request"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "06-REQ-1",
+            "06-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Verify return value propagation: auth middleware attaches identity to context and handlers consume it",
+          "details": [
+            "Confirm auth middleware stores resolved identity in Echo context key and all handlers read from that key",
+            "Verify `resolveWorkspace` return value is checked for error in every handler before proceeding",
+            "Verify `authorizeGitOp` return value is checked and HTTP response is written on error",
+            "Confirm `updateHeadSHA` error is logged and does not suppress the HTTP 200 response to the git client"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "06-REQ-2",
+            "06-REQ-4",
+            "06-REQ-5",
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Stub and dead-code audit: search for unimplemented markers in gitserver package",
+          "details": [
+            "Run `grep -r 'panic(\"not implemented\")' ./internal/gitserver/` \u2014 must return no results",
+            "Run `grep -r '// TODO' ./internal/gitserver/` \u2014 review and resolve any remaining TODOs",
+            "Run `grep -r 'panic(' ./internal/gitserver/` \u2014 confirm no panics remain in non-test code",
+            "Verify no bare `return nil` in non-trivial error paths (e.g., `Load`, `authorizeGitOp`, `updateHeadSHA`)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "06-REQ-7",
+            "06-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.4",
+          "title": "Run all spec tests and verify full test suite passes",
+          "details": [
+            "Run full spec test suite: `go test ./internal/gitserver/... -count=1 -v`",
+            "Run integration tests: `go test ./internal/gitserver/... -tags integration -count=1 -v`",
+            "Run full project test suite: `go test ./... -count=1`",
+            "Assert zero test failures and zero linter warnings: `go vet ./...`"
+          ],
+          "test_spec_refs": [
+            "TS-06-1",
+            "TS-06-2",
+            "TS-06-3",
+            "TS-06-4",
+            "TS-06-5",
+            "TS-06-6",
+            "TS-06-7",
+            "TS-06-8"
+          ],
+          "requirement_refs": [
+            "06-REQ-1",
+            "06-REQ-2",
+            "06-REQ-3",
+            "06-REQ-4",
+            "06-REQ-5",
+            "06-REQ-6",
+            "06-REQ-7",
+            "06-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.5",
+          "title": "Cross-spec entry point verification: confirm workspace clone_status and head_sha fields are accessible",
+          "details": [
+            "Verify that the workspace DB model from spec 01 exposes `clone_status` and `head_sha` fields readable by gitserver package",
+            "Confirm that `git.PlainOpen` path convention (`<WORKSPACE_ROOT>/<slug>/trunk/`) matches what spec 05 writes during checkout",
+            "Verify org association (org_id on workspace) from spec 04 is queryable by the resolver",
+            "Confirm no circular imports between `internal/gitserver` and other internal packages"
+          ],
+          "test_spec_refs": [
+            "TS-06-22",
+            "TS-06-23",
+            "TS-06-24",
+            "TS-06-25",
+            "TS-06-26",
+            "TS-06-27",
+            "TS-06-28",
+            "TS-06-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "06-REQ-4",
+            "06-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All spec tests pass: `go test ./internal/gitserver/... -count=1 -v`",
+          "All integration tests pass: `go test ./internal/gitserver/... -tags integration -count=1 -v`",
+          "Full project test suite passes: `go test ./... -count=1`",
+          "No linter warnings: `go vet ./...`",
+          "No `panic(\"not implemented\")` markers remain in `./internal/gitserver/`: `grep -r 'panic(\"not implemented\")' ./internal/gitserver/` returns empty",
+          "MountHandlers is called from production server entry point (verified by code review or grep)",
+          "Requirements 06-REQ-1 through 06-REQ-8 all acceptance criteria met as confirmed by passing tests"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "06-REQ-1.1",
+      "test_spec_id": "TS-06-1",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-1.1",
+      "test_spec_id": "TS-06-2",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-1.1",
+      "test_spec_id": "TS-06-3",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-1.1",
+      "test_spec_id": "TS-06-4",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-1.1",
+      "test_spec_id": "TS-06-5",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-2.1",
+      "test_spec_id": "TS-06-6",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-2.1",
+      "test_spec_id": "TS-06-7",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-2.1",
+      "test_spec_id": "TS-06-8",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-3.1",
+      "test_spec_id": "TS-06-9",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-3.1",
+      "test_spec_id": "TS-06-10",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-3.1",
+      "test_spec_id": "TS-06-11",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-4.1",
+      "test_spec_id": "TS-06-12",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-4.1",
+      "test_spec_id": "TS-06-13",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-4.1",
+      "test_spec_id": "TS-06-14",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-4.1",
+      "test_spec_id": "TS-06-15",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-5.1",
+      "test_spec_id": "TS-06-16",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-5.1",
+      "test_spec_id": "TS-06-17",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-5.1",
+      "test_spec_id": "TS-06-18",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-5.1",
+      "test_spec_id": "TS-06-19",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-5.1",
+      "test_spec_id": "TS-06-20",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-5.1",
+      "test_spec_id": "TS-06-21",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-6.1",
+      "test_spec_id": "TS-06-22",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-6.1",
+      "test_spec_id": "TS-06-23",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-7.1",
+      "test_spec_id": "TS-06-24",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-7.1",
+      "test_spec_id": "TS-06-25",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-8.1",
+      "test_spec_id": "TS-06-26",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-8.1",
+      "test_spec_id": "TS-06-27",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "06-REQ-8.1",
+      "test_spec_id": "TS-06-28",
+      "task_id": "6.3",
+      "test_path": null
+    }
+  ]
+}

@@ -1,0 +1,981 @@
+{
+  "$schema": null,
+  "spec_id": "05",
+  "spec_name": "workspace_checkout",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/workspace/... -count=1 -v && cd ../apikit && go test ./internal/config/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 8,
+      "to_group": 1,
+      "relationship": "Requires fully implemented workspace infrastructure (table, handlers, routes, CLI)",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "03",
+      "from_group": 6,
+      "to_group": 1,
+      "relationship": "Requires display_name and description fields, update endpoint",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Config Extension and WORKSPACE_ROOT Boot",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for WorkspaceConfig struct and path resolution",
+          "details": [
+            "Create test file ../apikit/internal/config/workspace_config_test.go (in the apikit repo)",
+            "Test TS-05-1: WorkspaceConfig struct has Path and Workers fields with correct toml tags",
+            "Test TS-05-2: Load() resolves workspace path with directory component as-is",
+            "Test TS-05-3: Load() resolves bare name with XDG_DATA_HOME set to $XDG_DATA_HOME/<name>",
+            "Test TS-05-4: Load() defaults to ./data/workspaces when path empty and XDG_DATA_HOME unset; Workers defaults to 4 when 0 or omitted"
+          ],
+          "test_spec_refs": [
+            "TS-05-1",
+            "TS-05-2",
+            "TS-05-3",
+            "TS-05-4"
+          ],
+          "requirement_refs": [
+            "05-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for WORKSPACE_ROOT directory creation on boot",
+          "details": [
+            "Create test file internal/workspace/boot_test.go",
+            "Test TS-05-5: Server boot creates WORKSPACE_ROOT directory if it does not exist",
+            "Test TS-05-6: Server boot exits fatally when WORKSPACE_ROOT cannot be created (e.g. permission denied on parent)"
+          ],
+          "test_spec_refs": [
+            "TS-05-5",
+            "TS-05-6"
+          ],
+          "requirement_refs": [
+            "05-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for new workspace schema fields and response serialization",
+          "details": [
+            "Create test file internal/workspace/schema_test.go",
+            "Test TS-05-7: workspaces table DDL includes clone_status TEXT NOT NULL DEFAULT 'pending', head_sha TEXT, clone_error TEXT columns",
+            "Test TS-05-8: Workspace response JSON includes clone_status, head_sha, clone_error fields in all endpoints (create, get, list, update, archive, reactivate)",
+            "Test TS-05-9: clone_status defaults to 'pending' on insert; head_sha and clone_error default to NULL"
+          ],
+          "test_spec_refs": [
+            "TS-05-7",
+            "TS-05-8",
+            "TS-05-9"
+          ],
+          "requirement_refs": [
+            "05-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/... && cd ../apikit && go build ./internal/config/...",
+          "Tests in this group are correctly skipped/fail (not yet passing) against unimplemented stubs: go test ./internal/config/... ./internal/workspace/... -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/... && cd ../apikit && go vet ./internal/config/...",
+          "Requirements 05-REQ-1, 05-REQ-2, 05-REQ-3 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Job Queue, Clone Worker, and Workspace Creation",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for in-memory job queue construction and worker lifecycle",
+          "details": [
+            "Create test file internal/workspace/queue_test.go",
+            "Test TS-05-10: Job queue is a buffered Go channel; workers count matches config Workers value",
+            "Test TS-05-11: Workers start on queue initialization and stop when context is cancelled",
+            "Test TS-05-12: Pending jobs are discarded on context cancellation (graceful shutdown)"
+          ],
+          "test_spec_refs": [
+            "TS-05-10",
+            "TS-05-11",
+            "TS-05-12"
+          ],
+          "requirement_refs": [
+            "05-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for clone job execution: success, failure, and idempotency",
+          "details": [
+            "Create test file internal/workspace/clone_test.go using a local bare git repo as upstream",
+            "Test TS-05-13: Worker sets clone_status='cloning', creates workspace dir, calls PlainCloneContext with Depth=1; on success sets clone_status='ready' and records head_sha",
+            "Test TS-05-14: Clone with explicit branch sets SingleBranch=true and ReferenceName=refs/heads/<branch>; clone without branch omits ReferenceName",
+            "Test TS-05-15: On clone failure, clone_status='failed', clone_error set to error message, partial workspace directory removed",
+            "Test TS-05-16: Idempotency \u2014 if workspace directory already exists, job skips clone and sets clone_status='ready'"
+          ],
+          "test_spec_refs": [
+            "TS-05-13",
+            "TS-05-14",
+            "TS-05-15",
+            "TS-05-16"
+          ],
+          "requirement_refs": [
+            "05-REQ-4",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for workspace creation endpoint enqueuing clone job",
+          "details": [
+            "Create test file internal/workspace/create_test.go",
+            "Test TS-05-17: POST /api/v1/workspaces returns HTTP 201 immediately with clone_status='pending'; a clone job is enqueued on the job queue"
+          ],
+          "test_spec_refs": [
+            "TS-05-17"
+          ],
+          "requirement_refs": [
+            "05-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/...",
+          "Tests in this group are present and fail against unimplemented stubs: go test ./internal/workspace/... -run 'TestQueue|TestClone|TestCreate' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 05-REQ-4, 05-REQ-5, 05-REQ-9 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Archive, Reactivate, Delete Lifecycle Changes",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for archive lifecycle git operations",
+          "details": [
+            "Create test file internal/workspace/archive_test.go using a local bare git repo",
+            "Test TS-05-18: Archive with clone_status='ready' calls PlainOpen, repo.Push with RemoteName='origin', records head_sha, deletes workspace dir, sets clone_status='archived'",
+            "Test TS-05-19: Archive with clone_status='ready' and NoErrAlreadyUpToDate from Push treats as success",
+            "Test TS-05-20: Archive with clone_status='ready' and push failure returns HTTP 500 with error message; workspace not archived",
+            "Test TS-05-21: Archive with clone_status='cloning' returns HTTP 409 with message 'clone in progress; try again after it completes'",
+            "Test TS-05-22: Archive with clone_status='pending' or 'failed' cleans up any partial directory, sets clone_status='archived', status='archived'"
+          ],
+          "test_spec_refs": [
+            "TS-05-18",
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-21",
+            "TS-05-22"
+          ],
+          "requirement_refs": [
+            "05-REQ-6",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for reactivate and delete lifecycle changes",
+          "details": [
+            "Create test file internal/workspace/reactivate_test.go",
+            "Test TS-05-23: POST /api/v1/workspaces/:slug/reactivate sets status='active', clone_status='pending', clears clone_error, enqueues reclone job, returns HTTP 200",
+            "Create test file internal/workspace/delete_test.go",
+            "Test TS-05-24: DELETE /api/v1/workspaces/:slug removes workspace directory if it still exists under WORKSPACE_ROOT before deleting DB row; logs warning if directory deletion fails but proceeds"
+          ],
+          "test_spec_refs": [
+            "TS-05-23",
+            "TS-05-24"
+          ],
+          "requirement_refs": [
+            "05-REQ-7",
+            "05-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for clone status state machine transitions",
+          "details": [
+            "Create test file internal/workspace/state_machine_test.go",
+            "Test TS-05-25: Valid transitions: pending\u2192cloning, cloning\u2192ready, cloning\u2192failed, ready\u2192archived, pending\u2192archived, failed\u2192archived, archived\u2192pending",
+            "Test TS-05-26: Invalid transitions are rejected (e.g. ready\u2192pending, archived\u2192ready directly)"
+          ],
+          "test_spec_refs": [
+            "TS-05-25",
+            "TS-05-26"
+          ],
+          "requirement_refs": [
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/...",
+          "Tests in this group are present and fail against unimplemented stubs: go test ./internal/workspace/... -run 'TestArchive|TestReactivate|TestDelete|TestStateMachine' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 05-REQ-6, 05-REQ-7, 05-REQ-8, 05-REQ-9 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement WorkspaceConfig in apikit and Path Resolution",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Add WorkspaceConfig struct and Workspace field to apikit Config",
+          "details": [
+            "In apikit's internal config package, define: type WorkspaceConfig struct { Path string `toml:\"path\"`; Workers int `toml:\"workers\"` }",
+            "Add Workspace WorkspaceConfig `toml:\"workspace\"` field to the existing Config struct alongside Server, Database, Logging, OAuth",
+            "Ensure the toml tags match the [workspace] section in config.toml"
+          ],
+          "test_spec_refs": [
+            "TS-05-1"
+          ],
+          "requirement_refs": [
+            "05-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement workspace path resolution in apikit Load()",
+          "details": [
+            "In apikit's config Load() function, resolve cfg.Workspace.Path using the same resolveDataPath logic as cfg.Database.Path",
+            "Resolution rules: (1) path with directory component used as-is; (2) bare name + XDG_DATA_HOME \u2192 $XDG_DATA_HOME/<name>; (3) empty + XDG_DATA_HOME \u2192 $XDG_DATA_HOME/workspaces; (4) empty + no XDG_DATA_HOME \u2192 ./data/workspaces",
+            "Default cfg.Workspace.Workers to 4 if the value is 0 or omitted after loading"
+          ],
+          "test_spec_refs": [
+            "TS-05-2",
+            "TS-05-3",
+            "TS-05-4"
+          ],
+          "requirement_refs": [
+            "05-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Add go-git dependency to hub module",
+          "details": [
+            "Run: go get github.com/go-git/go-git/v5 in the hub module",
+            "Verify go.mod and go.sum are updated with the go-git dependency",
+            "Confirm apikit local replace directive (replace github.com/txsvc/apikit => ../apikit) is still present in hub's go.mod"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Spec tests for config pass: go test ./internal/config/... -count=1 -v (TS-05-1 through TS-05-4 green)",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 05-REQ-1.1 through 05-REQ-1.4 acceptance criteria met: WorkspaceConfig struct exists with correct fields and tags, path resolution logic matches all four rules, Workers defaults to 4"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement WORKSPACE_ROOT Boot Initialization and Schema Migration",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement WORKSPACE_ROOT directory creation on server boot",
+          "details": [
+            "In hub's server initialization (e.g. internal/workspace/init.go or main boot sequence), call os.MkdirAll(cfg.Workspace.Path, 0755) after config is loaded",
+            "If os.MkdirAll returns an error, call log.Fatalf (or equivalent) to exit the server with a descriptive fatal error message",
+            "Ensure this runs before any HTTP handlers are registered so workspace operations are guaranteed to have a valid root"
+          ],
+          "test_spec_refs": [
+            "TS-05-5",
+            "TS-05-6"
+          ],
+          "requirement_refs": [
+            "05-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Apply DDL changes to workspaces table schema",
+          "details": [
+            "Update the CREATE TABLE IF NOT EXISTS workspaces DDL in hub's schema file to add: clone_status TEXT NOT NULL DEFAULT 'pending', head_sha TEXT, clone_error TEXT",
+            "Since this is pre-production (no migration framework), update the DDL directly and document that existing databases must be recreated",
+            "Verify the full updated schema matches the PRD's SQL definition exactly"
+          ],
+          "test_spec_refs": [
+            "TS-05-7",
+            "TS-05-9"
+          ],
+          "requirement_refs": [
+            "05-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Extend workspace response struct and JSON serialization",
+          "details": [
+            "Add CloneStatus string, HeadSHA *string, CloneError *string fields to the workspace response Go struct in internal/workspace/",
+            "Ensure JSON tags are clone_status, head_sha, clone_error respectively",
+            "Update all workspace response construction sites (create, get, list, update, archive, reactivate handlers) to populate the three new fields from the DB row"
+          ],
+          "test_spec_refs": [
+            "TS-05-8"
+          ],
+          "requirement_refs": [
+            "05-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Spec tests for schema and boot pass: go test ./internal/workspace/... -run 'TestBoot|TestSchema' -count=1 -v (TS-05-5 through TS-05-9 green)",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 05-REQ-2 and 05-REQ-3 acceptance criteria met: WORKSPACE_ROOT created on boot, fatal on failure, DDL includes all three new columns, response JSON includes clone_status/head_sha/clone_error"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement In-Memory Job Queue and Clone Worker",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement job queue type and worker pool startup",
+          "details": [
+            "Create internal/workspace/queue.go defining a CloneJob struct with fields: WorkspaceSlug string, GitURL string, Branch *string, JobType string (\"clone\" or \"reclone\")",
+            "Define a Queue struct backed by a buffered chan CloneJob with capacity proportional to Workers",
+            "Implement NewQueue(ctx context.Context, workers int, db *sql.DB, workspaceRoot string) *Queue that starts workers goroutines consuming from the channel",
+            "On context cancellation, workers exit their select loop and pending jobs are discarded"
+          ],
+          "test_spec_refs": [
+            "TS-05-10",
+            "TS-05-11",
+            "TS-05-12"
+          ],
+          "requirement_refs": [
+            "05-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement clone worker execution logic",
+          "details": [
+            "In internal/workspace/clone.go, implement func executeCloneJob(ctx context.Context, job CloneJob, db *sql.DB, workspaceRoot string) error",
+            "Step 1: UPDATE workspaces SET clone_status='cloning', updated_at=<now> WHERE slug=job.WorkspaceSlug",
+            "Step 2: Check if <workspaceRoot>/<slug> already exists; if so, set clone_status='ready' and return (idempotency)",
+            "Step 3: os.MkdirAll(<workspaceRoot>/<slug>, 0755)",
+            "Step 4: Build CloneOptions{URL: job.GitURL, Depth: 1}; if job.Branch != nil, set SingleBranch=true, ReferenceName=plumbing.NewBranchReferenceName(*job.Branch)",
+            "Step 5: Call git.PlainCloneContext(ctx, <workspaceRoot>/<slug>/trunk, false, &opts)",
+            "Step 6 success: read HEAD SHA via repo.Head().Hash().String(); UPDATE workspaces SET clone_status='ready', head_sha=<sha>, clone_error=NULL, updated_at=<now>",
+            "Step 6 failure: os.RemoveAll(<workspaceRoot>/<slug>); UPDATE workspaces SET clone_status='failed', clone_error=<err.Error()>, updated_at=<now>"
+          ],
+          "test_spec_refs": [
+            "TS-05-13",
+            "TS-05-14",
+            "TS-05-15",
+            "TS-05-16"
+          ],
+          "requirement_refs": [
+            "05-REQ-4",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Extend workspace creation handler to enqueue clone job",
+          "details": [
+            "In internal/workspace/handler_create.go (or equivalent), after inserting the workspace row with clone_status='pending', call queue.Enqueue(CloneJob{WorkspaceSlug: slug, GitURL: gitURL, Branch: branch, JobType: \"clone\"})",
+            "Ensure the HTTP 201 response is returned immediately without waiting for the clone to complete",
+            "The response body must include clone_status='pending', head_sha=null, clone_error=null"
+          ],
+          "test_spec_refs": [
+            "TS-05-17"
+          ],
+          "requirement_refs": [
+            "05-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Spec tests for queue and clone pass: go test ./internal/workspace/... -run 'TestQueue|TestClone|TestCreate' -count=1 -v (TS-05-10 through TS-05-17 green)",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 05-REQ-4 and 05-REQ-5 acceptance criteria met: workers start/stop with context, clone sets correct statuses, idempotency check works, creation returns 201 immediately"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Archive Lifecycle Git Operations",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement archive handler git push and SHA recording for ready workspaces",
+          "details": [
+            "In internal/workspace/handler_archive.go, after existing auth/state checks, branch on clone_status",
+            "If clone_status='ready': call git.PlainOpen(<workspaceRoot>/<slug>/trunk); call repo.Push(&git.PushOptions{RemoteName: \"origin\"}); if err != nil && err != git.NoErrAlreadyUpToDate, return HTTP 500 with error message",
+            "On push success: call repo.Head() then .Hash().String() to get head_sha; call os.RemoveAll(<workspaceRoot>/<slug>)",
+            "UPDATE workspaces SET clone_status='archived', head_sha=<sha>, status='archived', updated_at=<now>"
+          ],
+          "test_spec_refs": [
+            "TS-05-18",
+            "TS-05-19",
+            "TS-05-20"
+          ],
+          "requirement_refs": [
+            "05-REQ-6",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement archive rejection for cloning state and cleanup for pending/failed",
+          "details": [
+            "If clone_status='cloning': return HTTP 409 with JSON error body containing message 'clone in progress; try again after it completes'",
+            "If clone_status='pending' or 'failed': call os.RemoveAll(<workspaceRoot>/<slug>) to clean up any partial directory (ignore not-exist errors); UPDATE workspaces SET clone_status='archived', status='archived', updated_at=<now>",
+            "Return HTTP 200 with updated workspace response in all success cases"
+          ],
+          "test_spec_refs": [
+            "TS-05-21",
+            "TS-05-22"
+          ],
+          "requirement_refs": [
+            "05-REQ-6",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Spec tests for archive pass: go test ./internal/workspace/... -run 'TestArchive' -count=1 -v (TS-05-18 through TS-05-22 green)",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 05-REQ-6 acceptance criteria met: push called before delete, NoErrAlreadyUpToDate treated as success, push failure returns 500, cloning returns 409, pending/failed archives without sync"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Reactivate and Delete Lifecycle Changes",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement reactivate handler to enqueue reclone job",
+          "details": [
+            "In internal/workspace/handler_reactivate.go, after existing auth/state checks, UPDATE workspaces SET status='active', clone_status='pending', clone_error=NULL, updated_at=<now>",
+            "Enqueue a CloneJob{WorkspaceSlug: slug, GitURL: ws.GitURL, Branch: ws.Branch, JobType: \"reclone\"} on the job queue",
+            "Return HTTP 200 with updated workspace response (status='active', clone_status='pending', clone_error=null)"
+          ],
+          "test_spec_refs": [
+            "TS-05-23"
+          ],
+          "requirement_refs": [
+            "05-REQ-7",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement delete handler workspace directory cleanup",
+          "details": [
+            "In internal/workspace/handler_delete.go, before deleting the DB row, check if <workspaceRoot>/<slug> exists via os.Stat",
+            "If it exists, call os.RemoveAll(<workspaceRoot>/<slug>); if RemoveAll returns an error, log a warning (e.g. log.Printf(\"WARN: failed to remove workspace dir %s: %v\", path, err)) but do not abort",
+            "Proceed with the existing DB row deletion regardless of directory cleanup outcome"
+          ],
+          "test_spec_refs": [
+            "TS-05-24"
+          ],
+          "requirement_refs": [
+            "05-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Spec tests for reactivate and delete pass: go test ./internal/workspace/... -run 'TestReactivate|TestDelete' -count=1 -v (TS-05-23 and TS-05-24 green)",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 05-REQ-7 and 05-REQ-8 acceptance criteria met: reactivate sets pending and enqueues reclone, delete cleans up directory with warning-only on failure"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Full Test Suite Green Checkpoint",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run full spec test suite and confirm all 26 test cases pass",
+          "details": [
+            "Execute: go test ./internal/workspace/... -count=1 -v && cd ../apikit && go test ./internal/config/... -count=1 -v",
+            "Confirm TS-05-1 through TS-05-26 all report PASS",
+            "Document any flaky tests (especially those using local git repos) and stabilize with t.TempDir() isolation"
+          ],
+          "test_spec_refs": [
+            "TS-05-1",
+            "TS-05-2",
+            "TS-05-3",
+            "TS-05-4",
+            "TS-05-5",
+            "TS-05-6",
+            "TS-05-7",
+            "TS-05-8"
+          ],
+          "requirement_refs": [
+            "05-REQ-1",
+            "05-REQ-2",
+            "05-REQ-3",
+            "05-REQ-4",
+            "05-REQ-5",
+            "05-REQ-6",
+            "05-REQ-7",
+            "05-REQ-8",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Run remaining spec tests and full regression suite",
+          "details": [
+            "Confirm TS-05-16 through TS-05-26 all report PASS",
+            "Execute full regression: go test ./... -count=1",
+            "Confirm zero test failures across all packages"
+          ],
+          "test_spec_refs": [
+            "TS-05-16",
+            "TS-05-17",
+            "TS-05-18",
+            "TS-05-19",
+            "TS-05-20",
+            "TS-05-21",
+            "TS-05-22",
+            "TS-05-23"
+          ],
+          "requirement_refs": [
+            "05-REQ-4",
+            "05-REQ-5",
+            "05-REQ-6",
+            "05-REQ-7",
+            "05-REQ-8",
+            "05-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Audit for stub markers and dead code",
+          "details": [
+            "Search for panic(\"not implemented\"), // TODO, and bare return nil in non-trivial paths across internal/workspace/ and apikit config package",
+            "Resolve or document any found stubs before proceeding to wiring verification",
+            "Run go vet ./... and confirm zero warnings"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-1",
+            "05-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All 26 spec test cases pass: go test ./internal/workspace/... -count=1 -v && cd ../apikit && go test ./internal/config/... -count=1 -v",
+          "Full regression suite passes: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "No panic(\"not implemented\") or unresolved // TODO stubs remain in implementation files"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths from POST /api/v1/workspaces through clone worker",
+          "details": [
+            "Verify that the workspace creation handler calls queue.Enqueue() in production code (not just in tests)",
+            "Verify that NewQueue() is called during server startup with the correct context, workers count, db, and workspaceRoot from config",
+            "Confirm the call chain: HTTP handler \u2192 Enqueue \u2192 worker goroutine \u2192 executeCloneJob \u2192 PlainCloneContext \u2192 DB update",
+            "Confirm no panic(\"not implemented\") or // TODO stubs remain in internal/workspace/queue.go or internal/workspace/clone.go"
+          ],
+          "test_spec_refs": [
+            "TS-05-10",
+            "TS-05-17"
+          ],
+          "requirement_refs": [
+            "05-REQ-4",
+            "05-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Verify archive, reactivate, and delete handlers are wired to git operations",
+          "details": [
+            "Confirm archive handler calls git.PlainOpen and repo.Push in production code path for clone_status='ready'",
+            "Confirm reactivate handler calls queue.Enqueue with JobType='reclone' in production code",
+            "Confirm delete handler calls os.RemoveAll before DB deletion in production code",
+            "Verify return values from PlainOpen, Push, Head, and RemoveAll are all handled (not silently discarded)"
+          ],
+          "test_spec_refs": [
+            "TS-05-18",
+            "TS-05-23",
+            "TS-05-24"
+          ],
+          "requirement_refs": [
+            "05-REQ-6",
+            "05-REQ-7",
+            "05-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Verify WORKSPACE_ROOT boot initialization is wired into server startup",
+          "details": [
+            "Confirm os.MkdirAll(cfg.Workspace.Path, 0755) is called from the server's main boot sequence (not just in tests)",
+            "Confirm log.Fatalf (or equivalent) is called on MkdirAll failure \u2014 verify the fatal path is reachable from production code",
+            "Confirm apikit's Load() resolves cfg.Workspace.Path before the boot initialization runs"
+          ],
+          "test_spec_refs": [
+            "TS-05-5",
+            "TS-05-6"
+          ],
+          "requirement_refs": [
+            "05-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Stub and dead-code audit across all implementation files",
+          "details": [
+            "Search for panic(\"not implemented\") in internal/workspace/ and apikit config package: grep -r 'panic(\"not implemented\")' internal/workspace/ ../apikit/internal/config/",
+            "Search for bare return nil in non-trivial functions: grep -n 'return nil' internal/workspace/*.go and verify each is intentional",
+            "Search for unresolved // TODO comments: grep -rn '// TODO' internal/workspace/ ../apikit/internal/config/",
+            "All found stubs must be resolved before this group passes"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "05-REQ-1",
+            "05-REQ-2",
+            "05-REQ-4",
+            "05-REQ-5",
+            "05-REQ-6",
+            "05-REQ-7",
+            "05-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.5",
+          "title": "Run smoke tests with real components",
+          "details": [
+            "Start hub server with a test config.toml pointing to a real local git repo as upstream",
+            "POST /api/v1/workspaces and verify HTTP 201 with clone_status='pending'",
+            "Poll GET /api/v1/workspaces/:slug until clone_status='ready' and head_sha is a 40-char hex string",
+            "POST /api/v1/workspaces/:slug/archive and verify HTTP 200 with clone_status='archived' and workspace directory removed",
+            "POST /api/v1/workspaces/:slug/reactivate and verify HTTP 200 with clone_status='pending'",
+            "Poll GET until clone_status='ready' again",
+            "DELETE /api/v1/workspaces/:slug (after re-archiving) and verify HTTP 204 and DB row gone"
+          ],
+          "test_spec_refs": [
+            "TS-05-SMOKE-1",
+            "TS-05-SMOKE-2",
+            "TS-05-SMOKE-3",
+            "TS-05-SMOKE-4",
+            "TS-05-SMOKE-5",
+            "TS-05-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "05-REQ-5",
+            "05-REQ-6",
+            "05-REQ-7",
+            "05-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.6",
+          "title": "Cross-spec entry point verification: confirm upstream spec interfaces are called correctly",
+          "details": [
+            "Verify that apikit.LoadConfig() (from spec 01 / apikit) is the entry point used by hub to load WorkspaceConfig \u2014 not a direct call to internal config.Load()",
+            "Verify that MountHandlers (from spec 01) still correctly registers archive, reactivate, and delete routes after this spec's handler modifications",
+            "Confirm that the workspace table DDL changes are compatible with the existing schema from spec 01 (workspaces) and spec 03 (workspace_write_delete)"
+          ],
+          "test_spec_refs": [
+            "TS-05-7",
+            "TS-05-8"
+          ],
+          "requirement_refs": [
+            "05-REQ-1",
+            "05-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/workspace/... -count=1 -v && cd ../apikit && go test ./internal/config/... -count=1 -v",
+          "Full regression suite passes: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "No panic(\"not implemented\"), unresolved // TODO, or bare return nil stubs found in implementation files",
+          "Smoke test scenario completes successfully: workspace created \u2192 cloned \u2192 archived \u2192 reactivated \u2192 recloned \u2192 deleted",
+          "apikit.LoadConfig() is confirmed as the production entry point for WorkspaceConfig loading",
+          "MountHandlers still registers all workspace routes correctly after lifecycle handler modifications"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "05-REQ-1.1",
+      "test_spec_id": "TS-05-1",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.1",
+      "test_spec_id": "TS-05-2",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.1",
+      "test_spec_id": "TS-05-3",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-1.1",
+      "test_spec_id": "TS-05-4",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.1",
+      "test_spec_id": "TS-05-5",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-2.1",
+      "test_spec_id": "TS-05-6",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.1",
+      "test_spec_id": "TS-05-7",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.1",
+      "test_spec_id": "TS-05-8",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-3.1",
+      "test_spec_id": "TS-05-9",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-10",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-11",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-12",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-13",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-14",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-15",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-4.1",
+      "test_spec_id": "TS-05-16",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-5.1",
+      "test_spec_id": "TS-05-17",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-18",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-19",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-20",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-21",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-6.1",
+      "test_spec_id": "TS-05-22",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-7.1",
+      "test_spec_id": "TS-05-23",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-8.1",
+      "test_spec_id": "TS-05-24",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.1",
+      "test_spec_id": "TS-05-25",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "05-REQ-9.1",
+      "test_spec_id": "TS-05-26",
+      "task_id": "6.2",
+      "test_path": null
+    }
+  ]
+}
