@@ -49,7 +49,7 @@
           "requirement_refs": [
             "05-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -67,7 +67,7 @@
           "requirement_refs": [
             "05-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -87,7 +87,7 @@
           "requirement_refs": [
             "05-REQ-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -134,7 +134,7 @@
             "Test TS-05-13: Worker sets clone_status='cloning', creates workspace dir, calls PlainCloneContext with Depth=1; on success sets clone_status='ready' and records head_sha",
             "Test TS-05-14: Clone with explicit branch sets SingleBranch=true and ReferenceName=refs/heads/<branch>; clone without branch omits ReferenceName",
             "Test TS-05-15: On clone failure, clone_status='failed', clone_error set to error message, partial workspace directory removed",
-            "Test TS-05-16: Idempotency \u2014 if workspace directory already exists, job skips clone and sets clone_status='ready'"
+            "Test TS-05-16: Idempotency — if workspace directory already exists, job skips clone and sets clone_status='ready'"
           ],
           "test_spec_refs": [
             "TS-05-13",
@@ -231,8 +231,8 @@
           "title": "Write tests for clone status state machine transitions",
           "details": [
             "Create test file internal/workspace/state_machine_test.go",
-            "Test TS-05-25: Valid transitions: pending\u2192cloning, cloning\u2192ready, cloning\u2192failed, ready\u2192archived, pending\u2192archived, failed\u2192archived, archived\u2192pending",
-            "Test TS-05-26: Invalid transitions are rejected (e.g. ready\u2192pending, archived\u2192ready directly)"
+            "Test TS-05-25: Valid transitions: pending→cloning, cloning→ready, cloning→failed, ready→archived, pending→archived, failed→archived, archived→pending",
+            "Test TS-05-26: Invalid transitions are rejected (e.g. ready→pending, archived→ready directly)"
           ],
           "test_spec_refs": [
             "TS-05-25",
@@ -282,7 +282,7 @@
           "title": "Implement workspace path resolution in apikit Load()",
           "details": [
             "In apikit's config Load() function, resolve cfg.Workspace.Path using the same resolveDataPath logic as cfg.Database.Path",
-            "Resolution rules: (1) path with directory component used as-is; (2) bare name + XDG_DATA_HOME \u2192 $XDG_DATA_HOME/<name>; (3) empty + XDG_DATA_HOME \u2192 $XDG_DATA_HOME/workspaces; (4) empty + no XDG_DATA_HOME \u2192 ./data/workspaces",
+            "Resolution rules: (1) path with directory component used as-is; (2) bare name + XDG_DATA_HOME → $XDG_DATA_HOME/<name>; (3) empty + XDG_DATA_HOME → $XDG_DATA_HOME/workspaces; (4) empty + no XDG_DATA_HOME → ./data/workspaces",
             "Default cfg.Workspace.Workers to 4 if the value is 0 or omitted after loading"
           ],
           "test_spec_refs": [
@@ -681,7 +681,7 @@
           "details": [
             "Verify that the workspace creation handler calls queue.Enqueue() in production code (not just in tests)",
             "Verify that NewQueue() is called during server startup with the correct context, workers count, db, and workspaceRoot from config",
-            "Confirm the call chain: HTTP handler \u2192 Enqueue \u2192 worker goroutine \u2192 executeCloneJob \u2192 PlainCloneContext \u2192 DB update",
+            "Confirm the call chain: HTTP handler → Enqueue → worker goroutine → executeCloneJob → PlainCloneContext → DB update",
             "Confirm no panic(\"not implemented\") or // TODO stubs remain in internal/workspace/queue.go or internal/workspace/clone.go"
           ],
           "test_spec_refs": [
@@ -722,7 +722,7 @@
           "title": "Verify WORKSPACE_ROOT boot initialization is wired into server startup",
           "details": [
             "Confirm os.MkdirAll(cfg.Workspace.Path, 0755) is called from the server's main boot sequence (not just in tests)",
-            "Confirm log.Fatalf (or equivalent) is called on MkdirAll failure \u2014 verify the fatal path is reachable from production code",
+            "Confirm log.Fatalf (or equivalent) is called on MkdirAll failure — verify the fatal path is reachable from production code",
             "Confirm apikit's Load() resolves cfg.Workspace.Path before the boot initialization runs"
           ],
           "test_spec_refs": [
@@ -790,7 +790,7 @@
           "id": "10.6",
           "title": "Cross-spec entry point verification: confirm upstream spec interfaces are called correctly",
           "details": [
-            "Verify that apikit.LoadConfig() (from spec 01 / apikit) is the entry point used by hub to load WorkspaceConfig \u2014 not a direct call to internal config.Load()",
+            "Verify that apikit.LoadConfig() (from spec 01 / apikit) is the entry point used by hub to load WorkspaceConfig — not a direct call to internal config.Load()",
             "Verify that MountHandlers (from spec 01) still correctly registers archive, reactivate, and delete routes after this spec's handler modifications",
             "Confirm that the workspace table DDL changes are compatible with the existing schema from spec 01 (workspaces) and spec 03 (workspace_write_delete)"
           ],
@@ -813,7 +813,7 @@
           "Full regression suite passes: go test ./... -count=1",
           "No linter warnings: go vet ./...",
           "No panic(\"not implemented\"), unresolved // TODO, or bare return nil stubs found in implementation files",
-          "Smoke test scenario completes successfully: workspace created \u2192 cloned \u2192 archived \u2192 reactivated \u2192 recloned \u2192 deleted",
+          "Smoke test scenario completes successfully: workspace created → cloned → archived → reactivated → recloned → deleted",
           "apikit.LoadConfig() is confirmed as the production entry point for WorkspaceConfig loading",
           "MountHandlers still registers all workspace routes correctly after lifecycle handler modifications"
         ]
