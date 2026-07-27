@@ -3,7 +3,11 @@ package workspace
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
@@ -453,6 +457,10 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 }
 
 // handleArchiveWorkspace handles POST /api/v1/workspaces/:slug/archive.
+// The handler branches on clone_status to determine the archive strategy:
+//   - ready:          push to origin, record head_sha, delete workspace dir
+//   - cloning:        reject with HTTP 409 (clone in progress)
+//   - pending/failed: clean up any partial directory, no git push
 func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth, err := getAuth(c)
@@ -476,12 +484,64 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "workspace is already archived")
 		}
 
-		updated, err := updateWorkspaceStatus(db, slug, "archived")
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
-		}
+		switch ws.CloneStatus {
+		case "cloning":
+			// 05-REQ-6.3: Reject archive while clone is in progress.
+			return respondError(c, http.StatusConflict,
+				"clone in progress; try again after it completes")
 
-		return respondWorkspace(c, http.StatusOK, updated)
+		case "ready":
+			// 05-REQ-6.1, 05-REQ-6.5: Push to origin, record head_sha,
+			// delete workspace directory, then archive.
+			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
+
+			// Push local commits to upstream.
+			if pushErr := archiveOpenAndPushFn(repoPath); pushErr != nil && !errors.Is(pushErr, ErrAlreadyUpToDate) {
+				// 05-REQ-6.4: Push failure aborts the archive.
+				return respondError(c, http.StatusInternalServerError, pushErr.Error())
+			}
+
+			// Read HEAD SHA after successful push (or already-up-to-date).
+			headSHA, headErr := archiveHeadFn(repoPath)
+			if headErr != nil {
+				// 05-REQ-6.E2: HEAD read failure aborts the archive;
+				// workspace directory is NOT deleted.
+				return respondError(c, http.StatusInternalServerError, headErr.Error())
+			}
+
+			// Delete workspace directory from disk.
+			wsDir := filepath.Join(defaultWorkspaceRoot, slug)
+			if rmErr := os.RemoveAll(wsDir); rmErr != nil {
+				// 05-REQ-6.E3: Log warning but continue with DB update.
+				log.Printf("warning: failed to delete workspace directory %q: %v", wsDir, rmErr)
+			}
+
+			// Update DB: status='archived', clone_status='archived', head_sha recorded.
+			updated, err := archiveWorkspaceDB(db, slug, &headSHA)
+			if err != nil {
+				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
+			}
+			return respondWorkspace(c, http.StatusOK, updated)
+
+		case "pending", "failed":
+			// 05-REQ-6.2: No git push; just clean up and archive.
+			wsDir := filepath.Join(defaultWorkspaceRoot, slug)
+			_ = os.RemoveAll(wsDir) // Ignore not-exist errors.
+
+			updated, err := archiveWorkspaceDB(db, slug, nil)
+			if err != nil {
+				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
+			}
+			return respondWorkspace(c, http.StatusOK, updated)
+
+		default:
+			// Safety net for unexpected clone_status values.
+			updated, err := archiveWorkspaceDB(db, slug, nil)
+			if err != nil {
+				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
+			}
+			return respondWorkspace(c, http.StatusOK, updated)
+		}
 	}
 }
 

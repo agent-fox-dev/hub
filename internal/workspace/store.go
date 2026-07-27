@@ -162,6 +162,21 @@ func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID
 	return getWorkspaceBySlug(db, slug)
 }
 
+// archiveWorkspaceDB sets both status and clone_status to "archived",
+// records the head_sha (may be nil for workspaces archived from pending/failed),
+// clears clone_error, and refreshes updated_at. Returns the updated workspace.
+func archiveWorkspaceDB(db *sql.DB, slug string, headSHA *string) (*Workspace, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`UPDATE workspaces SET status = 'archived', clone_status = 'archived', head_sha = ?, clone_error = NULL, updated_at = ? WHERE slug = ?`,
+		headSHA, now, slug,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("archive workspace %q: %w", slug, err)
+	}
+	return getWorkspaceBySlug(db, slug)
+}
+
 // deleteWorkspace physically removes a workspace row from the workspaces table.
 func deleteWorkspace(db *sql.DB, slug string) error {
 	result, err := db.Exec(`DELETE FROM workspaces WHERE slug = ?`, slug)

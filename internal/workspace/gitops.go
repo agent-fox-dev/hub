@@ -49,6 +49,8 @@ var defaultQueue *JobQueue
 // Called during server boot after EnsureWorkspaceRoot.
 func InitCloneQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers int) {
 	cloneFn = defaultCloneFn
+	archiveOpenAndPushFn = defaultArchiveOpenAndPushFn
+	archiveHeadFn = defaultArchiveHeadFn
 	defaultWorkspaceRoot = workspaceRoot
 	defaultQueue = NewJobQueue(ctx, db, workspaceRoot, workers)
 }
