@@ -1,0 +1,851 @@
+{
+  "$schema": null,
+  "spec_id": "04",
+  "spec_name": "personal_org",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-04-1",
+      "requirement_id": "04-REQ-1.1",
+      "kind": "unit",
+      "description": "Verify that the AfterUserCreateFunc type is exported from the apikit package with the correct signature.",
+      "preconditions": [
+        "apikit package is compiled from the local replace path ../apikit",
+        "No hook has been registered on the server"
+      ],
+      "input": "Inspect the apikit package for the exported type AfterUserCreateFunc",
+      "expected": "AfterUserCreateFunc is a public type with signature func(ctx context.Context, tx *sql.Tx, userID, username, email string) error; the package compiles without error",
+      "assertion_pseudocode": "var fn apikit.AfterUserCreateFunc = func(ctx, tx, userID, username, email) error { return nil }; assert fn != nil AND typeof(fn) == apikit.AfterUserCreateFunc"
+    },
+    {
+      "id": "TS-04-2",
+      "requirement_id": "04-REQ-1.2",
+      "kind": "unit",
+      "description": "Verify that OnAfterUserCreate stores the provided hook function on the server and replaces any previous registration.",
+      "preconditions": [
+        "apikit Server is instantiated via NewServer with a valid Config and HealthChecker",
+        "No hook is registered initially"
+      ],
+      "input": "Call server.OnAfterUserCreate(hookFn) with a non-nil AfterUserCreateFunc",
+      "expected": "The server stores hookFn internally; a subsequent call with a different hookFn2 replaces hookFn such that only hookFn2 is called during user creation",
+      "assertion_pseudocode": "callCount1 := 0; callCount2 := 0; server.OnAfterUserCreate(func(...) { callCount1++ }); server.OnAfterUserCreate(func(...) { callCount2++ }); simulateUserCreate(server); assert callCount1 == 0 AND callCount2 == 1"
+    },
+    {
+      "id": "TS-04-3",
+      "requirement_id": "04-REQ-1.3",
+      "kind": "unit",
+      "description": "Verify that user creation proceeds normally without calling any hook when no hook has been registered.",
+      "preconditions": [
+        "apikit Server is instantiated",
+        "No OnAfterUserCreate has been called",
+        "Database is initialised with the users table"
+      ],
+      "input": "Trigger user creation (OAuth new-user branch or admin createUser) with no registered hook",
+      "expected": "User row is inserted successfully; no panic or error occurs; HTTP 201 (admin) or redirect (OAuth) is returned",
+      "assertion_pseudocode": "server := NewServer(cfg, checker); MountHandlers(server, db); result := createUserViaAdmin(server, {username:'alice', email:'alice@example.com'}); assert result.statusCode == 201 AND userExistsInDB('alice') == true"
+    },
+    {
+      "id": "TS-04-4",
+      "requirement_id": "04-REQ-1.4",
+      "kind": "unit",
+      "description": "Verify that registering a second hook replaces the first and only the second hook is called during user creation.",
+      "preconditions": [
+        "apikit Server is instantiated",
+        "Database is initialised"
+      ],
+      "input": "Call OnAfterUserCreate twice with distinct functions hookA and hookB, then trigger user creation",
+      "expected": "hookA is never called; hookB is called exactly once with correct parameters",
+      "assertion_pseudocode": "calledA := false; calledB := false; server.OnAfterUserCreate(func(...){ calledA = true; return nil }); server.OnAfterUserCreate(func(...){ calledB = true; return nil }); triggerNewUserCreation(server); assert calledA == false AND calledB == true"
+    },
+    {
+      "id": "TS-04-5",
+      "requirement_id": "04-REQ-1.5",
+      "kind": "integration",
+      "description": "Verify that a hook registered before MountHandlers is invoked in both the OAuth new-user branch and the admin createUser handler.",
+      "preconditions": [
+        "apikit Server is instantiated",
+        "Hook is registered via OnAfterUserCreate before MountHandlers is called",
+        "Database has users and orgs tables"
+      ],
+      "input": "Register hook, call MountHandlers, then trigger (1) OAuth new-user callback and (2) admin user creation",
+      "expected": "Hook is called exactly once in each scenario; hook receives the correct userID, username, and email in both cases",
+      "assertion_pseudocode": "invokedPaths := []; server.OnAfterUserCreate(func(ctx, tx, id, name, email){ invokedPaths.append(name); return nil }); server.MountHandlers(db); triggerOAuthNewUser(server, 'bob'); triggerAdminCreateUser(server, 'carol'); assert invokedPaths == ['bob', 'carol']"
+    },
+    {
+      "id": "TS-04-6",
+      "requirement_id": "04-REQ-2.1",
+      "kind": "integration",
+      "description": "Verify that the AfterUserCreateFunc hook is called with the active transaction and new user details after a new user INSERT during OAuth callback.",
+      "preconditions": [
+        "apikit Server has hook registered via OnAfterUserCreate before MountHandlers",
+        "Database has users table; no existing user row for the test user",
+        "OAuth provider mock returns a new user identity"
+      ],
+      "input": "Simulate OAuth callback for a new user 'dave' with email 'dave@example.com'",
+      "expected": "Hook is called with non-nil *sql.Tx, userID matching the inserted row, username='dave', email='dave@example.com'; hook is called before transaction commit",
+      "assertion_pseudocode": "capturedArgs := nil; server.OnAfterUserCreate(func(ctx, tx, id, name, email){ capturedArgs = {tx, id, name, email}; return nil }); simulateOAuthCallback(server, newUser={name:'dave', email:'dave@example.com'}); assert capturedArgs.tx != nil AND capturedArgs.name == 'dave' AND capturedArgs.email == 'dave@example.com' AND userExistsInDB('dave')"
+    },
+    {
+      "id": "TS-04-7",
+      "requirement_id": "04-REQ-2.2",
+      "kind": "integration",
+      "description": "Verify that a non-nil error from the hook during OAuth callback rolls back the transaction and returns HTTP 500.",
+      "preconditions": [
+        "apikit Server has hook registered that always returns errors.New('hook failed')",
+        "Database has users table; no existing user row for the test user",
+        "OAuth provider mock returns a new user identity"
+      ],
+      "input": "Simulate OAuth callback for a new user 'eve'",
+      "expected": "HTTP 500 response returned to OAuth caller; no user row for 'eve' exists in the database; no partial org or other rows created",
+      "assertion_pseudocode": "server.OnAfterUserCreate(func(ctx, tx, id, name, email){ return errors.New('hook failed') }); response := simulateOAuthCallback(server, {name:'eve'}); assert response.statusCode == 500 AND userExistsInDB('eve') == false"
+    },
+    {
+      "id": "TS-04-8",
+      "requirement_id": "04-REQ-2.3",
+      "kind": "integration",
+      "description": "Verify that the hook is NOT called when the OAuth callback identifies a returning (existing) user.",
+      "preconditions": [
+        "apikit Server has hook registered",
+        "Database has an existing user row for user 'frank'",
+        "OAuth provider mock returns identity matching 'frank'"
+      ],
+      "input": "Simulate OAuth callback for returning user 'frank'",
+      "expected": "Hook is never called; user row is not duplicated; normal login flow completes successfully",
+      "assertion_pseudocode": "hookCallCount := 0; server.OnAfterUserCreate(func(...){ hookCallCount++; return nil }); simulateOAuthCallback(server, existingUser={name:'frank'}); assert hookCallCount == 0"
+    },
+    {
+      "id": "TS-04-9",
+      "requirement_id": "04-REQ-3.1",
+      "kind": "unit",
+      "description": "Verify that the createUser handler wraps the user INSERT and hook call in a database transaction.",
+      "preconditions": [
+        "apikit Server has hook registered",
+        "Database is accessible with users table"
+      ],
+      "input": "Call admin createUser endpoint with valid user payload",
+      "expected": "The user INSERT and hook call execute within the same *sql.Tx; the hook receives a non-nil *sql.Tx that matches the one used for the user INSERT",
+      "assertion_pseudocode": "receivedTx := nil; server.OnAfterUserCreate(func(ctx, tx, id, name, email){ receivedTx = tx; return nil }); triggerAdminCreateUser(server, {username:'grace'}); assert receivedTx != nil AND typeof(receivedTx) == *sql.Tx AND userExistsInDB('grace')"
+    },
+    {
+      "id": "TS-04-10",
+      "requirement_id": "04-REQ-3.2",
+      "kind": "integration",
+      "description": "Verify that the hook is called with correct user details after a successful user INSERT inside the admin createUser transaction.",
+      "preconditions": [
+        "apikit Server with hook registered before MountHandlers",
+        "Database has users table; no existing user 'henry'"
+      ],
+      "input": "POST to admin user creation endpoint with {username:'henry', email:'henry@example.com'}",
+      "expected": "Hook is called with userID matching the inserted row, username='henry', email='henry@example.com', and a non-nil *sql.Tx",
+      "assertion_pseudocode": "captured := nil; server.OnAfterUserCreate(func(ctx, tx, id, name, email){ captured = {id, name, email} }); triggerAdminCreateUser({username:'henry', email:'henry@example.com'}); assert captured.name == 'henry' AND captured.email == 'henry@example.com' AND captured.id != ''"
+    },
+    {
+      "id": "TS-04-11",
+      "requirement_id": "04-REQ-3.3",
+      "kind": "integration",
+      "description": "Verify that a hook error during admin user creation rolls back the transaction and returns HTTP 500.",
+      "preconditions": [
+        "apikit Server has hook registered that returns errors.New('hook error')",
+        "Database has users table; no existing user 'ivan'"
+      ],
+      "input": "POST to admin user creation endpoint with {username:'ivan'}",
+      "expected": "HTTP 500 response; no user row for 'ivan' in the database; no partial state written",
+      "assertion_pseudocode": "server.OnAfterUserCreate(func(...){ return errors.New('hook error') }); response := triggerAdminCreateUser({username:'ivan'}); assert response.statusCode == 500 AND userExistsInDB('ivan') == false"
+    },
+    {
+      "id": "TS-04-12",
+      "requirement_id": "04-REQ-4.1",
+      "kind": "unit",
+      "description": "Verify that the orgs table DDL includes the owner_id TEXT nullable column.",
+      "preconditions": [
+        "SQLite database is initialised using the apikit schema DDL"
+      ],
+      "input": "Inspect the orgs table schema using PRAGMA table_info('orgs')",
+      "expected": "Column 'owner_id' exists with type TEXT and notnull=0 (nullable); existing org rows with no owner have owner_id=NULL",
+      "assertion_pseudocode": "columns := db.query('PRAGMA table_info(orgs)'); ownerCol := columns.find(name='owner_id'); assert ownerCol != nil AND ownerCol.type == 'TEXT' AND ownerCol.notnull == 0"
+    },
+    {
+      "id": "TS-04-13",
+      "requirement_id": "04-REQ-4.2",
+      "kind": "unit",
+      "description": "Verify that the Organization struct has an OwnerID field of type *string with JSON tag owner_id,omitempty.",
+      "preconditions": [
+        "apikit package is compiled"
+      ],
+      "input": "Reflect on the apikit.Organization struct type",
+      "expected": "OwnerID field exists as *string with JSON tag 'owner_id,omitempty'; package compiles successfully",
+      "assertion_pseudocode": "org := apikit.Organization{OwnerID: ptr('user-123')}; jsonBytes := json.Marshal(org); assert jsonBytes contains '\"owner_id\":\"user-123\"'; org2 := apikit.Organization{}; jsonBytes2 := json.Marshal(org2); assert jsonBytes2 does NOT contain 'owner_id'"
+    },
+    {
+      "id": "TS-04-14",
+      "requirement_id": "04-REQ-4.3",
+      "kind": "integration",
+      "description": "Verify that org API endpoints (list, get, update) include owner_id in JSON responses when set and omit it when NULL.",
+      "preconditions": [
+        "Database has two org rows: one with owner_id set to 'user-abc', one with owner_id NULL",
+        "apikit Server is running with org handlers mounted"
+      ],
+      "input": "GET /orgs for both orgs",
+      "expected": "Org with owner_id='user-abc' returns JSON containing '\"owner_id\":\"user-abc\"'; org with owner_id=NULL returns JSON without 'owner_id' key",
+      "assertion_pseudocode": "resp1 := GET('/orgs/personal-org-id'); assert resp1.body.owner_id == 'user-abc'; resp2 := GET('/orgs/admin-org-id'); assert 'owner_id' NOT IN resp2.body"
+    },
+    {
+      "id": "TS-04-15",
+      "requirement_id": "04-REQ-4.4",
+      "kind": "integration",
+      "description": "Verify that the admin org creation endpoint (POST /orgs) accepts an optional owner_id field and stores it.",
+      "preconditions": [
+        "apikit Server is running with admin org handler mounted",
+        "Database has orgs table with owner_id column"
+      ],
+      "input": "POST /orgs with body {name:'my-org', slug:'my-org', owner_id:'user-xyz'}",
+      "expected": "HTTP 201 response with JSON body containing owner_id='user-xyz'; database row has owner_id='user-xyz'",
+      "assertion_pseudocode": "response := POST('/orgs', {name:'my-org', slug:'my-org', owner_id:'user-xyz'}); assert response.statusCode == 201 AND response.body.owner_id == 'user-xyz'; dbRow := db.query('SELECT owner_id FROM orgs WHERE slug=?', 'my-org'); assert dbRow.owner_id == 'user-xyz'"
+    },
+    {
+      "id": "TS-04-16",
+      "requirement_id": "04-REQ-4.5",
+      "kind": "unit",
+      "description": "Verify that no foreign key constraint exists on the owner_id column in the orgs table DDL.",
+      "preconditions": [
+        "SQLite database initialised with apikit schema DDL"
+      ],
+      "input": "Inspect foreign key constraints on the orgs table using PRAGMA foreign_key_list('orgs')",
+      "expected": "No foreign key constraint referencing the users table or any table exists for the owner_id column",
+      "assertion_pseudocode": "fkList := db.query('PRAGMA foreign_key_list(orgs)'); fkForOwner := fkList.filter(from='owner_id'); assert fkForOwner.length == 0"
+    },
+    {
+      "id": "TS-04-17",
+      "requirement_id": "04-REQ-5.1",
+      "kind": "unit",
+      "description": "Verify that the slug sanitizer lowercases the entire username before further processing.",
+      "preconditions": [
+        "Hub personal org hook slug sanitizer function is available"
+      ],
+      "input": "username = 'Alice'",
+      "expected": "Sanitized slug is 'alice' (all lowercase)",
+      "assertion_pseudocode": "slug := sanitizeSlug('Alice', userID='uid-001'); assert slug == 'alice'"
+    },
+    {
+      "id": "TS-04-18",
+      "requirement_id": "04-REQ-5.2",
+      "kind": "unit",
+      "description": "Verify that characters not in [a-z0-9_-] are replaced with hyphens during slug sanitization.",
+      "preconditions": [
+        "Hub slug sanitizer function is available"
+      ],
+      "input": "username = 'alice@example'",
+      "expected": "Sanitized slug has '@' replaced with '-', yielding 'alice-example'",
+      "assertion_pseudocode": "slug := sanitizeSlug('alice@example', userID='uid-001'); assert slug == 'alice-example'"
+    },
+    {
+      "id": "TS-04-19",
+      "requirement_id": "04-REQ-5.3",
+      "kind": "unit",
+      "description": "Verify that consecutive hyphens are collapsed into a single hyphen during sanitization.",
+      "preconditions": [
+        "Hub slug sanitizer function is available"
+      ],
+      "input": "username = 'alice--bob'",
+      "expected": "Sanitized slug is 'alice-bob'",
+      "assertion_pseudocode": "slug := sanitizeSlug('alice--bob', userID='uid-001'); assert slug == 'alice-bob'"
+    },
+    {
+      "id": "TS-04-20",
+      "requirement_id": "04-REQ-5.4",
+      "kind": "unit",
+      "description": "Verify that leading and trailing hyphens and underscores are trimmed from the sanitized slug.",
+      "preconditions": [
+        "Hub slug sanitizer function is available"
+      ],
+      "input": "username = '-alice_'",
+      "expected": "Sanitized slug is 'alice' (leading hyphen and trailing underscore trimmed)",
+      "assertion_pseudocode": "slug := sanitizeSlug('-alice_', userID='uid-001'); assert slug == 'alice'"
+    },
+    {
+      "id": "TS-04-21",
+      "requirement_id": "04-REQ-5.5",
+      "kind": "unit",
+      "description": "Verify that a sanitized slug starting with a digit gets the 'u-' prefix prepended.",
+      "preconditions": [
+        "Hub slug sanitizer function is available"
+      ],
+      "input": "username = '42alice'",
+      "expected": "Sanitized slug is 'u-42alice' (digit-leading slug gets 'u-' prefix)",
+      "assertion_pseudocode": "slug := sanitizeSlug('42alice', userID='uid-001'); assert slug starts with 'u-' AND slug == 'u-42alice'"
+    },
+    {
+      "id": "TS-04-22",
+      "requirement_id": "04-REQ-5.6",
+      "kind": "unit",
+      "description": "Verify that when the sanitized slug is shorter than 2 characters, the fallback u-<first 8 chars of userID> is used.",
+      "preconditions": [
+        "Hub slug sanitizer function is available"
+      ],
+      "input": "username = 'a', userID = 'abcdefgh-1234'",
+      "expected": "Sanitized slug is 'u-abcdefgh' (fallback: 'u-' + first 8 chars of userID='abcdefgh')",
+      "assertion_pseudocode": "slug := sanitizeSlug('a', userID='abcdefgh-1234'); assert slug == 'u-abcdefgh'"
+    },
+    {
+      "id": "TS-04-23",
+      "requirement_id": "04-REQ-6.1",
+      "kind": "integration",
+      "description": "Verify that slug collision resolution appends -1, -2, etc. until a unique slug is found.",
+      "preconditions": [
+        "SQLite database with orgs table containing rows with slugs 'alice' and 'alice-1'",
+        "Hub personal org hook is available and connected to the database"
+      ],
+      "input": "Hook called with username='alice', userID='user-001'; orgs table already has slugs 'alice' and 'alice-1'",
+      "expected": "Hook inserts org with slug 'alice-2'; no error returned",
+      "assertion_pseudocode": "tx := beginTx(db); err := hubOrgHook(ctx, tx, 'user-001', 'alice', 'alice@test.com'); tx.commit(); assert err == nil; dbRow := db.query('SELECT slug FROM orgs WHERE owner_id=?', 'user-001'); assert dbRow.slug == 'alice-2'"
+    },
+    {
+      "id": "TS-04-24",
+      "requirement_id": "04-REQ-6.2",
+      "kind": "integration",
+      "description": "Verify that when all 10 slug suffix attempts collide, the hook returns an error causing transaction rollback and HTTP 500.",
+      "preconditions": [
+        "SQLite database with orgs table containing slugs 'alice', 'alice-1' through 'alice-10'",
+        "Hub personal org hook is available"
+      ],
+      "input": "Hook called with username='alice', userID='user-002'; orgs table has 'alice', 'alice-1', ..., 'alice-10'",
+      "expected": "Hook returns a non-nil error; no new org row is inserted; caller receives HTTP 500 when wired through the handler",
+      "assertion_pseudocode": "tx := beginTx(db); err := hubOrgHook(ctx, tx, 'user-002', 'alice', 'e@test.com'); assert err != nil; tx.rollback(); orgCount := db.query('SELECT COUNT(*) FROM orgs WHERE owner_id=?', 'user-002'); assert orgCount == 0"
+    },
+    {
+      "id": "TS-04-25",
+      "requirement_id": "04-REQ-6.3",
+      "kind": "integration",
+      "description": "Verify that when the candidate slug does not collide, it is used immediately without any suffix.",
+      "preconditions": [
+        "SQLite database with orgs table containing no row with slug 'newuser'",
+        "Hub personal org hook is available"
+      ],
+      "input": "Hook called with username='newuser', userID='user-003'",
+      "expected": "Hook inserts org with slug exactly 'newuser'; no suffix appended",
+      "assertion_pseudocode": "tx := beginTx(db); err := hubOrgHook(ctx, tx, 'user-003', 'newuser', 'n@test.com'); tx.commit(); assert err == nil; dbRow := db.query('SELECT slug FROM orgs WHERE owner_id=?', 'user-003'); assert dbRow.slug == 'newuser'"
+    },
+    {
+      "id": "TS-04-26",
+      "requirement_id": "04-REQ-7.1",
+      "kind": "integration",
+      "description": "Verify that the hub hook inserts an orgs row with all required fields correctly populated.",
+      "preconditions": [
+        "SQLite database with orgs table including owner_id column; no existing org for 'julia'",
+        "Hub personal org hook available"
+      ],
+      "input": "Hook called with username='Julia', email='julia@example.com', userID='user-julia-001'",
+      "expected": "orgs row inserted with: id=non-empty UUID, name='Julia' (original username), slug='julia' (sanitized), url='', owner_id='user-julia-001', status='active', created_at and updated_at in RFC 3339 format",
+      "assertion_pseudocode": "tx := beginTx(db); err := hubOrgHook(ctx, tx, 'user-julia-001', 'Julia', 'julia@example.com'); tx.commit(); row := db.query('SELECT * FROM orgs WHERE owner_id=?', 'user-julia-001'); assert row.id != '' AND row.name == 'Julia' AND row.slug == 'julia' AND row.url == '' AND row.owner_id == 'user-julia-001' AND row.status == 'active' AND isRFC3339(row.created_at) AND isRFC3339(row.updated_at)"
+    },
+    {
+      "id": "TS-04-27",
+      "requirement_id": "04-REQ-7.2",
+      "kind": "integration",
+      "description": "Verify that the hub hook inserts an org_members row linking the new user to the new org.",
+      "preconditions": [
+        "SQLite database with orgs and org_members tables; no existing org for 'karl'",
+        "Hub personal org hook available"
+      ],
+      "input": "Hook called with username='karl', userID='user-karl-001'",
+      "expected": "org_members row inserted with org_id matching the new org's id, user_id='user-karl-001', and created_at in RFC 3339 format",
+      "assertion_pseudocode": "tx := beginTx(db); err := hubOrgHook(ctx, tx, 'user-karl-001', 'karl', 'k@test.com'); tx.commit(); orgRow := db.query('SELECT id FROM orgs WHERE owner_id=?', 'user-karl-001'); memberRow := db.query('SELECT * FROM org_members WHERE user_id=?', 'user-karl-001'); assert memberRow.org_id == orgRow.id AND memberRow.user_id == 'user-karl-001' AND isRFC3339(memberRow.created_at)"
+    },
+    {
+      "id": "TS-04-28",
+      "requirement_id": "04-REQ-7.3",
+      "kind": "unit",
+      "description": "Verify that the hook performs all INSERT statements using the *sql.Tx passed to it, not a separate connection.",
+      "preconditions": [
+        "Hub personal org hook available",
+        "Database is accessible"
+      ],
+      "input": "Hook called with a spy transaction wrapper that records SQL statements executed on it",
+      "expected": "All INSERT statements (orgs and org_members) are executed on the passed *sql.Tx; no direct database connection is used for inserts",
+      "assertion_pseudocode": "txSpy := newSpyTx(realTx); err := hubOrgHook(ctx, txSpy, 'user-100', 'luna', 'l@test.com'); assert txSpy.insertCount == 2 AND txSpy.statements contains 'INSERT INTO orgs' AND txSpy.statements contains 'INSERT INTO org_members'"
+    },
+    {
+      "id": "TS-04-29",
+      "requirement_id": "04-REQ-8.1",
+      "kind": "integration",
+      "description": "Verify that workspace creation without org_id auto-assigns the user's personal org id as the workspace org_id.",
+      "preconditions": [
+        "SQLite database with orgs row where owner_id='user-mark-001' and id='org-mark-001'",
+        "Hub workspace handler is running; user 'mark' is authenticated with id='user-mark-001'"
+      ],
+      "input": "POST /api/v1/workspaces with body {git_url:'https://github.com/mark/repo', slug:'my-repo'} (no org_id)",
+      "expected": "HTTP 201 response; workspace JSON includes org_id='org-mark-001'; workspace row in database has org_id='org-mark-001'",
+      "assertion_pseudocode": "response := POST('/api/v1/workspaces', {git_url:'https://github.com/mark/repo', slug:'my-repo'}, auth=userMark); assert response.statusCode == 201 AND response.body.org_id == 'org-mark-001'; dbRow := db.query('SELECT org_id FROM workspaces WHERE slug=?', 'my-repo'); assert dbRow.org_id == 'org-mark-001'"
+    },
+    {
+      "id": "TS-04-30",
+      "requirement_id": "04-REQ-8.2",
+      "kind": "integration",
+      "description": "Verify that workspace creation with explicit org_id uses existing checkOrgMembership validation unchanged.",
+      "preconditions": [
+        "Database has orgs row 'org-team-001' and org_members row linking 'user-nina-001' to 'org-team-001'",
+        "User 'nina' authenticated with id='user-nina-001'"
+      ],
+      "input": "POST /api/v1/workspaces with body {git_url:'https://github.com/nina/repo', slug:'team-repo', org_id:'org-team-001'}",
+      "expected": "HTTP 201 response; workspace JSON includes org_id='org-team-001'; no personal org lookup is performed",
+      "assertion_pseudocode": "personalOrgQueryCount := 0; interceptQuery('SELECT id FROM orgs WHERE owner_id', func(){ personalOrgQueryCount++ }); response := POST('/api/v1/workspaces', {slug:'team-repo', org_id:'org-team-001'}, auth=userNina); assert response.statusCode == 201 AND personalOrgQueryCount == 0 AND response.body.org_id == 'org-team-001'"
+    },
+    {
+      "id": "TS-04-31",
+      "requirement_id": "04-REQ-8.3",
+      "kind": "integration",
+      "description": "Verify that workspace creation without org_id returns HTTP 400 with the prescribed message when the user has no personal org.",
+      "preconditions": [
+        "Database has no orgs row with owner_id='user-orphan-001'",
+        "User 'orphan' authenticated with id='user-orphan-001'"
+      ],
+      "input": "POST /api/v1/workspaces with body {git_url:'https://github.com/orphan/repo', slug:'orphan-ws'} (no org_id)",
+      "expected": "HTTP 400 response; response body JSON contains error message 'user has no personal organization; contact an administrator'",
+      "assertion_pseudocode": "response := POST('/api/v1/workspaces', {slug:'orphan-ws'}, auth=userOrphan); assert response.statusCode == 400 AND response.body.error == 'user has no personal organization; contact an administrator'"
+    },
+    {
+      "id": "TS-04-32",
+      "requirement_id": "04-REQ-9.1",
+      "kind": "integration",
+      "description": "Verify that afc workspace create without --org sends no org_id in the request body and receives a response with populated org_id from the personal org.",
+      "preconditions": [
+        "User has a personal org (owner_id = authenticated user's id) in the database",
+        "afc CLI is configured with valid auth token",
+        "Hub server is running"
+      ],
+      "input": "afc workspace create --git-url https://github.com/user/repo --slug my-workspace (no --org flag)",
+      "expected": "CLI sends POST /api/v1/workspaces without org_id field; response JSON shows org_id populated with the personal org's id; CLI output displays populated org_id",
+      "assertion_pseudocode": "requestBody := captureHTTPRequest(afc workspace create --git-url ... --slug my-workspace); assert 'org_id' NOT IN requestBody; response := parseJSONOutput(cliOutput); assert response.org_id != '' AND response.org_id == personalOrgID"
+    },
+    {
+      "id": "TS-04-33",
+      "requirement_id": "04-REQ-9.2",
+      "kind": "integration",
+      "description": "Verify that afc workspace create with --org sends org_id in the request body unchanged.",
+      "preconditions": [
+        "User is a member of org with slug 'my-team'",
+        "afc CLI is configured with valid auth token",
+        "Hub server is running"
+      ],
+      "input": "afc workspace create --git-url https://github.com/user/repo --slug team-ws --org my-team",
+      "expected": "CLI sends POST /api/v1/workspaces with org_id='my-team' (or the resolved ID); response JSON includes org_id matching the specified org",
+      "assertion_pseudocode": "requestBody := captureHTTPRequest(afc workspace create --slug team-ws --org my-team); assert 'org_id' IN requestBody AND requestBody.org_id == resolvedID('my-team'); response := parseJSONOutput(cliOutput); assert response.org_id == resolvedID('my-team')"
+    },
+    {
+      "id": "TS-04-34",
+      "requirement_id": "04-REQ-10.1",
+      "kind": "integration",
+      "description": "Verify that the hub server initialization registers the personal org hook before calling MountWorkspaceHandlers.",
+      "preconditions": [
+        "Hub server initialization code is inspectable",
+        "apikit Server instance is available"
+      ],
+      "input": "Trace hub server startup sequence",
+      "expected": "OnAfterUserCreate is called with the personal org hook function before MountWorkspaceHandlers (which calls MountHandlers internally); hook is active when handlers are wired",
+      "assertion_pseudocode": "callOrder := []; server.OnAfterUserCreate = wrapper(real, func(){ callOrder.append('OnAfterUserCreate') }); MountWorkspaceHandlers = wrapper(real, func(){ callOrder.append('MountWorkspaceHandlers') }); initHubServer(); assert callOrder.indexOf('OnAfterUserCreate') < callOrder.indexOf('MountWorkspaceHandlers')"
+    },
+    {
+      "id": "TS-04-35",
+      "requirement_id": "04-REQ-10.2",
+      "kind": "unit",
+      "description": "Verify that apikit Server uses the hook reference captured at MountHandlers call time; hooks registered after MountHandlers are not guaranteed to be invoked.",
+      "preconditions": [
+        "apikit Server instantiated",
+        "First hook (hookA) registered before MountHandlers",
+        "MountHandlers is called",
+        "Second hook (hookB) registered after MountHandlers"
+      ],
+      "input": "Register hookA, call MountHandlers, register hookB, then trigger a new user creation",
+      "expected": "hookA is called (or hookB, depending on implementation); the system does not panic; the PRD-defined behavior is that hooks after MountHandlers are not guaranteed — test documents that hookB may or may not be invoked but no panic occurs",
+      "assertion_pseudocode": "calledA := false; calledB := false; server.OnAfterUserCreate(func(...){ calledA = true }); server.MountHandlers(db); server.OnAfterUserCreate(func(...){ calledB = true }); assert doesNotPanic(func(){ triggerNewUserCreation(server) }); // At least one hook fires without error assert calledA OR calledB"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-04-P1",
+      "property_id": "04-PROP-1",
+      "validates": [
+        "04-REQ-2.1",
+        "04-REQ-2.2",
+        "04-REQ-3.1",
+        "04-REQ-3.3",
+        "04-REQ-7.1",
+        "04-REQ-7.E1",
+        "04-REQ-7.E2"
+      ],
+      "description": "For any user creation attempt, after the operation completes, either both the user row and a personal org row exist (with matching owner_id) or neither exists — no partial state is possible.",
+      "for_any_strategy": "Generate random (username, email) pairs for both OAuth and admin creation paths; randomly inject hook failures for approximately 50% of attempts",
+      "invariant_check": "after each attempt: (userExistsInDB(username) AND orgExistsForUser(userID)) OR (NOT userExistsInDB(username) AND NOT orgExistsForUser(userID)); never assert exactly one of the pair exists"
+    },
+    {
+      "id": "TS-04-P2",
+      "property_id": "04-PROP-2",
+      "validates": [
+        "04-REQ-6.1",
+        "04-REQ-6.2",
+        "04-REQ-6.3"
+      ],
+      "description": "For any call to the hub personal org hook, the slug written to the orgs table does not duplicate any pre-existing slug in the table.",
+      "for_any_strategy": "Generate arbitrary sets of pre-existing org slugs (0 to 15 slugs) and arbitrary usernames; run the hook against each combination",
+      "invariant_check": "after hook completes without error: SELECT COUNT(*) FROM orgs WHERE slug = insertedSlug == 1 (no duplicate); if hook returns error due to cap exceeded, no new org row exists"
+    },
+    {
+      "id": "TS-04-P3",
+      "property_id": "04-PROP-3",
+      "validates": [
+        "04-REQ-8.1",
+        "04-REQ-8.3"
+      ],
+      "description": "For any workspace creation request via POST /api/v1/workspaces, the persisted workspace row always has a non-null org_id.",
+      "for_any_strategy": "Generate workspace creation requests with and without org_id field for users with and without personal orgs",
+      "invariant_check": "if response.statusCode == 201: SELECT org_id FROM workspaces WHERE id=workspaceID returns a non-null, non-empty value; if response.statusCode != 201: no workspace row exists for that slug"
+    },
+    {
+      "id": "TS-04-P4",
+      "property_id": "04-PROP-4",
+      "validates": [
+        "04-REQ-2.1",
+        "04-REQ-2.3",
+        "04-REQ-3.2"
+      ],
+      "description": "The AfterUserCreateFunc hook is invoked exactly once per new-user INSERT and never for returning users.",
+      "for_any_strategy": "Generate sequences of OAuth callbacks with a mix of new users (not in DB) and returning users (already in DB); track hook invocation count per callback",
+      "invariant_check": "for each callback: if user was new → hookInvocationCount for that user == 1; if user was returning → hookInvocationCount for that user == 0; total hook invocations == number of genuinely new users in the sequence"
+    },
+    {
+      "id": "TS-04-P5",
+      "property_id": "04-PROP-5",
+      "validates": [
+        "04-REQ-5.1",
+        "04-REQ-5.2",
+        "04-REQ-5.3",
+        "04-REQ-5.4",
+        "04-REQ-5.5",
+        "04-REQ-5.6"
+      ],
+      "description": "For any username string, the slug sanitizer always produces a result that matches the validateSlug regex ^[a-z0-9][a-z0-9_-]*[a-z0-9]$ (minimum 2 chars).",
+      "for_any_strategy": "Generate arbitrary Unicode strings as usernames (length 0 to 200); generate arbitrary userID strings (length 8 to 36)",
+      "invariant_check": "slug := sanitizeSlug(username, userID); assert slug matches regex '^[a-z0-9][a-z0-9_-]*[a-z0-9]$' AND len(slug) >= 2; assert validateSlug(slug) returns nil error"
+    },
+    {
+      "id": "TS-04-P6",
+      "property_id": "04-PROP-6",
+      "validates": [
+        "04-REQ-6.1",
+        "04-REQ-6.2",
+        "04-REQ-6.E2"
+      ],
+      "description": "The slug collision retry loop always terminates after at most 10 iterations, regardless of how many slugs exist in the orgs table.",
+      "for_any_strategy": "Generate orgs tables with 0 to 20 pre-existing slugs matching the candidate pattern (base, base-1 through base-20); instrument the loop iteration counter",
+      "invariant_check": "iterationCount := countLoopIterations(hubOrgHook, ...); assert iterationCount <= 10; if all 10 collide → err != nil; if unique found at iteration k ≤ 10 → err == nil AND slug is unique"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-04-E1",
+      "requirement_id": "04-REQ-1.E1",
+      "kind": "unit",
+      "description": "Verify that calling OnAfterUserCreate after MountHandlers does not panic or error, even if behavior is undefined.",
+      "preconditions": [
+        "apikit Server instantiated and MountHandlers already called"
+      ],
+      "input": "Call server.OnAfterUserCreate(hookFn) after MountHandlers has returned",
+      "expected": "No panic; no error returned; the call completes silently (hook may or may not be wired)",
+      "assertion_pseudocode": "server.MountHandlers(db); assert doesNotPanic(func(){ server.OnAfterUserCreate(func(...) error { return nil }) })"
+    },
+    {
+      "id": "TS-04-E2",
+      "requirement_id": "04-REQ-2.E1",
+      "kind": "integration",
+      "description": "Verify that when the OAuth request context is cancelled while the hook executes, the transaction rolls back and HTTP 500 is returned.",
+      "preconditions": [
+        "apikit Server with a hook that blocks until context is cancelled",
+        "Database has users table; no existing user 'timeout-user'"
+      ],
+      "input": "Simulate OAuth callback for new user 'timeout-user' with a context that is cancelled after 10ms",
+      "expected": "Hook's database operations fail with a context error; hook returns non-nil error; transaction rolls back; HTTP 500 returned; no user row for 'timeout-user' exists",
+      "assertion_pseudocode": "ctx, cancel := contextWithTimeout(10ms); server.OnAfterUserCreate(func(ctx, tx, id, name, email){ sleep(100ms); return ctx.Err() }); response := simulateOAuthCallback(server, ctx, {name:'timeout-user'}); assert response.statusCode == 500 AND userExistsInDB('timeout-user') == false"
+    },
+    {
+      "id": "TS-04-E3",
+      "requirement_id": "04-REQ-3.E1",
+      "kind": "integration",
+      "description": "Verify that when a transaction cannot be started in createUser, HTTP 500 is returned without any INSERT attempted.",
+      "preconditions": [
+        "apikit Server with hook registered",
+        "Database connection is unavailable or returns error on Begin()"
+      ],
+      "input": "POST to admin user creation endpoint with valid payload while database is unavailable",
+      "expected": "HTTP 500 returned; no user row created; no org row created; hook is never called",
+      "assertion_pseudocode": "hookCalled := false; server.OnAfterUserCreate(func(...){ hookCalled = true; return nil }); db.simulateBeginError(); response := triggerAdminCreateUser({username:'nostart'}); assert response.statusCode == 500 AND hookCalled == false AND userExistsInDB('nostart') == false"
+    },
+    {
+      "id": "TS-04-E4",
+      "requirement_id": "04-REQ-3.E2",
+      "kind": "unit",
+      "description": "Verify that a fatal hook or transaction error in createUser is propagated as HTTP 500 without calling os.Exit or panic from library code.",
+      "preconditions": [
+        "apikit Server used as a library (not CLI entrypoint)",
+        "Hook registered that returns a non-nil error simulating a fatal condition"
+      ],
+      "input": "Trigger admin user creation; hook returns errors.New('fatal hook error')",
+      "expected": "HTTP 500 response returned to caller; no panic or os.Exit is invoked; process continues running",
+      "assertion_pseudocode": "server.OnAfterUserCreate(func(...){ return errors.New('fatal hook error') }); assert doesNotPanic(func(){ response := triggerAdminCreateUser({username:'panic-test'}); assert response.statusCode == 500 })"
+    },
+    {
+      "id": "TS-04-E5",
+      "requirement_id": "04-REQ-4.E1",
+      "kind": "unit",
+      "description": "Verify that org JSON responses omit the owner_id key when the org has owner_id=NULL (admin-created org).",
+      "preconditions": [
+        "Database has an org row with owner_id=NULL",
+        "apikit Server running with org endpoints"
+      ],
+      "input": "GET /orgs/<admin-org-id>",
+      "expected": "HTTP 200; response JSON body does not contain the key 'owner_id'",
+      "assertion_pseudocode": "response := GET('/orgs/admin-org-id'); assert response.statusCode == 200; jsonStr := response.body.toString(); assert 'owner_id' NOT IN jsonStr"
+    },
+    {
+      "id": "TS-04-E6",
+      "requirement_id": "04-REQ-5.E1",
+      "kind": "unit",
+      "description": "Verify that a username consisting entirely of special characters results in the fallback slug u-<first 8 chars of userID>.",
+      "preconditions": [
+        "Hub slug sanitizer function available"
+      ],
+      "input": "username = '!!!', userID = 'abcdefgh-xyz'",
+      "expected": "Sanitized slug is 'u-abcdefgh' (all specials → hyphens → trimmed → empty → fallback)",
+      "assertion_pseudocode": "slug := sanitizeSlug('!!!', userID='abcdefgh-xyz'); assert slug == 'u-abcdefgh'"
+    },
+    {
+      "id": "TS-04-E7",
+      "requirement_id": "04-REQ-5.E2",
+      "kind": "unit",
+      "description": "Verify that a username resulting in a single character after sanitization triggers the fallback slug.",
+      "preconditions": [
+        "Hub slug sanitizer function available"
+      ],
+      "input": "username = 'a!', userID = 'abcdefgh-000'",
+      "expected": "After sanitization: 'a!' → 'a-' → trim → 'a' (1 char < 2) → fallback 'u-abcdefgh'",
+      "assertion_pseudocode": "slug := sanitizeSlug('a!', userID='abcdefgh-000'); assert slug == 'u-abcdefgh'"
+    },
+    {
+      "id": "TS-04-E8",
+      "requirement_id": "04-REQ-5.E3",
+      "kind": "unit",
+      "description": "Verify that a username that is a single digit triggers the fallback slug.",
+      "preconditions": [
+        "Hub slug sanitizer function available"
+      ],
+      "input": "username = '7', userID = 'abcdefgh-111'",
+      "expected": "Sanitized result is '7' (1 char < 2) → fallback 'u-abcdefgh'",
+      "assertion_pseudocode": "slug := sanitizeSlug('7', userID='abcdefgh-111'); assert slug == 'u-abcdefgh'"
+    },
+    {
+      "id": "TS-04-E9",
+      "requirement_id": "04-REQ-6.E1",
+      "kind": "integration",
+      "description": "Verify that a database error during slug uniqueness query causes the hook to return an error and roll back the transaction.",
+      "preconditions": [
+        "Hub personal org hook available",
+        "Database transaction spy configured to return an error on the slug SELECT query"
+      ],
+      "input": "Hook called; SELECT slug uniqueness query against orgs returns a database error",
+      "expected": "Hook returns a non-nil error; transaction is rolled back; caller receives HTTP 500; no org or org_members row created",
+      "assertion_pseudocode": "tx := faultyTx(errorOn='SELECT.*FROM orgs WHERE slug'); err := hubOrgHook(ctx, tx, 'user-200', 'queryerr', 'q@test.com'); assert err != nil; orgCount := db.query('SELECT COUNT(*) FROM orgs WHERE owner_id=?', 'user-200'); assert orgCount == 0"
+    },
+    {
+      "id": "TS-04-E10",
+      "requirement_id": "04-REQ-6.E2",
+      "kind": "unit",
+      "description": "Verify that the slug collision retry loop is capped at exactly 10 iterations regardless of table state.",
+      "preconditions": [
+        "Hub personal org hook slug collision loop logic is instrumentable",
+        "Database orgs table has all possible slugs for 'testslug' through 'testslug-20' to ensure all attempts would collide"
+      ],
+      "input": "Hook called with a slug that collides on every attempt; loop iteration counter is instrumented",
+      "expected": "Loop executes exactly 10 iterations and then returns an error; iteration count never exceeds 10",
+      "assertion_pseudocode": "iterationCount := 0; wrappedSlugCheck := func(slug){ iterationCount++; return slugExistsAlways(slug) }; err := hubOrgHookWithCustomCheck(ctx, tx, 'user-300', 'testslug', 't@test.com', wrappedSlugCheck); assert err != nil AND iterationCount == 10"
+    },
+    {
+      "id": "TS-04-E11",
+      "requirement_id": "04-REQ-7.E1",
+      "kind": "integration",
+      "description": "Verify that if the orgs INSERT fails, the hook returns an error and rolls back all inserts including the user row.",
+      "preconditions": [
+        "Hub personal org hook available",
+        "Transaction configured to fail on INSERT INTO orgs (e.g., simulated constraint violation)"
+      ],
+      "input": "Hook called; orgs INSERT returns a constraint violation error",
+      "expected": "Hook returns non-nil error; transaction rolls back; no user, org, or org_members rows remain in the database",
+      "assertion_pseudocode": "tx := faultyTx(errorOn='INSERT INTO orgs'); err := hubOrgHook(ctx, tx, 'user-400', 'failorg', 'f@test.com'); assert err != nil; tx.rollback(); assert orgExistsForUser('user-400') == false"
+    },
+    {
+      "id": "TS-04-E12",
+      "requirement_id": "04-REQ-7.E2",
+      "kind": "integration",
+      "description": "Verify that if org_members INSERT fails after orgs INSERT succeeds, the hook returns an error and rolls back all inserts.",
+      "preconditions": [
+        "Hub personal org hook available",
+        "Transaction configured to succeed on INSERT INTO orgs but fail on INSERT INTO org_members"
+      ],
+      "input": "Hook called; org_members INSERT returns error after orgs row is inserted within the transaction",
+      "expected": "Hook returns non-nil error; transaction rolls back; no user, org, or org_members rows remain",
+      "assertion_pseudocode": "tx := faultyTx(errorOn='INSERT INTO org_members'); err := hubOrgHook(ctx, tx, 'user-401', 'failmember', 'fm@test.com'); assert err != nil; tx.rollback(); assert orgExistsForUser('user-401') == false AND memberExistsForUser('user-401') == false"
+    },
+    {
+      "id": "TS-04-E13",
+      "requirement_id": "04-REQ-7.E3",
+      "kind": "unit",
+      "description": "Verify that if UUID generation for the new org id fails, the hook returns an error immediately without performing any INSERT.",
+      "preconditions": [
+        "Hub personal org hook available",
+        "UUID generation is mocked to return an error"
+      ],
+      "input": "Hook called; UUID generator returns an error",
+      "expected": "Hook returns non-nil error without executing any INSERT statement; transaction is rolled back",
+      "assertion_pseudocode": "insertCount := 0; tx := countingTx(func(){ insertCount++ }); mockUUID := func(){ return '', errors.New('uuid gen failed') }; err := hubOrgHookWithUUID(ctx, tx, 'user-402', 'uuidfail', 'u@test.com', mockUUID); assert err != nil AND insertCount == 0"
+    },
+    {
+      "id": "TS-04-E14",
+      "requirement_id": "04-REQ-8.E1",
+      "kind": "integration",
+      "description": "Verify that a database error during personal org lookup in workspace creation returns HTTP 500 without inserting a workspace.",
+      "preconditions": [
+        "Hub workspace handler running",
+        "Database is configured to return an error on SELECT from orgs WHERE owner_id query",
+        "User authenticated with id='user-dberr'"
+      ],
+      "input": "POST /api/v1/workspaces with no org_id; personal org SELECT query fails",
+      "expected": "HTTP 500 response; no workspace row inserted in the database",
+      "assertion_pseudocode": "db.simulateErrorOn('SELECT id FROM orgs WHERE owner_id'); response := POST('/api/v1/workspaces', {slug:'dberr-ws'}, auth=userDBErr); assert response.statusCode == 500; workspaceCount := db.query('SELECT COUNT(*) FROM workspaces WHERE slug=?', 'dberr-ws'); assert workspaceCount == 0"
+    },
+    {
+      "id": "TS-04-E15",
+      "requirement_id": "04-REQ-8.E2",
+      "kind": "integration",
+      "description": "Verify that when multiple personal org rows exist for a user (data inconsistency), the first result is used and a warning is logged, but the request succeeds.",
+      "preconditions": [
+        "Database has two org rows both with owner_id='user-multi-org'",
+        "User authenticated with id='user-multi-org'",
+        "Warning logger is instrumentable"
+      ],
+      "input": "POST /api/v1/workspaces with no org_id; personal org query returns 2 rows",
+      "expected": "HTTP 201 response; workspace created with org_id set to the first matching org's id; a warning is logged; request does not fail",
+      "assertion_pseudocode": "warnings := []; interceptLog('WARN', func(msg){ warnings.append(msg) }); response := POST('/api/v1/workspaces', {slug:'multi-org-ws'}, auth=userMultiOrg); assert response.statusCode == 201 AND response.body.org_id != '' AND warnings.length >= 1"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-04-SMOKE-1",
+      "execution_path_id": "04-PATH-1",
+      "description": "End-to-end smoke test: a new user completes OAuth login and a personal org is atomically created alongside the user row.",
+      "trigger": "Simulate OAuth callback for a brand-new user 'smoketest-alice' who does not exist in the database",
+      "real_components": [
+        "apikit handleCallback",
+        "hub personal org AfterUserCreateFunc hook",
+        "SQLite database (users, orgs, org_members tables)"
+      ],
+      "mockable": [
+        "OAuth provider (token exchange)",
+        "UUID generator (deterministic UUIDs for assertions)"
+      ],
+      "expected_effects": [
+        "HTTP redirect (or 200) returned by the OAuth callback handler",
+        "users table has exactly one row for 'smoketest-alice'",
+        "orgs table has exactly one row with owner_id = smoketest-alice's userID and slug = 'smoketest-alice'",
+        "org_members table has one row linking smoketest-alice's userID to the new org's id",
+        "All three rows are in the database simultaneously (atomicity verified)"
+      ]
+    },
+    {
+      "id": "TS-04-SMOKE-2",
+      "execution_path_id": "04-PATH-2",
+      "description": "End-to-end smoke test: admin creates a new user via POST /users and a personal org is created atomically.",
+      "trigger": "Admin calls POST /users (admin user creation endpoint) with payload {username:'smoketest-bob', email:'bob@smoke.test'}",
+      "real_components": [
+        "apikit createUser handler (wrapped in transaction)",
+        "hub personal org AfterUserCreateFunc hook",
+        "SQLite database (users, orgs, org_members tables)"
+      ],
+      "mockable": [
+        "Admin authentication middleware (bypass for test)",
+        "UUID generator"
+      ],
+      "expected_effects": [
+        "HTTP 201 returned with user JSON",
+        "users table has exactly one row for 'smoketest-bob'",
+        "orgs table has one row with owner_id = smoketest-bob's userID, name = 'smoketest-bob', slug = 'smoketest-bob', status = 'active'",
+        "org_members table has one row linking smoketest-bob to the new org",
+        "All rows inserted atomically within the same transaction"
+      ]
+    },
+    {
+      "id": "TS-04-SMOKE-3",
+      "execution_path_id": "04-PATH-3",
+      "description": "End-to-end smoke test: workspace creation without --org automatically associates the workspace with the user's personal org.",
+      "trigger": "POST /api/v1/workspaces with body {git_url:'https://github.com/smoke/test', slug:'smoke-ws'} (no org_id), authenticated as user with existing personal org",
+      "real_components": [
+        "hub handleCreateWorkspace handler",
+        "SQLite database (orgs, workspaces tables)"
+      ],
+      "mockable": [
+        "Authentication middleware (inject test user with known personal org id)",
+        "Workspace git validation"
+      ],
+      "expected_effects": [
+        "HTTP 201 returned",
+        "Response JSON contains org_id equal to the user's personal org id",
+        "workspaces table row has non-null org_id matching the personal org"
+      ]
+    },
+    {
+      "id": "TS-04-SMOKE-4",
+      "execution_path_id": "04-PATH-4",
+      "description": "Full end-to-end smoke test: new user logs in via OAuth, personal org is created, then creates a workspace which is auto-associated with the personal org.",
+      "trigger": "Step 1: OAuth callback for new user 'smoketest-alice'. Step 2: POST /api/v1/workspaces with slug='alice-repo' and no org_id, authenticated as smoketest-alice",
+      "real_components": [
+        "apikit handleCallback",
+        "hub personal org hook",
+        "hub handleCreateWorkspace",
+        "SQLite database (users, orgs, org_members, workspaces tables)"
+      ],
+      "mockable": [
+        "OAuth provider token exchange",
+        "UUID generator"
+      ],
+      "expected_effects": [
+        "After step 1: user row, org row (slug='smoketest-alice'), and org_members row all exist",
+        "After step 2: HTTP 201; workspace row has org_id = the personal org id created in step 1",
+        "Final state: user, org, org_members, and workspace all exist and are correctly linked"
+      ]
+    },
+    {
+      "id": "TS-04-SMOKE-5",
+      "execution_path_id": "04-PATH-5",
+      "description": "Smoke test for atomic rollback: when the hook returns an error (all 10 slug attempts collide), neither the user row nor any org row is persisted.",
+      "trigger": "OAuth callback for new user whose sanitized username collides with 11 existing org slugs ('collision', 'collision-1' through 'collision-10' all pre-exist in orgs table)",
+      "real_components": [
+        "apikit handleCallback",
+        "hub personal org hook (collision resolution)",
+        "SQLite database (users, orgs tables)"
+      ],
+      "mockable": [
+        "OAuth provider token exchange"
+      ],
+      "expected_effects": [
+        "HTTP 500 returned to the OAuth caller",
+        "No new user row created in users table",
+        "No new org row created with owner_id matching the attempted new user's id",
+        "Pre-existing orgs rows are unmodified",
+        "Database is in the same state as before the callback was invoked"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

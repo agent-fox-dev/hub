@@ -1,0 +1,1451 @@
+{
+  "$schema": null,
+  "spec_id": "04",
+  "spec_name": "personal_org",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./... -run 'TestPersonalOrg|TestAfterUserCreate|TestSlug|TestOrgHook|TestWorkspaceAutoOrg' -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 8,
+      "to_group": 1,
+      "relationship": "Requires fully implemented workspace infrastructure",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "03",
+      "from_group": 6,
+      "to_group": 1,
+      "relationship": "Requires update endpoint and new fields implemented",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: AfterUserCreateFunc hook mechanism (REQ-1, REQ-2, REQ-3)",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write unit tests for AfterUserCreateFunc type and OnAfterUserCreate registration",
+          "details": [
+            "Create test file in apikit package (e.g. apikit/hook_test.go)",
+            "TS-04-1: assert AfterUserCreateFunc type compiles with correct signature func(ctx context.Context, tx *sql.Tx, userID, username, email string) error",
+            "TS-04-2: assert OnAfterUserCreate stores hook and second call replaces first",
+            "TS-04-3: assert user creation proceeds without panic when no hook is registered",
+            "TS-04-4: register hookA then hookB; assert only hookB is called on user creation"
+          ],
+          "test_spec_refs": [
+            "TS-04-1",
+            "TS-04-2",
+            "TS-04-3",
+            "TS-04-4"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.1",
+            "04-REQ-1.2",
+            "04-REQ-1.3",
+            "04-REQ-1.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write integration tests for hook wiring into OAuth and admin user creation paths",
+          "details": [
+            "TS-04-5: register hook before MountHandlers; simulate OAuth new-user and admin user creation; assert hook invoked with correct args in both paths",
+            "TS-04-E1: call OnAfterUserCreate after MountHandlers has returned; assert no panic occurs",
+            "Use SQLite in-memory database for integration tests"
+          ],
+          "test_spec_refs": [
+            "TS-04-5",
+            "TS-04-E1"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.5",
+            "04-REQ-1.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write integration tests for hook invocation in OAuth new-user branch",
+          "details": [
+            "TS-04-6: hook receives non-nil *sql.Tx, correct userID/username/email after OAuth INSERT for new user",
+            "TS-04-7: hook returning error rolls back transaction; HTTP 500 returned; no user row persists",
+            "TS-04-8: hook is NOT called for returning (existing) user in OAuth callback",
+            "TS-04-E2: context cancellation during hook execution rolls back transaction; HTTP 500 returned"
+          ],
+          "test_spec_refs": [
+            "TS-04-6",
+            "TS-04-7",
+            "TS-04-8",
+            "TS-04-E2"
+          ],
+          "requirement_refs": [
+            "04-REQ-2.1",
+            "04-REQ-2.2",
+            "04-REQ-2.3",
+            "04-REQ-2.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write integration tests for hook invocation in admin createUser handler with transaction wrapping",
+          "details": [
+            "TS-04-9: createUser wraps INSERT and hook in same *sql.Tx; hook receives non-nil tx",
+            "TS-04-10: hook called with correct userID/username/email after successful admin user INSERT",
+            "TS-04-11: hook error rolls back transaction; HTTP 500; no user row persists",
+            "TS-04-E3: database Begin() failure returns HTTP 500; hook never called; no rows written",
+            "TS-04-E4: fatal hook error propagated as HTTP 500; no panic or os.Exit from library code"
+          ],
+          "test_spec_refs": [
+            "TS-04-9",
+            "TS-04-10",
+            "TS-04-11",
+            "TS-04-E3",
+            "TS-04-E4"
+          ],
+          "requirement_refs": [
+            "04-REQ-3.1",
+            "04-REQ-3.2",
+            "04-REQ-3.3",
+            "04-REQ-3.E1",
+            "04-REQ-3.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./...",
+          "All written tests are skipped or fail as expected (no implementation yet): go test ./... -count=1",
+          "No linter errors introduced: go vet ./...",
+          "Test functions exist for TS-04-1 through TS-04-11, TS-04-E1 through TS-04-E4"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: organization ownership schema and SDK type (REQ-4)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write unit tests for orgs table owner_id column DDL and no foreign key constraint",
+          "details": [
+            "TS-04-12: PRAGMA table_info('orgs') confirms owner_id TEXT nullable column exists",
+            "TS-04-16: PRAGMA foreign_key_list('orgs') confirms no FK constraint on owner_id",
+            "TS-04-E5: GET /orgs/<admin-org-id> returns JSON without 'owner_id' key when owner_id=NULL"
+          ],
+          "test_spec_refs": [
+            "TS-04-12",
+            "TS-04-16",
+            "TS-04-E5"
+          ],
+          "requirement_refs": [
+            "04-REQ-4.1",
+            "04-REQ-4.5",
+            "04-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write unit and integration tests for Organization struct OwnerID field and API responses",
+          "details": [
+            "TS-04-13: reflect on apikit.Organization; assert OwnerID *string with JSON tag 'owner_id,omitempty'; marshal with and without OwnerID set",
+            "TS-04-14: GET /orgs for org with owner_id set returns JSON with 'owner_id'; org with NULL owner_id omits key",
+            "TS-04-15: POST /orgs with owner_id field returns HTTP 201 with owner_id in response; db row has owner_id set"
+          ],
+          "test_spec_refs": [
+            "TS-04-13",
+            "TS-04-14",
+            "TS-04-15"
+          ],
+          "requirement_refs": [
+            "04-REQ-4.2",
+            "04-REQ-4.3",
+            "04-REQ-4.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile: go build ./...",
+          "Tests for TS-04-12 through TS-04-16 and TS-04-E5 exist and are runnable: go test ./... -run 'TestOrg' -count=1",
+          "No linter errors: go vet ./...",
+          "Requirements 04-REQ-4.1 through 04-REQ-4.5 test coverage confirmed"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: slug sanitization (REQ-5)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write unit tests for slug sanitization happy-path transformations",
+          "details": [
+            "TS-04-17: 'Alice' -> 'alice' (lowercase)",
+            "TS-04-18: 'alice@example' -> 'alice-example' (invalid char replaced)",
+            "TS-04-19: 'alice--bob' -> 'alice-bob' (consecutive hyphens collapsed)",
+            "TS-04-20: '-alice_' -> 'alice' (leading/trailing hyphens and underscores trimmed)",
+            "TS-04-21: '42alice' -> 'u-42alice' (digit-leading gets u- prefix)",
+            "TS-04-22: 'a' with userID='abcdefgh-1234' -> 'u-abcdefgh' (< 2 chars fallback)"
+          ],
+          "test_spec_refs": [
+            "TS-04-17",
+            "TS-04-18",
+            "TS-04-19",
+            "TS-04-20",
+            "TS-04-21",
+            "TS-04-22"
+          ],
+          "requirement_refs": [
+            "04-REQ-5.1",
+            "04-REQ-5.2",
+            "04-REQ-5.3",
+            "04-REQ-5.4",
+            "04-REQ-5.5",
+            "04-REQ-5.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write unit tests for slug sanitization edge cases and property test for validateSlug compliance",
+          "details": [
+            "TS-04-E6: '!!!' with userID='abcdefgh-xyz' -> 'u-abcdefgh' (all specials)",
+            "TS-04-E7: 'a!' with userID='abcdefgh-000' -> 'u-abcdefgh' (single char after trim)",
+            "TS-04-E8: '7' with userID='abcdefgh-111' -> 'u-abcdefgh' (single digit)",
+            "TS-04-P5: property test using go-fuzz or table-driven arbitrary inputs; assert result always matches ^[a-z0-9][a-z0-9_-]*[a-z0-9]$ and validateSlug returns nil"
+          ],
+          "test_spec_refs": [
+            "TS-04-E6",
+            "TS-04-E7",
+            "TS-04-E8",
+            "TS-04-P5"
+          ],
+          "requirement_refs": [
+            "04-REQ-5.E1",
+            "04-REQ-5.E2",
+            "04-REQ-5.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All slug sanitizer tests compile and are runnable: go test ./... -run 'TestSanitizeSlug' -count=1 -v",
+          "TS-04-P5 property test exists and exercises arbitrary Unicode inputs",
+          "No linter errors: go vet ./...",
+          "04-REQ-5 acceptance criteria and edge cases have corresponding test functions"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: slug collision resolution and org/membership row insertion (REQ-6, REQ-7)",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write integration tests for slug collision resolution",
+          "details": [
+            "TS-04-23: orgs has 'alice' and 'alice-1'; hook inserts 'alice-2'",
+            "TS-04-24: orgs has 'alice' through 'alice-10'; hook returns error; no org row inserted",
+            "TS-04-25: 'newuser' slug not in orgs; hook inserts 'newuser' without suffix",
+            "TS-04-E9: SELECT slug query returns db error; hook returns error; no rows created",
+            "TS-04-E10: loop capped at exactly 10 iterations; instrument loop counter; assert iterationCount == 10 on full collision"
+          ],
+          "test_spec_refs": [
+            "TS-04-23",
+            "TS-04-24",
+            "TS-04-25",
+            "TS-04-E9",
+            "TS-04-E10"
+          ],
+          "requirement_refs": [
+            "04-REQ-6.1",
+            "04-REQ-6.2",
+            "04-REQ-6.3",
+            "04-REQ-6.E1",
+            "04-REQ-6.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write integration and unit tests for org and membership row insertion",
+          "details": [
+            "TS-04-26: hook inserts orgs row with all required fields (UUID, name=original username, slug, url='', owner_id, status='active', RFC3339 timestamps)",
+            "TS-04-27: hook inserts org_members row linking user to new org; org_id matches new org's id",
+            "TS-04-28: spy tx confirms both INSERTs executed on passed *sql.Tx not a separate connection",
+            "TS-04-E11: orgs INSERT failure rolls back all inserts; hook returns error",
+            "TS-04-E12: org_members INSERT failure after orgs INSERT rolls back all inserts; hook returns error",
+            "TS-04-E13: UUID generation failure causes hook to return error immediately; no INSERTs executed"
+          ],
+          "test_spec_refs": [
+            "TS-04-26",
+            "TS-04-27",
+            "TS-04-28",
+            "TS-04-E11",
+            "TS-04-E12",
+            "TS-04-E13"
+          ],
+          "requirement_refs": [
+            "04-REQ-7.1",
+            "04-REQ-7.2",
+            "04-REQ-7.3",
+            "04-REQ-7.E1",
+            "04-REQ-7.E2",
+            "04-REQ-7.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write property tests for atomicity and slug uniqueness invariants",
+          "details": [
+            "TS-04-P1: property test for user+org atomicity — either both exist or neither exists after random hook failures",
+            "TS-04-P2: property test — slug written to orgs never duplicates pre-existing slug",
+            "TS-04-P6: property test — collision retry loop terminates in <= 10 iterations for arbitrary orgs table state"
+          ],
+          "test_spec_refs": [
+            "TS-04-P1",
+            "TS-04-P2",
+            "TS-04-P6"
+          ],
+          "requirement_refs": [
+            "04-REQ-2.1",
+            "04-REQ-3.1",
+            "04-REQ-6.1",
+            "04-REQ-6.2",
+            "04-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All collision and insertion tests compile: go build ./...",
+          "Tests runnable: go test ./... -run 'TestSlugCollision|TestOrgInsert|TestOrgHook' -count=1 -v",
+          "Property tests (TS-04-P1, TS-04-P2, TS-04-P6) exist and run without panic",
+          "No linter errors: go vet ./...",
+          "04-REQ-6 and 04-REQ-7 acceptance criteria and edge cases all have test coverage"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write tests: workspace auto-association and CLI behavior (REQ-8, REQ-9, REQ-10)",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write integration tests for workspace auto-association with personal org",
+          "details": [
+            "TS-04-29: POST /api/v1/workspaces without org_id; assert response org_id matches user's personal org",
+            "TS-04-30: POST with explicit org_id; assert checkOrgMembership validation used; no personal org lookup",
+            "TS-04-31: user has no personal org; assert HTTP 400 with 'user has no personal organization; contact an administrator'",
+            "TS-04-E14: personal org SELECT query fails; assert HTTP 500; no workspace row inserted",
+            "TS-04-E15: multiple personal org rows returned; assert HTTP 201 with first org id; warning logged"
+          ],
+          "test_spec_refs": [
+            "TS-04-29",
+            "TS-04-30",
+            "TS-04-31",
+            "TS-04-E14",
+            "TS-04-E15"
+          ],
+          "requirement_refs": [
+            "04-REQ-8.1",
+            "04-REQ-8.2",
+            "04-REQ-8.3",
+            "04-REQ-8.E1",
+            "04-REQ-8.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write integration tests for CLI workspace create behavior and hook registration ordering",
+          "details": [
+            "TS-04-32: afc workspace create without --org sends no org_id in request body; response shows populated org_id",
+            "TS-04-33: afc workspace create with --org sends org_id in request body unchanged",
+            "TS-04-34: hub server init calls OnAfterUserCreate before MountWorkspaceHandlers; verify ordering via instrumented wrappers",
+            "TS-04-35: hook registered after MountHandlers does not panic; system remains operational"
+          ],
+          "test_spec_refs": [
+            "TS-04-32",
+            "TS-04-33",
+            "TS-04-34",
+            "TS-04-35"
+          ],
+          "requirement_refs": [
+            "04-REQ-9.1",
+            "04-REQ-9.2",
+            "04-REQ-10.1",
+            "04-REQ-10.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write property tests for workspace org_id and hook invocation count invariants",
+          "details": [
+            "TS-04-P3: property test — any successful workspace creation (HTTP 201) results in non-null org_id in persisted row",
+            "TS-04-P4: property test — hook invoked exactly once per new user; never for returning users; sequences of mixed callbacks"
+          ],
+          "test_spec_refs": [
+            "TS-04-P3",
+            "TS-04-P4"
+          ],
+          "requirement_refs": [
+            "04-REQ-8.1",
+            "04-REQ-8.3",
+            "04-REQ-2.1",
+            "04-REQ-2.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All workspace and CLI test files compile: go build ./...",
+          "Tests runnable: go test ./... -run 'TestWorkspaceAutoOrg|TestCLIWorkspace|TestHookOrdering' -count=1 -v",
+          "Property tests TS-04-P3 and TS-04-P4 exist and execute",
+          "No linter errors: go vet ./...",
+          "04-REQ-8, 04-REQ-9, 04-REQ-10 acceptance criteria all have test coverage"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement AfterUserCreateFunc type and OnAfterUserCreate method in apikit",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Add AfterUserCreateFunc type and hook field to apikit Server struct",
+          "details": [
+            "In apikit package, add to a new file (e.g. apikit/hook.go): type AfterUserCreateFunc func(ctx context.Context, tx *sql.Tx, userID, username, email string) error",
+            "Add unexported field `afterUserCreate AfterUserCreateFunc` to the Server struct",
+            "Implement func (s *Server) OnAfterUserCreate(fn AfterUserCreateFunc) { s.afterUserCreate = fn }",
+            "Ensure the field is not exported; replace-on-call semantics (no mutex needed for single-goroutine setup)"
+          ],
+          "test_spec_refs": [
+            "TS-04-1",
+            "TS-04-2"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.1",
+            "04-REQ-1.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Wire hook into handleCallback OAuth new-user branch",
+          "details": [
+            "In oauth/handleCallback (around line 182-226), after new user INSERT within the transaction, check if s.afterUserCreate != nil",
+            "If non-nil, call s.afterUserCreate(ctx, tx, userID, username, email)",
+            "If it returns a non-nil error, roll back the transaction and return HTTP 500",
+            "If no hook registered, proceed with commit as before (backward compatible)",
+            "Do not call hook in the returning-user branch (UPDATE path)"
+          ],
+          "test_spec_refs": [
+            "TS-04-6",
+            "TS-04-7",
+            "TS-04-8"
+          ],
+          "requirement_refs": [
+            "04-REQ-2.1",
+            "04-REQ-2.2",
+            "04-REQ-2.3",
+            "04-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Wrap createUser admin handler in transaction and wire hook",
+          "details": [
+            "In handlers/createUser, begin a *sql.Tx before the user INSERT using db.BeginTx(ctx, nil)",
+            "If Begin fails, return HTTP 500 immediately without INSERT or hook call",
+            "After successful user INSERT within tx, call s.afterUserCreate(ctx, tx, userID, username, email) if registered",
+            "If hook returns error, roll back and return HTTP 500; do not call os.Exit or panic",
+            "On success, commit tx and return HTTP 201"
+          ],
+          "test_spec_refs": [
+            "TS-04-9",
+            "TS-04-10",
+            "TS-04-11",
+            "TS-04-E3",
+            "TS-04-E4"
+          ],
+          "requirement_refs": [
+            "04-REQ-3.1",
+            "04-REQ-3.2",
+            "04-REQ-3.3",
+            "04-REQ-3.E1",
+            "04-REQ-3.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Pass hook reference through RegisterOAuthHandlers to handleCallback",
+          "details": [
+            "Update RegisterOAuthHandlers signature or closure capture to receive/use the hook from Server",
+            "Ensure MountHandlers passes s.afterUserCreate (or a reference to s) to RegisterOAuthHandlers",
+            "The hook captured at MountHandlers call time is the one used by the closures",
+            "Verify no circular imports introduced between oauth and apikit packages"
+          ],
+          "test_spec_refs": [
+            "TS-04-5"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Spec tests for hook mechanism pass: go test ./... -run 'TestAfterUserCreate|TestOnAfterUserCreate|TestHook' -count=1 -v",
+          "TS-04-1 through TS-04-11 pass",
+          "TS-04-E1 through TS-04-E4 pass",
+          "All existing apikit tests still pass: go test ./... -count=1",
+          "No linter errors: go vet ./...",
+          "04-REQ-1.1, 04-REQ-1.2, 04-REQ-1.3, 04-REQ-1.4, 04-REQ-1.5 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement organization ownership: owner_id column and Organization SDK type",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Add owner_id column to orgs table DDL",
+          "details": [
+            "In apikit db schema DDL (db/schema.go or equivalent), add `owner_id TEXT` to the orgs CREATE TABLE statement",
+            "Column must be nullable (no NOT NULL constraint) for backward compatibility",
+            "No foreign key constraint on owner_id (soft reference to users.id)",
+            "Apply DDL update to both new database initialisation and any existing setup scripts"
+          ],
+          "test_spec_refs": [
+            "TS-04-12",
+            "TS-04-16"
+          ],
+          "requirement_refs": [
+            "04-REQ-4.1",
+            "04-REQ-4.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Add OwnerID field to Organization struct and update JSON serialization",
+          "details": [
+            "In apikit, add `OwnerID *string \\`json:\\\"owner_id,omitempty\\\"\\`` field to type Organization struct",
+            "Update all db scan calls for org rows to populate OwnerID from the owner_id column",
+            "Ensure list, get, and update org handlers include owner_id in JSON responses (omitempty handles NULL -> omit)",
+            "Verify existing tests for org endpoints still pass with new field"
+          ],
+          "test_spec_refs": [
+            "TS-04-13",
+            "TS-04-14",
+            "TS-04-E5"
+          ],
+          "requirement_refs": [
+            "04-REQ-4.2",
+            "04-REQ-4.3",
+            "04-REQ-4.E1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Update admin org creation endpoint to accept optional owner_id field",
+          "details": [
+            "In POST /orgs handler, parse optional owner_id from request body",
+            "If provided, include owner_id in the INSERT statement for the new org row",
+            "Return HTTP 201 with org JSON including owner_id when provided",
+            "When owner_id not provided in request, insert NULL (backward compatible)"
+          ],
+          "test_spec_refs": [
+            "TS-04-15"
+          ],
+          "requirement_refs": [
+            "04-REQ-4.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Spec tests for org ownership pass: go test ./... -run 'TestOrg|TestOwnerID|TestOrgSchema' -count=1 -v",
+          "TS-04-12 through TS-04-16, TS-04-E5 pass",
+          "All existing org endpoint tests still pass: go test ./... -count=1",
+          "No linter errors: go vet ./...",
+          "04-REQ-4.1 through 04-REQ-4.5 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "checkpoint",
+      "title": "Checkpoint: apikit changes complete and stable",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Run full apikit test suite and confirm all hook and schema tests pass",
+          "details": [
+            "Run go test ./... -count=1 in apikit module",
+            "Confirm no regressions in existing org, user, and OAuth handler tests",
+            "Confirm AfterUserCreateFunc and OnAfterUserCreate are exported and usable from hub module"
+          ],
+          "test_spec_refs": [
+            "TS-04-1",
+            "TS-04-2",
+            "TS-04-3",
+            "TS-04-4",
+            "TS-04-5",
+            "TS-04-12",
+            "TS-04-13"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.1",
+            "04-REQ-1.2",
+            "04-REQ-1.3",
+            "04-REQ-1.4",
+            "04-REQ-1.5",
+            "04-REQ-4.1",
+            "04-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Verify apikit module builds cleanly and hub local replace resolves correctly",
+          "details": [
+            "Run go build ./... in apikit module",
+            "Run go build ./... in hub module with local replace at ../apikit",
+            "Confirm hub can import apikit.AfterUserCreateFunc and call server.OnAfterUserCreate",
+            "No import cycle between apikit and hub"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "04-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "go test ./... -count=1 passes in apikit module with zero failures",
+          "go build ./... succeeds in both apikit and hub modules",
+          "go vet ./... reports no issues in apikit",
+          "04-REQ-1 and 04-REQ-4 implementation is complete and tested"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement hub personal org hook: slug sanitizer",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement sanitizeSlug function in hub personal org hook package",
+          "details": [
+            "Create hub/orgs/slug.go (or similar) with func sanitizeSlug(username, userID string) string",
+            "Step 1: strings.ToLower(username)",
+            "Step 2: replace non-[a-z0-9_-] chars with hyphens using regexp.MustCompile(`[^a-z0-9_-]`).ReplaceAllString",
+            "Step 3: collapse consecutive hyphens: regexp.MustCompile(`-{2,}`).ReplaceAllString(s, `-`)",
+            "Step 4: trim leading/trailing hyphens and underscores using strings.Trim(s, `-_`)",
+            "Step 5: if result starts with digit, prepend 'u-'",
+            "Step 6: if len(result) < 2, return 'u-' + userID[:8] as fallback"
+          ],
+          "test_spec_refs": [
+            "TS-04-17",
+            "TS-04-18",
+            "TS-04-19",
+            "TS-04-20",
+            "TS-04-21",
+            "TS-04-22"
+          ],
+          "requirement_refs": [
+            "04-REQ-5.1",
+            "04-REQ-5.2",
+            "04-REQ-5.3",
+            "04-REQ-5.4",
+            "04-REQ-5.5",
+            "04-REQ-5.6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Validate sanitizeSlug output against apikit validateSlug pattern in tests",
+          "details": [
+            "Confirm edge case tests TS-04-E6, E7, E8 pass against the implementation",
+            "Run TS-04-P5 property test asserting output always matches ^[a-z0-9][a-z0-9_-]*[a-z0-9]$ with len >= 2",
+            "Optionally call apikit's validateSlug within property test to cross-validate"
+          ],
+          "test_spec_refs": [
+            "TS-04-E6",
+            "TS-04-E7",
+            "TS-04-E8",
+            "TS-04-P5"
+          ],
+          "requirement_refs": [
+            "04-REQ-5.1",
+            "04-REQ-5.2",
+            "04-REQ-5.3",
+            "04-REQ-5.4",
+            "04-REQ-5.5",
+            "04-REQ-5.6",
+            "04-REQ-5.E1",
+            "04-REQ-5.E2",
+            "04-REQ-5.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All slug sanitizer tests pass: go test ./... -run 'TestSanitizeSlug' -count=1 -v",
+          "TS-04-17 through TS-04-22 pass",
+          "TS-04-E6, TS-04-E7, TS-04-E8, TS-04-P5 pass",
+          "No linter errors: go vet ./...",
+          "04-REQ-5 acceptance criteria and 04-PROP-5 invariant verified"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement hub personal org hook: slug collision resolution and org/member row insertion",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement slug collision resolution loop (max 10 attempts)",
+          "details": [
+            "In hub/orgs/hook.go, after sanitizing the slug, query tx for: SELECT COUNT(*) FROM orgs WHERE slug = ?",
+            "If count > 0, try candidate = baseSlug + '-' + strconv.Itoa(i) for i=1..10",
+            "After 10 collisions, return fmt.Errorf('could not find unique slug for user %s after 10 attempts', username)",
+            "Use the *sql.Tx for all SELECT queries (not the raw db connection)",
+            "If SELECT returns a db error, return the error immediately"
+          ],
+          "test_spec_refs": [
+            "TS-04-23",
+            "TS-04-24",
+            "TS-04-25",
+            "TS-04-E9",
+            "TS-04-E10"
+          ],
+          "requirement_refs": [
+            "04-REQ-6.1",
+            "04-REQ-6.2",
+            "04-REQ-6.3",
+            "04-REQ-6.E1",
+            "04-REQ-6.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement org and org_members row insertion in the hook",
+          "details": [
+            "Generate new UUID for org id using a uuid package (e.g. github.com/google/uuid); return error if generation fails",
+            "INSERT INTO orgs (id, name, slug, url, owner_id, status, created_at, updated_at) VALUES (?, ?, ?, '', ?, 'active', ?, ?) using tx.ExecContext",
+            "name = original username (not sanitized), slug = resolved slug, owner_id = userID, timestamps = time.Now().UTC().Format(time.RFC3339)",
+            "INSERT INTO org_members (org_id, user_id, created_at) VALUES (?, ?, ?) using tx.ExecContext",
+            "Return any INSERT error immediately; caller (handleCallback/createUser) handles rollback"
+          ],
+          "test_spec_refs": [
+            "TS-04-26",
+            "TS-04-27",
+            "TS-04-28",
+            "TS-04-E11",
+            "TS-04-E12",
+            "TS-04-E13"
+          ],
+          "requirement_refs": [
+            "04-REQ-7.1",
+            "04-REQ-7.2",
+            "04-REQ-7.3",
+            "04-REQ-7.E1",
+            "04-REQ-7.E2",
+            "04-REQ-7.E3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Assemble and register the AfterUserCreateFunc hook in hub initialization",
+          "details": [
+            "In hub server init (before MountWorkspaceHandlers), call server.OnAfterUserCreate(personalOrgHook)",
+            "personalOrgHook is func(ctx context.Context, tx *sql.Tx, userID, username, email string) error",
+            "Hook body: sanitizeSlug -> collision resolution -> org INSERT -> org_members INSERT",
+            "Ensure OnAfterUserCreate is called before MountWorkspaceHandlers (which calls MountHandlers)"
+          ],
+          "test_spec_refs": [
+            "TS-04-34",
+            "TS-04-35"
+          ],
+          "requirement_refs": [
+            "04-REQ-10.1",
+            "04-REQ-10.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All collision and insertion tests pass: go test ./... -run 'TestSlugCollision|TestOrgHook|TestOrgInsert' -count=1 -v",
+          "TS-04-23 through TS-04-28, TS-04-E9 through TS-04-E13 pass",
+          "TS-04-P1, TS-04-P2, TS-04-P6 property tests pass",
+          "All existing hub tests still pass: go test ./... -count=1",
+          "No linter errors: go vet ./...",
+          "04-REQ-6, 04-REQ-7, 04-REQ-10 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement workspace auto-association with personal org in handleCreateWorkspace",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Add personal org lookup and auto-default logic to handleCreateWorkspace",
+          "details": [
+            "In hub handleCreateWorkspace, after parsing request body, check if org_id is empty/nil",
+            "If org_id absent: run SELECT id FROM orgs WHERE owner_id = ? with authenticated user's ID",
+            "If query returns sql.ErrNoRows, return HTTP 400 with JSON error 'user has no personal organization; contact an administrator'",
+            "If query succeeds, set request org_id to the returned org id and proceed with workspace INSERT",
+            "If org_id is explicitly provided, skip personal org lookup and use existing checkOrgMembership"
+          ],
+          "test_spec_refs": [
+            "TS-04-29",
+            "TS-04-30",
+            "TS-04-31"
+          ],
+          "requirement_refs": [
+            "04-REQ-8.1",
+            "04-REQ-8.2",
+            "04-REQ-8.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Handle database error and multiple-row edge cases in personal org lookup",
+          "details": [
+            "If SELECT query returns a database error (not ErrNoRows), return HTTP 500; do not insert workspace",
+            "If SELECT returns multiple rows (data inconsistency), use rows.Next() to read first row, log a warning with user ID, close rows, and continue with first result",
+            "Use log.Warn or equivalent logger available in hub for the multi-row warning"
+          ],
+          "test_spec_refs": [
+            "TS-04-E14",
+            "TS-04-E15"
+          ],
+          "requirement_refs": [
+            "04-REQ-8.E1",
+            "04-REQ-8.E2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Verify CLI workspace create sends no org_id when --org is omitted",
+          "details": [
+            "Inspect existing afc workspace create command implementation",
+            "Confirm that when --org flag is not provided, org_id field is omitted from POST /api/v1/workspaces request body (not sent as empty string or null)",
+            "Confirm that when --org is provided, org_id is included in the request body",
+            "No CLI code changes should be required; document if changes are needed"
+          ],
+          "test_spec_refs": [
+            "TS-04-32",
+            "TS-04-33"
+          ],
+          "requirement_refs": [
+            "04-REQ-9.1",
+            "04-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Workspace auto-association tests pass: go test ./... -run 'TestWorkspaceAutoOrg|TestHandleCreateWorkspace' -count=1 -v",
+          "TS-04-29 through TS-04-33, TS-04-E14, TS-04-E15 pass",
+          "TS-04-P3 property test passes",
+          "All existing workspace handler tests still pass: go test ./... -count=1",
+          "No linter errors: go vet ./...",
+          "04-REQ-8 and 04-REQ-9 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "checkpoint",
+      "title": "Checkpoint: hub implementation complete — full spec test suite passes",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Run full hub and apikit test suites confirming all spec tests pass",
+          "details": [
+            "Run go test ./... -count=1 in both apikit and hub modules",
+            "Confirm all 35 numbered tests (TS-04-1 through TS-04-35) pass",
+            "Confirm all 6 property tests (TS-04-P1 through TS-04-P6) pass",
+            "Confirm all 15 edge case tests (TS-04-E1 through TS-04-E15) pass"
+          ],
+          "test_spec_refs": [
+            "TS-04-P1",
+            "TS-04-P2",
+            "TS-04-P3",
+            "TS-04-P4",
+            "TS-04-P5",
+            "TS-04-P6"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.1",
+            "04-REQ-2.1",
+            "04-REQ-3.1",
+            "04-REQ-5.1",
+            "04-REQ-6.1",
+            "04-REQ-7.1",
+            "04-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Confirm no regressions in cross-spec dependencies (workspaces, workspace_write_delete)",
+          "details": [
+            "Run workspace-related tests from specs 01 and 03 to confirm no regressions",
+            "Verify checkOrgMembership still works correctly for explicit org_id workspace creation",
+            "Verify MountWorkspaceHandlers still operates correctly after hub changes"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "04-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "go test ./... -count=1 passes in both modules with zero failures",
+          "All property tests pass without timeout or panic",
+          "go vet ./... reports no issues in either module",
+          "Cross-spec workspace tests (spec 01 and 03) still pass"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration, smoke tests, and dead-code audit",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Trace execution paths and verify no stubs remain in production code",
+          "details": [
+            "Audit apikit codebase for panic(\"not implemented\"), // TODO, and bare return nil in non-trivial paths in hook.go and modified handler files",
+            "Confirm handleCallback new-user branch calls s.afterUserCreate (not a stub)",
+            "Confirm createUser wraps INSERT in tx.BeginTx and calls s.afterUserCreate (not a stub)",
+            "Confirm hub init registers personalOrgHook before MountWorkspaceHandlers (not a placeholder)",
+            "Run: grep -rn 'panic(\"not implemented\")\\|// TODO\\|not implemented' ./apikit ./hub"
+          ],
+          "test_spec_refs": [
+            "TS-04-SMOKE-1",
+            "TS-04-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "04-REQ-1.5",
+            "04-REQ-2.1",
+            "04-REQ-3.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Verify return value propagation: hook errors flow to HTTP 500 in both user creation paths",
+          "details": [
+            "Confirm handleCallback propagates non-nil AfterUserCreateFunc error as HTTP 500 (not swallowed or logged-only)",
+            "Confirm createUser propagates non-nil AfterUserCreateFunc error as HTTP 500",
+            "Confirm transaction rollback is called before HTTP 500 return in both paths",
+            "Code review: check that err return from s.afterUserCreate(ctx, tx, ...) is checked with if err != nil"
+          ],
+          "test_spec_refs": [
+            "TS-04-7",
+            "TS-04-11"
+          ],
+          "requirement_refs": [
+            "04-REQ-2.2",
+            "04-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Run smoke tests: OAuth new-user and admin user creation with personal org",
+          "details": [
+            "TS-04-SMOKE-1: OAuth callback for new user; verify users, orgs, org_members rows exist atomically",
+            "TS-04-SMOKE-2: POST /users (admin) for new user; verify HTTP 201; users, orgs, org_members exist atomically",
+            "TS-04-SMOKE-5: OAuth callback with slug exhausted (11 pre-existing collisions); verify HTTP 500; no user or org rows created",
+            "Run: go test ./... -run 'TestSmoke' -count=1 -v"
+          ],
+          "test_spec_refs": [
+            "TS-04-SMOKE-1",
+            "TS-04-SMOKE-2",
+            "TS-04-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "04-REQ-2.1",
+            "04-REQ-3.1",
+            "04-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.4",
+          "title": "Run smoke tests: workspace auto-association and full end-to-end flow",
+          "details": [
+            "TS-04-SMOKE-3: POST /api/v1/workspaces without org_id; verify HTTP 201 and workspace row has non-null org_id matching personal org",
+            "TS-04-SMOKE-4: Full flow — OAuth login creates user+org; then workspace creation auto-associates; verify all four tables linked",
+            "Run: go test ./... -run 'TestSmoke' -count=1 -v"
+          ],
+          "test_spec_refs": [
+            "TS-04-SMOKE-3",
+            "TS-04-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "04-REQ-8.1",
+            "04-REQ-8.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.5",
+          "title": "Verify call-site wiring: OnAfterUserCreate and personalOrgHook called from production code entry points",
+          "details": [
+            "Confirm hub main/server setup code calls server.OnAfterUserCreate(personalOrgHook) in production init path (not only in tests)",
+            "Confirm personalOrgHook is a real function (not nil or a stub) at registration time",
+            "Confirm handleCreateWorkspace personal org lookup (SELECT id FROM orgs WHERE owner_id = ?) is called from the production handler, not dead code",
+            "Run: grep -rn 'OnAfterUserCreate\\|personalOrgHook\\|owner_id' ./hub/main.go ./hub/server.go (or equivalent entry point)"
+          ],
+          "test_spec_refs": [
+            "TS-04-34"
+          ],
+          "requirement_refs": [
+            "04-REQ-10.1",
+            "04-REQ-10.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.6",
+          "title": "Cross-spec entry point verification: workspace creation flow from spec 01 and spec 03",
+          "details": [
+            "Confirm POST /api/v1/workspaces route is wired to handleCreateWorkspace in MountWorkspaceHandlers",
+            "Confirm checkOrgMembership is called from handleCreateWorkspace for explicit org_id requests (not bypassed)",
+            "Confirm the personal org lookup branch is mutually exclusive with checkOrgMembership (no double-checking)",
+            "Run existing workspace integration tests from spec 01 and spec 03 to confirm no breakage: go test ./... -count=1"
+          ],
+          "test_spec_refs": [
+            "TS-04-29",
+            "TS-04-30"
+          ],
+          "requirement_refs": [
+            "04-REQ-8.1",
+            "04-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "All 5 smoke tests pass: go test ./... -run 'TestSmoke' -count=1 -v (TS-04-SMOKE-1 through TS-04-SMOKE-5)",
+          "No stub markers found: grep -rn 'panic(\"not implemented\")' ./apikit ./hub returns no results",
+          "Full test suite passes with zero failures: go test ./... -count=1",
+          "No linter errors in either module: go vet ./...",
+          "04-PATH-1 through 04-PATH-5 execution paths verified as fully wired",
+          "04-PROP-1 through 04-PROP-6 invariants validated by property tests",
+          "OnAfterUserCreate is called from hub production init code (confirmed by grep or code review)",
+          "handleCreateWorkspace personal org lookup confirmed in production handler call chain"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "04-REQ-1.1",
+      "test_spec_id": "TS-04-1",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-1.2",
+      "test_spec_id": "TS-04-2",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-1.3",
+      "test_spec_id": "TS-04-3",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-1.4",
+      "test_spec_id": "TS-04-4",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-1.5",
+      "test_spec_id": "TS-04-5",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-1.E1",
+      "test_spec_id": "TS-04-E1",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-2.1",
+      "test_spec_id": "TS-04-6",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-2.2",
+      "test_spec_id": "TS-04-7",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-2.3",
+      "test_spec_id": "TS-04-8",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-2.E1",
+      "test_spec_id": "TS-04-E2",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-3.1",
+      "test_spec_id": "TS-04-9",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-3.2",
+      "test_spec_id": "TS-04-10",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-3.3",
+      "test_spec_id": "TS-04-11",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-3.E1",
+      "test_spec_id": "TS-04-E3",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-3.E2",
+      "test_spec_id": "TS-04-E4",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-4.1",
+      "test_spec_id": "TS-04-12",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-4.5",
+      "test_spec_id": "TS-04-16",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-4.E1",
+      "test_spec_id": "TS-04-E5",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-4.2",
+      "test_spec_id": "TS-04-13",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-4.3",
+      "test_spec_id": "TS-04-14",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-4.4",
+      "test_spec_id": "TS-04-15",
+      "task_id": "2.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.1",
+      "test_spec_id": "TS-04-17",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.2",
+      "test_spec_id": "TS-04-18",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.3",
+      "test_spec_id": "TS-04-19",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.4",
+      "test_spec_id": "TS-04-20",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.5",
+      "test_spec_id": "TS-04-21",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.6",
+      "test_spec_id": "TS-04-22",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.E1",
+      "test_spec_id": "TS-04-E6",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.E2",
+      "test_spec_id": "TS-04-E7",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-5.E3",
+      "test_spec_id": "TS-04-E8",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-6.1",
+      "test_spec_id": "TS-04-23",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-6.2",
+      "test_spec_id": "TS-04-24",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-6.3",
+      "test_spec_id": "TS-04-25",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-6.E1",
+      "test_spec_id": "TS-04-E9",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-6.E2",
+      "test_spec_id": "TS-04-E10",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-7.1",
+      "test_spec_id": "TS-04-26",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-7.2",
+      "test_spec_id": "TS-04-27",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-7.3",
+      "test_spec_id": "TS-04-28",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-7.E1",
+      "test_spec_id": "TS-04-E11",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-7.E2",
+      "test_spec_id": "TS-04-E12",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-7.E3",
+      "test_spec_id": "TS-04-E13",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-8.1",
+      "test_spec_id": "TS-04-29",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-8.2",
+      "test_spec_id": "TS-04-30",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-8.3",
+      "test_spec_id": "TS-04-31",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-8.E1",
+      "test_spec_id": "TS-04-E14",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-8.E2",
+      "test_spec_id": "TS-04-E15",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-9.1",
+      "test_spec_id": "TS-04-32",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-9.2",
+      "test_spec_id": "TS-04-33",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-10.1",
+      "test_spec_id": "TS-04-34",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "04-REQ-10.2",
+      "test_spec_id": "TS-04-35",
+      "task_id": "5.2",
+      "test_path": null
+    }
+  ]
+}

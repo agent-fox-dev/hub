@@ -1,0 +1,949 @@
+{
+  "$schema": null,
+  "spec_id": "04",
+  "spec_name": "personal_org",
+  "schema_version": 1,
+  "introduction": "This spec defines the Personal Organization Auto-Creation feature, which automatically provisions a personal organization for every new user (via OAuth login or admin creation), introduces organization ownership tracking, and ensures all workspaces are associated with an org namespace.",
+  "glossary": {
+    "AfterUserCreateFunc": "A Go callback type `func(ctx context.Context, tx *sql.Tx, userID, username, email string) error` registered on the apikit Server to run post-user-creation logic atomically within the user-creation transaction.",
+    "MountHandlers": "apikit Server method that wires up OAuth, auth middleware, and all HTTP handlers; hook must be registered before this is called.",
+    "MountWorkspaceHandlers": "Hub function `func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB) error` that calls `MountHandlers`; hook registration must precede this call.",
+    "OnAfterUserCreate": "Method on the apikit `Server` type that registers an `AfterUserCreateFunc` hook; must be added by this spec as it does not currently exist.",
+    "OwnerID": "New field added to the apikit `Organization` struct: `OwnerID *string` with JSON tag `owner_id,omitempty`.",
+    "POST /api/v1/workspaces": "HTTP endpoint for creating a new workspace; extended by this spec to auto-populate org_id from the user's personal org when not provided.",
+    "POST /orgs": "HTTP endpoint for admin org creation; extended by this spec to accept an optional owner_id field.",
+    "RFC 3339": "Timestamp format used for created_at and updated_at fields in database records.",
+    "WithTx": "apikit database helper used to wrap handler logic in a SQL transaction; used to add transaction support to `createUser`.",
+    "afc": "The CLI tool for interacting with the Agent Fox platform (e.g., `afc login`, `afc workspace create`).",
+    "checkOrgMembership": "Hub function `func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string)` used to validate explicit org_id during workspace creation.",
+    "createUser": "Internal apikit handler function `func (h *userHandlers) createUser(c echo.Context) error` for admin user creation; must be wrapped in a transaction by this spec.",
+    "handleCallback": "Internal OAuth handler closure in apikit's `oauth` package that processes the OAuth callback; contains the new-user branch where the hook is called.",
+    "handleCreateWorkspace": "Hub handler closure for `POST /api/v1/workspaces` that processes workspace creation requests; must be extended with personal org auto-default logic.",
+    "org_id": "Field on workspace records (and request bodies) identifying the organization a workspace belongs to.",
+    "org_members": "Database table linking users to organizations via org_id and user_id foreign references.",
+    "orgs": "Database table storing organization records, including id, name, slug, url, owner_id, status, created_at, updated_at.",
+    "owner_id": "Nullable column on the `orgs` table storing the user ID of the org's owner; set for personal orgs, NULL for admin-created orgs.",
+    "personal org": "An organization automatically created for a user upon account creation, named after the user's username, with owner_id set to that user's ID.",
+    "u-": "Prefix prepended to a sanitized org slug when the sanitized result starts with a digit, ensuring compliance with `validateSlug` which requires slugs to start with a letter.",
+    "validateSlug": "Internal apikit function enforcing the slug pattern `^[a-z0-9][a-z0-9_-]*[a-z0-9]$` with length 1–128 characters.",
+    "*sql.Tx": "Go standard library type representing an in-progress database transaction.",
+    "ctx": "Go context.Context parameter used for cancellation, deadlines, and request-scoped values.",
+    "os.Exit": "Go standard library function that terminates the process immediately with a given exit code.",
+    "panic": "Go built-in function that stops normal execution and begins unwinding the stack.",
+    "OwnerID *string": "Go struct field declaration: a nullable string pointer representing the organization owner's user ID.",
+    "owner_id,omitempty": "Go JSON struct tag for the OwnerID field; omits the field from JSON output when the pointer is nil.",
+    "Organization": "apikit SDK struct representing an organization record with fields for ID, Name, Slug, URL, Status, and OwnerID.",
+    "users.id": "Primary key column of the users database table; referenced as a soft foreign key by orgs.owner_id.",
+    "omitempty": "Go JSON struct tag option that omits a field from serialized JSON when it holds its zero value (nil for pointers).",
+    "u-<first 8 chars of userID>": "Fallback slug format used when the sanitized username is shorter than 2 characters; combines the u- prefix with a truncated user ID.",
+    "^[a-z0-9][a-z0-9_-]*[a-z0-9]$": "Regular expression pattern enforced by validateSlug for valid organization slugs.",
+    "func(ctx context.Context, tx *sql.Tx, userID, username, email string) error": "Full Go function signature for the AfterUserCreateFunc callback type.",
+    "OnAfterUserCreate(fn AfterUserCreateFunc)": "Method signature for registering an AfterUserCreateFunc hook on the apikit Server.",
+    "active": "Organization status value indicating the org is operational and usable."
+  },
+  "requirements": [
+    {
+      "id": "04-REQ-1",
+      "title": "AfterUserCreateFunc callback type and OnAfterUserCreate registration",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "register post-user-creation logic with apikit without modifying apikit's internal handlers",
+        "benefit": "hub-specific org-creation side effects remain decoupled from the generic apikit framework"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit",
+          "action": "exposes a public callback type `AfterUserCreateFunc` defined as `func(ctx context.Context, tx *sql.Tx, userID, username, email string) error` in the apikit package",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit Server",
+          "action": "exposes method `OnAfterUserCreate(fn AfterUserCreateFunc)` that stores the provided function on the server instance, replacing any previously registered hook",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "apikit Server",
+          "action": "proceeds with user creation without calling any hook, preserving backward compatibility",
+          "return_contract": null,
+          "trigger": "no hook has been registered via `OnAfterUserCreate`"
+        },
+        {
+          "id": "04-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "apikit Server",
+          "action": "replaces the previously registered hook with the new function; only the most recently registered hook is called during user creation",
+          "return_contract": null,
+          "trigger": "`OnAfterUserCreate` is called a second time"
+        },
+        {
+          "id": "04-REQ-1.5",
+          "ears_pattern": "state_driven",
+          "system": "apikit Server",
+          "action": "wires the hook into both the `handleCallback` OAuth new-user branch and the `createUser` admin handler so it is invoked on all user creation paths",
+          "return_contract": null,
+          "state": "a hook is registered before `MountHandlers` is called"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "apikit Server",
+          "action": "the hook is stored but may not be wired into handlers that have already been registered; the system does not panic or error, but the behavior is undefined and callers must register hooks before `MountHandlers`",
+          "return_contract": null,
+          "error_condition": "`OnAfterUserCreate` is called after `MountHandlers` has already been called"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-2",
+      "title": "Hook invocation in OAuth callback new-user branch",
+      "user_story": {
+        "role": "new user",
+        "goal": "have my personal org created atomically when I log in for the first time via OAuth",
+        "benefit": "my personal org is guaranteed to exist before any other operation completes"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "apikit `handleCallback`",
+          "action": "calls the registered `AfterUserCreateFunc` with the active `*sql.Tx`, the new user's id, username, and email, before committing the transaction",
+          "return_contract": null,
+          "trigger": "the OAuth callback identifies a new user (no existing user row in the database) and the user row INSERT succeeds"
+        },
+        {
+          "id": "04-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "apikit `handleCallback`",
+          "action": "rolls back the enclosing transaction (undoing the user INSERT and any hook side effects) and returns HTTP 500 to the OAuth caller",
+          "return_contract": "HTTP 500 response; transaction rolled back; no user row persisted",
+          "trigger": "the registered `AfterUserCreateFunc` returns a non-nil error"
+        },
+        {
+          "id": "04-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "apikit `handleCallback`",
+          "action": "does not call the `AfterUserCreateFunc` hook and proceeds with the normal login flow",
+          "return_contract": null,
+          "trigger": "the OAuth callback identifies a returning user (existing user row found)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "apikit `handleCallback`",
+          "action": "the hook inherits the request context (`ctx`) passed to it; if the OAuth request context is cancelled or times out, the hook's database operations fail with a context error, the transaction rolls back, and HTTP 500 is returned",
+          "return_contract": "HTTP 500; transaction rolled back; no partial state persisted",
+          "error_condition": "the `AfterUserCreateFunc` hook hangs or does not return within a reasonable time"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-3",
+      "title": "Hook invocation in admin user creation handler with transaction wrapping",
+      "user_story": {
+        "role": "administrator",
+        "goal": "have a personal org automatically created for every user I create via the admin API",
+        "benefit": "admin-created users have the same namespace guarantees as OAuth-created users"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-3.1",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit `createUser` handler",
+          "action": "wraps the user INSERT and hook call in a database transaction (using `WithTx` or equivalent) so that both operations succeed or fail atomically",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "apikit `createUser` handler",
+          "action": "calls the registered `AfterUserCreateFunc` with the active `*sql.Tx`, the new user's id, username, and email",
+          "return_contract": null,
+          "trigger": "the user INSERT succeeds inside the transaction"
+        },
+        {
+          "id": "04-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "apikit `createUser` handler",
+          "action": "rolls back the transaction (undoing the user INSERT and hook side effects) and returns HTTP 500 to the admin API caller",
+          "return_contract": "HTTP 500 response; transaction rolled back; no user row persisted",
+          "trigger": "the `AfterUserCreateFunc` returns a non-nil error"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "apikit `createUser` handler",
+          "action": "returns HTTP 500 without attempting the user INSERT or hook call; no partial state is written",
+          "return_contract": "HTTP 500; no user row or org row created",
+          "error_condition": "the transaction cannot be started (e.g., database connection unavailable)"
+        },
+        {
+          "id": "04-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "apikit `createUser` handler",
+          "action": "signals the error via the HTTP response return value; does not call `os.Exit` or `panic` from library code",
+          "return_contract": "HTTP 500 returned to caller; process continues running",
+          "error_condition": "the hook is registered but the library is used as a library (not a CLI); the hook or transaction code encounters a fatal error"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-4",
+      "title": "Organization ownership: owner_id column and SDK type update",
+      "user_story": {
+        "role": "developer",
+        "goal": "identify personal orgs by querying owner_id and expose ownership in the Organization SDK type",
+        "benefit": "application code can distinguish personal orgs from admin-created orgs without special naming conventions"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit database schema",
+          "action": "adds an `owner_id` column of type TEXT (nullable) to the `orgs` table DDL; existing orgs without an owner have `owner_id` = NULL",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-4.2",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit `Organization` struct",
+          "action": "adds field `OwnerID *string` with JSON tag `owner_id,omitempty` to the `Organization` type",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-4.3",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit org API endpoints (list, get, update)",
+          "action": "includes `owner_id` in all org JSON responses, omitting the field when NULL (Go omitempty semantics)",
+          "return_contract": "JSON org object includes `owner_id` string field when set, omits it when NULL"
+        },
+        {
+          "id": "04-REQ-4.4",
+          "ears_pattern": "optional",
+          "system": "apikit admin org creation endpoint",
+          "action": "accepts an optional `owner_id` field and stores it on the new org record",
+          "return_contract": "HTTP 201 with org JSON including `owner_id` when provided",
+          "feature": "`owner_id` field in `POST /orgs` request body"
+        },
+        {
+          "id": "04-REQ-4.5",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit database schema",
+          "action": "does not add a foreign key constraint on `owner_id`; the column is treated as a soft reference to `users.id` at the application level only",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-4.E1",
+          "ears_pattern": "event_driven",
+          "system": "apikit org API",
+          "action": "omits the `owner_id` field from the JSON response due to `omitempty` on `OwnerID *string`",
+          "return_contract": "JSON org object without `owner_id` key",
+          "trigger": "an org record has `owner_id` = NULL (admin-created org)"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-5",
+      "title": "Personal org creation hook: username sanitization into org slug",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "sanitize the username into a valid org slug following GitHub naming conventions",
+        "benefit": "the personal org slug is always valid per apikit's validateSlug rules regardless of provider-specific username formats"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-5.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "lowercases the entire username string before applying further transformations",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-5.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "replaces any character that is not a lowercase letter, digit, hyphen, or underscore with a hyphen",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-5.3",
+          "ears_pattern": "ubiquitous",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "collapses consecutive hyphens into a single hyphen",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-5.4",
+          "ears_pattern": "ubiquitous",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "trims leading and trailing hyphens and underscores from the sanitized string",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-5.5",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "prepends `u-` to the slug so it starts with a letter, satisfying `validateSlug`",
+          "return_contract": null,
+          "trigger": "the sanitized slug starts with a digit"
+        },
+        {
+          "id": "04-REQ-5.6",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "uses `u-<first 8 chars of userID>` as the slug (fallback), ensuring the slug meets `validateSlug`'s minimum length",
+          "return_contract": null,
+          "trigger": "the sanitized slug is shorter than 2 characters after all transformations"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-5.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "all characters are replaced with hyphens, hyphens trimmed, result is empty (< 2 chars), so fallback `u-<first 8 chars of userID>` is used",
+          "return_contract": "slug = `u-` + first 8 characters of userID",
+          "trigger": "the username consists entirely of special characters (e.g., !!!)"
+        },
+        {
+          "id": "04-REQ-5.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "the result is < 2 chars, so fallback `u-<first 8 chars of userID>` is used",
+          "return_contract": "slug = `u-` + first 8 characters of userID",
+          "trigger": "the username is a single character after sanitization"
+        },
+        {
+          "id": "04-REQ-5.E3",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook slug sanitizer",
+          "action": "sanitized slug is 7 (< 2 chars), fallback `u-<first 8 chars of userID>` is used",
+          "return_contract": "slug = `u-` + first 8 characters of userID",
+          "trigger": "the username is a single digit (e.g., 7)"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-6",
+      "title": "Personal org creation hook: slug collision resolution",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "resolve org slug collisions by appending numeric suffixes",
+        "benefit": "user creation never fails solely due to an existing org having the same slug as the sanitized username"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook",
+          "action": "appends -1, -2, etc. to the base slug and re-queries until a unique slug is found or 10 attempts are exhausted",
+          "return_contract": null,
+          "trigger": "the candidate slug already exists in the `orgs` table"
+        },
+        {
+          "id": "04-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook",
+          "action": "returns an error from the hook, causing the enclosing transaction to roll back and user creation to fail with HTTP 500",
+          "return_contract": "hook returns non-nil error; transaction rolled back; HTTP 500 returned to caller",
+          "trigger": "all 10 slug suffix attempts collide with existing `orgs` slugs"
+        },
+        {
+          "id": "04-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook",
+          "action": "proceeds with the unique slug immediately without appending any suffix",
+          "return_contract": null,
+          "trigger": "the candidate slug does not exist in the `orgs` table"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub personal org hook",
+          "action": "the hook returns the database error, rolling back the transaction and failing user creation with HTTP 500",
+          "return_contract": "hook returns non-nil error; transaction rolled back; HTTP 500 to caller",
+          "error_condition": "the slug uniqueness query against `orgs` fails due to a database error"
+        },
+        {
+          "id": "04-REQ-6.E2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub personal org hook",
+          "action": "caps slug collision retry attempts at exactly 10; the loop never exceeds 10 iterations regardless of table state, preventing unbounded iteration",
+          "return_contract": null
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-7",
+      "title": "Personal org creation hook: org and membership row insertion",
+      "user_story": {
+        "role": "new user",
+        "goal": "have a complete org record and org membership row inserted atomically with my user creation",
+        "benefit": "my personal org is immediately usable without any additional setup steps"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook",
+          "action": "inserts a row into `orgs` with: id = new UUID, name = original username, slug = sanitized slug, url = empty string, `owner_id` = new user's ID, status = `active`, created_at and updated_at = current time in RFC 3339 format",
+          "return_contract": null,
+          "trigger": "a unique slug has been determined"
+        },
+        {
+          "id": "04-REQ-7.2",
+          "ears_pattern": "event_driven",
+          "system": "hub personal org hook",
+          "action": "inserts a row into `org_members` linking the new user as a member of the new org (org_id = new org's id, user_id = new user's id, created_at = current time)",
+          "return_contract": null,
+          "trigger": "the `orgs` row is successfully inserted"
+        },
+        {
+          "id": "04-REQ-7.3",
+          "ears_pattern": "ubiquitous",
+          "system": "hub personal org hook",
+          "action": "performs all INSERT statements using the `*sql.Tx` passed to the hook, ensuring atomicity with the user creation transaction",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub personal org hook",
+          "action": "the hook returns the error; the transaction rolls back undoing both the user INSERT and any partial org state; HTTP 500 is returned to the caller",
+          "return_contract": "hook returns non-nil error; no user, org, or org_members rows persisted",
+          "error_condition": "the `orgs` INSERT fails (e.g., constraint violation or database error)"
+        },
+        {
+          "id": "04-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub personal org hook",
+          "action": "the hook returns the error; the transaction rolls back undoing all inserts (user, org, org_members); HTTP 500 is returned",
+          "return_contract": "hook returns non-nil error; no user, org, or org_members rows persisted",
+          "error_condition": "the `org_members` INSERT fails after the `orgs` INSERT succeeds"
+        },
+        {
+          "id": "04-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub personal org hook",
+          "action": "the hook returns the error immediately without performing any INSERT; the transaction rolls back",
+          "return_contract": "hook returns non-nil error; no rows persisted",
+          "error_condition": "UUID generation for the new org id fails"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-8",
+      "title": "Workspace auto-association with personal org on creation",
+      "user_story": {
+        "role": "user",
+        "goal": "have my workspace automatically associated with my personal org when I don't specify an org",
+        "benefit": "all workspaces have an org association without requiring explicit org flags in every CLI command"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "`handleCreateWorkspace`",
+          "action": "queries `orgs` table with SELECT id FROM orgs WHERE owner_id = ? using the authenticated user's ID to find the user's personal org, then sets `org_id` to the result before inserting the workspace",
+          "return_contract": "HTTP 201 with workspace JSON including populated `org_id` matching the user's personal org id",
+          "trigger": "a `POST /api/v1/workspaces` request is received with no `org_id` field (or `org_id` is null) in the request body"
+        },
+        {
+          "id": "04-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "`handleCreateWorkspace`",
+          "action": "applies the existing `checkOrgMembership` validation and proceeds without querying for a personal org; behavior is unchanged from pre-feature",
+          "return_contract": "HTTP 201 on success; HTTP 403 or HTTP 400 if membership check fails (unchanged behavior)",
+          "trigger": "a `POST /api/v1/workspaces` request is received with an explicit `org_id` in the request body"
+        },
+        {
+          "id": "04-REQ-8.3",
+          "ears_pattern": "event_driven",
+          "system": "`handleCreateWorkspace`",
+          "action": "returns HTTP 400 with message \"user has no personal organization; contact an administrator\"",
+          "return_contract": "HTTP 400 with JSON body containing error message \"user has no personal organization; contact an administrator\"",
+          "trigger": "the personal org query returns no row for the authenticated user's ID"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "04-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "`handleCreateWorkspace`",
+          "action": "returns HTTP 500 to the caller; no workspace row is inserted",
+          "return_contract": "HTTP 500; no partial workspace state created",
+          "error_condition": "the personal org lookup query fails due to a database error"
+        },
+        {
+          "id": "04-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "`handleCreateWorkspace`",
+          "action": "uses the first result and logs a warning; does not fail the request, but the condition should be monitored",
+          "return_contract": "HTTP 201 with first matching personal org's id used as `org_id`",
+          "error_condition": "the personal org lookup query returns multiple rows (data inconsistency)"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-9",
+      "title": "CLI workspace creation defaults to personal org when --org is omitted",
+      "user_story": {
+        "role": "CLI user",
+        "goal": "create a workspace without specifying --org and have it automatically associated with my personal org",
+        "benefit": "workspace creation is simpler and requires fewer flags for the common single-user case"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "`afc` CLI workspace create command",
+          "action": "sends a `POST /api/v1/workspaces` request body without an `org_id` field, relying on server-side defaulting to the personal org",
+          "return_contract": "JSON workspace response with populated `org_id` field equal to the user's personal org id",
+          "trigger": "afc workspace create --git-url <url> --slug <slug> is invoked without the --org flag"
+        },
+        {
+          "id": "04-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "`afc` CLI workspace create command",
+          "action": "sends `org_id` in the request body as before; behavior is unchanged",
+          "return_contract": "JSON workspace response with `org_id` matching the specified org",
+          "trigger": "afc workspace create --git-url <url> --slug <slug> --org <org-slug> is invoked with the --org flag"
+        }
+      ],
+      "edge_cases": []
+    },
+    {
+      "id": "04-REQ-10",
+      "title": "Hook registration ordering: before MountHandlers",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "have a clear ordering contract for hook registration relative to handler mounting",
+        "benefit": "the hook is guaranteed to be wired into all user creation paths"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "04-REQ-10.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub server initialization",
+          "action": "registers the personal org `AfterUserCreateFunc` hook via `OnAfterUserCreate` before calling `MountWorkspaceHandlers` (which internally calls `MountHandlers`)",
+          "return_contract": null
+        },
+        {
+          "id": "04-REQ-10.2",
+          "ears_pattern": "ubiquitous",
+          "system": "apikit Server",
+          "action": "uses the hook reference captured at the time `MountHandlers` is called; hooks registered after `MountHandlers` are not guaranteed to be called",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": []
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "04-PROP-1",
+      "title": "Personal org atomicity: user row and personal org always co-exist or neither exists",
+      "for_any": "user creation attempt via OAuth or admin API",
+      "invariant": "after the operation completes, either both the user row and a corresponding `orgs` row (with `owner_id` = userID) exist, or neither exists; there is no state where a user exists without a personal org or an org exists without its user",
+      "validates": [
+        "04-REQ-2.1",
+        "04-REQ-2.2",
+        "04-REQ-3.1",
+        "04-REQ-3.3",
+        "04-REQ-7.1",
+        "04-REQ-7.E1",
+        "04-REQ-7.E2"
+      ]
+    },
+    {
+      "id": "04-PROP-2",
+      "title": "Org slug uniqueness preserved after personal org creation",
+      "for_any": "call to the hub personal org hook",
+      "invariant": "the slug written to the `orgs` table by the hook does not duplicate any existing slug in `orgs`; uniqueness is enforced by pre-check query and numeric suffix resolution before INSERT",
+      "validates": [
+        "04-REQ-6.1",
+        "04-REQ-6.2",
+        "04-REQ-6.3"
+      ]
+    },
+    {
+      "id": "04-PROP-3",
+      "title": "Every workspace has an org_id after creation",
+      "for_any": "workspace creation request via `POST /api/v1/workspaces`",
+      "invariant": "the persisted workspace row always has a non-null `org_id`; if the request omits `org_id`, the server supplies the user's personal org id; if the user has no personal org the request is rejected with HTTP 400 before INSERT",
+      "validates": [
+        "04-REQ-8.1",
+        "04-REQ-8.3"
+      ]
+    },
+    {
+      "id": "04-PROP-4",
+      "title": "Hook is invoked at most once per user creation",
+      "for_any": "single user creation event (OAuth or admin)",
+      "invariant": "the `AfterUserCreateFunc` hook is called exactly once per new-user INSERT; returning users (existing user row found) do not trigger the hook",
+      "validates": [
+        "04-REQ-2.1",
+        "04-REQ-2.3",
+        "04-REQ-3.2"
+      ]
+    },
+    {
+      "id": "04-PROP-5",
+      "title": "Slug sanitization always produces a validateSlug-compliant result",
+      "for_any": "username string passed to the hub personal org hook slug sanitizer",
+      "invariant": "the output slug always matches `^[a-z0-9][a-z0-9_-]*[a-z0-9]$` (or equals the fallback `u-<first 8 chars of userID>` which also matches); `validateSlug` never rejects a slug produced by the sanitizer",
+      "validates": [
+        "04-REQ-5.1",
+        "04-REQ-5.2",
+        "04-REQ-5.3",
+        "04-REQ-5.4",
+        "04-REQ-5.5",
+        "04-REQ-5.6"
+      ]
+    },
+    {
+      "id": "04-PROP-6",
+      "title": "Slug collision retry loop is bounded",
+      "for_any": "slug collision resolution in the hub personal org hook",
+      "invariant": "the collision resolution loop terminates after at most 10 iterations; it never runs unboundedly regardless of the state of the `orgs` table",
+      "validates": [
+        "04-REQ-6.1",
+        "04-REQ-6.2",
+        "04-REQ-6.E2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "04-PATH-1",
+      "title": "New user OAuth login triggers personal org creation",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc login` and completes the OAuth flow in a browser"
+        },
+        {
+          "actor": "OAuth provider",
+          "action": "redirects to apikit's OAuth callback endpoint with authorization code"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "exchanges code for token, queries the database, finds no existing user row — identifies new user"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "begins a database transaction and inserts the new user row"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "calls the registered `AfterUserCreateFunc` hook with the transaction, userID, username, and email"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "sanitizes the username into a valid org slug using GitHub conventions"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "queries `orgs` table for slug uniqueness; appends suffix if needed"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "inserts a new row into `orgs` with `owner_id` = userID and status = `active`"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "inserts a new row into `org_members` linking the user to the new org"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "returns nil error to apikit"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "commits the transaction; user row and personal org row are now persisted atomically"
+        },
+        {
+          "actor": "User",
+          "action": "observes successful login; personal org exists and is queryable"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-2",
+      "title": "Admin creates user via API, triggering personal org creation",
+      "steps": [
+        {
+          "actor": "Administrator",
+          "action": "calls `POST /orgs` (admin users endpoint) to create a new user account"
+        },
+        {
+          "actor": "apikit `createUser` handler",
+          "action": "begins a database transaction (new behavior wrapping the existing INSERT)"
+        },
+        {
+          "actor": "apikit `createUser` handler",
+          "action": "inserts the new user row within the transaction"
+        },
+        {
+          "actor": "apikit `createUser` handler",
+          "action": "calls the registered `AfterUserCreateFunc` hook with the transaction and user details"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "sanitizes username, resolves slug collisions, inserts `orgs` and `org_members` rows"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "returns nil error"
+        },
+        {
+          "actor": "apikit `createUser` handler",
+          "action": "commits the transaction; user and personal org are persisted atomically"
+        },
+        {
+          "actor": "Administrator",
+          "action": "receives HTTP 201 with the created user JSON; the user's personal org is available"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-3",
+      "title": "Workspace creation without --org auto-associates with personal org",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc workspace create --git-url <url> --slug <slug>` without specifying `--org`"
+        },
+        {
+          "actor": "`afc` CLI",
+          "action": "sends `POST /api/v1/workspaces` with no `org_id` field in the request body"
+        },
+        {
+          "actor": "`handleCreateWorkspace`",
+          "action": "detects missing `org_id` in request body"
+        },
+        {
+          "actor": "`handleCreateWorkspace`",
+          "action": "queries `orgs` WHERE `owner_id` = authenticated user's ID to find the personal org"
+        },
+        {
+          "actor": "`handleCreateWorkspace`",
+          "action": "sets `org_id` to the personal org's id and proceeds with workspace creation"
+        },
+        {
+          "actor": "`handleCreateWorkspace`",
+          "action": "inserts workspace row and returns HTTP 201 with workspace JSON including populated `org_id`"
+        },
+        {
+          "actor": "User",
+          "action": "observes JSON output showing `org_id` set to their personal org's id"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-4",
+      "title": "End-to-end: new user login, personal org creation, and workspace auto-association",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc login` for the first time and completes OAuth"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "identifies new user, begins transaction, inserts user row, calls hook"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "sanitizes username `alice` → slug `alice`, inserts org row (name=`alice`, slug=`alice`, `owner_id`=userID), inserts `org_members` row"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "commits transaction; user `alice` and personal org `alice` now exist"
+        },
+        {
+          "actor": "User",
+          "action": "runs `afc workspace create --git-url https://github.com/alice/repo --slug my-repo`"
+        },
+        {
+          "actor": "`afc` CLI",
+          "action": "sends `POST /api/v1/workspaces` without `org_id`"
+        },
+        {
+          "actor": "`handleCreateWorkspace`",
+          "action": "queries personal org for user, finds org id for slug `alice`, sets `org_id`, inserts workspace"
+        },
+        {
+          "actor": "User",
+          "action": "receives HTTP 201 with workspace JSON showing `org_id` pointing to the `alice` personal org"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-5",
+      "title": "Hook error rolls back user creation atomically",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "initiates OAuth login for the first time"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "identifies new user, begins transaction, inserts user row, calls hook"
+        },
+        {
+          "actor": "hub personal org hook",
+          "action": "attempts slug collision resolution but all 10 attempts collide; returns non-nil error"
+        },
+        {
+          "actor": "apikit `handleCallback`",
+          "action": "receives non-nil error from hook, rolls back the transaction"
+        },
+        {
+          "actor": "User",
+          "action": "receives HTTP 500; no user row or org row exists in the database"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "04-ERR-1",
+      "condition": "Hook `AfterUserCreateFunc` returns a non-nil error during OAuth callback",
+      "behavior": "Transaction is rolled back; user INSERT is undone; HTTP 500 is returned to the OAuth caller; no partial state persists",
+      "requirement_id": "04-REQ-2.2"
+    },
+    {
+      "id": "04-ERR-2",
+      "condition": "Hook `AfterUserCreateFunc` returns a non-nil error during admin user creation",
+      "behavior": "Transaction is rolled back; user INSERT is undone; HTTP 500 is returned to the admin API caller; no partial state persists",
+      "requirement_id": "04-REQ-3.3"
+    },
+    {
+      "id": "04-ERR-3",
+      "condition": "All 10 slug suffix attempts collide with existing `orgs` slugs",
+      "behavior": "Hook returns an error; enclosing transaction rolls back; user creation fails with HTTP 500",
+      "requirement_id": "04-REQ-6.2"
+    },
+    {
+      "id": "04-ERR-4",
+      "condition": "Database error during slug uniqueness query in hub hook",
+      "behavior": "Hook returns the database error; transaction rolls back; HTTP 500 returned to caller",
+      "requirement_id": "04-REQ-6.E1"
+    },
+    {
+      "id": "04-ERR-5",
+      "condition": "`orgs` INSERT fails within the hook transaction",
+      "behavior": "Hook returns error; transaction rolls back all inserts (user, org, org_members); HTTP 500 to caller",
+      "requirement_id": "04-REQ-7.E1"
+    },
+    {
+      "id": "04-ERR-6",
+      "condition": "`org_members` INSERT fails after `orgs` INSERT succeeds within hook transaction",
+      "behavior": "Hook returns error; transaction rolls back all inserts; HTTP 500 to caller",
+      "requirement_id": "04-REQ-7.E2"
+    },
+    {
+      "id": "04-ERR-7",
+      "condition": "Authenticated user has no personal org when creating a workspace without `org_id`",
+      "behavior": "HTTP 400 returned with message `\"user has no personal organization; contact an administrator\"`",
+      "requirement_id": "04-REQ-8.3"
+    },
+    {
+      "id": "04-ERR-8",
+      "condition": "Personal org lookup query fails with a database error during workspace creation",
+      "behavior": "HTTP 500 returned; no workspace row inserted",
+      "requirement_id": "04-REQ-8.E1"
+    },
+    {
+      "id": "04-ERR-9",
+      "condition": "Transaction cannot be started in `createUser` handler (database unavailable)",
+      "behavior": "HTTP 500 returned; no user INSERT or hook call attempted; no partial state written",
+      "requirement_id": "04-REQ-3.E1"
+    },
+    {
+      "id": "04-ERR-10",
+      "condition": "OAuth request context is cancelled or times out while hook is executing",
+      "behavior": "Hook's database operations fail with context error; hook returns non-nil error; transaction rolls back; HTTP 500 returned",
+      "requirement_id": "04-REQ-2.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "v0.0.0 (local replace at ../apikit)",
+      "symbols": [
+        {
+          "name": "Server",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type Server struct { ... }",
+          "notes": "Unexported fields; extended with hook field by this spec"
+        },
+        {
+          "name": "NewServer",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func NewServer(cfg *Config, checker HealthChecker) *Server",
+          "notes": "Constructor; unchanged by this spec"
+        },
+        {
+          "name": "Server.MountHandlers",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func (s *Server) MountHandlers(database *DB, permissions ...Permission) error",
+          "notes": "Wires OAuth, auth middleware, and handlers; hook must be registered before this call"
+        },
+        {
+          "name": "Server.APIGroup",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func (s *Server) APIGroup() *echo.Group",
+          "notes": "Returns the API route group; unchanged by this spec"
+        },
+        {
+          "name": "AfterUserCreateFunc",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type AfterUserCreateFunc func(ctx context.Context, tx *sql.Tx, userID, username, email string) error",
+          "notes": "NOT FOUND in current codebase; must be added by this spec"
+        },
+        {
+          "name": "Server.OnAfterUserCreate",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func (s *Server) OnAfterUserCreate(fn AfterUserCreateFunc)",
+          "notes": "NOT FOUND in current codebase; must be added by this spec"
+        },
+        {
+          "name": "Organization",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type Organization struct { ID, Name, Slug, URL, Status string; OwnerID *string `json:\"owner_id,omitempty\"` }",
+          "notes": "OwnerID field does not exist yet; must be added by this spec"
+        },
+        {
+          "name": "MountWorkspaceHandlers",
+          "import_path": "github.com/agent-fox-dev/hub/workspace",
+          "signature": "func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB) error",
+          "notes": "Hub function; calls MountHandlers internally; hook must be registered before this"
+        },
+        {
+          "name": "checkOrgMembership",
+          "import_path": "github.com/agent-fox-dev/hub/workspace",
+          "signature": "func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string)",
+          "notes": "Hub internal function; reused for explicit org_id validation in workspace creation"
+        }
+      ]
+    }
+  ]
+}

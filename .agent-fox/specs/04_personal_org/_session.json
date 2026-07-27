@@ -1,0 +1,67 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"Personal Org\" PRD is exceptionally well-written and comprehensive. It clearly defines intent, measurable goals, explicit non-goals, detailed functional requirements, design decisions with rationale, technical boundaries, and a thorough \"Verified External API\" section that honestly flags symbols not yet present in apikit. Cross-spec dependencies on `workspaces` and `workspace_write_delete` are declared in the Dependencies table. No fundamental gaps were found. A few minor clarification opportunities exist (edge-case behavior, validateSlug compatibility, owner field on the spec itself), but none block progression to artifact generation.",
+      "gaps": [
+        "The `spec owner` field is empty \u2014 no owner is assigned to this spec, which may cause accountability gaps in reviews and sign-offs.",
+        "The `validateSlug` pattern (`^[a-z0-9][a-z0-9_-]*[a-z0-9]$`) requires at least 2 characters and disallows underscores in the slug body \u2014 the PRD's sanitization rules allow single-character slugs and do not mention stripping underscores. There may be a mismatch between the slug sanitization output and what `validateSlug` accepts.",
+        "The error propagation path for hook failures in the OAuth callback is described as 'HTTP 500', but UX impact on the end-user login flow (e.g., whether the user sees an error page or is silently redirected) is not specified.",
+        "No mention of observability: whether hook failures or slug-collision events should be logged, emitted as metrics, or surfaced in any monitoring system.",
+        "The collision-cap behaviour (fail after 10 attempts) fails user creation entirely. The PRD does not describe how an administrator would remediate this situation or whether any alerting/notification is expected."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The `validateSlug` regex (`^[a-z0-9][a-z0-9_-]*[a-z0-9]$`) requires at least 2 characters and permits underscores in the middle. The PRD's sanitization rules allow a 1-character result before the fallback triggers, and do not replace underscores in usernames. Should the sanitization step also strip underscores (replacing them with hyphens), and should the minimum-length threshold before triggering the `u-<userID>` fallback be 2 characters instead of 1?",
+          "context": "If the sanitized slug does not pass `validateSlug`, the INSERT will fail and roll back user creation. Aligning the sanitization output with the validator prevents silent failures.",
+          "options": [
+            "Yes \u2014 strip underscores and raise minimum length to 2 before fallback.",
+            "No \u2014 relax `validateSlug` to allow underscores and single-character slugs for personal orgs.",
+            "The hook should bypass `validateSlug` and insert directly; validation is only needed for user-supplied slugs."
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "When the `AfterUserCreateFunc` hook returns an error during the OAuth login flow, the PRD says the enclosing transaction rolls back and the caller receives HTTP 500. What should the end-user experience be? Is an HTTP 500 error page acceptable, or should the OAuth flow redirect to a specific error page with a user-friendly message?",
+          "context": "The OAuth callback is a browser-facing redirect flow. An HTTP 500 JSON response may not render well for users; a redirect to an error page may be more appropriate. Clarifying this affects the implementation of the hook error path in `handleCallback`.",
+          "options": [
+            "HTTP 500 with a JSON body is acceptable (login is developer/CLI-oriented).",
+            "Redirect to a dedicated error page with a user-friendly message.",
+            "Return HTTP 500 but log the error server-side; the user sees a generic 'login failed' page."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Who owns this spec? The `owner` field in the spec metadata is currently empty. Please assign an owner for accountability during review and implementation.",
+          "context": "An empty owner field makes it unclear who is responsible for sign-off, answering implementation questions, and accepting the delivered artifact.",
+          "options": [],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "When all 10 slug collision attempts are exhausted and user creation fails, what remediation path exists for an administrator? Should there be an admin command or API endpoint to manually create a personal org for a user who was not auto-provisioned?",
+          "context": "In a system with many users, the 10-attempt cap could be hit in theory. Without a remediation path, affected users would be permanently locked out of the system, since subsequent logins go through the returning-user branch and would not retry org creation.",
+          "options": [
+            "Add an admin CLI command (e.g., `afc admin users repair-org <username>`) \u2014 document as future work.",
+            "Increase the collision cap (e.g., to 100) to make the scenario practically impossible.",
+            "Log a critical error and continue user creation without a personal org; surface the missing-org error only at workspace-creation time.",
+            "No remediation needed \u2014 treat this as a fatal configuration error requiring manual DB intervention."
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}
