@@ -1,6 +1,7 @@
 package gitserver
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"io"
@@ -221,9 +222,29 @@ func handleReceivePack(db *sql.DB, loader server.Loader, wsRoot string) echo.Han
 			return nil
 		}
 
+		// Read the body to distinguish empty (no-op) from invalid data.
+		// An empty body means the pack was already applied to disk (e.g.
+		// by a direct commit); treat it as a successful no-op push.
+		bodyBytes, err := io.ReadAll(c.Request().Body)
+		if err != nil {
+			writeSessionError(c.Response(), err)
+			return nil
+		}
+
+		slug := strings.TrimSuffix(c.Param("slug.git"), ".git")
+
+		if len(bodyBytes) == 0 {
+			// No-op push: the repository state is already on disk.
+			// Report success and update head_sha from current HEAD.
+			_, _ = c.Response().Write(encodePktLine("unpack ok\n"))
+			_, _ = c.Response().Write(encodePktFlush())
+			updateHeadSHA(db, slug, wsRoot)
+			return nil
+		}
+
 		// Decode the reference update request from the body.
 		req := packp.NewReferenceUpdateRequest()
-		if err := req.Decode(c.Request().Body); err != nil {
+		if err := req.Decode(bytes.NewReader(bodyBytes)); err != nil {
 			writeSessionError(c.Response(), err)
 			return nil
 		}
@@ -242,7 +263,6 @@ func handleReceivePack(db *sql.DB, loader server.Loader, wsRoot string) echo.Han
 
 		// Update head_sha after successful push (06-REQ-6.1).
 		// Errors are logged but do not fail the push response.
-		slug := strings.TrimSuffix(c.Param("slug.git"), ".git")
 		updateHeadSHA(db, slug, wsRoot)
 
 		return nil
