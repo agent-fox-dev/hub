@@ -58,7 +58,7 @@
           "requirement_refs": [
             "06-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -79,7 +79,7 @@
           "requirement_refs": [
             "06-REQ-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -100,7 +100,7 @@
           "requirement_refs": [
             "06-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -331,7 +331,7 @@
           "Spec tests for REQ-1, REQ-2, REQ-3 pass: `go test ./internal/gitserver/... -run 'TestRoutes|TestPermissions|TestAuth' -count=1 -v`",
           "All existing tests still pass: `go test ./... -count=1`",
           "No linter warnings introduced: `go vet ./...`",
-          "Requirements 06-REQ-1.1\u201306-REQ-1.5, 06-REQ-2.1\u201306-REQ-2.3, 06-REQ-3.1\u201306-REQ-3.3 acceptance criteria met"
+          "Requirements 06-REQ-1.1–06-REQ-1.5, 06-REQ-2.1–06-REQ-2.3, 06-REQ-3.1–06-REQ-3.3 acceptance criteria met"
         ]
       }
     },
@@ -393,7 +393,7 @@
           "Spec tests for REQ-4 and REQ-5 pass: `go test ./internal/gitserver/... -run 'TestResolver|TestAuthz' -count=1 -v`",
           "All existing tests still pass: `go test ./... -count=1`",
           "No linter warnings introduced: `go vet ./...`",
-          "Requirements 06-REQ-4.1\u201306-REQ-4.4, 06-REQ-5.1\u201306-REQ-5.6 acceptance criteria met"
+          "Requirements 06-REQ-4.1–06-REQ-4.4, 06-REQ-5.1–06-REQ-5.6 acceptance criteria met"
         ]
       }
     },
@@ -470,7 +470,7 @@
           "Spec tests for REQ-7 and REQ-8 pass: `go test ./internal/gitserver/... -run 'TestLoader|TestBridge' -count=1 -v`",
           "All existing tests still pass: `go test ./... -count=1`",
           "No linter warnings introduced: `go vet ./...`",
-          "Requirements 06-REQ-7.1\u201306-REQ-7.2, 06-REQ-8.1\u201306-REQ-8.3 acceptance criteria met"
+          "Requirements 06-REQ-7.1–06-REQ-7.2, 06-REQ-8.1–06-REQ-8.3 acceptance criteria met"
         ]
       }
     },
@@ -525,7 +525,7 @@
           "Spec tests for REQ-6 pass: `go test ./internal/gitserver/... -run 'TestPush' -count=1 -v`",
           "All existing tests still pass: `go test ./... -count=1`",
           "No linter warnings introduced: `go vet ./...`",
-          "Requirements 06-REQ-6.1\u201306-REQ-6.2 acceptance criteria met",
+          "Requirements 06-REQ-6.1–06-REQ-6.2 acceptance criteria met",
           "DB update is verified by querying `head_sha` column after push in integration test"
         ]
       }
@@ -659,9 +659,9 @@
           "id": "9.3",
           "title": "Stub and dead-code audit: search for unimplemented markers in gitserver package",
           "details": [
-            "Run `grep -r 'panic(\"not implemented\")' ./internal/gitserver/` \u2014 must return no results",
-            "Run `grep -r '// TODO' ./internal/gitserver/` \u2014 review and resolve any remaining TODOs",
-            "Run `grep -r 'panic(' ./internal/gitserver/` \u2014 confirm no panics remain in non-test code",
+            "Run `grep -r 'panic(\"not implemented\")' ./internal/gitserver/` — must return no results",
+            "Run `grep -r '// TODO' ./internal/gitserver/` — review and resolve any remaining TODOs",
+            "Run `grep -r 'panic(' ./internal/gitserver/` — confirm no panics remain in non-test code",
             "Verify no bare `return nil` in non-trivial error paths (e.g., `Load`, `authorizeGitOp`, `updateHeadSHA`)"
           ],
           "test_spec_refs": [],
