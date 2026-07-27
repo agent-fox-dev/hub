@@ -48,6 +48,11 @@ func main() {
 
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 
+	// Register the personal org hook before MountWorkspaceHandlers so that
+	// the hook is captured when MountHandlers wires up user creation paths
+	// (04-REQ-10.1). MountWorkspaceHandlers calls MountHandlers internally.
+	server.OnAfterUserCreate(workspace.CreatePersonalOrg)
+
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace permission scopes registered.
 	if err := workspace.MountWorkspaceHandlers(server, database); err != nil {
