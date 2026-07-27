@@ -35,21 +35,28 @@ type Workspace struct {
 	Status      string
 	DisplayName string
 	Description string
+	CloneStatus string  // pending, cloning, ready, failed, archived
+	HeadSHA     *string // nullable: 40-char hex SHA when clone_status is ready or archived
+	CloneError  *string // nullable: error message when clone_status is failed
 	CreatedAt   string
 	UpdatedAt   string
 }
 
 // insertWorkspace inserts a new workspace record into the workspaces table.
 // It sets created_at and updated_at to the current time in RFC 3339 format.
+// If CloneStatus is empty, it defaults to "pending".
 func insertWorkspace(db *sql.DB, ws *Workspace) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	ws.CreatedAt = now
 	ws.UpdatedAt = now
+	if ws.CloneStatus == "" {
+		ws.CloneStatus = "pending"
+	}
 
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, branch, owner_id, org_id, status, display_name, description, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ws.Slug, ws.GitURL, ws.Branch, ws.OwnerID, ws.OrgID, ws.Status, ws.DisplayName, ws.Description, ws.CreatedAt, ws.UpdatedAt,
+		`INSERT INTO workspaces (slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ws.Slug, ws.GitURL, ws.Branch, ws.OwnerID, ws.OrgID, ws.Status, ws.DisplayName, ws.Description, ws.CloneStatus, ws.HeadSHA, ws.CloneError, ws.CreatedAt, ws.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert workspace %q: %w", ws.Slug, err)
@@ -62,10 +69,10 @@ func insertWorkspace(db *sql.DB, ws *Workspace) error {
 func getWorkspaceBySlug(db *sql.DB, slug string) (*Workspace, error) {
 	ws := &Workspace{}
 	err := db.QueryRow(
-		`SELECT slug, git_url, branch, owner_id, org_id, status, display_name, description, created_at, updated_at
+		`SELECT slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at
 		 FROM workspaces WHERE slug = ?`,
 		slug,
-	).Scan(&ws.Slug, &ws.GitURL, &ws.Branch, &ws.OwnerID, &ws.OrgID, &ws.Status, &ws.DisplayName, &ws.Description, &ws.CreatedAt, &ws.UpdatedAt)
+	).Scan(&ws.Slug, &ws.GitURL, &ws.Branch, &ws.OwnerID, &ws.OrgID, &ws.Status, &ws.DisplayName, &ws.Description, &ws.CloneStatus, &ws.HeadSHA, &ws.CloneError, &ws.CreatedAt, &ws.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -79,7 +86,7 @@ func getWorkspaceBySlug(db *sql.DB, slug string) (*Workspace, error) {
 // If includeArchived is false, only active workspaces are returned.
 // Results are ordered by created_at descending.
 func listWorkspacesByOwner(db *sql.DB, ownerID string, includeArchived bool) ([]*Workspace, error) {
-	query := `SELECT slug, git_url, branch, owner_id, org_id, status, display_name, description, created_at, updated_at
+	query := `SELECT slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at
 		 FROM workspaces WHERE owner_id = ?`
 	args := []any{ownerID}
 
@@ -101,7 +108,7 @@ func listWorkspacesByOwner(db *sql.DB, ownerID string, includeArchived bool) ([]
 // If includeArchived is false, only active workspaces are returned.
 // Results are ordered by created_at descending.
 func listAllWorkspaces(db *sql.DB, includeArchived bool) ([]*Workspace, error) {
-	query := `SELECT slug, git_url, branch, owner_id, org_id, status, display_name, description, created_at, updated_at
+	query := `SELECT slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at
 		 FROM workspaces`
 
 	if !includeArchived {
@@ -176,7 +183,7 @@ func scanWorkspaces(rows *sql.Rows) ([]*Workspace, error) {
 	var workspaces []*Workspace
 	for rows.Next() {
 		ws := &Workspace{}
-		if err := rows.Scan(&ws.Slug, &ws.GitURL, &ws.Branch, &ws.OwnerID, &ws.OrgID, &ws.Status, &ws.DisplayName, &ws.Description, &ws.CreatedAt, &ws.UpdatedAt); err != nil {
+		if err := rows.Scan(&ws.Slug, &ws.GitURL, &ws.Branch, &ws.OwnerID, &ws.OrgID, &ws.Status, &ws.DisplayName, &ws.Description, &ws.CloneStatus, &ws.HeadSHA, &ws.CloneError, &ws.CreatedAt, &ws.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan workspace row: %w", err)
 		}
 		workspaces = append(workspaces, ws)

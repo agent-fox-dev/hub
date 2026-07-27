@@ -34,6 +34,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Create WORKSPACE_ROOT directory before starting HTTP handlers.
+	if err := workspace.EnsureWorkspaceRoot(cfg.Workspace.Path); err != nil {
+		log.Fatal(err)
+	}
+
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and

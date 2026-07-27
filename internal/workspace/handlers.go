@@ -41,6 +41,9 @@ func workspaceResponse(ws *Workspace) map[string]any {
 		"status":       ws.Status,
 		"display_name": ws.DisplayName,
 		"description":  ws.Description,
+		"clone_status": ws.CloneStatus,
+		"head_sha":     ws.HeadSHA,
+		"clone_error":  ws.CloneError,
 		"created_at":   ws.CreatedAt,
 		"updated_at":   ws.UpdatedAt,
 	}
@@ -184,6 +187,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			Status:      "active",
 			DisplayName: displayName,
 			Description: description,
+			CloneStatus: "pending",
 		}
 
 		if err := insertWorkspace(db, ws); err != nil {

@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	status       TEXT NOT NULL DEFAULT 'active',
 	display_name TEXT NOT NULL DEFAULT '',
 	description  TEXT NOT NULL DEFAULT '',
+	clone_status TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
+	head_sha     TEXT,
+	clone_error  TEXT,
 	created_at   TEXT NOT NULL,
 	updated_at   TEXT NOT NULL
 )`

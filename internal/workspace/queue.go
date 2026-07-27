@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // CloneJob represents a unit of work for the clone job queue.
@@ -90,13 +91,26 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 // updateCloneStatus updates the clone_status, head_sha, and clone_error
 // fields for the workspace identified by slug.
 func updateCloneStatus(db *sql.DB, slug string, cloneStatus string, headSHA *string, cloneError *string) error {
-	// TODO: implement for spec 05-REQ-4
-	return fmt.Errorf("updateCloneStatus: not implemented")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`UPDATE workspaces SET clone_status = ?, head_sha = ?, clone_error = ?, updated_at = ? WHERE slug = ?`,
+		cloneStatus, headSHA, cloneError, now, slug,
+	)
+	if err != nil {
+		return fmt.Errorf("update clone status for %q: %w", slug, err)
+	}
+	return nil
 }
 
 // getCloneFields retrieves the current clone_status, head_sha, and clone_error
 // for the workspace identified by slug.
 func getCloneFields(db *sql.DB, slug string) (cloneStatus string, headSHA *string, cloneError *string, err error) {
-	// TODO: implement for spec 05-REQ-4
-	return "", nil, nil, fmt.Errorf("getCloneFields: not implemented")
+	err = db.QueryRow(
+		`SELECT clone_status, head_sha, clone_error FROM workspaces WHERE slug = ?`,
+		slug,
+	).Scan(&cloneStatus, &headSHA, &cloneError)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("get clone fields for %q: %w", slug, err)
+	}
+	return cloneStatus, headSHA, cloneError, nil
 }

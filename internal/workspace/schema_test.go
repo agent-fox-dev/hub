@@ -61,8 +61,8 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 		t.Fatalf("rows iteration error: %v", err)
 	}
 
-	if len(columns) != 10 {
-		t.Errorf("got %d columns; want 10", len(columns))
+	if len(columns) != 13 {
+		t.Errorf("got %d columns; want 13", len(columns))
 	}
 
 	// Verify each column's properties.
