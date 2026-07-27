@@ -177,6 +177,22 @@ func archiveWorkspaceDB(db *sql.DB, slug string, headSHA *string) (*Workspace, e
 	return getWorkspaceBySlug(db, slug)
 }
 
+// reactivateWorkspaceDB sets status to "active", clone_status to "pending",
+// clears clone_error, and refreshes updated_at. Returns the updated workspace.
+// Used by the reactivate handler to atomically reset all fields before
+// enqueuing a reclone job.
+func reactivateWorkspaceDB(db *sql.DB, slug string) (*Workspace, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`UPDATE workspaces SET status = 'active', clone_status = 'pending', clone_error = NULL, updated_at = ? WHERE slug = ?`,
+		now, slug,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reactivate workspace %q: %w", slug, err)
+	}
+	return getWorkspaceBySlug(db, slug)
+}
+
 // deleteWorkspace physically removes a workspace row from the workspaces table.
 func deleteWorkspace(db *sql.DB, slug string) error {
 	result, err := db.Exec(`DELETE FROM workspaces WHERE slug = ?`, slug)

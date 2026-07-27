@@ -546,7 +546,7 @@
             "05-REQ-7",
             "05-REQ-9"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -563,7 +563,7 @@
           "requirement_refs": [
             "05-REQ-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

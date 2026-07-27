@@ -102,7 +102,12 @@ func NewJobQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers 
 
 // Enqueue adds a clone job to the queue for processing by a worker goroutine.
 // If the channel buffer is full, the call blocks until a worker frees capacity.
+// A nil context (e.g. in test stubs) sends directly without cancellation support.
 func (q *JobQueue) Enqueue(job CloneJob) {
+	if q.ctx == nil {
+		q.jobs <- job
+		return
+	}
 	select {
 	case q.jobs <- job:
 	case <-q.ctx.Done():

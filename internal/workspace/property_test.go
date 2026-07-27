@@ -205,8 +205,9 @@ func TestPropWorkspace_DeleteOnlyFromArchived(t *testing.T) {
 		})
 
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "", auth)
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("DELETE active: status = %d; want %d", rec.Code, http.StatusBadRequest)
+		// Updated for spec 05: conflict cases return HTTP 409 instead of 400.
+		if rec.Code != http.StatusConflict {
+			t.Errorf("DELETE active: status = %d; want %d", rec.Code, http.StatusConflict)
 		}
 
 		// Row must still be present.

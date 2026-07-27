@@ -200,8 +200,9 @@ func TestWorkspaceReactivate_Success(t *testing.T) {
 }
 
 // TS-01-44: Verify that reactivating an already-active workspace returns
-// HTTP 400, not a no-op.
+// an error, not a no-op.
 // Requirement: 01-REQ-9.2
+// Updated for spec 05: conflict cases return HTTP 409 instead of 400.
 func TestWorkspaceReactivate_AlreadyActive(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -215,12 +216,12 @@ func TestWorkspaceReactivate_AlreadyActive(t *testing.T) {
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "",
 		userAuth("alice-id"))
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d; want %d", rec.Code, http.StatusConflict)
 	}
 	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusBadRequest)
+	if resp.Error.Code != http.StatusConflict {
+		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusConflict)
 	}
 	if resp.Error.Message == "" {
 		t.Error("error.message is empty; want non-empty descriptive message")
@@ -324,8 +325,9 @@ func TestWorkspaceDelete_Success(t *testing.T) {
 }
 
 // TS-01-48: Verify that attempting to delete an active workspace returns
-// HTTP 400.
+// an error.
 // Requirement: 01-REQ-10.2
+// Updated for spec 05: conflict cases return HTTP 409 instead of 400.
 func TestWorkspaceDelete_ActiveRejected(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -339,12 +341,12 @@ func TestWorkspaceDelete_ActiveRejected(t *testing.T) {
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "",
 		userAuth("alice-id"))
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d; want %d", rec.Code, http.StatusConflict)
 	}
 	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusBadRequest)
+	if resp.Error.Code != http.StatusConflict {
+		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusConflict)
 	}
 	if resp.Error.Message == "" {
 		t.Error("error.message is empty; want non-empty descriptive message")

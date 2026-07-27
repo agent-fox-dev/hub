@@ -429,7 +429,7 @@ func TestSmoke_ErrorPropagation(t *testing.T) {
 		}
 	})
 
-	t.Run("delete_active_returns_400", func(t *testing.T) {
+	t.Run("delete_active_returns_409", func(t *testing.T) {
 		env.seedWorkspace(t, &Workspace{
 			Slug:    "active-ws",
 			GitURL:  "https://github.com/org/repo",
@@ -438,8 +438,8 @@ func TestSmoke_ErrorPropagation(t *testing.T) {
 		})
 
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "", auth)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("delete active returned %d; want %d", rec.Code, http.StatusBadRequest)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("delete active returned %d; want %d", rec.Code, http.StatusConflict)
 		}
 	})
 
@@ -550,10 +550,10 @@ func TestSmoke_FullLifecycle(t *testing.T) {
 		t.Errorf("reactivate: status = %q; want active", ws.Status)
 	}
 
-	// 8. Delete active workspace — should fail.
+	// 8. Delete active workspace — should fail with 409 (must be archived first).
 	rec = env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/lifecycle-ws", "", auth)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("delete active returned %d; want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete active returned %d; want %d", rec.Code, http.StatusConflict)
 	}
 
 	// 9. Archive again.

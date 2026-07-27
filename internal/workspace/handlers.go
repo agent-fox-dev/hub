@@ -565,13 +565,26 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		if ws.Status == "active" {
-			return respondError(c, http.StatusBadRequest, "workspace is already active")
+		// 05-REQ-7.E3: Only archived workspaces can be reactivated.
+		if ws.Status != "archived" {
+			return respondError(c, http.StatusConflict, "workspace is not archived")
 		}
 
-		updated, err := updateWorkspaceStatus(db, slug, "active")
+		// 05-REQ-7.1: Set status='active', clone_status='pending',
+		// clear clone_error, and refresh updated_at.
+		updated, err := reactivateWorkspaceDB(db, slug)
 		if err != nil {
+			// 05-REQ-7.E4: DB failure returns 500 without enqueuing a job.
 			return respondError(c, http.StatusInternalServerError, "failed to reactivate workspace")
+		}
+
+		// Enqueue a reclone job using the workspace's git_url and branch.
+		if defaultQueue != nil {
+			defaultQueue.Enqueue(CloneJob{
+				Slug:   ws.Slug,
+				GitURL: ws.GitURL,
+				Branch: ws.Branch,
+			})
 		}
 
 		return respondWorkspace(c, http.StatusOK, updated)
@@ -598,9 +611,18 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		// Only archived workspaces can be deleted.
+		// 05-REQ-8.E2: Only archived workspaces can be deleted.
 		if ws.Status != "archived" {
-			return respondError(c, http.StatusBadRequest, "only archived workspaces can be deleted")
+			return respondError(c, http.StatusConflict, "workspace must be archived before deletion")
+		}
+
+		// 05-REQ-8.1: Check whether workspace directory exists and remove it.
+		wsDir := filepath.Join(defaultWorkspaceRoot, slug)
+		if _, statErr := os.Stat(wsDir); statErr == nil {
+			if rmErr := os.RemoveAll(wsDir); rmErr != nil {
+				// 05-REQ-8.E5: Log warning but proceed with DB deletion.
+				log.Printf("WARN: failed to remove workspace dir %s: %v", wsDir, rmErr)
+			}
 		}
 
 		if err := deleteWorkspace(db, slug); err != nil {
