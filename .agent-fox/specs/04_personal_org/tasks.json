@@ -726,7 +726,7 @@
             "04-REQ-5.5",
             "04-REQ-5.6"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -754,7 +754,7 @@
             "04-REQ-5.E2",
             "04-REQ-5.E3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
