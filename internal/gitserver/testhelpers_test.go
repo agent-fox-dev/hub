@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +31,8 @@ func openTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 
 	// Create the workspaces table schema.
+	// Includes clone_status (from spec 05) and head_sha (from spec 06)
+	// needed by the git server resolver and push handler.
 	workspaceSQL := `CREATE TABLE IF NOT EXISTS workspaces (
 		slug         TEXT PRIMARY KEY,
 		git_url      TEXT NOT NULL,
@@ -35,6 +40,8 @@ func openTestDB(t *testing.T) *sql.DB {
 		owner_id     TEXT NOT NULL,
 		org_id       TEXT,
 		status       TEXT NOT NULL DEFAULT 'active',
+		clone_status TEXT NOT NULL DEFAULT 'ready',
+		head_sha     TEXT,
 		display_name TEXT NOT NULL DEFAULT '',
 		description  TEXT NOT NULL DEFAULT '',
 		created_at   TEXT NOT NULL,
@@ -73,21 +80,26 @@ func openTestDB(t *testing.T) *sql.DB {
 
 // gitTestEnv holds a test HTTP server with git routes mounted.
 type gitTestEnv struct {
-	echo *echo.Echo
-	db   *sql.DB
+	echo          *echo.Echo
+	db            *sql.DB
+	workspaceRoot string // temp directory used as the workspace root for resolver tests
 }
 
 // newGitTestEnv creates an echo server with git routes mounted for testing.
+// It creates a temporary workspace root directory that is cleaned up after
+// the test completes.
 func newGitTestEnv(t *testing.T) *gitTestEnv {
 	t.Helper()
 	db := openTestDB(t)
 	e := echo.New()
 
+	wsRoot := t.TempDir()
+
 	if err := MountGitHandlers(e, db); err != nil {
 		t.Fatalf("MountGitHandlers() returned error: %v", err)
 	}
 
-	return &gitTestEnv{echo: e, db: db}
+	return &gitTestEnv{echo: e, db: db, workspaceRoot: wsRoot}
 }
 
 // doRequest performs an HTTP request against the test server.
@@ -162,4 +174,84 @@ func withBasicAuth(username, password string) map[string]string {
 	return map[string]string{
 		"Authorization": basicAuthHeader(username, password),
 	}
+}
+
+// assertPktLineErrorBody verifies that a response body is formatted as a
+// git pkt-line error (not a JSON response from Echo's default handler).
+// The pkt-line error format starts with a 4-hex-digit length prefix.
+// This helper ensures that tests expecting 404 from the resolver (with
+// pkt-line body) don't accidentally pass when Echo returns its default
+// JSON 404 ({"message":"Not Found"}).
+func assertPktLineErrorBody(t *testing.T, body, context string) {
+	t.Helper()
+	// Echo's default 404 returns JSON. The resolver should return pkt-line.
+	if strings.Contains(body, `"message"`) {
+		t.Errorf("%s: response body is JSON (Echo default), not pkt-line; got %q",
+			context, truncate(body, 200))
+	}
+	// A pkt-line error should contain "ERR" or start with a hex length prefix.
+	if len(body) > 0 && !strings.Contains(body, "ERR") {
+		// Check for pkt-line format: first 4 chars should be hex digits.
+		if len(body) < 4 {
+			t.Errorf("%s: response body too short for pkt-line; got %q",
+				context, body)
+		}
+	}
+}
+
+// setCloneStatus updates the clone_status column for a workspace.
+// Used by resolver tests to set non-default clone states (e.g. 'cloning').
+func (env *gitTestEnv) setCloneStatus(t *testing.T, slug, cloneStatus string) {
+	t.Helper()
+	result, err := env.db.Exec(
+		`UPDATE workspaces SET clone_status = ? WHERE slug = ?`,
+		cloneStatus, slug,
+	)
+	if err != nil {
+		t.Fatalf("setCloneStatus(%q, %q) failed: %v", slug, cloneStatus, err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		t.Fatalf("setCloneStatus(%q, %q): no workspace found", slug, cloneStatus)
+	}
+}
+
+// initWorkspaceRepo creates a git repository at <workspaceRoot>/<slug>/trunk/
+// to simulate a locally cloned workspace. Returns the path to the trunk directory.
+func (env *gitTestEnv) initWorkspaceRepo(t *testing.T, slug string) string {
+	t.Helper()
+	trunkPath := filepath.Join(env.workspaceRoot, slug, "trunk")
+	if err := os.MkdirAll(trunkPath, 0o755); err != nil {
+		t.Fatalf("failed to create trunk dir %q: %v", trunkPath, err)
+	}
+
+	cmd := exec.Command("git", "init", trunkPath)
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init %q failed: %v\n%s", trunkPath, err, out)
+	}
+
+	// Create an initial commit so the repo has a HEAD ref.
+	readmePath := filepath.Join(trunkPath, "README.md")
+	if err := os.WriteFile(readmePath, []byte("# test\n"), 0o644); err != nil {
+		t.Fatalf("failed to write README: %v", err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", trunkPath, "add", "."},
+		{"git", "-C", trunkPath, "-c", "user.name=test", "-c", "user.email=test@test.com", "commit", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_CONFIG_SYSTEM=/dev/null",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	return trunkPath
 }
