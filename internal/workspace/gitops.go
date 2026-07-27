@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 )
@@ -41,6 +43,15 @@ var defaultWorkspaceRoot string
 // operations. Set during server boot; used by handlers to enqueue
 // clone and reclone jobs.
 var defaultQueue *JobQueue
+
+// InitCloneQueue sets the production clone function, workspace root, and
+// starts the in-memory job queue with the configured number of workers.
+// Called during server boot after EnsureWorkspaceRoot.
+func InitCloneQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers int) {
+	cloneFn = defaultCloneFn
+	defaultWorkspaceRoot = workspaceRoot
+	defaultQueue = NewJobQueue(ctx, db, workspaceRoot, workers)
+}
 
 // validCloneTransitions defines the allowed clone_status state machine.
 // Each key is a current state; the value is the set of valid target states.

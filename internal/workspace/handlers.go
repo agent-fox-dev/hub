@@ -198,6 +198,16 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "failed to create workspace")
 		}
 
+		// Enqueue a clone job for the newly created workspace.
+		// The queue may be nil during tests that don't initialize it.
+		if defaultQueue != nil {
+			defaultQueue.Enqueue(CloneJob{
+				Slug:   ws.Slug,
+				GitURL: ws.GitURL,
+				Branch: ws.Branch,
+			})
+		}
+
 		return respondWorkspace(c, http.StatusCreated, ws)
 	}
 }

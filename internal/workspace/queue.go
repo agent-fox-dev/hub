@@ -4,6 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -52,14 +56,58 @@ type JobQueue struct {
 // Workers process jobs sequentially per-worker, with up to `workers` jobs
 // executing concurrently across all workers.
 func NewJobQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers int) *JobQueue {
-	// TODO: implement for spec 05-REQ-4.1
-	return nil
+	workerCtx, cancel := context.WithCancel(ctx)
+	q := &JobQueue{
+		workers:       workers,
+		workspaceRoot: workspaceRoot,
+		db:            db,
+		jobs:          make(chan CloneJob, workers*10),
+		ctx:           workerCtx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case job, ok := <-q.jobs:
+					if !ok {
+						return
+					}
+					// Check context again before processing — if cancelled
+					// while we were waiting, discard the job (05-REQ-4.E1).
+					if workerCtx.Err() != nil {
+						return
+					}
+					processCloneJob(workerCtx, q.db, q.workspaceRoot, job)
+				}
+			}
+		}()
+	}
+
+	// Close the done channel when all workers have exited.
+	go func() {
+		wg.Wait()
+		close(q.done)
+	}()
+
+	return q
 }
 
 // Enqueue adds a clone job to the queue for processing by a worker goroutine.
 // If the channel buffer is full, the call blocks until a worker frees capacity.
 func (q *JobQueue) Enqueue(job CloneJob) {
-	// TODO: implement for spec 05-REQ-4.2
+	select {
+	case q.jobs <- job:
+	case <-q.ctx.Done():
+		// Context cancelled; discard the job.
+	}
 }
 
 // WorkerCount returns the number of configured worker goroutines.
@@ -85,7 +133,58 @@ func (q *JobQueue) Wait() {
 //  4. On success: sets clone_status to "ready" and records head_sha
 //  5. On failure: sets clone_status to "failed", records error, removes partial dir
 func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job CloneJob) {
-	// TODO: implement for spec 05-REQ-4.2
+	slug := job.Slug
+
+	// Step 1: Set clone_status to "cloning".
+	if err := updateCloneStatus(db, slug, "cloning", nil, nil); err != nil {
+		log.Printf("clone job %q: failed to set cloning status: %v", slug, err)
+		return
+	}
+
+	// Step 2: Check if workspace directory already exists (idempotency).
+	wsDir := filepath.Join(workspaceRoot, slug)
+	if _, err := os.Stat(wsDir); err == nil {
+		// Directory exists; skip clone, set status to ready.
+		if err := updateCloneStatus(db, slug, "ready", nil, nil); err != nil {
+			log.Printf("clone job %q: failed to set ready status (idempotent): %v", slug, err)
+		}
+		return
+	}
+
+	// Step 3: Create workspace directory and trunk subdirectory.
+	trunkDir := filepath.Join(wsDir, "trunk")
+	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
+		errMsg := err.Error()
+		_ = updateCloneStatus(db, slug, "failed", nil, &errMsg)
+		return
+	}
+
+	// Step 4: Build clone options and call cloneFn.
+	depth := 1
+	singleBranch := false
+	refName := ""
+	if job.Branch != nil {
+		singleBranch = true
+		refName = "refs/heads/" + *job.Branch
+	}
+
+	headSHA, cloneErr := cloneFn(ctx, trunkDir, job.GitURL, depth, singleBranch, refName)
+
+	// Step 5: Handle result.
+	if cloneErr != nil {
+		// Clone failed: remove any partially created workspace directory.
+		_ = os.RemoveAll(wsDir)
+		errMsg := cloneErr.Error()
+		if err := updateCloneStatus(db, slug, "failed", nil, &errMsg); err != nil {
+			log.Printf("clone job %q: failed to set failed status: %v", slug, err)
+		}
+		return
+	}
+
+	// Step 6: Clone succeeded — record HEAD SHA and set status to ready.
+	if err := updateCloneStatus(db, slug, "ready", &headSHA, nil); err != nil {
+		log.Printf("clone job %q: failed to set ready status: %v", slug, err)
+	}
 }
 
 // updateCloneStatus updates the clone_status, head_sha, and clone_error

@@ -39,6 +39,13 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Initialize the async clone job queue with the configured number of
+	// workers. The server context controls worker lifecycle; cancelling it
+	// interrupts in-progress clones and discards pending jobs.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workspace.InitCloneQueue(ctx, database.SqlDB, cfg.Workspace.Path, cfg.Workspace.Workers)
+
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
