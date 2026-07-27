@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -164,12 +165,26 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
 		}
 
-		// Validate org_id if provided.
+		// Validate org_id if provided, or auto-assign personal org if omitted.
 		if req.OrgID != nil && *req.OrgID != "" {
+			// Explicit org_id: validate membership as before (04-REQ-8.2).
 			orgCode, orgMsg := orgMembershipCheckFn(db, auth.UserID, *req.OrgID)
 			if orgCode != 0 {
 				return respondError(c, orgCode, orgMsg)
 			}
+		} else {
+			// No org_id: look up user's personal org (04-REQ-8.1).
+			personalOrgID, err := lookupPersonalOrg(db, auth.UserID)
+			if err == errNoPersonalOrg {
+				// 04-REQ-8.3: user has no personal org.
+				return respondError(c, http.StatusBadRequest,
+					"user has no personal organization; contact an administrator")
+			}
+			if err != nil {
+				// 04-REQ-8.E1: database error during personal org lookup.
+				return respondError(c, http.StatusInternalServerError, "internal server error")
+			}
+			req.OrgID = &personalOrgID
 		}
 
 		// Check slug uniqueness.
@@ -244,6 +259,43 @@ func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string) {
 	}
 
 	return 0, ""
+}
+
+// errNoPersonalOrg is a sentinel error returned by lookupPersonalOrg when the
+// user has no org with owner_id matching their user ID.
+var errNoPersonalOrg = errors.New("no personal organization found")
+
+// lookupPersonalOrg queries the orgs table for an org owned by the given user.
+// Returns the org id on success, errNoPersonalOrg when no row exists, or a
+// wrapped database error on query failure.
+//
+// When multiple rows exist (data inconsistency, 04-REQ-8.E2) the first result
+// is returned and a warning is logged.
+func lookupPersonalOrg(db *sql.DB, userID string) (string, error) {
+	rows, err := db.Query("SELECT id FROM orgs WHERE owner_id = ?", userID)
+	if err != nil {
+		return "", fmt.Errorf("personal org lookup: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("personal org lookup: %w", err)
+		}
+		return "", errNoPersonalOrg
+	}
+
+	var orgID string
+	if err := rows.Scan(&orgID); err != nil {
+		return "", fmt.Errorf("personal org lookup scan: %w", err)
+	}
+
+	// 04-REQ-8.E2: log warning if multiple personal orgs exist.
+	if rows.Next() {
+		log.Printf("WARNING: user %s has multiple personal organizations; using first result", userID)
+	}
+
+	return orgID, nil
 }
 
 // updatePatchFields tracks which mutable fields were included in a PATCH body.

@@ -31,12 +31,15 @@ func openTestDB(t *testing.T) *sql.DB {
 
 	// Create the apikit orgs and org_members tables so that org membership
 	// checks in handlers work correctly during integration tests.
+	// The orgs table includes owner_id (spec 04 addition) to support
+	// personal org lookup in handleCreateWorkspace.
 	orgSchemaSQL := []string{
 		`CREATE TABLE IF NOT EXISTS orgs (
 			id TEXT NOT NULL PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE,
 			slug TEXT NOT NULL UNIQUE,
 			url TEXT,
+			owner_id TEXT,
 			status TEXT NOT NULL DEFAULT 'active',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL

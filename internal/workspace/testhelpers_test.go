@@ -21,6 +21,11 @@ type testEnv struct {
 
 // newTestEnv creates an echo server with workspace routes mounted for testing.
 // Uses an in-memory SQLite database initialised with the workspaces schema.
+//
+// Spec 04 requires every workspace to have an org_id. When org_id is omitted
+// from a create request, the handler auto-defaults to the user's personal org.
+// To keep existing tests working without individual modifications, newTestEnv
+// seeds personal orgs for all user IDs commonly used across the test suite.
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	db := openTestDB(t)
@@ -35,7 +40,13 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("RegisterRoutes() returned error: %v", err)
 	}
 
-	return &testEnv{echo: e, db: db}
+	env := &testEnv{echo: e, db: db}
+
+	// Seed personal orgs for all common test user IDs so that workspace
+	// creation without explicit org_id succeeds (04-REQ-8.1).
+	seedDefaultPersonalOrgs(t, db)
+
+	return env
 }
 
 // testAuthMiddleware returns middleware that reads AuthInfo from the
@@ -137,6 +148,70 @@ func (env *testEnv) seedOrgMember(t *testing.T, orgID, userID string) {
 	if err != nil {
 		t.Fatalf("seedOrgMember(%q, %q) returned error: %v", orgID, userID, err)
 	}
+}
+
+// seedDefaultPersonalOrgs inserts personal orgs for all user IDs commonly
+// used across the workspace test suite. This centralised setup avoids
+// modifying each individual test after spec 04 made org_id auto-default
+// mandatory. Tests that explicitly test "no personal org" behaviour use
+// newAutoOrgTestEnv instead and seed their own orgs as needed.
+func seedDefaultPersonalOrgs(t *testing.T, db *sql.DB) {
+	t.Helper()
+	// Comprehensive list of user IDs used in workspace tests that create
+	// workspaces without explicit org_id.
+	userIDs := []string{
+		"alice-id", "alice-user-id", "u1-id", "u2-id", "user-1",
+		"user-spec05", "prop-u1", "prop-u3", "prop-u4",
+		"prop-user-1", "prop-user-2", "user-defaults",
+		"empty-user-id", "del-pat-user", "scope-user",
+		"user-a", "user-b", "user-c",
+		"clone-user-001",
+		// Dynamically generated user IDs used in property tests.
+		"user-0", "user-2", "user-3", "user-4",
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, uid := range userIDs {
+		orgID := "personal-org-" + uid
+		name := "Personal " + uid
+		slug := "personal-" + uid
+		_, err := db.Exec(
+			`INSERT INTO orgs (id, name, slug, owner_id, status, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+			orgID, name, slug, uid, now, now,
+		)
+		if err != nil {
+			t.Fatalf("seedDefaultPersonalOrgs(%q): %v", uid, err)
+		}
+		_, err = db.Exec(
+			`INSERT INTO org_members (org_id, user_id, created_at) VALUES (?, ?, ?)`,
+			orgID, uid, now,
+		)
+		if err != nil {
+			t.Fatalf("seedDefaultPersonalOrgs membership(%q): %v", uid, err)
+		}
+	}
+}
+
+// seedPersonalOrg creates a personal org owned by the given user and adds
+// them as a member. The org's id is "personal-org-<userID>" and the slug is
+// "personal-<userID>". This is needed since spec 04 requires every workspace
+// to have an org_id: when no org_id is provided in the create request, the
+// handler auto-populates it from the user's personal org.
+func (env *testEnv) seedPersonalOrg(t *testing.T, userID string) {
+	t.Helper()
+	orgID := "personal-org-" + userID
+	name := "Personal " + userID
+	slug := "personal-" + userID
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := env.db.Exec(
+		`INSERT INTO orgs (id, name, slug, owner_id, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+		orgID, name, slug, userID, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedPersonalOrg(%q) returned error: %v", userID, err)
+	}
+	env.seedOrgMember(t, orgID, userID)
 }
 
 // deleteWorkspaceBySlug removes a workspace row directly from the database.
