@@ -36,6 +36,9 @@ import (
 // Must be called after NewServer and before Start.
 func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 	loader := NewWorkspaceLoader(db, workspaceRoot)
+	// Create the go-git server transport once at startup rather than
+	// per-request. The transport is stateless and thread-safe.
+	srv := server.NewServer(loader)
 
 	g := e.Group("/git/:org/:slug.git",
 		GitAuthMiddleware(db),
@@ -43,9 +46,9 @@ func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 		gitResolverMiddleware(db, workspaceRoot),
 	)
 
-	g.GET("/info/refs", handleInfoRefs(db, loader))
-	g.POST("/git-upload-pack", handleUploadPack(db, loader))
-	g.POST("/git-receive-pack", handleReceivePack(db, loader, workspaceRoot))
+	g.GET("/info/refs", handleInfoRefs(db, srv))
+	g.POST("/git-upload-pack", handleUploadPack(db, srv))
+	g.POST("/git-receive-pack", handleReceivePack(db, srv, workspaceRoot))
 
 	return nil
 }
@@ -71,7 +74,7 @@ func requireDotGitSuffix() echo.MiddlewareFunc {
 // It validates the `service` query parameter, creates a go-git session,
 // calls AdvertisedReferences to obtain refs and capabilities, and writes
 // a pkt-line encoded ref advertisement with the correct Content-Type.
-func handleInfoRefs(db *sql.DB, loader server.Loader) echo.HandlerFunc {
+func handleInfoRefs(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		service := c.QueryParam("service")
 		if service != "git-upload-pack" && service != "git-receive-pack" {
@@ -97,9 +100,8 @@ func handleInfoRefs(db *sql.DB, loader server.Loader) echo.HandlerFunc {
 		_, _ = c.Response().Write(encodePktLine(announcement))
 		_, _ = c.Response().Write(encodePktFlush())
 
-		// Create go-git server transport and session to obtain refs.
+		// Create sessions from the pre-initialized go-git server transport.
 		ep := endpointFromContext(c)
-		srv := server.NewServer(loader)
 
 		var ar *packp.AdvRefs
 		if service == "git-upload-pack" {
@@ -143,7 +145,7 @@ func handleInfoRefs(db *sql.DB, loader server.Loader) echo.HandlerFunc {
 // It creates a go-git UploadPackSession, decodes the upload-pack request
 // from the HTTP body, executes the session, and streams the pack response
 // back to the client.
-func handleUploadPack(db *sql.DB, loader server.Loader) echo.HandlerFunc {
+func handleUploadPack(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := requireGitScope(c, "git-upload-pack"); err != nil {
 			return err
@@ -152,9 +154,8 @@ func handleUploadPack(db *sql.DB, loader server.Loader) echo.HandlerFunc {
 		c.Response().Header().Set("Content-Type", "application/x-git-upload-pack-result")
 		c.Response().WriteHeader(http.StatusOK)
 
-		// Create go-git server transport and upload-pack session.
+		// Create upload-pack session from the pre-initialized transport.
 		ep := endpointFromContext(c)
-		srv := server.NewServer(loader)
 		sess, err := srv.NewUploadPackSession(ep, nil)
 		if err != nil {
 			writeSessionError(c.Response(), err)
@@ -197,7 +198,7 @@ func handleUploadPack(db *sql.DB, loader server.Loader) echo.HandlerFunc {
 // request from the HTTP body, executes the session, streams the report
 // status back to the client, and updates head_sha in the database after
 // a successful push.
-func handleReceivePack(db *sql.DB, loader server.Loader, wsRoot string) echo.HandlerFunc {
+func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := requireGitScope(c, "git-receive-pack"); err != nil {
 			return err
@@ -206,9 +207,8 @@ func handleReceivePack(db *sql.DB, loader server.Loader, wsRoot string) echo.Han
 		c.Response().Header().Set("Content-Type", "application/x-git-receive-pack-result")
 		c.Response().WriteHeader(http.StatusOK)
 
-		// Create go-git server transport and receive-pack session.
+		// Create receive-pack session from the pre-initialized transport.
 		ep := endpointFromContext(c)
-		srv := server.NewServer(loader)
 		sess, err := srv.NewReceivePackSession(ep, nil)
 		if err != nil {
 			writeSessionError(c.Response(), err)

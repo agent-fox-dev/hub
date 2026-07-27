@@ -7,6 +7,7 @@ import (
 
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
@@ -54,8 +55,15 @@ func main() {
 	server.OnAfterUserCreate(workspace.CreatePersonalOrg)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
-	// workspace handlers with workspace permission scopes registered.
-	if err := workspace.MountWorkspaceHandlers(server, database); err != nil {
+	// workspace handlers with workspace and git permission scopes registered.
+	if err := workspace.MountWorkspaceHandlers(server, database, gitserver.GitPermissions()...); err != nil {
+		log.Fatal(err)
+	}
+
+	// Mount git smart HTTP handlers on the Echo instance. The git server
+	// registers routes at /git/:org/:slug.git/* outside the API group,
+	// with its own HTTP Basic auth middleware.
+	if err := gitserver.MountGitHandlers(server.Echo(), database.SqlDB, cfg.Workspace.Path); err != nil {
 		log.Fatal(err)
 	}
 

@@ -28,14 +28,16 @@ func WorkspacePermissions() []apikit.Permission {
 // workspace-specific permission scopes, then registers workspace routes.
 //
 // Must be called after NewServer and before Start.
-func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB) error {
+func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB, extraPerms ...apikit.Permission) error {
 	// Initialise the workspaces table schema.
 	if err := initSchema(db.SqlDB); err != nil {
 		return fmt.Errorf("workspace schema init: %w", err)
 	}
 
-	// Register workspace permissions and mount all built-in handlers.
+	// Register workspace permissions (plus any extra module scopes) and
+	// mount all built-in handlers.
 	perms := WorkspacePermissions()
+	perms = append(perms, extraPerms...)
 	if err := s.MountHandlers(db, perms...); err != nil {
 		return fmt.Errorf("mount handlers: %w", err)
 	}
