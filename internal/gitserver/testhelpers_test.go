@@ -3,6 +3,7 @@ package gitserver
 import (
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -75,7 +76,162 @@ func openTestDB(t *testing.T) *sql.DB {
 		}
 	}
 
+	// Create auth tables (users, pats, api_keys, admin_config) matching
+	// apikit's schema so the git auth middleware can validate credentials.
+	authSchemaSQL := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT NOT NULL PRIMARY KEY,
+			username TEXT NOT NULL UNIQUE,
+			email TEXT NOT NULL,
+			full_name TEXT,
+			role TEXT NOT NULL DEFAULT 'user',
+			status TEXT NOT NULL DEFAULT 'active',
+			provider TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS pats (
+			token_id TEXT NOT NULL PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			secret_hash TEXT NOT NULL,
+			permissions TEXT NOT NULL,
+			expires_days INTEGER NOT NULL,
+			expires_at TEXT,
+			revoked_at TEXT,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			key_id TEXT NOT NULL PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			secret_hash TEXT NOT NULL,
+			expires_days INTEGER NOT NULL,
+			expires_at TEXT,
+			revoked_at TEXT,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_config (
+			key TEXT NOT NULL PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+	}
+	for _, stmt := range authSchemaSQL {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("failed to create auth schema: %v", err)
+		}
+	}
+
+	// Seed test users and credentials for all test files.
+	seedTestCredentials(t, db)
+
 	return db
+}
+
+// seedTestCredentials populates the auth tables with well-known test
+// credentials used across all gitserver test files. Each test gets its own
+// in-memory DB via openTestDB, so this seeding is isolated per test.
+func seedTestCredentials(t *testing.T, db *sql.DB) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// --- Test users ---
+	testUsers := []struct {
+		id, username, email, role string
+	}{
+		{"user-1", "testuser1", "user1@test.com", "user"},
+		{"user-a", "testusera", "usera@test.com", "user"},
+		{"user-b", "testuserb", "userb@test.com", "user"},
+		{"user-2", "testuser2", "user2@test.com", "user"},
+	}
+	for _, u := range testUsers {
+		_, err := db.Exec(
+			`INSERT INTO users (id, username, email, role, status, provider, provider_id, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 'active', 'github', ?, ?, ?)`,
+			u.id, u.username, u.email, u.role, "gh-"+u.id, now, now,
+		)
+		if err != nil {
+			t.Fatalf("seed user %q: %v", u.id, err)
+		}
+	}
+
+	// --- Test PATs ---
+	// The token format is af_pat_<identifier>. The identifier is used as
+	// the token_id in the pats table, and hashCredential(identifier) is
+	// stored as the secret_hash.
+	testPATs := []struct {
+		tokenID string
+		userID  string
+		perms   []string
+	}{
+		// auth_test.go, routes_test.go, bridge_test.go
+		{"abc123", "user-1", []string{"git:read", "git:write"}},
+		{"test123", "user-1", []string{"git:read", "git:write"}},
+
+		// permissions_test.go
+		{"writeonly", "user-1", []string{"git:write"}},
+		{"gitonly", "user-1", []string{"git:read"}},
+		{"readonly", "user-1", []string{"git:read"}},
+		{"noscopes", "user-1", []string{}},
+
+		// authz_test.go
+		{"readpat", "user-a", []string{"git:read"}},
+		{"writepat", "user-a", []string{"git:write"}},
+		{"userB_read", "user-b", []string{"git:read"}},
+		{"userB_write", "user-b", []string{"git:write"}},
+	}
+	for _, p := range testPATs {
+		permsJSON, _ := json.Marshal(p.perms)
+		_, err := db.Exec(
+			`INSERT INTO pats (token_id, user_id, name, secret_hash, permissions, expires_days, created_at)
+			 VALUES (?, ?, ?, ?, ?, 365, ?)`,
+			p.tokenID, p.userID, "test-"+p.tokenID, hashCredential(p.tokenID), string(permsJSON), now,
+		)
+		if err != nil {
+			t.Fatalf("seed PAT %q: %v", p.tokenID, err)
+		}
+	}
+
+	// --- Test API keys ---
+	// The token format is af_key_<identifier>. The identifier is used as
+	// the key_id, and hashCredential(identifier) is the secret_hash.
+	testKeys := []struct {
+		keyID, userID string
+	}{
+		{"test456", "user-1"},
+		{"user1", "user-1"},
+		{"user2", "user-2"},
+		{"userA", "user-a"},
+		{"userB", "user-b"},
+	}
+	for _, k := range testKeys {
+		_, err := db.Exec(
+			`INSERT INTO api_keys (key_id, user_id, secret_hash, expires_days, created_at)
+			 VALUES (?, ?, ?, 365, ?)`,
+			k.keyID, k.userID, hashCredential(k.keyID), now,
+		)
+		if err != nil {
+			t.Fatalf("seed API key %q: %v", k.keyID, err)
+		}
+	}
+
+	// --- Test admin tokens ---
+	// The full token (e.g. "af_admin_test789") is hashed and stored.
+	testAdmins := []struct {
+		configKey, fullToken string
+	}{
+		{"admin_token_hash", "af_admin_test789"},
+		{"admin_token_hash_2", "af_admin_supertoken"},
+	}
+	for _, a := range testAdmins {
+		_, err := db.Exec(
+			`INSERT INTO admin_config (key, value) VALUES (?, ?)`,
+			a.configKey, hashCredential(a.fullToken),
+		)
+		if err != nil {
+			t.Fatalf("seed admin token %q: %v", a.configKey, err)
+		}
+	}
 }
 
 // gitTestEnv holds a test HTTP server with git routes mounted.
