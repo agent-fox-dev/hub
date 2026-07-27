@@ -51,6 +51,7 @@ func TestGitPermissions_WriteImpliesRead(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	// A PAT with only git:write should be permitted for fetch (upload-pack).
 	fetchRec := env.doRequest(t, http.MethodGet,
@@ -82,6 +83,7 @@ func TestGitPermissions_IndependentFromWorkspaceScopes(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	// A PAT with only git:read (no workspaces:read) should succeed for fetch.
 	rec := env.doRequest(t, http.MethodGet,
@@ -103,6 +105,7 @@ func TestGitPermissions_ReadOnlyPAT_PushRejected(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	// A PAT with only git:read should be rejected for push.
 	rec := env.doRequest(t, http.MethodGet,
@@ -124,6 +127,7 @@ func TestGitPermissions_NeitherScope_Rejected(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	// A PAT with neither git:read nor git:write should be rejected.
 	rec := env.doRequest(t, http.MethodGet,

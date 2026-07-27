@@ -18,10 +18,19 @@ import (
 //   - POST /git/:org/:slug.git/git-upload-pack
 //   - POST /git/:org/:slug.git/git-receive-pack
 //
-// All routes are protected by the git-specific HTTP Basic auth middleware.
+// All routes are protected by the git-specific HTTP Basic auth middleware
+// and the workspace resolver middleware which enforces authorization.
+//
+// workspaceRoot is the filesystem directory under which workspace local
+// clones are stored, one subdirectory per workspace slug.
+//
 // Must be called after NewServer and before Start.
-func MountGitHandlers(e *echo.Echo, db *sql.DB) error {
-	g := e.Group("/git/:org/:slug.git", GitAuthMiddleware(db), requireDotGitSuffix())
+func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
+	g := e.Group("/git/:org/:slug.git",
+		GitAuthMiddleware(db),
+		requireDotGitSuffix(),
+		gitResolverMiddleware(db, workspaceRoot),
+	)
 
 	g.GET("/info/refs", handleInfoRefs(db))
 	g.POST("/git-upload-pack", handleUploadPack(db))

@@ -67,6 +67,7 @@ func TestInfoRefs_UploadPack_ContentType(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	rec := env.doRequest(t, http.MethodGet,
 		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
@@ -104,6 +105,7 @@ func TestInfoRefs_ReceivePack_ContentType(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	rec := env.doRequest(t, http.MethodGet,
 		"/git/myorg/myws.git/info/refs?service=git-receive-pack", "",
@@ -139,6 +141,7 @@ func TestUploadPack_ContentType(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	// Build a minimal upload-pack request body.
 	// In a real scenario this would contain want/have lines and a flush packet.
@@ -169,6 +172,7 @@ func TestReceivePack_ContentType(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	rec := env.doRequest(t, http.MethodPost,
 		"/git/myorg/myws.git/git-receive-pack", "",
@@ -195,6 +199,7 @@ func TestInfoRefs_InvalidService(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
 
 	tests := []struct {
 		name    string

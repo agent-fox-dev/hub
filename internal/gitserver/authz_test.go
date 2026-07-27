@@ -143,9 +143,13 @@ func TestAuthz_PATGitReadOnly_PushRejected(t *testing.T) {
 
 	env.initWorkspaceRepo(t, "myws")
 
+	// Use readpat (belongs to user-a with git:read scope) to match the spec:
+	// "PAT with git:read scope belonging to the workspace owner".
+	// The original af_pat_readonly belongs to user-1 (not user-a), which would
+	// trigger anti-enumeration (404) rather than scope rejection (403).
 	rec := env.doRequest(t, http.MethodGet,
 		"/git/myorg/myws.git/info/refs?service=git-receive-pack", "",
-		withBasicAuth("x", "af_pat_readonly"))
+		withBasicAuth("x", "af_pat_readpat"))
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("PAT git:read push: status = %d; want %d", rec.Code, http.StatusForbidden)

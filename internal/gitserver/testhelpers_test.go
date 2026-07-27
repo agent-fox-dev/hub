@@ -251,7 +251,7 @@ func newGitTestEnv(t *testing.T) *gitTestEnv {
 
 	wsRoot := t.TempDir()
 
-	if err := MountGitHandlers(e, db); err != nil {
+	if err := MountGitHandlers(e, db, wsRoot); err != nil {
 		t.Fatalf("MountGitHandlers() returned error: %v", err)
 	}
 
