@@ -577,7 +577,7 @@
             "04-REQ-4.1",
             "04-REQ-4.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -599,7 +599,7 @@
             "04-REQ-4.3",
             "04-REQ-4.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -617,7 +617,7 @@
           "requirement_refs": [
             "04-REQ-4.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
