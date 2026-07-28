@@ -23,6 +23,10 @@ Data is stored in an embedded SQLite database (pure Go, no CGo). Authentication
 supports three credential types: admin tokens, user API keys, and
 workspace-scoped tokens.
 
+The af-hub binary also includes a built-in git smart HTTP server that exposes
+workspace repositories at /git/<org>/<slug>.git for clone, fetch, and push
+operations.
+
 ## Getting Started
 
 ### Prerequisites
@@ -49,8 +53,12 @@ port = 8080
 [database]
 path = "./data/af-hub.db"
 
-[log]
+[logging]
 level = "info"
+
+[workspace]
+path = "./data/workspaces"
+workers = 2
 
 [[oauth.providers]]
 name = "github"
@@ -107,9 +115,10 @@ curl http://localhost:8080/readyz
 make check            # lint + tests
 make test             # tests only
 make lint             # go vet
-make build-container  # build af-hub image via containers/hub/Containerfile
-make run-container    # run image with bin/ mounted for /config and /data
-make clean            # remove bin/
+make buildc           # build container image via podman
+make hub-reset        # reset data and first-boot
+make hub-run          # run the container
+make clean            # remove bin/ and container image
 ```
 
 The web UI scaffold (Vite + React + TypeScript) lives in `web/`:

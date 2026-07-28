@@ -33,6 +33,8 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
+| `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
+| `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
 
 ### Implied Permissions
 
@@ -42,6 +44,8 @@ they can access. The following scopes are available for workspace operations:
   also list and view workspaces.
 - `workspaces:delete` does **not** imply read access — a PAT with only
   `workspaces:delete` cannot list or view workspaces.
+- `git:write` implies `git:read` — a PAT with git write scope can also clone
+  and fetch.
 
 ### Anti-Enumeration Policy
 
@@ -60,12 +64,16 @@ schema:
 {
   "slug": "my-project",
   "git_url": "https://github.com/user/repo.git",
+  "hub_url": "http://localhost:8080/git/org-slug/my-project.git",
   "branch": "main",
   "owner_id": "uuid-string",
   "org_id": "uuid-string-or-null",
   "status": "active",
   "display_name": "My Project",
   "description": "A description of the workspace",
+  "clone_status": "ready",
+  "head_sha": "abc123def456...",
+  "clone_error": null,
   "created_at": "2024-01-01T00:00:00Z",
   "updated_at": "2024-01-01T00:00:00Z"
 }
@@ -75,12 +83,16 @@ schema:
 |-------|------|-------------|
 | `slug` | string | Immutable globally unique URL-safe identifier |
 | `git_url` | string | HTTPS or SSH URL of the git repository; immutable after creation |
+| `hub_url` | string or null | Git clone URL on the hub built-in git server (e.g. `"http://localhost:8080/git/org-slug/workspace-slug.git"`). Null when external_url is not configured or the workspace has no organization. |
 | `branch` | string or null | Git ref associated with the workspace; immutable after creation |
 | `owner_id` | string (UUID) | User who owns the workspace |
 | `org_id` | string (UUID) or null | Organization the workspace is associated with; nullable |
 | `status` | string | Lifecycle state: `"active"` or `"archived"` |
 | `display_name` | string | Human-readable label; defaults to slug value when not set; never null or empty |
 | `description` | string | Free-form text describing the workspace; defaults to empty string; never null |
+| `clone_status` | string | Clone lifecycle state: `"pending"`, `"cloning"`, `"ready"`, `"failed"`, or `"archived"` |
+| `head_sha` | string or null | 40-character hex SHA of the HEAD commit. Set when clone_status is `"ready"` or `"archived"`. Null otherwise. |
+| `clone_error` | string or null | Error message when clone_status is `"failed"`. Null otherwise. |
 | `created_at` | string (RFC 3339) | Timestamp of workspace creation; immutable |
 | `updated_at` | string (RFC 3339) | Timestamp of last modification |
 
@@ -277,6 +289,7 @@ tokens can archive any workspace.
 | 400 | Workspace is already archived |
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 409 | Clone is in progress; archive is rejected until the clone completes or fails |
 
 ---
 
@@ -295,13 +308,16 @@ tokens can reactivate any workspace.
 
 **Response:** HTTP 200 OK with the updated workspace JSON (status = `"active"`).
 
+On reactivation, `clone_status` is reset to `"pending"` and a reclone job is
+enqueued.
+
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Workspace is already active |
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 409 | Workspace is not archived |
 
 ---
 
@@ -324,9 +340,101 @@ tokens can delete any workspace.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Workspace is not archived (must archive before deleting) |
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:delete` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 409 | Workspace is not archived (must archive before deleting) |
+
+---
+
+## Git Server Endpoints
+
+The hub includes a built-in git smart HTTP server that exposes workspace
+repositories for clone, fetch, and push operations. All git endpoints are
+served under `/git/<org-slug>/<workspace-slug>.git/`.
+
+### Git Server Authentication
+
+All git server endpoints use HTTP Basic authentication. The username is
+ignored; the password must be a valid hub credential (API key, PAT, or admin
+token).
+
+### Git Permission Scopes
+
+| Scope | Description |
+|-------|-------------|
+| `git:read` | Clone and fetch access to workspace repositories |
+| `git:write` | Push access to workspace repositories. Implies `git:read`. |
+
+Admin tokens and API keys have implicit full access to all git operations.
+
+### URL Format
+
+```
+<external_url>/git/<org-slug>/<workspace-slug>.git
+```
+
+The `.git` suffix is required. Requests without it receive HTTP 404.
+
+---
+
+### GET /git/:org/:slug.git/info/refs
+
+Git ref advertisement endpoint (smart HTTP discovery).
+
+**Authentication:** HTTP Basic (see Git Server Authentication above).
+
+**Query Parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `service` | yes | `"git-upload-pack"` (fetch/clone) or `"git-receive-pack"` (push) |
+
+**Response:** HTTP 200 with `Content-Type: application/x-<service>-advertisement`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Missing or invalid credentials |
+| 403 | Invalid or missing `service` parameter, or PAT lacks the required git scope |
+| 404 | Workspace not found, org mismatch, or clone not ready |
+
+---
+
+### POST /git/:org/:slug.git/git-upload-pack
+
+Git fetch/clone data transfer.
+
+**Authentication:** HTTP Basic. PATs require `git:read` scope.
+
+**Response:** HTTP 200 with `Content-Type: application/x-git-upload-pack-result`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Missing or invalid credentials |
+| 403 | PAT lacks `git:read` scope |
+| 404 | Workspace not found, org mismatch, or clone not ready |
+
+---
+
+### POST /git/:org/:slug.git/git-receive-pack
+
+Git push data transfer. After a successful push, updates `head_sha` in the
+database and resets the working tree to match the new HEAD.
+
+**Authentication:** HTTP Basic. PATs require `git:write` scope.
+
+**Response:** HTTP 200 with `Content-Type: application/x-git-receive-pack-result`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Missing or invalid credentials |
+| 403 | PAT lacks `git:write` scope |
+| 404 | Workspace not found, org mismatch, or clone not ready |
 
 ---
 

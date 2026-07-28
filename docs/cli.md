@@ -46,6 +46,8 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 - Sends `POST /api/v1/workspaces` with the provided fields.
 - When `--org` is provided, the org slug is resolved to its UUID via the
   user's org list before inclusion in the request.
+- When `--org` is omitted, the server automatically assigns the workspace to
+  the user's personal organization.
 - Prints the created workspace JSON to stdout.
 
 **Exit Codes:**
@@ -199,7 +201,7 @@ afc workspace archive <slug>
 | Code | Condition |
 |------|-----------|
 | 0 | Workspace archived successfully |
-| 1 | Workspace already archived, not found, API error, network error, or timeout |
+| 1 | Workspace already archived, clone in progress, not found, API error, network error, or timeout |
 
 ---
 
@@ -229,7 +231,7 @@ afc workspace reactivate <slug>
 | Code | Condition |
 |------|-----------|
 | 0 | Workspace reactivated successfully |
-| 1 | Workspace already active, not found, API error, network error, or timeout |
+| 1 | Workspace is not archived, not found, API error, network error, or timeout |
 
 ---
 
