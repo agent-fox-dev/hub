@@ -54,7 +54,7 @@ func TestArchive_Spec05_ReadyPushAndArchive(t *testing.T) {
 	// Mock archive push: return nil (push success).
 	var pushCalled int32
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath string) error {
+	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
 		atomic.AddInt32(&pushCalled, 1)
 		// Verify the push is called with the correct trunk path.
 		expectedPath := filepath.Join(wsRoot, "ready-ws", "trunk")
@@ -170,7 +170,7 @@ func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 			// Mock archive push: track calls to verify it is NOT called.
 			var pushCalled int32
 			oldPush := archiveOpenAndPushFn
-			archiveOpenAndPushFn = func(_ string) error {
+			archiveOpenAndPushFn = func(_, _ string) error {
 				atomic.AddInt32(&pushCalled, 1)
 				return nil
 			}
@@ -308,7 +308,7 @@ func TestArchive_Spec05_PushErrorReturns500(t *testing.T) {
 
 	// Mock archive push: return a real error (not NoErrAlreadyUpToDate).
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_ string) error {
+	archiveOpenAndPushFn = func(_, _ string) error {
 		return errors.New("push rejected: remote does not allow push")
 	}
 	defer func() { archiveOpenAndPushFn = oldPush }()
@@ -384,7 +384,7 @@ func TestArchive_Spec05_NoErrAlreadyUpToDate(t *testing.T) {
 
 	// Mock archive push: return ErrAlreadyUpToDate (nothing to push).
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_ string) error {
+	archiveOpenAndPushFn = func(_, _ string) error {
 		return ErrAlreadyUpToDate
 	}
 	defer func() { archiveOpenAndPushFn = oldPush }()

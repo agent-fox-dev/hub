@@ -13,10 +13,11 @@ import (
 var ErrAlreadyUpToDate = errors.New("already up-to-date")
 
 // ArchiveOpenAndPushFuncType opens a local git repository at repoPath
-// and pushes to origin. Returns nil on success, ErrAlreadyUpToDate
+// and pushes to origin using gitURL as the remote URL (which may contain
+// embedded credentials). Returns nil on success, ErrAlreadyUpToDate
 // when the remote already has all local commits (nothing to push), or
 // an error on failure (including open failures and push rejections).
-type ArchiveOpenAndPushFuncType func(repoPath string) error
+type ArchiveOpenAndPushFuncType func(repoPath, gitURL string) error
 
 // ArchiveHeadFuncType reads the 40-character hex SHA of HEAD from
 // a local repository at repoPath. Called after a successful push

@@ -130,7 +130,7 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 	// Inject mock git functions.
 	origPush := archiveOpenAndPushFn
 	pushCalled := false
-	archiveOpenAndPushFn = func(repoPath string) error {
+	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
 		pushCalled = true
 		return nil
 	}
@@ -347,7 +347,7 @@ func TestSmoke05_FullLifecycle(t *testing.T) {
 	defer func() { cloneFn = origCloneFn }()
 
 	origPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath string) error {
+	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
 		return ErrAlreadyUpToDate
 	}
 	defer func() { archiveOpenAndPushFn = origPush }()
@@ -515,7 +515,7 @@ func TestSmoke05_AllEndpointsIncludeCloneFields(t *testing.T) {
 
 	// Inject mock functions so archive/reactivate work without real git.
 	origPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath string) error { return ErrAlreadyUpToDate }
+	archiveOpenAndPushFn = func(repoPath, gitURL string) error { return ErrAlreadyUpToDate }
 	defer func() { archiveOpenAndPushFn = origPush }()
 
 	origHead := archiveHeadFn

@@ -603,8 +603,9 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			// delete workspace directory, then archive.
 			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 
-			// Push local commits to upstream.
-			if pushErr := archiveOpenAndPushFn(repoPath); pushErr != nil && !errors.Is(pushErr, ErrAlreadyUpToDate) {
+			// Push local commits to upstream using the stored git_url
+			// (which may contain embedded credentials).
+			if pushErr := archiveOpenAndPushFn(repoPath, ws.GitURL); pushErr != nil && !errors.Is(pushErr, ErrAlreadyUpToDate) {
 				// 05-REQ-6.4: Push failure aborts the archive.
 				return respondError(c, http.StatusInternalServerError, pushErr.Error())
 			}
