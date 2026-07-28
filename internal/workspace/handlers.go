@@ -599,18 +599,10 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 				"clone in progress; try again after it completes")
 
 		case "ready":
-			// 05-REQ-6.1, 05-REQ-6.5: Push to origin, record head_sha,
-			// delete workspace directory, then archive.
+			// Record head_sha, delete workspace directory, then archive.
+			// Upstream push is deferred until credential management is implemented.
 			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 
-			// Push local commits to upstream using the stored git_url
-			// (which may contain embedded credentials).
-			if pushErr := archiveOpenAndPushFn(repoPath, ws.GitURL); pushErr != nil && !errors.Is(pushErr, ErrAlreadyUpToDate) {
-				// 05-REQ-6.4: Push failure aborts the archive.
-				return respondError(c, http.StatusInternalServerError, pushErr.Error())
-			}
-
-			// Read HEAD SHA after successful push (or already-up-to-date).
 			headSHA, headErr := archiveHeadFn(repoPath)
 			if headErr != nil {
 				// 05-REQ-6.E2: HEAD read failure aborts the archive;

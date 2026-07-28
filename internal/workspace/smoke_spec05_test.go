@@ -128,14 +128,6 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 	})
 
 	// Inject mock git functions.
-	origPush := archiveOpenAndPushFn
-	pushCalled := false
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
-		pushCalled = true
-		return nil
-	}
-	defer func() { archiveOpenAndPushFn = origPush }()
-
 	origHead := archiveHeadFn
 	archiveHeadFn = func(repoPath string) (string, error) {
 		return fakeSHA, nil
@@ -168,10 +160,6 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 	if resp.HeadSHA == nil || *resp.HeadSHA != fakeSHA {
 		t.Errorf("head_sha = %v; want %q", resp.HeadSHA, fakeSHA)
 	}
-	if !pushCalled {
-		t.Error("archiveOpenAndPushFn was not called")
-	}
-
 	// Verify workspace directory was deleted.
 	wsDir := filepath.Join(wsRoot, slug)
 	if _, err := os.Stat(wsDir); !os.IsNotExist(err) {
@@ -346,12 +334,6 @@ func TestSmoke05_FullLifecycle(t *testing.T) {
 	}
 	defer func() { cloneFn = origCloneFn }()
 
-	origPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
-		return ErrAlreadyUpToDate
-	}
-	defer func() { archiveOpenAndPushFn = origPush }()
-
 	origHead := archiveHeadFn
 	archiveHeadFn = func(repoPath string) (string, error) {
 		return sha1, nil
@@ -514,10 +496,6 @@ func TestSmoke05_AllEndpointsIncludeCloneFields(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Inject mock functions so archive/reactivate work without real git.
-	origPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error { return ErrAlreadyUpToDate }
-	defer func() { archiveOpenAndPushFn = origPush }()
-
 	origHead := archiveHeadFn
 	archiveHeadFn = func(repoPath string) (string, error) {
 		return "abcdef0123456789abcdef0123456789abcdef01", nil

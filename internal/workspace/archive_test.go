@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,11 +18,11 @@ import (
 // hexSHAPattern matches a valid 40-character lowercase hex SHA string.
 var hexSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// TS-05-18: Archiving a workspace with clone_status='ready' pushes to origin,
-// records head_sha, deletes the workspace directory, and returns HTTP 200 with
-// status='archived' and clone_status='archived'.
+// TS-05-18: Archiving a workspace with clone_status='ready' records head_sha,
+// deletes the workspace directory, and returns HTTP 200 with status='archived'
+// and clone_status='archived'. Upstream push is deferred.
 // Requirement: 05-REQ-6.1
-func TestArchive_Spec05_ReadyPushAndArchive(t *testing.T) {
+func TestArchive_Spec05_ReadyRecordAndArchive(t *testing.T) {
 	env := newTestEnv(t)
 	wsRoot := t.TempDir()
 
@@ -50,20 +49,6 @@ func TestArchive_Spec05_ReadyPushAndArchive(t *testing.T) {
 	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
 		t.Fatalf("create trunk dir: %v", err)
 	}
-
-	// Mock archive push: return nil (push success).
-	var pushCalled int32
-	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
-		atomic.AddInt32(&pushCalled, 1)
-		// Verify the push is called with the correct trunk path.
-		expectedPath := filepath.Join(wsRoot, "ready-ws", "trunk")
-		if repoPath != expectedPath {
-			t.Errorf("push repoPath = %q; want %q", repoPath, expectedPath)
-		}
-		return nil
-	}
-	defer func() { archiveOpenAndPushFn = oldPush }()
 
 	// Mock HEAD SHA reader: return a known SHA.
 	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
@@ -108,11 +93,6 @@ func TestArchive_Spec05_ReadyPushAndArchive(t *testing.T) {
 	}
 	if !hexSHAPattern.MatchString(*ws.HeadSHA) {
 		t.Errorf("head_sha = %q; want valid 40-char hex string", *ws.HeadSHA)
-	}
-
-	// Assert push was called.
-	if atomic.LoadInt32(&pushCalled) == 0 {
-		t.Error("archive push function was not called; expected push to origin")
 	}
 
 	// Assert workspace directory was deleted.
@@ -276,166 +256,3 @@ func TestArchive_Spec05_CloningReturns409(t *testing.T) {
 	}
 }
 
-// TS-05-21: When repo.Push returns an error other than NoErrAlreadyUpToDate
-// during archive, the handler returns HTTP 500 and leaves workspace status
-// and clone_status unchanged.
-// Requirement: 05-REQ-6.4
-func TestArchive_Spec05_PushErrorReturns500(t *testing.T) {
-	env := newTestEnv(t)
-	wsRoot := t.TempDir()
-
-	oldRoot := defaultWorkspaceRoot
-	defaultWorkspaceRoot = wsRoot
-	defer func() { defaultWorkspaceRoot = oldRoot }()
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "push-fail-ws",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "active",
-	})
-
-	// Set clone_status to 'ready'.
-	if err := updateCloneStatus(env.db, "push-fail-ws", "ready", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('ready'): %v", err)
-	}
-
-	// Create workspace directory with trunk.
-	trunkDir := filepath.Join(wsRoot, "push-fail-ws", "trunk")
-	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
-		t.Fatalf("create trunk dir: %v", err)
-	}
-
-	// Mock archive push: return a real error (not NoErrAlreadyUpToDate).
-	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_, _ string) error {
-		return errors.New("push rejected: remote does not allow push")
-	}
-	defer func() { archiveOpenAndPushFn = oldPush }()
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/push-fail-ws/archive", "",
-		userAuth("user-1"))
-
-	// Assert HTTP 500.
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("HTTP status = %d; want %d\nbody: %s",
-			rec.Code, http.StatusInternalServerError, rec.Body.String())
-	}
-
-	// Assert error body contains push error message.
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("error.message is empty; want push error message")
-	}
-
-	// Verify workspace status and clone_status remain unchanged.
-	cloneStatus, _, _, err := getCloneFields(env.db, "push-fail-ws")
-	if err != nil {
-		t.Fatalf("getCloneFields: %v", err)
-	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q (unchanged)", cloneStatus, "ready")
-	}
-
-	var status string
-	if err := env.db.QueryRow("SELECT status FROM workspaces WHERE slug = ?", "push-fail-ws").Scan(&status); err != nil {
-		t.Fatalf("query workspace status: %v", err)
-	}
-	if status != "active" {
-		t.Errorf("workspace status = %q; want %q (unchanged)", status, "active")
-	}
-
-	// Verify workspace directory still exists (not deleted on push failure).
-	wsDir := filepath.Join(wsRoot, "push-fail-ws")
-	if _, err := os.Stat(wsDir); os.IsNotExist(err) {
-		t.Error("workspace directory should still exist after push failure")
-	}
-}
-
-// TS-05-22: When repo.Push returns NoErrAlreadyUpToDate during archive,
-// the handler treats it as success and proceeds to record head_sha, delete
-// the directory, and return HTTP 200.
-// Requirement: 05-REQ-6.5
-func TestArchive_Spec05_NoErrAlreadyUpToDate(t *testing.T) {
-	env := newTestEnv(t)
-	wsRoot := t.TempDir()
-
-	oldRoot := defaultWorkspaceRoot
-	defaultWorkspaceRoot = wsRoot
-	defer func() { defaultWorkspaceRoot = oldRoot }()
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "uptodate-ws",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "active",
-	})
-
-	// Set clone_status to 'ready'.
-	if err := updateCloneStatus(env.db, "uptodate-ws", "ready", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('ready'): %v", err)
-	}
-
-	// Create workspace directory with trunk.
-	trunkDir := filepath.Join(wsRoot, "uptodate-ws", "trunk")
-	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
-		t.Fatalf("create trunk dir: %v", err)
-	}
-
-	// Mock archive push: return ErrAlreadyUpToDate (nothing to push).
-	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_, _ string) error {
-		return ErrAlreadyUpToDate
-	}
-	defer func() { archiveOpenAndPushFn = oldPush }()
-
-	// Mock HEAD SHA reader.
-	fakeSHA := "1234567890abcdef1234567890abcdef12345678"
-	oldHead := archiveHeadFn
-	archiveHeadFn = func(_ string) (string, error) {
-		return fakeSHA, nil
-	}
-	defer func() { archiveHeadFn = oldHead }()
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/uptodate-ws/archive", "",
-		userAuth("user-1"))
-
-	// Assert HTTP 200 (ErrAlreadyUpToDate treated as success).
-	if rec.Code != http.StatusOK {
-		t.Fatalf("HTTP status = %d; want %d\nbody: %s",
-			rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	// Parse response.
-	var ws spec05WorkspaceJSON
-	if err := json.NewDecoder(rec.Body).Decode(&ws); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	// Assert status = 'archived'.
-	if ws.Status != "archived" {
-		t.Errorf("status = %q; want %q", ws.Status, "archived")
-	}
-
-	// Assert clone_status = 'archived'.
-	if ws.CloneStatus == nil {
-		t.Fatal("clone_status is nil; want 'archived'")
-	}
-	if *ws.CloneStatus != "archived" {
-		t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "archived")
-	}
-
-	// Assert head_sha is recorded.
-	if ws.HeadSHA == nil {
-		t.Fatal("head_sha is nil; want non-null 40-char hex string")
-	}
-	if !hexSHAPattern.MatchString(*ws.HeadSHA) {
-		t.Errorf("head_sha = %q; want valid 40-char hex string", *ws.HeadSHA)
-	}
-
-	// Assert workspace directory was deleted.
-	wsDir := filepath.Join(wsRoot, "uptodate-ws")
-	if _, err := os.Stat(wsDir); !os.IsNotExist(err) {
-		t.Errorf("workspace directory %q should be deleted after archive", wsDir)
-	}
-}
