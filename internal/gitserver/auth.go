@@ -16,9 +16,10 @@ import (
 
 // Credential prefixes used by af-hub for token classification.
 const (
-	patPrefix   = "af_pat_"
-	keyPrefix   = "af_key_"
-	adminPrefix = "af_admin_"
+	basePrefix  = "af_"
+	patPrefix   = basePrefix + "pat_"
+	keyPrefix   = basePrefix + "key_"
+	adminPrefix = basePrefix + "admin_"
 )
 
 // GitAuthMiddleware returns an echo middleware that performs HTTP Basic
@@ -73,6 +74,10 @@ func GitAuthMiddleware(db *sql.DB) echo.MiddlewareFunc {
 
 // resolveCredential classifies a hub credential by its prefix and validates
 // it against the database, returning the resolved identity.
+//
+// Tokens with explicit type infixes (af_pat_, af_key_, af_admin_) are matched
+// first. Remaining tokens that carry only the base prefix (af_<key_id>_<secret>)
+// are treated as API keys — this is the format produced by the OAuth login flow.
 func resolveCredential(db *sql.DB, token string) (*apikit.AuthInfo, error) {
 	switch {
 	case strings.HasPrefix(token, patPrefix):
@@ -82,7 +87,7 @@ func resolveCredential(db *sql.DB, token string) (*apikit.AuthInfo, error) {
 	case strings.HasPrefix(token, adminPrefix):
 		return resolveAdminToken(db, token)
 	default:
-		return nil, nil
+		return resolveBaseAPIKey(db, token)
 	}
 }
 
@@ -204,6 +209,23 @@ func lookupAPIKey(db *sql.DB, keyID, secret string) (*apikit.AuthInfo, error) {
 		Role:           role,
 		KeyID:          keyID,
 	}, nil
+}
+
+// resolveBaseAPIKey handles API keys in the base-prefix format produced by
+// the OAuth login flow: af_<key_id>_<secret> (no _key_ infix).
+func resolveBaseAPIKey(db *sql.DB, token string) (*apikit.AuthInfo, error) {
+	if !strings.HasPrefix(token, basePrefix) {
+		return nil, nil
+	}
+	rest := strings.TrimPrefix(token, basePrefix)
+
+	idx := strings.Index(rest, "_")
+	if idx <= 0 || idx >= len(rest)-1 {
+		return nil, nil
+	}
+	keyID := rest[:idx]
+	secret := rest[idx+1:]
+	return lookupAPIKey(db, keyID, secret)
 }
 
 // resolveAdminToken validates an admin token by hashing the full token and

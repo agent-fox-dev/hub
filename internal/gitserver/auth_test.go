@@ -206,6 +206,41 @@ func TestGitAuth_MalformedAuthHeader(t *testing.T) {
 	}
 }
 
+// TestGitAuth_LoginAPIKey verifies that an API key in the OAuth login format
+// (af_<key_id>_<secret>, without the _key_ infix) is accepted by git auth.
+func TestGitAuth_LoginAPIKey(t *testing.T) {
+	db := openTestDB(t)
+	middleware := GitAuthMiddleware(db)
+
+	var capturedInfo *apikit.AuthInfo
+	handler := middleware(func(c echo.Context) error {
+		capturedInfo = apikit.GetAuthInfo(c)
+		return c.NoContent(http.StatusOK)
+	})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet,
+		"/git/myorg/myws.git/info/refs?service=git-upload-pack", nil)
+	// af_user1_user1 uses the login format: af_<key_id>_<secret>.
+	req.Header.Set("Authorization", basicAuthHeader("x-token-auth", "af_user1_user1"))
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	err := handler(c)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if capturedInfo == nil {
+		t.Fatal("expected AuthInfo for login-format API key; got nil")
+	}
+	if capturedInfo.CredentialType != "api_key" {
+		t.Errorf("CredentialType = %q; want %q", capturedInfo.CredentialType, "api_key")
+	}
+	if capturedInfo.UserID != "user-1" {
+		t.Errorf("UserID = %q; want %q", capturedInfo.UserID, "user-1")
+	}
+}
+
 // TestGitAuth_AllCredentialPrefixes verifies that all three credential prefixes
 // (af_pat_, af_key_, af_admin_) are accepted by the auth middleware and result
 // in a resolved identity attached to the request context.
@@ -222,6 +257,7 @@ func TestGitAuth_AllCredentialPrefixes(t *testing.T) {
 		{"af_pat_ prefix", "af_pat_test123", "pat"},
 		{"af_key_ prefix", "af_key_test456", "api_key"},
 		{"af_admin_ prefix", "af_admin_test789", "admin_token"},
+		{"af_ login key", "af_user1_user1", "api_key"},
 	}
 
 	for _, tc := range prefixes {
