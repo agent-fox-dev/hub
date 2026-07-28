@@ -165,7 +165,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 	}
 
 	// Step 4: Build clone options and call cloneFn.
-	depth := 1
+	depth := 0
 	singleBranch := false
 	refName := ""
 	if job.Branch != nil {

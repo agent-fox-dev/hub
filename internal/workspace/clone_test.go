@@ -173,9 +173,9 @@ func TestCloneWorker_SuccessfulClone(t *testing.T) {
 		t.Fatal("clone function was not called by processCloneJob")
 	}
 
-	// Verify Depth=1 (shallow clone).
-	if capturedDepth != 1 {
-		t.Errorf("clone depth = %d; want 1 (shallow clone)", capturedDepth)
+	// Verify Depth=0 (full clone for git serving).
+	if capturedDepth != 0 {
+		t.Errorf("clone depth = %d; want 0 (full clone)", capturedDepth)
 	}
 
 	// Verify workspace directory was created with trunk subdirectory.
