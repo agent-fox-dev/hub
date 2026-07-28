@@ -53,6 +53,7 @@ func BuildRootCommand() *cobra.Command {
 		apikit.OrgsCmd(),
 		apikit.AdminCmd(),
 		WorkspaceCmd(),
+		CredentialHelperCmd(),
 	)
 
 	return root

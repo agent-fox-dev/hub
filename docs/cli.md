@@ -269,6 +269,46 @@ afc workspace delete <slug> --confirm
 
 ---
 
+## Git Credential Helper
+
+The `afc` CLI includes a built-in git credential helper that automatically
+authenticates git operations against the hub using the API key stored in
+`~/.af/config.toml` (set during `afc login`).
+
+### Setup
+
+Configure git to use the credential helper for your hub instance:
+
+```
+git config --global credential.http://localhost:8080.helper '!afc credential-helper'
+```
+
+Replace `http://localhost:8080` with your hub's URL.
+
+### Usage
+
+Once configured, plain git URLs work without embedded tokens:
+
+```
+git clone http://localhost:8080/git/mickume/my-workspace.git
+git push origin main
+```
+
+Git calls `afc credential-helper get` behind the scenes whenever it needs
+credentials for the hub host. The helper reads the API key from
+`~/.af/config.toml` and supplies it as HTTP Basic auth. Requests to other
+hosts are ignored, allowing git's default credential chain to handle them.
+
+### How It Works
+
+The credential helper implements the standard
+[git credential helper protocol](https://git-scm.com/docs/gitcredentials).
+It only responds to `get` requests where the host matches the configured
+`endpoint_url`. The `store` and `erase` actions are no-ops since credentials
+are managed by `afc login`.
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage
