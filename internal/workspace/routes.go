@@ -34,6 +34,9 @@ func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB, extraPerms ...apiki
 		return fmt.Errorf("workspace schema init: %w", err)
 	}
 
+	// Capture the external URL for hub_url construction in workspace responses.
+	defaultExternalURL = s.ExternalURL()
+
 	// Register workspace permissions (plus any extra module scopes) and
 	// mount all built-in handlers.
 	perms := WorkspacePermissions()

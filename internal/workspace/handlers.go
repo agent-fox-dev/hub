@@ -31,15 +31,19 @@ func respondError(c echo.Context, code int, message string) error {
 }
 
 // respondWorkspace writes a workspace JSON object as the response body.
-func respondWorkspace(c echo.Context, code int, ws *Workspace) error {
-	return c.JSON(code, workspaceResponse(ws))
+// It computes the hub_url from the workspace's org and the configured external URL.
+func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB) error {
+	hubURL := buildHubURL(db, ws)
+	return c.JSON(code, workspaceResponse(ws, hubURL))
 }
 
 // workspaceResponse converts a Workspace to a JSON-serializable map.
-func workspaceResponse(ws *Workspace) map[string]any {
+// hubURL is included as-is; pass nil for workspaces without a hub URL.
+func workspaceResponse(ws *Workspace, hubURL *string) map[string]any {
 	return map[string]any{
 		"slug":         ws.Slug,
 		"git_url":      ws.GitURL,
+		"hub_url":      hubURL,
 		"branch":       ws.Branch,
 		"owner_id":     ws.OwnerID,
 		"org_id":       ws.OrgID,
@@ -52,6 +56,57 @@ func workspaceResponse(ws *Workspace) map[string]any {
 		"created_at":   ws.CreatedAt,
 		"updated_at":   ws.UpdatedAt,
 	}
+}
+
+// buildHubURL constructs the hub git server URL for a workspace.
+// Returns nil if the external URL is not configured or the workspace has no org.
+func buildHubURL(db *sql.DB, ws *Workspace) *string {
+	if defaultExternalURL == "" || ws.OrgID == nil {
+		return nil
+	}
+	var orgSlug string
+	err := db.QueryRow("SELECT slug FROM orgs WHERE id = ?", *ws.OrgID).Scan(&orgSlug)
+	if err != nil {
+		return nil
+	}
+	url := defaultExternalURL + "/git/" + orgSlug + "/" + ws.Slug + ".git"
+	return &url
+}
+
+// buildHubURLMap builds hub URLs for a batch of workspaces in a single query.
+func buildHubURLMap(db *sql.DB, workspaces []*Workspace) map[string]*string {
+	result := make(map[string]*string, len(workspaces))
+	if defaultExternalURL == "" {
+		return result
+	}
+
+	orgIDs := make(map[string]bool)
+	for _, ws := range workspaces {
+		if ws.OrgID != nil {
+			orgIDs[*ws.OrgID] = true
+		}
+	}
+	if len(orgIDs) == 0 {
+		return result
+	}
+
+	orgSlugs := make(map[string]string)
+	for id := range orgIDs {
+		var slug string
+		if err := db.QueryRow("SELECT slug FROM orgs WHERE id = ?", id).Scan(&slug); err == nil {
+			orgSlugs[id] = slug
+		}
+	}
+
+	for _, ws := range workspaces {
+		if ws.OrgID != nil {
+			if orgSlug, ok := orgSlugs[*ws.OrgID]; ok {
+				url := defaultExternalURL + "/git/" + orgSlug + "/" + ws.Slug + ".git"
+				result[ws.Slug] = &url
+			}
+		}
+	}
+	return result
 }
 
 // createWorkspaceRequest represents the JSON body of a create workspace request.
@@ -227,7 +282,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			})
 		}
 
-		return respondWorkspace(c, http.StatusCreated, ws)
+		return respondWorkspace(c, http.StatusCreated, ws, db)
 	}
 }
 
@@ -441,7 +496,7 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
 		}
 
-		return respondWorkspace(c, http.StatusOK, updated)
+		return respondWorkspace(c, http.StatusOK, updated, db)
 	}
 }
 
@@ -474,9 +529,10 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 		}
 
 		// Build response array.
+		hubURLs := buildHubURLMap(db, workspaces)
 		result := make([]map[string]any, 0, len(workspaces))
 		for _, ws := range workspaces {
-			result = append(result, workspaceResponse(ws))
+			result = append(result, workspaceResponse(ws, hubURLs[ws.Slug]))
 		}
 
 		return c.JSON(http.StatusOK, result)
@@ -504,7 +560,7 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		return respondWorkspace(c, http.StatusOK, ws)
+		return respondWorkspace(c, http.StatusOK, ws, db)
 	}
 }
 
@@ -573,7 +629,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
-			return respondWorkspace(c, http.StatusOK, updated)
+			return respondWorkspace(c, http.StatusOK, updated, db)
 
 		case "pending", "failed":
 			// 05-REQ-6.2: No git push; just clean up and archive.
@@ -584,7 +640,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
-			return respondWorkspace(c, http.StatusOK, updated)
+			return respondWorkspace(c, http.StatusOK, updated, db)
 
 		default:
 			// Safety net for unexpected clone_status values.
@@ -592,7 +648,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
-			return respondWorkspace(c, http.StatusOK, updated)
+			return respondWorkspace(c, http.StatusOK, updated, db)
 		}
 	}
 }
@@ -639,7 +695,7 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			})
 		}
 
-		return respondWorkspace(c, http.StatusOK, updated)
+		return respondWorkspace(c, http.StatusOK, updated, db)
 	}
 }
 

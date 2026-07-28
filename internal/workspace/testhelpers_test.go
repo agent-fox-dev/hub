@@ -235,6 +235,7 @@ type errorEnvelope struct {
 type workspaceJSON struct {
 	Slug        string  `json:"slug"`
 	GitURL      string  `json:"git_url"`
+	HubURL      *string `json:"hub_url"`
 	Branch      *string `json:"branch"`
 	DisplayName string  `json:"display_name"`
 	Description string  `json:"description"`

@@ -39,6 +39,8 @@ var archiveHeadFn ArchiveHeadFuncType
 // to locate and manage workspace directories on disk.
 var defaultWorkspaceRoot string
 
+var defaultExternalURL string
+
 // defaultQueue holds the in-memory job queue for clone/reclone
 // operations. Set during server boot; used by handlers to enqueue
 // clone and reclone jobs.

@@ -355,3 +355,100 @@ func TestWorkspaceList_NoPagination(t *testing.T) {
 	// parseWorkspaceListJSON already validates it's an array; if it were
 	// an object like {"data":[...],"cursor":"..."} the parse would fail.
 }
+
+// TestWorkspaceGet_HubURL verifies the hub_url field in workspace responses.
+func TestWorkspaceGet_HubURL(t *testing.T) {
+	env := newTestEnv(t)
+
+	orgID := "personal-org-alice-id"
+	orgSlug := "personal-alice-id"
+	env.seedWorkspace(t, &Workspace{
+		Slug:    "alice-ws",
+		GitURL:  "https://github.com/org/alice-repo",
+		OwnerID: "alice-id",
+		OrgID:   &orgID,
+		Status:  "active",
+	})
+
+	t.Run("null when external URL not configured", func(t *testing.T) {
+		old := defaultExternalURL
+		defaultExternalURL = ""
+		defer func() { defaultExternalURL = old }()
+
+		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/alice-ws", "",
+			userAuth("alice-id"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+		}
+		ws := parseWorkspaceJSON(t, rec)
+		if ws.HubURL != nil {
+			t.Errorf("hub_url = %q; want nil when external URL not configured", *ws.HubURL)
+		}
+	})
+
+	t.Run("computed when external URL configured", func(t *testing.T) {
+		old := defaultExternalURL
+		defaultExternalURL = "https://hub.example.com"
+		defer func() { defaultExternalURL = old }()
+
+		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/alice-ws", "",
+			userAuth("alice-id"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+		}
+		ws := parseWorkspaceJSON(t, rec)
+		want := "https://hub.example.com/git/" + orgSlug + "/alice-ws.git"
+		if ws.HubURL == nil || *ws.HubURL != want {
+			t.Errorf("hub_url = %v; want %q", ws.HubURL, want)
+		}
+	})
+
+	t.Run("present in list response", func(t *testing.T) {
+		old := defaultExternalURL
+		defaultExternalURL = "https://hub.example.com"
+		defer func() { defaultExternalURL = old }()
+
+		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "",
+			userAuth("alice-id"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+		}
+		workspaces := parseWorkspaceListJSON(t, rec)
+		found := false
+		for _, ws := range workspaces {
+			if ws.Slug == "alice-ws" {
+				found = true
+				want := "https://hub.example.com/git/" + orgSlug + "/alice-ws.git"
+				if ws.HubURL == nil || *ws.HubURL != want {
+					t.Errorf("hub_url = %v; want %q", ws.HubURL, want)
+				}
+			}
+		}
+		if !found {
+			t.Error("alice-ws not found in list response")
+		}
+	})
+
+	t.Run("null when workspace has no org_id", func(t *testing.T) {
+		old := defaultExternalURL
+		defaultExternalURL = "https://hub.example.com"
+		defer func() { defaultExternalURL = old }()
+
+		env.seedWorkspace(t, &Workspace{
+			Slug:    "no-org-ws",
+			GitURL:  "https://github.com/org/no-org-repo",
+			OwnerID: "alice-id",
+			Status:  "active",
+		})
+
+		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/no-org-ws", "",
+			userAuth("alice-id"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+		}
+		ws := parseWorkspaceJSON(t, rec)
+		if ws.HubURL != nil {
+			t.Errorf("hub_url = %q; want nil for workspace with no org_id", *ws.HubURL)
+		}
+	})
+}
