@@ -299,15 +299,13 @@ func isHexString(s string) bool {
 }
 
 // extractFirstSHA finds the first 40-character hex SHA in a pkt-line response.
+// Requires the SHA to be followed by a space (ref name separator) to avoid
+// false matches against pkt-line length prefixes which are also hex.
 func extractFirstSHA(body string) string {
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		// Scan for a 40-char hex string in the line.
-		for i := 0; i+40 <= len(line); i++ {
-			candidate := line[i : i+40]
-			if isHexString(candidate) {
-				return candidate
-			}
+	for i := 0; i+41 <= len(body); i++ {
+		candidate := body[i : i+40]
+		if body[i+40] == ' ' && isHexString(candidate) {
+			return candidate
 		}
 	}
 	return ""

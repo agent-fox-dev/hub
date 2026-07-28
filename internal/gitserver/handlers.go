@@ -287,53 +287,38 @@ func writeSessionError(w io.Writer, err error) {
 }
 
 // writeRefAdvertisement writes the ref advertisement body from an AdvRefs
-// to the response writer. Uses 4-space prefix instead of standard pkt-line
-// length encoding to avoid false SHA matches in test helpers that scan
-// for 40-character hex strings. A newline separator is inserted before
-// the ref lines to ensure they start on their own line after the flush
-// packet.
-//
-// Format per ref line: "    <40-char-sha> <refname>\n"
-// First ref line includes capabilities: "    <sha> <refname>\0<caps>\n"
+// to the response writer using standard pkt-line encoding.
 func writeRefAdvertisement(w io.Writer, ar *packp.AdvRefs) {
-	// Collect and sort ref names for deterministic output.
 	var refNames []string
 	for name := range ar.References {
 		refNames = append(refNames, name)
 	}
 	sort.Strings(refNames)
 
-	// Build capabilities string.
 	capsStr := ""
 	if ar.Capabilities != nil && !ar.Capabilities.IsEmpty() {
 		capsStr = ar.Capabilities.String()
 	}
 
-	// Insert a newline after the preceding flush packet so that ref lines
-	// start on their own line when the body is split by '\n'.
-	_, _ = w.Write([]byte("\n"))
-
 	firstLine := true
 
-	// Write HEAD line first if available.
 	if ar.Head != nil {
 		headSHA := ar.Head.String()
 		if firstLine && capsStr != "" {
-			_, _ = fmt.Fprintf(w, "    %s HEAD\x00%s\n", headSHA, capsStr)
+			_, _ = w.Write(encodePktLine(fmt.Sprintf("%s HEAD\x00%s\n", headSHA, capsStr)))
 		} else {
-			_, _ = fmt.Fprintf(w, "    %s HEAD\n", headSHA)
+			_, _ = w.Write(encodePktLine(fmt.Sprintf("%s HEAD\n", headSHA)))
 		}
 		firstLine = false
 	}
 
-	// Write other ref lines sorted alphabetically.
 	for _, name := range refNames {
 		sha := ar.References[name].String()
 		if firstLine && capsStr != "" {
-			_, _ = fmt.Fprintf(w, "    %s %s\x00%s\n", sha, name, capsStr)
+			_, _ = w.Write(encodePktLine(fmt.Sprintf("%s %s\x00%s\n", sha, name, capsStr)))
 			firstLine = false
 		} else {
-			_, _ = fmt.Fprintf(w, "    %s %s\n", sha, name)
+			_, _ = w.Write(encodePktLine(fmt.Sprintf("%s %s\n", sha, name)))
 		}
 	}
 }
