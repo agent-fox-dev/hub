@@ -338,6 +338,17 @@ func updateHeadSHA(db *sql.DB, slug, wsRoot string) {
 		log.Printf("git push: failed to read HEAD after push: %v", err)
 		return
 	}
+
+	// Reset the working tree to match the new HEAD. The receive-pack
+	// session updates refs and objects but does not touch the worktree,
+	// so without this the on-disk files stay at the old commit.
+	wt, err := repo.Worktree()
+	if err != nil {
+		log.Printf("git push: failed to get worktree for reset: %v", err)
+	} else if err := wt.Reset(&git.ResetOptions{Commit: head.Hash(), Mode: git.HardReset}); err != nil {
+		log.Printf("git push: failed to reset worktree to HEAD: %v", err)
+	}
+
 	sha := head.Hash().String()
 	_, err = db.Exec("UPDATE workspaces SET head_sha = ? WHERE slug = ?", sha, slug)
 	if err != nil {
