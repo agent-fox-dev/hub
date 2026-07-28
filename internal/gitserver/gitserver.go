@@ -64,5 +64,19 @@ func (l *WorkspaceLoader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 		return nil, fmt.Errorf("open repository at %s: %w", repoPath, err)
 	}
 
-	return repo.Storer, nil
+	// Wrap the storer so it does NOT satisfy storer.PackfileWriter.
+	// go-git's packfile.UpdateObjectStorage takes a raw-copy shortcut
+	// when the storer implements PackfileWriter, but that path parses
+	// the incoming pack without access to the existing object store,
+	// so REF_DELTA objects in thin packs (sent by git push) fail with
+	// "reference delta not found". The wrapper forces the parser-with-
+	// storage path, which can resolve deltas against existing objects.
+	return &thinPackSafeStorer{repo.Storer}, nil
+}
+
+// thinPackSafeStorer wraps a storer.Storer without implementing
+// storer.PackfileWriter, forcing go-git to use the parser path
+// that can resolve thin pack deltas against the existing object store.
+type thinPackSafeStorer struct {
+	storer.Storer
 }
