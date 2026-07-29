@@ -1,0 +1,984 @@
+{
+  "$schema": null,
+  "spec_id": "09",
+  "spec_name": "git_credentials",
+  "schema_version": 1,
+  "introduction": "This spec defines the requirements for extending the `afc workspace create` CLI command and `POST /workspaces` API endpoint to accept optional git credentials (PAT or username/password) for authenticating against private upstream repositories, storing them as workspace-scoped secrets, validating them at creation time, and using them during clone and reclone operations.",
+  "glossary": {
+    "ArchiveHeadFuncType": "An existing injectable Go function type used for archiving workspace HEAD; referenced here as a precedent for the `ValidateCredentialsFuncType` injection pattern.",
+    "BasicAuth": "The go-git HTTP transport type `type BasicAuth struct { Username, Password string }` from `github.com/go-git/go-git/v5/plumbing/transport/http` used to pass credentials to clone and ls-remote operations.",
+    "CRITICAL": "A structured log severity level above ERROR, used to signal conditions requiring immediate operator intervention.",
+    "CloneFuncType": "An injectable Go function type used to perform the git clone operation; extended in this spec to accept an optional `transport.AuthMethod` parameter.",
+    "CloneOptions.Auth": "The `Auth transport.AuthMethod` field on go-git's `CloneOptions` struct used to pass authentication to a clone operation.",
+    "CreateSecrets": "The internal secrets store method `func (s *Store) CreateSecrets(ownerType, ownerID string, entries []EntryInput) ([]SecretEntry, error)` that opens its own internal transaction and base64-encodes values at write time.",
+    "EntryInput": "The go type representing a single key/value pair passed to `CreateSecrets`.",
+    "GIT_PASSWORD": "The workspace-scoped secret key under which an HTTP basic-auth password is stored.",
+    "GIT_PAT": "The workspace-scoped secret key under which a Personal Access Token is stored.",
+    "GIT_USERNAME": "The workspace-scoped secret key under which an HTTP basic-auth username is stored.",
+    "GetSecretValue": "The new internal secrets store method `func (s *Store) GetSecretValue(ownerType, ownerID, key string) (string, error)` that returns the base64-decoded plaintext value for a given secret key.",
+    "ListOptions.Auth": "The `Auth transport.AuthMethod` field on go-git's `ListOptions` struct used to pass authentication to a `Remote.ListContext` call.",
+    "NewRemote": "The go-git function `func NewRemote(s storage.Storer, c *config.RemoteConfig) *Remote` used to construct an ephemeral remote for the ls-remote check.",
+    "NotFoundError": "The error type returned by `GetSecretValue` when the requested secret key does not exist for the given owner.",
+    "PAT": "Personal Access Token — a single opaque string used in place of a password for HTTP authentication against a git hosting provider.",
+    "POST /workspaces": "The REST API endpoint `POST /api/v1/workspaces` used to create a new workspace.",
+    "PlainCloneContext": "The go-git function `func PlainCloneContext(ctx context.Context, path string, isBare bool, o *CloneOptions) (*Repository, error)` used to clone a repository to disk.",
+    "Remote.ListContext": "The go-git method `func (r *Remote) ListContext(ctx context.Context, o *ListOptions) ([]*plumbing.Reference, error)` used as the ls-remote equivalent for credential validation.",
+    "ValidateCredentialsFuncType": "An injectable Go function type `func(ctx context.Context, gitURL string, auth transport.AuthMethod) error` used to perform the ls-remote credential check, enabling unit-test stubbing.",
+    "afc workspace create": "The CLI command used to create a new workspace, extended in this spec with `--git-pat`, `--git-username`, and `--git-password` flags.",
+    "apikit.CLIHandleError": "The existing apikit middleware function that formats API error responses consistently for CLI output.",
+    "clone_error": "A field on the workspace record containing the raw error message from a failed clone job.",
+    "clone_status": "A field on the workspace record indicating the current state of the background clone job (e.g., 'pending', 'running', 'succeeded', 'failed').",
+    "compensating DELETE": "A database DELETE issued against the workspace row to undo a successful INSERT when a subsequent operation (e.g., `CreateSecrets`) fails, restoring a clean state.",
+    "createWorkspaceRequest": "The Go struct representing the JSON request body for `POST /workspaces`, extended with optional `GitPAT`, `GitUsername`, and `GitPassword` pointer fields.",
+    "deleteWorkspace": "The existing function in `internal/workspace/store.go` that deletes a workspace and cascade-deletes all associated workspace-scoped secrets and variables.",
+    "deleteWorkspace()": "The function in `internal/workspace/store.go` that deletes a workspace and cascade-deletes associated secrets and variables.",
+    "git_password": "JSON field name for the HTTP basic auth password in the `createWorkspaceRequest`.",
+    "git_pat": "JSON field name for the personal access token in the `createWorkspaceRequest`.",
+    "git_url": "The JSON field and CLI flag specifying the upstream git repository URL for a workspace.",
+    "git_username": "JSON field name for the HTTP basic auth username in the `createWorkspaceRequest`.",
+    "ls-remote": "A lightweight git operation that lists remote references without downloading repository objects; used here to validate credentials before workspace creation.",
+    "memory.NewStorage": "The go-git function `func NewStorage() *Storage` from `github.com/go-git/go-git/v5/storage/memory` that returns an ephemeral in-memory storer with no disk I/O.",
+    "owner_id": "The identifier column in the secrets table holding the slug or ID of the owning entity.",
+    "owner_type": "The discriminator column in the secrets table indicating the kind of entity that owns the secret (e.g., 'workspace', 'user', 'org').",
+    "reactivation": "The lifecycle event of restoring an archived workspace to active status, which triggers a reclone of the upstream repository.",
+    "reclone": "The operation of re-cloning a workspace repository, triggered when a previously archived workspace is reactivated.",
+    "slug": "A human-readable, URL-safe unique identifier for a workspace.",
+    "transport.AuthMethod": "The go-git interface type from `github.com/go-git/go-git/v5/plumbing/transport` representing any authentication method; `nil` means no authentication.",
+    "x-token-auth": "The fixed username string used when constructing a `BasicAuth` struct for PAT authentication, compatible with GitHub, GitLab, and Bitbucket."
+  },
+  "requirements": [
+    {
+      "id": "09-REQ-1",
+      "title": "CLI credential flags for workspace create",
+      "user_story": {
+        "role": "developer",
+        "goal": "provide git credentials when creating a workspace from a private repository",
+        "benefit": "so that the workspace is created successfully without a delayed clone failure"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "include {\"git_pat\": \"<token>\"} in the JSON body of the `POST /workspaces` request",
+          "return_contract": "the HTTP request body contains the git_pat field; no credential value appears in CLI output or logs",
+          "trigger": "a user runs `afc workspace create` with --git-pat <token>"
+        },
+        {
+          "id": "09-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "include {\"git_username\": \"<user>\", \"git_password\": \"<pass>\"} in the JSON body of the `POST /workspaces` request",
+          "return_contract": "the HTTP request body contains both git_username and git_password fields; no credential values appear in CLI output or logs",
+          "trigger": "a user runs `afc workspace create` with --git-username <user> and --git-password <pass>"
+        },
+        {
+          "id": "09-REQ-1.3",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command before sending any HTTP request and print a mutual-exclusion error message",
+          "return_contract": "exits with a non-zero exit code and prints an error message indicating the flags are mutually exclusive; no HTTP request is sent",
+          "error_condition": "both --git-pat and --git-username/--git-password flags are provided"
+        },
+        {
+          "id": "09-REQ-1.4",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command before sending any HTTP request and print a pair-completeness error message",
+          "return_contract": "exits with a non-zero exit code and prints an error message indicating both flags must be provided together; no HTTP request is sent",
+          "error_condition": "only one of --git-username or --git-password is provided without the other"
+        },
+        {
+          "id": "09-REQ-1.5",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command before sending any HTTP request and print an HTTPS-requirement error message",
+          "return_contract": "exits with a non-zero exit code and prints an error message indicating credentials require an HTTPS URL; no HTTP request is sent",
+          "error_condition": "any credential flag is provided but --git-url does not start with https://"
+        },
+        {
+          "id": "09-REQ-1.6",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "delegate error rendering entirely to `apikit.CLIHandleError` without any special-case credential error handling",
+          "return_contract": "the formatted API error message is printed to stderr and the CLI exits with a non-zero exit code",
+          "trigger": "the `POST /workspaces` API returns HTTP 400"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command with a validation error before sending any HTTP request",
+          "return_contract": "exits with a non-zero exit code and prints an error indicating the PAT value must not be empty",
+          "error_condition": "--git-pat is provided as an empty string"
+        },
+        {
+          "id": "09-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command with a pair-completeness error before sending any HTTP request",
+          "return_contract": "exits with a non-zero exit code and prints an error indicating both username and password must be non-empty",
+          "error_condition": "--git-username is provided but --git-password is an empty string"
+        },
+        {
+          "id": "09-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command with an HTTPS-requirement error",
+          "return_contract": "exits with a non-zero exit code; no HTTP request is sent",
+          "error_condition": "credential flags are provided with a `git_url` using the http:// scheme (non-HTTPS)"
+        },
+        {
+          "id": "09-REQ-1.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "reject the command with an HTTPS-requirement error",
+          "return_contract": "exits with a non-zero exit code; no HTTP request is sent",
+          "error_condition": "credential flags are provided with a `git_url` using the git@ SSH scheme"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-2",
+      "title": "API request body extension for git credentials",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "pass optional git credentials in the POST /workspaces request body",
+        "benefit": "so that the server can store and validate them atomically with workspace creation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-2.1",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /workspaces handler",
+          "action": "accept three optional pointer fields on `createWorkspaceRequest`: GitPAT *string (JSON: `git_pat`), GitUsername *string (JSON: `git_username`), and GitPassword *string (JSON: `git_password`)",
+          "return_contract": "requests omitting all three fields are processed identically to the pre-feature behavior; no change in response shape for public-repo workspaces"
+        },
+        {
+          "id": "09-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 400 with a mutual-exclusion error message before performing any database operation",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": string} describing the mutual-exclusion violation",
+          "error_condition": "`git_pat` is provided alongside `git_username` or `git_password`"
+        },
+        {
+          "id": "09-REQ-2.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 400 with a pair-completeness error message before performing any database operation",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": string} describing the pair-completeness violation",
+          "error_condition": "`git_username` is provided without `git_password`, or `git_password` is provided without `git_username`"
+        },
+        {
+          "id": "09-REQ-2.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 400 with the message \"git credentials require an HTTPS git_url\" before performing any database operation",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": \"git credentials require an HTTPS git_url\"}",
+          "error_condition": "any credential field is provided but `git_url` does not start with https://"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 400 with a validation error indicating the PAT value must not be empty",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": string}",
+          "error_condition": "`git_pat` is provided as an empty string (not null, but \"\")"
+        },
+        {
+          "id": "09-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 400 with a validation error indicating the username must not be empty",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": string}",
+          "error_condition": "`git_username` is provided as an empty string"
+        },
+        {
+          "id": "09-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 400 with a mutual-exclusion error before any database operation",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": string}",
+          "error_condition": "all three credential fields are provided simultaneously"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-3",
+      "title": "Credential validation via ls-remote before workspace creation",
+      "user_story": {
+        "role": "developer",
+        "goal": "receive immediate feedback when my git credentials are invalid",
+        "benefit": "so that I do not have to poll the workspace status to discover a failed clone"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /workspaces handler",
+          "action": "invoke `ValidateCredentialsFuncType` with the `git_url` and a `BasicAuth` constructed from the credentials, using `NewRemote` with memory.NewStorage() and `Remote.ListContext` with a 10-second context deadline in the production implementation",
+          "return_contract": "if validation succeeds (returns nil), processing continues to workspace creation; no response is sent yet",
+          "trigger": "a request with valid credential fields passes structural validation"
+        },
+        {
+          "id": "09-REQ-3.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "log the raw go-git error at ERROR level server-side, then return HTTP 400 with the sanitised message \"credential validation failed for <git_url>: unable to authenticate\" without exposing the raw error to the client",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": \"credential validation failed for <git_url>: unable to authenticate\"} where <git_url> is the actual URL from the request",
+          "error_condition": "`ValidateCredentialsFuncType` returns a non-nil error (authentication rejected, network error, or any other failure)"
+        },
+        {
+          "id": "09-REQ-3.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "treat the deadline-exceeded error identically to an authentication failure: log at ERROR level and return the sanitised HTTP 400 message",
+          "return_contract": "returns HTTP 400 with JSON body {\"error\": \"credential validation failed for <git_url>: unable to authenticate\"}",
+          "error_condition": "the 10-second context deadline is exceeded during `Remote.ListContext`"
+        },
+        {
+          "id": "09-REQ-3.4",
+          "ears_pattern": "state_driven",
+          "system": "POST /workspaces handler",
+          "action": "skip the `ValidateCredentialsFuncType` call entirely and proceed directly to workspace creation",
+          "return_contract": "workspace creation proceeds without any ls-remote network call; response is unchanged from pre-feature behavior",
+          "state": "no credential fields are present in the request"
+        },
+        {
+          "id": "09-REQ-3.5",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /workspaces handler",
+          "action": "expose `ValidateCredentialsFuncType` as an injectable field on the handler struct, following the same pattern as `CloneFuncType` and `ArchiveHeadFuncType`, so that unit tests can replace the production implementation with a stub",
+          "return_contract": "the production default uses `NewRemote` + memory.NewStorage() + `Remote.ListContext`; test stubs can return arbitrary errors or nil"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "the 10-second context deadline cancels the call; the handler returns the sanitised HTTP 400 error and does not block beyond 10 seconds",
+          "return_contract": "returns HTTP 400 within approximately 10 seconds with JSON body {\"error\": \"credential validation failed for <git_url>: unable to authenticate\"}",
+          "error_condition": "the upstream git host is unreachable and `Remote.ListContext` hangs indefinitely"
+        },
+        {
+          "id": "09-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "treat a nil error from `ValidateCredentialsFuncType` as success regardless of the reference list content and proceed to workspace creation",
+          "return_contract": "workspace creation proceeds normally; HTTP 201 is returned if all subsequent steps succeed",
+          "error_condition": "`Remote.ListContext` returns a success response but with an empty reference list (public repo with no refs)"
+        },
+        {
+          "id": "09-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "log the raw error server-side at ERROR level but never include it in the HTTP response body; only the sanitised message is returned to the client",
+          "return_contract": "HTTP response body contains only {\"error\": \"credential validation failed for <git_url>: unable to authenticate\"}; no credential value appears in the response",
+          "error_condition": "the raw go-git error message contains the credential value (e.g., the PAT appears in the error string)"
+        },
+        {
+          "id": "09-REQ-3.E4",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "construct `BasicAuth` with Username: \"x-token-auth\" and Password: <pat> and pass it as the `transport.AuthMethod` argument",
+          "return_contract": "the `ValidateCredentialsFuncType` receives a non-nil `transport.AuthMethod` of type *BasicAuth with the correct username and password fields",
+          "error_condition": "`ValidateCredentialsFuncType` is called for a PAT credential"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-4",
+      "title": "Atomic credential storage with compensating DELETE",
+      "user_story": {
+        "role": "system",
+        "goal": "store credentials and create the workspace atomically",
+        "benefit": "so that no orphaned workspace records exist without their required credentials"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /workspaces handler",
+          "action": "insert the workspace row, then call `CreateSecrets` with owner_type=\"workspace\", owner_id=<slug>, and the appropriate secret entries (`GIT_PAT` for PAT auth, or `GIT_USERNAME`+`GIT_PASSWORD` for basic auth), then enqueue the clone job",
+          "return_contract": "returns HTTP 201 with the workspace JSON body; the secrets are persisted in the secrets table",
+          "trigger": "`ValidateCredentialsFuncType` returns nil (credentials are valid)"
+        },
+        {
+          "id": "09-REQ-4.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "issue a compensating DELETE on the workspace row to restore a clean state, then return HTTP 500 to the client",
+          "return_contract": "returns HTTP 500 with a JSON error body; the workspace row is absent from the database after the compensating DELETE succeeds",
+          "error_condition": "`CreateSecrets` returns an error after the workspace row has been successfully inserted"
+        },
+        {
+          "id": "09-REQ-4.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "emit a CRITICAL-level structured log entry including the `slug` of the orphaned workspace row, then return HTTP 500 to the client; no retry or reconciliation job is initiated",
+          "return_contract": "returns HTTP 500 with a JSON error body; a CRITICAL log entry with the workspace `slug` is written to the log sink for operator intervention",
+          "error_condition": "both `CreateSecrets` and the compensating DELETE fail"
+        },
+        {
+          "id": "09-REQ-4.4",
+          "ears_pattern": "event_driven",
+          "system": "POST /workspaces handler",
+          "action": "skip the `CreateSecrets` call entirely and proceed with the existing workspace creation and clone-job-enqueue flow unchanged",
+          "return_contract": "returns HTTP 201 with the workspace JSON body; no entries are written to the secrets table",
+          "trigger": "no credential fields are present in the request"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "the `CreateSecrets` call returns an error; the handler attempts the compensating DELETE; if the DELETE also fails due to the lost connection, a CRITICAL log entry is emitted",
+          "return_contract": "returns HTTP 500 regardless of whether the compensating DELETE succeeds or fails",
+          "error_condition": "the database connection is lost between the workspace INSERT and the `CreateSecrets` call"
+        },
+        {
+          "id": "09-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 500; the workspace row and secrets remain in the database (no compensating DELETE for this case, as the workspace and credentials are consistent)",
+          "return_contract": "returns HTTP 500 with a JSON error body; the workspace row and associated secrets persist in the database",
+          "error_condition": "`CreateSecrets` succeeds but the clone job enqueue fails"
+        },
+        {
+          "id": "09-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "return HTTP 409 or HTTP 400 per existing behavior; no `CreateSecrets` call is made and no compensating DELETE is needed",
+          "return_contract": "returns HTTP 409 or HTTP 400 with a JSON error body; no secrets are written",
+          "error_condition": "a `slug` collision occurs (workspace with the same slug already exists) during the INSERT"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-5",
+      "title": "GetSecretValue method on secrets store",
+      "user_story": {
+        "role": "clone worker",
+        "goal": "retrieve stored git credentials by key from the secrets store",
+        "benefit": "so that the clone operation can authenticate against private repositories"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "secrets Store",
+          "action": "perform a case-insensitive key lookup, base64-decode the stored value, and return the plaintext string",
+          "return_contract": "returns (string, nil) where the string is the plaintext credential value",
+          "trigger": "`GetSecretValue` is called with a valid ownerType, ownerID, and key that exists in the secrets table"
+        },
+        {
+          "id": "09-REQ-5.2",
+          "ears_pattern": "unwanted",
+          "system": "secrets Store",
+          "action": "return `NotFoundError`",
+          "return_contract": "returns (\"\", NotFoundError)",
+          "error_condition": "the requested key does not exist for the given ownerType and ownerID"
+        },
+        {
+          "id": "09-REQ-5.3",
+          "ears_pattern": "ubiquitous",
+          "system": "secrets Store",
+          "action": "never expose `GetSecretValue` via any HTTP endpoint; the method is internal-only and secret values must never be returned through the API",
+          "return_contract": "no HTTP route maps to this method; it is callable only from within the Go process"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "secrets Store",
+          "action": "return a non-nil error describing the decode failure",
+          "return_contract": "returns (\"\", error) where error describes the base64 decode failure",
+          "error_condition": "the stored base64 value is malformed and cannot be decoded"
+        },
+        {
+          "id": "09-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "secrets Store",
+          "action": "return `NotFoundError` or a validation error without querying the database",
+          "return_contract": "returns (\"\", error) with a descriptive error",
+          "error_condition": "`GetSecretValue` is called with an empty key string"
+        },
+        {
+          "id": "09-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "secrets Store",
+          "action": "return the database error wrapped with context",
+          "return_contract": "returns (\"\", error) where error wraps the underlying database error",
+          "error_condition": "the database query fails due to a connection error"
+        },
+        {
+          "id": "09-REQ-5.E4",
+          "ears_pattern": "event_driven",
+          "system": "secrets Store",
+          "action": "perform a case-insensitive match and return the correct value",
+          "return_contract": "returns (string, nil) with the plaintext value regardless of key case",
+          "trigger": "`GetSecretValue` is called with key in a different case than it was stored (e.g., `git_pat` vs `GIT_PAT`)"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-6",
+      "title": "Clone worker credential lookup and CloneFuncType extension",
+      "user_story": {
+        "role": "clone worker",
+        "goal": "look up stored git credentials and pass them to the clone operation",
+        "benefit": "so that private repositories are cloned successfully without manual intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "clone worker",
+          "action": "call GetSecretValue(\"workspace\", <slug>, \"GIT_PAT\") first; if found, construct &BasicAuth{Username: \"x-token-auth\", Password: <pat>} and pass it as the auth argument to `CloneFuncType`",
+          "return_contract": "the clone is invoked with a non-nil `transport.AuthMethod` of type *BasicAuth; the clone proceeds with PAT authentication",
+          "trigger": "a clone job is dequeued for a workspace"
+        },
+        {
+          "id": "09-REQ-6.2",
+          "ears_pattern": "complex_event",
+          "system": "clone worker",
+          "action": "construct &BasicAuth{Username: <username>, Password: <password>} and pass it as the auth argument to `CloneFuncType`",
+          "return_contract": "the clone is invoked with a non-nil `transport.AuthMethod` of type *BasicAuth; the clone proceeds with basic auth",
+          "trigger": "a clone job is dequeued for a workspace",
+          "condition": "`GIT_PAT` is not found but `GIT_USERNAME` and `GIT_PASSWORD` are both found"
+        },
+        {
+          "id": "09-REQ-6.3",
+          "ears_pattern": "complex_event",
+          "system": "clone worker",
+          "action": "pass nil as the auth argument to `CloneFuncType`, preserving existing public-repo clone behavior",
+          "return_contract": "the clone is invoked with auth = nil; behavior is identical to pre-feature public-repo cloning",
+          "trigger": "a clone job is dequeued for a workspace",
+          "condition": "no credential secrets (`GIT_PAT`, `GIT_USERNAME`, `GIT_PASSWORD`) are found for the workspace"
+        },
+        {
+          "id": "09-REQ-6.4",
+          "ears_pattern": "ubiquitous",
+          "system": "clone worker",
+          "action": "use the extended `CloneFuncType` signature func(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string, auth transport.AuthMethod) (headSHA string, err error) for all clone invocations; the defaultCloneFn passes auth to `CloneOptions.Auth` in `PlainCloneContext`",
+          "return_contract": "all callers of `CloneFuncType` are updated to pass the auth argument; existing behavior for nil auth is unchanged"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "clone worker",
+          "action": "log the error and mark the clone job as failed with a descriptive error message; do not proceed with the clone",
+          "return_contract": "the workspace `clone_status` is set to 'failed' and `clone_error` contains a descriptive message; no clone is attempted",
+          "error_condition": "`GetSecretValue` returns an error other than `NotFoundError` when looking up `GIT_PAT`"
+        },
+        {
+          "id": "09-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "clone worker",
+          "action": "log a warning and attempt the clone without authentication (treat as public repo), or mark the clone as failed with a descriptive error",
+          "return_contract": "the clone either proceeds without auth or the workspace `clone_status` is set to 'failed'; the inconsistency is logged",
+          "error_condition": "`GIT_USERNAME` is found but `GIT_PASSWORD` returns `NotFoundError` (inconsistent secret state)"
+        },
+        {
+          "id": "09-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "clone worker",
+          "action": "mark the clone job as failed and set clone_status='failed' and `clone_error` to the error message from `CloneFuncType`",
+          "return_contract": "the workspace record reflects clone_status='failed' with a descriptive `clone_error`; no retry is attempted",
+          "error_condition": "the clone fails with an authentication error despite credentials being present (e.g., credentials were revoked after workspace creation)"
+        },
+        {
+          "id": "09-REQ-6.E4",
+          "ears_pattern": "event_driven",
+          "system": "clone worker",
+          "action": "follow the same credential lookup sequence (`GIT_PAT` first, then `GIT_USERNAME`+`GIT_PASSWORD`, then nil) as the initial clone; credentials persist across archive/reactivate cycles",
+          "return_contract": "the reclone is invoked with the same `transport.AuthMethod` that would have been used for the initial clone",
+          "trigger": "a reclone job is triggered by workspace reactivation"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-7",
+      "title": "Audit log safety — credential scrubbing",
+      "user_story": {
+        "role": "security operator",
+        "goal": "ensure git credential values never appear in request or response logs",
+        "benefit": "so that credentials are not leaked to log aggregation systems or log viewers"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-7.1",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /workspaces handler",
+          "action": "ensure that `git_pat`, `git_username`, and `git_password` field values are scrubbed from request/response logs before any log sink receives them, either via middleware field-level scrubbing configuration or by zeroing out credential fields on the `createWorkspaceRequest` struct before any logging occurs",
+          "return_contract": "no log entry at any level contains the plaintext value of `git_pat`, `git_username`, or `git_password`"
+        },
+        {
+          "id": "09-REQ-7.2",
+          "ears_pattern": "ubiquitous",
+          "system": "POST /workspaces handler",
+          "action": "log the raw go-git error from a failed `ValidateCredentialsFuncType` call at ERROR level server-side, but never include it in the HTTP response body sent to the client",
+          "return_contract": "the HTTP response body for a credential validation failure contains only the sanitised message; the raw error appears only in server-side logs"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "the handler must zero out the credential fields on the `createWorkspaceRequest` struct immediately after binding and before any logging middleware can access the struct",
+          "return_contract": "credential values are absent from all log entries regardless of middleware capability",
+          "error_condition": "the existing logging middleware does not support field-level scrubbing for `git_pat`, `git_username`, and `git_password`"
+        },
+        {
+          "id": "09-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /workspaces handler",
+          "action": "the CRITICAL log entry includes the workspace `slug` but must not include any credential values",
+          "return_contract": "the CRITICAL log entry contains the `slug` and error context but no plaintext credential values",
+          "error_condition": "a CRITICAL log entry is emitted for a compensating DELETE failure"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-8",
+      "title": "Secret lifecycle — cascade deletion on workspace removal",
+      "user_story": {
+        "role": "system",
+        "goal": "automatically remove git credential secrets when a workspace is deleted",
+        "benefit": "so that no orphaned credential secrets remain after workspace deletion"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "09-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace store",
+          "action": "cascade-delete all workspace-scoped secrets (including `GIT_PAT`, `GIT_USERNAME`, and `GIT_PASSWORD`) via the existing `deleteWorkspace()` implementation that deletes from the secrets table where owner_type='workspace' AND owner_id=<slug>",
+          "return_contract": "after deletion, no secrets with owner_type='workspace' and owner_id=<slug> remain in the secrets table",
+          "trigger": "`deleteWorkspace()` is called for a workspace that has associated `GIT_PAT`, `GIT_USERNAME`, or `GIT_PASSWORD` secrets"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "09-REQ-8.E1",
+          "ears_pattern": "event_driven",
+          "system": "workspace store",
+          "action": "the cascade-delete query executes without error and deletes zero rows from the secrets table",
+          "return_contract": "the workspace is deleted successfully; no error is returned due to the absence of credential secrets",
+          "trigger": "`deleteWorkspace()` is called for a workspace that has no associated credential secrets"
+        },
+        {
+          "id": "09-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace store",
+          "action": "propagate the error to the caller and do not delete the workspace row (existing transactional behavior of `deleteWorkspace()` applies)",
+          "return_contract": "returns an error; the workspace row and its secrets remain in the database",
+          "error_condition": "the secrets table delete fails during `deleteWorkspace()` due to a database error"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "09-PROP-1",
+      "title": "Credential mutual exclusion is always enforced",
+      "for_any": "request to `POST /workspaces` containing both `git_pat` and at least one of `git_username` or `git_password`",
+      "invariant": "the handler always returns HTTP 400 and never inserts a workspace row or calls `CreateSecrets`",
+      "validates": [
+        "09-REQ-2.2",
+        "09-REQ-2.E3"
+      ]
+    },
+    {
+      "id": "09-PROP-2",
+      "title": "Credential validation always precedes workspace creation",
+      "for_any": "request to `POST /workspaces` containing any credential field",
+      "invariant": "`ValidateCredentialsFuncType` is always invoked before any database INSERT; if it returns a non-nil error, no workspace row is inserted and no secrets are stored",
+      "validates": [
+        "09-REQ-3.1",
+        "09-REQ-3.2"
+      ]
+    },
+    {
+      "id": "09-PROP-3",
+      "title": "No workspace row exists without its credentials after a CreateSecrets failure",
+      "for_any": "scenario where the workspace INSERT succeeds but `CreateSecrets` returns an error",
+      "invariant": "after the compensating DELETE succeeds, no workspace row with the given `slug` exists in the database",
+      "validates": [
+        "09-REQ-4.2"
+      ]
+    },
+    {
+      "id": "09-PROP-4",
+      "title": "Credential values never appear in HTTP responses",
+      "for_any": "any HTTP response from `POST /workspaces`, including error responses",
+      "invariant": "the response body never contains the plaintext value of `git_pat`, `git_username`, or `git_password`",
+      "validates": [
+        "09-REQ-7.1",
+        "09-REQ-3.2"
+      ]
+    },
+    {
+      "id": "09-PROP-5",
+      "title": "Clone worker always uses the correct auth method for stored credentials",
+      "for_any": "workspace with `GIT_PAT` stored in the secrets table",
+      "invariant": "`CloneFuncType` is always called with &BasicAuth{Username: \"x-token-auth\", Password: <pat>} and never with nil auth",
+      "validates": [
+        "09-REQ-6.1"
+      ]
+    },
+    {
+      "id": "09-PROP-6",
+      "title": "Public repo clone behavior is unchanged when no credentials are stored",
+      "for_any": "workspace with no `GIT_PAT`, `GIT_USERNAME`, or `GIT_PASSWORD` secrets",
+      "invariant": "`CloneFuncType` is always called with auth = nil, preserving pre-feature public-repo behavior",
+      "validates": [
+        "09-REQ-6.3",
+        "09-REQ-4.4"
+      ]
+    },
+    {
+      "id": "09-PROP-7",
+      "title": "Credential validation timeout is bounded at 10 seconds",
+      "for_any": "invocation of `ValidateCredentialsFuncType` in the production implementation",
+      "invariant": "the context passed to `Remote.ListContext` always has a deadline no greater than 10 seconds from the time of invocation",
+      "validates": [
+        "09-REQ-3.1",
+        "09-REQ-3.3",
+        "09-REQ-3.E1"
+      ]
+    },
+    {
+      "id": "09-PROP-8",
+      "title": "GetSecretValue always returns decoded plaintext",
+      "for_any": "call to `GetSecretValue` where the key exists and the stored value is valid base64",
+      "invariant": "the returned string is always the base64-decoded plaintext value, never the raw base64-encoded form",
+      "validates": [
+        "09-REQ-5.1"
+      ]
+    },
+    {
+      "id": "09-PROP-9",
+      "title": "HTTPS requirement is enforced at both CLI and API layers",
+      "for_any": "any credential-bearing request where `git_url` does not start with https://",
+      "invariant": "both the CLI and the API handler independently reject the request before any network or database operation",
+      "validates": [
+        "09-REQ-1.5",
+        "09-REQ-2.4"
+      ]
+    },
+    {
+      "id": "09-PROP-10",
+      "title": "Credential secrets are always cascade-deleted with the workspace",
+      "for_any": "workspace deletion via `deleteWorkspace()` where the workspace has associated credential secrets",
+      "invariant": "after successful deletion, no secrets with owner_type='workspace' and owner_id=<slug> remain in the secrets table",
+      "validates": [
+        "09-REQ-8.1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "09-PATH-1",
+      "title": "Happy path: create workspace with PAT for private repo",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc123`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "validates flags: PAT and username/password are mutually exclusive (pass), git_url starts with https:// (pass), then sends `POST /workspaces` with JSON body `{\"slug\": \"my-ws\", \"git_url\": \"https://github.com/acme/private\", \"git_pat\": \"ghp_abc123\"}`"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "binds and validates the request body; zeroes out credential fields on the struct before any logging; confirms mutual exclusion and HTTPS requirement pass"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "constructs `&BasicAuth{Username: \"x-token-auth\", Password: \"ghp_abc123\"}` and invokes `ValidateCredentialsFuncType` with the git_url and the BasicAuth, applying a 10-second context deadline via `Remote.ListContext` using `NewRemote` with `memory.NewStorage()`"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "`ValidateCredentialsFuncType` returns nil (credentials valid); handler inserts the workspace row into the database"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "calls `CreateSecrets(\"workspace\", \"my-ws\", [{Key: \"GIT_PAT\", Value: \"ghp_abc123\"}])` to store the PAT as a workspace-scoped secret"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "enqueues the clone job for the workspace and returns HTTP 201 with the workspace JSON body"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "receives HTTP 201 and prints the workspace details to stdout"
+        },
+        {
+          "actor": "clone worker",
+          "action": "dequeues the clone job; calls `GetSecretValue(\"workspace\", \"my-ws\", \"GIT_PAT\")` which returns `\"ghp_abc123\"`; constructs `&BasicAuth{Username: \"x-token-auth\", Password: \"ghp_abc123\"}` and invokes `CloneFuncType` with the auth argument"
+        },
+        {
+          "actor": "clone worker",
+          "action": "`CloneFuncType` calls `PlainCloneContext` with `CloneOptions.Auth` set to the BasicAuth; clone succeeds and the workspace `clone_status` is updated to 'succeeded'"
+        }
+      ]
+    },
+    {
+      "id": "09-PATH-2",
+      "title": "Failure path: invalid PAT rejected at creation time",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat wrong-token`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "validates flags (all pass) and sends `POST /workspaces` with the invalid PAT"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "binds and validates the request; invokes `ValidateCredentialsFuncType` with the git_url and `&BasicAuth{Username: \"x-token-auth\", Password: \"wrong-token\"}`"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "`ValidateCredentialsFuncType` returns a non-nil error (authentication rejected by upstream); handler logs the raw error at ERROR level server-side"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "returns HTTP 400 with JSON body `{\"error\": \"credential validation failed for https://github.com/acme/private: unable to authenticate\"}`; no workspace row is inserted and no secrets are stored"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "receives HTTP 400 and delegates to `apikit.CLIHandleError`, which prints the formatted error message to stderr and exits with a non-zero exit code"
+        }
+      ]
+    },
+    {
+      "id": "09-PATH-3",
+      "title": "Failure path: compensating DELETE after CreateSecrets failure",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc123`"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "credential validation passes; workspace row is inserted into the database"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "calls `CreateSecrets(\"workspace\", \"my-ws\", [...])` which returns an error (e.g., database connection lost)"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "issues a compensating DELETE on the workspace row with `slug='my-ws'`; the DELETE succeeds and the workspace row is removed"
+        },
+        {
+          "actor": "POST /workspaces handler",
+          "action": "returns HTTP 500 with a JSON error body; no clone job is enqueued"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "receives HTTP 500 and delegates to `apikit.CLIHandleError`, printing the error to stderr and exiting with a non-zero exit code"
+        }
+      ]
+    },
+    {
+      "id": "09-PATH-4",
+      "title": "Happy path: reclone on workspace reactivation with stored credentials",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "calls `POST /api/v1/workspaces/my-ws/reactivate` to reactivate an archived workspace that was originally created with a PAT"
+        },
+        {
+          "actor": "POST /workspaces/:slug/reactivate handler",
+          "action": "updates the workspace status to active and enqueues a reclone job"
+        },
+        {
+          "actor": "clone worker",
+          "action": "dequeues the reclone job; calls `GetSecretValue(\"workspace\", \"my-ws\", \"GIT_PAT\")` which returns the stored PAT value"
+        },
+        {
+          "actor": "clone worker",
+          "action": "constructs `&BasicAuth{Username: \"x-token-auth\", Password: <pat>}` and invokes `CloneFuncType` with the auth argument"
+        },
+        {
+          "actor": "clone worker",
+          "action": "`CloneFuncType` calls `PlainCloneContext` with `CloneOptions.Auth` set; reclone succeeds and the workspace `clone_status` is updated to 'succeeded'"
+        }
+      ]
+    },
+    {
+      "id": "09-PATH-5",
+      "title": "CLI mutual exclusion rejection before HTTP request",
+      "steps": [
+        {
+          "actor": "Developer",
+          "action": "runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc --git-username alice --git-password secret`"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "detects that both `--git-pat` and `--git-username`/`--git-password` are provided; rejects the command with a mutual-exclusion error message"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "exits with a non-zero exit code; no HTTP request is sent to the server"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "09-ERR-1",
+      "condition": "CLI receives both `--git-pat` and `--git-username`/`--git-password` flags",
+      "behavior": "CLI rejects the command before sending any HTTP request, prints a mutual-exclusion error, and exits with a non-zero exit code",
+      "requirement_id": "09-REQ-1.3"
+    },
+    {
+      "id": "09-ERR-2",
+      "condition": "CLI receives only one of `--git-username` or `--git-password`",
+      "behavior": "CLI rejects the command before sending any HTTP request, prints a pair-completeness error, and exits with a non-zero exit code",
+      "requirement_id": "09-REQ-1.4"
+    },
+    {
+      "id": "09-ERR-3",
+      "condition": "CLI receives credential flags with a non-HTTPS git_url",
+      "behavior": "CLI rejects the command before sending any HTTP request, prints an HTTPS-requirement error, and exits with a non-zero exit code",
+      "requirement_id": "09-REQ-1.5"
+    },
+    {
+      "id": "09-ERR-4",
+      "condition": "API receives `git_pat` alongside `git_username` or `git_password`",
+      "behavior": "handler returns HTTP 400 with a JSON error body describing the mutual-exclusion violation before any database operation",
+      "requirement_id": "09-REQ-2.2"
+    },
+    {
+      "id": "09-ERR-5",
+      "condition": "API receives `git_username` without `git_password` or vice versa",
+      "behavior": "handler returns HTTP 400 with a JSON error body describing the pair-completeness violation before any database operation",
+      "requirement_id": "09-REQ-2.3"
+    },
+    {
+      "id": "09-ERR-6",
+      "condition": "API receives credential fields with a non-HTTPS git_url",
+      "behavior": "handler returns HTTP 400 with JSON body `{\"error\": \"git credentials require an HTTPS git_url\"}` before any database operation",
+      "requirement_id": "09-REQ-2.4"
+    },
+    {
+      "id": "09-ERR-7",
+      "condition": "`ValidateCredentialsFuncType` returns a non-nil error (auth rejected, network error, or timeout)",
+      "behavior": "handler logs the raw error at ERROR level server-side, then returns HTTP 400 with JSON body `{\"error\": \"credential validation failed for <git_url>: unable to authenticate\"}`; no workspace row is inserted",
+      "requirement_id": "09-REQ-3.2"
+    },
+    {
+      "id": "09-ERR-8",
+      "condition": "10-second context deadline is exceeded during `Remote.ListContext`",
+      "behavior": "handler treats the deadline-exceeded error as an authentication failure and returns HTTP 400 with the sanitised error message",
+      "requirement_id": "09-REQ-3.3"
+    },
+    {
+      "id": "09-ERR-9",
+      "condition": "`CreateSecrets` fails after the workspace row has been inserted",
+      "behavior": "handler issues a compensating DELETE on the workspace row; if DELETE succeeds, returns HTTP 500; if DELETE also fails, emits a CRITICAL log entry with the workspace `slug` and returns HTTP 500",
+      "requirement_id": "09-REQ-4.2"
+    },
+    {
+      "id": "09-ERR-10",
+      "condition": "Both `CreateSecrets` and the compensating DELETE fail",
+      "behavior": "handler emits a CRITICAL-level structured log entry including the workspace `slug` for operator intervention, then returns HTTP 500; no retry or reconciliation job is initiated",
+      "requirement_id": "09-REQ-4.3"
+    },
+    {
+      "id": "09-ERR-11",
+      "condition": "`GetSecretValue` returns a non-`NotFoundError` error during clone worker credential lookup",
+      "behavior": "clone worker logs the error and marks the clone job as failed with a descriptive error message; the workspace `clone_status` is set to 'failed'",
+      "requirement_id": "09-REQ-6.E1"
+    },
+    {
+      "id": "09-ERR-12",
+      "condition": "`GetSecretValue` returns a malformed base64 value that cannot be decoded",
+      "behavior": "returns `(\"\", error)` describing the base64 decode failure; the caller handles the error",
+      "requirement_id": "09-REQ-5.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5.19.1",
+      "symbols": [
+        {
+          "name": "PlainCloneContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainCloneContext(ctx context.Context, path string, isBare bool, o *CloneOptions) (*Repository, error)",
+          "notes": "Used by defaultCloneFn; CloneOptions.Auth is set to the transport.AuthMethod resolved from stored secrets"
+        },
+        {
+          "name": "CloneOptions.Auth",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "Auth transport.AuthMethod",
+          "notes": "Optional auth for clone; nil means no authentication (public repo)"
+        },
+        {
+          "name": "NewRemote",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func NewRemote(s storage.Storer, c *config.RemoteConfig) *Remote",
+          "notes": "Used in the production ValidateCredentialsFuncType implementation; pass memory.NewStorage() as storer"
+        },
+        {
+          "name": "Remote.ListContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Remote) ListContext(ctx context.Context, o *ListOptions) ([]*plumbing.Reference, error)",
+          "notes": "ls-remote equivalent; used with a 10-second context deadline for credential validation"
+        },
+        {
+          "name": "ListOptions.Auth",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "Auth transport.AuthMethod",
+          "notes": "Auth for ls-remote; set to the BasicAuth constructed from the request credentials"
+        },
+        {
+          "name": "BasicAuth",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/transport/http",
+          "signature": "type BasicAuth struct { Username, Password string }",
+          "notes": "HTTP basic auth; for PAT use Username: \"x-token-auth\", Password: <pat>"
+        },
+        {
+          "name": "NewStorage",
+          "import_path": "github.com/go-git/go-git/v5/storage/memory",
+          "signature": "func NewStorage() *Storage",
+          "notes": "Ephemeral in-memory storer for ls-remote validation; no disk I/O; discarded after the check"
+        }
+      ]
+    },
+    {
+      "package": "internal/secrets",
+      "version": "internal",
+      "symbols": [
+        {
+          "name": "CreateSecrets",
+          "import_path": "internal/secrets",
+          "signature": "func (s *Store) CreateSecrets(ownerType, ownerID string, entries []EntryInput) ([]SecretEntry, error)",
+          "notes": "Opens its own internal transaction; base64-encodes values at write time; called after workspace INSERT"
+        },
+        {
+          "name": "GetSecretValue",
+          "import_path": "internal/secrets",
+          "signature": "func (s *Store) GetSecretValue(ownerType, ownerID, key string) (string, error)",
+          "notes": "NEW — to be added in this spec; returns base64-decoded plaintext value; returns NotFoundError if key absent"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1589 @@
+{
+  "$schema": null,
+  "spec_id": "09",
+  "spec_name": "git_credentials",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-09-1",
+      "requirement_id": "09-REQ-1.1",
+      "kind": "unit",
+      "description": "CLI includes git_pat field in POST /workspaces JSON body when --git-pat flag is provided.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "A mock HTTP server is listening to capture the outgoing POST /workspaces request",
+        "A valid HTTPS git_url is provided"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc123"
+      },
+      "expected": {
+        "http_request_body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "no_credential_in_stderr": true,
+        "no_credential_in_stdout": true
+      },
+      "assertion_pseudocode": "capturedBody = interceptHTTPRequest(POST, '/workspaces'); assert capturedBody['git_pat'] == 'ghp_abc123'; assert 'ghp_abc123' not in stdout; assert 'ghp_abc123' not in stderr"
+    },
+    {
+      "id": "TS-09-2",
+      "requirement_id": "09-REQ-1.2",
+      "kind": "unit",
+      "description": "CLI includes git_username and git_password fields in POST /workspaces JSON body when --git-username and --git-password flags are provided.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "A mock HTTP server is listening to capture the outgoing POST /workspaces request",
+        "A valid HTTPS git_url is provided"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-username alice --git-password s3cr3t"
+      },
+      "expected": {
+        "http_request_body": {
+          "git_password": "s3cr3t",
+          "git_url": "https://github.com/acme/private",
+          "git_username": "alice",
+          "slug": "my-ws"
+        },
+        "no_credential_in_stderr": true,
+        "no_credential_in_stdout": true
+      },
+      "assertion_pseudocode": "capturedBody = interceptHTTPRequest(POST, '/workspaces'); assert capturedBody['git_username'] == 'alice'; assert capturedBody['git_password'] == 's3cr3t'; assert 'alice' not in stdout; assert 's3cr3t' not in stderr"
+    },
+    {
+      "id": "TS-09-3",
+      "requirement_id": "09-REQ-1.3",
+      "kind": "unit",
+      "description": "CLI rejects the command with a mutual-exclusion error and non-zero exit code when both --git-pat and --git-username/--git-password are provided.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed (request must not be sent)"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc --git-username alice --git-password s3cr3t"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "mutually exclusive"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc --git-username alice --git-password s3cr3t'); assert result.exitCode != 0; assert 'mutually exclusive' in result.stderr (case-insensitive); assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-4",
+      "requirement_id": "09-REQ-1.4",
+      "kind": "unit",
+      "description": "CLI rejects the command with a pair-completeness error and non-zero exit code when only --git-username is provided without --git-password.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed (request must not be sent)"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-username alice"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "must be provided together"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-username alice'); assert result.exitCode != 0; assert result.stderr contains message about both flags required; assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-5",
+      "requirement_id": "09-REQ-1.5",
+      "kind": "unit",
+      "description": "CLI rejects the command with an HTTPS-requirement error and non-zero exit code when credential flags are provided with a non-HTTPS git_url.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed (request must not be sent)"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url git@github.com:acme/private.git --git-pat ghp_abc"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "HTTPS"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url git@github.com:acme/private.git --git-pat ghp_abc'); assert result.exitCode != 0; assert 'https' in result.stderr (case-insensitive); assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-6",
+      "requirement_id": "09-REQ-1.6",
+      "kind": "unit",
+      "description": "CLI delegates error rendering to apikit.CLIHandleError when the API returns HTTP 400, printing the formatted error to stderr and exiting non-zero.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "A mock HTTP server returns HTTP 400 with JSON body {\"error\": \"credential validation failed for https://github.com/acme/private: unable to authenticate\"}"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat wrong-token"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "stderr_contains": "credential validation failed",
+        "stdout": ""
+      },
+      "assertion_pseudocode": "mockServer.respondWith(400, {error: 'credential validation failed for https://github.com/acme/private: unable to authenticate'}); result = runCLI('afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat wrong-token'); assert result.exitCode != 0; assert 'credential validation failed' in result.stderr"
+    },
+    {
+      "id": "TS-09-7",
+      "requirement_id": "09-REQ-2.1",
+      "kind": "unit",
+      "description": "POST /workspaces handler accepts requests with no credential fields and processes them identically to pre-feature behavior.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType",
+        "In-memory SQLite database is initialized with the workspaces schema",
+        "Clone job queue is available"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/acme/public",
+          "slug": "public-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "status": 201,
+        "validate_credentials_called": false,
+        "workspace_created": true
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'public-ws', git_url: 'https://github.com/acme/public'}); assert resp.status == 201; assert validateCredentialsCalled == false; assert workspaceExistsInDB('public-ws')"
+    },
+    {
+      "id": "TS-09-8",
+      "requirement_id": "09-REQ-2.2",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with a mutual-exclusion error when git_pat is provided alongside git_username.",
+      "preconditions": [
+        "Handler is initialized",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_password": "s3cr3t",
+          "git_pat": "ghp_abc",
+          "git_url": "https://github.com/acme/private",
+          "git_username": "alice",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "contains mutual exclusion message"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc', git_username: 'alice', git_password: 's3cr3t'}); assert resp.status == 400; assert resp.body.error contains 'mutually exclusive' (case-insensitive); assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-9",
+      "requirement_id": "09-REQ-2.3",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with a pair-completeness error when git_username is provided without git_password.",
+      "preconditions": [
+        "Handler is initialized",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/acme/private",
+          "git_username": "alice",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "contains pair-completeness message"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_username: 'alice'}); assert resp.status == 400; assert resp.body.error contains message about both username and password required; assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-10",
+      "requirement_id": "09-REQ-2.4",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with 'git credentials require an HTTPS git_url' when credential fields are provided with a non-HTTPS git_url.",
+      "preconditions": [
+        "Handler is initialized",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc",
+          "git_url": "git@github.com:acme/private.git",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "git credentials require an HTTPS git_url"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'git@github.com:acme/private.git', git_pat: 'ghp_abc'}); assert resp.status == 400; assert resp.body.error == 'git credentials require an HTTPS git_url'; assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-11",
+      "requirement_id": "09-REQ-3.1",
+      "kind": "unit",
+      "description": "POST /workspaces handler invokes ValidateCredentialsFuncType with the git_url and a BasicAuth constructed from the PAT before creating the workspace.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType that records its arguments and returns nil",
+        "In-memory SQLite database is initialized with the workspaces schema",
+        "Clone job queue is available"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "status": 201,
+        "validate_credentials_args": {
+          "auth_password": "ghp_abc123",
+          "auth_username": "x-token-auth",
+          "gitURL": "https://github.com/acme/private"
+        },
+        "validate_credentials_called": true
+      },
+      "assertion_pseudocode": "stub = recordingStub(returnsNil); handler.ValidateCredentialsFn = stub; resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert stub.calledOnce; assert stub.args.gitURL == 'https://github.com/acme/private'; assert stub.args.auth.Username == 'x-token-auth'; assert stub.args.auth.Password == 'ghp_abc123'; assert resp.status == 201"
+    },
+    {
+      "id": "TS-09-12",
+      "requirement_id": "09-REQ-3.2",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with sanitised error message and logs raw error at ERROR level when ValidateCredentialsFuncType returns a non-nil error.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType that returns an authentication error",
+        "In-memory SQLite database is initialized",
+        "Log capture is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "wrong-token",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "credential validation failed for https://github.com/acme/private: unable to authenticate"
+        },
+        "database_insert": false,
+        "raw_error_in_log": true,
+        "raw_error_in_response": false,
+        "server_log_level": "ERROR",
+        "status": 400
+      },
+      "assertion_pseudocode": "stub = stubReturning(errors.New('authentication required')); handler.ValidateCredentialsFn = stub; resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'wrong-token'}); assert resp.status == 400; assert resp.body.error == 'credential validation failed for https://github.com/acme/private: unable to authenticate'; assert workspaceNotInDB('my-ws'); assert logContainsAtLevel('ERROR', 'authentication required')"
+    },
+    {
+      "id": "TS-09-13",
+      "requirement_id": "09-REQ-3.3",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with sanitised error message when ValidateCredentialsFuncType returns context.DeadlineExceeded.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType that returns context.DeadlineExceeded",
+        "In-memory SQLite database is initialized",
+        "Log capture is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "credential validation failed for https://github.com/acme/private: unable to authenticate"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "stub = stubReturning(context.DeadlineExceeded); handler.ValidateCredentialsFn = stub; resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert resp.status == 400; assert resp.body.error == 'credential validation failed for https://github.com/acme/private: unable to authenticate'; assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-14",
+      "requirement_id": "09-REQ-3.4",
+      "kind": "unit",
+      "description": "POST /workspaces handler skips ValidateCredentialsFuncType entirely when no credential fields are present in the request.",
+      "preconditions": [
+        "Handler is initialized with a spy ValidateCredentialsFuncType",
+        "In-memory SQLite database is initialized with the workspaces schema",
+        "Clone job queue is available"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/acme/public",
+          "slug": "public-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "status": 201,
+        "validate_credentials_called": false
+      },
+      "assertion_pseudocode": "spy = spyStub(); handler.ValidateCredentialsFn = spy; resp = httptest.POST('/api/v1/workspaces', {slug: 'public-ws', git_url: 'https://github.com/acme/public'}); assert spy.callCount == 0; assert resp.status == 201"
+    },
+    {
+      "id": "TS-09-15",
+      "requirement_id": "09-REQ-3.5",
+      "kind": "unit",
+      "description": "Handler struct exposes ValidateCredentialsFuncType as an injectable field, and the production default uses NewRemote + memory.NewStorage() + Remote.ListContext.",
+      "preconditions": [
+        "Handler struct is instantiated with default production configuration",
+        "go-git v5.19.1 is available as a dependency"
+      ],
+      "input": {
+        "inspection": "handler struct field ValidateCredentialsFn"
+      },
+      "expected": {
+        "default_non_nil": true,
+        "field_exists": true,
+        "field_type": "ValidateCredentialsFuncType",
+        "replaceable_in_tests": true
+      },
+      "assertion_pseudocode": "h = newHandler(defaultConfig); assert h.ValidateCredentialsFn != nil; testStub = func(ctx, gitURL, auth) error { return nil }; h.ValidateCredentialsFn = testStub; assert h.ValidateCredentialsFn == testStub"
+    },
+    {
+      "id": "TS-09-16",
+      "requirement_id": "09-REQ-4.1",
+      "kind": "unit",
+      "description": "POST /workspaces handler inserts workspace row, calls CreateSecrets with correct arguments, and enqueues clone job when credentials pass validation.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Clone job queue is available and observable",
+        "Secrets store is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "clone_job_enqueued": true,
+        "secret_in_db": {
+          "key": "GIT_PAT",
+          "owner_id": "my-ws",
+          "owner_type": "workspace"
+        },
+        "status": 201,
+        "workspace_in_db": true
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert resp.status == 201; assert workspaceExistsInDB('my-ws'); assert secretExistsInDB('workspace', 'my-ws', 'GIT_PAT'); assert cloneJobEnqueued('my-ws')"
+    },
+    {
+      "id": "TS-09-17",
+      "requirement_id": "09-REQ-4.2",
+      "kind": "unit",
+      "description": "POST /workspaces handler issues compensating DELETE and returns HTTP 500 when CreateSecrets fails after workspace row is inserted.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "In-memory SQLite database is initialized",
+        "CreateSecrets is stubbed to return an error"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "clone_job_enqueued": false,
+        "status": 500,
+        "workspace_in_db": false
+      },
+      "assertion_pseudocode": "secretsStore.CreateSecrets = stubError('db error'); resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert resp.status == 500; assert workspaceNotInDB('my-ws'); assert cloneJobNotEnqueued('my-ws')"
+    },
+    {
+      "id": "TS-09-18",
+      "requirement_id": "09-REQ-4.3",
+      "kind": "unit",
+      "description": "POST /workspaces handler emits a CRITICAL log entry with the workspace slug and returns HTTP 500 when both CreateSecrets and the compensating DELETE fail.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "In-memory SQLite database is initialized",
+        "CreateSecrets is stubbed to return an error",
+        "The workspace DELETE operation is stubbed to also return an error",
+        "Log capture is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "critical_log_contains_slug": "my-ws",
+        "critical_log_emitted": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "secretsStore.CreateSecrets = stubError('db error'); workspaceStore.Delete = stubError('connection lost'); resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert resp.status == 500; assert logContainsAtLevel('CRITICAL', 'my-ws')"
+    },
+    {
+      "id": "TS-09-19",
+      "requirement_id": "09-REQ-4.4",
+      "kind": "unit",
+      "description": "POST /workspaces handler skips CreateSecrets entirely and returns HTTP 201 when no credential fields are present.",
+      "preconditions": [
+        "Handler is initialized with a spy CreateSecrets",
+        "In-memory SQLite database is initialized with the workspaces schema",
+        "Clone job queue is available"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/acme/public",
+          "slug": "public-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "create_secrets_called": false,
+        "secrets_in_db": 0,
+        "status": 201
+      },
+      "assertion_pseudocode": "spy = spyCreateSecrets(); handler.secretsStore.CreateSecrets = spy; resp = httptest.POST('/api/v1/workspaces', {slug: 'public-ws', git_url: 'https://github.com/acme/public'}); assert resp.status == 201; assert spy.callCount == 0; assert countSecretsInDB('workspace', 'public-ws') == 0"
+    },
+    {
+      "id": "TS-09-20",
+      "requirement_id": "09-REQ-5.1",
+      "kind": "unit",
+      "description": "GetSecretValue returns the base64-decoded plaintext string when the key exists in the secrets table.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with the secrets schema",
+        "A secret with owner_type='workspace', owner_id='my-ws', key='GIT_PAT', value=base64('ghp_abc123') is inserted into the secrets table"
+      ],
+      "input": {
+        "args": {
+          "key": "GIT_PAT",
+          "ownerID": "my-ws",
+          "ownerType": "workspace"
+        },
+        "method": "GetSecretValue"
+      },
+      "expected": {
+        "error": null,
+        "return_value": "ghp_abc123"
+      },
+      "assertion_pseudocode": "store = newSecretsStore(inMemoryDB); insertSecret(db, 'workspace', 'my-ws', 'GIT_PAT', base64Encode('ghp_abc123')); val, err = store.GetSecretValue('workspace', 'my-ws', 'GIT_PAT'); assert err == nil; assert val == 'ghp_abc123'"
+    },
+    {
+      "id": "TS-09-21",
+      "requirement_id": "09-REQ-5.2",
+      "kind": "unit",
+      "description": "GetSecretValue returns NotFoundError when the requested key does not exist for the given owner.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with the secrets schema",
+        "No secret with key='GIT_PAT' exists for owner_type='workspace', owner_id='my-ws'"
+      ],
+      "input": {
+        "args": {
+          "key": "GIT_PAT",
+          "ownerID": "my-ws",
+          "ownerType": "workspace"
+        },
+        "method": "GetSecretValue"
+      },
+      "expected": {
+        "error_type": "NotFoundError",
+        "return_value": ""
+      },
+      "assertion_pseudocode": "store = newSecretsStore(inMemoryDB); val, err = store.GetSecretValue('workspace', 'my-ws', 'GIT_PAT'); assert val == ''; assert isNotFoundError(err)"
+    },
+    {
+      "id": "TS-09-22",
+      "requirement_id": "09-REQ-5.3",
+      "kind": "unit",
+      "description": "GetSecretValue is not exposed via any HTTP endpoint; no HTTP route maps to this method.",
+      "preconditions": [
+        "Echo v4 router is initialized with all registered routes"
+      ],
+      "input": {
+        "inspection": "registered HTTP routes"
+      },
+      "expected": {
+        "no_route_for_get_secret_value": true
+      },
+      "assertion_pseudocode": "routes = router.Routes(); for each route in routes: assert route.path does not expose raw secret values; assert no route calls GetSecretValue directly; assert GET /api/v1/workspaces/:slug/secrets/:key returns metadata only (not value)"
+    },
+    {
+      "id": "TS-09-23",
+      "requirement_id": "09-REQ-6.1",
+      "kind": "unit",
+      "description": "Clone worker calls GetSecretValue for GIT_PAT first and passes BasicAuth with Username='x-token-auth' to CloneFuncType when PAT is found.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with secrets schema",
+        "GIT_PAT secret is stored for workspace 'my-ws' with value 'ghp_abc123'",
+        "CloneFuncType is a spy that records its arguments",
+        "GetSecretValue is stubbed to return 'ghp_abc123' for GIT_PAT"
+      ],
+      "input": {
+        "clone_job": {
+          "git_url": "https://github.com/acme/private",
+          "workspace_slug": "my-ws"
+        }
+      },
+      "expected": {
+        "auth_type": "BasicAuth",
+        "clone_called_with_auth": {
+          "Password": "ghp_abc123",
+          "Username": "x-token-auth"
+        }
+      },
+      "assertion_pseudocode": "cloneSpy = recordingCloneFn(); worker.CloneFn = cloneSpy; worker.processCloneJob('my-ws'); assert cloneSpy.calledOnce; assert cloneSpy.args.auth != nil; assert cloneSpy.args.auth.Username == 'x-token-auth'; assert cloneSpy.args.auth.Password == 'ghp_abc123'"
+    },
+    {
+      "id": "TS-09-24",
+      "requirement_id": "09-REQ-6.2",
+      "kind": "unit",
+      "description": "Clone worker constructs BasicAuth from GIT_USERNAME and GIT_PASSWORD and passes it to CloneFuncType when GIT_PAT is not found but both username and password are found.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with secrets schema",
+        "GIT_USERNAME='alice' and GIT_PASSWORD='s3cr3t' secrets are stored for workspace 'my-ws'",
+        "GIT_PAT is not stored for workspace 'my-ws'",
+        "CloneFuncType is a spy that records its arguments"
+      ],
+      "input": {
+        "clone_job": {
+          "git_url": "https://github.com/acme/private",
+          "workspace_slug": "my-ws"
+        }
+      },
+      "expected": {
+        "auth_type": "BasicAuth",
+        "clone_called_with_auth": {
+          "Password": "s3cr3t",
+          "Username": "alice"
+        }
+      },
+      "assertion_pseudocode": "cloneSpy = recordingCloneFn(); worker.CloneFn = cloneSpy; worker.processCloneJob('my-ws'); assert cloneSpy.calledOnce; assert cloneSpy.args.auth != nil; assert cloneSpy.args.auth.Username == 'alice'; assert cloneSpy.args.auth.Password == 's3cr3t'"
+    },
+    {
+      "id": "TS-09-25",
+      "requirement_id": "09-REQ-6.3",
+      "kind": "unit",
+      "description": "Clone worker passes nil as the auth argument to CloneFuncType when no credential secrets are found for the workspace.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with secrets schema",
+        "No GIT_PAT, GIT_USERNAME, or GIT_PASSWORD secrets exist for workspace 'public-ws'",
+        "CloneFuncType is a spy that records its arguments"
+      ],
+      "input": {
+        "clone_job": {
+          "git_url": "https://github.com/acme/public",
+          "workspace_slug": "public-ws"
+        }
+      },
+      "expected": {
+        "clone_called_with_auth": null
+      },
+      "assertion_pseudocode": "cloneSpy = recordingCloneFn(); worker.CloneFn = cloneSpy; worker.processCloneJob('public-ws'); assert cloneSpy.calledOnce; assert cloneSpy.args.auth == nil"
+    },
+    {
+      "id": "TS-09-26",
+      "requirement_id": "09-REQ-6.4",
+      "kind": "unit",
+      "description": "CloneFuncType signature includes the auth transport.AuthMethod parameter and defaultCloneFn passes it to PlainCloneContext CloneOptions.Auth.",
+      "preconditions": [
+        "defaultCloneFn is the production implementation",
+        "A temporary directory is available for the clone path",
+        "A mock git server or stub PlainCloneContext is available"
+      ],
+      "input": {
+        "args": {
+          "auth": {
+            "Password": "ghp_abc123",
+            "Username": "x-token-auth"
+          },
+          "ctx": "background",
+          "depth": 1,
+          "path": "/tmp/ws",
+          "refName": "refs/heads/main",
+          "singleBranch": true,
+          "url": "https://github.com/acme/private"
+        },
+        "function": "defaultCloneFn"
+      },
+      "expected": {
+        "plain_clone_context_called_with_auth": {
+          "Password": "ghp_abc123",
+          "Username": "x-token-auth"
+        }
+      },
+      "assertion_pseudocode": "capturedOpts = nil; stubPlainClone = func(ctx, path, isBare, opts) { capturedOpts = opts; return nil, nil }; defaultCloneFn(ctx, '/tmp/ws', 'https://...', 1, true, 'refs/heads/main', &BasicAuth{Username: 'x-token-auth', Password: 'ghp_abc123'}); assert capturedOpts.Auth != nil; assert capturedOpts.Auth.Username == 'x-token-auth'"
+    },
+    {
+      "id": "TS-09-27",
+      "requirement_id": "09-REQ-7.1",
+      "kind": "unit",
+      "description": "POST /workspaces handler ensures git_pat, git_username, and git_password values do not appear in any log entry at any level.",
+      "preconditions": [
+        "Handler is initialized with log capture enabled",
+        "A stub ValidateCredentialsFuncType returning nil is configured",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "super-secret-pat-value",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "log_entries_contain_credential": false,
+        "status": 201
+      },
+      "assertion_pseudocode": "logs = captureAllLogs(); resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'super-secret-pat-value'}); for each logEntry in logs: assert 'super-secret-pat-value' not in logEntry.message; assert 'super-secret-pat-value' not in logEntry.fields"
+    },
+    {
+      "id": "TS-09-28",
+      "requirement_id": "09-REQ-7.2",
+      "kind": "unit",
+      "description": "POST /workspaces handler logs the raw go-git error at ERROR level server-side but never includes it in the HTTP response body.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning a raw error containing internal details",
+        "Log capture is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "wrong-token",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces",
+        "stub_error": "authentication required: remote: Invalid username or password"
+      },
+      "expected": {
+        "body": {
+          "error": "credential validation failed for https://github.com/acme/private: unable to authenticate"
+        },
+        "raw_error_in_log": true,
+        "raw_error_in_response_body": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "stub = stubReturning(errors.New('authentication required: remote: Invalid username or password')); handler.ValidateCredentialsFn = stub; logs = captureAllLogs(); resp = httptest.POST('/api/v1/workspaces', {...}); assert resp.body.error == 'credential validation failed for https://github.com/acme/private: unable to authenticate'; assert 'Invalid username or password' not in resp.body; assert logContainsAtLevel('ERROR', 'Invalid username or password')"
+    },
+    {
+      "id": "TS-09-29",
+      "requirement_id": "09-REQ-8.1",
+      "kind": "unit",
+      "description": "deleteWorkspace cascade-deletes all workspace-scoped credential secrets (GIT_PAT, GIT_USERNAME, GIT_PASSWORD) when a workspace is deleted.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'my-ws' exists in the workspaces table",
+        "Secrets GIT_PAT, GIT_USERNAME, GIT_PASSWORD exist in the secrets table with owner_type='workspace' and owner_id='my-ws'"
+      ],
+      "input": {
+        "args": {
+          "slug": "my-ws"
+        },
+        "method": "deleteWorkspace"
+      },
+      "expected": {
+        "secrets_remaining": 0,
+        "workspace_in_db": false
+      },
+      "assertion_pseudocode": "store.deleteWorkspace('my-ws'); assert workspaceNotInDB('my-ws'); assert countSecretsInDB('workspace', 'my-ws') == 0"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-09-P1",
+      "property_id": "09-PROP-1",
+      "validates": [
+        "09-REQ-2.2",
+        "09-REQ-2.E3"
+      ],
+      "description": "For any POST /workspaces request containing both git_pat and at least one of git_username or git_password, the handler always returns HTTP 400 and never inserts a workspace row or calls CreateSecrets.",
+      "for_any_strategy": "Generate random combinations of non-empty git_pat with non-empty git_username and/or git_password, paired with random valid HTTPS git_url and slug values. Use at least 50 samples covering: (pat+username), (pat+password), (pat+username+password).",
+      "invariant_check": "for each generated request: resp.status == 400 AND workspaceNotInDB(slug) AND createSecretsCallCount == 0"
+    },
+    {
+      "id": "TS-09-P2",
+      "property_id": "09-PROP-2",
+      "validates": [
+        "09-REQ-3.1",
+        "09-REQ-3.2"
+      ],
+      "description": "For any POST /workspaces request containing any credential field, ValidateCredentialsFuncType is always invoked before any database INSERT, and if it returns a non-nil error, no workspace row is inserted and no secrets are stored.",
+      "for_any_strategy": "Generate random valid requests with git_pat or (git_username + git_password), with ValidateCredentialsFuncType stubbed to return either nil or a random error. Use at least 100 samples with 50% error rate.",
+      "invariant_check": "if validateCredentialsFn returned non-nil error: workspaceNotInDB(slug) AND secretsCount == 0; if returned nil: validateCredentialsFn was called before any DB INSERT (verified via call ordering spy)"
+    },
+    {
+      "id": "TS-09-P3",
+      "property_id": "09-PROP-3",
+      "validates": [
+        "09-REQ-4.2"
+      ],
+      "description": "For any scenario where workspace INSERT succeeds but CreateSecrets returns an error and the compensating DELETE succeeds, no workspace row with the given slug exists in the database afterward.",
+      "for_any_strategy": "Generate random valid workspace slugs and PAT values. Stub ValidateCredentialsFuncType to return nil, stub CreateSecrets to return a random error, and allow the compensating DELETE to succeed. Use at least 50 samples.",
+      "invariant_check": "after handler returns: workspaceNotInDB(slug) == true for all samples where compensating DELETE succeeded"
+    },
+    {
+      "id": "TS-09-P4",
+      "property_id": "09-PROP-4",
+      "validates": [
+        "09-REQ-7.1",
+        "09-REQ-3.2"
+      ],
+      "description": "For any HTTP response from POST /workspaces, the response body never contains the plaintext value of git_pat, git_username, or git_password.",
+      "for_any_strategy": "Generate random credential values (random alphanumeric strings of length 8-64) for git_pat, git_username, and git_password. Send requests with various outcomes (success, validation failure, auth failure, DB failure). Use at least 100 samples.",
+      "invariant_check": "for each response: credentialValue not in serialize(resp.body) for all three credential fields"
+    },
+    {
+      "id": "TS-09-P5",
+      "property_id": "09-PROP-5",
+      "validates": [
+        "09-REQ-6.1"
+      ],
+      "description": "For any workspace with GIT_PAT stored in the secrets table, CloneFuncType is always called with BasicAuth{Username: 'x-token-auth', Password: <pat>} and never with nil auth.",
+      "for_any_strategy": "Generate random PAT values (random alphanumeric strings of length 8-64) stored as GIT_PAT secrets for random workspace slugs. Process clone jobs for each workspace. Use at least 50 samples.",
+      "invariant_check": "for each clone invocation: cloneFn.args.auth != nil AND cloneFn.args.auth.Username == 'x-token-auth' AND cloneFn.args.auth.Password == storedPAT"
+    },
+    {
+      "id": "TS-09-P6",
+      "property_id": "09-PROP-6",
+      "validates": [
+        "09-REQ-6.3",
+        "09-REQ-4.4"
+      ],
+      "description": "For any workspace with no GIT_PAT, GIT_USERNAME, or GIT_PASSWORD secrets, CloneFuncType is always called with auth=nil.",
+      "for_any_strategy": "Generate random workspace slugs with no credential secrets stored. Process clone jobs for each workspace. Use at least 50 samples.",
+      "invariant_check": "for each clone invocation: cloneFn.args.auth == nil"
+    },
+    {
+      "id": "TS-09-P7",
+      "property_id": "09-PROP-7",
+      "validates": [
+        "09-REQ-3.1",
+        "09-REQ-3.3",
+        "09-REQ-3.E1"
+      ],
+      "description": "For any invocation of the production ValidateCredentialsFuncType, the context passed to Remote.ListContext always has a deadline no greater than 10 seconds from the time of invocation.",
+      "for_any_strategy": "Instrument the production ValidateCredentialsFuncType to capture the context deadline before calling Remote.ListContext. Invoke it with random git URLs and BasicAuth values. Use at least 20 samples.",
+      "invariant_check": "for each invocation: context.Deadline() - invocationTime <= 10*time.Second AND context.Deadline() is set (not zero)"
+    },
+    {
+      "id": "TS-09-P8",
+      "property_id": "09-PROP-8",
+      "validates": [
+        "09-REQ-5.1"
+      ],
+      "description": "For any call to GetSecretValue where the key exists and the stored value is valid base64, the returned string is always the base64-decoded plaintext value.",
+      "for_any_strategy": "Generate random plaintext strings (length 1-256, any printable ASCII). Base64-encode them, insert into the secrets table, then call GetSecretValue. Use at least 100 samples.",
+      "invariant_check": "for each sample: val, err = store.GetSecretValue(...); assert err == nil; assert val == originalPlaintext; assert val != base64EncodedValue"
+    },
+    {
+      "id": "TS-09-P9",
+      "property_id": "09-PROP-9",
+      "validates": [
+        "09-REQ-1.5",
+        "09-REQ-2.4"
+      ],
+      "description": "For any credential-bearing request where git_url does not start with 'https://', both the CLI and the API handler independently reject the request before any network or database operation.",
+      "for_any_strategy": "Generate random non-HTTPS URLs (http://, git@, ssh://, file://, ftp://) paired with random credential values (git_pat or git_username+git_password). Test both CLI and API handler. Use at least 50 samples per layer.",
+      "invariant_check": "CLI: exitCode != 0 AND noHTTPRequestSent; API: resp.status == 400 AND workspaceNotInDB(slug) AND validateCredentialsFnCallCount == 0"
+    },
+    {
+      "id": "TS-09-P10",
+      "property_id": "09-PROP-10",
+      "validates": [
+        "09-REQ-8.1"
+      ],
+      "description": "For any workspace deletion via deleteWorkspace() where the workspace has associated credential secrets, after successful deletion no secrets with owner_type='workspace' and owner_id=slug remain in the secrets table.",
+      "for_any_strategy": "Generate random workspace slugs with random combinations of GIT_PAT, GIT_USERNAME, and GIT_PASSWORD secrets (all present, some present, none present). Call deleteWorkspace for each. Use at least 50 samples.",
+      "invariant_check": "for each successful deletion: countSecretsInDB('workspace', slug) == 0"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-09-E1",
+      "requirement_id": "09-REQ-1.E1",
+      "kind": "unit",
+      "description": "CLI rejects the command with a validation error when --git-pat is provided as an empty string.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat \"\""
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "empty"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat \"\"'); assert result.exitCode != 0; assert result.stderr contains message about empty PAT; assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-E2",
+      "requirement_id": "09-REQ-1.E2",
+      "kind": "unit",
+      "description": "CLI rejects the command with a pair-completeness error when --git-username is provided but --git-password is an empty string.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-username alice --git-password \"\""
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "non-empty"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-username alice --git-password \"\"'); assert result.exitCode != 0; assert result.stderr contains message about both username and password being non-empty; assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-E3",
+      "requirement_id": "09-REQ-1.E3",
+      "kind": "unit",
+      "description": "CLI rejects the command with an HTTPS-requirement error when credential flags are provided with an http:// git_url.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url http://github.com/acme/private --git-pat ghp_abc"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "HTTPS"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url http://github.com/acme/private --git-pat ghp_abc'); assert result.exitCode != 0; assert 'https' in result.stderr (case-insensitive); assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-E4",
+      "requirement_id": "09-REQ-1.E4",
+      "kind": "unit",
+      "description": "CLI rejects the command with an HTTPS-requirement error when credential flags are provided with a git@ SSH scheme URL.",
+      "preconditions": [
+        "afc CLI binary is built and available",
+        "No HTTP server is needed"
+      ],
+      "input": {
+        "command": "afc workspace create --slug my-ws --git-url git@github.com:acme/private.git --git-pat ghp_abc"
+      },
+      "expected": {
+        "exit_code": "non-zero",
+        "http_request_sent": false,
+        "stderr_contains": "HTTPS"
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace create --slug my-ws --git-url git@github.com:acme/private.git --git-pat ghp_abc'); assert result.exitCode != 0; assert 'https' in result.stderr (case-insensitive); assert noHTTPRequestWasSent()"
+    },
+    {
+      "id": "TS-09-E5",
+      "requirement_id": "09-REQ-2.E1",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with a validation error when git_pat is provided as an empty string.",
+      "preconditions": [
+        "Handler is initialized",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "contains non-empty PAT message"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: ''}); assert resp.status == 400; assert resp.body.error contains message about empty PAT; assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-E6",
+      "requirement_id": "09-REQ-2.E2",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with a validation error when git_username is provided as an empty string.",
+      "preconditions": [
+        "Handler is initialized",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_password": "s3cr3t",
+          "git_url": "https://github.com/acme/private",
+          "git_username": "",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "contains non-empty username message"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_username: '', git_password: 's3cr3t'}); assert resp.status == 400; assert resp.body.error contains message about empty username; assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-E7",
+      "requirement_id": "09-REQ-2.E3",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 with a mutual-exclusion error when all three credential fields are provided simultaneously.",
+      "preconditions": [
+        "Handler is initialized",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_password": "s3cr3t",
+          "git_pat": "ghp_abc",
+          "git_url": "https://github.com/acme/private",
+          "git_username": "alice",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "contains mutual exclusion message"
+        },
+        "database_insert": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc', git_username: 'alice', git_password: 's3cr3t'}); assert resp.status == 400; assert resp.body.error contains 'mutually exclusive' (case-insensitive); assert workspaceNotInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-E8",
+      "requirement_id": "09-REQ-3.E1",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 400 within approximately 10 seconds when the upstream git host is unreachable and Remote.ListContext hangs.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType that blocks for 11 seconds then returns context.DeadlineExceeded",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://unreachable.example.com/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "error": "credential validation failed for https://unreachable.example.com/private: unable to authenticate"
+        },
+        "response_time_seconds": "<= 11",
+        "status": 400
+      },
+      "assertion_pseudocode": "stub = stubBlockingThenReturning(11*second, context.DeadlineExceeded); handler.ValidateCredentialsFn = stub; start = now(); resp = httptest.POST('/api/v1/workspaces', {...}); elapsed = now() - start; assert resp.status == 400; assert resp.body.error == 'credential validation failed for https://unreachable.example.com/private: unable to authenticate'; assert elapsed <= 11*second"
+    },
+    {
+      "id": "TS-09-E9",
+      "requirement_id": "09-REQ-3.E2",
+      "kind": "unit",
+      "description": "POST /workspaces handler treats nil error from ValidateCredentialsFuncType as success and proceeds to workspace creation even when the reference list is empty.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "In-memory SQLite database is initialized with the workspaces schema",
+        "Clone job queue is available"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/empty-repo",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "status": 201,
+        "workspace_in_db": true
+      },
+      "assertion_pseudocode": "stub = stubReturning(nil); handler.ValidateCredentialsFn = stub; resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/empty-repo', git_pat: 'ghp_abc123'}); assert resp.status == 201; assert workspaceExistsInDB('my-ws')"
+    },
+    {
+      "id": "TS-09-E10",
+      "requirement_id": "09-REQ-3.E3",
+      "kind": "unit",
+      "description": "POST /workspaces handler never includes the raw go-git error (which may contain credential values) in the HTTP response body.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning an error that contains the PAT value in its message",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_super_secret",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces",
+        "stub_error": "authentication failed with token ghp_super_secret"
+      },
+      "expected": {
+        "body": {
+          "error": "credential validation failed for https://github.com/acme/private: unable to authenticate"
+        },
+        "credential_in_response_body": false,
+        "status": 400
+      },
+      "assertion_pseudocode": "stub = stubReturning(errors.New('authentication failed with token ghp_super_secret')); handler.ValidateCredentialsFn = stub; resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_super_secret'}); assert resp.status == 400; assert 'ghp_super_secret' not in resp.body; assert resp.body.error == 'credential validation failed for https://github.com/acme/private: unable to authenticate'"
+    },
+    {
+      "id": "TS-09-E11",
+      "requirement_id": "09-REQ-3.E4",
+      "kind": "unit",
+      "description": "POST /workspaces handler constructs BasicAuth with Username='x-token-auth' and the PAT as Password when ValidateCredentialsFuncType is called for a PAT credential.",
+      "preconditions": [
+        "Handler is initialized with a spy ValidateCredentialsFuncType that records the auth argument",
+        "In-memory SQLite database is initialized"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "auth_type": "*BasicAuth",
+        "validate_credentials_auth_password": "ghp_abc123",
+        "validate_credentials_auth_username": "x-token-auth"
+      },
+      "assertion_pseudocode": "spy = recordingStub(returnsNil); handler.ValidateCredentialsFn = spy; httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert spy.args.auth != nil; assert typeOf(spy.args.auth) == '*BasicAuth'; assert spy.args.auth.Username == 'x-token-auth'; assert spy.args.auth.Password == 'ghp_abc123'"
+    },
+    {
+      "id": "TS-09-E12",
+      "requirement_id": "09-REQ-4.E1",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 500 and emits CRITICAL log when database connection is lost between workspace INSERT and CreateSecrets, causing both CreateSecrets and compensating DELETE to fail.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "In-memory SQLite database is initialized",
+        "CreateSecrets is stubbed to return a connection error",
+        "The workspace DELETE is stubbed to also return a connection error",
+        "Log capture is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "critical_log_contains_slug": "my-ws",
+        "critical_log_emitted": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "secretsStore.CreateSecrets = stubError('connection lost'); workspaceStore.Delete = stubError('connection lost'); logs = captureAllLogs(); resp = httptest.POST('/api/v1/workspaces', {...}); assert resp.status == 500; assert logContainsAtLevel('CRITICAL', 'my-ws')"
+    },
+    {
+      "id": "TS-09-E13",
+      "requirement_id": "09-REQ-4.E2",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 500 and leaves workspace row and secrets in the database when CreateSecrets succeeds but clone job enqueue fails.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Clone job queue is stubbed to return an error on enqueue"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "secret_in_db": true,
+        "status": 500,
+        "workspace_in_db": true
+      },
+      "assertion_pseudocode": "cloneQueue.Enqueue = stubError('queue full'); resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert resp.status == 500; assert workspaceExistsInDB('my-ws'); assert secretExistsInDB('workspace', 'my-ws', 'GIT_PAT')"
+    },
+    {
+      "id": "TS-09-E14",
+      "requirement_id": "09-REQ-4.E3",
+      "kind": "unit",
+      "description": "POST /workspaces handler returns HTTP 409 or 400 and does not call CreateSecrets when a slug collision occurs during INSERT.",
+      "preconditions": [
+        "Handler is initialized with a spy CreateSecrets",
+        "In-memory SQLite database is initialized with workspace 'my-ws' already existing"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "ghp_abc123",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "create_secrets_called": false,
+        "status": "409 or 400"
+      },
+      "assertion_pseudocode": "spy = spyCreateSecrets(); handler.secretsStore.CreateSecrets = spy; resp = httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'ghp_abc123'}); assert resp.status in [409, 400]; assert spy.callCount == 0"
+    },
+    {
+      "id": "TS-09-E15",
+      "requirement_id": "09-REQ-5.E1",
+      "kind": "unit",
+      "description": "GetSecretValue returns a non-nil error describing the decode failure when the stored base64 value is malformed.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with the secrets schema",
+        "A secret with owner_type='workspace', owner_id='my-ws', key='GIT_PAT', value='not-valid-base64!!!' is inserted directly into the secrets table"
+      ],
+      "input": {
+        "args": {
+          "key": "GIT_PAT",
+          "ownerID": "my-ws",
+          "ownerType": "workspace"
+        },
+        "method": "GetSecretValue"
+      },
+      "expected": {
+        "error_describes": "base64 decode failure",
+        "error_non_nil": true,
+        "return_value": ""
+      },
+      "assertion_pseudocode": "insertRawSecret(db, 'workspace', 'my-ws', 'GIT_PAT', 'not-valid-base64!!!'); val, err = store.GetSecretValue('workspace', 'my-ws', 'GIT_PAT'); assert val == ''; assert err != nil; assert 'decode' in err.Error() (case-insensitive)"
+    },
+    {
+      "id": "TS-09-E16",
+      "requirement_id": "09-REQ-5.E2",
+      "kind": "unit",
+      "description": "GetSecretValue returns an error without querying the database when called with an empty key string.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with the secrets schema"
+      ],
+      "input": {
+        "args": {
+          "key": "",
+          "ownerID": "my-ws",
+          "ownerType": "workspace"
+        },
+        "method": "GetSecretValue"
+      },
+      "expected": {
+        "error_non_nil": true,
+        "return_value": ""
+      },
+      "assertion_pseudocode": "val, err = store.GetSecretValue('workspace', 'my-ws', ''); assert val == ''; assert err != nil"
+    },
+    {
+      "id": "TS-09-E17",
+      "requirement_id": "09-REQ-5.E3",
+      "kind": "unit",
+      "description": "GetSecretValue returns a wrapped database error when the database query fails due to a connection error.",
+      "preconditions": [
+        "Secrets store is initialized with a database connection that is closed/unavailable"
+      ],
+      "input": {
+        "args": {
+          "key": "GIT_PAT",
+          "ownerID": "my-ws",
+          "ownerType": "workspace"
+        },
+        "method": "GetSecretValue"
+      },
+      "expected": {
+        "error_non_nil": true,
+        "error_wraps_db_error": true,
+        "return_value": ""
+      },
+      "assertion_pseudocode": "db.Close(); val, err = store.GetSecretValue('workspace', 'my-ws', 'GIT_PAT'); assert val == ''; assert err != nil; assert errors.Unwrap(err) != nil (wraps underlying db error)"
+    },
+    {
+      "id": "TS-09-E18",
+      "requirement_id": "09-REQ-5.E4",
+      "kind": "unit",
+      "description": "GetSecretValue performs case-insensitive key lookup and returns the correct plaintext value when the key case differs from storage.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with the secrets schema",
+        "A secret with owner_type='workspace', owner_id='my-ws', key='GIT_PAT', value=base64('ghp_abc123') is inserted into the secrets table"
+      ],
+      "input": {
+        "args": {
+          "key": "git_pat",
+          "ownerID": "my-ws",
+          "ownerType": "workspace"
+        },
+        "method": "GetSecretValue"
+      },
+      "expected": {
+        "error": null,
+        "return_value": "ghp_abc123"
+      },
+      "assertion_pseudocode": "insertSecret(db, 'workspace', 'my-ws', 'GIT_PAT', base64Encode('ghp_abc123')); val, err = store.GetSecretValue('workspace', 'my-ws', 'git_pat'); assert err == nil; assert val == 'ghp_abc123'"
+    },
+    {
+      "id": "TS-09-E19",
+      "requirement_id": "09-REQ-6.E1",
+      "kind": "unit",
+      "description": "Clone worker logs the error and marks clone_status='failed' when GetSecretValue returns a non-NotFoundError for GIT_PAT lookup.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'my-ws' exists with clone_status='pending'",
+        "GetSecretValue is stubbed to return a non-NotFoundError for GIT_PAT"
+      ],
+      "input": {
+        "clone_job": {
+          "workspace_slug": "my-ws"
+        }
+      },
+      "expected": {
+        "clone_error_non_empty": true,
+        "clone_fn_called": false,
+        "clone_status": "failed"
+      },
+      "assertion_pseudocode": "secretsStore.GetSecretValue = stubError('db connection error'); worker.processCloneJob('my-ws'); ws = getWorkspaceFromDB('my-ws'); assert ws.clone_status == 'failed'; assert ws.clone_error != ''; assert cloneFnCallCount == 0"
+    },
+    {
+      "id": "TS-09-E20",
+      "requirement_id": "09-REQ-6.E2",
+      "kind": "unit",
+      "description": "Clone worker handles inconsistent secret state (GIT_USERNAME found but GIT_PASSWORD returns NotFoundError) by logging a warning and either proceeding without auth or marking clone as failed.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'my-ws' exists with clone_status='pending'",
+        "GIT_PAT returns NotFoundError",
+        "GIT_USERNAME returns 'alice'",
+        "GIT_PASSWORD returns NotFoundError"
+      ],
+      "input": {
+        "clone_job": {
+          "workspace_slug": "my-ws"
+        }
+      },
+      "expected": {
+        "clone_status": "failed or succeeded without auth",
+        "inconsistency_logged": true
+      },
+      "assertion_pseudocode": "secretsStore.GetSecretValue = stubReturning({'GIT_PAT': NotFoundError, 'GIT_USERNAME': 'alice', 'GIT_PASSWORD': NotFoundError}); logs = captureAllLogs(); worker.processCloneJob('my-ws'); ws = getWorkspaceFromDB('my-ws'); assert logContains('warning') OR ws.clone_status == 'failed'"
+    },
+    {
+      "id": "TS-09-E21",
+      "requirement_id": "09-REQ-6.E3",
+      "kind": "unit",
+      "description": "Clone worker marks clone_status='failed' with a descriptive clone_error when CloneFuncType returns an authentication error despite credentials being present.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'my-ws' exists with clone_status='pending'",
+        "GIT_PAT='ghp_revoked' is stored for workspace 'my-ws'",
+        "CloneFuncType is stubbed to return an authentication error"
+      ],
+      "input": {
+        "clone_job": {
+          "workspace_slug": "my-ws"
+        }
+      },
+      "expected": {
+        "clone_error_non_empty": true,
+        "clone_status": "failed"
+      },
+      "assertion_pseudocode": "cloneFn = stubError('authentication required'); worker.CloneFn = cloneFn; worker.processCloneJob('my-ws'); ws = getWorkspaceFromDB('my-ws'); assert ws.clone_status == 'failed'; assert ws.clone_error != ''"
+    },
+    {
+      "id": "TS-09-E22",
+      "requirement_id": "09-REQ-6.E4",
+      "kind": "unit",
+      "description": "Clone worker follows the same credential lookup sequence for reclone on workspace reactivation, using stored credentials that persist across archive/reactivate cycles.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'my-ws' was previously archived and is now being reactivated",
+        "GIT_PAT='ghp_abc123' is stored for workspace 'my-ws' (persisted from original creation)",
+        "CloneFuncType is a spy that records its arguments"
+      ],
+      "input": {
+        "reclone_job": {
+          "workspace_slug": "my-ws"
+        }
+      },
+      "expected": {
+        "clone_called_with_auth": {
+          "Password": "ghp_abc123",
+          "Username": "x-token-auth"
+        }
+      },
+      "assertion_pseudocode": "cloneSpy = recordingCloneFn(); worker.CloneFn = cloneSpy; worker.processRecloneJob('my-ws'); assert cloneSpy.calledOnce; assert cloneSpy.args.auth.Username == 'x-token-auth'; assert cloneSpy.args.auth.Password == 'ghp_abc123'"
+    },
+    {
+      "id": "TS-09-E23",
+      "requirement_id": "09-REQ-7.E1",
+      "kind": "unit",
+      "description": "POST /workspaces handler zeroes out credential fields on createWorkspaceRequest before any logging middleware can access them when middleware does not support field-level scrubbing.",
+      "preconditions": [
+        "Handler is initialized with log capture enabled",
+        "Logging middleware does not support field-level scrubbing",
+        "A stub ValidateCredentialsFuncType returning nil is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "super-secret-value",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "credential_in_any_log": false
+      },
+      "assertion_pseudocode": "logs = captureAllLogs(); httptest.POST('/api/v1/workspaces', {slug: 'my-ws', git_url: 'https://github.com/acme/private', git_pat: 'super-secret-value'}); for each logEntry in logs: assert 'super-secret-value' not in logEntry.message; assert 'super-secret-value' not in serialize(logEntry.fields)"
+    },
+    {
+      "id": "TS-09-E24",
+      "requirement_id": "09-REQ-7.E2",
+      "kind": "unit",
+      "description": "CRITICAL log entry emitted for compensating DELETE failure contains the workspace slug but no plaintext credential values.",
+      "preconditions": [
+        "Handler is initialized with a stub ValidateCredentialsFuncType returning nil",
+        "CreateSecrets is stubbed to return an error",
+        "Workspace DELETE is stubbed to return an error",
+        "Log capture is configured"
+      ],
+      "input": {
+        "body": {
+          "git_pat": "super-secret-value",
+          "git_url": "https://github.com/acme/private",
+          "slug": "my-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "critical_log_contains_credential": false,
+        "critical_log_contains_slug": "my-ws"
+      },
+      "assertion_pseudocode": "logs = captureAllLogs(); httptest.POST('/api/v1/workspaces', {...}); criticalLogs = filterLogs(logs, level='CRITICAL'); assert len(criticalLogs) > 0; assert 'my-ws' in criticalLogs[0].message OR criticalLogs[0].fields['slug'] == 'my-ws'; assert 'super-secret-value' not in serialize(criticalLogs[0])"
+    },
+    {
+      "id": "TS-09-E25",
+      "requirement_id": "09-REQ-8.E1",
+      "kind": "unit",
+      "description": "deleteWorkspace executes without error and deletes zero rows from secrets table when the workspace has no associated credential secrets.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'no-creds-ws' exists in the workspaces table",
+        "No secrets exist for owner_type='workspace', owner_id='no-creds-ws'"
+      ],
+      "input": {
+        "args": {
+          "slug": "no-creds-ws"
+        },
+        "method": "deleteWorkspace"
+      },
+      "expected": {
+        "error": null,
+        "workspace_in_db": false
+      },
+      "assertion_pseudocode": "err = store.deleteWorkspace('no-creds-ws'); assert err == nil; assert workspaceNotInDB('no-creds-ws'); assert countSecretsInDB('workspace', 'no-creds-ws') == 0"
+    },
+    {
+      "id": "TS-09-E26",
+      "requirement_id": "09-REQ-8.E2",
+      "kind": "unit",
+      "description": "deleteWorkspace propagates the error and leaves workspace row and secrets intact when the secrets table delete fails due to a database error.",
+      "preconditions": [
+        "In-memory SQLite database is initialized with workspaces and secrets schemas",
+        "Workspace 'my-ws' exists with associated GIT_PAT secret",
+        "The secrets table DELETE is stubbed to return a database error"
+      ],
+      "input": {
+        "args": {
+          "slug": "my-ws"
+        },
+        "method": "deleteWorkspace"
+      },
+      "expected": {
+        "error_non_nil": true,
+        "secrets_in_db": true,
+        "workspace_in_db": true
+      },
+      "assertion_pseudocode": "db.stubSecretsDeleteError('db error'); err = store.deleteWorkspace('my-ws'); assert err != nil; assert workspaceExistsInDB('my-ws'); assert secretExistsInDB('workspace', 'my-ws', 'GIT_PAT')"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-09-SMOKE-1",
+      "execution_path_id": "09-PATH-1",
+      "description": "End-to-end happy path: create workspace with PAT for private repo, validate credentials, store secret, enqueue clone, and clone with auth.",
+      "trigger": "Developer runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc123`",
+      "real_components": [
+        "afc CLI",
+        "POST /workspaces Echo v4 handler",
+        "ValidateCredentialsFuncType (stubbed)",
+        "workspace SQLite store",
+        "secrets Store (CreateSecrets, GetSecretValue)",
+        "in-memory clone job queue",
+        "clone worker"
+      ],
+      "mockable": [
+        "ValidateCredentialsFuncType (stub returning nil instead of real Remote.ListContext)",
+        "CloneFuncType (stub returning a fake headSHA instead of real PlainCloneContext)"
+      ],
+      "expected_effects": [
+        "POST /workspaces returns HTTP 201 with workspace JSON body containing slug='my-ws'",
+        "Workspace row exists in SQLite with slug='my-ws'",
+        "Secret GIT_PAT exists in secrets table with owner_type='workspace', owner_id='my-ws', base64-encoded value",
+        "Clone job is enqueued for workspace 'my-ws'",
+        "Clone worker calls CloneFuncType with BasicAuth{Username: 'x-token-auth', Password: 'ghp_abc123'}",
+        "Workspace clone_status is updated to 'succeeded' after clone completes",
+        "No credential values appear in any log entry"
+      ]
+    },
+    {
+      "id": "TS-09-SMOKE-2",
+      "execution_path_id": "09-PATH-2",
+      "description": "Failure path: invalid PAT is rejected at creation time with HTTP 400 and sanitised error message; no workspace row is created.",
+      "trigger": "Developer runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat wrong-token`",
+      "real_components": [
+        "afc CLI",
+        "POST /workspaces Echo v4 handler",
+        "ValidateCredentialsFuncType (stubbed to return auth error)",
+        "workspace SQLite store",
+        "apikit.CLIHandleError"
+      ],
+      "mockable": [
+        "ValidateCredentialsFuncType (stub returning authentication error instead of real Remote.ListContext)"
+      ],
+      "expected_effects": [
+        "POST /workspaces returns HTTP 400 with JSON body {\"error\": \"credential validation failed for https://github.com/acme/private: unable to authenticate\"}",
+        "No workspace row exists in SQLite for slug='my-ws'",
+        "No secrets are written to the secrets table",
+        "No clone job is enqueued",
+        "Raw go-git error is logged at ERROR level server-side",
+        "CLI exits with non-zero exit code",
+        "CLI stderr contains the formatted error message from apikit.CLIHandleError"
+      ]
+    },
+    {
+      "id": "TS-09-SMOKE-3",
+      "execution_path_id": "09-PATH-3",
+      "description": "Failure path: compensating DELETE is issued and succeeds when CreateSecrets fails after workspace INSERT; HTTP 500 is returned.",
+      "trigger": "Developer runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc123` with CreateSecrets stubbed to fail",
+      "real_components": [
+        "afc CLI",
+        "POST /workspaces Echo v4 handler",
+        "ValidateCredentialsFuncType (stubbed to return nil)",
+        "workspace SQLite store (real INSERT and DELETE)",
+        "apikit.CLIHandleError"
+      ],
+      "mockable": [
+        "ValidateCredentialsFuncType (stub returning nil)",
+        "CreateSecrets (stub returning a database error)"
+      ],
+      "expected_effects": [
+        "POST /workspaces returns HTTP 500 with a JSON error body",
+        "No workspace row exists in SQLite for slug='my-ws' after the compensating DELETE",
+        "No secrets are written to the secrets table",
+        "No clone job is enqueued",
+        "CLI exits with non-zero exit code",
+        "CLI stderr contains the error message from apikit.CLIHandleError"
+      ]
+    },
+    {
+      "id": "TS-09-SMOKE-4",
+      "execution_path_id": "09-PATH-4",
+      "description": "Happy path: reclone on workspace reactivation uses stored PAT credentials from the secrets table.",
+      "trigger": "Developer calls POST /api/v1/workspaces/my-ws/reactivate for an archived workspace originally created with a PAT",
+      "real_components": [
+        "POST /workspaces/:slug/reactivate Echo v4 handler",
+        "workspace SQLite store",
+        "secrets Store (GetSecretValue)",
+        "in-memory clone job queue",
+        "clone worker"
+      ],
+      "mockable": [
+        "CloneFuncType (stub returning a fake headSHA instead of real PlainCloneContext)"
+      ],
+      "expected_effects": [
+        "POST /api/v1/workspaces/my-ws/reactivate returns HTTP 200",
+        "Reclone job is enqueued for workspace 'my-ws'",
+        "Clone worker calls GetSecretValue('workspace', 'my-ws', 'GIT_PAT') and retrieves the stored PAT",
+        "Clone worker calls CloneFuncType with BasicAuth{Username: 'x-token-auth', Password: <stored_pat>}",
+        "Workspace clone_status is updated to 'succeeded' after reclone completes"
+      ]
+    },
+    {
+      "id": "TS-09-SMOKE-5",
+      "execution_path_id": "09-PATH-5",
+      "description": "CLI mutual exclusion rejection: command is rejected before any HTTP request is sent when both --git-pat and --git-username/--git-password are provided.",
+      "trigger": "Developer runs `afc workspace create --slug my-ws --git-url https://github.com/acme/private --git-pat ghp_abc --git-username alice --git-password secret`",
+      "real_components": [
+        "afc CLI",
+        "Cobra command flag validation"
+      ],
+      "mockable": [
+        "HTTP transport (assert no request is sent)"
+      ],
+      "expected_effects": [
+        "CLI exits with a non-zero exit code",
+        "CLI stderr contains a mutual-exclusion error message",
+        "No HTTP request is sent to any server",
+        "No workspace row is created in the database"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

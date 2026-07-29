@@ -1,0 +1,185 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"git_credentials\" PRD is thorough and well-structured. It clearly articulates intent, goals, non-goals, tech stack, CLI/API changes, secrets store extensions, clone worker changes, a verified external API surface, and explicit design decisions. All required sections are present and of high quality. The PRD declares correct dependencies on `secrets_variables` (07) and `workspace_checkout` (05), and no conflicting overlap with other active specs was found. Two minor gaps are worth surfacing \u2014 the transaction boundary for atomic secret storage is described informally rather than specifying a concrete mechanism, and error message copy for the credential validation failure (HTTP 400) is partially underspecified \u2014 but neither is a blocker for artifact generation.",
+      "gaps": [
+        "Atomic transaction boundary is described informally: the PRD says secrets are stored 'in the same transaction (or immediately after workspace insert within the same handler)' but does not commit to a specific mechanism (e.g., a single SQLite transaction wrapping both the workspace INSERT and CreateSecrets). The ambiguity between a true DB transaction and a compensating delete could lead to inconsistent implementations.",
+        "Error message copy for the credential-validation failure (ls-remote check) is underspecified. The PRD says 'return HTTP 400 with a descriptive error message' but does not define what the message body looks like or what information it should include (e.g., the upstream URL, a sanitised error from go-git, or a fixed string). This may cause inconsistent UX.",
+        "The `ListOptions` struct used for ls-remote requires a non-nil `storage.Storer` when constructing a `NewRemote`. The PRD does not specify what storer to pass (e.g., `memory.NewStorage()`) for an ephemeral connectivity check, which is a subtle go-git usage detail that could trip up implementers.",
+        "No mention of timeout or context deadline for the create-time credential validation (ls-remote call). A slow or unreachable upstream would block the HTTP request handler indefinitely without a bounded timeout."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should the workspace INSERT and the subsequent CreateSecrets call be wrapped in a single SQLite database transaction, or is a compensating DELETE (rollback by deletion) acceptable if secret storage fails?",
+          "context": "The PRD currently says 'in the same transaction (or immediately after workspace insert within the same handler)', leaving the implementation open to either approach. A true DB transaction is safer but requires the secrets store to accept an external *sql.Tx. Clarifying this prevents divergent implementations.",
+          "options": [
+            "Single SQLite transaction wrapping both the workspace INSERT and CreateSecrets (preferred for atomicity)",
+            "Compensating DELETE on the workspace row if CreateSecrets fails (simpler, eventual consistency)",
+            "Either approach is acceptable \u2014 leave it to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "What should the HTTP 400 response body look like when the create-time credential validation (ls-remote check) fails? Should it echo back the upstream URL, include the raw go-git error message, or return a fixed/sanitised string?",
+          "context": "Returning raw go-git error messages could leak internal details or confuse users. A fixed message like 'credential validation failed for <url>: authentication rejected' is safer but less debuggable. Defining this now ensures consistent CLI error rendering.",
+          "options": [
+            "Fixed message: \"credential validation failed: authentication rejected by upstream repository\"",
+            "Sanitised message including the upstream URL but not the raw go-git error",
+            "Raw go-git error message passed through (most debuggable, some leakage risk)",
+            "Leave the exact wording to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "What storage backend and context timeout should be used for the ephemeral ls-remote credential check? Specifically: (a) which `storage.Storer` should be passed to `NewRemote` (e.g., `memory.NewStorage()`), and (b) should a hard timeout (e.g., 10 s) be applied to the check?",
+          "context": "go-git's `NewRemote` requires a non-nil storer even for a connectivity-only check. Using `memory.NewStorage()` is the idiomatic approach for ephemeral checks. Without a timeout, a slow upstream can block the HTTP handler indefinitely, impacting server responsiveness.",
+          "options": [
+            "Use memory.NewStorage() for the storer; apply a 10-second context deadline",
+            "Use memory.NewStorage() for the storer; inherit the request context (no additional timeout)",
+            "Leave both details to the implementer"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is thorough and well-structured, covering CLI flags, API contract, credential validation, secret storage, and clone-worker integration with precise Go signatures. Most quality dimensions are strong. The main gaps are: (1) no explicit `## Intent` section (the overview paragraph serves that role but is not labelled correctly), (2) testing strategy/tooling is absent, (3) background/context for an unfamiliar reader is thin, (4) a few edge-cases and operational concerns are underdocumented (e.g. credential deletion on workspace deletion, secret encoding format, rate-limiting on ls-remote, rollback observability).",
+      "gaps": [
+        "No dedicated `## Intent` section \u2014 the `## Overview` paragraph functions as intent but must be a single-paragraph section labelled `## Intent` per PRD conventions.",
+        "No testing strategy documented \u2014 unit-test approach for the ls-remote validation mock, integration-test fixtures for private-repo scenarios, and any test tooling (e.g. httptest, testify, go-git in-memory server) are unspecified.",
+        "Background / motivation is thin \u2014 there is no explanation of the current state (what happens today when a user provides a private git URL without credentials) or the business driver behind this feature.",
+        "Secret lifecycle on workspace deletion is unspecified \u2014 are `GIT_PAT` / `GIT_USERNAME` / `GIT_PASSWORD` secrets cascade-deleted when the workspace is deleted, or does the caller need to clean them up explicitly?",
+        "Secret encoding format is not documented \u2014 `GetSecretValue` says it returns 'base64-decoded raw value', but the encoding contract for `CreateSecrets` (how values are encoded at write time) is not described in this PRD, making it hard to verify correctness without reading the secrets spec.",
+        "Observability / logging for the compensating DELETE is not specified \u2014 if the DELETE itself fails, there is no guidance on whether the handler should log, alert, or return a different error code, leaving a silent inconsistency risk.",
+        "Rate-limiting / retry policy for the ls-remote validation call is unaddressed \u2014 a hostile or slow upstream could abuse the 10-second window per request; no mention of per-user rate limiting or circuit-breaking.",
+        "No description of what error the CLI surfaces when the API returns HTTP 400 for credential validation failure \u2014 the API error format is defined but the CLI rendering of that error is not.",
+        "The `CloneFuncType` signature change is mentioned but the before/after signatures are not shown, making it harder for an implementer to understand the interface contract delta.",
+        "No mention of how credentials are handled in audit logs \u2014 whether secret values are scrubbed from any request/response logging middleware."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the current user-facing behaviour when someone runs `afc workspace create` with a private git URL and no credentials? (e.g. does the clone silently fail, does the workspace enter an error state, or is there no handling at all?)",
+          "context": "This is the 'before' state needed for the Background section and helps justify the urgency/design of the feature.",
+          "options": [
+            "The clone job fails silently and the workspace is left in a broken state",
+            "The workspace creation succeeds but the clone job errors with an authentication failure that the user must poll to discover",
+            "The API already returns an error at creation time for private URLs",
+            "There is currently no detection \u2014 the workspace appears healthy but the repo is never cloned"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What testing approach should be used for the ls-remote credential validation? Specifically, how should the go-git `Remote.ListContext` call be isolated in unit tests?",
+          "context": "Without a defined test strategy, implementers may skip testing this critical path or write brittle tests that call real upstream repos.",
+          "options": [
+            "Inject a `RemoteLister` interface that can be stubbed in tests",
+            "Use a local in-memory git server (e.g. go-git's test helpers) for integration tests",
+            "Use `httptest.NewServer` to simulate a git HTTP server returning 401/200",
+            "Unit-test with a simple mock; add a separate integration-test suite that runs against a real private repo in CI using a stored secret"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "When a workspace is deleted, should the associated git credential secrets (`GIT_PAT`, `GIT_USERNAME`, `GIT_PASSWORD`) be automatically deleted as well?",
+          "context": "Without specifying the deletion lifecycle, secrets may accumulate in the DB or leave sensitive credential data after workspace removal.",
+          "options": [
+            "Yes \u2014 cascade-delete all workspace-scoped secrets when the workspace row is deleted",
+            "Yes \u2014 the workspace DELETE handler should explicitly call a secrets cleanup method",
+            "No \u2014 secrets are already cleaned up by existing workspace deletion logic (please confirm)",
+            "No \u2014 credentials should be retained for audit purposes and cleaned up by a separate TTL/purge job"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What should the CLI output to the user when the API returns HTTP 400 due to credential validation failure? Should it print the raw `error` field from the JSON body, a friendly rephrased message, or something else?",
+          "context": "The API error format is well-defined, but the CLI rendering is unspecified, which could lead to inconsistent UX.",
+          "options": [
+            "Print the `error` field from the JSON response body verbatim",
+            "Print a fixed CLI-level message such as 'Error: could not authenticate with the upstream repository. Check your credentials and try again.'",
+            "Print both: a short CLI message followed by the server detail in parentheses",
+            "Delegate entirely to the existing apikit error-rendering middleware"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "What are the before/after signatures for `CloneFuncType` after the auth parameter is added?",
+          "context": "The PRD mentions the signature must be extended but does not show the old and new signatures, which is critical for implementers of the clone worker.",
+          "options": [],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Should the ls-remote validation endpoint be subject to any rate limiting (e.g. max N credential-validation attempts per user per minute) to prevent abuse of the 10-second blocking call?",
+          "context": "Without rate limiting, a malicious or buggy client could hold many goroutines open for up to 10 seconds each by repeatedly posting to POST /workspaces with bad credentials.",
+          "options": [
+            "Yes \u2014 apply the existing API rate-limiter (if one exists)",
+            "Yes \u2014 add a dedicated per-user rate limit for this endpoint (specify limit)",
+            "No \u2014 the 10-second timeout is sufficient protection",
+            "No \u2014 rely on upstream git provider rate limits"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "How should a failed compensating DELETE (i.e. the workspace INSERT succeeded, CreateSecrets failed, and the DELETE also fails) be handled and surfaced?",
+          "context": "This is a rare but possible failure mode that could leave orphaned workspace rows with no credentials, causing silent clone failures.",
+          "options": [
+            "Log a CRITICAL/ERROR-level structured log entry and return HTTP 500 to the client",
+            "Trigger an alert/metric increment so on-call can investigate",
+            "Attempt a retry of the DELETE before giving up",
+            "Document it as a known limitation and rely on a periodic reconciliation job to clean up orphaned rows"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The PRD is now comprehensive and implementation-ready. All previously identified gaps have been addressed: a dedicated Background section explains the current broken UX; a full testing strategy with injectable ValidateCredentialsFuncType, tooling (testify, httptest, in-memory SQLite), and CI gating for integration tests is documented; the CloneFuncType before/after signatures are shown explicitly; the compensating-DELETE failure path specifies CRITICAL-level logging and HTTP 500; secret encoding/decoding is clarified (base64 at write, decoded at read); CLI error rendering is delegated to apikit.CLIHandleError; cascade-deletion on workspace removal is confirmed as already implemented; audit log scrubbing is specified; and rate-limiting is explicitly declared out of scope with rationale. The PRD covers all quality dimensions \u2014 intent, goals, non-goals, background, external API surface, and tech stack \u2014 at a level that an unfamiliar implementer can work from without ambiguity.",
+      "gaps": [],
+      "questions": []
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Compensating DELETE on the workspace row if CreateSecrets fails. The secrets store's CreateSecrets method opens its own transaction internally, so passing an external sql.Tx would require a significant API change. A compensating delete is simpler and acceptable since the failure window is minimal (only network/IO errors between two back-to-back DB operations).",
+        "q2": "Sanitised message including the upstream URL but not the raw go-git error. Format: 'credential validation failed for <url>: unable to authenticate'. This gives the user enough context to identify which URL failed without leaking internal error details.",
+        "q3": "Use memory.NewStorage() for the storer; apply a 10-second context deadline. This prevents a slow or unreachable upstream from blocking the HTTP handler and is a reasonable default for a connectivity check."
+      },
+      "timestamp": "2026-07-29T16:28:56.967326+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "The workspace creation succeeds but the clone job errors with an authentication failure that the user must poll to discover. Currently the clone_status goes to 'failed' with an error message from go-git, which includes the auth rejection. The user must call GET /workspaces/<slug> to see clone_status='failed' and clone_error. This feature eliminates that delayed discovery by validating up front.",
+        "q2": "Inject a RemoteLister interface (or a function type like ValidateCredentialsFuncType) that can be stubbed in tests. This follows the same pattern as CloneFuncType and ArchiveHeadFuncType already used in the workspace package. Unit tests replace it with a mock; integration tests with a real remote are optional and separate.",
+        "q3": "Yes, the workspace DELETE handler already cascade-deletes all workspace-scoped secrets and variables. This is implemented in deleteWorkspace() in internal/workspace/store.go (lines 199-230) which deletes from both the secrets and variables tables where owner_type='workspace' AND owner_id=slug. No additional work is needed for credential cleanup on workspace deletion.",
+        "q4": "Delegate entirely to the existing apikit error-rendering middleware. The CLI uses apikit.CLIHandleError which already formats API error responses consistently. No special handling needed for this specific error.",
+        "q5": "Before: func(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string) (headSHA string, err error). After: func(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string, auth transport.AuthMethod) (headSHA string, err error). The auth parameter is added as the last parameter before the return values. When nil, no authentication is used (public repo).",
+        "q6": "No, the 10-second timeout is sufficient protection. The existing workspace creation already has natural rate limiting through the slug uniqueness constraint and authentication requirement. Adding dedicated rate limiting for this endpoint is out of scope.",
+        "q7": "Log a CRITICAL/ERROR-level structured log entry and return HTTP 500 to the client. The log entry should include the workspace slug to aid manual cleanup. This is a rare edge case and does not warrant retry logic or a reconciliation job at this time."
+      },
+      "timestamp": "2026-07-29T16:31:16.011228+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}
