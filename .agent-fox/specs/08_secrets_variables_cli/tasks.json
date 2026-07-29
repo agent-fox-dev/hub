@@ -315,7 +315,7 @@
           "requirement_refs": [
             "08-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -333,7 +333,7 @@
           "requirement_refs": [
             "08-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -352,7 +352,7 @@
           "requirement_refs": [
             "08-REQ-12"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -375,7 +375,7 @@
             "08-REQ-8",
             "08-REQ-9"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

@@ -241,13 +241,28 @@ func runRootCmd(t *testing.T, args ...string) (stdout, stderr string, err error)
 }
 
 // hasErrorEnvelope returns true if stdout contains a JSON error envelope.
+// It handles multi-value stdout (e.g., when multi-scope create outputs
+// both a success response and an error envelope as concatenated JSON).
 func hasErrorEnvelope(stdout string) bool {
-	var env struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	for {
+		var raw any
+		if err := dec.Decode(&raw); err != nil {
+			break
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		errObj, ok := obj["error"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg, ok := errObj["message"].(string); ok && msg != "" {
+			return true
+		}
 	}
-	return json.Unmarshal([]byte(stdout), &env) == nil && env.Error.Message != ""
+	return false
 }
 
 // errorMessage extracts the error message from a JSON error envelope.
