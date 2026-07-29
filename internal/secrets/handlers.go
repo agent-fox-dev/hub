@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -141,29 +142,166 @@ func lookupWorkspaceOwner(db *sql.DB, slug, userID string, isAdmin bool) (string
 	return ownerID, 0, ""
 }
 
+// --- Request types ---
+
+// createRequest is the JSON body for POST secrets/variables endpoints.
+type createRequest struct {
+	Entries []EntryInput `json:"entries"`
+}
+
+// updateSecretRequest is the JSON body for PATCH secrets endpoints.
+// Value is a pointer to distinguish between missing/null (nil) and empty string.
+type updateSecretRequest struct {
+	Value *string `json:"value"`
+}
+
+// --- Error classification ---
+
+// classifyStoreError maps a store-layer error to the appropriate HTTP status code.
+// ConflictError → 409, NotFoundError → 404, wrapped DB errors → 500, validation → 400.
+func classifyStoreError(err error) int {
+	var ce *ConflictError
+	if errors.As(err, &ce) {
+		return http.StatusConflict
+	}
+	var nfe *NotFoundError
+	if errors.As(err, &nfe) {
+		return http.StatusNotFound
+	}
+	// Wrapped errors (fmt.Errorf("...: %w", dbErr)) are internal/DB errors.
+	if errors.Unwrap(err) != nil {
+		return http.StatusInternalServerError
+	}
+	// Everything else is a validation or limit error.
+	return http.StatusBadRequest
+}
+
+// storeErrorMessage returns the error message to send in the response.
+// Internal errors get a generic message; client errors pass through.
+func storeErrorMessage(err error, code int) string {
+	if code == http.StatusInternalServerError {
+		return "internal server error"
+	}
+	return err.Error()
+}
+
+// --- Scope resolution helpers ---
+
+// resolveOrgScope resolves an org slug to its UUID and verifies access.
+// Admin bypasses the membership check; other credential types require membership.
+func resolveOrgScope(db *sql.DB, auth *AuthInfo, slug string) (string, int, string) {
+	if auth.CredType == CredentialAdmin {
+		var orgID string
+		err := db.QueryRow("SELECT id FROM orgs WHERE slug = ?", slug).Scan(&orgID)
+		if err != nil {
+			return "", http.StatusNotFound, "not found"
+		}
+		return orgID, 0, ""
+	}
+	return checkOrgMembership(db, auth.UserID, slug)
+}
+
+// --- Core secret CRUD operations ---
+
+func doCreateSecrets(c echo.Context, store *Store, ownerType, ownerID string) error {
+	var req createRequest
+	if err := c.Bind(&req); err != nil {
+		return respondError(c, http.StatusBadRequest, "invalid request body")
+	}
+	entries, err := store.CreateSecrets(ownerType, ownerID, req.Entries)
+	if err != nil {
+		code := classifyStoreError(err)
+		return respondError(c, code, storeErrorMessage(err, code))
+	}
+	return c.JSON(http.StatusCreated, entries)
+}
+
+func doListSecrets(c echo.Context, store *Store, ownerType, ownerID string) error {
+	entries, err := store.ListSecrets(ownerType, ownerID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	return c.JSON(http.StatusOK, entries)
+}
+
+func doUpdateSecret(c echo.Context, store *Store, ownerType, ownerID string) error {
+	key := c.Param("key")
+	var req updateSecretRequest
+	if err := c.Bind(&req); err != nil {
+		return respondError(c, http.StatusBadRequest, "invalid request body")
+	}
+	if req.Value == nil {
+		return respondError(c, http.StatusBadRequest, "value field is required")
+	}
+	entry, err := store.UpdateSecret(ownerType, ownerID, key, *req.Value)
+	if err != nil {
+		code := classifyStoreError(err)
+		return respondError(c, code, storeErrorMessage(err, code))
+	}
+	return c.JSON(http.StatusOK, entry)
+}
+
+func doDeleteSecret(c echo.Context, store *Store, ownerType, ownerID string) error {
+	key := c.Param("key")
+	err := store.DeleteSecret(ownerType, ownerID, key)
+	if err != nil {
+		code := classifyStoreError(err)
+		return respondError(c, code, storeErrorMessage(err, code))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 // --- User-scoped secret handlers ---
 
 func handleCreateUserSecrets(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsManage() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doCreateSecrets(c, store, "user", auth.UserID)
 	}
 }
 
 func handleListUserSecrets(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsList() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doListSecrets(c, store, "user", auth.UserID)
 	}
 }
 
 func handleUpdateUserSecret(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsWrite() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doUpdateSecret(c, store, "user", auth.UserID)
 	}
 }
 
 func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsDelete() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doDeleteSecret(c, store, "user", auth.UserID)
 	}
 }
 
@@ -171,25 +309,69 @@ func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
 
 func handleCreateOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsManage() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doCreateSecrets(c, store, "org", orgID)
 	}
 }
 
 func handleListOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsList() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doListSecrets(c, store, "org", orgID)
 	}
 }
 
 func handleUpdateOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsWrite() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doUpdateSecret(c, store, "org", orgID)
 	}
 }
 
 func handleDeleteOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsDelete() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doDeleteSecret(c, store, "org", orgID)
 	}
 }
 
@@ -197,25 +379,73 @@ func handleDeleteOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleCreateWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsManage() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doCreateSecrets(c, store, "workspace", slug)
 	}
 }
 
 func handleListWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsList() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doListSecrets(c, store, "workspace", slug)
 	}
 }
 
 func handleUpdateWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsWrite() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doUpdateSecret(c, store, "workspace", slug)
 	}
 }
 
 func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasSecretsDelete() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doDeleteSecret(c, store, "workspace", slug)
 	}
 }
 
