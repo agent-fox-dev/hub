@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/txsvc/apikit"
 )
 
 // =============================================================================
@@ -659,7 +661,7 @@ func TestSpec03_Group5_ExistingScopesStable(t *testing.T) {
 
 	pats := []struct {
 		name string
-		auth *AuthInfo
+		auth *apikit.AuthInfo
 	}{
 		{"workspaces:read", patAuth("scope-user", "workspaces:read")},
 		{"workspaces:create", patAuth("scope-user", "workspaces:create")},

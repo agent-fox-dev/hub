@@ -505,7 +505,7 @@ func TestSpec03_Group2_ReadCreatePATsDeniedOnMutation(t *testing.T) {
 
 	pats := []struct {
 		name string
-		auth *AuthInfo
+		auth *apikit.AuthInfo
 	}{
 		{"workspaces:read", patAuth("u1-id", "workspaces:read")},
 		{"workspaces:create", patAuth("u1-id", "workspaces:create")},

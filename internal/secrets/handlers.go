@@ -4,100 +4,51 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/labstack/echo/v4"
+	"github.com/txsvc/apikit"
 )
 
-// authInfoKey is the echo context key for storing AuthInfo in test environments.
-const authInfoKey = "secrets.auth"
+// --- Auth helpers using apikit.AuthInfo directly ---
 
-// CredentialType identifies the type of credential used to authenticate a request.
-type CredentialType string
-
-const (
-	// CredentialAdmin represents an admin token.
-	CredentialAdmin CredentialType = "admin"
-	// CredentialAPIKey represents a user API key.
-	CredentialAPIKey CredentialType = "apikey"
-	// CredentialPAT represents a personal access token.
-	CredentialPAT CredentialType = "pat"
-)
-
-// AuthInfo holds the authenticated identity and permissions for a request.
-type AuthInfo struct {
-	CredType    CredentialType `json:"cred_type"`
-	UserID      string         `json:"user_id"`
-	Permissions []string       `json:"permissions"`
+func isAdmin(auth *apikit.AuthInfo) bool {
+	return auth.CredentialType == "admin_token"
 }
 
-// getAuth retrieves the AuthInfo from the echo context.
-func getAuth(c echo.Context) (*AuthInfo, error) {
-	val := c.Get(authInfoKey)
-	if val != nil {
-		info, ok := val.(*AuthInfo)
-		if ok {
-			return info, nil
-		}
-	}
-	return nil, echo.NewHTTPError(http.StatusUnauthorized, "authentication required")
+func isPAT(auth *apikit.AuthInfo) bool {
+	return auth.CredentialType == "pat"
 }
 
-// hasPermission checks whether the AuthInfo contains a specific permission scope.
-func (a *AuthInfo) hasPermission(perm string) bool {
-	for _, p := range a.Permissions {
-		if p == perm {
+func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
+	for _, s := range scopes {
+		if slices.Contains(auth.Permissions, s) {
 			return true
 		}
 	}
 	return false
 }
 
-// hasSecretsManage reports whether the credential can perform all secrets operations.
-func (a *AuthInfo) hasSecretsManage() bool {
-	return a.hasPermission("secrets:manage")
+func canSecretsManage(auth *apikit.AuthInfo) bool { return hasScope(auth, "secrets:manage") }
+func canSecretsList(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "secrets:list", "secrets:manage")
+}
+func canSecretsWrite(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "secrets:write", "secrets:manage")
+}
+func canSecretsDelete(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "secrets:delete", "secrets:manage")
 }
 
-// hasSecretsList reports whether the credential can list secrets.
-// secrets:manage implies secrets:list.
-func (a *AuthInfo) hasSecretsList() bool {
-	return a.hasPermission("secrets:list") || a.hasPermission("secrets:manage")
+func canVarsManage(auth *apikit.AuthInfo) bool { return hasScope(auth, "vars:manage") }
+func canVarsRead(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "vars:read", "vars:write", "vars:manage")
 }
-
-// hasSecretsWrite reports whether the credential can update secrets.
-// secrets:manage implies secrets:write.
-func (a *AuthInfo) hasSecretsWrite() bool {
-	return a.hasPermission("secrets:write") || a.hasPermission("secrets:manage")
+func canVarsWrite(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "vars:write", "vars:manage")
 }
-
-// hasSecretsDelete reports whether the credential can delete secrets.
-// secrets:manage implies secrets:delete.
-func (a *AuthInfo) hasSecretsDelete() bool {
-	return a.hasPermission("secrets:delete") || a.hasPermission("secrets:manage")
-}
-
-// hasVarsManage reports whether the credential can perform all variables operations.
-func (a *AuthInfo) hasVarsManage() bool {
-	return a.hasPermission("vars:manage")
-}
-
-// hasVarsRead reports whether the credential can list and read variables.
-// vars:manage and vars:write both imply vars:read.
-func (a *AuthInfo) hasVarsRead() bool {
-	return a.hasPermission("vars:read") ||
-		a.hasPermission("vars:write") ||
-		a.hasPermission("vars:manage")
-}
-
-// hasVarsWrite reports whether the credential can update variables.
-// vars:manage implies vars:write.
-func (a *AuthInfo) hasVarsWrite() bool {
-	return a.hasPermission("vars:write") || a.hasPermission("vars:manage")
-}
-
-// hasVarsDelete reports whether the credential can delete variables.
-// vars:manage implies vars:delete.
-func (a *AuthInfo) hasVarsDelete() bool {
-	return a.hasPermission("vars:delete") || a.hasPermission("vars:manage")
+func canVarsDelete(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "vars:delete", "vars:manage")
 }
 
 // respondError writes a JSON error envelope and sets the HTTP status code.
@@ -130,13 +81,13 @@ func checkOrgMembership(db *sql.DB, userID, orgSlug string) (string, int, string
 
 // lookupWorkspaceOwner retrieves a workspace and checks ownership.
 // Returns the workspace owner_id or an error code for anti-enumeration.
-func lookupWorkspaceOwner(db *sql.DB, slug, userID string, isAdmin bool) (string, int, string) {
+func lookupWorkspaceOwner(db *sql.DB, slug, userID string, admin bool) (string, int, string) {
 	var ownerID string
 	err := db.QueryRow("SELECT owner_id FROM workspaces WHERE slug = ?", slug).Scan(&ownerID)
 	if err != nil {
 		return "", http.StatusNotFound, "not found"
 	}
-	if !isAdmin && ownerID != userID {
+	if !admin && ownerID != userID {
 		return "", http.StatusNotFound, "not found"
 	}
 	return ownerID, 0, ""
@@ -189,8 +140,8 @@ func storeErrorMessage(err error, code int) string {
 
 // resolveOrgScope resolves an org slug to its UUID and verifies access.
 // Admin bypasses the membership check; other credential types require membership.
-func resolveOrgScope(db *sql.DB, auth *AuthInfo, slug string) (string, int, string) {
-	if auth.CredType == CredentialAdmin {
+func resolveOrgScope(db *sql.DB, auth *apikit.AuthInfo, slug string) (string, int, string) {
+	if isAdmin(auth) {
 		var orgID string
 		err := db.QueryRow("SELECT id FROM orgs WHERE slug = ?", slug).Scan(&orgID)
 		if err != nil {
@@ -255,11 +206,11 @@ func doDeleteSecret(c echo.Context, store *Store, ownerType, ownerID string) err
 
 func handleCreateUserSecrets(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsManage() {
+		if isPAT(auth) && !canSecretsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doCreateSecrets(c, store, "user", auth.UserID)
@@ -268,11 +219,11 @@ func handleCreateUserSecrets(store *Store) echo.HandlerFunc {
 
 func handleListUserSecrets(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsList() {
+		if isPAT(auth) && !canSecretsList(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doListSecrets(c, store, "user", auth.UserID)
@@ -281,11 +232,11 @@ func handleListUserSecrets(store *Store) echo.HandlerFunc {
 
 func handleUpdateUserSecret(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsWrite() {
+		if isPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doUpdateSecret(c, store, "user", auth.UserID)
@@ -294,11 +245,11 @@ func handleUpdateUserSecret(store *Store) echo.HandlerFunc {
 
 func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsDelete() {
+		if isPAT(auth) && !canSecretsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doDeleteSecret(c, store, "user", auth.UserID)
@@ -309,11 +260,11 @@ func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
 
 func handleCreateOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsManage() {
+		if isPAT(auth) && !canSecretsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -326,11 +277,11 @@ func handleCreateOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleListOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsList() {
+		if isPAT(auth) && !canSecretsList(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -343,11 +294,11 @@ func handleListOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleUpdateOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsWrite() {
+		if isPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -360,11 +311,11 @@ func handleUpdateOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleDeleteOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsDelete() {
+		if isPAT(auth) && !canSecretsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -379,15 +330,15 @@ func handleDeleteOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleCreateWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsManage() {
+		if isPAT(auth) && !canSecretsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -397,15 +348,15 @@ func handleCreateWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleListWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsList() {
+		if isPAT(auth) && !canSecretsList(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -415,15 +366,15 @@ func handleListWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleUpdateWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsWrite() {
+		if isPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -433,15 +384,15 @@ func handleUpdateWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasSecretsDelete() {
+		if isPAT(auth) && !canSecretsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -503,11 +454,11 @@ func doDeleteVar(c echo.Context, store *Store, ownerType, ownerID string) error 
 
 func handleCreateUserVars(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsManage() {
+		if isPAT(auth) && !canVarsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doCreateVars(c, store, "user", auth.UserID)
@@ -516,11 +467,11 @@ func handleCreateUserVars(store *Store) echo.HandlerFunc {
 
 func handleListUserVars(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+		if isPAT(auth) && !canVarsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doListVars(c, store, "user", auth.UserID)
@@ -529,11 +480,11 @@ func handleListUserVars(store *Store) echo.HandlerFunc {
 
 func handleUpdateUserVar(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsWrite() {
+		if isPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doUpdateVar(c, store, "user", auth.UserID)
@@ -542,11 +493,11 @@ func handleUpdateUserVar(store *Store) echo.HandlerFunc {
 
 func handleDeleteUserVar(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsDelete() {
+		if isPAT(auth) && !canVarsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		return doDeleteVar(c, store, "user", auth.UserID)
@@ -557,11 +508,11 @@ func handleDeleteUserVar(store *Store) echo.HandlerFunc {
 
 func handleCreateOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsManage() {
+		if isPAT(auth) && !canVarsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -574,11 +525,11 @@ func handleCreateOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleListOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+		if isPAT(auth) && !canVarsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -591,11 +542,11 @@ func handleListOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleUpdateOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsWrite() {
+		if isPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -608,11 +559,11 @@ func handleUpdateOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsDelete() {
+		if isPAT(auth) && !canVarsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -627,15 +578,15 @@ func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsManage() {
+		if isPAT(auth) && !canVarsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -645,15 +596,15 @@ func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleListWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+		if isPAT(auth) && !canVarsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -663,15 +614,15 @@ func handleListWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleUpdateWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsWrite() {
+		if isPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -681,15 +632,15 @@ func handleUpdateWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsDelete() {
+		if isPAT(auth) && !canVarsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}
@@ -702,7 +653,7 @@ func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 // lookupWorkspaceForResolution retrieves a workspace's owner_id and org_id
 // for the resolved variables endpoint. Returns (ownerID, orgID, httpCode, message).
 // orgID may be empty if the workspace has no org association.
-func lookupWorkspaceForResolution(db *sql.DB, slug, userID string, isAdmin bool) (string, string, int, string) {
+func lookupWorkspaceForResolution(db *sql.DB, slug, userID string, admin bool) (string, string, int, string) {
 	var ownerID string
 	var orgID sql.NullString
 	err := db.QueryRow(
@@ -711,7 +662,7 @@ func lookupWorkspaceForResolution(db *sql.DB, slug, userID string, isAdmin bool)
 	if err != nil {
 		return "", "", http.StatusNotFound, "not found"
 	}
-	if !isAdmin && ownerID != userID {
+	if !admin && ownerID != userID {
 		return "", "", http.StatusNotFound, "not found"
 	}
 	orgIDStr := ""
@@ -723,16 +674,16 @@ func lookupWorkspaceForResolution(db *sql.DB, slug, userID string, isAdmin bool)
 
 func handleResolvedWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+		if isPAT(auth) && !canVarsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 
 		slug := c.Param("slug")
-		wsOwnerID, orgID, code, msg := lookupWorkspaceForResolution(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		wsOwnerID, orgID, code, msg := lookupWorkspaceForResolution(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
 		}

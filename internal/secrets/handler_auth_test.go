@@ -277,12 +277,8 @@ func TestSecretAuthz_PATManageScopeAntiEnumOrgNonMember(t *testing.T) {
 // are in the vars package (Group 3/7), this test validates the permission
 // logic at the AuthInfo level as a unit test rather than an integration test.
 func TestSecretAuthz_VarsWriteImpliesRead(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"vars:write"},
-	}
-	if !auth.hasVarsRead() {
-		t.Error("PAT with vars:write should satisfy hasVarsRead() per 07-REQ-7.E3")
+	auth := patAuth("user-1", "vars:write")
+	if !canVarsRead(auth) {
+		t.Error("PAT with vars:write should satisfy canVarsRead() per 07-REQ-7.E3")
 	}
 }

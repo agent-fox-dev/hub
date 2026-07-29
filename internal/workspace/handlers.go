@@ -141,7 +141,7 @@ func normalizeDescription(input *string) string {
 // Admin credentials can access any workspace; non-admin credentials can only access
 // workspaces they own. Returns the workspace and nil error on success; on failure
 // writes an error response and returns nil workspace with the response error.
-func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *AuthInfo) (*Workspace, error) {
+func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo) (*Workspace, error) {
 	ws, err := getWorkspaceBySlug(db, slug)
 	if err != nil {
 		return nil, respondError(c, http.StatusInternalServerError, "internal server error")
@@ -150,14 +150,11 @@ func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *AuthI
 		return nil, respondError(c, http.StatusNotFound, "workspace not found")
 	}
 
-	// Admin can access any workspace.
-	if auth.CredType == CredentialAdmin {
+	if isAdmin(auth) {
 		return ws, nil
 	}
 
-	// Non-admin: must own the workspace.
 	if ws.OwnerID != auth.UserID {
-		// Return 404 instead of 403 to prevent slug enumeration.
 		return nil, respondError(c, http.StatusNotFound, "workspace not found")
 	}
 
@@ -167,18 +164,16 @@ func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *AuthI
 // handleCreateWorkspace handles POST /api/v1/workspaces.
 func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// Admin tokens cannot create workspaces.
-		if auth.CredType == CredentialAdmin {
+		if isAdmin(auth) {
 			return respondError(c, http.StatusForbidden, "admin tokens cannot create workspaces; a real user is required as owner")
 		}
 
-		// PAT must have workspaces:create scope.
-		if auth.CredType == CredentialPAT && !auth.hasPermission("workspaces:create") {
+		if isPAT(auth) && !hasScope(auth, "workspaces:create") {
 			return respondError(c, http.StatusForbidden, "PAT requires workspaces:create scope to create workspaces")
 		}
 
@@ -372,14 +367,12 @@ type updatePatchFields struct {
 // (slug, git_url, branch, owner_id).
 func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs require workspaces:write scope to update.
-		// PATs without write access get 404 (anti-enumeration).
-		if auth.CredType == CredentialPAT && !auth.hasWriteAccess() {
+		if isPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -503,23 +496,21 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 // handleListWorkspaces handles GET /api/v1/workspaces.
 func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PAT must have a scope that implies read access.
-		// workspaces:read, workspaces:create, and workspaces:write imply read.
-		// workspaces:delete does NOT imply read — return 404 (anti-enumeration).
-		if auth.CredType == CredentialPAT && !auth.hasReadAccess() {
+		if isPAT(auth) && !hasReadAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		includeArchived := c.QueryParam("include_archived") == "true"
 
 		var workspaces []*Workspace
+		var err error
 
-		if auth.CredType == CredentialAdmin {
+		if isAdmin(auth) {
 			workspaces, err = listAllWorkspaces(db, includeArchived)
 		} else {
 			workspaces, err = listWorkspacesByOwner(db, auth.UserID, includeArchived)
@@ -542,15 +533,12 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 // handleGetWorkspace handles GET /api/v1/workspaces/:slug.
 func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PAT must have a scope that implies read access.
-		// workspaces:read, workspaces:create, and workspaces:write imply read.
-		// workspaces:delete does NOT imply read — return 404 (anti-enumeration).
-		if auth.CredType == CredentialPAT && !auth.hasReadAccess() {
+		if isPAT(auth) && !hasReadAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -571,14 +559,12 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 //   - pending/failed: clean up any partial directory, no git push
 func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs require workspaces:write scope to archive.
-		// PATs without write access get 404 (anti-enumeration).
-		if auth.CredType == CredentialPAT && !auth.hasWriteAccess() {
+		if isPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -649,14 +635,12 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 // handleReactivateWorkspace handles POST /api/v1/workspaces/:slug/reactivate.
 func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs require workspaces:write scope to reactivate.
-		// PATs without write access get 404 (anti-enumeration).
-		if auth.CredType == CredentialPAT && !auth.hasWriteAccess() {
+		if isPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -695,14 +679,12 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 // handleDeleteWorkspace handles DELETE /api/v1/workspaces/:slug.
 func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		auth, err := getAuth(c)
-		if err != nil {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		// PATs require workspaces:delete scope to delete.
-		// PATs without delete access (including workspaces:write) get 404 (anti-enumeration).
-		if auth.CredType == CredentialPAT && !auth.hasDeleteAccess() {
+		if isPAT(auth) && !hasDeleteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 

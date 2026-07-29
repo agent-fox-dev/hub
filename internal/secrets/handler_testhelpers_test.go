@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/txsvc/apikit"
 )
 
 // handlerTestEnv holds a test HTTP server and database for integration tests.
@@ -70,7 +71,7 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	e := echo.New()
 	api := e.Group("/api/v1")
 
-	// Apply test auth middleware that reads AuthInfo from X-Test-Auth header.
+	// Apply test auth middleware that injects apikit.AuthInfo from X-Test-Auth header.
 	api.Use(testAuthMiddleware())
 
 	// Register secrets routes.
@@ -81,19 +82,19 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	return &handlerTestEnv{echo: e, db: db}
 }
 
-// testAuthMiddleware returns middleware that reads AuthInfo from the
-// X-Test-Auth JSON header. If absent, auth context remains unset
-// (simulates an unauthenticated request).
+// testAuthMiddleware returns middleware that reads apikit.AuthInfo from the
+// X-Test-Auth JSON header and injects it via apikit.SetAuthInfo. If absent,
+// auth context remains unset (simulates an unauthenticated request).
 func testAuthMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			authHeader := c.Request().Header.Get("X-Test-Auth")
 			if authHeader != "" {
-				var info AuthInfo
+				var info apikit.AuthInfo
 				if err := json.Unmarshal([]byte(authHeader), &info); err != nil {
 					return echo.NewHTTPError(http.StatusBadRequest, "invalid X-Test-Auth header")
 				}
-				c.Set(authInfoKey, &info)
+				apikit.SetAuthInfo(c, &info)
 			}
 			return next(c)
 		}
@@ -101,7 +102,7 @@ func testAuthMiddleware() echo.MiddlewareFunc {
 }
 
 // doRequest performs an HTTP request against the test server with optional auth.
-func (env *handlerTestEnv) doRequest(t *testing.T, method, path, body string, auth *AuthInfo) *httptest.ResponseRecorder {
+func (env *handlerTestEnv) doRequest(t *testing.T, method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	t.Helper()
 	var bodyReader io.Reader
 	if body != "" {
@@ -123,27 +124,27 @@ func (env *handlerTestEnv) doRequest(t *testing.T, method, path, body string, au
 	return rec
 }
 
-// adminAuth returns an AuthInfo representing an admin token.
-func adminAuth() *AuthInfo {
-	return &AuthInfo{
-		CredType: CredentialAdmin,
+// adminAuth returns an apikit.AuthInfo representing an admin token.
+func adminAuth() *apikit.AuthInfo {
+	return &apikit.AuthInfo{
+		CredentialType: "admin_token",
 	}
 }
 
-// userAuth returns an AuthInfo representing a user API key.
-func userAuth(userID string) *AuthInfo {
-	return &AuthInfo{
-		CredType: CredentialAPIKey,
-		UserID:   userID,
+// userAuth returns an apikit.AuthInfo representing a user API key.
+func userAuth(userID string) *apikit.AuthInfo {
+	return &apikit.AuthInfo{
+		CredentialType: "api_key",
+		UserID:         userID,
 	}
 }
 
-// patAuth returns an AuthInfo representing a PAT with the given permission scopes.
-func patAuth(userID string, permissions ...string) *AuthInfo {
-	return &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      userID,
-		Permissions: permissions,
+// patAuth returns an apikit.AuthInfo representing a PAT with the given permission scopes.
+func patAuth(userID string, permissions ...string) *apikit.AuthInfo {
+	return &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         userID,
+		Permissions:    permissions,
 	}
 }
 
@@ -201,33 +202,6 @@ func parseErrorEnvelope(t *testing.T, rec *httptest.ResponseRecorder) errorEnvel
 	var resp errorEnvelope
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
-	}
-	return resp
-}
-
-// secretJSON represents a secret entry in API responses.
-type secretJSON struct {
-	Key       string `json:"key"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
-
-// parseSecretJSON parses the response body as a single secret JSON object.
-func parseSecretJSON(t *testing.T, rec *httptest.ResponseRecorder) secretJSON {
-	t.Helper()
-	var resp secretJSON
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode secret response: %v", err)
-	}
-	return resp
-}
-
-// parseSecretListJSON parses the response body as a JSON array of secrets.
-func parseSecretListJSON(t *testing.T, rec *httptest.ResponseRecorder) []secretJSON {
-	t.Helper()
-	var resp []secretJSON
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode secret list response: %v", err)
 	}
 	return resp
 }

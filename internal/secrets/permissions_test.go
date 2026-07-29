@@ -36,44 +36,44 @@ func TestPermissions_SecretsScopes(t *testing.T) {
 }
 
 // TestPermissions_SecretsManageImpliesList verifies that secrets:manage implies
-// secrets:list at the handler level (via hasSecretsList OR-check).
+// secrets:list at the handler level (via canSecretsList OR-check).
 // Requirement: 07-REQ-6.1
 func TestPermissions_SecretsManageImpliesList(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"secrets:manage"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"secrets:manage"},
 	}
-	if !auth.hasSecretsList() {
-		t.Error("PAT with secrets:manage should satisfy hasSecretsList()")
+	if !canSecretsList(auth) {
+		t.Error("PAT with secrets:manage should satisfy canSecretsList()")
 	}
 }
 
 // TestPermissions_SecretsManageImpliesWrite verifies that secrets:manage implies
-// secrets:write at the handler level (via hasSecretsWrite OR-check).
+// secrets:write at the handler level (via canSecretsWrite OR-check).
 // Requirement: 07-REQ-6.1
 func TestPermissions_SecretsManageImpliesWrite(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"secrets:manage"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"secrets:manage"},
 	}
-	if !auth.hasSecretsWrite() {
-		t.Error("PAT with secrets:manage should satisfy hasSecretsWrite()")
+	if !canSecretsWrite(auth) {
+		t.Error("PAT with secrets:manage should satisfy canSecretsWrite()")
 	}
 }
 
 // TestPermissions_SecretsManageImpliesDelete verifies that secrets:manage implies
-// secrets:delete at the handler level (via hasSecretsDelete OR-check).
+// secrets:delete at the handler level (via canSecretsDelete OR-check).
 // Requirement: 07-REQ-6.1
 func TestPermissions_SecretsManageImpliesDelete(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"secrets:manage"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"secrets:manage"},
 	}
-	if !auth.hasSecretsDelete() {
-		t.Error("PAT with secrets:manage should satisfy hasSecretsDelete()")
+	if !canSecretsDelete(auth) {
+		t.Error("PAT with secrets:manage should satisfy canSecretsDelete()")
 	}
 }
 
@@ -109,13 +109,13 @@ func TestPermissions_VarsScopes(t *testing.T) {
 // vars:read at the handler level.
 // Requirement: 07-REQ-6.2
 func TestPermissions_VarsManageImpliesRead(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"vars:manage"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"vars:manage"},
 	}
-	if !auth.hasVarsRead() {
-		t.Error("PAT with vars:manage should satisfy hasVarsRead()")
+	if !canVarsRead(auth) {
+		t.Error("PAT with vars:manage should satisfy canVarsRead()")
 	}
 }
 
@@ -123,13 +123,13 @@ func TestPermissions_VarsManageImpliesRead(t *testing.T) {
 // vars:write at the handler level.
 // Requirement: 07-REQ-6.2
 func TestPermissions_VarsManageImpliesWrite(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"vars:manage"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"vars:manage"},
 	}
-	if !auth.hasVarsWrite() {
-		t.Error("PAT with vars:manage should satisfy hasVarsWrite()")
+	if !canVarsWrite(auth) {
+		t.Error("PAT with vars:manage should satisfy canVarsWrite()")
 	}
 }
 
@@ -137,13 +137,13 @@ func TestPermissions_VarsManageImpliesWrite(t *testing.T) {
 // vars:delete at the handler level.
 // Requirement: 07-REQ-6.2
 func TestPermissions_VarsManageImpliesDelete(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"vars:manage"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"vars:manage"},
 	}
-	if !auth.hasVarsDelete() {
-		t.Error("PAT with vars:manage should satisfy hasVarsDelete()")
+	if !canVarsDelete(auth) {
+		t.Error("PAT with vars:manage should satisfy canVarsDelete()")
 	}
 }
 
@@ -151,13 +151,13 @@ func TestPermissions_VarsManageImpliesDelete(t *testing.T) {
 // vars:read at the handler level.
 // Requirement: 07-REQ-6.2
 func TestPermissions_VarsWriteImpliesRead(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"vars:write"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"vars:write"},
 	}
-	if !auth.hasVarsRead() {
-		t.Error("PAT with vars:write should satisfy hasVarsRead()")
+	if !canVarsRead(auth) {
+		t.Error("PAT with vars:write should satisfy canVarsRead()")
 	}
 }
 
@@ -196,29 +196,29 @@ func TestPermissions_IndependentFromWorkspaceScopes(t *testing.T) {
 }
 
 // TestPermissions_SecretsListDoesNotImplyManage verifies that secrets:list alone
-// does NOT satisfy hasSecretsManage. This validates the one-directional implication.
+// does NOT satisfy canSecretsManage. This validates the one-directional implication.
 // Requirement: 07-REQ-6.E2
 func TestPermissions_SecretsListDoesNotImplyManage(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"secrets:list"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"secrets:list"},
 	}
-	if auth.hasSecretsManage() {
-		t.Error("PAT with only secrets:list should NOT satisfy hasSecretsManage()")
+	if canSecretsManage(auth) {
+		t.Error("PAT with only secrets:list should NOT satisfy canSecretsManage()")
 	}
 }
 
 // TestPermissions_VarsDeleteDoesNotImplyRead verifies that vars:delete alone
-// does NOT satisfy hasVarsRead. This ensures vars:delete is independent.
+// does NOT satisfy canVarsRead. This ensures vars:delete is independent.
 // Requirement: 07-REQ-6.2
 func TestPermissions_VarsDeleteDoesNotImplyRead(t *testing.T) {
-	auth := &AuthInfo{
-		CredType:    CredentialPAT,
-		UserID:      "user-1",
-		Permissions: []string{"vars:delete"},
+	auth := &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         "user-1",
+		Permissions:    []string{"vars:delete"},
 	}
-	if auth.hasVarsRead() {
-		t.Error("PAT with only vars:delete should NOT satisfy hasVarsRead()")
+	if canVarsRead(auth) {
+		t.Error("PAT with only vars:delete should NOT satisfy canVarsRead()")
 	}
 }
