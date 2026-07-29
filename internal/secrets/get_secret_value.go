@@ -1,6 +1,10 @@
 package secrets
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
 
 // GetSecretValue retrieves the plaintext value for a secret identified by
 // ownerType, ownerID, and key. It performs a case-insensitive key lookup,
@@ -15,9 +19,26 @@ import "fmt"
 //
 // Requirements: 09-REQ-5.1, 09-REQ-5.2, 09-REQ-5.3
 func (s *Store) GetSecretValue(ownerType, ownerID, key string) (string, error) {
-	// Stub: will be implemented in task group 3.
-	_ = ownerType
-	_ = ownerID
-	_ = key
-	return "", fmt.Errorf("GetSecretValue: not implemented")
+	if key == "" {
+		return "", fmt.Errorf("key must not be empty")
+	}
+
+	var encoded string
+	err := s.db.QueryRow(
+		"SELECT value FROM secrets WHERE owner_type = ? AND owner_id = ? AND UPPER(key) = ?",
+		ownerType, ownerID, strings.ToUpper(key),
+	).Scan(&encoded)
+	if err == sql.ErrNoRows {
+		return "", &NotFoundError{Key: key}
+	}
+	if err != nil {
+		return "", fmt.Errorf("get secret %q: %w", key, err)
+	}
+
+	decoded, err := DecodeValue(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decode secret %q: %w", key, err)
+	}
+
+	return decoded, nil
 }
