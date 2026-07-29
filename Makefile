@@ -35,6 +35,7 @@ lint:
 build:
 	go build $(LDFLAGS) -o bin/afc ./cmd/afc
 	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
+	cp bin/afc ${DEVEL}/tools/afc
 
 # Build the af-hub container locally 
 buildc: build
