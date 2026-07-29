@@ -37,7 +37,9 @@ build:
 	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 
 # Build the af-hub container locally 
-build-container: build
+buildc: build
+	-cd ../apikit && git push origin main
+	-git push origin main
 	podman build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg BUILD=$(COMMIT) \
