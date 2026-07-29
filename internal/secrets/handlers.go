@@ -449,29 +449,107 @@ func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 	}
 }
 
+// --- Core variable CRUD operations ---
+
+func doCreateVars(c echo.Context, store *Store, ownerType, ownerID string) error {
+	var req createRequest
+	if err := c.Bind(&req); err != nil {
+		return respondError(c, http.StatusBadRequest, "invalid request body")
+	}
+	entries, err := store.CreateVariables(ownerType, ownerID, req.Entries)
+	if err != nil {
+		code := classifyStoreError(err)
+		return respondError(c, code, storeErrorMessage(err, code))
+	}
+	return c.JSON(http.StatusCreated, entries)
+}
+
+func doListVars(c echo.Context, store *Store, ownerType, ownerID string) error {
+	entries, err := store.ListVariables(ownerType, ownerID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	return c.JSON(http.StatusOK, entries)
+}
+
+func doUpdateVar(c echo.Context, store *Store, ownerType, ownerID string) error {
+	key := c.Param("key")
+	var req updateSecretRequest
+	if err := c.Bind(&req); err != nil {
+		return respondError(c, http.StatusBadRequest, "invalid request body")
+	}
+	if req.Value == nil {
+		return respondError(c, http.StatusBadRequest, "value field is required")
+	}
+	entry, err := store.UpdateVariable(ownerType, ownerID, key, *req.Value)
+	if err != nil {
+		code := classifyStoreError(err)
+		return respondError(c, code, storeErrorMessage(err, code))
+	}
+	return c.JSON(http.StatusOK, entry)
+}
+
+func doDeleteVar(c echo.Context, store *Store, ownerType, ownerID string) error {
+	key := c.Param("key")
+	err := store.DeleteVariable(ownerType, ownerID, key)
+	if err != nil {
+		code := classifyStoreError(err)
+		return respondError(c, code, storeErrorMessage(err, code))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 // --- User-scoped variable handlers ---
 
 func handleCreateUserVars(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsManage() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doCreateVars(c, store, "user", auth.UserID)
 	}
 }
 
 func handleListUserVars(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doListVars(c, store, "user", auth.UserID)
 	}
 }
 
 func handleUpdateUserVar(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsWrite() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doUpdateVar(c, store, "user", auth.UserID)
 	}
 }
 
 func handleDeleteUserVar(store *Store) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsDelete() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		return doDeleteVar(c, store, "user", auth.UserID)
 	}
 }
 
@@ -479,25 +557,69 @@ func handleDeleteUserVar(store *Store) echo.HandlerFunc {
 
 func handleCreateOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsManage() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doCreateVars(c, store, "org", orgID)
 	}
 }
 
 func handleListOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doListVars(c, store, "org", orgID)
 	}
 }
 
 func handleUpdateOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsWrite() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doUpdateVar(c, store, "org", orgID)
 	}
 }
 
 func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsDelete() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doDeleteVar(c, store, "org", orgID)
 	}
 }
 
@@ -505,32 +627,121 @@ func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 
 func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsManage() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doCreateVars(c, store, "workspace", slug)
 	}
 }
 
 func handleListWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doListVars(c, store, "workspace", slug)
 	}
 }
 
 func handleUpdateWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsWrite() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doUpdateVar(c, store, "workspace", slug)
 	}
 }
 
 func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsDelete() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		slug := c.Param("slug")
+		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+		return doDeleteVar(c, store, "workspace", slug)
 	}
 }
 
 // --- Resolved variables handler ---
 
+// lookupWorkspaceForResolution retrieves a workspace's owner_id and org_id
+// for the resolved variables endpoint. Returns (ownerID, orgID, httpCode, message).
+// orgID may be empty if the workspace has no org association.
+func lookupWorkspaceForResolution(db *sql.DB, slug, userID string, isAdmin bool) (string, string, int, string) {
+	var ownerID string
+	var orgID sql.NullString
+	err := db.QueryRow(
+		"SELECT owner_id, org_id FROM workspaces WHERE slug = ?", slug,
+	).Scan(&ownerID, &orgID)
+	if err != nil {
+		return "", "", http.StatusNotFound, "not found"
+	}
+	if !isAdmin && ownerID != userID {
+		return "", "", http.StatusNotFound, "not found"
+	}
+	orgIDStr := ""
+	if orgID.Valid {
+		orgIDStr = orgID.String
+	}
+	return ownerID, orgIDStr, 0, ""
+}
+
 func handleResolvedWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		return respondError(c, http.StatusNotImplemented, "not implemented")
+		auth, err := getAuth(c)
+		if err != nil {
+			return respondError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if auth.CredType == CredentialPAT && !auth.hasVarsRead() {
+			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+
+		slug := c.Param("slug")
+		wsOwnerID, orgID, code, msg := lookupWorkspaceForResolution(db, slug, auth.UserID, auth.CredType == CredentialAdmin)
+		if code != 0 {
+			return respondError(c, code, msg)
+		}
+
+		resolved, err := store.ResolveVariables(wsOwnerID, orgID, slug)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+
+		return c.JSON(http.StatusOK, resolved)
 	}
 }
