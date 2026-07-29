@@ -40,6 +40,16 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--org` | no | string | Organization slug to associate the workspace with (resolved to UUID) |
 | `--display-name` | no | string | Human-readable label; defaults to slug value if omitted |
 | `--description` | no | string | Free-form text describing the workspace; defaults to empty string |
+| `--git-pat` | no | string | Personal access token for authenticating against a private repository |
+| `--git-username` | no | string | Git username for HTTP basic auth (must be paired with `--git-password`) |
+| `--git-password` | no | string | Git password for HTTP basic auth (must be paired with `--git-username`) |
+
+**Credential flag rules:**
+
+- `--git-pat` and `--git-username`/`--git-password` are **mutually exclusive**.
+- `--git-username` and `--git-password` must be provided **together**.
+- Credential flags require `--git-url` to use the `https://` scheme.
+- Empty credential values are rejected.
 
 **Behavior:**
 
@@ -48,6 +58,8 @@ afc workspace create --slug <slug> --git-url <url> [flags]
   user's org list before inclusion in the request.
 - When `--org` is omitted, the server automatically assigns the workspace to
   the user's personal organization.
+- When credential flags are provided, the server validates them against the
+  remote repository before creating the workspace.
 - Prints the created workspace JSON to stdout.
 
 **Exit Codes:**
@@ -55,7 +67,7 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | Code | Condition |
 |------|-----------|
 | 0 | Workspace created successfully |
-| 1 | Missing required flags, API error (4xx/5xx), network error, or timeout |
+| 1 | Missing required flags, credential validation error, API error (4xx/5xx), network error, or timeout |
 
 ---
 

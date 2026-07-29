@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -70,6 +71,9 @@ func newCreateCmd() *cobra.Command {
 		org         string
 		displayName string
 		description string
+		gitPAT      string
+		gitUsername  string
+		gitPassword string
 	)
 
 	cmd := &cobra.Command{
@@ -83,6 +87,45 @@ func newCreateCmd() *cobra.Command {
 			}
 			if slug == "" {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "--slug flag is required"))
+			}
+
+			hasPAT := cmd.Flags().Changed("git-pat")
+			hasUsername := cmd.Flags().Changed("git-username")
+			hasPassword := cmd.Flags().Changed("git-password")
+			hasAnyCred := hasPAT || hasUsername || hasPassword
+
+			// Mutual exclusion: --git-pat and --git-username/--git-password
+			// cannot be used together.
+			if hasPAT && (hasUsername || hasPassword) {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--git-pat and --git-username/--git-password are mutually exclusive"))
+			}
+
+			// Pair completeness: --git-username and --git-password must both
+			// be provided together.
+			if hasUsername != hasPassword {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--git-username and --git-password must be provided together"))
+			}
+
+			// Empty value validation.
+			if hasPAT && gitPAT == "" {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--git-pat value must not be empty"))
+			}
+			if hasUsername && gitUsername == "" {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--git-username value must not be empty"))
+			}
+			if hasPassword && gitPassword == "" {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--git-username and --git-password values must not be empty"))
+			}
+
+			// HTTPS requirement: credentials require an HTTPS git_url.
+			if hasAnyCred && !strings.HasPrefix(gitURL, "https://") {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"git credentials require an HTTPS git_url"))
 			}
 
 			client, err := apikit.CLIClientFromCmd(cmd)
@@ -108,6 +151,17 @@ func newCreateCmd() *cobra.Command {
 				body["org_id"] = org
 			}
 
+			// Add credential fields to request body.
+			if hasPAT {
+				body["git_pat"] = gitPAT
+			}
+			if hasUsername {
+				body["git_username"] = gitUsername
+			}
+			if hasPassword {
+				body["git_password"] = gitPassword
+			}
+
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces", body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
@@ -123,6 +177,9 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&org, "org", "", "Organization slug (optional)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "Workspace display name (optional)")
 	cmd.Flags().StringVar(&description, "description", "", "Workspace description (optional)")
+	cmd.Flags().StringVar(&gitPAT, "git-pat", "", "Personal access token for private repo (optional)")
+	cmd.Flags().StringVar(&gitUsername, "git-username", "", "Git username for private repo (optional)")
+	cmd.Flags().StringVar(&gitPassword, "git-password", "", "Git password for private repo (optional)")
 
 	return cmd
 }
