@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
 // CloneJob represents a unit of work for the clone job queue.
@@ -27,9 +31,10 @@ type CloneJob struct {
 //   - depth: clone depth (1 for shallow)
 //   - singleBranch: whether to clone only one branch
 //   - refName: branch reference name (e.g. "refs/heads/main"); empty for default
+//   - auth: optional transport.AuthMethod for authentication (nil = public repo)
 //
 // Returns the 40-character hex SHA of the HEAD commit, or an error.
-type CloneFuncType func(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string) (headSHA string, err error)
+type CloneFuncType func(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string, auth transport.AuthMethod) (headSHA string, err error)
 
 // cloneFn is the injectable clone function used by processCloneJob.
 // Tests replace it to capture arguments or simulate errors. The production
@@ -156,6 +161,16 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 		return
 	}
 
+	// Step 2.5: Look up stored git credentials (09-REQ-6.1, 09-REQ-6.2, 09-REQ-6.3).
+	store := secrets.NewStore(db)
+	auth, authErr := resolveCloneAuth(store, slug)
+	if authErr != nil {
+		log.Printf("clone job %q: credential lookup failed: %v", slug, authErr)
+		errMsg := fmt.Sprintf("credential lookup failed: %v", authErr)
+		_ = updateCloneStatus(db, slug, "failed", nil, &errMsg)
+		return
+	}
+
 	// Step 3: Create workspace directory and trunk subdirectory.
 	trunkDir := filepath.Join(wsDir, "trunk")
 	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
@@ -173,7 +188,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 		refName = "refs/heads/" + *job.Branch
 	}
 
-	headSHA, cloneErr := cloneFn(ctx, trunkDir, job.GitURL, depth, singleBranch, refName)
+	headSHA, cloneErr := cloneFn(ctx, trunkDir, job.GitURL, depth, singleBranch, refName, auth)
 
 	// Step 5: Handle result.
 	if cloneErr != nil {

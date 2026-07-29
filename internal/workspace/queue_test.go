@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // ========================================================================
@@ -83,7 +85,7 @@ func TestJobQueue_ConcurrentWorkerLimit(t *testing.T) {
 	var processed int32
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		c := atomic.AddInt32(&current, 1)
 		defer atomic.AddInt32(&current, -1)
 
@@ -158,7 +160,7 @@ func TestJobQueue_WorkerLifecycle(t *testing.T) {
 	// Verify workers are running by processing a job.
 	var processed int32
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		atomic.AddInt32(&processed, 1)
 		return "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", nil
 	}
@@ -231,7 +233,7 @@ func TestJobQueue_GracefulShutdown(t *testing.T) {
 	// a slow network clone.
 	var started int32
 	oldFn := cloneFn
-	cloneFn = func(fnCtx context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(fnCtx context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		atomic.AddInt32(&started, 1)
 		// Block until context is cancelled (simulating a hang).
 		<-fnCtx.Done()

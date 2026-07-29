@@ -7,16 +7,20 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // defaultCloneFn is the production implementation of CloneFuncType.
 // It uses go-git's PlainCloneContext to perform a shallow clone with
-// context cancellation support. Returns the 40-character hex SHA of
+// context cancellation support. The auth parameter is passed through
+// to CloneOptions.Auth; when nil, the clone proceeds without
+// authentication (public repo). Returns the 40-character hex SHA of
 // the HEAD commit on success.
-func defaultCloneFn(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string) (string, error) {
+func defaultCloneFn(ctx context.Context, path string, url string, depth int, singleBranch bool, refName string, auth transport.AuthMethod) (string, error) {
 	opts := &git.CloneOptions{
 		URL:   url,
 		Depth: depth,
+		Auth:  auth,
 	}
 	if singleBranch {
 		opts.SingleBranch = true

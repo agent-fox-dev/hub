@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // ========================================================================
@@ -157,7 +159,7 @@ func TestCloneWorker_SuccessfulClone(t *testing.T) {
 	fakeHeadSHA := "abcdef1234567890abcdef1234567890abcdef12"
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, depth int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, depth int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		atomic.AddInt32(&called, 1)
 		capturedDepth = depth
 		return fakeHeadSHA, nil
@@ -221,7 +223,7 @@ func TestCloneWorker_HeadSHARecorded(t *testing.T) {
 
 	expectedSHA := "0123456789abcdef0123456789abcdef01234567"
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return expectedSHA, nil
 	}
 	defer func() { cloneFn = oldFn }()
@@ -272,7 +274,7 @@ func TestCloneWorker_BranchCloneOptions(t *testing.T) {
 	var called bool
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, singleBranch bool, refName string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, singleBranch bool, refName string, _ transport.AuthMethod) (string, error) {
 		called = true
 		capturedSingleBranch = singleBranch
 		capturedRefName = refName
@@ -321,7 +323,7 @@ func TestCloneWorker_DefaultBranchCloneOptions(t *testing.T) {
 	var called bool
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, singleBranch bool, refName string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, singleBranch bool, refName string, _ transport.AuthMethod) (string, error) {
 		called = true
 		capturedSingleBranch = singleBranch
 		capturedRefName = refName
@@ -368,7 +370,7 @@ func TestCloneWorker_FailedClone(t *testing.T) {
 
 	// Mock clone function that returns an error.
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return "", fmt.Errorf("repository not found")
 	}
 	defer func() { cloneFn = oldFn }()
@@ -419,7 +421,7 @@ func TestCloneWorker_FailedClone_RemovesPartialDir(t *testing.T) {
 
 	// Mock clone function that creates partial files then fails.
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, path string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, path string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		// Simulate partial clone: create some files then error.
 		if err := os.MkdirAll(path, 0o755); err == nil {
 			_ = os.WriteFile(filepath.Join(path, "partial.txt"), []byte("partial"), 0o644)
@@ -474,7 +476,7 @@ func TestCloneWorker_FailedClone_UnreachableURL(t *testing.T) {
 	}
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return "", fmt.Errorf("unable to access 'https://invalid.example.com/nonexistent.git': Could not resolve host")
 	}
 	defer func() { cloneFn = oldFn }()
@@ -516,7 +518,7 @@ func TestCloneWorker_FailedClone_BranchNotFound(t *testing.T) {
 	}
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return "", fmt.Errorf("reference not found")
 	}
 	defer func() { cloneFn = oldFn }()
@@ -560,7 +562,7 @@ func TestCloneWorker_FailedClone_HeadError(t *testing.T) {
 	// Mock clone function: clone "succeeds" but returns empty SHA (simulating
 	// a Head() error in the real implementation).
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, path string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, path string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		// Create the directory to simulate the clone succeeded at the fs level.
 		_ = os.MkdirAll(path, 0o755)
 		// Return error to signal a Head() error.
@@ -618,7 +620,7 @@ func TestCloneWorker_IdempotentSkip(t *testing.T) {
 	// Clone function should NOT be called.
 	var called bool
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		called = true
 		return "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", nil
 	}
@@ -669,7 +671,7 @@ func TestCloneWorker_StatusTransition_PendingToCloning(t *testing.T) {
 	// the clone function is called.
 	var statusDuringClone string
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		// Read clone_status from DB during the clone operation.
 		status, _, _, err := getCloneFields(db, ws.Slug)
 		if err != nil {
@@ -710,7 +712,7 @@ func TestCloneWorker_StatusTransition_CloningToReady(t *testing.T) {
 	}
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", nil
 	}
 	defer func() { cloneFn = oldFn }()
@@ -747,7 +749,7 @@ func TestCloneWorker_StatusTransition_CloningToFailed(t *testing.T) {
 	}
 
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return "", fmt.Errorf("clone failed")
 	}
 	defer func() { cloneFn = oldFn }()

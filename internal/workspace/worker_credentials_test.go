@@ -185,9 +185,11 @@ func TestWorkerCredential_ProcessCloneJob_PassesAuth(t *testing.T) {
 
 	// Install a clone function spy that records the call.
 	var cloneCalled bool
+	var capturedAuth transport.AuthMethod
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, auth transport.AuthMethod) (string, error) {
 		cloneCalled = true
+		capturedAuth = auth
 		return "abcdef1234567890abcdef1234567890abcdef12", nil
 	}
 	defer func() { cloneFn = oldFn }()
@@ -202,26 +204,20 @@ func TestWorkerCredential_ProcessCloneJob_PassesAuth(t *testing.T) {
 		t.Fatal("clone function was not called")
 	}
 
-	// Verify that the resolved auth would have been BasicAuth with PAT.
-	// Once CloneFuncType is extended (task group 6), this test should
-	// capture the auth argument passed to cloneFn and assert its contents.
-	resolvedAuth, err := resolveCloneAuth(store, "auth-ws")
-	if err != nil {
-		t.Fatalf("resolveCloneAuth() returned error: %v", err)
-	}
-	if resolvedAuth == nil {
-		t.Fatal("resolveCloneAuth() returned nil; want BasicAuth with PAT credentials")
+	// Verify that processCloneJob passed the correct auth to cloneFn.
+	if capturedAuth == nil {
+		t.Fatal("cloneFn was called with nil auth; want BasicAuth with PAT credentials")
 	}
 
-	basicAuth, ok := resolvedAuth.(*githttp.BasicAuth)
+	basicAuth, ok := capturedAuth.(*githttp.BasicAuth)
 	if !ok {
-		t.Fatalf("resolved auth is %T; want *http.BasicAuth", resolvedAuth)
+		t.Fatalf("auth is %T; want *http.BasicAuth", capturedAuth)
 	}
 	if basicAuth.Username != "x-token-auth" {
-		t.Errorf("resolved auth.Username = %q; want %q", basicAuth.Username, "x-token-auth")
+		t.Errorf("auth.Username = %q; want %q", basicAuth.Username, "x-token-auth")
 	}
 	if basicAuth.Password != "ghp_abc123" {
-		t.Errorf("resolved auth.Password = %q; want %q", basicAuth.Password, "ghp_abc123")
+		t.Errorf("auth.Password = %q; want %q", basicAuth.Password, "ghp_abc123")
 	}
 }
 
@@ -302,9 +298,11 @@ func TestWorkerCredential_Reclone_UsesCredentials(t *testing.T) {
 
 	// Install a clone function spy.
 	var cloneCalled bool
+	var capturedAuth transport.AuthMethod
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, auth transport.AuthMethod) (string, error) {
 		cloneCalled = true
+		capturedAuth = auth
 		return "abcdef1234567890abcdef1234567890abcdef12", nil
 	}
 	defer func() { cloneFn = oldFn }()
@@ -319,24 +317,20 @@ func TestWorkerCredential_Reclone_UsesCredentials(t *testing.T) {
 		t.Fatal("clone function was not called for reclone")
 	}
 
-	// Verify that resolveCloneAuth still returns the stored PAT credentials.
-	auth, err := resolveCloneAuth(store, "reclone-ws")
-	if err != nil {
-		t.Fatalf("resolveCloneAuth() returned error: %v", err)
-	}
-	if auth == nil {
-		t.Fatal("resolveCloneAuth() returned nil; credentials should persist across reclone")
+	// Verify that processCloneJob passed the correct auth to cloneFn.
+	if capturedAuth == nil {
+		t.Fatal("cloneFn was called with nil auth; credentials should persist across reclone")
 	}
 
-	basicAuth, ok := auth.(*githttp.BasicAuth)
+	basicAuth, ok := capturedAuth.(*githttp.BasicAuth)
 	if !ok {
-		t.Fatalf("resolved auth is %T; want *http.BasicAuth", auth)
+		t.Fatalf("auth is %T; want *http.BasicAuth", capturedAuth)
 	}
 	if basicAuth.Username != "x-token-auth" {
-		t.Errorf("resolved auth.Username = %q; want %q", basicAuth.Username, "x-token-auth")
+		t.Errorf("auth.Username = %q; want %q", basicAuth.Username, "x-token-auth")
 	}
 	if basicAuth.Password != "ghp_reclone_token" {
-		t.Errorf("resolved auth.Password = %q; want %q", basicAuth.Password, "ghp_reclone_token")
+		t.Errorf("auth.Password = %q; want %q", basicAuth.Password, "ghp_reclone_token")
 	}
 }
 
@@ -367,7 +361,7 @@ func TestWorkerCredential_CloneAuthError(t *testing.T) {
 
 	// Clone function returns an auth error.
 	oldFn := cloneFn
-	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string) (string, error) {
+	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
 		return "", transport.ErrAuthenticationRequired
 	}
 	defer func() { cloneFn = oldFn }()

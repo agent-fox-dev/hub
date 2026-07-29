@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // TS-05-SMOKE-1: Happy path: workspace is created via POST /api/v1/workspaces,
@@ -32,7 +34,7 @@ func TestSmoke05_CreateAndCloneReady(t *testing.T) {
 	defer cancel()
 
 	origCloneFn := cloneFn
-	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string) (string, error) {
+	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string, _ transport.AuthMethod) (string, error) {
 		// Create a fake trunk dir to simulate go-git behaviour.
 		_ = os.MkdirAll(path, 0o755)
 		return fakeSHA, nil
@@ -181,7 +183,7 @@ func TestSmoke05_ReactivateAndReclone(t *testing.T) {
 	defer cancel()
 
 	origCloneFn := cloneFn
-	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string) (string, error) {
+	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string, _ transport.AuthMethod) (string, error) {
 		_ = os.MkdirAll(path, 0o755)
 		return fakeSHA, nil
 	}
@@ -324,7 +326,7 @@ func TestSmoke05_FullLifecycle(t *testing.T) {
 	defer cancel()
 
 	origCloneFn := cloneFn
-	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string) (string, error) {
+	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string, _ transport.AuthMethod) (string, error) {
 		_ = os.MkdirAll(path, 0o755)
 		cloneCount++
 		if cloneCount == 1 {
@@ -441,7 +443,7 @@ func TestSmoke05_CloneFailure(t *testing.T) {
 	defer cancel()
 
 	origCloneFn := cloneFn
-	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string) (string, error) {
+	cloneFn = func(_ context.Context, path, url string, depth int, singleBranch bool, refName string, _ transport.AuthMethod) (string, error) {
 		return "", fmt.Errorf("repository not found")
 	}
 	defer func() { cloneFn = origCloneFn }()
