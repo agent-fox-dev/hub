@@ -1,0 +1,326 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"Secrets and Variables\" PRD is comprehensive and well-structured. It clearly defines intent, goals, non-goals, functional requirements (schema, key/value constraints, authorization, permissions, REST endpoints, request/response formats, error handling, resolution logic), tech stack, and dependencies. All major sections are present and of high quality. The spec is sufficiently detailed to proceed to artifact generation, with only minor clarifying questions worth raising to eliminate any remaining ambiguity.",
+      "gaps": [
+        "The `owner_id` column uses workspace slug (a mutable string) rather than a stable UUID for workspace-scoped records \u2014 this could cause data orphaning if a workspace slug changes. The PRD does not address referential integrity or foreign key constraints for the `owner_id` values across ownership tiers.",
+        "The `GET /api/v1/user/vars` list endpoint shows `vars:read` as sufficient, but `vars:read` implies listing. The `secrets:list` scope grants listing but secrets have no standalone read scope. The asymmetry between secrets (list = names only, no value read scope) and variables (read = names + values) is intentional per the non-goals, but the permission table for `vars:read` says 'List and read variable values' while the secrets list only returns names \u2014 this distinction should be confirmed as deliberate and is not a blocker.",
+        "No testing strategy or test tooling is specified in the Tech Stack section (e.g., Go's `testing` package, `httptest`, integration test approach). Absence of test tooling guidance may result in inconsistent test artifacts.",
+        "The resolved variables endpoint (`GET /api/v1/workspaces/:slug/vars/resolved`) does not document how the workspace's `org_id` is looked up internally (i.e., which store/table provides the org association), though the `01_workspaces` dependency implies this. A brief note on the internal lookup chain would eliminate ambiguity for implementers.",
+        "The PRD does not specify behavior when the POST (create) `entries` array contains duplicate keys within the same request body (e.g., two entries with the same key in one call). It only addresses duplicate keys across calls (HTTP 409).",
+        "The `workspace_write_delete` active spec covers workspace-scoped PAT permissions and uses `apikit.Permission`. The new `secrets:*` and `vars:*` scopes registered here should be confirmed as non-overlapping with any scopes defined or implied in `workspace_write_delete`."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the intended behavior when the POST request body contains duplicate keys within the same `entries` array (e.g., two objects with `key: 'DB_HOST'` in a single call)?",
+          "context": "The PRD specifies HTTP 409 for creating a key that already exists at the same scope, but does not address intra-request duplicates. Implementers need a deterministic rule (e.g., reject the entire request with 400, use last-wins, or error on the specific duplicate entry).",
+          "options": [
+            "Reject the entire request with HTTP 400 (preferred \u2014 fail fast)",
+            "Use last-wins (silently accept the last value for the duplicate key)",
+            "Return HTTP 409 for the duplicate key within the batch"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should the `secrets` and `variables` tables have foreign key constraints on `owner_id`, or is referential integrity enforced at the application layer only?",
+          "context": "The `owner_id` for workspace-scoped rows stores a workspace slug (mutable string), not a UUID. If a workspace slug changes (or a workspace is deleted), orphaned secrets/variables could accumulate. Clarifying whether cascading deletes or application-layer cleanup are expected will affect the schema and store implementation.",
+          "options": [
+            "Application-layer cleanup only (delete secrets/variables when the owner is deleted)",
+            "Add SQLite foreign keys with ON DELETE CASCADE (requires slug to be the canonical workspace PK)",
+            "No cleanup required \u2014 orphaned rows are acceptable for now"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should test tooling (e.g., Go `testing` + `httptest`, a specific integration test pattern, or a test database setup) be specified in the Tech Stack section?",
+          "context": "The Tech Stack section names the language, database, and framework but omits testing tooling. Specifying expected test patterns (unit vs. integration, use of in-memory SQLite for tests, etc.) ensures generated test artifacts are consistent with the rest of the hub codebase.",
+          "options": [
+            "Go standard `testing` package + `httptest` for handler tests (same as hub)",
+            "Integration tests against a real SQLite file",
+            "No test tooling preference \u2014 leave to implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "The `workspace_write_delete` active spec registers PAT permission scopes for workspace operations via `apikit.Permission`. Do the new `secrets:*` and `vars:*` scopes need to be coordinated with or depend on that spec to avoid conflicts in apikit's permission registry?",
+          "context": "The cross-spec landscape shows `workspace_write_delete` also deals with PAT scopes and `apikit.Permission`. If both specs register scopes with apikit independently, there may be ordering dependencies or registry conflicts during hub initialization.",
+          "options": [
+            "Secrets/Variables scopes are fully independent \u2014 no coordination needed",
+            "Add `workspace_write_delete` as a dependency to ensure scopes are registered in the correct order",
+            "Merge scope registration into a shared initialization step (new spec or hub bootstrap)"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD that covers the full subsystem comprehensively. Intent is clear, goals are concrete, non-goals are explicit, the database schema is fully specified, REST API endpoints are tabulated with permissions, error codes are enumerated, and the tech stack is named. The document is largely self-consistent and would give an implementer enough detail to build the subsystem without significant ambiguity. A small number of minor gaps exist around cascading delete behavior ordering, the exact shape of the POST 201 response for secrets vs. variables, PATCH behavior on a non-existent key, and the scope-limit enforcement (100 entries per owner) error code \u2014 none of which block implementation but would benefit from clarification.",
+      "gaps": [
+        "The POST 201 response body shape for secrets is described as 'created entries (secrets omit value)' but no JSON example is provided \u2014 unlike variables and the list endpoint. The exact field set returned is ambiguous.",
+        "PATCH on a non-existent key is not explicitly addressed in the error-handling table. It is unclear whether this returns 404 or some other status.",
+        "The per-owner 100-entry limit is defined as a constraint but the HTTP status code returned when it is exceeded is not specified (presumably 400 or 422, but this should be explicit).",
+        "Cascading delete responsibility is mentioned ('application must delete all associated secrets and variables') but the ordering or transactional guarantee is not described \u2014 e.g., does the secrets/variables deletion happen inside the same DB transaction as the parent resource deletion?",
+        "The resolved endpoint response omits `created_at` / `updated_at` fields in the example, while the standard list response includes them. It is not clear whether those timestamps are included in the resolved response or intentionally omitted.",
+        "There is no description of how slug-rename migrations for workspace owner_id are triggered or sequenced \u2014 just that 'the application layer is responsible.' No pointer to where this is handled."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the exact JSON shape returned in the HTTP 201 response body for a successful POST to a secrets endpoint?",
+          "context": "The PRD says secrets omit 'value' but does not provide a JSON example. Implementers need to know whether the response includes created_at, updated_at, owner_type, owner_id, or just key and timestamps.",
+          "options": [
+            "Return [{\"key\": \"...\", \"created_at\": \"...\", \"updated_at\": \"...\"}] mirroring the GET list shape",
+            "Return the full entry object minus value (key, owner_type, owner_id, created_at, updated_at)",
+            "Return only HTTP 201 with no body"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What HTTP status code should be returned when a PATCH request targets a key that does not exist at the given scope?",
+          "context": "The error table covers 404 for 'key not found' generically, but PATCH is not explicitly called out. Confirming this prevents inconsistent handler implementations.",
+          "options": [
+            "404 Not Found",
+            "400 Bad Request",
+            "409 Conflict"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What HTTP status code and error body should be returned when a POST request would exceed the 100-entry-per-owner limit?",
+          "context": "The 100-entry cap is specified as a constraint but the corresponding error response is missing from the error-handling table.",
+          "options": [
+            "400 Bad Request with a descriptive message",
+            "422 Unprocessable Entity",
+            "409 Conflict"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Does the resolved variables response (/workspaces/:slug/vars/resolved) include created_at and updated_at timestamps for each entry, or are those fields intentionally omitted?",
+          "context": "The list response example includes timestamps but the resolved response example only shows key, value, and origin. Consistency matters for API clients.",
+          "options": [
+            "Include created_at and updated_at (consistent with list)",
+            "Omit timestamps \u2014 origin is the only extra field needed",
+            "Make timestamps optional/nullable in the resolved response"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should cascading deletion of secrets and variables when a parent resource (user/org/workspace) is deleted happen inside the same database transaction as the parent resource deletion?",
+          "context": "The PRD says the application layer is responsible but does not specify transactional guarantees. A crash between parent deletion and child deletion could leave orphaned rows.",
+          "options": [
+            "Yes \u2014 wrap parent deletion and child secrets/variables deletion in a single transaction",
+            "No \u2014 best-effort sequential deletion is acceptable; orphan rows can be cleaned up later",
+            "Defer this decision to the implementing team"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "When a workspace slug changes, what mechanism triggers the migration of owner_id values in the secrets and variables tables?",
+          "context": "The PRD notes the application layer is responsible for migrating owner_id on slug rename but does not point to where or how this is implemented.",
+          "options": [
+            "The workspace update handler in 01_workspaces calls the secrets/variables store to rename owner_id atomically",
+            "A separate migration job/script handles it out-of-band",
+            "Slug renames are not currently supported; this is future work"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD. It covers intent, goals, non-goals, database schema, key/value constraints, authorization model, all REST endpoints with request/response shapes, error handling, resolution logic, cascading deletion, tech stack, and dependencies with exceptional thoroughness. The clarifications section proactively addresses 17 edge cases. Only a few minor gaps remain that could improve implementer confidence but are not blockers.",
+      "gaps": [
+        "Listing order is unspecified \u2014 GET list endpoints do not define a sort order (e.g., alphabetical by key, or insertion order by created_at). Implementers may produce inconsistent results across runs.",
+        "Concurrent write safety is not addressed \u2014 the spec does not describe how the 100-entry-per-scope limit check and the subsequent INSERT are made atomic (e.g., database transaction, SELECT FOR UPDATE equivalent, or SQLite's serialized writes).",
+        "PATCH 200 response shape for secrets is implied ('same shape as a single list entry') but never shown with an explicit example, unlike variables.",
+        "The resolved endpoint authorization check is described for PATs, but it is not explicitly stated whether admin tokens and API keys can also call GET /workspaces/:slug/vars/resolved \u2014 the pattern should be confirmed for completeness.",
+        "Maximum number of entries in a single POST `entries` array is not specified separately from the per-scope cap of 100 (they may be the same, but it is not stated).",
+        "The spec does not address what happens when a PATCH request body is missing the `value` field or contains an empty string \u2014 is an empty string a valid value?"
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What sort order should GET list endpoints use when returning secrets or variables?",
+          "context": "Without a defined order, different implementations may return entries in different sequences, making tests fragile and API consumers unable to rely on ordering.",
+          "options": [
+            "Alphabetical ascending by key (case-insensitive)",
+            "Insertion order (ascending created_at)",
+            "Ascending updated_at",
+            "No guaranteed order (clients must sort)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "How is the 100-entry-per-scope limit enforced atomically to prevent race conditions in concurrent POST requests?",
+          "context": "Two simultaneous POST requests that each check the count and see 99 entries could both succeed and push the scope to 101. SQLite's serialized write mode may handle this implicitly, but the spec should confirm the mechanism.",
+          "options": [
+            "SQLite's serialized write mode makes this safe implicitly \u2014 no extra steps needed",
+            "The count check and INSERT are wrapped in a single database transaction with a unique constraint fallback",
+            "A per-scope advisory lock is acquired before checking the count",
+            "This is explicitly accepted as a known limitation / best-effort enforcement"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Can a variable (or secret) have an empty string as its value, or is a non-empty value required?",
+          "context": "The spec sets a maximum value size of 256 KB but no minimum. Clarifying whether empty-string values are permitted avoids ambiguity in validation logic and test coverage.",
+          "options": [
+            "Empty string is a valid value (minimum size = 0 bytes)",
+            "Value must be non-empty (minimum 1 byte); empty string returns HTTP 400",
+            "Empty string is treated as a deletion (implicit DELETE semantics)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Do admin tokens and API keys have access to the GET /workspaces/:slug/vars/resolved endpoint, or is it PAT-only?",
+          "context": "The authorization model section covers all three token types for CRUD endpoints, but the resolved endpoint's authorization is only described in terms of PAT scopes. Consistency with other endpoints suggests admins and API keys should also have access, but this should be explicit.",
+          "options": [
+            "Yes \u2014 admin tokens and API keys have full access to the resolved endpoint, consistent with all other endpoints",
+            "The resolved endpoint is PAT-accessible only (unusual \u2014 needs a reason)",
+            "Admin tokens have access; API keys do not"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Is there a maximum number of entries allowed in a single POST `entries` array, independent of the per-scope cap?",
+          "context": "The spec caps total entries per scope at 100, but does not state whether a single request could contain, say, 500 entries (which would always fail if the scope already has any entries). A separate per-request array size limit (e.g., 100) would make validation clearer and protect against oversized payloads.",
+          "options": [
+            "The per-scope cap of 100 is the only limit \u2014 no separate per-request array size limit",
+            "Add a separate per-request limit equal to the per-scope cap (100 entries per POST)",
+            "Add a separate, smaller per-request limit (e.g., 25 or 50 entries per POST)"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-crafted PRD. It covers intent, goals, non-goals, database schema, authorization model, REST API surface (endpoints, request/response shapes, error codes), resolution logic, cascading deletion semantics, permissions, and tech stack with a high degree of precision. The 21-item Clarifications section proactively resolves nearly every ambiguity a developer might encounter. Only a small number of minor gaps remain, mostly around operational edge cases and implementation-level details that could benefit from explicit callouts.",
+      "gaps": [
+        "GET (single-entry read) endpoints are absent for variables \u2014 only list (collection) GET is defined. It is unclear whether a caller can fetch a single variable by key (e.g. GET /api/v1/user/vars/:key) or must always retrieve the full list.",
+        "The POST 409 conflict response body format is not specified. Other error body shapes are implied but never shown as a JSON example, making it harder for implementers to produce consistent error responses.",
+        "The PATCH endpoint renames/re-keys are not addressed \u2014 the spec only allows updating values, not keys. This is likely intentional but is not explicitly stated as a non-goal.",
+        "Behavior when the workspace referenced by the resolved endpoint does not exist or is not owned by the caller is described only at a high level ('HTTP 404'); the exact lookup failure path (workspace not found vs. workspace not owned) could be documented more explicitly.",
+        "The spec does not describe how the 'internal' secret resolution works (the hub reading secret values for its own use), even at a high level. The store-layer method signature or usage pattern is not hinted at, which may cause ambiguity for the implementing engineer.",
+        "Rate limiting or abuse-prevention considerations are absent. While pagination is explicitly deferred, there is no mention of whether rate limits apply to these endpoints differently from other hub endpoints.",
+        "The cascading deletion section mentions the store method 'accepts a transaction context', but does not name or hint at the store interface method signature, which could lead to inconsistent implementations across user, org, and workspace deletion paths."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should there be a GET endpoint for reading a single variable by key (e.g. GET /api/v1/user/vars/:key), or is the list endpoint the only way to retrieve variable values?",
+          "context": "The spec defines list (GET collection) and update (PATCH) endpoints for variables, but no single-resource GET. If clients need to fetch a specific variable without retrieving all 100, a per-key GET endpoint should be documented. Its absence may also be an intentional simplification.",
+          "options": [
+            "No single-key GET \u2014 the list endpoint is sufficient for all read use cases.",
+            "Yes, add GET /api/v1/{user|orgs/:slug|workspaces/:slug}/vars/:key with vars:read permission.",
+            "Defer the single-key GET to a future spec."
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "What is the standard error response body format for all error codes (400, 401, 403, 404, 409)? Should the spec include a JSON example?",
+          "context": "The error table lists HTTP status codes and conditions but does not show the JSON body shape (e.g. {\"error\": \"...\", \"message\": \"...\"}). Consistent error bodies are important for CLI and client-side error handling, and the 400 scope-limit message is already partially specified as a string.",
+          "options": [
+            "Use the existing hub error envelope format \u2014 no need to restate it here.",
+            "Add a brief error body example to the spec for completeness.",
+            "Define a new error schema specific to secrets/variables endpoints."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Is renaming a key (changing the key name, not the value) intentionally unsupported? Should PATCH returning 400 for a key-change attempt be explicitly documented?",
+          "context": "PATCH only accepts a 'value' field, implying keys are immutable after creation. If a user wants to rename a key, they would need to DELETE the old key and POST a new one. Making this explicit prevents implementers from adding key-rename logic or clients from expecting it.",
+          "options": [
+            "Yes, keys are immutable \u2014 add an explicit non-goal or clarification note.",
+            "Allow key rename via PATCH by accepting an optional 'key' field.",
+            "No change needed \u2014 the current PATCH schema implicitly handles this."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should the spec describe, even at a high level, how the hub internally reads secret values (e.g. the store method signature or call site pattern)?",
+          "context": "The spec states secrets are 'only read internally by the hub' but gives no guidance on the store-layer interface for doing so. Without at least a hint (e.g. 'GetSecretValue(ctx, ownerType, ownerID, key) (string, error)'), implementers may design the internal API inconsistently.",
+          "options": [
+            "Add a brief store interface note for internal secret reads.",
+            "Leave it to the implementing engineer \u2014 the external API is sufficient.",
+            "Cover internal secret resolution in a separate internal design doc."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Do rate limits apply to secrets/variables endpoints, or do they inherit the hub's global rate limiting without any endpoint-specific rules?",
+          "context": "The spec is silent on rate limiting. Given that POST can create up to 100 entries in one request and values can be up to 256 KB each (~25 MB per request), it may be worth explicitly stating whether these endpoints are subject to the same or stricter rate limits as other hub endpoints.",
+          "options": [
+            "Inherit hub's global rate limits \u2014 no special rules needed.",
+            "Apply stricter rate limits to POST endpoints given payload size.",
+            "Rate limiting is out of scope for this spec \u2014 defer to infra/ops."
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Reject the entire request with HTTP 400 \u2014 fail fast, consistent with the error-on-duplicate approach",
+        "q2": "Application-layer cleanup only \u2014 delete secrets/variables when the owner is deleted. This matches the existing hub pattern where workspaces have no FK constraints either",
+        "q3": "Go standard testing package + httptest for handler tests, same as the rest of the hub codebase. In-memory SQLite for unit tests",
+        "q4": "Secrets/Variables scopes are fully independent \u2014 no coordination needed. They are different resource types (secrets, vars) that don't overlap with workspace scopes (workspaces) at all. Registration order does not matter for apikit's permission registry"
+      },
+      "timestamp": "2026-07-29T09:15:07.579879+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Return [{\"key\": \"...\", \"created_at\": \"...\", \"updated_at\": \"...\"}] mirroring the GET list shape",
+        "q2": "404 Not Found \u2014 consistent with other hub endpoints that return 404 for non-existent resources",
+        "q3": "400 Bad Request with a descriptive message like 'maximum of 100 entries per scope exceeded'",
+        "q4": "Include created_at and updated_at \u2014 consistent with list response format",
+        "q5": "Yes \u2014 wrap parent deletion and child secrets/variables deletion in a single transaction to prevent orphans",
+        "q6": "Slug renames are not currently supported \u2014 workspace slugs are immutable (PRIMARY KEY in the workspaces table, PATCH rejects immutable fields). This is not a concern."
+      },
+      "timestamp": "2026-07-29T09:17:06.817382+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Alphabetical ascending by key (case-insensitive) \u2014 deterministic and easy to test",
+        "q2": "SQLite's serialized write mode makes this safe implicitly \u2014 hub uses a single writer pattern with SQLite already",
+        "q3": "Empty string is a valid value (minimum size = 0 bytes) \u2014 variables like feature flags may intentionally be empty",
+        "q4": "Yes \u2014 admin tokens and API keys have full access to the resolved endpoint, consistent with all other endpoints",
+        "q5": "The per-scope cap of 100 is the only limit \u2014 no separate per-request array size limit"
+      },
+      "timestamp": "2026-07-29T09:21:20.389159+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

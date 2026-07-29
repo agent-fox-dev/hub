@@ -1,0 +1,1540 @@
+{
+  "$schema": null,
+  "spec_id": "07",
+  "spec_name": "secrets_variables",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/secrets/... ./internal/vars/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01_workspaces",
+      "from_group": 5,
+      "to_group": 1,
+      "relationship": "Uses workspace schema and store for ownership lookups; provides org_id and user_id needed by the variable resolution endpoint",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "04_personal_org",
+      "from_group": 3,
+      "to_group": 1,
+      "relationship": "Uses org membership checks for org-scoped authorization",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Database Schema and Key/Value Validation",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for secrets and variables table schema",
+          "details": [
+            "Create test file internal/secrets/store_test.go with in-memory SQLite setup",
+            "Test that secrets table has columns: owner_type, owner_id, key, value, created_at, updated_at",
+            "Test composite PRIMARY KEY (owner_type, owner_id, key) enforces uniqueness",
+            "Test CHECK constraint on owner_type accepts only 'user', 'org', 'workspace'",
+            "Test that variables table has identical schema to secrets table",
+            "Test NOT NULL constraints on all columns"
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-2",
+            "TS-07-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-1.2",
+            "07-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for key naming rule validation",
+          "details": [
+            "Create internal/secrets/validation_test.go",
+            "Test that keys with only alphanumeric chars and underscores are accepted",
+            "Test that keys starting with a digit are rejected with HTTP 400",
+            "Test that keys with special characters (hyphens, dots, spaces) are rejected",
+            "Test that keys exceeding 255 characters are rejected",
+            "Test that empty key string is rejected",
+            "Test case-insensitive uniqueness: 'DB_HOST' and 'db_host' conflict within same scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-5"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1",
+            "07-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for value constraints and base64 encoding",
+          "details": [
+            "Test that empty string ('') is accepted as a valid value (0-byte raw value)",
+            "Test that values up to 256 KB (262144 bytes) are accepted",
+            "Test that values exceeding 256 KB are rejected with HTTP 400",
+            "Test that values are stored base64-encoded in the database",
+            "Test that values are decoded transparently on read (API returns raw value)",
+            "Test multi-line content (YAML, certificates) round-trips correctly through base64"
+          ],
+          "test_spec_refs": [
+            "TS-07-6",
+            "TS-07-7"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write tests for per-scope entry limit enforcement",
+          "details": [
+            "Test that POST succeeds when scope has fewer than 100 entries",
+            "Test that POST is rejected with HTTP 400 when adding entries would push scope past 100",
+            "Test error message is 'maximum of 100 entries per scope exceeded'",
+            "Test that no entries are written when the limit would be exceeded (all-or-nothing)",
+            "Test that limit is per (owner_type, owner_id) combination independently"
+          ],
+          "test_spec_refs": [
+            "TS-07-8",
+            "TS-07-9"
+          ],
+          "requirement_refs": [
+            "07-REQ-4.1",
+            "07-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write tests for intra-request duplicate key detection",
+          "details": [
+            "Test that POST with two entries sharing the same key (exact match) returns HTTP 400",
+            "Test that POST with two entries sharing the same key (case-insensitive: 'DB_HOST' vs 'db_host') returns HTTP 400",
+            "Test that no entries are written when duplicate keys are detected in the request",
+            "Test that a valid POST with all unique keys succeeds normally"
+          ],
+          "test_spec_refs": [
+            "TS-07-10",
+            "TS-07-11"
+          ],
+          "requirement_refs": [
+            "07-REQ-5.1",
+            "07-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./...",
+          "Tests in this group are skipped/fail gracefully (no implementation yet): go test ./internal/secrets/... ./internal/vars/... -count=1 -v",
+          "No linter warnings in test files: go vet ./...",
+          "Requirements 07-REQ-1, 07-REQ-2, 07-REQ-3, 07-REQ-4, 07-REQ-5 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: PAT Permissions, Authorization, and Secret CRUD",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for PAT permission scope registration",
+          "details": [
+            "Create internal/secrets/permissions_test.go",
+            "Test that all 8 scopes are registered: secrets:manage, secrets:list, secrets:write, secrets:delete, vars:manage, vars:read, vars:write, vars:delete",
+            "Test that secrets:manage implies secrets:list, secrets:write, secrets:delete",
+            "Test that vars:manage implies vars:read, vars:write, vars:delete",
+            "Test that vars:write implies vars:read",
+            "Test that secrets:* scopes are independent of workspaces:* scopes"
+          ],
+          "test_spec_refs": [
+            "TS-07-12",
+            "TS-07-13",
+            "TS-07-14"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2",
+            "07-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for authorization model",
+          "details": [
+            "Create internal/secrets/handler_test.go using net/http/httptest",
+            "Test that admin tokens bypass ownership checks for all endpoints",
+            "Test that API keys have implicit full access to user/org/workspace secrets and vars",
+            "Test that PATs without required scope receive HTTP 403",
+            "Test that non-member of org receives HTTP 404 (anti-enumeration) for org-scoped endpoints",
+            "Test that non-owner of workspace receives HTTP 404 for workspace-scoped endpoints"
+          ],
+          "test_spec_refs": [
+            "TS-07-15",
+            "TS-07-16",
+            "TS-07-17",
+            "TS-07-18",
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-7.3",
+            "07-REQ-7.4",
+            "07-REQ-7.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for secret POST (create) endpoint",
+          "details": [
+            "Test POST /api/v1/user/secrets with valid entries returns HTTP 201",
+            "Test response body is array of {key, created_at, updated_at} \u2014 no value field",
+            "Test POST with empty entries array returns HTTP 400",
+            "Test POST with duplicate key at same scope (cross-request) returns HTTP 409",
+            "Test POST with invalid key name returns HTTP 400",
+            "Test POST with value exceeding 256 KB returns HTTP 400",
+            "Test POST creates entries for org-scoped and workspace-scoped paths"
+          ],
+          "test_spec_refs": [
+            "TS-07-20",
+            "TS-07-21"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write tests for secret GET (list) endpoint",
+          "details": [
+            "Test GET /api/v1/user/secrets returns HTTP 200 with array of {key, created_at, updated_at}",
+            "Test that secret values are never included in list response",
+            "Test that results are sorted alphabetically ascending by key (case-insensitive)",
+            "Test GET for org-scoped and workspace-scoped paths",
+            "Test that empty scope returns empty array []"
+          ],
+          "test_spec_refs": [
+            "TS-07-22",
+            "TS-07-23"
+          ],
+          "requirement_refs": [
+            "07-REQ-9.1",
+            "07-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write tests for secret PATCH (update) and DELETE endpoints",
+          "details": [
+            "Test PATCH /api/v1/user/secrets/:key with valid value returns HTTP 200 with {key, created_at, updated_at}",
+            "Test PATCH with missing value field returns HTTP 400",
+            "Test PATCH with null value returns HTTP 400",
+            "Test PATCH with empty string value ('') returns HTTP 200 (valid update)",
+            "Test PATCH on non-existent key returns HTTP 404",
+            "Test DELETE /api/v1/user/secrets/:key returns HTTP 204",
+            "Test DELETE on non-existent key returns HTTP 404"
+          ],
+          "test_spec_refs": [
+            "TS-07-24",
+            "TS-07-25",
+            "TS-07-26",
+            "TS-07-27"
+          ],
+          "requirement_refs": [
+            "07-REQ-10.1",
+            "07-REQ-10.2",
+            "07-REQ-11.1",
+            "07-REQ-11.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: go build ./...",
+          "Tests in this group are present and structured correctly: go test ./internal/secrets/... -list '.*' -count=1",
+          "No linter warnings in test files: go vet ./...",
+          "Requirements 07-REQ-6, 07-REQ-7, 07-REQ-8, 07-REQ-9, 07-REQ-10, 07-REQ-11 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Variable CRUD and Resolution Endpoint",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for variable POST (create) endpoint",
+          "details": [
+            "Test POST /api/v1/user/vars with valid entries returns HTTP 201",
+            "Test response body is array of {key, value, created_at, updated_at} \u2014 value IS included",
+            "Test POST with empty entries array returns HTTP 400",
+            "Test POST with duplicate key at same scope (cross-request) returns HTTP 409",
+            "Test POST with invalid key name returns HTTP 400",
+            "Test POST with value exceeding 256 KB returns HTTP 400",
+            "Test POST creates entries for org-scoped and workspace-scoped paths"
+          ],
+          "test_spec_refs": [
+            "TS-07-28",
+            "TS-07-29"
+          ],
+          "requirement_refs": [
+            "07-REQ-12.1",
+            "07-REQ-12.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for variable GET (list) endpoint",
+          "details": [
+            "Test GET /api/v1/user/vars returns HTTP 200 with array of {key, value, created_at, updated_at}",
+            "Test that variable values ARE included in list response",
+            "Test that results are sorted alphabetically ascending by key (case-insensitive)",
+            "Test GET for org-scoped and workspace-scoped paths",
+            "Test that empty scope returns empty array []"
+          ],
+          "test_spec_refs": [
+            "TS-07-30",
+            "TS-07-31"
+          ],
+          "requirement_refs": [
+            "07-REQ-13.1",
+            "07-REQ-13.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for variable PATCH (update) and DELETE endpoints",
+          "details": [
+            "Test PATCH /api/v1/user/vars/:key with valid value returns HTTP 200 with {key, value, created_at, updated_at}",
+            "Test PATCH with missing value field returns HTTP 400",
+            "Test PATCH with null value returns HTTP 400",
+            "Test PATCH with empty string value ('') returns HTTP 200 (valid update)",
+            "Test PATCH on non-existent key returns HTTP 404",
+            "Test DELETE /api/v1/user/vars/:key returns HTTP 204",
+            "Test DELETE on non-existent key returns HTTP 404"
+          ],
+          "test_spec_refs": [
+            "TS-07-32",
+            "TS-07-33",
+            "TS-07-34",
+            "TS-07-35"
+          ],
+          "requirement_refs": [
+            "07-REQ-14.1",
+            "07-REQ-14.2",
+            "07-REQ-15.1",
+            "07-REQ-15.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write tests for resolved variables endpoint",
+          "details": [
+            "Test GET /api/v1/workspaces/:slug/vars/resolved returns HTTP 200 with merged variables",
+            "Test workspace-level variables override org-level variables with same key",
+            "Test org-level variables override user-level variables with same key",
+            "Test that response includes 'origin' field ('user', 'org', or 'workspace') for each entry",
+            "Test that response includes created_at and updated_at from the winning tier's record",
+            "Test that results are sorted alphabetically ascending by key (case-insensitive)",
+            "Test that org tier is skipped when workspace has no org_id"
+          ],
+          "test_spec_refs": [
+            "TS-07-36",
+            "TS-07-37",
+            "TS-07-38"
+          ],
+          "requirement_refs": [
+            "07-REQ-16.1",
+            "07-REQ-16.2",
+            "07-REQ-16.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests for cascading deletion",
+          "details": [
+            "Test that deleting a user also deletes all user-scoped secrets and variables in the same transaction",
+            "Test that deleting an org also deletes all org-scoped secrets and variables in the same transaction",
+            "Test that deleting a workspace also deletes all workspace-scoped secrets and variables in the same transaction",
+            "Test that if parent deletion fails mid-transaction, child secrets/variables are not deleted (rollback)"
+          ],
+          "test_spec_refs": [
+            "TS-07-39",
+            "TS-07-40"
+          ],
+          "requirement_refs": [
+            "07-REQ-17.1",
+            "07-REQ-17.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile without errors: go build ./...",
+          "Tests in this group are present and structured correctly: go test ./internal/vars/... -list '.*' -count=1",
+          "No linter warnings in test files: go vet ./...",
+          "Requirements 07-REQ-12, 07-REQ-13, 07-REQ-14, 07-REQ-15, 07-REQ-16, 07-REQ-17 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement Database Schema and Store Layer",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Create secrets and variables table migrations",
+          "details": [
+            "Add SQL migration file(s) creating the secrets table with columns: owner_type TEXT NOT NULL CHECK(owner_type IN ('user','org','workspace')), owner_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (owner_type, owner_id, key)",
+            "Add identical migration for the variables table",
+            "Register migrations with the hub's existing migration runner",
+            "Verify CHECK constraint on owner_type is enforced at the database level"
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-2",
+            "TS-07-3"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-1.2",
+            "07-REQ-1.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement key validation and value encoding utilities",
+          "details": [
+            "Create internal/secrets/validation.go with ValidateKey(key string) error function",
+            "Implement regex check: ^[a-zA-Z_][a-zA-Z0-9_]{0,254}$ (alphanumeric + underscore, no leading digit, max 255 chars)",
+            "Create EncodeValue(raw string) string and DecodeValue(encoded string) (string, error) using encoding/base64",
+            "Implement ValidateValueSize(raw string) error checking raw byte length <= 262144",
+            "Implement CheckIntraRequestDuplicates(entries []Entry) error for case-insensitive duplicate detection"
+          ],
+          "test_spec_refs": [
+            "TS-07-4",
+            "TS-07-5",
+            "TS-07-6",
+            "TS-07-7",
+            "TS-07-10",
+            "TS-07-11"
+          ],
+          "requirement_refs": [
+            "07-REQ-2.1",
+            "07-REQ-2.2",
+            "07-REQ-3.1",
+            "07-REQ-3.2",
+            "07-REQ-5.1",
+            "07-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement secrets store CRUD methods",
+          "details": [
+            "Create internal/secrets/store.go with SecretsStore interface and SQLite implementation",
+            "Implement CreateSecrets(ctx, tx, ownerType, ownerID string, entries []SecretEntry) ([]SecretEntry, error) \u2014 base64-encodes values before INSERT",
+            "Implement ListSecrets(ctx, ownerType, ownerID string) ([]SecretEntry, error) \u2014 returns key+timestamps only, sorted by key ASC COLLATE NOCASE",
+            "Implement UpdateSecret(ctx, ownerType, ownerID, key string, value string) (*SecretEntry, error) \u2014 base64-encodes value, returns HTTP 404 if not found",
+            "Implement DeleteSecret(ctx, ownerType, ownerID, key string) error \u2014 returns HTTP 404 if not found",
+            "Implement CountSecrets(ctx, tx, ownerType, ownerID string) (int, error) for per-scope limit check"
+          ],
+          "test_spec_refs": [
+            "TS-07-8",
+            "TS-07-9",
+            "TS-07-20",
+            "TS-07-21",
+            "TS-07-22",
+            "TS-07-23",
+            "TS-07-24",
+            "TS-07-25",
+            "TS-07-26",
+            "TS-07-27"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-8.2",
+            "07-REQ-9.1",
+            "07-REQ-9.2",
+            "07-REQ-10.1",
+            "07-REQ-10.2",
+            "07-REQ-11.1",
+            "07-REQ-11.2",
+            "07-REQ-4.1",
+            "07-REQ-4.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Implement variables store CRUD and resolution methods",
+          "details": [
+            "Create internal/vars/store.go with VarsStore interface and SQLite implementation",
+            "Implement CreateVars, ListVars, UpdateVar, DeleteVar, CountVars methods mirroring secrets store but returning value field in responses",
+            "Implement ResolveVars(ctx, userID, orgID, workspaceSlug string) ([]ResolvedVar, error) \u2014 fetches all three tiers, merges with workspace > org > user priority, skips org tier if orgID is empty, includes origin field and winning tier's timestamps",
+            "Ensure ListVars and ResolveVars sort results by key ASC COLLATE NOCASE",
+            "Implement DeleteVarsByOwner(ctx, tx, ownerType, ownerID string) error for cascading deletion"
+          ],
+          "test_spec_refs": [
+            "TS-07-28",
+            "TS-07-29",
+            "TS-07-30",
+            "TS-07-31",
+            "TS-07-32",
+            "TS-07-33",
+            "TS-07-34",
+            "TS-07-35",
+            "TS-07-36",
+            "TS-07-37",
+            "TS-07-38"
+          ],
+          "requirement_refs": [
+            "07-REQ-12.1",
+            "07-REQ-12.2",
+            "07-REQ-13.1",
+            "07-REQ-13.2",
+            "07-REQ-14.1",
+            "07-REQ-14.2",
+            "07-REQ-15.1",
+            "07-REQ-15.2",
+            "07-REQ-16.1",
+            "07-REQ-16.2",
+            "07-REQ-16.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.5",
+          "title": "Implement cascading deletion integration in parent store methods",
+          "details": [
+            "Implement DeleteSecretsByOwner(ctx, tx, ownerType, ownerID string) error in secrets store",
+            "Integrate DeleteSecretsByOwner and DeleteVarsByOwner into user deletion transaction (wrap in same tx as parent DELETE)",
+            "Integrate into org deletion transaction",
+            "Integrate into workspace deletion transaction (using workspace slug as owner_id)",
+            "Ensure all child deletions occur before parent commit; rollback on any error"
+          ],
+          "test_spec_refs": [
+            "TS-07-39",
+            "TS-07-40"
+          ],
+          "requirement_refs": [
+            "07-REQ-17.1",
+            "07-REQ-17.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Store layer tests pass: go test ./internal/secrets/... ./internal/vars/... -count=1 -v -run TestStore",
+          "Schema migration applies cleanly on fresh in-memory SQLite: go test ./internal/secrets/... -run TestMigration",
+          "No linter warnings: go vet ./...",
+          "Requirements 07-REQ-1, 07-REQ-2, 07-REQ-3, 07-REQ-4, 07-REQ-5, 07-REQ-17 acceptance criteria met by store tests"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Register PAT Permission Scopes",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Register secrets PAT permission scopes with apikit",
+          "details": [
+            "Create internal/secrets/permissions.go",
+            "Register secrets:manage with apikit's permission registry, declaring it implies secrets:list, secrets:write, secrets:delete",
+            "Register secrets:list as a standalone scope (no implications)",
+            "Register secrets:write as a standalone scope (no implications)",
+            "Register secrets:delete as a standalone scope (no implications)",
+            "Ensure registration is called during hub startup (e.g. in MountHandlers or init)"
+          ],
+          "test_spec_refs": [
+            "TS-07-12",
+            "TS-07-13"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Register variables PAT permission scopes with apikit",
+          "details": [
+            "Create internal/vars/permissions.go",
+            "Register vars:manage with apikit's permission registry, declaring it implies vars:read, vars:write, vars:delete",
+            "Register vars:write declaring it implies vars:read",
+            "Register vars:read as a standalone scope (no implications)",
+            "Register vars:delete as a standalone scope (no implications)",
+            "Confirm vars:* and secrets:* scopes are independent of workspaces:* scopes"
+          ],
+          "test_spec_refs": [
+            "TS-07-13",
+            "TS-07-14"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.2",
+            "07-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Permission registration tests pass: go test ./internal/secrets/... ./internal/vars/... -run TestPermission -count=1 -v",
+          "All 8 scopes are registered and resolvable via apikit's permission registry",
+          "No linter warnings: go vet ./...",
+          "Requirements 07-REQ-6.1, 07-REQ-6.2, 07-REQ-6.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement Secret HTTP Handlers",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement POST handler for creating secrets",
+          "details": [
+            "Create internal/secrets/handler.go with HandleCreateSecrets(c echo.Context) error",
+            "Parse and validate request body: entries array must not be empty, check intra-request duplicate keys (case-insensitive), validate each key name, validate each value size <= 256 KB",
+            "Check per-scope count: CountSecrets + len(entries) <= 100, return HTTP 400 with 'maximum of 100 entries per scope exceeded' if violated",
+            "Check for cross-request duplicate keys (existing keys at scope), return HTTP 409 if any key already exists",
+            "Call CreateSecrets store method within a write transaction; return HTTP 201 with [{key, created_at, updated_at}] \u2014 no value field"
+          ],
+          "test_spec_refs": [
+            "TS-07-20",
+            "TS-07-21",
+            "TS-07-8",
+            "TS-07-9",
+            "TS-07-10",
+            "TS-07-11"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-8.2",
+            "07-REQ-4.1",
+            "07-REQ-4.2",
+            "07-REQ-5.1",
+            "07-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement GET handler for listing secrets",
+          "details": [
+            "Implement HandleListSecrets(c echo.Context) error",
+            "Resolve owner (user UUID, org UUID, or workspace slug) from path/auth context",
+            "Call ListSecrets store method; return HTTP 200 with [{key, created_at, updated_at}] sorted alphabetically ascending by key (case-insensitive)",
+            "Never include value field in response",
+            "Return empty array [] when no secrets exist for the scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-22",
+            "TS-07-23"
+          ],
+          "requirement_refs": [
+            "07-REQ-9.1",
+            "07-REQ-9.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement PATCH handler for updating secrets",
+          "details": [
+            "Implement HandleUpdateSecret(c echo.Context) error",
+            "Parse request body: value field is required; missing or null value returns HTTP 400; empty string is valid",
+            "Validate new value size <= 256 KB",
+            "Call UpdateSecret store method; return HTTP 200 with {key, created_at, updated_at} \u2014 no value field",
+            "Return HTTP 404 if key does not exist at the given scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-24",
+            "TS-07-25"
+          ],
+          "requirement_refs": [
+            "07-REQ-10.1",
+            "07-REQ-10.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Implement DELETE handler for secrets",
+          "details": [
+            "Implement HandleDeleteSecret(c echo.Context) error",
+            "Extract key from path parameter",
+            "Call DeleteSecret store method; return HTTP 204 No Content on success",
+            "Return HTTP 404 if key does not exist at the given scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-26",
+            "TS-07-27"
+          ],
+          "requirement_refs": [
+            "07-REQ-11.1",
+            "07-REQ-11.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.5",
+          "title": "Apply authorization middleware to secret handlers",
+          "details": [
+            "Wire admin token bypass, API key implicit access, and PAT scope checks for each secret endpoint",
+            "POST requires secrets:manage; GET requires secrets:manage or secrets:list; PATCH requires secrets:manage or secrets:write; DELETE requires secrets:manage or secrets:delete",
+            "Apply org membership check (HTTP 404 anti-enumeration) for /orgs/:slug/secrets endpoints",
+            "Apply workspace ownership check (HTTP 404) for /workspaces/:slug/secrets endpoints",
+            "Return HTTP 401 for unauthenticated requests, HTTP 403 for insufficient PAT scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-15",
+            "TS-07-16",
+            "TS-07-17",
+            "TS-07-18",
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-7.3",
+            "07-REQ-7.4",
+            "07-REQ-7.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Secret handler tests pass: go test ./internal/secrets/... -run TestHandler -count=1 -v",
+          "All secret endpoint authorization tests pass including anti-enumeration checks",
+          "No linter warnings: go vet ./...",
+          "Requirements 07-REQ-7, 07-REQ-8, 07-REQ-9, 07-REQ-10, 07-REQ-11 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Variable HTTP Handlers",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement POST handler for creating variables",
+          "details": [
+            "Create internal/vars/handler.go with HandleCreateVars(c echo.Context) error",
+            "Parse and validate request body: entries array must not be empty, check intra-request duplicate keys (case-insensitive), validate each key name, validate each value size <= 256 KB",
+            "Check per-scope count: CountVars + len(entries) <= 100, return HTTP 400 with 'maximum of 100 entries per scope exceeded' if violated",
+            "Check for cross-request duplicate keys (existing keys at scope), return HTTP 409 if any key already exists",
+            "Call CreateVars store method within a write transaction; return HTTP 201 with [{key, value, created_at, updated_at}]"
+          ],
+          "test_spec_refs": [
+            "TS-07-28",
+            "TS-07-29"
+          ],
+          "requirement_refs": [
+            "07-REQ-12.1",
+            "07-REQ-12.2",
+            "07-REQ-4.1",
+            "07-REQ-4.2",
+            "07-REQ-5.1",
+            "07-REQ-5.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement GET handler for listing variables",
+          "details": [
+            "Implement HandleListVars(c echo.Context) error",
+            "Resolve owner from path/auth context",
+            "Call ListVars store method; return HTTP 200 with [{key, value, created_at, updated_at}] sorted alphabetically ascending by key (case-insensitive)",
+            "Return empty array [] when no variables exist for the scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-30",
+            "TS-07-31"
+          ],
+          "requirement_refs": [
+            "07-REQ-13.1",
+            "07-REQ-13.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement PATCH and DELETE handlers for variables",
+          "details": [
+            "Implement HandleUpdateVar(c echo.Context) error: parse value (required, null rejected, empty string valid), validate size, call UpdateVar, return HTTP 200 with {key, value, created_at, updated_at}, HTTP 404 if not found",
+            "Implement HandleDeleteVar(c echo.Context) error: extract key from path, call DeleteVar, return HTTP 204, HTTP 404 if not found"
+          ],
+          "test_spec_refs": [
+            "TS-07-32",
+            "TS-07-33",
+            "TS-07-34",
+            "TS-07-35"
+          ],
+          "requirement_refs": [
+            "07-REQ-14.1",
+            "07-REQ-14.2",
+            "07-REQ-15.1",
+            "07-REQ-15.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.4",
+          "title": "Implement resolved variables GET handler",
+          "details": [
+            "Implement HandleResolveVars(c echo.Context) error for GET /api/v1/workspaces/:slug/vars/resolved",
+            "Look up workspace record via workspaces store to obtain org_id and user_id",
+            "Call ResolveVars(ctx, userID, orgID, workspaceSlug) \u2014 skip org tier if org_id is null/empty",
+            "Return HTTP 200 with [{key, value, origin, created_at, updated_at}] sorted alphabetically ascending by key (case-insensitive)",
+            "Apply authorization: admin tokens and API keys have full access; PATs require vars:manage, vars:write, or vars:read"
+          ],
+          "test_spec_refs": [
+            "TS-07-36",
+            "TS-07-37",
+            "TS-07-38"
+          ],
+          "requirement_refs": [
+            "07-REQ-16.1",
+            "07-REQ-16.2",
+            "07-REQ-16.3",
+            "07-REQ-7.1",
+            "07-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.5",
+          "title": "Apply authorization middleware to variable handlers",
+          "details": [
+            "Wire admin token bypass, API key implicit access, and PAT scope checks for each variable endpoint",
+            "POST requires vars:manage; GET requires vars:manage, vars:write, or vars:read; PATCH requires vars:manage or vars:write; DELETE requires vars:manage or vars:delete",
+            "Apply org membership check (HTTP 404 anti-enumeration) for /orgs/:slug/vars endpoints",
+            "Apply workspace ownership check (HTTP 404) for /workspaces/:slug/vars endpoints",
+            "Return HTTP 401 for unauthenticated requests, HTTP 403 for insufficient PAT scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-15",
+            "TS-07-16",
+            "TS-07-17",
+            "TS-07-18",
+            "TS-07-19"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-7.3",
+            "07-REQ-7.4",
+            "07-REQ-7.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Variable handler tests pass: go test ./internal/vars/... -run TestHandler -count=1 -v",
+          "Resolved variables endpoint returns correct merged result with origin field and correct timestamps",
+          "No linter warnings: go vet ./...",
+          "Requirements 07-REQ-12, 07-REQ-13, 07-REQ-14, 07-REQ-15, 07-REQ-16 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Mount Routes and Wire Handlers into Hub",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Mount secret routes for user, org, and workspace scopes",
+          "details": [
+            "In MountHandlers (or equivalent hub router setup), register all 12 secret routes",
+            "POST /api/v1/user/secrets, GET /api/v1/user/secrets, PATCH /api/v1/user/secrets/:key, DELETE /api/v1/user/secrets/:key",
+            "POST /api/v1/orgs/:slug/secrets, GET /api/v1/orgs/:slug/secrets, PATCH /api/v1/orgs/:slug/secrets/:key, DELETE /api/v1/orgs/:slug/secrets/:key",
+            "POST /api/v1/workspaces/:slug/secrets, GET /api/v1/workspaces/:slug/secrets, PATCH /api/v1/workspaces/:slug/secrets/:key, DELETE /api/v1/workspaces/:slug/secrets/:key",
+            "Attach appropriate authorization middleware to each route"
+          ],
+          "test_spec_refs": [
+            "TS-07-20",
+            "TS-07-22",
+            "TS-07-24",
+            "TS-07-26"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-9.1",
+            "07-REQ-10.1",
+            "07-REQ-11.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Mount variable routes for user, org, and workspace scopes",
+          "details": [
+            "Register all 13 variable routes in MountHandlers",
+            "POST /api/v1/user/vars, GET /api/v1/user/vars, PATCH /api/v1/user/vars/:key, DELETE /api/v1/user/vars/:key",
+            "POST /api/v1/orgs/:slug/vars, GET /api/v1/orgs/:slug/vars, PATCH /api/v1/orgs/:slug/vars/:key, DELETE /api/v1/orgs/:slug/vars/:key",
+            "POST /api/v1/workspaces/:slug/vars, GET /api/v1/workspaces/:slug/vars, PATCH /api/v1/workspaces/:slug/vars/:key, DELETE /api/v1/workspaces/:slug/vars/:key",
+            "GET /api/v1/workspaces/:slug/vars/resolved",
+            "Attach appropriate authorization middleware to each route"
+          ],
+          "test_spec_refs": [
+            "TS-07-28",
+            "TS-07-30",
+            "TS-07-32",
+            "TS-07-34",
+            "TS-07-36"
+          ],
+          "requirement_refs": [
+            "07-REQ-12.1",
+            "07-REQ-13.1",
+            "07-REQ-14.1",
+            "07-REQ-15.1",
+            "07-REQ-16.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Initialize stores and inject dependencies at startup",
+          "details": [
+            "Instantiate SecretsStore and VarsStore with the shared SQLite DB connection at hub startup",
+            "Inject stores into handler constructors",
+            "Inject workspaces store into the resolved variables handler for workspace lookup",
+            "Call permission registration functions for secrets:* and vars:* scopes during startup",
+            "Ensure migration runs before any handler is invoked"
+          ],
+          "test_spec_refs": [
+            "TS-07-12",
+            "TS-07-13",
+            "TS-07-14",
+            "TS-07-36"
+          ],
+          "requirement_refs": [
+            "07-REQ-6.1",
+            "07-REQ-6.2",
+            "07-REQ-6.3",
+            "07-REQ-16.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Hub compiles and starts without errors: go build ./...",
+          "All routes are registered and reachable (no 404 on valid paths): go test ./... -run TestRoutes -count=1",
+          "Permission scopes are registered at startup and resolvable",
+          "No linter warnings: go vet ./...",
+          "All spec tests pass: go test ./internal/secrets/... ./internal/vars/... -count=1 -v"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Integration Checkpoint: Full CRUD and Resolution",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run full secrets CRUD integration tests",
+          "details": [
+            "Execute all secret handler tests against in-memory SQLite: go test ./internal/secrets/... -count=1 -v",
+            "Verify POST \u2192 GET \u2192 PATCH \u2192 DELETE lifecycle works end-to-end for user, org, and workspace scopes",
+            "Confirm secret values are never returned in any response",
+            "Confirm HTTP 409 on duplicate key creation and HTTP 404 on PATCH/DELETE of non-existent key"
+          ],
+          "test_spec_refs": [
+            "TS-07-20",
+            "TS-07-21",
+            "TS-07-22",
+            "TS-07-23",
+            "TS-07-24",
+            "TS-07-25",
+            "TS-07-26",
+            "TS-07-27"
+          ],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-8.2",
+            "07-REQ-9.1",
+            "07-REQ-9.2",
+            "07-REQ-10.1",
+            "07-REQ-10.2",
+            "07-REQ-11.1",
+            "07-REQ-11.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Run full variables CRUD and resolution integration tests",
+          "details": [
+            "Execute all variable handler tests: go test ./internal/vars/... -count=1 -v",
+            "Verify POST \u2192 GET \u2192 PATCH \u2192 DELETE lifecycle for user, org, and workspace scopes",
+            "Verify resolved endpoint returns correct merged set with origin field, correct timestamps, and alphabetical ordering",
+            "Verify org tier is skipped when workspace has no org_id"
+          ],
+          "test_spec_refs": [
+            "TS-07-28",
+            "TS-07-29",
+            "TS-07-30",
+            "TS-07-31",
+            "TS-07-32",
+            "TS-07-33",
+            "TS-07-34",
+            "TS-07-35",
+            "TS-07-36",
+            "TS-07-37",
+            "TS-07-38"
+          ],
+          "requirement_refs": [
+            "07-REQ-12.1",
+            "07-REQ-12.2",
+            "07-REQ-13.1",
+            "07-REQ-13.2",
+            "07-REQ-14.1",
+            "07-REQ-14.2",
+            "07-REQ-15.1",
+            "07-REQ-15.2",
+            "07-REQ-16.1",
+            "07-REQ-16.2",
+            "07-REQ-16.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Run cascading deletion and authorization integration tests",
+          "details": [
+            "Execute cascading deletion tests: go test ./... -run TestCascade -count=1 -v",
+            "Verify secrets and variables are deleted within the same transaction as parent resource",
+            "Execute authorization tests: go test ./... -run TestAuth -count=1 -v",
+            "Verify anti-enumeration (HTTP 404) for non-members and non-owners",
+            "Verify HTTP 401 for unauthenticated and HTTP 403 for insufficient PAT scope"
+          ],
+          "test_spec_refs": [
+            "TS-07-15",
+            "TS-07-16",
+            "TS-07-17",
+            "TS-07-18",
+            "TS-07-19",
+            "TS-07-39",
+            "TS-07-40"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.1",
+            "07-REQ-7.2",
+            "07-REQ-7.3",
+            "07-REQ-7.4",
+            "07-REQ-7.5",
+            "07-REQ-17.1",
+            "07-REQ-17.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/secrets/... ./internal/vars/... -count=1 -v",
+          "All existing hub tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Requirements 07-REQ-7 through 07-REQ-17 acceptance criteria all met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration and Stub Audit",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths from route registration to store calls",
+          "details": [
+            "Verify each secret route (POST/GET/PATCH/DELETE for user, org, workspace) calls the correct handler function \u2014 no stub panic(\"not implemented\") remains",
+            "Verify each variable route (POST/GET/PATCH/DELETE for user, org, workspace, plus resolved) calls the correct handler function",
+            "Confirm handler functions call store methods (CreateSecrets, ListSecrets, UpdateSecret, DeleteSecret, CreateVars, ListVars, UpdateVar, DeleteVar, ResolveVars)",
+            "Confirm ResolveVars handler calls workspaces store to obtain org_id and user_id before merging"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "07-REQ-8.1",
+            "07-REQ-9.1",
+            "07-REQ-10.1",
+            "07-REQ-11.1",
+            "07-REQ-12.1",
+            "07-REQ-13.1",
+            "07-REQ-14.1",
+            "07-REQ-15.1",
+            "07-REQ-16.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Search codebase for panic(\"not implemented\") in secrets and vars packages: grep -r 'panic(\"not implemented\")' internal/secrets/ internal/vars/",
+            "Search for bare TODO stubs: grep -r '// TODO' internal/secrets/ internal/vars/",
+            "Search for empty return nil in non-trivial store methods that should return data",
+            "Confirm no handler returns a hardcoded response without calling the store",
+            "Confirm base64 encoding/decoding is applied in all store write/read paths (not stubbed out)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Verify return value propagation across the call chain",
+          "details": [
+            "Confirm handlers propagate store errors as appropriate HTTP status codes (not swallowed)",
+            "Confirm base64-decoded values are returned in variable responses (not raw encoded strings)",
+            "Confirm secret responses never include the value field \u2014 verify by inspecting JSON serialization tags",
+            "Confirm resolved variables response includes origin field and timestamps from the winning tier"
+          ],
+          "test_spec_refs": [
+            "TS-07-6",
+            "TS-07-7",
+            "TS-07-23",
+            "TS-07-37",
+            "TS-07-38"
+          ],
+          "requirement_refs": [
+            "07-REQ-3.1",
+            "07-REQ-3.2",
+            "07-REQ-9.2",
+            "07-REQ-16.2",
+            "07-REQ-16.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Cross-spec entry point verification",
+          "details": [
+            "Confirm workspaces store lookup (from spec 01_workspaces) is called from production code in HandleResolveVars \u2014 not just tested in isolation",
+            "Confirm org membership check (from spec 04_personal_org) is called from production middleware for org-scoped endpoints",
+            "Confirm cascading deletion hooks are wired into the actual user/org/workspace deletion paths in production code (not just tested)",
+            "Confirm permission registration functions are called from hub startup (MountHandlers or equivalent), not just from test setup"
+          ],
+          "test_spec_refs": [
+            "TS-07-17",
+            "TS-07-18",
+            "TS-07-36",
+            "TS-07-39",
+            "TS-07-40"
+          ],
+          "requirement_refs": [
+            "07-REQ-7.3",
+            "07-REQ-7.4",
+            "07-REQ-16.1",
+            "07-REQ-17.1",
+            "07-REQ-17.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.5",
+          "title": "Run all spec tests and verify full test suite passes",
+          "details": [
+            "Run all spec tests: go test ./internal/secrets/... ./internal/vars/... -count=1 -v",
+            "Run full test suite: go test ./... -count=1",
+            "Run linter: go vet ./...",
+            "Confirm no regressions in existing workspace, org, or user endpoints"
+          ],
+          "test_spec_refs": [
+            "TS-07-1",
+            "TS-07-4",
+            "TS-07-6",
+            "TS-07-8",
+            "TS-07-10",
+            "TS-07-12",
+            "TS-07-15",
+            "TS-07-20",
+            "TS-07-22",
+            "TS-07-24",
+            "TS-07-26",
+            "TS-07-28",
+            "TS-07-30",
+            "TS-07-32",
+            "TS-07-34",
+            "TS-07-36",
+            "TS-07-39",
+            "TS-07-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "07-REQ-1.1",
+            "07-REQ-2.1",
+            "07-REQ-3.1",
+            "07-REQ-4.1",
+            "07-REQ-5.1",
+            "07-REQ-6.1",
+            "07-REQ-7.1",
+            "07-REQ-8.1",
+            "07-REQ-9.1",
+            "07-REQ-10.1",
+            "07-REQ-11.1",
+            "07-REQ-12.1",
+            "07-REQ-13.1",
+            "07-REQ-14.1",
+            "07-REQ-15.1",
+            "07-REQ-16.1",
+            "07-REQ-17.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/secrets/... ./internal/vars/... -count=1 -v",
+          "Full test suite passes with no regressions: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "No panic(\"not implemented\") stubs remain: grep -r 'panic(\"not implemented\")' internal/secrets/ internal/vars/ returns no results",
+          "No bare TODO stubs remain in production code: grep -r '// TODO' internal/secrets/ internal/vars/ returns no results",
+          "All 25 REST endpoints (12 secret + 13 variable) are registered and reachable",
+          "All 8 PAT permission scopes are registered at startup",
+          "Cascading deletion is wired into parent resource deletion transactions",
+          "Requirements 07-REQ-1 through 07-REQ-17 all acceptance criteria verified"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "07-REQ-1.1",
+      "test_spec_id": "TS-07-1",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.2",
+      "test_spec_id": "TS-07-2",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-1.3",
+      "test_spec_id": "TS-07-3",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.1",
+      "test_spec_id": "TS-07-4",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-2.2",
+      "test_spec_id": "TS-07-5",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.1",
+      "test_spec_id": "TS-07-6",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-3.2",
+      "test_spec_id": "TS-07-7",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.1",
+      "test_spec_id": "TS-07-8",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-4.2",
+      "test_spec_id": "TS-07-9",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.1",
+      "test_spec_id": "TS-07-10",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-5.2",
+      "test_spec_id": "TS-07-11",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.1",
+      "test_spec_id": "TS-07-12",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.2",
+      "test_spec_id": "TS-07-13",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-6.3",
+      "test_spec_id": "TS-07-14",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.1",
+      "test_spec_id": "TS-07-15",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.2",
+      "test_spec_id": "TS-07-16",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.3",
+      "test_spec_id": "TS-07-17",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.4",
+      "test_spec_id": "TS-07-18",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-7.5",
+      "test_spec_id": "TS-07-19",
+      "task_id": "7.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-8.1",
+      "test_spec_id": "TS-07-20",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-8.2",
+      "test_spec_id": "TS-07-21",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-9.1",
+      "test_spec_id": "TS-07-22",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-9.2",
+      "test_spec_id": "TS-07-23",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-10.1",
+      "test_spec_id": "TS-07-24",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-10.2",
+      "test_spec_id": "TS-07-25",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-11.1",
+      "test_spec_id": "TS-07-26",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-11.2",
+      "test_spec_id": "TS-07-27",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-12.1",
+      "test_spec_id": "TS-07-28",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-12.2",
+      "test_spec_id": "TS-07-29",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-13.1",
+      "test_spec_id": "TS-07-30",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-13.2",
+      "test_spec_id": "TS-07-31",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-14.1",
+      "test_spec_id": "TS-07-32",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-14.2",
+      "test_spec_id": "TS-07-33",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-15.1",
+      "test_spec_id": "TS-07-34",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-15.2",
+      "test_spec_id": "TS-07-35",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-16.1",
+      "test_spec_id": "TS-07-36",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-16.2",
+      "test_spec_id": "TS-07-37",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-16.3",
+      "test_spec_id": "TS-07-38",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-17.1",
+      "test_spec_id": "TS-07-39",
+      "task_id": "4.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "07-REQ-17.2",
+      "test_spec_id": "TS-07-40",
+      "task_id": "4.5",
+      "test_path": null
+    }
+  ]
+}

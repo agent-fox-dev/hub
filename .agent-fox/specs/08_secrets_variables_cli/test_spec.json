@@ -1,0 +1,1073 @@
+{
+  "$schema": null,
+  "spec_id": "08",
+  "spec_name": "secrets_variables_cli",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-08-1",
+      "requirement_id": "08-REQ-1.1",
+      "kind": "unit",
+      "description": "BuildRootCommand registers both 'secrets' and 'vars' as top-level subcommands accessible via the root Cobra command.",
+      "preconditions": [
+        "internal/cli/workspace_cmd.go contains BuildRootCommand that calls SecretsCmd() and VarsCmd()",
+        "internal/cli/secrets_cmd.go defines SecretsCmd()",
+        "internal/cli/vars_cmd.go defines VarsCmd()"
+      ],
+      "input": "Call BuildRootCommand() and inspect the returned root command's subcommand list",
+      "expected": "The root command has subcommands named 'secrets' and 'vars'; both are non-nil Cobra commands",
+      "assertion_pseudocode": "root = BuildRootCommand(); cmds = root.Commands(); names = [c.Name() for c in cmds]; assert 'secrets' in names; assert 'vars' in names"
+    },
+    {
+      "id": "TS-08-2",
+      "requirement_id": "08-REQ-2.1",
+      "kind": "unit",
+      "description": "afc secrets create with no ownership flags defaults to user scope and POSTs to /api/v1/user/secrets with the correct entries body.",
+      "preconditions": [
+        "httptest.Server is running and records incoming requests",
+        "CLIClient is configured to point at the httptest.Server",
+        "Server responds with 200 and body {\"entries\":[{\"key\":\"API_KEY\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-01T00:00:00Z\"}]}"
+      ],
+      "input": "Execute 'afc secrets create API_KEY=abc123' with no ownership flags",
+      "expected": "Exit code 0; exactly one POST request to /api/v1/user/secrets with body {\"entries\":[{\"key\":\"API_KEY\",\"value\":\"abc123\"}]}; stdout contains the JSON response object",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/secrets' -> 200, entriesResponse); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'API_KEY=abc123']); assert exitCode == 0; assert server.requestCount == 1; assert server.lastRequest.method == 'POST'; assert server.lastRequest.path == '/api/v1/user/secrets'; assert server.lastRequest.body.entries[0].key == 'API_KEY'; assert server.lastRequest.body.entries[0].value == 'abc123'; assert stdout contains 'API_KEY'"
+    },
+    {
+      "id": "TS-08-3",
+      "requirement_id": "08-REQ-2.2",
+      "kind": "unit",
+      "description": "afc secrets create --org myorg POSTs to /api/v1/orgs/myorg/secrets with the correct entries body.",
+      "preconditions": [
+        "httptest.Server is running and records incoming requests",
+        "Server responds with 200 and a valid entries response for org scope"
+      ],
+      "input": "Execute 'afc secrets create KEY=val --org myorg'",
+      "expected": "Exit code 0; POST request to /api/v1/orgs/myorg/secrets with body {\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}; stdout contains the JSON response",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/orgs/myorg/secrets' -> 200, orgEntriesResponse); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val', '--org', 'myorg']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/orgs/myorg/secrets'; assert server.lastRequest.body.entries[0].key == 'KEY'; assert server.lastRequest.body.entries[0].value == 'val'; assert stdout contains 'KEY'"
+    },
+    {
+      "id": "TS-08-4",
+      "requirement_id": "08-REQ-2.3",
+      "kind": "unit",
+      "description": "afc secrets create --workspace myws POSTs to /api/v1/workspaces/myws/secrets with the correct entries body.",
+      "preconditions": [
+        "httptest.Server is running and records incoming requests",
+        "Server responds with 200 and a valid entries response for workspace scope"
+      ],
+      "input": "Execute 'afc secrets create KEY=val --workspace myws'",
+      "expected": "Exit code 0; POST request to /api/v1/workspaces/myws/secrets; stdout contains the JSON response",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/workspaces/myws/secrets' -> 200, wsEntriesResponse); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val', '--workspace', 'myws']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/workspaces/myws/secrets'; assert stdout contains 'KEY'"
+    },
+    {
+      "id": "TS-08-5",
+      "requirement_id": "08-REQ-2.4",
+      "kind": "unit",
+      "description": "afc secrets create --user --org myorg --workspace myws makes three sequential POST calls in fixed user→org→workspace order and prints all three responses.",
+      "preconditions": [
+        "httptest.Server is running and records all incoming requests in order",
+        "Server responds with 200 for all three POST endpoints"
+      ],
+      "input": "Execute 'afc secrets create KEY=val --user --org myorg --workspace myws'",
+      "expected": "Exit code 0; exactly three POST requests in order: /api/v1/user/secrets, /api/v1/orgs/myorg/secrets, /api/v1/workspaces/myws/secrets; stdout contains three JSON response objects",
+      "assertion_pseudocode": "server = startMockServer(recordAll, 200); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val', '--user', '--org', 'myorg', '--workspace', 'myws']); assert exitCode == 0; assert server.requestCount == 3; assert server.requests[0].path == '/api/v1/user/secrets'; assert server.requests[1].path == '/api/v1/orgs/myorg/secrets'; assert server.requests[2].path == '/api/v1/workspaces/myws/secrets'"
+    },
+    {
+      "id": "TS-08-6",
+      "requirement_id": "08-REQ-2.5",
+      "kind": "unit",
+      "description": "afc secrets create with a comma-separated argument sends all entries in a single POST body.",
+      "preconditions": [
+        "httptest.Server is running and records incoming requests",
+        "Server responds with 200 and a multi-entry response"
+      ],
+      "input": "Execute 'afc secrets create KEY1=val1,KEY2=val2'",
+      "expected": "Exit code 0; one POST to /api/v1/user/secrets with body {\"entries\":[{\"key\":\"KEY1\",\"value\":\"val1\"},{\"key\":\"KEY2\",\"value\":\"val2\"}]}; stdout contains the response",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/secrets' -> 200, multiEntriesResponse); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY1=val1,KEY2=val2']); assert exitCode == 0; assert server.requestCount == 1; assert len(server.lastRequest.body.entries) == 2; assert server.lastRequest.body.entries[0].key == 'KEY1'; assert server.lastRequest.body.entries[1].key == 'KEY2'"
+    },
+    {
+      "id": "TS-08-7",
+      "requirement_id": "08-REQ-3.1",
+      "kind": "unit",
+      "description": "afc secrets list with no ownership flags defaults to user scope and GETs /api/v1/user/secrets.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body [{\"key\":\"MY_SECRET\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-01T00:00:00Z\"}]"
+      ],
+      "input": "Execute 'afc secrets list' with no ownership flags",
+      "expected": "Exit code 0; GET request to /api/v1/user/secrets; stdout contains the JSON array",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/secrets' -> 200, secretsListResponse); exitCode, stdout, stderr = runCLI(['secrets', 'list']); assert exitCode == 0; assert server.lastRequest.method == 'GET'; assert server.lastRequest.path == '/api/v1/user/secrets'; assert stdout contains 'MY_SECRET'"
+    },
+    {
+      "id": "TS-08-8",
+      "requirement_id": "08-REQ-3.2",
+      "kind": "unit",
+      "description": "afc secrets list --org myorg GETs /api/v1/orgs/myorg/secrets and prints the response.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a valid org-scoped secrets list"
+      ],
+      "input": "Execute 'afc secrets list --org myorg'",
+      "expected": "Exit code 0; GET request to /api/v1/orgs/myorg/secrets; stdout contains the JSON array",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/orgs/myorg/secrets' -> 200, orgSecretsListResponse); exitCode, stdout, stderr = runCLI(['secrets', 'list', '--org', 'myorg']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/orgs/myorg/secrets'; assert stdout contains response content"
+    },
+    {
+      "id": "TS-08-9",
+      "requirement_id": "08-REQ-3.3",
+      "kind": "unit",
+      "description": "afc secrets list --workspace myws GETs /api/v1/workspaces/myws/secrets and prints the response.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a valid workspace-scoped secrets list"
+      ],
+      "input": "Execute 'afc secrets list --workspace myws'",
+      "expected": "Exit code 0; GET request to /api/v1/workspaces/myws/secrets; stdout contains the JSON array",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/workspaces/myws/secrets' -> 200, wsSecretsListResponse); exitCode, stdout, stderr = runCLI(['secrets', 'list', '--workspace', 'myws']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/workspaces/myws/secrets'; assert stdout contains response content"
+    },
+    {
+      "id": "TS-08-10",
+      "requirement_id": "08-REQ-4.1",
+      "kind": "unit",
+      "description": "afc secrets update KEY=newval with no flags defaults to user scope and PATCHes /api/v1/user/secrets/KEY with body {\"value\":\"newval\"}.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body {\"key\":\"KEY\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-02T00:00:00Z\"}"
+      ],
+      "input": "Execute 'afc secrets update KEY=newval' with no ownership flags",
+      "expected": "Exit code 0; PATCH request to /api/v1/user/secrets/KEY with body {\"value\":\"newval\"}; stdout contains the updated secret metadata JSON",
+      "assertion_pseudocode": "server = startMockServer(PATCH '/api/v1/user/secrets/KEY' -> 200, updateResponse); exitCode, stdout, stderr = runCLI(['secrets', 'update', 'KEY=newval']); assert exitCode == 0; assert server.lastRequest.method == 'PATCH'; assert server.lastRequest.path == '/api/v1/user/secrets/KEY'; assert server.lastRequest.body.value == 'newval'; assert stdout contains 'KEY'"
+    },
+    {
+      "id": "TS-08-11",
+      "requirement_id": "08-REQ-4.2",
+      "kind": "unit",
+      "description": "afc secrets update KEY=newval --org myorg PATCHes /api/v1/orgs/myorg/secrets/KEY with the correct body.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a valid update response"
+      ],
+      "input": "Execute 'afc secrets update KEY=newval --org myorg'",
+      "expected": "Exit code 0; PATCH request to /api/v1/orgs/myorg/secrets/KEY with body {\"value\":\"newval\"}; stdout contains the updated metadata",
+      "assertion_pseudocode": "server = startMockServer(PATCH '/api/v1/orgs/myorg/secrets/KEY' -> 200, orgUpdateResponse); exitCode, stdout, stderr = runCLI(['secrets', 'update', 'KEY=newval', '--org', 'myorg']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/orgs/myorg/secrets/KEY'; assert server.lastRequest.body.value == 'newval'"
+    },
+    {
+      "id": "TS-08-12",
+      "requirement_id": "08-REQ-5.1",
+      "kind": "unit",
+      "description": "afc secrets delete MYKEY with no flags defaults to user scope, DELETEs /api/v1/user/secrets/MYKEY, skips CLIPrintResult, and prints confirmation to stderr only.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 204 No Content for DELETE /api/v1/user/secrets/MYKEY"
+      ],
+      "input": "Execute 'afc secrets delete MYKEY' with no ownership flags",
+      "expected": "Exit code 0; DELETE request to /api/v1/user/secrets/MYKEY; stdout is empty; stderr contains \"Secret 'MYKEY' has been deleted.\"",
+      "assertion_pseudocode": "server = startMockServer(DELETE '/api/v1/user/secrets/MYKEY' -> 204, nil); exitCode, stdout, stderr = runCLI(['secrets', 'delete', 'MYKEY']); assert exitCode == 0; assert stdout == ''; assert stderr contains \"Secret 'MYKEY' has been deleted.\"; assert server.lastRequest.method == 'DELETE'; assert server.lastRequest.path == '/api/v1/user/secrets/MYKEY'"
+    },
+    {
+      "id": "TS-08-13",
+      "requirement_id": "08-REQ-5.2",
+      "kind": "unit",
+      "description": "afc secrets delete MYKEY --org myorg DELETEs /api/v1/orgs/myorg/secrets/MYKEY and prints confirmation to stderr.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 204 No Content for DELETE /api/v1/orgs/myorg/secrets/MYKEY"
+      ],
+      "input": "Execute 'afc secrets delete MYKEY --org myorg'",
+      "expected": "Exit code 0; DELETE request to /api/v1/orgs/myorg/secrets/MYKEY; stdout is empty; stderr contains \"Secret 'MYKEY' has been deleted.\"",
+      "assertion_pseudocode": "server = startMockServer(DELETE '/api/v1/orgs/myorg/secrets/MYKEY' -> 204, nil); exitCode, stdout, stderr = runCLI(['secrets', 'delete', 'MYKEY', '--org', 'myorg']); assert exitCode == 0; assert stdout == ''; assert stderr contains \"Secret 'MYKEY' has been deleted.\""
+    },
+    {
+      "id": "TS-08-14",
+      "requirement_id": "08-REQ-6.1",
+      "kind": "unit",
+      "description": "afc vars create KEY=val with no flags defaults to user scope and POSTs to /api/v1/user/vars with the entries body including values.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body {\"entries\":[{\"key\":\"KEY\",\"value\":\"val\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-01T00:00:00Z\"}]}"
+      ],
+      "input": "Execute 'afc vars create KEY=val' with no ownership flags",
+      "expected": "Exit code 0; POST to /api/v1/user/vars with body {\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}; stdout contains the JSON response including the value field",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/vars' -> 200, varEntriesResponse); exitCode, stdout, stderr = runCLI(['vars', 'create', 'KEY=val']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/user/vars'; assert server.lastRequest.body.entries[0].key == 'KEY'; assert server.lastRequest.body.entries[0].value == 'val'; assert stdout contains 'KEY'; assert stdout contains 'val'"
+    },
+    {
+      "id": "TS-08-15",
+      "requirement_id": "08-REQ-6.2",
+      "kind": "unit",
+      "description": "afc vars create KEY=val --user --org myorg makes two sequential POST calls in user→org order and prints both responses.",
+      "preconditions": [
+        "httptest.Server is running and records all requests in order",
+        "Server responds with 200 for both POST endpoints"
+      ],
+      "input": "Execute 'afc vars create KEY=val --user --org myorg'",
+      "expected": "Exit code 0; exactly two POST requests in order: /api/v1/user/vars then /api/v1/orgs/myorg/vars; stdout contains two JSON response objects",
+      "assertion_pseudocode": "server = startMockServer(recordAll, 200); exitCode, stdout, stderr = runCLI(['vars', 'create', 'KEY=val', '--user', '--org', 'myorg']); assert exitCode == 0; assert server.requestCount == 2; assert server.requests[0].path == '/api/v1/user/vars'; assert server.requests[1].path == '/api/v1/orgs/myorg/vars'"
+    },
+    {
+      "id": "TS-08-16",
+      "requirement_id": "08-REQ-6.3",
+      "kind": "unit",
+      "description": "afc vars create KEY1=val1,KEY2=val2 --workspace myws sends all entries in a single POST to /api/v1/workspaces/myws/vars.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a multi-entry vars response"
+      ],
+      "input": "Execute 'afc vars create KEY1=val1,KEY2=val2 --workspace myws'",
+      "expected": "Exit code 0; one POST to /api/v1/workspaces/myws/vars with two entries; stdout contains the response with values",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/workspaces/myws/vars' -> 200, multiVarEntriesResponse); exitCode, stdout, stderr = runCLI(['vars', 'create', 'KEY1=val1,KEY2=val2', '--workspace', 'myws']); assert exitCode == 0; assert server.requestCount == 1; assert len(server.lastRequest.body.entries) == 2; assert server.lastRequest.body.entries[0].key == 'KEY1'; assert server.lastRequest.body.entries[1].key == 'KEY2'"
+    },
+    {
+      "id": "TS-08-17",
+      "requirement_id": "08-REQ-7.1",
+      "kind": "unit",
+      "description": "afc vars list with no flags defaults to user scope and GETs /api/v1/user/vars, printing the full response including values.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body [{\"key\":\"MY_VAR\",\"value\":\"myval\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-01T00:00:00Z\"}]"
+      ],
+      "input": "Execute 'afc vars list' with no ownership flags",
+      "expected": "Exit code 0; GET to /api/v1/user/vars; stdout contains the JSON array with key and value fields",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/vars' -> 200, varListResponse); exitCode, stdout, stderr = runCLI(['vars', 'list']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/user/vars'; assert stdout contains 'MY_VAR'; assert stdout contains 'myval'"
+    },
+    {
+      "id": "TS-08-18",
+      "requirement_id": "08-REQ-7.2",
+      "kind": "unit",
+      "description": "afc vars list --org myorg GETs /api/v1/orgs/myorg/vars and prints the response including values.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a valid org-scoped vars list"
+      ],
+      "input": "Execute 'afc vars list --org myorg'",
+      "expected": "Exit code 0; GET to /api/v1/orgs/myorg/vars; stdout contains the JSON array",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/orgs/myorg/vars' -> 200, orgVarListResponse); exitCode, stdout, stderr = runCLI(['vars', 'list', '--org', 'myorg']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/orgs/myorg/vars'; assert stdout contains response content"
+    },
+    {
+      "id": "TS-08-19",
+      "requirement_id": "08-REQ-7.3",
+      "kind": "unit",
+      "description": "afc vars list --workspace myws GETs /api/v1/workspaces/myws/vars and prints the response including values.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a valid workspace-scoped vars list"
+      ],
+      "input": "Execute 'afc vars list --workspace myws'",
+      "expected": "Exit code 0; GET to /api/v1/workspaces/myws/vars; stdout contains the JSON array",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/workspaces/myws/vars' -> 200, wsVarListResponse); exitCode, stdout, stderr = runCLI(['vars', 'list', '--workspace', 'myws']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/workspaces/myws/vars'; assert stdout contains response content"
+    },
+    {
+      "id": "TS-08-20",
+      "requirement_id": "08-REQ-8.1",
+      "kind": "unit",
+      "description": "afc vars update KEY=newval with no flags defaults to user scope and PATCHes /api/v1/user/vars/KEY with body {\"value\":\"newval\"}, printing the response including the value.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body {\"key\":\"KEY\",\"value\":\"newval\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-02T00:00:00Z\"}"
+      ],
+      "input": "Execute 'afc vars update KEY=newval' with no ownership flags",
+      "expected": "Exit code 0; PATCH to /api/v1/user/vars/KEY with body {\"value\":\"newval\"}; stdout contains the updated variable JSON including the value field",
+      "assertion_pseudocode": "server = startMockServer(PATCH '/api/v1/user/vars/KEY' -> 200, varUpdateResponse); exitCode, stdout, stderr = runCLI(['vars', 'update', 'KEY=newval']); assert exitCode == 0; assert server.lastRequest.method == 'PATCH'; assert server.lastRequest.path == '/api/v1/user/vars/KEY'; assert server.lastRequest.body.value == 'newval'; assert stdout contains 'newval'"
+    },
+    {
+      "id": "TS-08-21",
+      "requirement_id": "08-REQ-8.2",
+      "kind": "unit",
+      "description": "afc vars update KEY=newval --workspace myws PATCHes /api/v1/workspaces/myws/vars/KEY with the correct body.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and a valid update response"
+      ],
+      "input": "Execute 'afc vars update KEY=newval --workspace myws'",
+      "expected": "Exit code 0; PATCH to /api/v1/workspaces/myws/vars/KEY with body {\"value\":\"newval\"}; stdout contains the updated variable JSON",
+      "assertion_pseudocode": "server = startMockServer(PATCH '/api/v1/workspaces/myws/vars/KEY' -> 200, wsVarUpdateResponse); exitCode, stdout, stderr = runCLI(['vars', 'update', 'KEY=newval', '--workspace', 'myws']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/workspaces/myws/vars/KEY'; assert server.lastRequest.body.value == 'newval'"
+    },
+    {
+      "id": "TS-08-22",
+      "requirement_id": "08-REQ-9.1",
+      "kind": "unit",
+      "description": "afc vars delete MYKEY with no flags defaults to user scope, DELETEs /api/v1/user/vars/MYKEY, skips CLIPrintResult, and prints confirmation to stderr only.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 204 No Content for DELETE /api/v1/user/vars/MYKEY"
+      ],
+      "input": "Execute 'afc vars delete MYKEY' with no ownership flags",
+      "expected": "Exit code 0; DELETE to /api/v1/user/vars/MYKEY; stdout is empty; stderr contains \"Variable 'MYKEY' has been deleted.\"",
+      "assertion_pseudocode": "server = startMockServer(DELETE '/api/v1/user/vars/MYKEY' -> 204, nil); exitCode, stdout, stderr = runCLI(['vars', 'delete', 'MYKEY']); assert exitCode == 0; assert stdout == ''; assert stderr contains \"Variable 'MYKEY' has been deleted.\"; assert server.lastRequest.method == 'DELETE'; assert server.lastRequest.path == '/api/v1/user/vars/MYKEY'"
+    },
+    {
+      "id": "TS-08-23",
+      "requirement_id": "08-REQ-9.2",
+      "kind": "unit",
+      "description": "afc vars delete MYKEY --org myorg DELETEs /api/v1/orgs/myorg/vars/MYKEY and prints confirmation to stderr.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 204 No Content for DELETE /api/v1/orgs/myorg/vars/MYKEY"
+      ],
+      "input": "Execute 'afc vars delete MYKEY --org myorg'",
+      "expected": "Exit code 0; DELETE to /api/v1/orgs/myorg/vars/MYKEY; stdout is empty; stderr contains \"Variable 'MYKEY' has been deleted.\"",
+      "assertion_pseudocode": "server = startMockServer(DELETE '/api/v1/orgs/myorg/vars/MYKEY' -> 204, nil); exitCode, stdout, stderr = runCLI(['vars', 'delete', 'MYKEY', '--org', 'myorg']); assert exitCode == 0; assert stdout == ''; assert stderr contains \"Variable 'MYKEY' has been deleted.\""
+    },
+    {
+      "id": "TS-08-24",
+      "requirement_id": "08-REQ-10.1",
+      "kind": "unit",
+      "description": "afc vars resolve myws GETs /api/v1/workspaces/myws/vars/resolved and prints the merged variable set including origin fields.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body [{\"key\":\"DB_URL\",\"value\":\"postgres://...\",\"origin\":\"workspace\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-01T00:00:00Z\"}]"
+      ],
+      "input": "Execute 'afc vars resolve myws'",
+      "expected": "Exit code 0; GET to /api/v1/workspaces/myws/vars/resolved; stdout contains the JSON array with key, value, and origin fields",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/workspaces/myws/vars/resolved' -> 200, resolvedVarsResponse); exitCode, stdout, stderr = runCLI(['vars', 'resolve', 'myws']); assert exitCode == 0; assert server.lastRequest.method == 'GET'; assert server.lastRequest.path == '/api/v1/workspaces/myws/vars/resolved'; assert stdout contains 'DB_URL'; assert stdout contains 'origin'"
+    },
+    {
+      "id": "TS-08-25",
+      "requirement_id": "08-REQ-11.1",
+      "kind": "unit",
+      "description": "The key=value parser splits on the first '=' so that values containing '=' characters are preserved correctly.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for POST /api/v1/user/secrets"
+      ],
+      "input": "Execute 'afc secrets create KEY=val=with=equals'",
+      "expected": "Exit code 0; the request body has key='KEY' and value='val=with=equals' (value contains the extra '=' characters)",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/secrets' -> 200, entriesResponse); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val=with=equals']); assert exitCode == 0; assert server.lastRequest.body.entries[0].key == 'KEY'; assert server.lastRequest.body.entries[0].value == 'val=with=equals'"
+    },
+    {
+      "id": "TS-08-26",
+      "requirement_id": "08-REQ-11.2",
+      "kind": "unit",
+      "description": "The key=value parser correctly splits a comma-separated argument into multiple key=value pairs for create commands.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for POST /api/v1/user/vars"
+      ],
+      "input": "Execute 'afc vars create A=1,B=2,C=3'",
+      "expected": "Exit code 0; one POST to /api/v1/user/vars with three entries: {key:A,value:1}, {key:B,value:2}, {key:C,value:3}",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/vars' -> 200, multiVarResponse); exitCode, stdout, stderr = runCLI(['vars', 'create', 'A=1,B=2,C=3']); assert exitCode == 0; assert len(server.lastRequest.body.entries) == 3; assert server.lastRequest.body.entries[0] == {key:'A', value:'1'}; assert server.lastRequest.body.entries[1] == {key:'B', value:'2'}; assert server.lastRequest.body.entries[2] == {key:'C', value:'3'}"
+    },
+    {
+      "id": "TS-08-27",
+      "requirement_id": "08-REQ-12.1",
+      "kind": "unit",
+      "description": "When all three ownership flag variables remain at zero values, the command targets user scope and calls /api/v1/user/ paths.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for GET /api/v1/user/vars"
+      ],
+      "input": "Execute 'afc vars list' with no flags (--user not set, --org not set, --workspace not set)",
+      "expected": "Exit code 0; GET request path is /api/v1/user/vars confirming user scope was selected by runtime zero-value detection",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/vars' -> 200, varListResponse); exitCode, stdout, stderr = runCLI(['vars', 'list']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/user/vars'"
+    },
+    {
+      "id": "TS-08-28",
+      "requirement_id": "08-REQ-12.2",
+      "kind": "unit",
+      "description": "The --user flag is defined as a BoolVar with default false; explicitly passing --user also targets user scope.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for GET /api/v1/user/secrets"
+      ],
+      "input": "Execute 'afc secrets list --user'",
+      "expected": "Exit code 0; GET request to /api/v1/user/secrets confirming --user flag explicitly selects user scope",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/secrets' -> 200, secretsListResponse); exitCode, stdout, stderr = runCLI(['secrets', 'list', '--user']); assert exitCode == 0; assert server.lastRequest.path == '/api/v1/user/secrets'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-08-P1",
+      "property_id": "08-PROP-1",
+      "validates": [
+        "08-REQ-2.4",
+        "08-REQ-6.2"
+      ],
+      "description": "For any combination of --user, --org, and --workspace flags on secrets/vars create, API calls are always made in fixed user→org→workspace order regardless of flag order on the command line.",
+      "for_any_strategy": "Enumerate all 7 non-empty subsets of {user, org, workspace} flags; for each subset, run 'afc secrets create KEY=val' with those flags in random order on the command line; record the sequence of DoRequest paths",
+      "invariant_check": "For each run: if user scope is included, its DoRequest call appears before org scope calls; if org scope is included, its DoRequest call appears before workspace scope calls; the sequence of paths matches the expected user→org→workspace subsequence for the given flag subset"
+    },
+    {
+      "id": "TS-08-P2",
+      "property_id": "08-PROP-2",
+      "validates": [
+        "08-REQ-2.E4",
+        "08-REQ-6.E3"
+      ],
+      "description": "For any multi-scope create where at least one scope fails, the command always exits 1 and all remaining scopes are still attempted after the failure.",
+      "for_any_strategy": "For each of the 6 possible (scope-set, failing-scope) combinations where scope-set has 2+ scopes and failing-scope is in scope-set: run 'afc secrets create KEY=val' with those flags; mock the failing scope to return 500 and all others to return 200",
+      "invariant_check": "exitCode == 1; server.requestCount == len(scope-set) (all scopes attempted); stdout contains responses from all successful scopes; stderr contains the error envelope for the failing scope"
+    },
+    {
+      "id": "TS-08-P3",
+      "property_id": "08-PROP-3",
+      "validates": [
+        "08-REQ-5.1",
+        "08-REQ-9.1"
+      ],
+      "description": "For any invocation of afc secrets delete or afc vars delete that receives a 204 response, CLIPrintResult is never called and stdout remains empty.",
+      "for_any_strategy": "For each of the 3 scope selectors (user, org, workspace) and both commands (secrets delete, vars delete): run the delete command with a mock server returning 204; capture stdout and the list of CLIPrintResult calls",
+      "invariant_check": "stdout == '' for all 6 combinations; CLIPrintResult call count == 0; stderr contains the confirmation message matching the exact format \"Secret/Variable 'KEY' has been deleted.\\n\""
+    },
+    {
+      "id": "TS-08-P4",
+      "property_id": "08-PROP-4",
+      "validates": [
+        "08-REQ-2.E1",
+        "08-REQ-2.E2",
+        "08-REQ-2.E3",
+        "08-REQ-11.E1",
+        "08-REQ-11.E2"
+      ],
+      "description": "For any command invocation where the positional argument fails parsing, no HTTP request is ever made to the server.",
+      "for_any_strategy": "Generate invalid argument strings: (a) strings with no '=' character, (b) comma-separated strings with empty tokens, (c) whitespace-only keys; apply each to all create and update subcommands (secrets create, secrets update, vars create, vars update)",
+      "invariant_check": "server.requestCount == 0 for every invalid-argument invocation; exitCode == 2 for every case; stderr is non-empty"
+    },
+    {
+      "id": "TS-08-P5",
+      "property_id": "08-PROP-5",
+      "validates": [
+        "08-REQ-3.E1",
+        "08-REQ-4.E2",
+        "08-REQ-5.E2",
+        "08-REQ-7.E1",
+        "08-REQ-8.E2",
+        "08-REQ-9.E2",
+        "08-REQ-12.E1"
+      ],
+      "description": "For any invocation of list, update, or delete commands with two or more ownership selectors, the command exits 2 without making any API call.",
+      "for_any_strategy": "Enumerate all multi-selector combinations (user+org, user+workspace, org+workspace, user+org+workspace) for each of the 6 single-scope commands (secrets list, secrets update, secrets delete, vars list, vars update, vars delete); run each combination",
+      "invariant_check": "exitCode == 2 for all 24 combinations; server.requestCount == 0 for all combinations; stderr contains a message about single scope requirement"
+    },
+    {
+      "id": "TS-08-P6",
+      "property_id": "08-PROP-6",
+      "validates": [
+        "08-REQ-2.1",
+        "08-REQ-3.1",
+        "08-REQ-4.1",
+        "08-REQ-5.1",
+        "08-REQ-6.1",
+        "08-REQ-7.1",
+        "08-REQ-8.1",
+        "08-REQ-9.1",
+        "08-REQ-12.1"
+      ],
+      "description": "For any command invocation with no ownership flags provided, the API call path always begins with /api/v1/user/ confirming user scope is selected by runtime zero-value detection.",
+      "for_any_strategy": "Run each of the 8 subcommands (secrets create, secrets list, secrets update, secrets delete, vars create, vars list, vars update, vars delete) with no ownership flags; record the DoRequest path for each",
+      "invariant_check": "For all 8 invocations: server.lastRequest.path starts with '/api/v1/user/'; exitCode == 0 (given a 200/204 mock response)"
+    },
+    {
+      "id": "TS-08-P7",
+      "property_id": "08-PROP-7",
+      "validates": [
+        "08-REQ-2.1",
+        "08-REQ-3.1",
+        "08-REQ-6.1",
+        "08-REQ-7.1",
+        "08-REQ-10.1"
+      ],
+      "description": "For any non-DELETE command that receives a successful API response, CLIPrintResult is called with the exact value returned by DoRequest without reshaping.",
+      "for_any_strategy": "For each non-DELETE subcommand (secrets create, secrets list, secrets update, vars create, vars list, vars update, vars resolve): mock DoRequest to return a sentinel response object with a unique marker field; capture what CLIPrintResult receives",
+      "invariant_check": "The value passed to CLIPrintResult is reference-equal or deep-equal to the value returned by DoRequest; no fields are added, removed, or renamed; the sentinel marker field is present in the CLIPrintResult argument"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-08-E1",
+      "requirement_id": "08-REQ-1.E1",
+      "kind": "unit",
+      "description": "If SecretsCmd() or VarsCmd() returns nil, BuildRootCommand panics with a descriptive message before any user interaction.",
+      "preconditions": [
+        "A test double or build tag causes SecretsCmd() to return nil"
+      ],
+      "input": "Call BuildRootCommand() when SecretsCmd() returns nil",
+      "expected": "The process panics with a non-zero exit and a message identifying which constructor returned nil; no user interaction occurs",
+      "assertion_pseudocode": "assert panics(BuildRootCommand) when SecretsCmd returns nil; captured panic message contains 'SecretsCmd' or 'nil'"
+    },
+    {
+      "id": "TS-08-E2",
+      "requirement_id": "08-REQ-2.E1",
+      "kind": "unit",
+      "description": "afc secrets create with an argument missing '=' returns exit code 2 and a descriptive error without making any API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets create BADKEY'",
+      "expected": "Exit code 2; stderr contains a parse error message indicating missing '='; no request is made to the server",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'BADKEY']); assert exitCode == 2; assert stderr contains '='; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E3",
+      "requirement_id": "08-REQ-2.E2",
+      "kind": "unit",
+      "description": "afc secrets create with a comma-separated argument that produces an empty key returns exit code 2 with a positional error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets create KEY=val,,KEY2=val2'",
+      "expected": "Exit code 2; stderr contains a message like 'empty key in argument at position 1'; no request is made to the server",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val,,KEY2=val2']); assert exitCode == 2; assert stderr contains 'empty key'; assert stderr contains 'position 1'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E4",
+      "requirement_id": "08-REQ-2.E3",
+      "kind": "unit",
+      "description": "afc secrets create with no positional argument returns exit code 2 with a usage error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets create' with no arguments",
+      "expected": "Exit code 2; stderr contains a usage error message indicating a required argument is missing; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'create']); assert exitCode == 2; assert stderr contains 'argument' or 'required'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E5",
+      "requirement_id": "08-REQ-2.E4",
+      "kind": "unit",
+      "description": "During a multi-scope create, if one scope's DoRequest fails, the error is printed immediately, hadError is set, remaining scopes continue, and the command exits 1.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for POST /api/v1/user/secrets",
+        "Server responds with 500 for POST /api/v1/orgs/myorg/secrets"
+      ],
+      "input": "Execute 'afc secrets create TOKEN=xyz --user --org myorg'",
+      "expected": "Exit code 1; stderr contains the API error envelope for the org scope failure; stdout contains the user-scope success response; both requests were attempted",
+      "assertion_pseudocode": "server = startMockServer({'/api/v1/user/secrets': 200, '/api/v1/orgs/myorg/secrets': 500}); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'TOKEN=xyz', '--user', '--org', 'myorg']); assert exitCode == 1; assert server.requestCount == 2; assert stdout contains user scope response; assert stderr contains error envelope"
+    },
+    {
+      "id": "TS-08-E6",
+      "requirement_id": "08-REQ-2.E5",
+      "kind": "unit",
+      "description": "afc secrets create with a single scope where DoRequest returns an API error prints the error envelope to stderr and exits non-zero.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 403 Forbidden for POST /api/v1/user/secrets"
+      ],
+      "input": "Execute 'afc secrets create KEY=val' (single scope, user default)",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope with a 403 error; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/secrets' -> 403, errorEnvelope); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val']); assert exitCode != 0; assert stderr contains '403' or error message; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E7",
+      "requirement_id": "08-REQ-2.E6",
+      "kind": "unit",
+      "description": "afc secrets create exits non-zero with a client initialization error when CLIClientFromCmd fails (e.g. missing API key).",
+      "preconditions": [
+        "No API key or PAT is configured in the CLI environment"
+      ],
+      "input": "Execute 'afc secrets create KEY=val' without any API key configured",
+      "expected": "Exit code non-zero; stderr contains the client initialization error message; no HTTP request is made",
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI(['secrets', 'create', 'KEY=val'], env={}); assert exitCode != 0; assert stderr contains 'API key' or 'configuration' or 'auth'"
+    },
+    {
+      "id": "TS-08-E8",
+      "requirement_id": "08-REQ-3.E1",
+      "kind": "unit",
+      "description": "afc secrets list with multiple ownership flags returns exit code 2 with an error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets list --user --org myorg'",
+      "expected": "Exit code 2; stderr contains an error message indicating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'list', '--user', '--org', 'myorg']); assert exitCode == 2; assert stderr contains 'one' or 'selector' or 'scope'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E9",
+      "requirement_id": "08-REQ-3.E2",
+      "kind": "unit",
+      "description": "afc secrets list prints the API error envelope to stderr and exits non-zero when DoRequest returns an error.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 403 Forbidden for GET /api/v1/user/secrets"
+      ],
+      "input": "Execute 'afc secrets list' (user scope default)",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/secrets' -> 403, errorEnvelope); exitCode, stdout, stderr = runCLI(['secrets', 'list']); assert exitCode != 0; assert stderr contains error content; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E10",
+      "requirement_id": "08-REQ-3.E3",
+      "kind": "unit",
+      "description": "afc secrets list prints an empty JSON array to stdout and exits 0 when the API returns an empty array.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body []"
+      ],
+      "input": "Execute 'afc secrets list'",
+      "expected": "Exit code 0; stdout contains '[]'; stderr is empty",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/secrets' -> 200, '[]'); exitCode, stdout, stderr = runCLI(['secrets', 'list']); assert exitCode == 0; assert stdout contains '[]'"
+    },
+    {
+      "id": "TS-08-E11",
+      "requirement_id": "08-REQ-4.E1",
+      "kind": "unit",
+      "description": "afc secrets update with an argument missing '=' returns exit code 2 with a parse error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets update BADKEY'",
+      "expected": "Exit code 2; stderr contains a parse error message about missing '='; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'update', 'BADKEY']); assert exitCode == 2; assert stderr contains '='; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E12",
+      "requirement_id": "08-REQ-4.E2",
+      "kind": "unit",
+      "description": "afc secrets update with multiple ownership flags returns exit code 2 with an error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets update KEY=val --user --workspace myws'",
+      "expected": "Exit code 2; stderr contains an error message indicating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'update', 'KEY=val', '--user', '--workspace', 'myws']); assert exitCode == 2; assert stderr contains 'one' or 'selector'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E13",
+      "requirement_id": "08-REQ-4.E3",
+      "kind": "unit",
+      "description": "afc secrets update prints the 404 API error envelope to stderr and exits non-zero when the key does not exist.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 404 for PATCH /api/v1/user/secrets/MISSING"
+      ],
+      "input": "Execute 'afc secrets update MISSING=newval'",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope with a not-found message; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(PATCH '/api/v1/user/secrets/MISSING' -> 404, notFoundEnvelope); exitCode, stdout, stderr = runCLI(['secrets', 'update', 'MISSING=newval']); assert exitCode != 0; assert stderr contains '404' or 'not found'; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E14",
+      "requirement_id": "08-REQ-4.E4",
+      "kind": "unit",
+      "description": "afc secrets update with no positional argument returns exit code 2 with a usage error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets update' with no arguments",
+      "expected": "Exit code 2; stderr contains a usage error message; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'update']); assert exitCode == 2; assert stderr contains 'argument' or 'required'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E15",
+      "requirement_id": "08-REQ-5.E1",
+      "kind": "unit",
+      "description": "afc secrets delete with no positional argument returns exit code 2 with a usage error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets delete' with no arguments",
+      "expected": "Exit code 2; stderr contains a usage error message; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'delete']); assert exitCode == 2; assert stderr contains 'argument' or 'required'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E16",
+      "requirement_id": "08-REQ-5.E2",
+      "kind": "unit",
+      "description": "afc secrets delete with multiple ownership flags returns exit code 2 with an error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc secrets delete MYKEY --user --org myorg'",
+      "expected": "Exit code 2; stderr contains an error message indicating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['secrets', 'delete', 'MYKEY', '--user', '--org', 'myorg']); assert exitCode == 2; assert stderr contains 'one' or 'selector'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E17",
+      "requirement_id": "08-REQ-5.E3",
+      "kind": "unit",
+      "description": "afc secrets delete prints the 404 API error envelope to stderr, exits non-zero, and does not print the confirmation message when the key does not exist.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 404 for DELETE /api/v1/user/secrets/MISSING"
+      ],
+      "input": "Execute 'afc secrets delete MISSING'",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope; stderr does NOT contain 'has been deleted'; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(DELETE '/api/v1/user/secrets/MISSING' -> 404, notFoundEnvelope); exitCode, stdout, stderr = runCLI(['secrets', 'delete', 'MISSING']); assert exitCode != 0; assert stderr contains '404' or 'not found'; assert stderr does not contain 'has been deleted'; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E18",
+      "requirement_id": "08-REQ-6.E1",
+      "kind": "unit",
+      "description": "afc vars create with an argument missing '=' returns exit code 2 with a parse error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars create BADKEY'",
+      "expected": "Exit code 2; stderr contains a parse error message about missing '='; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'create', 'BADKEY']); assert exitCode == 2; assert stderr contains '='; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E19",
+      "requirement_id": "08-REQ-6.E2",
+      "kind": "unit",
+      "description": "afc vars create with a comma-separated argument producing an empty key returns exit code 2 with a positional error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars create KEY=val,,KEY2=val2'",
+      "expected": "Exit code 2; stderr contains a message like 'empty key in argument at position 1'; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'create', 'KEY=val,,KEY2=val2']); assert exitCode == 2; assert stderr contains 'empty key'; assert stderr contains 'position 1'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E20",
+      "requirement_id": "08-REQ-6.E3",
+      "kind": "unit",
+      "description": "During a multi-scope vars create, if one scope fails, the error is printed immediately, remaining scopes continue, and the command exits 1.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for POST /api/v1/user/vars",
+        "Server responds with 500 for POST /api/v1/orgs/myorg/vars"
+      ],
+      "input": "Execute 'afc vars create KEY=val --user --org myorg'",
+      "expected": "Exit code 1; stderr contains the API error envelope for the org scope failure; stdout contains the user-scope success response; both requests were attempted",
+      "assertion_pseudocode": "server = startMockServer({'/api/v1/user/vars': 200, '/api/v1/orgs/myorg/vars': 500}); exitCode, stdout, stderr = runCLI(['vars', 'create', 'KEY=val', '--user', '--org', 'myorg']); assert exitCode == 1; assert server.requestCount == 2; assert stdout contains user scope response; assert stderr contains error envelope"
+    },
+    {
+      "id": "TS-08-E21",
+      "requirement_id": "08-REQ-6.E4",
+      "kind": "unit",
+      "description": "afc vars create with no positional argument returns exit code 2 with a usage error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars create' with no arguments",
+      "expected": "Exit code 2; stderr contains a usage error message; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'create']); assert exitCode == 2; assert stderr contains 'argument' or 'required'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E22",
+      "requirement_id": "08-REQ-7.E1",
+      "kind": "unit",
+      "description": "afc vars list with multiple ownership flags returns exit code 2 with an error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars list --user --org myorg'",
+      "expected": "Exit code 2; stderr contains an error message indicating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'list', '--user', '--org', 'myorg']); assert exitCode == 2; assert stderr contains 'one' or 'selector'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E23",
+      "requirement_id": "08-REQ-7.E2",
+      "kind": "unit",
+      "description": "afc vars list prints the API error envelope to stderr and exits non-zero when DoRequest returns an error.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 403 Forbidden for GET /api/v1/user/vars"
+      ],
+      "input": "Execute 'afc vars list' (user scope default)",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/vars' -> 403, errorEnvelope); exitCode, stdout, stderr = runCLI(['vars', 'list']); assert exitCode != 0; assert stderr contains error content; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E24",
+      "requirement_id": "08-REQ-7.E3",
+      "kind": "unit",
+      "description": "afc vars list prints an empty JSON array to stdout and exits 0 when the API returns an empty array.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body []"
+      ],
+      "input": "Execute 'afc vars list'",
+      "expected": "Exit code 0; stdout contains '[]'; stderr is empty",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/user/vars' -> 200, '[]'); exitCode, stdout, stderr = runCLI(['vars', 'list']); assert exitCode == 0; assert stdout contains '[]'"
+    },
+    {
+      "id": "TS-08-E25",
+      "requirement_id": "08-REQ-8.E1",
+      "kind": "unit",
+      "description": "afc vars update with an argument missing '=' returns exit code 2 with a parse error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars update BADKEY'",
+      "expected": "Exit code 2; stderr contains a parse error message about missing '='; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'update', 'BADKEY']); assert exitCode == 2; assert stderr contains '='; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E26",
+      "requirement_id": "08-REQ-8.E2",
+      "kind": "unit",
+      "description": "afc vars update with multiple ownership flags returns exit code 2 with an error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars update KEY=val --user --workspace myws'",
+      "expected": "Exit code 2; stderr contains an error message indicating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'update', 'KEY=val', '--user', '--workspace', 'myws']); assert exitCode == 2; assert stderr contains 'one' or 'selector'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E27",
+      "requirement_id": "08-REQ-8.E3",
+      "kind": "unit",
+      "description": "afc vars update prints the 404 API error envelope to stderr and exits non-zero when the key does not exist.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 404 for PATCH /api/v1/user/vars/MISSING"
+      ],
+      "input": "Execute 'afc vars update MISSING=newval'",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope with a not-found message; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(PATCH '/api/v1/user/vars/MISSING' -> 404, notFoundEnvelope); exitCode, stdout, stderr = runCLI(['vars', 'update', 'MISSING=newval']); assert exitCode != 0; assert stderr contains '404' or 'not found'; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E28",
+      "requirement_id": "08-REQ-9.E1",
+      "kind": "unit",
+      "description": "afc vars delete with no positional argument returns exit code 2 with a usage error and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars delete' with no arguments",
+      "expected": "Exit code 2; stderr contains a usage error message; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'delete']); assert exitCode == 2; assert stderr contains 'argument' or 'required'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E29",
+      "requirement_id": "08-REQ-9.E2",
+      "kind": "unit",
+      "description": "afc vars delete with multiple ownership flags returns exit code 2 with an error message and no API call.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars delete MYKEY --user --org myorg'",
+      "expected": "Exit code 2; stderr contains an error message indicating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'delete', 'MYKEY', '--user', '--org', 'myorg']); assert exitCode == 2; assert stderr contains 'one' or 'selector'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E30",
+      "requirement_id": "08-REQ-9.E3",
+      "kind": "unit",
+      "description": "afc vars delete prints the 404 API error envelope to stderr, exits non-zero, and does not print the confirmation message when the key does not exist.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 404 for DELETE /api/v1/user/vars/MISSING"
+      ],
+      "input": "Execute 'afc vars delete MISSING'",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope; stderr does NOT contain 'has been deleted'; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(DELETE '/api/v1/user/vars/MISSING' -> 404, notFoundEnvelope); exitCode, stdout, stderr = runCLI(['vars', 'delete', 'MISSING']); assert exitCode != 0; assert stderr contains '404' or 'not found'; assert stderr does not contain 'has been deleted'; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E31",
+      "requirement_id": "08-REQ-10.E1",
+      "kind": "unit",
+      "description": "afc vars resolve with no positional argument returns exit code 2 with a usage error indicating the workspace slug is required.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars resolve' with no arguments",
+      "expected": "Exit code 2; stderr contains a usage error message indicating the workspace slug is required; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'resolve']); assert exitCode == 2; assert stderr contains 'workspace' or 'slug' or 'argument'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E32",
+      "requirement_id": "08-REQ-10.E2",
+      "kind": "unit",
+      "description": "afc vars resolve prints the 404 API error envelope to stderr and exits non-zero when the workspace slug does not exist.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 404 for GET /api/v1/workspaces/nonexistent/vars/resolved"
+      ],
+      "input": "Execute 'afc vars resolve nonexistent'",
+      "expected": "Exit code non-zero; stderr contains the JSON API error envelope; stdout is empty",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/workspaces/nonexistent/vars/resolved' -> 404, notFoundEnvelope); exitCode, stdout, stderr = runCLI(['vars', 'resolve', 'nonexistent']); assert exitCode != 0; assert stderr contains '404' or 'not found'; assert stdout == ''"
+    },
+    {
+      "id": "TS-08-E33",
+      "requirement_id": "08-REQ-10.E3",
+      "kind": "unit",
+      "description": "afc vars resolve prints an empty JSON array to stdout and exits 0 when no variables are defined at any scope for the workspace.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 and body [] for GET /api/v1/workspaces/myws/vars/resolved"
+      ],
+      "input": "Execute 'afc vars resolve myws'",
+      "expected": "Exit code 0; stdout contains '[]'; stderr is empty",
+      "assertion_pseudocode": "server = startMockServer(GET '/api/v1/workspaces/myws/vars/resolved' -> 200, '[]'); exitCode, stdout, stderr = runCLI(['vars', 'resolve', 'myws']); assert exitCode == 0; assert stdout contains '[]'"
+    },
+    {
+      "id": "TS-08-E34",
+      "requirement_id": "08-REQ-10.E4",
+      "kind": "unit",
+      "description": "afc vars resolve returns exit code 2 with an error message when an ownership flag is provided alongside the workspace slug.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars resolve myws --org myorg'",
+      "expected": "Exit code 2; stderr contains an error message indicating ownership flags are not accepted; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'resolve', 'myws', '--org', 'myorg']); assert exitCode == 2; assert stderr contains 'flag' or 'ownership' or 'not accepted'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E35",
+      "requirement_id": "08-REQ-11.E1",
+      "kind": "unit",
+      "description": "The key=value parser returns an error without contacting the API when the input token contains no '=' character.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars update NOEQUALS'",
+      "expected": "Exit code 2; stderr contains a parse error; no request is made to the server",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'update', 'NOEQUALS']); assert exitCode == 2; assert stderr contains '=' or 'parse'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E36",
+      "requirement_id": "08-REQ-11.E2",
+      "kind": "unit",
+      "description": "The key=value parser returns an error identifying the zero-based position of an empty key after comma-splitting.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars create =val,KEY2=val2' (first entry has empty key)",
+      "expected": "Exit code 2; stderr contains a message like 'empty key in argument at position 0'; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'create', '=val,KEY2=val2']); assert exitCode == 2; assert stderr contains 'empty key'; assert stderr contains 'position 0'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E37",
+      "requirement_id": "08-REQ-11.E3",
+      "kind": "unit",
+      "description": "The key=value parser passes keys with special characters through to the API without additional validation beyond the empty/whitespace guard.",
+      "preconditions": [
+        "httptest.Server is running",
+        "Server responds with 200 for POST /api/v1/user/secrets"
+      ],
+      "input": "Execute 'afc secrets create MY.KEY.WITH.DOTS=val'",
+      "expected": "Exit code 0; the request body has key='MY.KEY.WITH.DOTS' passed through unchanged; the server receives the key as-is",
+      "assertion_pseudocode": "server = startMockServer(POST '/api/v1/user/secrets' -> 200, entriesResponse); exitCode, stdout, stderr = runCLI(['secrets', 'create', 'MY.KEY.WITH.DOTS=val']); assert exitCode == 0; assert server.lastRequest.body.entries[0].key == 'MY.KEY.WITH.DOTS'"
+    },
+    {
+      "id": "TS-08-E38",
+      "requirement_id": "08-REQ-12.E1",
+      "kind": "unit",
+      "description": "For list, update, and delete commands, providing two or more ownership selectors simultaneously returns exit code 2 without calling DoRequest.",
+      "preconditions": [
+        "httptest.Server is running and records all requests"
+      ],
+      "input": "Execute 'afc vars update KEY=val --org myorg --workspace myws'",
+      "expected": "Exit code 2; stderr contains an error message stating only one scope selector is allowed; no request is made",
+      "assertion_pseudocode": "server = startMockServer(recordAll); exitCode, stdout, stderr = runCLI(['vars', 'update', 'KEY=val', '--org', 'myorg', '--workspace', 'myws']); assert exitCode == 2; assert stderr contains 'one' or 'selector'; assert server.requestCount == 0"
+    },
+    {
+      "id": "TS-08-E39",
+      "requirement_id": "08-REQ-12.E2",
+      "kind": "unit",
+      "description": "For create commands with all three ownership flags, API calls are executed in fixed user→org→workspace order.",
+      "preconditions": [
+        "httptest.Server is running and records all requests in order",
+        "Server responds with 200 for all three POST endpoints"
+      ],
+      "input": "Execute 'afc vars create KEY=val --user --org myorg --workspace myws'",
+      "expected": "Exit code 0; three POST requests in order: /api/v1/user/vars, /api/v1/orgs/myorg/vars, /api/v1/workspaces/myws/vars",
+      "assertion_pseudocode": "server = startMockServer(recordAll, 200); exitCode, stdout, stderr = runCLI(['vars', 'create', 'KEY=val', '--user', '--org', 'myorg', '--workspace', 'myws']); assert exitCode == 0; assert server.requestCount == 3; assert server.requests[0].path == '/api/v1/user/vars'; assert server.requests[1].path == '/api/v1/orgs/myorg/vars'; assert server.requests[2].path == '/api/v1/workspaces/myws/vars'"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-08-SMOKE-1",
+      "execution_path_id": "08-PATH-1",
+      "description": "End-to-end smoke test for afc secrets create single scope (user default): verifies the full flow from CLI argument parsing through DoRequest to CLIPrintResult output.",
+      "trigger": "Run 'afc secrets create API_KEY=abc123' with no ownership flags against a real httptest.Server",
+      "real_components": [
+        "SecretsCmd() Cobra command (internal/cli/secrets_cmd.go)",
+        "CLIClientFromCmd (apikit)",
+        "CLIClient.DoRequest (apikit)",
+        "CLIPrintResult (apikit)"
+      ],
+      "mockable": [
+        "Hub REST API (replaced by net/http/httptest.Server responding with 200 and a valid entries JSON body)"
+      ],
+      "expected_effects": [
+        "Exactly one POST request is received at /api/v1/user/secrets",
+        "Request body is {\"entries\":[{\"key\":\"API_KEY\",\"value\":\"abc123\"}]}",
+        "Process exits with code 0",
+        "stdout contains the JSON response object with key 'API_KEY'",
+        "stderr is empty"
+      ]
+    },
+    {
+      "id": "TS-08-SMOKE-2",
+      "execution_path_id": "08-PATH-2",
+      "description": "End-to-end smoke test for multi-scope secrets create with partial failure: verifies user scope succeeds, org scope fails, hadError is set, and exit code 1 is returned.",
+      "trigger": "Run 'afc secrets create TOKEN=xyz --user --org myorg' against a real httptest.Server where user scope returns 200 and org scope returns 500",
+      "real_components": [
+        "SecretsCmd() Cobra command (internal/cli/secrets_cmd.go)",
+        "CLIClientFromCmd (apikit)",
+        "CLIClient.DoRequest (apikit)",
+        "CLIPrintResult (apikit)",
+        "CLIHandleError (apikit)",
+        "NewCLIError (apikit)",
+        "Cobra error handler"
+      ],
+      "mockable": [
+        "Hub REST API (replaced by net/http/httptest.Server: /api/v1/user/secrets returns 200, /api/v1/orgs/myorg/secrets returns 500)"
+      ],
+      "expected_effects": [
+        "Two POST requests are received in order: /api/v1/user/secrets then /api/v1/orgs/myorg/secrets",
+        "Process exits with code 1",
+        "stdout contains the user-scope JSON response",
+        "stderr contains the API error envelope for the org scope failure"
+      ]
+    },
+    {
+      "id": "TS-08-SMOKE-3",
+      "execution_path_id": "08-PATH-3",
+      "description": "End-to-end smoke test for afc secrets delete (user scope): verifies DELETE is called, CLIPrintResult is skipped, stdout is silent, and confirmation appears on stderr.",
+      "trigger": "Run 'afc secrets delete MY_SECRET' with no ownership flags against a real httptest.Server returning 204 No Content",
+      "real_components": [
+        "SecretsCmd() Cobra command (internal/cli/secrets_cmd.go)",
+        "CLIClientFromCmd (apikit)",
+        "CLIClient.DoRequest (apikit)"
+      ],
+      "mockable": [
+        "Hub REST API (replaced by net/http/httptest.Server responding with 204 No Content for DELETE /api/v1/user/secrets/MY_SECRET)"
+      ],
+      "expected_effects": [
+        "Exactly one DELETE request is received at /api/v1/user/secrets/MY_SECRET",
+        "Process exits with code 0",
+        "stdout is empty (CLIPrintResult is not called)",
+        "stderr contains exactly \"Secret 'MY_SECRET' has been deleted.\\n\""
+      ]
+    },
+    {
+      "id": "TS-08-SMOKE-4",
+      "execution_path_id": "08-PATH-4",
+      "description": "End-to-end smoke test for afc vars resolve: verifies GET to the resolved endpoint and that the full merged variable set including origin fields is printed.",
+      "trigger": "Run 'afc vars resolve myworkspace' against a real httptest.Server returning a resolved vars array",
+      "real_components": [
+        "VarsCmd() Cobra command (internal/cli/vars_cmd.go)",
+        "CLIClientFromCmd (apikit)",
+        "CLIClient.DoRequest (apikit)",
+        "CLIPrintResult (apikit)"
+      ],
+      "mockable": [
+        "Hub REST API (replaced by net/http/httptest.Server responding with 200 and [{\"key\":\"DB_URL\",\"value\":\"postgres://...\",\"origin\":\"workspace\",\"created_at\":\"...\",\"updated_at\":\"...\"}] for GET /api/v1/workspaces/myworkspace/vars/resolved)"
+      ],
+      "expected_effects": [
+        "Exactly one GET request is received at /api/v1/workspaces/myworkspace/vars/resolved",
+        "Process exits with code 0",
+        "stdout contains the JSON array with key, value, and origin fields",
+        "stderr is empty"
+      ]
+    },
+    {
+      "id": "TS-08-SMOKE-5",
+      "execution_path_id": "08-PATH-5",
+      "description": "End-to-end smoke test for argument validation failure: verifies that a missing '=' in the argument causes exit code 2 with no API call.",
+      "trigger": "Run 'afc secrets create BADKEY' (no '=' character) against a real httptest.Server",
+      "real_components": [
+        "SecretsCmd() Cobra command (internal/cli/secrets_cmd.go)",
+        "NewCLIError (apikit)",
+        "Cobra error handler"
+      ],
+      "mockable": [
+        "Hub REST API (replaced by net/http/httptest.Server recording all requests)"
+      ],
+      "expected_effects": [
+        "No HTTP request is received by the server",
+        "Process exits with code 2",
+        "stderr contains a parse error message mentioning the missing '=' character",
+        "stdout is empty"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

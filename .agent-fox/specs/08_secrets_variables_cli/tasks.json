@@ -1,0 +1,1105 @@
+{
+  "$schema": null,
+  "spec_id": "08",
+  "spec_name": "secrets_variables_cli",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/cli/... -count=1 -v -run 'Secret|Var'",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "07",
+      "from_group": 8,
+      "to_group": 1,
+      "relationship": "CLI calls the REST API endpoints mounted in group 8 of spec 07_secrets_variables",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests for afc secrets subcommands",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Scaffold secrets_cmd_test.go with httptest helpers",
+          "details": [
+            "Create `internal/cli/secrets_cmd_test.go` with package `cli_test`.",
+            "Add a `newSecretsTestServer` helper using `net/http/httptest` that records requests and returns configurable JSON responses, mirroring the pattern in `workspace_cmd_test.go`.",
+            "Add a `runSecretsCmd` helper that wires the test server URL into `SecretsCmd()` and captures stdout/stderr."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "08-REQ-2",
+            "08-REQ-3",
+            "08-REQ-4",
+            "08-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write happy-path tests for afc secrets create (single scope)",
+          "details": [
+            "Test `afc secrets create KEY=val` with no flags \u2192 expects POST to `/api/v1/user/secrets` with body `{\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}`.",
+            "Test `afc secrets create KEY=val --org myorg` \u2192 expects POST to `/api/v1/orgs/myorg/secrets`.",
+            "Test `afc secrets create KEY=val --workspace myws` \u2192 expects POST to `/api/v1/workspaces/myws/secrets`.",
+            "Assert stdout contains the JSON response from the mock server and exit code is 0."
+          ],
+          "test_spec_refs": [
+            "TS-08-2",
+            "TS-08-27"
+          ],
+          "requirement_refs": [
+            "08-REQ-2",
+            "08-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write multi-scope create test for afc secrets create",
+          "details": [
+            "Test `afc secrets create KEY=val --user --org myorg` \u2192 expects two POST calls in order: first to `/api/v1/user/secrets`, then to `/api/v1/orgs/myorg/secrets`.",
+            "Assert both responses are printed to stdout and exit code is 0.",
+            "Test partial failure: mock org scope to return HTTP 500 \u2192 assert `hadError` path returns exit code 1 and user-scope output was already printed.",
+            "Test `--user --org myorg --workspace myws` \u2192 three calls in user \u2192 org \u2192 workspace order."
+          ],
+          "test_spec_refs": [
+            "TS-08-3",
+            "TS-08-4",
+            "TS-08-5"
+          ],
+          "requirement_refs": [
+            "08-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write argument validation error tests for afc secrets create",
+          "details": [
+            "Test `afc secrets create NOEQUALS` \u2192 expects exit code 2 with error message about missing `=`.",
+            "Test `afc secrets create KEY=val,,KEY2=val2` \u2192 expects exit code 2 with message `empty key in argument at position 1`.",
+            "Test `afc secrets create` (no args) \u2192 expects exit code 2.",
+            "Assert no HTTP calls are made to the mock server in all error cases."
+          ],
+          "test_spec_refs": [
+            "TS-08-25",
+            "TS-08-26"
+          ],
+          "requirement_refs": [
+            "08-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write happy-path and error tests for afc secrets list, update, delete",
+          "details": [
+            "Test `afc secrets list` (no flags) \u2192 GET `/api/v1/user/secrets`, stdout has JSON array.",
+            "Test `afc secrets list --org myorg --workspace myws` \u2192 expects exit code 2 (multiple selectors).",
+            "Test `afc secrets update KEY=newval --workspace myws` \u2192 PATCH `/api/v1/workspaces/myws/secrets/KEY` with body `{\"value\":\"newval\"}`.",
+            "Test `afc secrets update NOEQUALS` \u2192 exit code 2.",
+            "Test `afc secrets delete mykey --org myorg` \u2192 DELETE `/api/v1/orgs/myorg/secrets/mykey`, stdout silent, stderr has `Secret 'mykey' has been deleted.`.",
+            "Test `afc secrets delete` (no args) \u2192 exit code 2."
+          ],
+          "test_spec_refs": [
+            "TS-08-7",
+            "TS-08-8",
+            "TS-08-9",
+            "TS-08-10",
+            "TS-08-11",
+            "TS-08-12",
+            "TS-08-13"
+          ],
+          "requirement_refs": [
+            "08-REQ-3",
+            "08-REQ-4",
+            "08-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.6",
+          "title": "Write BuildRootCommand registration smoke test",
+          "details": [
+            "Test that `BuildRootCommand()` returns a root command that has `secrets` and `vars` as registered subcommands.",
+            "Assert `secrets` has subcommands: `create`, `list`, `update`, `delete`.",
+            "Assert `vars` has subcommands: `create`, `list`, `update`, `delete`, `resolve`.",
+            "This is TS-08-1 \u2014 verifies 08-REQ-1 registration requirement."
+          ],
+          "test_spec_refs": [
+            "TS-08-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: `go build ./internal/cli/...`",
+          "Test stubs (using `t.Skip` or `panic(\"not implemented\")`) are in place so `go test ./internal/cli/... -count=1` runs without build failures.",
+          "No linter warnings introduced: `go vet ./internal/cli/...`",
+          "Requirements 08-REQ-1, 08-REQ-2, 08-REQ-3, 08-REQ-4, 08-REQ-5, 08-REQ-11, 08-REQ-12 test coverage scaffolded."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests for afc vars subcommands",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Scaffold vars_cmd_test.go with httptest helpers",
+          "details": [
+            "Create `internal/cli/vars_cmd_test.go` with package `cli_test`.",
+            "Add a `newVarsTestServer` helper using `net/http/httptest` that records requests and returns configurable JSON responses.",
+            "Add a `runVarsCmd` helper that wires the test server URL into `VarsCmd()` and captures stdout/stderr."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "08-REQ-6",
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9",
+            "08-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write happy-path tests for afc vars create (single scope)",
+          "details": [
+            "Test `afc vars create KEY=val` (no flags) \u2192 POST `/api/v1/user/vars` with body `{\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}`.",
+            "Test `afc vars create KEY=val --org myorg` \u2192 POST `/api/v1/orgs/myorg/vars`.",
+            "Test `afc vars create KEY=val --workspace myws` \u2192 POST `/api/v1/workspaces/myws/vars`.",
+            "Assert stdout contains the JSON response (including `value` field) and exit code is 0."
+          ],
+          "test_spec_refs": [
+            "TS-08-14",
+            "TS-08-28"
+          ],
+          "requirement_refs": [
+            "08-REQ-6",
+            "08-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write multi-scope create test for afc vars create",
+          "details": [
+            "Test `afc vars create KEY=val --user --org myorg` \u2192 two POST calls in order: `/api/v1/user/vars` then `/api/v1/orgs/myorg/vars`.",
+            "Assert both responses printed to stdout and exit code 0.",
+            "Test partial failure: mock org scope returns HTTP 500 \u2192 assert exit code 1 and user-scope output already printed.",
+            "Test `--user --org myorg --workspace myws` \u2192 three calls in user \u2192 org \u2192 workspace order."
+          ],
+          "test_spec_refs": [
+            "TS-08-15",
+            "TS-08-16"
+          ],
+          "requirement_refs": [
+            "08-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write argument validation error tests for afc vars create",
+          "details": [
+            "Test `afc vars create NOEQUALS` \u2192 exit code 2 with error about missing `=`.",
+            "Test `afc vars create KEY=val,,KEY2=val2` \u2192 exit code 2 with `empty key in argument at position 1`.",
+            "Test `afc vars create` (no args) \u2192 exit code 2.",
+            "Assert no HTTP calls made to mock server in all error cases."
+          ],
+          "test_spec_refs": [
+            "TS-08-25",
+            "TS-08-26"
+          ],
+          "requirement_refs": [
+            "08-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write happy-path and error tests for afc vars list, update, delete",
+          "details": [
+            "Test `afc vars list` (no flags) \u2192 GET `/api/v1/user/vars`, stdout has JSON array with `value` field.",
+            "Test `afc vars list --org myorg --workspace myws` \u2192 exit code 2 (multiple selectors).",
+            "Test `afc vars update KEY=newval --workspace myws` \u2192 PATCH `/api/v1/workspaces/myws/vars/KEY` with body `{\"value\":\"newval\"}`.",
+            "Test `afc vars update NOEQUALS` \u2192 exit code 2.",
+            "Test `afc vars delete mykey --org myorg` \u2192 DELETE `/api/v1/orgs/myorg/vars/mykey`, stdout silent, stderr has `Variable 'mykey' has been deleted.`.",
+            "Test `afc vars delete` (no args) \u2192 exit code 2."
+          ],
+          "test_spec_refs": [
+            "TS-08-17",
+            "TS-08-18",
+            "TS-08-19",
+            "TS-08-20",
+            "TS-08-21",
+            "TS-08-22",
+            "TS-08-23"
+          ],
+          "requirement_refs": [
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.6",
+          "title": "Write happy-path test for afc vars resolve",
+          "details": [
+            "Test `afc vars resolve myws` \u2192 GET `/api/v1/workspaces/myws/vars/resolved`, stdout has JSON array with `origin` field.",
+            "Test `afc vars resolve` (no args) \u2192 exit code 2.",
+            "Assert no ownership flags are accepted by the resolve subcommand (no `--org`, `--workspace`, `--user` flags defined)."
+          ],
+          "test_spec_refs": [
+            "TS-08-24"
+          ],
+          "requirement_refs": [
+            "08-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: `go build ./internal/cli/...`",
+          "Test stubs are in place so `go test ./internal/cli/... -count=1` runs without build failures.",
+          "No linter warnings introduced: `go vet ./internal/cli/...`",
+          "Requirements 08-REQ-6, 08-REQ-7, 08-REQ-8, 08-REQ-9, 08-REQ-10 test coverage scaffolded."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "standard",
+      "title": "Implement key=value argument parsing and ownership selector helpers",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Implement parseKeyValue helper function",
+          "details": [
+            "Add `parseKeyValue(arg string) (key, value string, err error)` in a shared internal helper (e.g. top of `secrets_cmd.go` or a small `cli_util.go`).",
+            "Split on the first `=` using `strings.SplitN(arg, \"=\", 2)`; if len < 2 return `apikit.NewCLIError(2, \"invalid argument: missing '=' in '\" + arg + \"'\")`.",
+            "Key is `parts[0]`, value is `parts[1]` (value may contain `=`).",
+            "Return the parsed key and value on success."
+          ],
+          "test_spec_refs": [
+            "TS-08-25"
+          ],
+          "requirement_refs": [
+            "08-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Implement parseKeyValueList helper for multi-entry create",
+          "details": [
+            "Add `parseKeyValueList(arg string) ([]entry, error)` where `entry` is `struct{ Key, Value string }`.",
+            "Split `arg` on `,` to get individual `key=value` tokens.",
+            "For each token at position N: if empty or whitespace-only key after `parseKeyValue`, return `apikit.NewCLIError(2, fmt.Sprintf(\"empty key in argument at position %d\", N))`.",
+            "Return the slice of entries on success."
+          ],
+          "test_spec_refs": [
+            "TS-08-26"
+          ],
+          "requirement_refs": [
+            "08-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Implement ownership selector resolution helper",
+          "details": [
+            "Add `resolveScope(userFlag bool, orgFlag, workspaceFlag string) []scopeTarget` where `scopeTarget` holds the API path prefix.",
+            "If all three flags are at zero values (`!userFlag && orgFlag == \"\" && workspaceFlag == \"\"`), default to user scope.",
+            "Otherwise include each non-zero flag as a scope in fixed order: user \u2192 org \u2192 workspace.",
+            "Return the ordered slice of scope targets for use by create commands."
+          ],
+          "test_spec_refs": [
+            "TS-08-27",
+            "TS-08-28"
+          ],
+          "requirement_refs": [
+            "08-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Implement single-selector enforcement for list/update/delete",
+          "details": [
+            "Add `singleScope(userFlag bool, orgFlag, workspaceFlag string) (scopeTarget, error)` that returns exactly one scope or `apikit.NewCLIError(2, \"only one of --user, --org, --workspace may be specified\")` if multiple are set.",
+            "Apply the same default-to-user logic when no flags are provided.",
+            "This helper is used by `list`, `update`, and `delete` subcommands in both `secrets_cmd.go` and `vars_cmd.go`."
+          ],
+          "test_spec_refs": [
+            "TS-08-8",
+            "TS-08-18"
+          ],
+          "requirement_refs": [
+            "08-REQ-3",
+            "08-REQ-4",
+            "08-REQ-5",
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "Unit tests for `parseKeyValue`, `parseKeyValueList`, `resolveScope`, and `singleScope` pass: `go test ./internal/cli/... -count=1 -run 'TestParse|TestScope'`",
+          "TS-08-25 and TS-08-26 (argument validation) pass.",
+          "TS-08-27 and TS-08-28 (default scope) pass.",
+          "No linter warnings: `go vet ./internal/cli/...`",
+          "08-REQ-11 and 08-REQ-12 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement afc secrets subcommands in secrets_cmd.go",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Implement SecretsCmd() and afc secrets create",
+          "details": [
+            "Create `internal/cli/secrets_cmd.go` with `SecretsCmd() *cobra.Command` returning a parent command with `Use: \"secrets\"`.",
+            "Implement `secretsCreateCmd()`: bind `--user` (BoolVar, default false), `--org` (StringVar), `--workspace` (StringVar) flags.",
+            "In `RunE`: parse the positional arg with `parseKeyValueList`; call `resolveScope`; iterate scopes in user \u2192 org \u2192 workspace order; for each scope call `CLIClientFromCmd`, then `client.DoRequest(ctx, \"POST\", path, body)`, then `CLIPrintResult`; on error call `CLIHandleError` and set `hadError = true`; after all scopes, if `hadError` return `apikit.NewCLIError(1, \"\")`."
+          ],
+          "test_spec_refs": [
+            "TS-08-2",
+            "TS-08-3",
+            "TS-08-4",
+            "TS-08-5",
+            "TS-08-6"
+          ],
+          "requirement_refs": [
+            "08-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement afc secrets list subcommand",
+          "details": [
+            "Implement `secretsListCmd()` with `--user`, `--org`, `--workspace` flags.",
+            "In `RunE`: call `singleScope` to get exactly one scope (exit code 2 if multiple); call `DoRequest(ctx, \"GET\", path, nil)`; call `CLIPrintResult` with the response.",
+            "API path: `/api/v1/user/secrets`, `/api/v1/orgs/:slug/secrets`, or `/api/v1/workspaces/:slug/secrets`."
+          ],
+          "test_spec_refs": [
+            "TS-08-7",
+            "TS-08-8",
+            "TS-08-9"
+          ],
+          "requirement_refs": [
+            "08-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement afc secrets update subcommand",
+          "details": [
+            "Implement `secretsUpdateCmd()` with `--user`, `--org`, `--workspace` flags.",
+            "In `RunE`: validate exactly one positional arg; call `parseKeyValue`; call `singleScope`; call `DoRequest(ctx, \"PATCH\", path+\"/\"+key, map[string]string{\"value\": value})`; call `CLIPrintResult`.",
+            "API path: `/api/v1/{scope}/secrets/:key`."
+          ],
+          "test_spec_refs": [
+            "TS-08-10",
+            "TS-08-11"
+          ],
+          "requirement_refs": [
+            "08-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Implement afc secrets delete subcommand",
+          "details": [
+            "Implement `secretsDeleteCmd()` with `--user`, `--org`, `--workspace` flags.",
+            "In `RunE`: validate exactly one positional arg (the key name); call `singleScope`; call `DoRequest(ctx, \"DELETE\", path+\"/\"+key, nil)`.",
+            "On success (nil body returned for 204): skip `CLIPrintResult`; print `fmt.Fprintf(cmd.ErrOrStderr(), \"Secret '%s' has been deleted.\\n\", key)` to stderr only.",
+            "On error: call `CLIHandleError`."
+          ],
+          "test_spec_refs": [
+            "TS-08-12",
+            "TS-08-13"
+          ],
+          "requirement_refs": [
+            "08-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.5",
+          "title": "Add all secrets subcommands to SecretsCmd parent",
+          "details": [
+            "In `SecretsCmd()`, call `cmd.AddCommand(secretsCreateCmd(), secretsListCmd(), secretsUpdateCmd(), secretsDeleteCmd())`.",
+            "Ensure `Use`, `Short`, and `Args` fields are set appropriately on each subcommand (e.g. `cobra.ExactArgs(1)` for update/delete, `cobra.ExactArgs(1)` for create)."
+          ],
+          "test_spec_refs": [
+            "TS-08-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-1",
+            "08-REQ-2",
+            "08-REQ-3",
+            "08-REQ-4",
+            "08-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All secrets subcommand tests pass: `go test ./internal/cli/... -count=1 -run 'TestSecrets'`",
+          "TS-08-2 through TS-08-13 pass.",
+          "Multi-scope create test (TS-08-3, TS-08-4, TS-08-5) verifies user \u2192 org \u2192 workspace call order.",
+          "Delete test (TS-08-12) confirms stdout is silent and stderr has confirmation message.",
+          "No linter warnings: `go vet ./internal/cli/...`",
+          "08-REQ-2, 08-REQ-3, 08-REQ-4, 08-REQ-5 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement afc vars subcommands in vars_cmd.go",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement VarsCmd() and afc vars create",
+          "details": [
+            "Create `internal/cli/vars_cmd.go` with `VarsCmd() *cobra.Command` returning a parent command with `Use: \"vars\"`.",
+            "Implement `varsCreateCmd()`: bind `--user` (BoolVar, default false), `--org` (StringVar), `--workspace` (StringVar) flags.",
+            "In `RunE`: parse positional arg with `parseKeyValueList`; call `resolveScope`; iterate scopes in user \u2192 org \u2192 workspace order; for each scope call `DoRequest(ctx, \"POST\", path, body)`, then `CLIPrintResult`; on error call `CLIHandleError` and set `hadError = true`; after all scopes, if `hadError` return `apikit.NewCLIError(1, \"\")`.",
+            "API path: `/api/v1/user/vars`, `/api/v1/orgs/:slug/vars`, `/api/v1/workspaces/:slug/vars`."
+          ],
+          "test_spec_refs": [
+            "TS-08-14",
+            "TS-08-15",
+            "TS-08-16"
+          ],
+          "requirement_refs": [
+            "08-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement afc vars list subcommand",
+          "details": [
+            "Implement `varsListCmd()` with `--user`, `--org`, `--workspace` flags.",
+            "In `RunE`: call `singleScope`; call `DoRequest(ctx, \"GET\", path, nil)`; call `CLIPrintResult` with the full response (includes `value` field).",
+            "API path: `/api/v1/user/vars`, `/api/v1/orgs/:slug/vars`, `/api/v1/workspaces/:slug/vars`."
+          ],
+          "test_spec_refs": [
+            "TS-08-17",
+            "TS-08-18",
+            "TS-08-19"
+          ],
+          "requirement_refs": [
+            "08-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement afc vars update subcommand",
+          "details": [
+            "Implement `varsUpdateCmd()` with `--user`, `--org`, `--workspace` flags.",
+            "In `RunE`: validate exactly one positional arg; call `parseKeyValue`; call `singleScope`; call `DoRequest(ctx, \"PATCH\", path+\"/\"+key, map[string]string{\"value\": value})`; call `CLIPrintResult`.",
+            "API path: `/api/v1/{scope}/vars/:key`."
+          ],
+          "test_spec_refs": [
+            "TS-08-20",
+            "TS-08-21"
+          ],
+          "requirement_refs": [
+            "08-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement afc vars delete subcommand",
+          "details": [
+            "Implement `varsDeleteCmd()` with `--user`, `--org`, `--workspace` flags.",
+            "In `RunE`: validate exactly one positional arg (the key name); call `singleScope`; call `DoRequest(ctx, \"DELETE\", path+\"/\"+key, nil)`.",
+            "On success (nil body for 204): skip `CLIPrintResult`; print `fmt.Fprintf(cmd.ErrOrStderr(), \"Variable '%s' has been deleted.\\n\", key)` to stderr only.",
+            "On error: call `CLIHandleError`."
+          ],
+          "test_spec_refs": [
+            "TS-08-22",
+            "TS-08-23"
+          ],
+          "requirement_refs": [
+            "08-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.5",
+          "title": "Implement afc vars resolve subcommand",
+          "details": [
+            "Implement `varsResolveCmd()` with no ownership flags \u2014 resolution is always workspace-scoped.",
+            "In `RunE`: validate exactly one positional arg (workspace slug); call `DoRequest(ctx, \"GET\", \"/api/v1/workspaces/\"+slug+\"/vars/resolved\", nil)`; call `CLIPrintResult` with the full response.",
+            "Response includes `origin` field (`user`, `org`, or `workspace`) per entry."
+          ],
+          "test_spec_refs": [
+            "TS-08-24"
+          ],
+          "requirement_refs": [
+            "08-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.6",
+          "title": "Add all vars subcommands to VarsCmd parent",
+          "details": [
+            "In `VarsCmd()`, call `cmd.AddCommand(varsCreateCmd(), varsListCmd(), varsUpdateCmd(), varsDeleteCmd(), varsResolveCmd())`.",
+            "Ensure `Use`, `Short`, and `Args` fields are set appropriately on each subcommand."
+          ],
+          "test_spec_refs": [
+            "TS-08-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-1",
+            "08-REQ-6",
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9",
+            "08-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All vars subcommand tests pass: `go test ./internal/cli/... -count=1 -run 'TestVars'`",
+          "TS-08-14 through TS-08-24 pass.",
+          "Multi-scope create test (TS-08-15, TS-08-16) verifies user \u2192 org \u2192 workspace call order.",
+          "Delete test (TS-08-22) confirms stdout is silent and stderr has `Variable 'mykey' has been deleted.`",
+          "Resolve test (TS-08-24) confirms GET to `/api/v1/workspaces/:slug/vars/resolved` and `origin` field in response.",
+          "No linter warnings: `go vet ./internal/cli/...`",
+          "08-REQ-6, 08-REQ-7, 08-REQ-8, 08-REQ-9, 08-REQ-10 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Register SecretsCmd and VarsCmd in BuildRootCommand",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Add SecretsCmd() and VarsCmd() to BuildRootCommand in workspace_cmd.go",
+          "details": [
+            "Open `internal/cli/workspace_cmd.go` and locate the `BuildRootCommand` function.",
+            "Add `root.AddCommand(SecretsCmd(), VarsCmd())` alongside the existing workspace command registrations.",
+            "Ensure import of the `secrets_cmd.go` and `vars_cmd.go` symbols is implicit (same package `cli`)."
+          ],
+          "test_spec_refs": [
+            "TS-08-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Verify command tree structure after registration",
+          "details": [
+            "Run `go build ./...` to confirm no compilation errors after registration.",
+            "Manually verify `afc secrets --help` and `afc vars --help` show the correct subcommands.",
+            "Confirm `afc vars resolve --help` shows no ownership flags."
+          ],
+          "test_spec_refs": [
+            "TS-08-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "TS-08-1 (BuildRootCommand registration smoke test) passes: `go test ./internal/cli/... -count=1 -run 'TestBuildRootCommand'`",
+          "`go build ./...` succeeds with no errors.",
+          "No linter warnings: `go vet ./...`",
+          "08-REQ-1 acceptance criteria met: both `secrets` and `vars` command groups appear in the root command."
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "checkpoint",
+      "title": "Full test suite green checkpoint",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Run all spec tests and confirm all pass",
+          "details": [
+            "Execute `go test ./internal/cli/... -count=1 -v -run 'Secret|Var'` and confirm all TS-08-* tests pass.",
+            "Confirm TS-08-2 through TS-08-28 are all green.",
+            "Confirm no test is skipped or panicking."
+          ],
+          "test_spec_refs": [
+            "TS-08-1",
+            "TS-08-2",
+            "TS-08-3",
+            "TS-08-4",
+            "TS-08-5",
+            "TS-08-6",
+            "TS-08-7",
+            "TS-08-8",
+            "TS-08-9",
+            "TS-08-10",
+            "TS-08-11",
+            "TS-08-12",
+            "TS-08-13",
+            "TS-08-14",
+            "TS-08-15"
+          ],
+          "requirement_refs": [
+            "08-REQ-1",
+            "08-REQ-2",
+            "08-REQ-3",
+            "08-REQ-4",
+            "08-REQ-5",
+            "08-REQ-6",
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9",
+            "08-REQ-10",
+            "08-REQ-11",
+            "08-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Run remaining spec tests and confirm all pass",
+          "details": [
+            "Confirm TS-08-16 through TS-08-28 are all green.",
+            "Execute `go test ./... -count=1` to confirm no regressions in other packages.",
+            "Confirm no existing workspace command tests are broken."
+          ],
+          "test_spec_refs": [
+            "TS-08-16",
+            "TS-08-17",
+            "TS-08-18",
+            "TS-08-19",
+            "TS-08-20",
+            "TS-08-21",
+            "TS-08-22",
+            "TS-08-23",
+            "TS-08-24",
+            "TS-08-25",
+            "TS-08-26",
+            "TS-08-27",
+            "TS-08-28"
+          ],
+          "requirement_refs": [
+            "08-REQ-6",
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9",
+            "08-REQ-10",
+            "08-REQ-11",
+            "08-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Audit for panic/stub markers and dead code",
+          "details": [
+            "Search for `panic(\"not implemented\")`, bare `// TODO` stubs, and unimplemented `RunE` functions across `secrets_cmd.go` and `vars_cmd.go`.",
+            "Confirm all `RunE` functions are fully implemented (not returning `nil` trivially).",
+            "Confirm `hadError` tracking is present in both `secretsCreateCmd` and `varsCreateCmd` `RunE` implementations."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "08-REQ-2",
+            "08-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "All 28 TS-08-* tests pass: `go test ./internal/cli/... -count=1 -v -run 'Secret|Var'`",
+          "Full test suite passes with no regressions: `go test ./... -count=1`",
+          "No stub markers found: `grep -r 'panic(\"not implemented\")\\|// TODO' internal/cli/secrets_cmd.go internal/cli/vars_cmd.go` returns empty.",
+          "No linter warnings: `go vet ./...`"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "wiring_verification",
+      "title": "Wiring verification \u2014 end-to-end integration and call-site audit",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Trace execution paths from CLI entry point to DoRequest",
+          "details": [
+            "Verify that each subcommand's `RunE` calls `apikit.CLIClientFromCmd` \u2192 `client.DoRequest` \u2192 `apikit.CLIPrintResult` (or stderr confirmation for DELETE) in the correct order.",
+            "Confirm `afc secrets create` and `afc vars create` iterate scopes in user \u2192 org \u2192 workspace order with no reordering.",
+            "Confirm `afc vars resolve` calls `DoRequest` with path `/api/v1/workspaces/:slug/vars/resolved` and no ownership flags are wired."
+          ],
+          "test_spec_refs": [
+            "TS-08-3",
+            "TS-08-15",
+            "TS-08-24",
+            "TS-08-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-2",
+            "08-REQ-6",
+            "08-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Verify return value propagation for error and success paths",
+          "details": [
+            "Confirm `CLIHandleError` return value is not discarded in multi-scope create loops.",
+            "Confirm `apikit.NewCLIError(1, \"\")` is returned (not `nil`) from `RunE` when `hadError == true`.",
+            "Confirm `apikit.NewCLIError(2, message)` is returned for all argument validation errors (missing `=`, empty key, wrong arg count, multiple selectors).",
+            "Confirm DELETE commands return `nil` from `RunE` on success (204 path)."
+          ],
+          "test_spec_refs": [
+            "TS-08-4",
+            "TS-08-5",
+            "TS-08-12",
+            "TS-08-16",
+            "TS-08-22"
+          ],
+          "requirement_refs": [
+            "08-REQ-2",
+            "08-REQ-5",
+            "08-REQ-6",
+            "08-REQ-9",
+            "08-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Verify SecretsCmd and VarsCmd are wired into BuildRootCommand",
+          "details": [
+            "Confirm `BuildRootCommand` in `internal/cli/workspace_cmd.go` calls `root.AddCommand(SecretsCmd(), VarsCmd())`.",
+            "Confirm both functions are exported and callable from `workspace_cmd.go` (same package).",
+            "Run `go build ./...` to confirm the binary compiles with both command groups registered."
+          ],
+          "test_spec_refs": [
+            "TS-08-1"
+          ],
+          "requirement_refs": [
+            "08-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.4",
+          "title": "Stub and dead-code audit across all new CLI files",
+          "details": [
+            "Search for `panic(\"not implemented\")` in `internal/cli/secrets_cmd.go` and `internal/cli/vars_cmd.go` \u2014 must return zero results.",
+            "Search for bare `return nil` in non-trivial `RunE` functions that should return errors \u2014 confirm all error paths return proper `CLIError` values.",
+            "Search for `// TODO` markers that indicate unfinished implementation \u2014 must return zero results.",
+            "Confirm `CLIPrintResult` is NOT called in any DELETE `RunE` path."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "08-REQ-5",
+            "08-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.5",
+          "title": "Run full test suite and confirm cross-spec API path correctness",
+          "details": [
+            "Execute `go test ./... -count=1` \u2014 all tests must pass.",
+            "Confirm that API paths in `DoRequest` calls match the hub REST API table from spec `07_secrets_variables` exactly (e.g. `/api/v1/user/secrets`, `/api/v1/orgs/:slug/vars`, `/api/v1/workspaces/:slug/vars/resolved`).",
+            "Confirm HTTP methods match: POST for create, GET for list/resolve, PATCH for update, DELETE for delete."
+          ],
+          "test_spec_refs": [
+            "TS-08-2",
+            "TS-08-7",
+            "TS-08-10",
+            "TS-08-12",
+            "TS-08-14",
+            "TS-08-17",
+            "TS-08-20",
+            "TS-08-22",
+            "TS-08-24"
+          ],
+          "requirement_refs": [
+            "08-REQ-2",
+            "08-REQ-3",
+            "08-REQ-4",
+            "08-REQ-5",
+            "08-REQ-6",
+            "08-REQ-7",
+            "08-REQ-8",
+            "08-REQ-9",
+            "08-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Full test suite passes: `go test ./... -count=1`",
+          "Spec tests pass: `go test ./internal/cli/... -count=1 -v -run 'Secret|Var'`",
+          "No stub markers found: `grep -rn 'panic(\"not implemented\")\\|// TODO' internal/cli/secrets_cmd.go internal/cli/vars_cmd.go` returns empty.",
+          "No linter warnings: `go vet ./...`",
+          "TS-08-1 (registration), TS-08-3 (multi-scope secrets create order), TS-08-15 (multi-scope vars create order), TS-08-24 (vars resolve) all pass.",
+          "`go build ./...` succeeds \u2014 binary includes both `afc secrets` and `afc vars` command groups.",
+          "08-REQ-1 through 08-REQ-12 all acceptance criteria confirmed met."
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "08-REQ-1.1",
+      "test_spec_id": "TS-08-1",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-2.1",
+      "test_spec_id": "TS-08-2",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-2.1",
+      "test_spec_id": "TS-08-3",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-2.1",
+      "test_spec_id": "TS-08-4",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-2.1",
+      "test_spec_id": "TS-08-5",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-2.1",
+      "test_spec_id": "TS-08-6",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-3.1",
+      "test_spec_id": "TS-08-7",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-3.1",
+      "test_spec_id": "TS-08-8",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-3.1",
+      "test_spec_id": "TS-08-9",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-4.1",
+      "test_spec_id": "TS-08-10",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-4.1",
+      "test_spec_id": "TS-08-11",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-5.1",
+      "test_spec_id": "TS-08-12",
+      "task_id": "4.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-5.1",
+      "test_spec_id": "TS-08-13",
+      "task_id": "4.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-6.1",
+      "test_spec_id": "TS-08-14",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-6.1",
+      "test_spec_id": "TS-08-15",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-6.1",
+      "test_spec_id": "TS-08-16",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-7.1",
+      "test_spec_id": "TS-08-17",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-7.1",
+      "test_spec_id": "TS-08-18",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-7.1",
+      "test_spec_id": "TS-08-19",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-8.1",
+      "test_spec_id": "TS-08-20",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-8.1",
+      "test_spec_id": "TS-08-21",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-9.1",
+      "test_spec_id": "TS-08-22",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-9.1",
+      "test_spec_id": "TS-08-23",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-10.1",
+      "test_spec_id": "TS-08-24",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-11.1",
+      "test_spec_id": "TS-08-25",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-11.1",
+      "test_spec_id": "TS-08-26",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-12.1",
+      "test_spec_id": "TS-08-27",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "08-REQ-12.1",
+      "test_spec_id": "TS-08-28",
+      "task_id": "3.3",
+      "test_path": null
+    }
+  ]
+}

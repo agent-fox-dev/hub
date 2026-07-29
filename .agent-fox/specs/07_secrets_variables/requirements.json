@@ -1,0 +1,1318 @@
+{
+  "$schema": null,
+  "spec_id": "07",
+  "spec_name": "secrets_variables",
+  "schema_version": 1,
+  "introduction": "This spec defines the secrets and variables subsystem for af-hub, covering database schema, store layer, REST API endpoints, variable resolution logic, PAT permission scopes, and cascading deletion. Note: requirements referencing apikit permission registry APIs are based on PRD descriptions and should be cross-checked against the installed apikit library before implementation.",
+  "glossary": {
+    "DELETE /api/v1/orgs/:slug/secrets/:key": "Endpoint to delete an org-scoped secret",
+    "DELETE /api/v1/orgs/:slug/vars/:key": "Endpoint to delete an org-scoped variable",
+    "DELETE /api/v1/user/secrets/:key": "Endpoint to delete a user-scoped secret",
+    "DELETE /api/v1/user/vars/:key": "Endpoint to delete a user-scoped variable",
+    "DELETE /api/v1/workspaces/:slug/secrets/:key": "Endpoint to delete a workspace-scoped secret",
+    "DELETE /api/v1/workspaces/:slug/vars/:key": "Endpoint to delete a workspace-scoped variable",
+    "GET /api/v1/orgs/:slug/secrets": "Endpoint to list org-scoped secret names and timestamps",
+    "GET /api/v1/orgs/:slug/vars": "Endpoint to list org-scoped variables with values",
+    "GET /api/v1/user/secrets": "Endpoint to list user-scoped secret names and timestamps",
+    "GET /api/v1/user/vars": "Endpoint to list user-scoped variables with values",
+    "GET /api/v1/workspaces/:slug/secrets": "Endpoint to list workspace-scoped secret names and timestamps",
+    "GET /api/v1/workspaces/:slug/vars": "Endpoint to list workspace-scoped variables with values",
+    "GET /api/v1/workspaces/:slug/vars/resolved": "Endpoint returning the merged set of variables for a workspace context, applying resolution order across user, org, and workspace tiers",
+    "PAT": "Personal Access Token \u2014 a scoped credential that requires explicit permission scopes for each operation",
+    "PATCH /api/v1/orgs/:slug/secrets/:key": "Endpoint to update an org-scoped secret value",
+    "PATCH /api/v1/orgs/:slug/vars/:key": "Endpoint to update an org-scoped variable value",
+    "PATCH /api/v1/user/secrets/:key": "Endpoint to update a user-scoped secret value",
+    "PATCH /api/v1/user/vars/:key": "Endpoint to update a user-scoped variable value",
+    "PATCH /api/v1/workspaces/:slug/secrets/:key": "Endpoint to update a workspace-scoped secret value",
+    "PATCH /api/v1/workspaces/:slug/vars/:key": "Endpoint to update a workspace-scoped variable value",
+    "POST /api/v1/orgs/:slug/secrets": "Endpoint to create one or more org-scoped secrets",
+    "POST /api/v1/orgs/:slug/vars": "Endpoint to create one or more org-scoped variables",
+    "POST /api/v1/user/secrets": "Endpoint to create one or more user-scoped secrets",
+    "POST /api/v1/user/vars": "Endpoint to create one or more user-scoped variables",
+    "POST /api/v1/workspaces/:slug/secrets": "Endpoint to create one or more workspace-scoped secrets",
+    "POST /api/v1/workspaces/:slug/vars": "Endpoint to create one or more workspace-scoped variables",
+    "anti-enumeration": "Security pattern where non-existent and unauthorized resources both return HTTP 404 to prevent resource discovery by unauthorized callers",
+    "apikit": "The hub's HTTP framework and permission registry library built on Echo v4",
+    "base64-encoded": "Values stored in the database are encoded using standard base64; the API transparently encodes on write and decodes on read",
+    "cascading deletion": "The requirement that when a user, org, or workspace is deleted, all associated secrets and variables are deleted within the same database transaction",
+    "entries": "Array field in POST request bodies containing one or more key/value objects to create in a single request",
+    "org_id": "The UUID of the organization that owns a workspace, stored in the workspaces table; may be null if the workspace has no org",
+    "origin": "Field in the resolved variables response indicating which tier (user, org, or workspace) a resolved variable's value came from",
+    "owner_id": "The identifier of the owning entity: a user UUID for owner_type='user', an org UUID for owner_type='org', or a workspace slug for owner_type='workspace'",
+    "owner_type": "Discriminator column in the secrets/variables tables; one of 'user', 'org', or 'workspace'",
+    "per-scope limit": "The maximum of 100 secrets or 100 variables allowed per (owner_type, owner_id) combination",
+    "resolution order": "The priority ordering for variable merging: workspace (highest) > org > user (lowest); more specific scopes override less specific ones",
+    "secrets": "Sensitive key/value pairs (API tokens, certificates, connection strings) stored per owner scope; values are never returned to external API clients",
+    "secrets table": "SQLite table storing sensitive key/value pairs with composite primary key (owner_type, owner_id, key)",
+    "secrets:delete": "PAT permission scope granting delete access to secrets",
+    "secrets:list": "PAT permission scope granting list access to secret names (values never returned)",
+    "secrets:manage": "PAT permission scope granting create, list, update, and delete access to secrets; implies secrets:list, secrets:write, and secrets:delete",
+    "secrets:write": "PAT permission scope granting update access to existing secret values",
+    "serialized write mode": "SQLite's WAL or exclusive locking mode used by hub that serializes all concurrent writes, making count-check-then-insert effectively atomic",
+    "user_id": "The UUID of the user who owns a workspace, stored in the workspaces table",
+    "variables": "Non-sensitive configuration key/value pairs stored per owner scope; values are readable by API clients",
+    "variables table": "SQLite table storing non-sensitive key/value pairs with composite primary key (owner_type, owner_id, key)",
+    "vars:delete": "PAT permission scope granting delete access to variables",
+    "vars:manage": "PAT permission scope granting create, list, read, update, and delete access to variables; implies vars:read, vars:write, and vars:delete",
+    "vars:read": "PAT permission scope granting list and read access to variable values",
+    "vars:write": "PAT permission scope granting list, read, and update access to variable values; implies vars:read",
+    "workspaces store": "The store layer component from spec 01_workspaces that provides workspace lookup including org_id and user_id fields",
+    "workspaces:read": "Existing apikit PAT permission scope that grants read access to workspaces. Referenced here in the context of ownership authorization checks (non-overlapping with secrets/variables scopes).",
+    "workspaces:write": "Existing apikit PAT permission scope that grants write access to workspaces. Referenced here in the context of ownership authorization checks (non-overlapping with secrets/variables scopes).",
+    "workspaces:delete": "Existing apikit PAT permission scope that grants delete access to workspaces. Referenced here in the context of ownership authorization checks (non-overlapping with secrets/variables scopes)."
+  },
+  "requirements": [
+    {
+      "id": "07-REQ-1",
+      "title": "Database Schema for Secrets and Variables Tables",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "have a well-defined SQLite schema for secrets and variables",
+        "benefit": "the store layer can persist and retrieve key/value pairs with correct ownership and timestamps"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub database",
+          "action": "maintains a `secrets table` and a `variables table`, each with columns owner_type (TEXT NOT NULL, CHECK IN ('user','org','workspace')), `owner_id` (TEXT NOT NULL), key (TEXT NOT NULL), value (TEXT NOT NULL), created_at (TEXT NOT NULL RFC 3339), updated_at (TEXT NOT NULL RFC 3339), and a composite PRIMARY KEY of (`owner_type`, `owner_id`, key)",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub database",
+          "action": "stores values as `base64-encoded` strings in both tables, with encoding performed transparently by the store layer before write and decoding performed transparently on read",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "hub database",
+          "action": "enforces no database-level foreign key constraints on `owner_id`; referential integrity is enforced at the application layer via `cascading deletion` within the same transaction as parent resource deletion",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub store layer",
+          "action": "returns an internal error to the caller rather than returning a garbled decoded value",
+          "return_contract": "returns (nil, error) to the calling handler, which responds with HTTP 500",
+          "error_condition": "a value written to the database is not valid base64 on read (data corruption)"
+        },
+        {
+          "id": "07-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub database migration",
+          "action": "rolls back the migration transaction and leaves the database in its prior state, returning an error to the startup routine",
+          "return_contract": "returns a non-nil error; hub startup aborts",
+          "error_condition": "the migration to create the `secrets table` or `variables table` fails partway through"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-2",
+      "title": "Key Naming Rules Validation",
+      "user_story": {
+        "role": "API client",
+        "goal": "receive a clear error when I submit an invalid key name",
+        "benefit": "I can correct my request before any data is written"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-2.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "accepts keys that contain only alphanumeric characters and underscores, do not start with a digit, and are at most 255 characters long; enforces case-insensitive uniqueness within a scope",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the entire request before writing any entries",
+          "return_contract": "returns HTTP 400 with a JSON error body describing the invalid key",
+          "error_condition": "a submitted key contains characters other than alphanumeric or underscore, starts with a digit, or exceeds 255 characters"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a descriptive error message",
+          "error_condition": "a key is exactly 256 characters long (one over the limit)"
+        },
+        {
+          "id": "07-REQ-2.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "accepts the key as valid",
+          "return_contract": "proceeds with the request normally; returns HTTP 201 or HTTP 200 as appropriate",
+          "trigger": "a key is exactly 255 characters long (at the limit) and otherwise valid"
+        },
+        {
+          "id": "07-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a descriptive error message",
+          "error_condition": "a key is an empty string"
+        },
+        {
+          "id": "07-REQ-2.E4",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a descriptive error message",
+          "error_condition": "a key starts with a digit (e.g., '1_KEY')"
+        },
+        {
+          "id": "07-REQ-2.E5",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request without writing any entries",
+          "return_contract": "returns HTTP 409 with a JSON error body indicating the key already exists",
+          "trigger": "a POST request contains a key that already exists at the same (`owner_type`, `owner_id`) scope in a prior request (cross-request duplicate)"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-3",
+      "title": "Value Constraints and Base64 Encoding",
+      "user_story": {
+        "role": "API client",
+        "goal": "store values up to 256 KB including empty strings and multi-line content",
+        "benefit": "I can manage certificates, YAML files, and feature-flag variables without worrying about encoding"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-3.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "accepts raw values of 0 bytes (empty string) up to 262144 bytes (256 KB), encodes them as `base64-encoded` strings before storage, and decodes them transparently on read so that API clients always see raw values",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-3.2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the entire request before writing any entries",
+          "return_contract": "returns HTTP 400 with a JSON error body describing the value size violation",
+          "error_condition": "a submitted raw value exceeds 262144 bytes"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-3.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "accepts the empty string and overwrites the existing stored value with an empty `base64-encoded` string",
+          "return_contract": "returns HTTP 200 with the updated entry; for variables, value field is empty string; for secrets, value field is omitted",
+          "trigger": "a PATCH request body contains an empty string value (\"\")"
+        },
+        {
+          "id": "07-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a JSON error body indicating the value field is required",
+          "error_condition": "a PATCH request body omits the value field entirely or sets it to null"
+        },
+        {
+          "id": "07-REQ-3.E3",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "accepts the value and stores it as a `base64-encoded` string",
+          "return_contract": "proceeds normally; returns HTTP 201 or HTTP 200 as appropriate",
+          "trigger": "a value is exactly 262144 bytes (at the 256 KB limit)"
+        },
+        {
+          "id": "07-REQ-3.E4",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "encodes the value as `base64-encoded` before storage and decodes it on read, preserving all newlines and special characters",
+          "return_contract": "the decoded value returned to the client is byte-for-byte identical to the submitted value",
+          "trigger": "a value contains multi-line content such as a PEM certificate or YAML document"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-4",
+      "title": "Per-Scope Entry Limit Enforcement",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "enforce a cap of 100 entries per owner scope",
+        "benefit": "the database does not accumulate unbounded rows per owner"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "counts existing entries for that scope, checks that existing count plus the number of new entries in the request does not exceed 100, and if the limit would be exceeded rejects the entire request before writing any entries",
+          "return_contract": "returns HTTP 400 with the message \"maximum of 100 entries per scope exceeded\"; no entries are written",
+          "trigger": "a POST request is received for a given (`owner_type`, `owner_id`) scope"
+        },
+        {
+          "id": "07-REQ-4.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub store layer",
+          "action": "performs the count check and INSERT within the same write transaction, relying on SQLite's `serialized write mode` to ensure atomicity so that no two concurrent POST requests can simultaneously pass the count check and both push a scope past 100 entries",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-4.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "accepts the request and writes all entries",
+          "return_contract": "returns HTTP 201 with the created entries",
+          "trigger": "a POST request would bring the scope to exactly 100 entries"
+        },
+        {
+          "id": "07-REQ-4.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the entire request before writing any entries",
+          "return_contract": "returns HTTP 400 with the message \"maximum of 100 entries per scope exceeded\"",
+          "trigger": "a POST request would bring the scope to 101 entries (one over the limit)"
+        },
+        {
+          "id": "07-REQ-4.E3",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the entire request atomically; no partial writes occur",
+          "return_contract": "returns HTTP 400 with the message \"maximum of 100 entries per scope exceeded\"",
+          "trigger": "a POST request contains entries that would individually be valid but collectively push the scope over 100"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-5",
+      "title": "Intra-Request Duplicate Key Detection",
+      "user_story": {
+        "role": "API client",
+        "goal": "receive an immediate error if my POST entries array contains duplicate keys",
+        "benefit": "I know my request was rejected cleanly before any data was written"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the entire request before performing any database writes",
+          "return_contract": "returns HTTP 400 with a JSON error body identifying the duplicate key",
+          "trigger": "a POST request's `entries` array contains two or more objects with the same key (compared case-insensitively)"
+        },
+        {
+          "id": "07-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request before performing any database writes",
+          "return_contract": "returns HTTP 400 with a JSON error body indicating the entries array must not be empty",
+          "trigger": "a POST request's `entries` array is empty"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-5.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "treats them as duplicates and rejects the entire request",
+          "return_contract": "returns HTTP 400 with a JSON error body identifying the duplicate key",
+          "trigger": "a POST request contains entries with keys that differ only by case (e.g., 'DB_HOST' and 'db_host')"
+        },
+        {
+          "id": "07-REQ-5.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "proceeds past duplicate detection and continues with remaining validations",
+          "return_contract": "does not return HTTP 400 for duplicate key reasons; proceeds to other validation steps",
+          "trigger": "a POST request contains a single entry with a valid key"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-6",
+      "title": "PAT Permission Scope Registration",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "register 8 new PAT permission scopes with apikit's permission registry",
+        "benefit": "PAT holders can be granted fine-grained access to secrets and variables operations"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-6.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub permission registry",
+          "action": "registers `secrets:manage`, `secrets:list`, `secrets:write`, and `secrets:delete` scopes with apikit, where `secrets:manage` implies `secrets:list`, `secrets:write`, and `secrets:delete`",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-6.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub permission registry",
+          "action": "registers `vars:manage`, `vars:read`, `vars:write`, and `vars:delete` scopes with apikit, where `vars:manage` implies `vars:read`, `vars:write`, and `vars:delete`, and `vars:write` implies `vars:read`",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-6.3",
+          "ears_pattern": "ubiquitous",
+          "system": "hub permission registry",
+          "action": "registers all 8 scopes independently of the workspace scopes (`workspaces:read`, `workspaces:write`, `workspaces:delete`) registered by the workspace_write_delete spec; the two sets do not overlap",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub permission registry",
+          "action": "returns the error to the hub startup routine",
+          "return_contract": "returns a non-nil error; hub startup aborts",
+          "error_condition": "apikit's permission registry returns an error when registering any of the 8 scopes (e.g., duplicate registration)"
+        },
+        {
+          "id": "07-REQ-6.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request because creation requires `secrets:manage`",
+          "return_contract": "returns HTTP 403 with a JSON error body indicating insufficient scope",
+          "trigger": "a PAT with only `secrets:list` attempts to create a secret"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-7",
+      "title": "Authorization Model for Secrets and Variables Endpoints",
+      "user_story": {
+        "role": "API client",
+        "goal": "have my access to secrets and variables governed by my token type and scope",
+        "benefit": "sensitive data is protected and access is appropriately restricted"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-7.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "grants admin tokens full access to all secrets and variables endpoints at any scope without ownership checks",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-7.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "grants API keys implicit full access to secrets and variables owned by the authenticated user, their org memberships, and their workspaces, including `GET /api/v1/workspaces/:slug/vars/resolved`",
+          "return_contract": null
+        },
+        {
+          "id": "07-REQ-7.3",
+          "ears_pattern": "state_driven",
+          "system": "hub API",
+          "action": "enforces the required permission scope for each endpoint as defined in the REST API endpoint tables; a PAT lacking the required scope is rejected",
+          "return_contract": "returns HTTP 403 with a JSON error body indicating the missing scope",
+          "state": "the request is authenticated with a PAT"
+        },
+        {
+          "id": "07-REQ-7.4",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a request targets an org-scoped endpoint and the authenticated caller is not a member of that org"
+        },
+        {
+          "id": "07-REQ-7.5",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a request targets a workspace-scoped endpoint and the authenticated caller does not own that workspace"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 401 with a JSON error body",
+          "error_condition": "an unauthenticated request (no token) reaches any secrets or variables endpoint"
+        },
+        {
+          "id": "07-REQ-7.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration` regardless of the PAT scope",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a PAT with `secrets:manage` attempts to access an org-scoped endpoint for an org the PAT holder is not a member of"
+        },
+        {
+          "id": "07-REQ-7.E3",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "grants access because `vars:write` implies `vars:read`",
+          "return_contract": "returns HTTP 200 with the variable list",
+          "trigger": "a PAT with `vars:write` attempts to list variables"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-8",
+      "title": "Create Secrets via POST",
+      "user_story": {
+        "role": "API client with secrets:manage scope",
+        "goal": "create one or more secrets at a given ownership scope in a single request",
+        "benefit": "I can batch-create secrets efficiently without multiple round trips"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "validates all entries (key naming, value size, intra-request duplicates, scope limit), encodes values as `base64-encoded` strings, writes all entries atomically, and returns the created entries without values",
+          "return_contract": "returns HTTP 201 with a JSON array of objects each containing key, created_at, and updated_at; the value field is never included in the response",
+          "trigger": "a POST request is made to `POST /api/v1/user/secrets`, `POST /api/v1/orgs/:slug/secrets`, or `POST /api/v1/workspaces/:slug/secrets` with a valid `entries` array"
+        },
+        {
+          "id": "07-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the entire request without writing any entries",
+          "return_contract": "returns HTTP 409 with a JSON error body indicating the key already exists",
+          "trigger": "a POST request to a secrets endpoint contains a key that already exists at the same (`owner_type`, `owner_id`) scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-8.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a POST request to `POST /api/v1/orgs/:slug/secrets` references an org slug that does not exist"
+        },
+        {
+          "id": "07-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rolls back the transaction and returns an error to the caller",
+          "return_contract": "returns HTTP 500 with a JSON error body; no entries are persisted",
+          "error_condition": "the database write fails after validation passes (e.g., disk full or SQLite error)"
+        },
+        {
+          "id": "07-REQ-8.E3",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request because creation requires `secrets:manage`",
+          "return_contract": "returns HTTP 403 with a JSON error body",
+          "trigger": "a POST request to a secrets endpoint is made by a PAT with `secrets:list` but not `secrets:manage`"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-9",
+      "title": "List Secrets via GET",
+      "user_story": {
+        "role": "API client with secrets:list or secrets:manage scope",
+        "goal": "list secret names and timestamps at a given ownership scope",
+        "benefit": "I can audit which secrets exist without ever seeing their values"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "retrieves all secrets for the given (`owner_type`, `owner_id`) scope and returns them sorted alphabetically ascending by key (case-insensitive), never including values",
+          "return_contract": "returns HTTP 200 with a JSON array of objects each containing key, created_at, and updated_at; the value field is never included",
+          "trigger": "a GET request is made to `GET /api/v1/user/secrets`, `GET /api/v1/orgs/:slug/secrets`, or `GET /api/v1/workspaces/:slug/secrets`"
+        },
+        {
+          "id": "07-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "returns an empty array",
+          "return_contract": "returns HTTP 200 with an empty JSON array []",
+          "trigger": "a GET request is made to a secrets list endpoint for a scope with no secrets"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-9.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a GET request to `GET /api/v1/orgs/:slug/secrets` references an org the caller is not a member of"
+        },
+        {
+          "id": "07-REQ-9.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request because listing requires `secrets:manage` or `secrets:list`",
+          "return_contract": "returns HTTP 403 with a JSON error body",
+          "trigger": "a GET request to a secrets list endpoint is made by a PAT with `secrets:write` but not `secrets:list` or `secrets:manage`"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-10",
+      "title": "Update Secret via PATCH",
+      "user_story": {
+        "role": "API client with secrets:write or secrets:manage scope",
+        "goal": "update the value of an existing secret at a given ownership scope",
+        "benefit": "I can rotate credentials without deleting and recreating the secret"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "validates the value, encodes it as `base64-encoded`, updates the stored value and updated_at timestamp, and returns the updated entry without the value",
+          "return_contract": "returns HTTP 200 with a JSON object containing key, created_at, and updated_at; the value field is never included",
+          "trigger": "a PATCH request is made to `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, or `PATCH /api/v1/workspaces/:slug/secrets/:key` with a valid value field"
+        },
+        {
+          "id": "07-REQ-10.2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 404 with a JSON error body",
+          "error_condition": "the key specified in the PATCH path does not exist at the given (`owner_type`, `owner_id`) scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a JSON error body indicating the value field is required",
+          "error_condition": "the PATCH request body omits the value field or sets it to null"
+        },
+        {
+          "id": "07-REQ-10.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "performs a case-insensitive lookup and updates the matching entry",
+          "return_contract": "returns HTTP 200 with the updated entry using the originally stored key casing",
+          "trigger": "a PATCH request to a secrets endpoint uses a key that differs in case from the stored key (e.g., PATCH 'db_host' when stored as 'DB_HOST')"
+        },
+        {
+          "id": "07-REQ-10.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a JSON error body describing the value size violation",
+          "error_condition": "the new value in the PATCH request exceeds 262144 bytes"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-11",
+      "title": "Delete Secret via DELETE",
+      "user_story": {
+        "role": "API client with secrets:delete or secrets:manage scope",
+        "goal": "delete a secret at a given ownership scope",
+        "benefit": "I can remove credentials that are no longer needed"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "deletes the secret with the given key at the given (`owner_type`, `owner_id`) scope",
+          "return_contract": "returns HTTP 204 No Content",
+          "trigger": "a DELETE request is made to `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, or `DELETE /api/v1/workspaces/:slug/secrets/:key`"
+        },
+        {
+          "id": "07-REQ-11.2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 404 with a JSON error body",
+          "error_condition": "the key specified in the DELETE path does not exist at the given (`owner_type`, `owner_id`) scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-11.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "performs a case-insensitive lookup and deletes the matching entry",
+          "return_contract": "returns HTTP 204 No Content",
+          "trigger": "a DELETE request to a secrets endpoint uses a key that differs in case from the stored key"
+        },
+        {
+          "id": "07-REQ-11.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a DELETE request to `DELETE /api/v1/workspaces/:slug/secrets/:key` is made by a PAT with `secrets:delete` for a workspace the PAT holder does not own"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-12",
+      "title": "Create Variables via POST",
+      "user_story": {
+        "role": "API client with vars:manage scope",
+        "goal": "create one or more variables at a given ownership scope in a single request",
+        "benefit": "I can batch-create configuration variables efficiently"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "validates all entries (key naming, value size, intra-request duplicates, scope limit), encodes values as `base64-encoded` strings, writes all entries atomically, and returns the created entries including decoded values",
+          "return_contract": "returns HTTP 201 with a JSON array of objects each containing key, value (decoded), created_at, and updated_at",
+          "trigger": "a POST request is made to `POST /api/v1/user/vars`, `POST /api/v1/orgs/:slug/vars`, or `POST /api/v1/workspaces/:slug/vars` with a valid `entries` array"
+        },
+        {
+          "id": "07-REQ-12.2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the entire request without writing any entries",
+          "return_contract": "returns HTTP 409 with a JSON error body indicating the key already exists",
+          "trigger": "a POST request to a variables endpoint contains a key that already exists at the same (`owner_type`, `owner_id`) scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-12.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a POST request to `POST /api/v1/orgs/:slug/vars` references an org slug that does not exist"
+        },
+        {
+          "id": "07-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rolls back the transaction and returns an error to the caller",
+          "return_contract": "returns HTTP 500 with a JSON error body; no entries are persisted",
+          "error_condition": "the database write fails after validation passes"
+        },
+        {
+          "id": "07-REQ-12.E3",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request because creation requires `vars:manage`",
+          "return_contract": "returns HTTP 403 with a JSON error body",
+          "trigger": "a POST request to a variables endpoint is made by a PAT with `vars:read` but not `vars:manage`"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-13",
+      "title": "List Variables via GET",
+      "user_story": {
+        "role": "API client with vars:read, vars:write, or vars:manage scope",
+        "goal": "list variables and their values at a given ownership scope",
+        "benefit": "I can inspect configuration values for a given owner"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "retrieves all variables for the given (`owner_type`, `owner_id`) scope, decodes values from `base64-encoded` storage, and returns them sorted alphabetically ascending by key (case-insensitive)",
+          "return_contract": "returns HTTP 200 with a JSON array of objects each containing key, value (decoded), created_at, and updated_at",
+          "trigger": "a GET request is made to `GET /api/v1/user/vars`, `GET /api/v1/orgs/:slug/vars`, or `GET /api/v1/workspaces/:slug/vars`"
+        },
+        {
+          "id": "07-REQ-13.2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "returns an empty array",
+          "return_contract": "returns HTTP 200 with an empty JSON array []",
+          "trigger": "a GET request is made to a variables list endpoint for a scope with no variables"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-13.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a GET request to `GET /api/v1/orgs/:slug/vars` references an org the caller is not a member of"
+        },
+        {
+          "id": "07-REQ-13.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request because listing requires `vars:read`, `vars:write`, or `vars:manage`",
+          "return_contract": "returns HTTP 403 with a JSON error body",
+          "trigger": "a GET request to a variables list endpoint is made by a PAT with `vars:delete` but not `vars:read`, `vars:write`, or `vars:manage`"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-14",
+      "title": "Update Variable via PATCH",
+      "user_story": {
+        "role": "API client with vars:write or vars:manage scope",
+        "goal": "update the value of an existing variable at a given ownership scope",
+        "benefit": "I can change configuration values without deleting and recreating the variable"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "validates the value, encodes it as `base64-encoded`, updates the stored value and updated_at timestamp, and returns the updated entry with the decoded value",
+          "return_contract": "returns HTTP 200 with a JSON object containing key, value (decoded), created_at, and updated_at",
+          "trigger": "a PATCH request is made to `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, or `PATCH /api/v1/workspaces/:slug/vars/:key` with a valid value field"
+        },
+        {
+          "id": "07-REQ-14.2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 404 with a JSON error body",
+          "error_condition": "the key specified in the PATCH path does not exist at the given (`owner_type`, `owner_id`) scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a JSON error body indicating the value field is required",
+          "error_condition": "the PATCH request body omits the value field or sets it to null"
+        },
+        {
+          "id": "07-REQ-14.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "performs a case-insensitive lookup and updates the matching entry",
+          "return_contract": "returns HTTP 200 with the updated entry using the originally stored key casing",
+          "trigger": "a PATCH request to a variables endpoint uses a key that differs in case from the stored key"
+        },
+        {
+          "id": "07-REQ-14.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 400 with a JSON error body describing the value size violation",
+          "error_condition": "the new value in the PATCH request exceeds 262144 bytes"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-15",
+      "title": "Delete Variable via DELETE",
+      "user_story": {
+        "role": "API client with vars:delete or vars:manage scope",
+        "goal": "delete a variable at a given ownership scope",
+        "benefit": "I can remove configuration values that are no longer needed"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-15.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "deletes the variable with the given key at the given (`owner_type`, `owner_id`) scope",
+          "return_contract": "returns HTTP 204 No Content",
+          "trigger": "a DELETE request is made to `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, or `DELETE /api/v1/workspaces/:slug/vars/:key`"
+        },
+        {
+          "id": "07-REQ-15.2",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 404 with a JSON error body",
+          "error_condition": "the key specified in the DELETE path does not exist at the given (`owner_type`, `owner_id`) scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-15.E1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "performs a case-insensitive lookup and deletes the matching entry",
+          "return_contract": "returns HTTP 204 No Content",
+          "trigger": "a DELETE request to a variables endpoint uses a key that differs in case from the stored key"
+        },
+        {
+          "id": "07-REQ-15.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "trigger": "a DELETE request to `DELETE /api/v1/workspaces/:slug/vars/:key` is made by a PAT with `vars:delete` for a workspace the PAT holder does not own"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-16",
+      "title": "Resolved Variables Endpoint",
+      "user_story": {
+        "role": "API client with vars:read, vars:write, or vars:manage scope",
+        "goal": "retrieve the fully merged set of variables for a workspace context",
+        "benefit": "I can see the effective configuration that will be applied to a workspace without manually merging three tiers"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-16.1",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "looks up the workspace via the `workspaces store` to obtain `org_id` and `user_id`, fetches variables for all applicable tiers (user, org if `org_id` is non-null, workspace), merges them using `resolution order` (workspace wins over org wins over user), and returns the merged set sorted alphabetically ascending by key (case-insensitive) with an `origin` field on each entry",
+          "return_contract": "returns HTTP 200 with a JSON array of objects each containing key, value (decoded), origin (one of 'user', 'org', 'workspace'), created_at, and updated_at from the winning tier's record",
+          "trigger": "a GET request is made to `GET /api/v1/workspaces/:slug/vars/resolved`"
+        },
+        {
+          "id": "07-REQ-16.2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "skips the org tier entirely and merges only user-level and workspace-level variables",
+          "return_contract": "returns HTTP 200 with the merged result; no org-tier variables appear",
+          "trigger": "the workspace referenced in `GET /api/v1/workspaces/:slug/vars/resolved` has a null or empty `org_id`"
+        },
+        {
+          "id": "07-REQ-16.3",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "uses the value from the most specific tier (workspace > org > user) and sets the `origin` field to that tier's name; timestamps are taken from the winning tier's record",
+          "return_contract": "returns HTTP 200 with the winning tier's value, origin, created_at, and updated_at for that key",
+          "trigger": "the same key exists at multiple tiers for a workspace resolution"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-16.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "rejects the request using `anti-enumeration`",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "the workspace slug in `GET /api/v1/workspaces/:slug/vars/resolved` does not exist or the caller does not own it"
+        },
+        {
+          "id": "07-REQ-16.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "returns an empty merged set",
+          "return_contract": "returns HTTP 200 with an empty JSON array []",
+          "trigger": "a GET request to `GET /api/v1/workspaces/:slug/vars/resolved` is made for a workspace with no variables at any tier"
+        },
+        {
+          "id": "07-REQ-16.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub API",
+          "action": "returns an internal error to the caller",
+          "return_contract": "returns HTTP 500 with a JSON error body",
+          "error_condition": "the `workspaces store` lookup fails (e.g., database error) during resolution"
+        },
+        {
+          "id": "07-REQ-16.E4",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "rejects the request",
+          "return_contract": "returns HTTP 403 with a JSON error body",
+          "trigger": "a GET request to `GET /api/v1/workspaces/:slug/vars/resolved` is made by a PAT with `vars:delete` but not `vars:read`, `vars:write`, or `vars:manage`"
+        },
+        {
+          "id": "07-REQ-16.E5",
+          "ears_pattern": "event_driven",
+          "system": "hub API",
+          "action": "grants full access without ownership checks and returns the resolved variables",
+          "return_contract": "returns HTTP 200 with the merged variable set",
+          "trigger": "a GET request to `GET /api/v1/workspaces/:slug/vars/resolved` is made by an admin token"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-17",
+      "title": "Cascading Deletion of Secrets and Variables",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "ensure all secrets and variables for a deleted owner are removed in the same transaction as the parent deletion",
+        "benefit": "the database never contains orphaned rows even if the process crashes between parent and child deletions"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "07-REQ-17.1",
+          "ears_pattern": "event_driven",
+          "system": "hub store layer",
+          "action": "deletes all rows in the `secrets table` and `variables table` where (`owner_type`, `owner_id`) matches the deleted entity, within the same database transaction as the parent resource deletion",
+          "return_contract": null,
+          "trigger": "a user, org, or workspace is deleted"
+        },
+        {
+          "id": "07-REQ-17.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub store layer",
+          "action": "wraps the parent resource deletion and the child secrets/variables deletions in a single database transaction so that either all deletions commit or none do",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "07-REQ-17.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub store layer",
+          "action": "rolls back the entire transaction, leaving the parent resource and all its secrets/variables intact",
+          "return_contract": "returns a non-nil error to the calling handler, which responds with HTTP 500",
+          "error_condition": "the child secrets/variables deletion fails within the transaction (e.g., database error)"
+        },
+        {
+          "id": "07-REQ-17.E2",
+          "ears_pattern": "event_driven",
+          "system": "hub store layer",
+          "action": "executes the deletion queries for secrets and variables (which affect 0 rows) without error and commits the transaction",
+          "return_contract": "returns nil error; parent resource is deleted successfully",
+          "trigger": "a user, org, or workspace with no associated secrets or variables is deleted"
+        },
+        {
+          "id": "07-REQ-17.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub store layer",
+          "action": "SQLite rolls back the uncommitted transaction on next startup, leaving both the parent resource and its secrets/variables intact",
+          "return_contract": "no orphaned rows exist after recovery",
+          "error_condition": "the process crashes after the parent resource deletion SQL executes but before the transaction commits"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "07-PROP-1",
+      "title": "Secret values are never returned by any API endpoint",
+      "for_any": "secret stored in the `secrets table`",
+      "invariant": "no GET, POST, PATCH, or DELETE response body for any `secrets` endpoint includes a value field; only key, created_at, and updated_at are returned",
+      "validates": [
+        "07-REQ-8.1",
+        "07-REQ-9.1",
+        "07-REQ-10.1"
+      ]
+    },
+    {
+      "id": "07-PROP-2",
+      "title": "Base64 round-trip preserves value bytes",
+      "for_any": "raw value V of 0 to 262144 bytes submitted to any create or update endpoint",
+      "invariant": "the value returned by a subsequent GET or PATCH response is byte-for-byte identical to V",
+      "validates": [
+        "07-REQ-3.1",
+        "07-REQ-13.1",
+        "07-REQ-14.1"
+      ]
+    },
+    {
+      "id": "07-PROP-3",
+      "title": "Per-scope entry count never exceeds 100",
+      "for_any": "(`owner_type`, `owner_id`) combination in the `secrets table` or `variables table`",
+      "invariant": "the number of rows with that (owner_type, owner_id) pair never exceeds 100",
+      "validates": [
+        "07-REQ-4.1",
+        "07-REQ-4.2"
+      ]
+    },
+    {
+      "id": "07-PROP-4",
+      "title": "Key uniqueness is case-insensitive within a scope",
+      "for_any": "pair of rows in the `secrets table` or `variables table` with the same (`owner_type`, `owner_id`)",
+      "invariant": "no two rows have keys that are equal when compared case-insensitively",
+      "validates": [
+        "07-REQ-2.1",
+        "07-REQ-5.1",
+        "07-REQ-8.2",
+        "07-REQ-12.2"
+      ]
+    },
+    {
+      "id": "07-PROP-5",
+      "title": "Resolution order: workspace overrides org overrides user",
+      "for_any": "key K present at two or more tiers for a given workspace resolution",
+      "invariant": "the resolved value for K is the value from the most specific tier (workspace if present, else org if present, else user), and the `origin` field reflects that tier",
+      "validates": [
+        "07-REQ-16.1",
+        "07-REQ-16.3"
+      ]
+    },
+    {
+      "id": "07-PROP-6",
+      "title": "List and resolved endpoints return keys in case-insensitive alphabetical order",
+      "for_any": "response from any GET list or `GET /api/v1/workspaces/:slug/vars/resolved` endpoint",
+      "invariant": "the keys in the response array are sorted in ascending alphabetical order when compared case-insensitively",
+      "validates": [
+        "07-REQ-9.1",
+        "07-REQ-13.1",
+        "07-REQ-16.1"
+      ]
+    },
+    {
+      "id": "07-PROP-7",
+      "title": "Cascading deletion leaves no orphaned rows",
+      "for_any": "user, org, or workspace that is deleted",
+      "invariant": "after the deletion transaction commits, no rows exist in the `secrets table` or `variables table` with an `owner_id` matching the deleted entity's identifier",
+      "validates": [
+        "07-REQ-17.1",
+        "07-REQ-17.2"
+      ]
+    },
+    {
+      "id": "07-PROP-8",
+      "title": "POST validation is all-or-nothing",
+      "for_any": "POST request to any secrets or variables create endpoint",
+      "invariant": "either all entries in the request are written atomically or none are; no partial writes occur regardless of which validation rule is violated",
+      "validates": [
+        "07-REQ-4.1",
+        "07-REQ-5.1",
+        "07-REQ-8.1",
+        "07-REQ-12.1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "07-PATH-1",
+      "title": "Create a workspace-scoped secret via PAT",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "sends POST /api/v1/workspaces/:slug/secrets with Authorization header containing a PAT bearing secrets:manage scope and a JSON body with an entries array"
+        },
+        {
+          "actor": "hub API (auth middleware)",
+          "action": "validates the PAT, checks that it has secrets:manage scope, and verifies the caller owns the workspace; returns HTTP 403 or HTTP 404 if either check fails"
+        },
+        {
+          "actor": "hub API (request validation)",
+          "action": "validates the entries array is non-empty, checks for intra-request duplicate keys (case-insensitive), validates each key against naming rules, and validates each value does not exceed 262144 bytes; returns HTTP 400 if any check fails"
+        },
+        {
+          "actor": "hub store layer",
+          "action": "opens a write transaction, counts existing secrets for (owner_type='workspace', owner_id=slug), checks that count + new entries <= 100, checks for cross-request duplicate keys returning HTTP 409 if found, encodes each value as base64-encoded, inserts all rows, and commits the transaction"
+        },
+        {
+          "actor": "hub API (response)",
+          "action": "returns HTTP 201 with a JSON array of objects containing key, created_at, and updated_at for each created secret; value is never included"
+        }
+      ]
+    },
+    {
+      "id": "07-PATH-2",
+      "title": "Resolve variables for a workspace context",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "sends GET /api/v1/workspaces/:slug/vars/resolved with an Authorization header containing an API key"
+        },
+        {
+          "actor": "hub API (auth middleware)",
+          "action": "validates the API key and verifies the caller owns the workspace; returns HTTP 404 if the workspace does not exist or is not owned by the caller"
+        },
+        {
+          "actor": "hub API (resolution handler)",
+          "action": "calls the workspaces store to look up the workspace record and retrieve org_id and user_id"
+        },
+        {
+          "actor": "workspaces store (spec 01_workspaces)",
+          "action": "returns the workspace record including org_id (may be null) and user_id"
+        },
+        {
+          "actor": "hub store layer (variables)",
+          "action": "fetches all variables for owner_type='user' and owner_id=user_id; fetches all variables for owner_type='org' and owner_id=org_id (skipped if org_id is null); fetches all variables for owner_type='workspace' and owner_id=slug; decodes all values from base64-encoded storage"
+        },
+        {
+          "actor": "hub API (resolution handler)",
+          "action": "merges the three variable sets using resolution order (workspace overrides org overrides user), attaches the origin field to each entry, sorts the result alphabetically ascending by key (case-insensitive)"
+        },
+        {
+          "actor": "hub API (response)",
+          "action": "returns HTTP 200 with a JSON array of resolved variable objects each containing key, value, origin, created_at, and updated_at from the winning tier's record"
+        }
+      ]
+    },
+    {
+      "id": "07-PATH-3",
+      "title": "Delete a user and cascade-delete their secrets and variables",
+      "steps": [
+        {
+          "actor": "hub API or admin operation",
+          "action": "initiates deletion of a user account"
+        },
+        {
+          "actor": "hub store layer (user deletion)",
+          "action": "opens a database transaction and executes DELETE on the users table for the given user UUID"
+        },
+        {
+          "actor": "hub store layer (cascading deletion)",
+          "action": "within the same transaction, executes DELETE on the secrets table WHERE owner_type='user' AND owner_id=user_uuid"
+        },
+        {
+          "actor": "hub store layer (cascading deletion)",
+          "action": "within the same transaction, executes DELETE on the variables table WHERE owner_type='user' AND owner_id=user_uuid"
+        },
+        {
+          "actor": "hub store layer",
+          "action": "commits the transaction; all three deletions are atomically persisted with no orphaned rows"
+        }
+      ]
+    },
+    {
+      "id": "07-PATH-4",
+      "title": "Update a variable value via PATCH",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "sends PATCH /api/v1/user/vars/:key with a JSON body containing a value field"
+        },
+        {
+          "actor": "hub API (auth middleware)",
+          "action": "validates the token and checks that the caller has vars:manage or vars:write scope (for PATs); returns HTTP 401 or HTTP 403 if checks fail"
+        },
+        {
+          "actor": "hub API (request validation)",
+          "action": "checks that the value field is present and not null, and that the raw value does not exceed 262144 bytes; returns HTTP 400 if either check fails"
+        },
+        {
+          "actor": "hub store layer",
+          "action": "performs a case-insensitive lookup for the key at (owner_type='user', owner_id=caller_uuid); returns HTTP 404 if not found"
+        },
+        {
+          "actor": "hub store layer",
+          "action": "encodes the new value as base64-encoded, updates the row's value and updated_at columns, and commits the write"
+        },
+        {
+          "actor": "hub API (response)",
+          "action": "returns HTTP 200 with a JSON object containing key, value (decoded), created_at, and updated_at"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "07-ERR-1",
+      "condition": "Invalid key name (contains non-alphanumeric/non-underscore characters, starts with a digit, or exceeds 255 characters)",
+      "behavior": "Reject the entire request before any writes; return HTTP 400 with a JSON error body describing the invalid key",
+      "requirement_id": "07-REQ-2.2"
+    },
+    {
+      "id": "07-ERR-2",
+      "condition": "Raw value exceeds 262144 bytes (256 KB)",
+      "behavior": "Reject the entire request before any writes; return HTTP 400 with a JSON error body describing the value size violation",
+      "requirement_id": "07-REQ-3.2"
+    },
+    {
+      "id": "07-ERR-3",
+      "condition": "POST entries array is empty",
+      "behavior": "Reject the request before any writes; return HTTP 400 with a JSON error body indicating the entries array must not be empty",
+      "requirement_id": "07-REQ-5.2"
+    },
+    {
+      "id": "07-ERR-4",
+      "condition": "POST entries array contains two or more entries with the same key (case-insensitive intra-request duplicate)",
+      "behavior": "Reject the entire request before any writes; return HTTP 400 with a JSON error body identifying the duplicate key",
+      "requirement_id": "07-REQ-5.1"
+    },
+    {
+      "id": "07-ERR-5",
+      "condition": "POST would push the (owner_type, owner_id) scope past 100 entries",
+      "behavior": "Reject the entire request before any writes; return HTTP 400 with the message \"maximum of 100 entries per scope exceeded\"",
+      "requirement_id": "07-REQ-4.1"
+    },
+    {
+      "id": "07-ERR-6",
+      "condition": "POST contains a key that already exists at the same (owner_type, owner_id) scope (cross-request duplicate)",
+      "behavior": "Reject the entire request without writing any entries; return HTTP 409 with a JSON error body indicating the key already exists",
+      "requirement_id": "07-REQ-8.2"
+    },
+    {
+      "id": "07-ERR-7",
+      "condition": "Unauthenticated request (no token) to any secrets or variables endpoint",
+      "behavior": "Return HTTP 401 with a JSON error body",
+      "requirement_id": "07-REQ-7.E1"
+    },
+    {
+      "id": "07-ERR-8",
+      "condition": "PAT lacks the required permission scope for the requested operation",
+      "behavior": "Return HTTP 403 with a JSON error body indicating the missing scope",
+      "requirement_id": "07-REQ-7.3"
+    },
+    {
+      "id": "07-ERR-9",
+      "condition": "Caller is not a member of the org for an org-scoped endpoint (anti-enumeration)",
+      "behavior": "Return HTTP 404",
+      "requirement_id": "07-REQ-7.4"
+    },
+    {
+      "id": "07-ERR-10",
+      "condition": "Caller does not own the workspace for a workspace-scoped endpoint (anti-enumeration)",
+      "behavior": "Return HTTP 404",
+      "requirement_id": "07-REQ-7.5"
+    },
+    {
+      "id": "07-ERR-11",
+      "condition": "PATCH or DELETE targeting a key that does not exist at the given scope",
+      "behavior": "Return HTTP 404 with a JSON error body",
+      "requirement_id": "07-REQ-10.2"
+    },
+    {
+      "id": "07-ERR-12",
+      "condition": "PATCH request body omits the value field or sets it to null",
+      "behavior": "Return HTTP 400 with a JSON error body indicating the value field is required",
+      "requirement_id": "07-REQ-3.E2"
+    },
+    {
+      "id": "07-ERR-13",
+      "condition": "Workspace slug in GET /api/v1/workspaces/:slug/vars/resolved does not exist or caller does not own it",
+      "behavior": "Return HTTP 404 (anti-enumeration)",
+      "requirement_id": "07-REQ-16.E1"
+    },
+    {
+      "id": "07-ERR-14",
+      "condition": "Database write fails after validation passes (e.g., disk full or SQLite error)",
+      "behavior": "Roll back the transaction; return HTTP 500 with a JSON error body; no entries are persisted",
+      "requirement_id": "07-REQ-8.E2"
+    },
+    {
+      "id": "07-ERR-15",
+      "condition": "Child secrets/variables deletion fails within the cascading deletion transaction",
+      "behavior": "Roll back the entire transaction leaving parent resource and all its secrets/variables intact; return a non-nil error to the calling handler which responds with HTTP 500",
+      "requirement_id": "07-REQ-17.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "modernc.org/sqlite",
+      "version": "unverified \u2014 cross-check before implementation",
+      "symbols": [
+        {
+          "name": "Open",
+          "import_path": "modernc.org/sqlite",
+          "signature": "func Open(name string) (*sql.DB, error)",
+          "notes": "Used to open the SQLite database; hub uses serialized write mode for atomicity of count-check-then-insert"
+        }
+      ]
+    },
+    {
+      "package": "encoding/base64",
+      "version": "Go standard library",
+      "symbols": [
+        {
+          "name": "StdEncoding.EncodeToString",
+          "import_path": "encoding/base64",
+          "signature": "func (enc *Encoding) EncodeToString(src []byte) string",
+          "notes": "Used to encode raw values before storage in the secrets and variables tables"
+        },
+        {
+          "name": "StdEncoding.DecodeString",
+          "import_path": "encoding/base64",
+          "signature": "func (enc *Encoding) DecodeString(s string) ([]byte, error)",
+          "notes": "Used to decode stored base64-encoded values before returning them to API clients"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2133 @@
+{
+  "$schema": null,
+  "spec_id": "07",
+  "spec_name": "secrets_variables",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-07-1",
+      "requirement_id": "07-REQ-1.1",
+      "kind": "unit",
+      "description": "Verifies that both the secrets and variables tables exist in the SQLite database with the correct columns, types, constraints, and composite primary key.",
+      "preconditions": [
+        "Hub database migrations have been applied to an in-memory SQLite database",
+        "No prior data exists in the database"
+      ],
+      "input": "Query PRAGMA table_info('secrets') and PRAGMA table_info('variables') on the migrated database",
+      "expected": {
+        "primary_key": "Composite (owner_type, owner_id, key) on both tables",
+        "secrets_columns": [
+          "owner_type TEXT NOT NULL CHECK IN ('user','org','workspace')",
+          "owner_id TEXT NOT NULL",
+          "key TEXT NOT NULL",
+          "value TEXT NOT NULL",
+          "created_at TEXT NOT NULL",
+          "updated_at TEXT NOT NULL"
+        ],
+        "variables_columns": "Same schema as secrets"
+      },
+      "assertion_pseudocode": "db = openInMemorySQLite(); applyMigrations(db); secretsCols = queryTableInfo(db, 'secrets'); variablesCols = queryTableInfo(db, 'variables'); assert secretsCols contains {name:'owner_type', type:'TEXT', notnull:1}; assert secretsCols contains {name:'owner_id', type:'TEXT', notnull:1}; assert secretsCols contains {name:'key', type:'TEXT', notnull:1}; assert secretsCols contains {name:'value', type:'TEXT', notnull:1}; assert secretsCols contains {name:'created_at', type:'TEXT', notnull:1}; assert secretsCols contains {name:'updated_at', type:'TEXT', notnull:1}; assert variablesCols == secretsCols; pkInfo = queryIndexList(db, 'secrets'); assert pkInfo includes composite PK on (owner_type, owner_id, key)"
+    },
+    {
+      "id": "TS-07-2",
+      "requirement_id": "07-REQ-1.2",
+      "kind": "unit",
+      "description": "Verifies that the store layer base64-encodes values before writing to the database and decodes them transparently on read.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "Secrets store and variables store are initialized"
+      ],
+      "input": {
+        "key": "MY_SECRET",
+        "raw_value": "hello world\nline2"
+      },
+      "expected": {
+        "api_returned_value": "hello world\nline2 (raw, decoded)",
+        "db_stored_value": "aGVsbG8gd29ybGQKbGluZTI= (base64 of 'hello world\\nline2')"
+      },
+      "assertion_pseudocode": "store.CreateSecret(ctx, 'user', userID, 'MY_SECRET', 'hello world\\nline2'); rawInDB = db.QueryRow('SELECT value FROM secrets WHERE key=?', 'MY_SECRET').Scan(); assert rawInDB == base64.StdEncoding.EncodeToString([]byte('hello world\\nline2')); vars = store.ListVariables(ctx, 'user', userID); assert vars[0].Value == 'hello world\\nline2'"
+    },
+    {
+      "id": "TS-07-3",
+      "requirement_id": "07-REQ-1.3",
+      "kind": "unit",
+      "description": "Verifies that no foreign key constraints exist on owner_id in the secrets and variables tables, and that cascading deletion is handled at the application layer.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied"
+      ],
+      "input": "Insert a row into secrets with owner_id referencing a non-existent user UUID",
+      "expected": {
+        "note": "Referential integrity is enforced at application layer only",
+        "result": "Insert succeeds without a foreign key constraint error"
+      },
+      "assertion_pseudocode": "db = openInMemorySQLite(); applyMigrations(db); err = db.Exec('INSERT INTO secrets (owner_type, owner_id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', 'user', 'nonexistent-uuid', 'KEY', base64('val'), now(), now()); assert err == nil; fkList = db.Query('PRAGMA foreign_key_list(secrets)'); assert fkList is empty"
+    },
+    {
+      "id": "TS-07-4",
+      "requirement_id": "07-REQ-2.1",
+      "kind": "unit",
+      "description": "Verifies that keys containing only alphanumeric characters and underscores, not starting with a digit, and at most 255 characters are accepted.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "VALID_KEY_123",
+            "value": "somevalue"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "VALID_KEY_123"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key: 'VALID_KEY_123', value: 'somevalue'}]}, authHeader=apiKey); assert resp.status == 201; assert resp.body[0].key == 'VALID_KEY_123'; assert resp.body[0].value is absent"
+    },
+    {
+      "id": "TS-07-5",
+      "requirement_id": "07-REQ-2.2",
+      "kind": "unit",
+      "description": "Verifies that a key containing invalid characters (e.g., hyphen) is rejected with HTTP 400 before any entries are written.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "INVALID-KEY",
+            "value": "somevalue"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "contains description of invalid key"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key: 'INVALID-KEY', value: 'somevalue'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'invalid' or 'key'; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-6",
+      "requirement_id": "07-REQ-3.1",
+      "kind": "unit",
+      "description": "Verifies that the API accepts raw values from 0 bytes (empty string) up to 262144 bytes, encodes them for storage, and returns decoded values to clients.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "EMPTY_VAR",
+            "value": ""
+          },
+          {
+            "key": "LARGE_VAR",
+            "value": "A repeated 262144 times"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "EMPTY_VAR",
+            "value": ""
+          },
+          {
+            "key": "LARGE_VAR",
+            "value": "A repeated 262144 times"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "emptyResp = client.post('/api/v1/user/vars', {entries: [{key: 'EMPTY_VAR', value: ''}]}, authHeader=apiKey); assert emptyResp.status == 201; assert emptyResp.body[0].value == ''; largeVal = 'A' * 262144; largeResp = client.post('/api/v1/user/vars', {entries: [{key: 'LARGE_VAR', value: largeVal}]}, authHeader=apiKey); assert largeResp.status == 201; assert largeResp.body[0].value == largeVal"
+    },
+    {
+      "id": "TS-07-7",
+      "requirement_id": "07-REQ-3.2",
+      "kind": "unit",
+      "description": "Verifies that a raw value exceeding 262144 bytes is rejected with HTTP 400 before any entries are written.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "TOO_BIG",
+            "value": "A repeated 262145 times"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "contains description of value size violation"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "oversizedVal = 'A' * 262145; resp = client.post('/api/v1/user/vars', {entries: [{key: 'TOO_BIG', value: oversizedVal}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'size' or 'exceed' or '256'; count = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-8",
+      "requirement_id": "07-REQ-4.1",
+      "kind": "unit",
+      "description": "Verifies that a POST request that would push a scope past 100 entries is rejected with HTTP 400 and the specific message about the limit.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope",
+        "Exactly 99 secrets already exist for (owner_type='user', owner_id=userID)"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "KEY_100",
+            "value": "v1"
+          },
+          {
+            "key": "KEY_101",
+            "value": "v2"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "maximum of 100 entries per scope exceeded"
+        },
+        "side_effect": "No entries written; count remains 99",
+        "status": 400
+      },
+      "assertion_pseudocode": "seedSecrets(db, 'user', userID, 99); resp = client.post('/api/v1/user/secrets', {entries: [{key:'KEY_100', value:'v1'}, {key:'KEY_101', value:'v2'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error == 'maximum of 100 entries per scope exceeded'; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 99"
+    },
+    {
+      "id": "TS-07-9",
+      "requirement_id": "07-REQ-4.2",
+      "kind": "unit",
+      "description": "Verifies that the count check and INSERT are performed within the same write transaction to ensure atomicity.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "Secrets store initialized"
+      ],
+      "input": "Concurrent POST requests to the same scope when count is at 99",
+      "expected": {
+        "result": "At most one of the concurrent requests succeeds; the scope never exceeds 100 entries"
+      },
+      "assertion_pseudocode": "seedSecrets(db, 'user', userID, 99); results = concurrentlyExecute(2, () => store.CreateSecrets(ctx, 'user', userID, [{key: uniqueKey(), value: 'v'}])); successCount = count(r for r in results if r.err == nil); assert successCount <= 1; finalCount = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert finalCount <= 100"
+    },
+    {
+      "id": "TS-07-10",
+      "requirement_id": "07-REQ-5.1",
+      "kind": "unit",
+      "description": "Verifies that a POST request with duplicate keys (case-insensitively) in the entries array is rejected with HTTP 400 before any writes.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope",
+        "No existing secrets for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "v1"
+          },
+          {
+            "key": "db_host",
+            "value": "v2"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "identifies duplicate key 'DB_HOST' or 'db_host'"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key:'DB_HOST', value:'v1'}, {key:'db_host', value:'v2'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'duplicate' or 'DB_HOST' or 'db_host'; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-11",
+      "requirement_id": "07-REQ-5.2",
+      "kind": "unit",
+      "description": "Verifies that a POST request with an empty entries array is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": []
+      },
+      "expected": {
+        "body": {
+          "error": "entries array must not be empty"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/vars', {entries: []}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'empty' or 'entries'"
+    },
+    {
+      "id": "TS-07-12",
+      "requirement_id": "07-REQ-6.1",
+      "kind": "unit",
+      "description": "Verifies that secrets:manage, secrets:list, secrets:write, and secrets:delete scopes are registered with apikit, and that secrets:manage implies the other three.",
+      "preconditions": [
+        "Hub permission registry is initialized"
+      ],
+      "input": "Inspect registered permissions in apikit's permission registry",
+      "expected": {
+        "implication": "secrets:manage implies secrets:list, secrets:write, secrets:delete",
+        "registered_scopes": [
+          "secrets:manage",
+          "secrets:list",
+          "secrets:write",
+          "secrets:delete"
+        ]
+      },
+      "assertion_pseudocode": "registry = initPermissionRegistry(); assert registry.HasScope('secrets:manage'); assert registry.HasScope('secrets:list'); assert registry.HasScope('secrets:write'); assert registry.HasScope('secrets:delete'); assert registry.Implies('secrets:manage', 'secrets:list'); assert registry.Implies('secrets:manage', 'secrets:write'); assert registry.Implies('secrets:manage', 'secrets:delete')"
+    },
+    {
+      "id": "TS-07-13",
+      "requirement_id": "07-REQ-6.2",
+      "kind": "unit",
+      "description": "Verifies that vars:manage, vars:read, vars:write, and vars:delete scopes are registered with apikit, with correct implication chains.",
+      "preconditions": [
+        "Hub permission registry is initialized"
+      ],
+      "input": "Inspect registered permissions in apikit's permission registry",
+      "expected": {
+        "implications": "vars:manage implies vars:read, vars:write, vars:delete; vars:write implies vars:read",
+        "registered_scopes": [
+          "vars:manage",
+          "vars:read",
+          "vars:write",
+          "vars:delete"
+        ]
+      },
+      "assertion_pseudocode": "registry = initPermissionRegistry(); assert registry.HasScope('vars:manage'); assert registry.HasScope('vars:read'); assert registry.HasScope('vars:write'); assert registry.HasScope('vars:delete'); assert registry.Implies('vars:manage', 'vars:read'); assert registry.Implies('vars:manage', 'vars:write'); assert registry.Implies('vars:manage', 'vars:delete'); assert registry.Implies('vars:write', 'vars:read')"
+    },
+    {
+      "id": "TS-07-14",
+      "requirement_id": "07-REQ-6.3",
+      "kind": "unit",
+      "description": "Verifies that the 8 secrets/vars scopes are registered independently of workspace scopes and do not overlap with workspaces:read, workspaces:write, workspaces:delete.",
+      "preconditions": [
+        "Hub permission registry is initialized with both workspace_write_delete and secrets_variables scopes"
+      ],
+      "input": "Inspect all registered scopes",
+      "expected": {
+        "no_overlap": "secrets:* and vars:* scopes are distinct from workspaces:* scopes",
+        "total_new_scopes": 8
+      },
+      "assertion_pseudocode": "registry = initPermissionRegistry(); secretsVarsScopes = ['secrets:manage','secrets:list','secrets:write','secrets:delete','vars:manage','vars:read','vars:write','vars:delete']; workspaceScopes = ['workspaces:read','workspaces:write','workspaces:delete']; for scope in secretsVarsScopes { assert registry.HasScope(scope) }; intersection = secretsVarsScopes intersect workspaceScopes; assert len(intersection) == 0"
+    },
+    {
+      "id": "TS-07-15",
+      "requirement_id": "07-REQ-7.1",
+      "kind": "integration",
+      "description": "Verifies that admin tokens can access secrets and variables at any scope without ownership checks.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Admin token is available",
+        "A workspace owned by a different user exists"
+      ],
+      "input": "GET /api/v1/workspaces/:slug/secrets with admin token for a workspace not owned by the admin",
+      "expected": {
+        "body": "JSON array (possibly empty) of secret names",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/other-workspace/secrets', authHeader=adminToken); assert resp.status == 200; assert resp.body is array"
+    },
+    {
+      "id": "TS-07-16",
+      "requirement_id": "07-REQ-7.2",
+      "kind": "integration",
+      "description": "Verifies that API keys have implicit full access to secrets and variables for the authenticated user's owned resources including the resolved endpoint.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for a user who owns a workspace",
+        "Variables exist at user, org, and workspace tiers"
+      ],
+      "input": "GET /api/v1/workspaces/:slug/vars/resolved with API key",
+      "expected": {
+        "body": "JSON array of resolved variables with origin fields",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/vars/resolved', authHeader=apiKey); assert resp.status == 200; assert resp.body is array; for entry in resp.body { assert entry.origin in ['user','org','workspace'] }"
+    },
+    {
+      "id": "TS-07-17",
+      "requirement_id": "07-REQ-7.3",
+      "kind": "integration",
+      "description": "Verifies that a PAT lacking the required scope for an endpoint receives HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only vars:delete scope (no vars:read, vars:write, or vars:manage)"
+      ],
+      "input": "GET /api/v1/user/vars with PAT bearing only vars:delete",
+      "expected": {
+        "body": {
+          "error": "indicates missing scope"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:delete']); resp = client.get('/api/v1/user/vars', authHeader=pat); assert resp.status == 403; assert resp.body.error contains 'scope' or 'permission' or 'forbidden'"
+    },
+    {
+      "id": "TS-07-18",
+      "requirement_id": "07-REQ-7.4",
+      "kind": "integration",
+      "description": "Verifies that a caller who is not a member of an org receives HTTP 404 for org-scoped endpoints (anti-enumeration).",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "An org exists that the authenticated user is not a member of",
+        "PAT with secrets:manage scope"
+      ],
+      "input": "GET /api/v1/orgs/:slug/secrets with PAT for a non-member user",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:manage'], userID=nonMemberUserID); resp = client.get('/api/v1/orgs/some-org/secrets', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-19",
+      "requirement_id": "07-REQ-7.5",
+      "kind": "integration",
+      "description": "Verifies that a caller who does not own a workspace receives HTTP 404 for workspace-scoped endpoints (anti-enumeration).",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "A workspace owned by user A exists",
+        "PAT with secrets:manage scope for user B"
+      ],
+      "input": "GET /api/v1/workspaces/:slug/secrets with PAT for non-owner user B",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:manage'], userID=userB); resp = client.get('/api/v1/workspaces/user-a-workspace/secrets', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-20",
+      "requirement_id": "07-REQ-8.1",
+      "kind": "integration",
+      "description": "Verifies that a valid POST to a secrets endpoint creates entries atomically and returns HTTP 201 with key and timestamps but never the value.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:manage scope for the user",
+        "No existing secrets for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "localhost:5432"
+          },
+          {
+            "key": "DB_NAME",
+            "value": "mydb"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "created_at": "RFC3339 timestamp",
+            "key": "DB_HOST",
+            "updated_at": "RFC3339 timestamp"
+          },
+          {
+            "created_at": "RFC3339 timestamp",
+            "key": "DB_NAME",
+            "updated_at": "RFC3339 timestamp"
+          }
+        ],
+        "status": 201,
+        "value_absent": true
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key:'DB_HOST',value:'localhost:5432'},{key:'DB_NAME',value:'mydb'}]}, authHeader=pat); assert resp.status == 201; assert len(resp.body) == 2; for entry in resp.body { assert 'key' in entry; assert 'created_at' in entry; assert 'updated_at' in entry; assert 'value' not in entry }; assert resp.body[0].key == 'DB_HOST'; assert resp.body[1].key == 'DB_NAME'"
+    },
+    {
+      "id": "TS-07-21",
+      "requirement_id": "07-REQ-8.2",
+      "kind": "integration",
+      "description": "Verifies that a POST request containing a key that already exists at the same scope returns HTTP 409 without writing any entries.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:manage scope",
+        "Secret 'DB_HOST' already exists for (owner_type='user', owner_id=userID)"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "newvalue"
+          },
+          {
+            "key": "NEW_KEY",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "key already exists"
+        },
+        "side_effect": "NEW_KEY is not written",
+        "status": 409
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'oldvalue'); resp = client.post('/api/v1/user/secrets', {entries: [{key:'DB_HOST',value:'newvalue'},{key:'NEW_KEY',value:'v'}]}, authHeader=pat); assert resp.status == 409; assert resp.body.error contains 'exist' or 'conflict'; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-07-22",
+      "requirement_id": "07-REQ-9.1",
+      "kind": "integration",
+      "description": "Verifies that GET on a secrets list endpoint returns all secret names and timestamps sorted alphabetically ascending (case-insensitive), never including values.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:list scope",
+        "Secrets 'ZEBRA', 'apple', 'MANGO' exist for the user"
+      ],
+      "input": "GET /api/v1/user/secrets",
+      "expected": {
+        "body": [
+          {
+            "created_at": "...",
+            "key": "apple",
+            "updated_at": "..."
+          },
+          {
+            "created_at": "...",
+            "key": "MANGO",
+            "updated_at": "..."
+          },
+          {
+            "created_at": "...",
+            "key": "ZEBRA",
+            "updated_at": "..."
+          }
+        ],
+        "order": "alphabetical ascending case-insensitive",
+        "status": 200,
+        "value_absent": true
+      },
+      "assertion_pseudocode": "seedSecrets(db, 'user', userID, ['ZEBRA','apple','MANGO']); resp = client.get('/api/v1/user/secrets', authHeader=pat); assert resp.status == 200; assert len(resp.body) == 3; keys = [e.key for e in resp.body]; assert keys == sorted(keys, key=lambda k: k.lower()); for entry in resp.body { assert 'value' not in entry; assert 'created_at' in entry; assert 'updated_at' in entry }"
+    },
+    {
+      "id": "TS-07-23",
+      "requirement_id": "07-REQ-9.2",
+      "kind": "integration",
+      "description": "Verifies that GET on a secrets list endpoint for a scope with no secrets returns HTTP 200 with an empty array.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:list scope",
+        "No secrets exist for the user"
+      ],
+      "input": "GET /api/v1/user/secrets",
+      "expected": {
+        "body": [],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/user/secrets', authHeader=pat); assert resp.status == 200; assert resp.body == []"
+    },
+    {
+      "id": "TS-07-24",
+      "requirement_id": "07-REQ-10.1",
+      "kind": "integration",
+      "description": "Verifies that PATCH on a secrets endpoint updates the value and updated_at, returns HTTP 200 with key and timestamps but never the value.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:write scope",
+        "Secret 'DB_HOST' exists for the user with value 'oldvalue'"
+      ],
+      "input": {
+        "value": "newvalue"
+      },
+      "expected": {
+        "body": {
+          "created_at": "original timestamp",
+          "key": "DB_HOST",
+          "updated_at": "new timestamp"
+        },
+        "status": 200,
+        "value_absent": true
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'oldvalue'); resp = client.patch('/api/v1/user/secrets/DB_HOST', {value: 'newvalue'}, authHeader=pat); assert resp.status == 200; assert resp.body.key == 'DB_HOST'; assert 'value' not in resp.body; assert resp.body.updated_at > resp.body.created_at; storedVal = db.QueryRow('SELECT value FROM secrets WHERE key=?', 'DB_HOST').Scan(); assert storedVal == base64('newvalue')"
+    },
+    {
+      "id": "TS-07-25",
+      "requirement_id": "07-REQ-10.2",
+      "kind": "integration",
+      "description": "Verifies that PATCH on a non-existent secret key returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:write scope",
+        "No secret named 'NONEXISTENT' exists for the user"
+      ],
+      "input": {
+        "value": "somevalue"
+      },
+      "expected": {
+        "body": {
+          "error": "key not found or similar message"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/user/secrets/NONEXISTENT', {value: 'somevalue'}, authHeader=pat); assert resp.status == 404; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-26",
+      "requirement_id": "07-REQ-11.1",
+      "kind": "integration",
+      "description": "Verifies that DELETE on a secrets endpoint removes the secret and returns HTTP 204 No Content.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:delete scope",
+        "Secret 'DB_HOST' exists for the user"
+      ],
+      "input": "DELETE /api/v1/user/secrets/DB_HOST",
+      "expected": {
+        "body": "empty",
+        "status": 204
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'val'); resp = client.delete('/api/v1/user/secrets/DB_HOST', authHeader=pat); assert resp.status == 204; assert resp.body is empty; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE key=? AND owner_id=?', 'DB_HOST', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-27",
+      "requirement_id": "07-REQ-11.2",
+      "kind": "integration",
+      "description": "Verifies that DELETE on a non-existent secret key returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:delete scope",
+        "No secret named 'NONEXISTENT' exists for the user"
+      ],
+      "input": "DELETE /api/v1/user/secrets/NONEXISTENT",
+      "expected": {
+        "body": {
+          "error": "key not found or similar message"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/user/secrets/NONEXISTENT', authHeader=pat); assert resp.status == 404; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-28",
+      "requirement_id": "07-REQ-12.1",
+      "kind": "integration",
+      "description": "Verifies that a valid POST to a variables endpoint creates entries atomically and returns HTTP 201 with key, decoded value, and timestamps.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:manage scope",
+        "No existing variables for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "localhost:5432"
+          },
+          {
+            "key": "DB_NAME",
+            "value": "mydb"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "created_at": "...",
+            "key": "DB_HOST",
+            "updated_at": "...",
+            "value": "localhost:5432"
+          },
+          {
+            "created_at": "...",
+            "key": "DB_NAME",
+            "updated_at": "...",
+            "value": "mydb"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/vars', {entries: [{key:'DB_HOST',value:'localhost:5432'},{key:'DB_NAME',value:'mydb'}]}, authHeader=pat); assert resp.status == 201; assert len(resp.body) == 2; assert resp.body[0].key == 'DB_HOST'; assert resp.body[0].value == 'localhost:5432'; assert 'created_at' in resp.body[0]; assert 'updated_at' in resp.body[0]"
+    },
+    {
+      "id": "TS-07-29",
+      "requirement_id": "07-REQ-12.2",
+      "kind": "integration",
+      "description": "Verifies that a POST to a variables endpoint with a key that already exists at the same scope returns HTTP 409 without writing any entries.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:manage scope",
+        "Variable 'DB_HOST' already exists for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "newvalue"
+          },
+          {
+            "key": "NEW_VAR",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "key already exists"
+        },
+        "side_effect": "NEW_VAR is not written",
+        "status": 409
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'oldvalue'); resp = client.post('/api/v1/user/vars', {entries: [{key:'DB_HOST',value:'newvalue'},{key:'NEW_VAR',value:'v'}]}, authHeader=pat); assert resp.status == 409; assert resp.body.error contains 'exist' or 'conflict'; count = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-07-30",
+      "requirement_id": "07-REQ-13.1",
+      "kind": "integration",
+      "description": "Verifies that GET on a variables list endpoint returns all variables with decoded values sorted alphabetically ascending (case-insensitive).",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:read scope",
+        "Variables 'ZEBRA', 'apple', 'MANGO' exist for the user"
+      ],
+      "input": "GET /api/v1/user/vars",
+      "expected": {
+        "body": "Array sorted case-insensitively: apple, MANGO, ZEBRA; each entry has key, value, created_at, updated_at",
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariables(db, 'user', userID, ['ZEBRA','apple','MANGO']); resp = client.get('/api/v1/user/vars', authHeader=pat); assert resp.status == 200; assert len(resp.body) == 3; keys = [e.key for e in resp.body]; assert keys == sorted(keys, key=lambda k: k.lower()); for entry in resp.body { assert 'value' in entry; assert 'created_at' in entry; assert 'updated_at' in entry }"
+    },
+    {
+      "id": "TS-07-31",
+      "requirement_id": "07-REQ-13.2",
+      "kind": "integration",
+      "description": "Verifies that GET on a variables list endpoint for a scope with no variables returns HTTP 200 with an empty array.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:read scope",
+        "No variables exist for the user"
+      ],
+      "input": "GET /api/v1/user/vars",
+      "expected": {
+        "body": [],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/user/vars', authHeader=pat); assert resp.status == 200; assert resp.body == []"
+    },
+    {
+      "id": "TS-07-32",
+      "requirement_id": "07-REQ-14.1",
+      "kind": "integration",
+      "description": "Verifies that PATCH on a variables endpoint updates the value and updated_at, returns HTTP 200 with key, decoded value, and timestamps.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variable 'DB_HOST' exists for the user with value 'oldvalue'"
+      ],
+      "input": {
+        "value": "newvalue"
+      },
+      "expected": {
+        "body": {
+          "created_at": "original timestamp",
+          "key": "DB_HOST",
+          "updated_at": "new timestamp",
+          "value": "newvalue"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'oldvalue'); resp = client.patch('/api/v1/user/vars/DB_HOST', {value: 'newvalue'}, authHeader=pat); assert resp.status == 200; assert resp.body.key == 'DB_HOST'; assert resp.body.value == 'newvalue'; assert resp.body.updated_at > resp.body.created_at"
+    },
+    {
+      "id": "TS-07-33",
+      "requirement_id": "07-REQ-14.2",
+      "kind": "integration",
+      "description": "Verifies that PATCH on a non-existent variable key returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "No variable named 'NONEXISTENT' exists for the user"
+      ],
+      "input": {
+        "value": "somevalue"
+      },
+      "expected": {
+        "body": {
+          "error": "key not found or similar message"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/user/vars/NONEXISTENT', {value: 'somevalue'}, authHeader=pat); assert resp.status == 404; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-34",
+      "requirement_id": "07-REQ-15.1",
+      "kind": "integration",
+      "description": "Verifies that DELETE on a variables endpoint removes the variable and returns HTTP 204 No Content.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:delete scope",
+        "Variable 'DB_HOST' exists for the user"
+      ],
+      "input": "DELETE /api/v1/user/vars/DB_HOST",
+      "expected": {
+        "body": "empty",
+        "status": 204
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'val'); resp = client.delete('/api/v1/user/vars/DB_HOST', authHeader=pat); assert resp.status == 204; assert resp.body is empty; count = db.QueryRow('SELECT COUNT(*) FROM variables WHERE key=? AND owner_id=?', 'DB_HOST', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-35",
+      "requirement_id": "07-REQ-15.2",
+      "kind": "integration",
+      "description": "Verifies that DELETE on a non-existent variable key returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:delete scope",
+        "No variable named 'NONEXISTENT' exists for the user"
+      ],
+      "input": "DELETE /api/v1/user/vars/NONEXISTENT",
+      "expected": {
+        "body": {
+          "error": "key not found or similar message"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/user/vars/NONEXISTENT', authHeader=pat); assert resp.status == 404; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-36",
+      "requirement_id": "07-REQ-16.1",
+      "kind": "integration",
+      "description": "Verifies that GET /workspaces/:slug/vars/resolved merges variables from user, org, and workspace tiers with correct resolution order, origin field, and alphabetical sorting.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for workspace owner",
+        "Workspace 'my-ws' exists with org_id='org-uuid' and user_id='user-uuid'",
+        "User variable: APP_NAME=user_app",
+        "Org variable: DB_HOST=org_db",
+        "Workspace variable: APP_NAME=ws_app (overrides user), DB_HOST=ws_db (overrides org)"
+      ],
+      "input": "GET /api/v1/workspaces/my-ws/vars/resolved",
+      "expected": {
+        "body": [
+          {
+            "key": "APP_NAME",
+            "origin": "workspace",
+            "value": "ws_app"
+          },
+          {
+            "key": "DB_HOST",
+            "origin": "workspace",
+            "value": "ws_db"
+          }
+        ],
+        "order": "alphabetical ascending case-insensitive",
+        "status": 200,
+        "timestamps": "from winning tier's record"
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'APP_NAME', 'user_app'); seedVariable(db, 'org', orgID, 'DB_HOST', 'org_db'); seedVariable(db, 'workspace', 'my-ws', 'APP_NAME', 'ws_app'); seedVariable(db, 'workspace', 'my-ws', 'DB_HOST', 'ws_db'); resp = client.get('/api/v1/workspaces/my-ws/vars/resolved', authHeader=apiKey); assert resp.status == 200; keys = [e.key for e in resp.body]; assert keys == sorted(keys, key=lambda k: k.lower()); appEntry = find(resp.body, key='APP_NAME'); assert appEntry.value == 'ws_app'; assert appEntry.origin == 'workspace'; dbEntry = find(resp.body, key='DB_HOST'); assert dbEntry.value == 'ws_db'; assert dbEntry.origin == 'workspace'"
+    },
+    {
+      "id": "TS-07-37",
+      "requirement_id": "07-REQ-16.2",
+      "kind": "integration",
+      "description": "Verifies that when a workspace has no org_id, the resolved endpoint skips the org tier and merges only user and workspace variables.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for workspace owner",
+        "Workspace 'no-org-ws' exists with org_id=null and user_id='user-uuid'",
+        "User variable: USER_VAR=user_val",
+        "Workspace variable: WS_VAR=ws_val"
+      ],
+      "input": "GET /api/v1/workspaces/no-org-ws/vars/resolved",
+      "expected": {
+        "body": [
+          {
+            "key": "USER_VAR",
+            "origin": "user",
+            "value": "user_val"
+          },
+          {
+            "key": "WS_VAR",
+            "origin": "workspace",
+            "value": "ws_val"
+          }
+        ],
+        "no_org_entries": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'USER_VAR', 'user_val'); seedVariable(db, 'workspace', 'no-org-ws', 'WS_VAR', 'ws_val'); resp = client.get('/api/v1/workspaces/no-org-ws/vars/resolved', authHeader=apiKey); assert resp.status == 200; for entry in resp.body { assert entry.origin != 'org' }; assert find(resp.body, key='USER_VAR').origin == 'user'; assert find(resp.body, key='WS_VAR').origin == 'workspace'"
+    },
+    {
+      "id": "TS-07-38",
+      "requirement_id": "07-REQ-16.3",
+      "kind": "integration",
+      "description": "Verifies that when the same key exists at multiple tiers, the most specific tier wins and the origin field reflects that tier.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for workspace owner",
+        "Workspace 'my-ws' with org_id='org-uuid' and user_id='user-uuid'",
+        "Key 'SHARED_KEY' exists at user (value='user_val'), org (value='org_val'), and workspace (value='ws_val') tiers"
+      ],
+      "input": "GET /api/v1/workspaces/my-ws/vars/resolved",
+      "expected": {
+        "body_contains": {
+          "key": "SHARED_KEY",
+          "origin": "workspace",
+          "value": "ws_val"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'SHARED_KEY', 'user_val'); seedVariable(db, 'org', orgID, 'SHARED_KEY', 'org_val'); seedVariable(db, 'workspace', 'my-ws', 'SHARED_KEY', 'ws_val'); resp = client.get('/api/v1/workspaces/my-ws/vars/resolved', authHeader=apiKey); assert resp.status == 200; entry = find(resp.body, key='SHARED_KEY'); assert entry.value == 'ws_val'; assert entry.origin == 'workspace'; assert entry.created_at is not empty; assert entry.updated_at is not empty"
+    },
+    {
+      "id": "TS-07-39",
+      "requirement_id": "07-REQ-17.1",
+      "kind": "unit",
+      "description": "Verifies that deleting a user also deletes all associated secrets and variables within the same database transaction.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "User 'user-uuid' exists with 3 secrets and 2 variables"
+      ],
+      "input": "Delete user 'user-uuid'",
+      "expected": {
+        "atomicity": "All deletions committed in a single transaction",
+        "result": "User row deleted; 0 secrets and 0 variables remain for owner_id='user-uuid'"
+      },
+      "assertion_pseudocode": "seedUser(db, 'user-uuid'); seedSecrets(db, 'user', 'user-uuid', 3); seedVariables(db, 'user', 'user-uuid', 2); store.DeleteUser(ctx, 'user-uuid'); secretCount = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', 'user-uuid').Scan(); varCount = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_type=? AND owner_id=?', 'user', 'user-uuid').Scan(); assert secretCount == 0; assert varCount == 0"
+    },
+    {
+      "id": "TS-07-40",
+      "requirement_id": "07-REQ-17.2",
+      "kind": "unit",
+      "description": "Verifies that parent resource deletion and child secrets/variables deletions are wrapped in a single database transaction.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "Workspace 'ws-slug' exists with 2 secrets and 1 variable"
+      ],
+      "input": "Delete workspace 'ws-slug' with a simulated failure after parent deletion but before child deletion",
+      "expected": {
+        "result": "Transaction is rolled back; workspace, secrets, and variables all remain intact"
+      },
+      "assertion_pseudocode": "seedWorkspace(db, 'ws-slug'); seedSecrets(db, 'workspace', 'ws-slug', 2); seedVariables(db, 'workspace', 'ws-slug', 1); injectFailureAfterParentDelete(); err = store.DeleteWorkspace(ctx, 'ws-slug'); assert err != nil; wsCount = db.QueryRow('SELECT COUNT(*) FROM workspaces WHERE slug=?', 'ws-slug').Scan(); assert wsCount == 1; secretCount = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'workspace', 'ws-slug').Scan(); assert secretCount == 2"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-07-P1",
+      "property_id": "07-PROP-1",
+      "validates": [
+        "07-REQ-8.1",
+        "07-REQ-9.1",
+        "07-REQ-10.1"
+      ],
+      "description": "For any secret stored in the secrets table, no API response body for GET, POST, PATCH, or DELETE on a secrets endpoint ever includes a value field.",
+      "for_any_strategy": "Generate random valid secrets (random alphanumeric keys, random byte values 0-262144 bytes) and create them via POST; then call GET list, PATCH, and DELETE on those secrets",
+      "invariant_check": "for each response body from any secrets endpoint: assert 'value' not in response_body and (for arrays) for each entry in response_body: assert 'value' not in entry"
+    },
+    {
+      "id": "TS-07-P2",
+      "property_id": "07-PROP-2",
+      "validates": [
+        "07-REQ-3.1",
+        "07-REQ-13.1",
+        "07-REQ-14.1"
+      ],
+      "description": "For any raw value V of 0 to 262144 bytes submitted to any create or update endpoint, the value returned by a subsequent GET or PATCH response is byte-for-byte identical to V.",
+      "for_any_strategy": "Generate random byte slices of length 0 to 262144 (including edge cases: empty, 1 byte, 262144 bytes, binary data, multi-line strings, PEM-like content); create or update a variable with each value; then retrieve via GET list",
+      "invariant_check": "retrieved_value = find(GET_response.body, key=test_key).value; assert retrieved_value == original_raw_value (byte-for-byte comparison)"
+    },
+    {
+      "id": "TS-07-P3",
+      "property_id": "07-PROP-3",
+      "validates": [
+        "07-REQ-4.1",
+        "07-REQ-4.2"
+      ],
+      "description": "For any (owner_type, owner_id) combination, the number of rows in the secrets or variables table never exceeds 100.",
+      "for_any_strategy": "Generate sequences of POST requests (each with 1-10 entries) to the same scope until rejection; also attempt concurrent POSTs near the limit using goroutines",
+      "invariant_check": "after each POST (success or failure): count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', ownerType, ownerID).Scan(); assert count <= 100"
+    },
+    {
+      "id": "TS-07-P4",
+      "property_id": "07-PROP-4",
+      "validates": [
+        "07-REQ-2.1",
+        "07-REQ-5.1",
+        "07-REQ-8.2",
+        "07-REQ-12.2"
+      ],
+      "description": "For any pair of rows in the secrets or variables table with the same (owner_type, owner_id), no two rows have keys that are equal when compared case-insensitively.",
+      "for_any_strategy": "Generate random valid key names (alphanumeric+underscore, no leading digit, 1-255 chars) and attempt to create them via POST; include mixed-case variants of the same key",
+      "invariant_check": "rows = db.Query('SELECT key FROM secrets WHERE owner_type=? AND owner_id=?', ownerType, ownerID); lowerKeys = [k.lower() for k in rows]; assert len(lowerKeys) == len(set(lowerKeys))"
+    },
+    {
+      "id": "TS-07-P5",
+      "property_id": "07-PROP-5",
+      "validates": [
+        "07-REQ-16.1",
+        "07-REQ-16.3"
+      ],
+      "description": "For any key K present at two or more tiers for a given workspace resolution, the resolved value is from the most specific tier (workspace > org > user) and the origin field reflects that tier.",
+      "for_any_strategy": "Generate random keys and values; seed them at all combinations of tiers (user only, org only, workspace only, user+org, user+workspace, org+workspace, all three); call GET /workspaces/:slug/vars/resolved for each combination",
+      "invariant_check": "for each key in resolved_response: if key exists at workspace tier: assert entry.value == workspace_value and entry.origin == 'workspace'; else if key exists at org tier: assert entry.value == org_value and entry.origin == 'org'; else: assert entry.value == user_value and entry.origin == 'user'"
+    },
+    {
+      "id": "TS-07-P6",
+      "property_id": "07-PROP-6",
+      "validates": [
+        "07-REQ-9.1",
+        "07-REQ-13.1",
+        "07-REQ-16.1"
+      ],
+      "description": "For any response from any GET list or GET /workspaces/:slug/vars/resolved endpoint, the keys in the response array are sorted in ascending alphabetical order when compared case-insensitively.",
+      "for_any_strategy": "Generate random sets of 1-100 valid keys with mixed casing; create them via POST; call GET list and GET resolved endpoints",
+      "invariant_check": "keys = [entry.key for entry in response.body]; assert keys == sorted(keys, key=lambda k: k.lower())"
+    },
+    {
+      "id": "TS-07-P7",
+      "property_id": "07-PROP-7",
+      "validates": [
+        "07-REQ-17.1",
+        "07-REQ-17.2"
+      ],
+      "description": "For any user, org, or workspace that is deleted, after the deletion transaction commits, no rows exist in the secrets or variables tables with an owner_id matching the deleted entity's identifier.",
+      "for_any_strategy": "Generate random users/orgs/workspaces each with 0-50 secrets and 0-50 variables; delete each entity; query the database after deletion",
+      "invariant_check": "after store.DeleteEntity(ctx, entityID): secretCount = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_id=?', entityID).Scan(); varCount = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_id=?', entityID).Scan(); assert secretCount == 0; assert varCount == 0"
+    },
+    {
+      "id": "TS-07-P8",
+      "property_id": "07-PROP-8",
+      "validates": [
+        "07-REQ-4.1",
+        "07-REQ-5.1",
+        "07-REQ-8.1",
+        "07-REQ-12.1"
+      ],
+      "description": "For any POST request to any secrets or variables create endpoint, either all entries in the request are written atomically or none are; no partial writes occur regardless of which validation rule is violated.",
+      "for_any_strategy": "Generate POST requests that fail at each validation stage (empty entries, invalid key, oversized value, intra-request duplicate, scope limit exceeded, cross-request duplicate); for each failure case, count rows before and after the request",
+      "invariant_check": "count_before = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', ownerType, ownerID).Scan(); resp = client.post(endpoint, body); if resp.status != 201: count_after = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', ownerType, ownerID).Scan(); assert count_after == count_before"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-07-E1",
+      "requirement_id": "07-REQ-1.E1",
+      "kind": "unit",
+      "description": "Verifies that the store layer returns an error (not a garbled value) when a stored value is not valid base64 due to data corruption.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "A row in the variables table has been manually corrupted with a non-base64 value"
+      ],
+      "input": "Call store.ListVariables for the scope containing the corrupted row",
+      "expected": {
+        "http_response": "HTTP 500 from the handler",
+        "result": "(nil, error) returned to the calling handler"
+      },
+      "assertion_pseudocode": "db.Exec('INSERT INTO variables (owner_type, owner_id, key, value, created_at, updated_at) VALUES (?,?,?,?,?,?)', 'user', userID, 'BAD_KEY', '!!!not-base64!!!', now(), now()); vars, err = store.ListVariables(ctx, 'user', userID); assert err != nil; assert vars == nil"
+    },
+    {
+      "id": "TS-07-E2",
+      "requirement_id": "07-REQ-1.E2",
+      "kind": "unit",
+      "description": "Verifies that a failed database migration rolls back and returns a non-nil error, causing hub startup to abort.",
+      "preconditions": [
+        "SQLite database is in a state where the migration will fail (e.g., table already exists with wrong schema)"
+      ],
+      "input": "Run migrations on a database with a pre-existing conflicting 'secrets' table",
+      "expected": {
+        "result": "Migration returns non-nil error; database is left in prior state; hub startup aborts"
+      },
+      "assertion_pseudocode": "db = openInMemorySQLite(); db.Exec('CREATE TABLE secrets (wrong_col TEXT)'); err = applyMigrations(db); assert err != nil; cols = queryTableInfo(db, 'secrets'); assert cols does not contain {name:'owner_type'}"
+    },
+    {
+      "id": "TS-07-E3",
+      "requirement_id": "07-REQ-2.E1",
+      "kind": "unit",
+      "description": "Verifies that a key exactly 256 characters long (one over the 255-character limit) is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "A repeated 256 times",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "describes key length violation"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "key256 = 'A' * 256; resp = client.post('/api/v1/user/secrets', {entries: [{key: key256, value: 'v'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'length' or 'key' or '255'"
+    },
+    {
+      "id": "TS-07-E4",
+      "requirement_id": "07-REQ-2.E2",
+      "kind": "unit",
+      "description": "Verifies that a key exactly 255 characters long (at the limit) and otherwise valid is accepted.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "A repeated 255 times",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "A repeated 255 times"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "key255 = 'A' * 255; resp = client.post('/api/v1/user/secrets', {entries: [{key: key255, value: 'v'}]}, authHeader=apiKey); assert resp.status == 201; assert resp.body[0].key == key255"
+    },
+    {
+      "id": "TS-07-E5",
+      "requirement_id": "07-REQ-2.E3",
+      "kind": "unit",
+      "description": "Verifies that an empty string key is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "describes invalid key"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key: '', value: 'v'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-E6",
+      "requirement_id": "07-REQ-2.E4",
+      "kind": "unit",
+      "description": "Verifies that a key starting with a digit (e.g., '1_KEY') is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "1_KEY",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "describes invalid key starting with digit"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key: '1_KEY', value: 'v'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'invalid' or 'digit' or 'key'"
+    },
+    {
+      "id": "TS-07-E7",
+      "requirement_id": "07-REQ-2.E5",
+      "kind": "integration",
+      "description": "Verifies that a POST request containing a key that already exists at the same scope in a prior request (cross-request duplicate) returns HTTP 409.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope",
+        "Secret 'DB_HOST' already exists for the user from a prior request"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "newvalue"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "key already exists"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "client.post('/api/v1/user/secrets', {entries: [{key:'DB_HOST', value:'v1'}]}, authHeader=apiKey); resp = client.post('/api/v1/user/secrets', {entries: [{key:'DB_HOST', value:'v2'}]}, authHeader=apiKey); assert resp.status == 409; assert resp.body.error contains 'exist' or 'conflict'"
+    },
+    {
+      "id": "TS-07-E8",
+      "requirement_id": "07-REQ-3.E1",
+      "kind": "integration",
+      "description": "Verifies that a PATCH request with an empty string value is accepted and overwrites the existing value.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variable 'FEATURE_FLAG' exists for the user with value 'enabled'"
+      ],
+      "input": {
+        "value": ""
+      },
+      "expected": {
+        "body": {
+          "key": "FEATURE_FLAG",
+          "value": ""
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'FEATURE_FLAG', 'enabled'); resp = client.patch('/api/v1/user/vars/FEATURE_FLAG', {value: ''}, authHeader=pat); assert resp.status == 200; assert resp.body.key == 'FEATURE_FLAG'; assert resp.body.value == ''; storedVal = db.QueryRow('SELECT value FROM variables WHERE key=?', 'FEATURE_FLAG').Scan(); assert storedVal == base64('')"
+    },
+    {
+      "id": "TS-07-E9",
+      "requirement_id": "07-REQ-3.E2",
+      "kind": "integration",
+      "description": "Verifies that a PATCH request body that omits the value field entirely is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variable 'DB_HOST' exists for the user"
+      ],
+      "input": "{}",
+      "expected": {
+        "body": {
+          "error": "value field is required"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'val'); resp = client.patch('/api/v1/user/vars/DB_HOST', {}, authHeader=pat); assert resp.status == 400; assert resp.body.error contains 'value' or 'required'"
+    },
+    {
+      "id": "TS-07-E10",
+      "requirement_id": "07-REQ-3.E3",
+      "kind": "unit",
+      "description": "Verifies that a value exactly 262144 bytes (at the 256 KB limit) is accepted and stored correctly.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MAX_VAL",
+            "value": "A repeated 262144 times"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "MAX_VAL",
+            "value": "A repeated 262144 times"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "maxVal = 'A' * 262144; resp = client.post('/api/v1/user/vars', {entries: [{key: 'MAX_VAL', value: maxVal}]}, authHeader=apiKey); assert resp.status == 201; assert resp.body[0].value == maxVal"
+    },
+    {
+      "id": "TS-07-E11",
+      "requirement_id": "07-REQ-3.E4",
+      "kind": "unit",
+      "description": "Verifies that multi-line content (e.g., a PEM certificate) is stored and returned byte-for-byte identical after base64 round-trip.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "TLS_CERT",
+            "value": "-----BEGIN CERTIFICATE-----\nMIIBIjANBgkq...\n-----END CERTIFICATE-----\n"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "TLS_CERT",
+            "value": "-----BEGIN CERTIFICATE-----\nMIIBIjANBgkq...\n-----END CERTIFICATE-----\n"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "pemVal = '-----BEGIN CERTIFICATE-----\\nMIIBIjANBgkq...\\n-----END CERTIFICATE-----\\n'; resp = client.post('/api/v1/user/vars', {entries: [{key: 'TLS_CERT', value: pemVal}]}, authHeader=apiKey); assert resp.status == 201; assert resp.body[0].value == pemVal; getResp = client.get('/api/v1/user/vars', authHeader=apiKey); certEntry = find(getResp.body, key='TLS_CERT'); assert certEntry.value == pemVal"
+    },
+    {
+      "id": "TS-07-E12",
+      "requirement_id": "07-REQ-4.E1",
+      "kind": "unit",
+      "description": "Verifies that a POST request that brings the scope to exactly 100 entries is accepted.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope",
+        "Exactly 99 secrets already exist for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "KEY_100",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "KEY_100"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "seedSecrets(db, 'user', userID, 99); resp = client.post('/api/v1/user/secrets', {entries: [{key:'KEY_100', value:'v'}]}, authHeader=apiKey); assert resp.status == 201; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 100"
+    },
+    {
+      "id": "TS-07-E13",
+      "requirement_id": "07-REQ-4.E2",
+      "kind": "unit",
+      "description": "Verifies that a POST request that would bring the scope to 101 entries is rejected with HTTP 400 and the specific limit message.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope",
+        "Exactly 100 secrets already exist for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "KEY_101",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "maximum of 100 entries per scope exceeded"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "seedSecrets(db, 'user', userID, 100); resp = client.post('/api/v1/user/secrets', {entries: [{key:'KEY_101', value:'v'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error == 'maximum of 100 entries per scope exceeded'; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 100"
+    },
+    {
+      "id": "TS-07-E14",
+      "requirement_id": "07-REQ-4.E3",
+      "kind": "unit",
+      "description": "Verifies that a POST request with multiple entries that collectively push the scope over 100 is rejected atomically with no partial writes.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope",
+        "Exactly 99 secrets already exist for the user"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "KEY_100",
+            "value": "v1"
+          },
+          {
+            "key": "KEY_101",
+            "value": "v2"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "maximum of 100 entries per scope exceeded"
+        },
+        "side_effect": "Neither KEY_100 nor KEY_101 is written",
+        "status": 400
+      },
+      "assertion_pseudocode": "seedSecrets(db, 'user', userID, 99); resp = client.post('/api/v1/user/secrets', {entries: [{key:'KEY_100',value:'v1'},{key:'KEY_101',value:'v2'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error == 'maximum of 100 entries per scope exceeded'; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 99"
+    },
+    {
+      "id": "TS-07-E15",
+      "requirement_id": "07-REQ-5.E1",
+      "kind": "unit",
+      "description": "Verifies that entries with keys differing only by case (e.g., 'DB_HOST' and 'db_host') are treated as duplicates and the request is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "DB_HOST",
+            "value": "v1"
+          },
+          {
+            "key": "db_host",
+            "value": "v2"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "identifies duplicate key"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/vars', {entries: [{key:'DB_HOST',value:'v1'},{key:'db_host',value:'v2'}]}, authHeader=apiKey); assert resp.status == 400; assert resp.body.error contains 'duplicate' or 'DB_HOST' or 'db_host'; count = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-E16",
+      "requirement_id": "07-REQ-5.E2",
+      "kind": "unit",
+      "description": "Verifies that a POST request with a single valid entry passes duplicate detection and proceeds to other validations.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Authenticated API key for user scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "SINGLE_KEY",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": [
+          {
+            "key": "SINGLE_KEY"
+          }
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/user/secrets', {entries: [{key:'SINGLE_KEY', value:'v'}]}, authHeader=apiKey); assert resp.status == 201; assert resp.body[0].key == 'SINGLE_KEY'"
+    },
+    {
+      "id": "TS-07-E17",
+      "requirement_id": "07-REQ-6.E1",
+      "kind": "unit",
+      "description": "Verifies that if apikit's permission registry returns an error when registering any of the 8 scopes, the error is propagated and hub startup aborts.",
+      "preconditions": [
+        "apikit permission registry is configured to return an error on duplicate registration",
+        "One of the 8 scopes has already been registered"
+      ],
+      "input": "Call hub permission registration function",
+      "expected": {
+        "result": "Non-nil error returned; hub startup aborts"
+      },
+      "assertion_pseudocode": "registry = newRegistryWithExistingScope('secrets:manage'); err = registerSecretsVarsScopes(registry); assert err != nil"
+    },
+    {
+      "id": "TS-07-E18",
+      "requirement_id": "07-REQ-6.E2",
+      "kind": "integration",
+      "description": "Verifies that a PAT with only secrets:list scope cannot create a secret and receives HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only secrets:list scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "NEW_SECRET",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "insufficient scope or permission"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:list']); resp = client.post('/api/v1/user/secrets', {entries: [{key:'NEW_SECRET', value:'v'}]}, authHeader=pat); assert resp.status == 403; assert resp.body.error contains 'scope' or 'permission' or 'forbidden'"
+    },
+    {
+      "id": "TS-07-E19",
+      "requirement_id": "07-REQ-7.E1",
+      "kind": "integration",
+      "description": "Verifies that an unauthenticated request to any secrets or variables endpoint returns HTTP 401.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "No Authorization header is provided"
+      ],
+      "input": "GET /api/v1/user/secrets with no Authorization header",
+      "expected": {
+        "body": {
+          "error": "unauthenticated"
+        },
+        "status": 401
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/user/secrets'); assert resp.status == 401; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-E20",
+      "requirement_id": "07-REQ-7.E2",
+      "kind": "integration",
+      "description": "Verifies that a PAT with secrets:manage scope receives HTTP 404 when accessing an org-scoped endpoint for an org the PAT holder is not a member of.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:manage scope for user who is not a member of 'other-org'"
+      ],
+      "input": "GET /api/v1/orgs/other-org/secrets with PAT",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:manage'], userID=nonMemberUserID); resp = client.get('/api/v1/orgs/other-org/secrets', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E21",
+      "requirement_id": "07-REQ-7.E3",
+      "kind": "integration",
+      "description": "Verifies that a PAT with vars:write scope (which implies vars:read) can list variables and receives HTTP 200.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variables exist for the user"
+      ],
+      "input": "GET /api/v1/user/vars with PAT bearing vars:write",
+      "expected": {
+        "body": "JSON array of variables",
+        "status": 200
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:write']); seedVariable(db, 'user', userID, 'MY_VAR', 'val'); resp = client.get('/api/v1/user/vars', authHeader=pat); assert resp.status == 200; assert resp.body is array"
+    },
+    {
+      "id": "TS-07-E22",
+      "requirement_id": "07-REQ-8.E1",
+      "kind": "integration",
+      "description": "Verifies that a POST to an org secrets endpoint with a non-existent org slug returns HTTP 404 (anti-enumeration).",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:manage scope",
+        "Org 'nonexistent-org' does not exist"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MY_SECRET",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:manage']); resp = client.post('/api/v1/orgs/nonexistent-org/secrets', {entries: [{key:'MY_SECRET', value:'v'}]}, authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E23",
+      "requirement_id": "07-REQ-8.E2",
+      "kind": "unit",
+      "description": "Verifies that a database write failure after validation passes causes a transaction rollback and returns HTTP 500 with no entries persisted.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:manage scope",
+        "Database write is configured to fail after validation (e.g., via test injection)"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MY_SECRET",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "internal server error or similar"
+        },
+        "side_effect": "No entries written to the database",
+        "status": 500
+      },
+      "assertion_pseudocode": "injectDBWriteFailure(); resp = client.post('/api/v1/user/secrets', {entries: [{key:'MY_SECRET', value:'v'}]}, authHeader=pat); assert resp.status == 500; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-E24",
+      "requirement_id": "07-REQ-8.E3",
+      "kind": "integration",
+      "description": "Verifies that a POST to a secrets endpoint by a PAT with secrets:list but not secrets:manage returns HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only secrets:list scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MY_SECRET",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "insufficient scope"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:list']); resp = client.post('/api/v1/user/secrets', {entries: [{key:'MY_SECRET', value:'v'}]}, authHeader=pat); assert resp.status == 403"
+    },
+    {
+      "id": "TS-07-E25",
+      "requirement_id": "07-REQ-9.E1",
+      "kind": "integration",
+      "description": "Verifies that GET on an org secrets list endpoint for an org the caller is not a member of returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:list scope for a non-member user",
+        "Org 'some-org' exists"
+      ],
+      "input": "GET /api/v1/orgs/some-org/secrets",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:list'], userID=nonMemberUserID); resp = client.get('/api/v1/orgs/some-org/secrets', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E26",
+      "requirement_id": "07-REQ-9.E2",
+      "kind": "integration",
+      "description": "Verifies that a PAT with secrets:write but not secrets:list or secrets:manage cannot list secrets and receives HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only secrets:write scope"
+      ],
+      "input": "GET /api/v1/user/secrets with PAT bearing secrets:write",
+      "expected": {
+        "body": {
+          "error": "insufficient scope"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:write']); resp = client.get('/api/v1/user/secrets', authHeader=pat); assert resp.status == 403"
+    },
+    {
+      "id": "TS-07-E27",
+      "requirement_id": "07-REQ-10.E1",
+      "kind": "integration",
+      "description": "Verifies that a PATCH request body that omits the value field or sets it to null returns HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:write scope",
+        "Secret 'DB_HOST' exists for the user"
+      ],
+      "input": "PATCH body with null value: {\"value\": null}",
+      "expected": {
+        "body": {
+          "error": "value field is required"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'val'); resp = client.patch('/api/v1/user/secrets/DB_HOST', {value: null}, authHeader=pat); assert resp.status == 400; assert resp.body.error contains 'value' or 'required'"
+    },
+    {
+      "id": "TS-07-E28",
+      "requirement_id": "07-REQ-10.E2",
+      "kind": "integration",
+      "description": "Verifies that PATCH with a key differing in case from the stored key performs a case-insensitive lookup and updates the matching entry.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:write scope",
+        "Secret stored as 'DB_HOST' for the user"
+      ],
+      "input": "PATCH /api/v1/user/secrets/db_host with {\"value\": \"newval\"}",
+      "expected": {
+        "body": {
+          "key": "DB_HOST",
+          "updated_at": "new timestamp"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'oldval'); resp = client.patch('/api/v1/user/secrets/db_host', {value: 'newval'}, authHeader=pat); assert resp.status == 200; assert resp.body.key == 'DB_HOST'; storedVal = db.QueryRow('SELECT value FROM secrets WHERE key=?', 'DB_HOST').Scan(); assert storedVal == base64('newval')"
+    },
+    {
+      "id": "TS-07-E29",
+      "requirement_id": "07-REQ-10.E3",
+      "kind": "integration",
+      "description": "Verifies that a PATCH request with a new value exceeding 262144 bytes is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:write scope",
+        "Secret 'DB_HOST' exists for the user"
+      ],
+      "input": {
+        "value": "A repeated 262145 times"
+      },
+      "expected": {
+        "body": {
+          "error": "describes value size violation"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'oldval'); oversizedVal = 'A' * 262145; resp = client.patch('/api/v1/user/secrets/DB_HOST', {value: oversizedVal}, authHeader=pat); assert resp.status == 400; assert resp.body.error contains 'size' or 'exceed' or '256'"
+    },
+    {
+      "id": "TS-07-E30",
+      "requirement_id": "07-REQ-11.E1",
+      "kind": "integration",
+      "description": "Verifies that DELETE with a key differing in case from the stored key performs a case-insensitive lookup and deletes the matching entry.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:delete scope",
+        "Secret stored as 'DB_HOST' for the user"
+      ],
+      "input": "DELETE /api/v1/user/secrets/db_host",
+      "expected": {
+        "body": "empty",
+        "status": 204
+      },
+      "assertion_pseudocode": "seedSecret(db, 'user', userID, 'DB_HOST', 'val'); resp = client.delete('/api/v1/user/secrets/db_host', authHeader=pat); assert resp.status == 204; count = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_id=? AND owner_type=?', userID, 'user').Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-E31",
+      "requirement_id": "07-REQ-11.E2",
+      "kind": "integration",
+      "description": "Verifies that a DELETE request to a workspace secrets endpoint for a workspace the PAT holder does not own returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with secrets:delete scope for user B",
+        "Workspace 'user-a-ws' owned by user A exists with secret 'MY_SECRET'"
+      ],
+      "input": "DELETE /api/v1/workspaces/user-a-ws/secrets/MY_SECRET with PAT for user B",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['secrets:delete'], userID=userB); resp = client.delete('/api/v1/workspaces/user-a-ws/secrets/MY_SECRET', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E32",
+      "requirement_id": "07-REQ-12.E1",
+      "kind": "integration",
+      "description": "Verifies that a POST to an org variables endpoint with a non-existent org slug returns HTTP 404 (anti-enumeration).",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:manage scope",
+        "Org 'nonexistent-org' does not exist"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MY_VAR",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:manage']); resp = client.post('/api/v1/orgs/nonexistent-org/vars', {entries: [{key:'MY_VAR', value:'v'}]}, authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E33",
+      "requirement_id": "07-REQ-12.E2",
+      "kind": "unit",
+      "description": "Verifies that a database write failure after validation passes for variables causes a transaction rollback and returns HTTP 500.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:manage scope",
+        "Database write is configured to fail after validation"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MY_VAR",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "internal server error or similar"
+        },
+        "side_effect": "No entries written",
+        "status": 500
+      },
+      "assertion_pseudocode": "injectDBWriteFailure(); resp = client.post('/api/v1/user/vars', {entries: [{key:'MY_VAR', value:'v'}]}, authHeader=pat); assert resp.status == 500; count = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_type=? AND owner_id=?', 'user', userID).Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-E34",
+      "requirement_id": "07-REQ-12.E3",
+      "kind": "integration",
+      "description": "Verifies that a POST to a variables endpoint by a PAT with vars:read but not vars:manage returns HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only vars:read scope"
+      ],
+      "input": {
+        "entries": [
+          {
+            "key": "MY_VAR",
+            "value": "v"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "error": "insufficient scope"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:read']); resp = client.post('/api/v1/user/vars', {entries: [{key:'MY_VAR', value:'v'}]}, authHeader=pat); assert resp.status == 403"
+    },
+    {
+      "id": "TS-07-E35",
+      "requirement_id": "07-REQ-13.E1",
+      "kind": "integration",
+      "description": "Verifies that GET on an org variables list endpoint for an org the caller is not a member of returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:read scope for a non-member user",
+        "Org 'some-org' exists"
+      ],
+      "input": "GET /api/v1/orgs/some-org/vars",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:read'], userID=nonMemberUserID); resp = client.get('/api/v1/orgs/some-org/vars', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E36",
+      "requirement_id": "07-REQ-13.E2",
+      "kind": "integration",
+      "description": "Verifies that a PAT with vars:delete but not vars:read, vars:write, or vars:manage cannot list variables and receives HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only vars:delete scope"
+      ],
+      "input": "GET /api/v1/user/vars with PAT bearing vars:delete",
+      "expected": {
+        "body": {
+          "error": "insufficient scope"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:delete']); resp = client.get('/api/v1/user/vars', authHeader=pat); assert resp.status == 403"
+    },
+    {
+      "id": "TS-07-E37",
+      "requirement_id": "07-REQ-14.E1",
+      "kind": "integration",
+      "description": "Verifies that a PATCH request body that omits the value field or sets it to null for a variable returns HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variable 'DB_HOST' exists for the user"
+      ],
+      "input": "PATCH body with null value: {\"value\": null}",
+      "expected": {
+        "body": {
+          "error": "value field is required"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'val'); resp = client.patch('/api/v1/user/vars/DB_HOST', {value: null}, authHeader=pat); assert resp.status == 400; assert resp.body.error contains 'value' or 'required'"
+    },
+    {
+      "id": "TS-07-E38",
+      "requirement_id": "07-REQ-14.E2",
+      "kind": "integration",
+      "description": "Verifies that PATCH on a variable with a key differing in case from the stored key performs a case-insensitive lookup and updates the matching entry.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variable stored as 'DB_HOST' for the user"
+      ],
+      "input": "PATCH /api/v1/user/vars/db_host with {\"value\": \"newval\"}",
+      "expected": {
+        "body": {
+          "key": "DB_HOST",
+          "value": "newval"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'oldval'); resp = client.patch('/api/v1/user/vars/db_host', {value: 'newval'}, authHeader=pat); assert resp.status == 200; assert resp.body.key == 'DB_HOST'; assert resp.body.value == 'newval'"
+    },
+    {
+      "id": "TS-07-E39",
+      "requirement_id": "07-REQ-14.E3",
+      "kind": "integration",
+      "description": "Verifies that a PATCH request for a variable with a new value exceeding 262144 bytes is rejected with HTTP 400.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:write scope",
+        "Variable 'DB_HOST' exists for the user"
+      ],
+      "input": {
+        "value": "A repeated 262145 times"
+      },
+      "expected": {
+        "body": {
+          "error": "describes value size violation"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'oldval'); oversizedVal = 'A' * 262145; resp = client.patch('/api/v1/user/vars/DB_HOST', {value: oversizedVal}, authHeader=pat); assert resp.status == 400; assert resp.body.error contains 'size' or 'exceed' or '256'"
+    },
+    {
+      "id": "TS-07-E40",
+      "requirement_id": "07-REQ-15.E1",
+      "kind": "integration",
+      "description": "Verifies that DELETE on a variable with a key differing in case from the stored key performs a case-insensitive lookup and deletes the matching entry.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:delete scope",
+        "Variable stored as 'DB_HOST' for the user"
+      ],
+      "input": "DELETE /api/v1/user/vars/db_host",
+      "expected": {
+        "body": "empty",
+        "status": 204
+      },
+      "assertion_pseudocode": "seedVariable(db, 'user', userID, 'DB_HOST', 'val'); resp = client.delete('/api/v1/user/vars/db_host', authHeader=pat); assert resp.status == 204; count = db.QueryRow('SELECT COUNT(*) FROM variables WHERE owner_id=? AND owner_type=?', userID, 'user').Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-07-E41",
+      "requirement_id": "07-REQ-15.E2",
+      "kind": "integration",
+      "description": "Verifies that a DELETE request to a workspace variables endpoint for a workspace the PAT holder does not own returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with vars:delete scope for user B",
+        "Workspace 'user-a-ws' owned by user A exists with variable 'MY_VAR'"
+      ],
+      "input": "DELETE /api/v1/workspaces/user-a-ws/vars/MY_VAR with PAT for user B",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:delete'], userID=userB); resp = client.delete('/api/v1/workspaces/user-a-ws/vars/MY_VAR', authHeader=pat); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E42",
+      "requirement_id": "07-REQ-16.E1",
+      "kind": "integration",
+      "description": "Verifies that GET /workspaces/:slug/vars/resolved with a non-existent or unowned workspace slug returns HTTP 404.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for user B",
+        "Workspace 'nonexistent-ws' does not exist"
+      ],
+      "input": "GET /api/v1/workspaces/nonexistent-ws/vars/resolved",
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/nonexistent-ws/vars/resolved', authHeader=apiKeyUserB); assert resp.status == 404"
+    },
+    {
+      "id": "TS-07-E43",
+      "requirement_id": "07-REQ-16.E2",
+      "kind": "integration",
+      "description": "Verifies that GET /workspaces/:slug/vars/resolved for a workspace with no variables at any tier returns HTTP 200 with an empty array.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for workspace owner",
+        "Workspace 'empty-ws' exists with no variables at any tier"
+      ],
+      "input": "GET /api/v1/workspaces/empty-ws/vars/resolved",
+      "expected": {
+        "body": [],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/empty-ws/vars/resolved', authHeader=apiKey); assert resp.status == 200; assert resp.body == []"
+    },
+    {
+      "id": "TS-07-E44",
+      "requirement_id": "07-REQ-16.E3",
+      "kind": "unit",
+      "description": "Verifies that a workspaces store lookup failure during variable resolution returns HTTP 500.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "API key for workspace owner",
+        "Workspaces store is configured to return a database error"
+      ],
+      "input": "GET /api/v1/workspaces/my-ws/vars/resolved",
+      "expected": {
+        "body": {
+          "error": "internal server error or similar"
+        },
+        "status": 500
+      },
+      "assertion_pseudocode": "injectWorkspaceStoreError(); resp = client.get('/api/v1/workspaces/my-ws/vars/resolved', authHeader=apiKey); assert resp.status == 500; assert resp.body.error is not empty"
+    },
+    {
+      "id": "TS-07-E45",
+      "requirement_id": "07-REQ-16.E4",
+      "kind": "integration",
+      "description": "Verifies that a PAT with vars:delete but not vars:read, vars:write, or vars:manage cannot access the resolved endpoint and receives HTTP 403.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "PAT with only vars:delete scope",
+        "Workspace 'my-ws' exists and is owned by the PAT holder"
+      ],
+      "input": "GET /api/v1/workspaces/my-ws/vars/resolved with PAT bearing vars:delete",
+      "expected": {
+        "body": {
+          "error": "insufficient scope"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "pat = createPAT(scopes=['vars:delete'], userID=ownerUserID); resp = client.get('/api/v1/workspaces/my-ws/vars/resolved', authHeader=pat); assert resp.status == 403"
+    },
+    {
+      "id": "TS-07-E46",
+      "requirement_id": "07-REQ-16.E5",
+      "kind": "integration",
+      "description": "Verifies that an admin token can access the resolved endpoint for any workspace without ownership checks.",
+      "preconditions": [
+        "Hub API is running with in-memory SQLite",
+        "Admin token is available",
+        "Workspace 'other-user-ws' owned by a different user exists with variables"
+      ],
+      "input": "GET /api/v1/workspaces/other-user-ws/vars/resolved with admin token",
+      "expected": {
+        "body": "JSON array of resolved variables",
+        "status": 200
+      },
+      "assertion_pseudocode": "seedVariable(db, 'workspace', 'other-user-ws', 'MY_VAR', 'val'); resp = client.get('/api/v1/workspaces/other-user-ws/vars/resolved', authHeader=adminToken); assert resp.status == 200; assert resp.body is array"
+    },
+    {
+      "id": "TS-07-E47",
+      "requirement_id": "07-REQ-17.E1",
+      "kind": "unit",
+      "description": "Verifies that a failure during child secrets/variables deletion within the cascading deletion transaction causes a full rollback, leaving parent and children intact.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "User 'user-uuid' exists with 2 secrets",
+        "Child deletion is configured to fail via test injection"
+      ],
+      "input": "Delete user 'user-uuid'",
+      "expected": {
+        "result": "Non-nil error returned; user row and all secrets remain in the database"
+      },
+      "assertion_pseudocode": "seedUser(db, 'user-uuid'); seedSecrets(db, 'user', 'user-uuid', 2); injectChildDeletionFailure(); err = store.DeleteUser(ctx, 'user-uuid'); assert err != nil; userCount = db.QueryRow('SELECT COUNT(*) FROM users WHERE id=?', 'user-uuid').Scan(); assert userCount == 1; secretCount = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'user', 'user-uuid').Scan(); assert secretCount == 2"
+    },
+    {
+      "id": "TS-07-E48",
+      "requirement_id": "07-REQ-17.E2",
+      "kind": "unit",
+      "description": "Verifies that deleting a user, org, or workspace with no associated secrets or variables succeeds without error.",
+      "preconditions": [
+        "In-memory SQLite database with migrations applied",
+        "User 'user-uuid' exists with no secrets or variables"
+      ],
+      "input": "Delete user 'user-uuid'",
+      "expected": {
+        "result": "nil error returned; user row is deleted; no orphaned rows"
+      },
+      "assertion_pseudocode": "seedUser(db, 'user-uuid'); err = store.DeleteUser(ctx, 'user-uuid'); assert err == nil; userCount = db.QueryRow('SELECT COUNT(*) FROM users WHERE id=?', 'user-uuid').Scan(); assert userCount == 0; secretCount = db.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_id=?', 'user-uuid').Scan(); assert secretCount == 0"
+    },
+    {
+      "id": "TS-07-E49",
+      "requirement_id": "07-REQ-17.E3",
+      "kind": "unit",
+      "description": "Verifies that SQLite rolls back an uncommitted transaction on next startup, leaving both parent resource and its secrets/variables intact after a simulated crash.",
+      "preconditions": [
+        "SQLite database file on disk (not in-memory) with migrations applied",
+        "Workspace 'ws-slug' exists with 1 secret",
+        "Process crash is simulated after parent deletion SQL executes but before commit"
+      ],
+      "input": "Simulate crash mid-transaction during workspace deletion",
+      "expected": {
+        "result": "After database reopening, workspace and its secret both exist; no orphaned rows"
+      },
+      "assertion_pseudocode": "db = openSQLiteFile('test.db'); applyMigrations(db); seedWorkspace(db, 'ws-slug'); seedSecret(db, 'workspace', 'ws-slug', 'MY_SECRET', 'val'); tx = db.Begin(); tx.Exec('DELETE FROM workspaces WHERE slug=?', 'ws-slug'); simulateCrash(tx); db2 = openSQLiteFile('test.db'); wsCount = db2.QueryRow('SELECT COUNT(*) FROM workspaces WHERE slug=?', 'ws-slug').Scan(); assert wsCount == 1; secretCount = db2.QueryRow('SELECT COUNT(*) FROM secrets WHERE owner_type=? AND owner_id=?', 'workspace', 'ws-slug').Scan(); assert secretCount == 1"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-07-SMOKE-1",
+      "execution_path_id": "07-PATH-1",
+      "description": "End-to-end smoke test for creating a workspace-scoped secret via a PAT with secrets:manage scope, verifying all validation, encoding, and response shape steps.",
+      "trigger": "POST /api/v1/workspaces/test-ws/secrets with PAT bearing secrets:manage, body {entries: [{key: 'API_TOKEN', value: 'secret123'}]}",
+      "real_components": [
+        "hub API (auth middleware)",
+        "hub API (request validation)",
+        "hub store layer",
+        "hub API (response)",
+        "SQLite database (in-memory)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 201 response with JSON array containing {key: 'API_TOKEN', created_at: <RFC3339>, updated_at: <RFC3339>} and no value field",
+        "One row inserted into the secrets table with owner_type='workspace', owner_id='test-ws', key='API_TOKEN', value=base64('secret123')",
+        "created_at and updated_at are valid RFC 3339 timestamps"
+      ]
+    },
+    {
+      "id": "TS-07-SMOKE-2",
+      "execution_path_id": "07-PATH-2",
+      "description": "End-to-end smoke test for resolving variables for a workspace context via API key, verifying tier merging, origin field, and alphabetical sorting.",
+      "trigger": "GET /api/v1/workspaces/test-ws/vars/resolved with API key for workspace owner",
+      "real_components": [
+        "hub API (auth middleware)",
+        "hub API (resolution handler)",
+        "workspaces store (spec 01_workspaces)",
+        "hub store layer (variables)",
+        "hub API (response)",
+        "SQLite database (in-memory)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with JSON array of resolved variables",
+        "Each entry contains key, value (decoded), origin (one of 'user', 'org', 'workspace'), created_at, and updated_at",
+        "Keys are sorted alphabetically ascending case-insensitively",
+        "For keys present at multiple tiers, the workspace-tier value wins with origin='workspace'",
+        "If workspace has no org_id, no entries have origin='org'"
+      ]
+    },
+    {
+      "id": "TS-07-SMOKE-3",
+      "execution_path_id": "07-PATH-3",
+      "description": "End-to-end smoke test for deleting a user and verifying that all associated secrets and variables are cascade-deleted within the same transaction.",
+      "trigger": "Delete user 'test-user-uuid' who has 3 secrets and 2 variables",
+      "real_components": [
+        "hub store layer (user deletion)",
+        "hub store layer (cascading deletion)",
+        "SQLite database (in-memory)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "User row is removed from the users table",
+        "All 3 secrets with owner_type='user' and owner_id='test-user-uuid' are removed from the secrets table",
+        "All 2 variables with owner_type='user' and owner_id='test-user-uuid' are removed from the variables table",
+        "All deletions are committed atomically in a single transaction",
+        "No orphaned rows remain in secrets or variables tables for owner_id='test-user-uuid'"
+      ]
+    },
+    {
+      "id": "TS-07-SMOKE-4",
+      "execution_path_id": "07-PATH-4",
+      "description": "End-to-end smoke test for updating a user-level variable value via PATCH, verifying validation, encoding, and response shape.",
+      "trigger": "PATCH /api/v1/user/vars/DB_HOST with PAT bearing vars:write, body {value: 'newhost:5432'}",
+      "real_components": [
+        "hub API (auth middleware)",
+        "hub API (request validation)",
+        "hub store layer",
+        "hub API (response)",
+        "SQLite database (in-memory)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with JSON object containing key='DB_HOST', value='newhost:5432', created_at (original), updated_at (new, later than created_at)",
+        "The variables table row for (owner_type='user', owner_id=userID, key='DB_HOST') has value=base64('newhost:5432') and updated_at updated to current time",
+        "created_at is unchanged from the original creation time"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

@@ -1,0 +1,1180 @@
+{
+  "$schema": null,
+  "spec_id": "08",
+  "spec_name": "secrets_variables_cli",
+  "schema_version": 1,
+  "introduction": "This spec defines the CLI layer for managing secrets and variables in the `afc` command-line tool, providing `afc secrets` and `afc vars` command groups that parse arguments and flags, call the hub REST API via `apikit.CLIClient`, and print results following the established `afc workspace` patterns.",
+  "glossary": {
+    "07-REQ-16": "The requirement in spec `07_secrets_variables` that defines the `GET /api/v1/workspaces/:slug/vars/resolved` endpoint returning the merged variable set for a workspace.",
+    "BuildRootCommand": "The function in `internal/cli/workspace_cmd.go` that assembles the root Cobra command and registers all subcommand groups.",
+    "CLIClient": "The `apikit` HTTP client type with a `DoRequest(ctx, method, path, body) (any, error)` method used to call the hub REST API.",
+    "CLIClientFromCmd": "The `apikit` function `func CLIClientFromCmd(cmd *cobra.Command) (*CLIClient, error)` that instantiates an authenticated HTTP client from the Cobra command context.",
+    "CLIHandleError": "The `apikit` function `func CLIHandleError(cmd *cobra.Command, err error) error` that prints an API error envelope and returns the error.",
+    "CLIPrintResult": "The `apikit` function `func CLIPrintResult(cmd *cobra.Command, v any) error` that serializes and prints the full API response as JSON to stdout.",
+    "DoRequest": "The method `func (c *CLIClient) DoRequest(ctx context.Context, method, path string, body any) (any, error)` on `CLIClient` that executes an HTTP request and returns the parsed response body or nil for 204 responses.",
+    "NewCLIError": "The `apikit` function `func NewCLIError(code int, message string) *CLIError` that constructs a CLI error with a specific exit code.",
+    "PAT": "Personal Access Token \u2014 an authentication credential used to identify the caller when making API requests.",
+    "SecretsCmd": "The Cobra command group constructor function returning the `afc secrets` parent command, implemented in `internal/cli/secrets_cmd.go`.",
+    "VarsCmd": "The Cobra command group constructor function returning the `afc vars` parent command, implemented in `internal/cli/vars_cmd.go`.",
+    "afc": "The primary command-line interface for the agent-fox platform.",
+    "hadError": "A boolean tracking variable in multi-scope create commands that is set to `true` if any per-scope API call fails, used to determine the final exit code.",
+    "org scope": "The ownership scope targeting an organization identified by slug, using API path prefix `orgs/<slug>/secrets` or `orgs/<slug>/vars`.",
+    "ownership selector": "A CLI flag (`--user`, `--org`, or `--workspace`) that determines which API path segment is used when calling the hub REST API.",
+    "resolved variable set": "The merged, precedence-ordered set of variables for a workspace returned by `GET /api/v1/workspaces/:slug/vars/resolved`, where each entry includes an `origin` field indicating which tier (`user`, `org`, or `workspace`) the value came from.",
+    "secrets_cmd.go": "The new file `internal/cli/secrets_cmd.go` that implements `SecretsCmd()` and all `afc secrets` subcommands.",
+    "user scope": "The ownership scope targeting the authenticated user, using API path prefix `user/secrets` or `user/vars`.",
+    "vars_cmd.go": "The new file `internal/cli/vars_cmd.go` that implements `VarsCmd()` and all `afc vars` subcommands.",
+    "workspace scope": "The ownership scope targeting a workspace identified by slug, using API path prefix `workspaces/<slug>/secrets` or `workspaces/<slug>/vars`.",
+    "workspace_cmd.go": "The existing file `internal/cli/workspace_cmd.go` that contains `BuildRootCommand` and serves as the canonical implementation reference for CLI command patterns.",
+    "/api/v1/user/secrets/MYKEY": "REST API endpoint path.",
+    "\"Variable 'MYKEY' has been deleted.\\n\"": "Domain term or code reference used in acceptance criteria.",
+    "false": "Domain term or code reference used in acceptance criteria.",
+    "afc secrets create KEY1=val1,KEY2=val2": "CLI command invocation example.",
+    "afc vars update KEY=newval": "CLI command invocation example.",
+    "afc vars update KEY=newval --workspace myws": "CLI command invocation example.",
+    "{\"entries\":[{\"key\":\"KEY1\",\"value\":\"val1\"},{\"key\":\"KEY2\",\"value\":\"val2\"}]}": "Domain term or code reference used in acceptance criteria.",
+    "user/vars": "API path segment for ownership scope.",
+    "/api/v1/workspaces/myws/secrets": "REST API endpoint path.",
+    "afc secrets create KEY=val": "CLI command invocation example.",
+    "/api/v1/orgs/myorg/secrets/KEY": "REST API endpoint path.",
+    "afc vars delete MYKEY --org myorg": "CLI command invocation example.",
+    "/api/v1/orgs/myorg/vars/MYKEY": "REST API endpoint path.",
+    "afc secrets create KEY=val --org myorg": "CLI command invocation example.",
+    "--workspace": "CLI flag.",
+    "{\"value\":\"newval\"}": "Domain term or code reference used in acceptance criteria.",
+    "BoolVar": "Domain term or code reference used in acceptance criteria.",
+    "afc vars delete MYKEY": "CLI command invocation example.",
+    "SecretsCmd()": "Go function or method call.",
+    "afc secrets update KEY=newval": "CLI command invocation example.",
+    "/api/v1/orgs/myorg/secrets": "REST API endpoint path.",
+    "afc secrets list": "CLI command invocation example.",
+    "afc vars list": "CLI command invocation example.",
+    "/api/v1/user/secrets": "REST API endpoint path.",
+    "fmt.Fprintf(cmd.ErrOrStderr(), ...)": "Go function or method call.",
+    "afc secrets create KEY=val --user --org myorg --workspace myws": "CLI command invocation example.",
+    "afc vars list --org myorg": "CLI command invocation example.",
+    "/api/v1/user/vars": "REST API endpoint path.",
+    "afc secrets update KEY=newval --org myorg": "CLI command invocation example.",
+    "/api/v1/user/vars/KEY": "REST API endpoint path.",
+    "true": "Domain term or code reference used in acceptance criteria.",
+    "/api/v1/user/secrets/KEY": "REST API endpoint path.",
+    "\"Secret 'MYKEY' has been deleted.\\n\"": "Domain term or code reference used in acceptance criteria.",
+    "key=value": "Key-value argument format example.",
+    "/api/v1/user/vars/MYKEY": "REST API endpoint path.",
+    "=": "Key-value argument format example.",
+    "afc secrets list --org myorg": "CLI command invocation example.",
+    "user/secrets": "API path segment for ownership scope.",
+    "{\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}": "Domain term or code reference used in acceptance criteria.",
+    "/api/v1/workspaces/myws/vars": "REST API endpoint path.",
+    "--user": "CLI flag.",
+    "/api/v1/orgs/myorg/secrets/MYKEY": "REST API endpoint path.",
+    "afc vars create KEY=val --user --org myorg": "CLI command invocation example.",
+    "KEY1=val1,KEY2=val2": "Key-value argument format example.",
+    "/api/v1/workspaces/myws/vars/KEY": "REST API endpoint path.",
+    "--org": "CLI flag.",
+    "afc vars create KEY=val": "CLI command invocation example.",
+    "afc secrets delete MYKEY": "CLI command invocation example.",
+    "VarsCmd()": "Go function or method call.",
+    "/api/v1/workspaces/myws/vars/resolved": "REST API endpoint path.",
+    "afc secrets create KEY=val --workspace myws": "CLI command invocation example.",
+    "/api/v1/orgs/myorg/vars": "REST API endpoint path.",
+    "afc secrets list --workspace myws": "CLI command invocation example.",
+    "afc vars create KEY1=val1,KEY2=val2 --workspace myws": "CLI command invocation example.",
+    "afc vars resolve myws": "CLI command invocation example.",
+    "afc vars list --workspace myws": "CLI command invocation example.",
+    "root.AddCommand": "Domain term or code reference used in acceptance criteria.",
+    "afc secrets delete MYKEY --org myorg": "CLI command invocation example.",
+    "afc secrets create": "CLI command invocation example.",
+    "/api/v1/user/secrets/MY_SECRET": "REST API endpoint path.",
+    "MY_SECRET": "Code reference or domain term used in acceptance criteria.",
+    "CLIHandleError(cmd, err)": "Go function or method call.",
+    "afc secrets create API_KEY=abc123": "CLI command invocation example.",
+    "/api/v1/workspaces/myworkspace/vars/resolved": "REST API endpoint path.",
+    "/api/v1/user/": "REST API endpoint path.",
+    "{\"entries\":[{\"key\":\"API_KEY\",\"value\":\"abc123\"}]}": "Code reference or domain term used in acceptance criteria.",
+    "NewCLIError(2, message)": "Go function or method call.",
+    "user": "Code reference or domain term used in acceptance criteria.",
+    "BADKEY": "Code reference or domain term used in acceptance criteria.",
+    "workspace": "Code reference or domain term used in acceptance criteria.",
+    "origin": "Code reference or domain term used in acceptance criteria.",
+    "API_KEY=abc123": "Key-value argument format example.",
+    "afc vars update": "CLI command invocation example.",
+    "{key, value, origin, created_at, updated_at}": "Code reference or domain term used in acceptance criteria.",
+    "{\"entries\":[{\"key\":\"...\",\"value\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}]}": "Code reference or domain term used in acceptance criteria.",
+    "afc secrets create BADKEY": "CLI command invocation example.",
+    "fmt.Fprintf(cmd.ErrOrStderr(), \"Secret 'MY_SECRET' has been deleted.\\n\")": "Go function or method call.",
+    "\"Variable 'MYKEY' has been deleted.\"": "Output string or message template.",
+    "afc vars delete": "CLI command invocation example.",
+    "API_KEY": "Code reference or domain term used in acceptance criteria.",
+    "TOKEN=xyz": "Key-value argument format example.",
+    "CLIError": "Code reference or domain term used in acceptance criteria.",
+    "{\"key\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}": "Code reference or domain term used in acceptance criteria.",
+    "abc123": "Code reference or domain term used in acceptance criteria.",
+    "afc secrets delete": "CLI command invocation example.",
+    "afc vars resolve": "CLI command invocation example.",
+    "afc secrets update": "CLI command invocation example.",
+    "secrets": "Code reference or domain term used in acceptance criteria.",
+    "{\"entries\":[{\"key\":\"API_KEY\",\"created_at\":\"...\",\"updated_at\":\"...\"}]}": "Code reference or domain term used in acceptance criteria.",
+    "{key, value, created_at, updated_at}": "Code reference or domain term used in acceptance criteria.",
+    "vars": "Code reference or domain term used in acceptance criteria.",
+    "afc secrets": "CLI command invocation example.",
+    "myworkspace": "Code reference or domain term used in acceptance criteria.",
+    "NewCLIError(2, \"empty key in argument at position N\")": "Go function or method call.",
+    "myorg": "Code reference or domain term used in acceptance criteria.",
+    "\"Secret 'MYKEY' has been deleted.\"": "Output string or message template.",
+    "afc vars resolve myworkspace": "CLI command invocation example.",
+    "NewCLIError(1, \"\")": "Go function or method call.",
+    "afc vars create": "CLI command invocation example.",
+    "RunE": "Code reference or domain term used in acceptance criteria.",
+    "afc secrets delete MY_SECRET": "CLI command invocation example.",
+    "org": "Code reference or domain term used in acceptance criteria.",
+    "{key, created_at, updated_at}": "Code reference or domain term used in acceptance criteria.",
+    "{\"key\":\"...\",\"value\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}": "Code reference or domain term used in acceptance criteria.",
+    "{\"entries\":[{\"key\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}]}": "Code reference or domain term used in acceptance criteria.",
+    "afc secrets create TOKEN=xyz --user --org myorg": "CLI command invocation example.",
+    "afc vars": "CLI command invocation example.",
+    "KEY=val,,KEY2=val2": "Malformed comma-separated key=value input with an empty entry between consecutive commas.",
+    "--user --org myorg": "Example of multiple ownership selector flags provided simultaneously."
+  },
+  "requirements": [
+    {
+      "id": "08-REQ-1",
+      "title": "Register SecretsCmd and VarsCmd in BuildRootCommand",
+      "user_story": {
+        "role": "developer integrating the CLI",
+        "goal": "have `afc secrets` and `afc vars` available as top-level command groups",
+        "benefit": "users can manage secrets and variables from the CLI without additional setup"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "BuildRootCommand",
+          "action": "call `SecretsCmd()` and `VarsCmd()` and register both returned commands via `root.AddCommand` in `workspace_cmd.go`",
+          "return_contract": "the root Cobra command includes `secrets` and `vars` as subcommands accessible via `afc secrets` and `afc vars`",
+          "trigger": "BuildRootCommand is called"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "BuildRootCommand",
+          "action": "panic at startup with a clear message indicating which constructor returned nil",
+          "return_contract": "process terminates with a non-zero exit code and a descriptive panic message before any user interaction",
+          "error_condition": "`SecretsCmd()` or `VarsCmd()` returns a nil command due to a programming error"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-2",
+      "title": "afc secrets create \u2014 single and multi-scope secret creation",
+      "user_story": {
+        "role": "platform user",
+        "goal": "create one or more secrets at one or more ownership scopes with a single command",
+        "benefit": "I can populate secrets across user, org, and workspace scopes without running multiple commands"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets create",
+          "action": "parse the `key=value` argument, default to `user scope`, call `DoRequest` with POST to `/api/v1/user/secrets` with body `{\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the JSON response `{\"entries\":[{\"key\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}]}`",
+          "trigger": "a user runs `afc secrets create KEY=val` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets create",
+          "action": "parse the argument, call `DoRequest` with POST to `/api/v1/orgs/myorg/secrets` with the entries body, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the JSON response for the org scope",
+          "trigger": "a user runs `afc secrets create KEY=val --org myorg`"
+        },
+        {
+          "id": "08-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets create",
+          "action": "parse the argument, call `DoRequest` with POST to `/api/v1/workspaces/myws/secrets` with the entries body, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the JSON response for the workspace scope",
+          "trigger": "a user runs `afc secrets create KEY=val --workspace myws`"
+        },
+        {
+          "id": "08-REQ-2.4",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets create",
+          "action": "make three sequential `DoRequest` POST calls in fixed order: first to `/api/v1/user/secrets`, then `/api/v1/orgs/myorg/secrets`, then `/api/v1/workspaces/myws/secrets`; call `CLIPrintResult` after each successful call",
+          "return_contract": "exits 0 if all three calls succeed; stdout contains three JSON response objects in order",
+          "trigger": "a user runs `afc secrets create KEY=val --user --org myorg --workspace myws`"
+        },
+        {
+          "id": "08-REQ-2.5",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets create",
+          "action": "split the argument on commas, parse each `key=value` pair, and include all entries in a single `DoRequest` POST call body as `{\"entries\":[{\"key\":\"KEY1\",\"value\":\"val1\"},{\"key\":\"KEY2\",\"value\":\"val2\"}]}`",
+          "return_contract": "exits 0; stdout contains the JSON response with all created entries",
+          "trigger": "a user runs `afc secrets create KEY1=val1,KEY2=val2`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets create",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a descriptive parse error message; no API call is made",
+          "error_condition": "the argument string contains no `=` character (e.g. `afc secrets create BADKEY`)"
+        },
+        {
+          "id": "08-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets create",
+          "action": "return `NewCLIError(2, message)` with a message such as \"empty key in argument at position N\" without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains the positional parse error message; no API call is made",
+          "error_condition": "comma-splitting produces an empty or whitespace-only key at position N (e.g. `KEY=val,,KEY2=val2`)"
+        },
+        {
+          "id": "08-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets create",
+          "action": "return `NewCLIError(2, message)` indicating a required argument is missing",
+          "return_contract": "exits 2; stderr contains a usage error message; no API call is made",
+          "error_condition": "no positional argument is provided"
+        },
+        {
+          "id": "08-REQ-2.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets create",
+          "action": "call `CLIHandleError` immediately for the failing scope, set `hadError` to `true`, continue executing remaining scopes in user \u2192 org \u2192 workspace order, and after all scopes complete return `NewCLIError(1, \"\")` because `hadError` is `true`",
+          "return_contract": "exits 1; stderr contains the API error envelope for the failed scope; successful scopes still produce stdout output",
+          "error_condition": "one scope's `DoRequest` call fails during a multi-scope create (e.g. `--user --org myorg`)"
+        },
+        {
+          "id": "08-REQ-2.E5",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets create",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope",
+          "error_condition": "`DoRequest` returns an API error for a single-scope create"
+        },
+        {
+          "id": "08-REQ-2.E6",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets create",
+          "action": "return the error from `RunE` without calling `DoRequest`",
+          "return_contract": "exits non-zero; stderr contains the client initialization error",
+          "error_condition": "`CLIClientFromCmd` returns an error (e.g. missing API key configuration)"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-3",
+      "title": "afc secrets list \u2014 list secret names at a single ownership scope",
+      "user_story": {
+        "role": "platform user",
+        "goal": "list the names of secrets at a specific ownership scope",
+        "benefit": "I can audit which secrets exist without exposing their values"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets list",
+          "action": "default to `user scope`, call `DoRequest` with GET to `/api/v1/user/secrets`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of `{key, created_at, updated_at}` objects",
+          "trigger": "a user runs `afc secrets list` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets list",
+          "action": "call `DoRequest` with GET to `/api/v1/orgs/myorg/secrets`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of org-scoped secret metadata objects",
+          "trigger": "a user runs `afc secrets list --org myorg`"
+        },
+        {
+          "id": "08-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets list",
+          "action": "call `DoRequest` with GET to `/api/v1/workspaces/myws/secrets`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of workspace-scoped secret metadata objects",
+          "trigger": "a user runs `afc secrets list --workspace myws`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets list",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message indicating only one scope selector is allowed",
+          "error_condition": "multiple ownership flags are provided simultaneously (e.g. `--user --org myorg`)"
+        },
+        {
+          "id": "08-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets list",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope",
+          "error_condition": "`DoRequest` returns an API error (e.g. 403 Forbidden)"
+        },
+        {
+          "id": "08-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets list",
+          "action": "call `CLIPrintResult` with the empty array response",
+          "return_contract": "exits 0; stdout contains `[]`",
+          "error_condition": "the API returns an empty array (no secrets exist at the scope)"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-4",
+      "title": "afc secrets update \u2014 update a single secret's value",
+      "user_story": {
+        "role": "platform user",
+        "goal": "update the value of an existing secret at a specific ownership scope",
+        "benefit": "I can rotate or correct secret values without deleting and recreating them"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets update",
+          "action": "parse the `key=value` argument, default to `user scope`, call `DoRequest` with PATCH to `/api/v1/user/secrets/KEY` with body `{\"value\":\"newval\"}`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the JSON response `{\"key\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}`",
+          "trigger": "a user runs `afc secrets update KEY=newval` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets update",
+          "action": "call `DoRequest` with PATCH to `/api/v1/orgs/myorg/secrets/KEY` with body `{\"value\":\"newval\"}`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the updated secret metadata JSON",
+          "trigger": "a user runs `afc secrets update KEY=newval --org myorg`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets update",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a parse error message",
+          "error_condition": "the argument contains no `=` character"
+        },
+        {
+          "id": "08-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets update",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message indicating only one scope selector is allowed",
+          "error_condition": "multiple ownership flags are provided simultaneously"
+        },
+        {
+          "id": "08-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets update",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope with a not-found message",
+          "error_condition": "the API returns 404 because the key does not exist at the specified scope"
+        },
+        {
+          "id": "08-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets update",
+          "action": "return `NewCLIError(2, message)` indicating a required argument is missing",
+          "return_contract": "exits 2; stderr contains a usage error message",
+          "error_condition": "no positional argument is provided"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-5",
+      "title": "afc secrets delete \u2014 delete a single secret",
+      "user_story": {
+        "role": "platform user",
+        "goal": "delete a secret by key at a specific ownership scope",
+        "benefit": "I can remove secrets that are no longer needed without leaving stale credentials"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets delete",
+          "action": "default to `user scope`, call `DoRequest` with DELETE to `/api/v1/user/secrets/MYKEY`; since `DoRequest` returns nil body for 204, skip `CLIPrintResult` and print `\"Secret 'MYKEY' has been deleted.\\n\"` to stderr via `fmt.Fprintf(cmd.ErrOrStderr(), ...)`",
+          "return_contract": "exits 0; stdout is silent; stderr contains the confirmation message",
+          "trigger": "a user runs `afc secrets delete MYKEY` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "afc secrets delete",
+          "action": "call `DoRequest` with DELETE to `/api/v1/orgs/myorg/secrets/MYKEY`; skip `CLIPrintResult` and print the confirmation message to stderr",
+          "return_contract": "exits 0; stdout is silent; stderr contains `\"Secret 'MYKEY' has been deleted.\"`",
+          "trigger": "a user runs `afc secrets delete MYKEY --org myorg`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets delete",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a usage error message",
+          "error_condition": "no positional argument is provided"
+        },
+        {
+          "id": "08-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets delete",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message indicating only one scope selector is allowed",
+          "error_condition": "multiple ownership flags are provided simultaneously"
+        },
+        {
+          "id": "08-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc secrets delete",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`; do not print the confirmation message",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope; no confirmation message is printed",
+          "error_condition": "the API returns 404 because the key does not exist"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-6",
+      "title": "afc vars create \u2014 single and multi-scope variable creation",
+      "user_story": {
+        "role": "platform user",
+        "goal": "create one or more variables at one or more ownership scopes with a single command",
+        "benefit": "I can populate non-sensitive configuration values across scopes without running multiple commands"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "afc vars create",
+          "action": "parse the `key=value` argument, default to `user scope`, call `DoRequest` with POST to `/api/v1/user/vars` with body `{\"entries\":[{\"key\":\"KEY\",\"value\":\"val\"}]}`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the JSON response `{\"entries\":[{\"key\":\"...\",\"value\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}]}`",
+          "trigger": "a user runs `afc vars create KEY=val` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "afc vars create",
+          "action": "make two sequential `DoRequest` POST calls in fixed order: first to `/api/v1/user/vars`, then `/api/v1/orgs/myorg/vars`; call `CLIPrintResult` after each successful call",
+          "return_contract": "exits 0 if both calls succeed; stdout contains two JSON response objects in user-then-org order",
+          "trigger": "a user runs `afc vars create KEY=val --user --org myorg`"
+        },
+        {
+          "id": "08-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "afc vars create",
+          "action": "split the argument on commas, parse each `key=value` pair, and include all entries in a single `DoRequest` POST call to `/api/v1/workspaces/myws/vars`",
+          "return_contract": "exits 0; stdout contains the JSON response with all created variable entries including values",
+          "trigger": "a user runs `afc vars create KEY1=val1,KEY2=val2 --workspace myws`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc vars create",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a descriptive parse error message",
+          "error_condition": "the argument string contains no `=` character"
+        },
+        {
+          "id": "08-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc vars create",
+          "action": "return `NewCLIError(2, message)` with a message such as \"empty key in argument at position N\" without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains the positional parse error message; no API call is made",
+          "error_condition": "comma-splitting produces an empty or whitespace-only key at position N"
+        },
+        {
+          "id": "08-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc vars create",
+          "action": "call `CLIHandleError` immediately for the failing scope, set `hadError` to `true`, continue executing remaining scopes in user \u2192 org \u2192 workspace order, and after all scopes complete return `NewCLIError(1, \"\")` because `hadError` is `true`",
+          "return_contract": "exits 1; stderr contains the API error envelope for the failed scope; successful scopes still produce stdout output",
+          "error_condition": "one scope's `DoRequest` call fails during a multi-scope create"
+        },
+        {
+          "id": "08-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc vars create",
+          "action": "return `NewCLIError(2, message)` indicating a required argument is missing",
+          "return_contract": "exits 2; stderr contains a usage error message; no API call is made",
+          "error_condition": "no positional argument is provided"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-7",
+      "title": "afc vars list \u2014 list variables (names and values) at a single ownership scope",
+      "user_story": {
+        "role": "platform user",
+        "goal": "list all variables including their values at a specific ownership scope",
+        "benefit": "I can inspect non-sensitive configuration values without navigating a web UI"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "afc vars list",
+          "action": "default to `user scope`, call `DoRequest` with GET to `/api/v1/user/vars`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of `{key, value, created_at, updated_at}` objects",
+          "trigger": "a user runs `afc vars list` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-7.2",
+          "ears_pattern": "event_driven",
+          "system": "afc vars list",
+          "action": "call `DoRequest` with GET to `/api/v1/orgs/myorg/vars`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of org-scoped variable objects including values",
+          "trigger": "a user runs `afc vars list --org myorg`"
+        },
+        {
+          "id": "08-REQ-7.3",
+          "ears_pattern": "event_driven",
+          "system": "afc vars list",
+          "action": "call `DoRequest` with GET to `/api/v1/workspaces/myws/vars`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of workspace-scoped variable objects including values",
+          "trigger": "a user runs `afc vars list --workspace myws`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc vars list",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message indicating only one scope selector is allowed",
+          "error_condition": "multiple ownership flags are provided simultaneously"
+        },
+        {
+          "id": "08-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc vars list",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope",
+          "error_condition": "`DoRequest` returns an API error"
+        },
+        {
+          "id": "08-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc vars list",
+          "action": "call `CLIPrintResult` with the empty array response",
+          "return_contract": "exits 0; stdout contains `[]`",
+          "error_condition": "the API returns an empty array (no variables exist at the scope)"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-8",
+      "title": "afc vars update \u2014 update a single variable's value",
+      "user_story": {
+        "role": "platform user",
+        "goal": "update the value of an existing variable at a specific ownership scope",
+        "benefit": "I can change configuration values without deleting and recreating them"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "afc vars update",
+          "action": "parse the `key=value` argument, default to `user scope`, call `DoRequest` with PATCH to `/api/v1/user/vars/KEY` with body `{\"value\":\"newval\"}`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the JSON response `{\"key\":\"...\",\"value\":\"...\",\"created_at\":\"...\",\"updated_at\":\"...\"}`",
+          "trigger": "a user runs `afc vars update KEY=newval` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "afc vars update",
+          "action": "call `DoRequest` with PATCH to `/api/v1/workspaces/myws/vars/KEY` with body `{\"value\":\"newval\"}`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains the updated variable JSON including the new value",
+          "trigger": "a user runs `afc vars update KEY=newval --workspace myws`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc vars update",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a parse error message",
+          "error_condition": "the argument contains no `=` character"
+        },
+        {
+          "id": "08-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc vars update",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message indicating only one scope selector is allowed",
+          "error_condition": "multiple ownership flags are provided simultaneously"
+        },
+        {
+          "id": "08-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc vars update",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope with a not-found message",
+          "error_condition": "the API returns 404 because the key does not exist at the specified scope"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-9",
+      "title": "afc vars delete \u2014 delete a single variable",
+      "user_story": {
+        "role": "platform user",
+        "goal": "delete a variable by key at a specific ownership scope",
+        "benefit": "I can remove stale configuration values from any scope"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "afc vars delete",
+          "action": "default to `user scope`, call `DoRequest` with DELETE to `/api/v1/user/vars/MYKEY`; since `DoRequest` returns nil body for 204, skip `CLIPrintResult` and print `\"Variable 'MYKEY' has been deleted.\\n\"` to stderr via `fmt.Fprintf(cmd.ErrOrStderr(), ...)`",
+          "return_contract": "exits 0; stdout is silent; stderr contains the confirmation message",
+          "trigger": "a user runs `afc vars delete MYKEY` with no ownership flags"
+        },
+        {
+          "id": "08-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "afc vars delete",
+          "action": "call `DoRequest` with DELETE to `/api/v1/orgs/myorg/vars/MYKEY`; skip `CLIPrintResult` and print the confirmation message to stderr",
+          "return_contract": "exits 0; stdout is silent; stderr contains `\"Variable 'MYKEY' has been deleted.\"`",
+          "trigger": "a user runs `afc vars delete MYKEY --org myorg`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc vars delete",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a usage error message",
+          "error_condition": "no positional argument is provided"
+        },
+        {
+          "id": "08-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc vars delete",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message indicating only one scope selector is allowed",
+          "error_condition": "multiple ownership flags are provided simultaneously"
+        },
+        {
+          "id": "08-REQ-9.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc vars delete",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`; do not print the confirmation message",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope; no confirmation message is printed",
+          "error_condition": "the API returns 404 because the key does not exist"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-10",
+      "title": "afc vars resolve \u2014 show the resolved/merged variable set for a workspace",
+      "user_story": {
+        "role": "platform user",
+        "goal": "view the fully merged variable set for a workspace with precedence applied",
+        "benefit": "I can understand exactly which variable values will be visible to agents running in a workspace, and which scope each value came from"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "afc vars resolve",
+          "action": "call `DoRequest` with GET to `/api/v1/workspaces/myws/vars/resolved`, then call `CLIPrintResult` with the full response",
+          "return_contract": "exits 0; stdout contains a JSON array of `{key, value, origin, created_at, updated_at}` objects where `origin` is one of `user`, `org`, or `workspace`",
+          "trigger": "a user runs `afc vars resolve myws`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc vars resolve",
+          "action": "return `NewCLIError(2, message)` without calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains a usage error message indicating the workspace slug is required",
+          "error_condition": "no positional argument (workspace slug) is provided"
+        },
+        {
+          "id": "08-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc vars resolve",
+          "action": "call `CLIHandleError` with the error and return the resulting error from `RunE`",
+          "return_contract": "exits non-zero; stderr contains the JSON API error envelope",
+          "error_condition": "the API returns 404 because the workspace slug does not exist"
+        },
+        {
+          "id": "08-REQ-10.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc vars resolve",
+          "action": "call `CLIPrintResult` with the empty array response",
+          "return_contract": "exits 0; stdout contains `[]`",
+          "error_condition": "the API returns an empty array (no variables are defined at any scope for the workspace)"
+        },
+        {
+          "id": "08-REQ-10.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc vars resolve",
+          "action": "return `NewCLIError(2, message)` indicating that `afc vars resolve` does not accept ownership flags",
+          "return_contract": "exits 2; stderr contains an error message; no API call is made",
+          "error_condition": "an ownership flag (`--org`, `--workspace`, `--user`) is provided alongside the workspace slug argument"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-11",
+      "title": "key=value argument parsing \u2014 split on first = and validate",
+      "user_story": {
+        "role": "CLI implementer",
+        "goal": "have a consistent, correct parser for key=value arguments used across all create and update subcommands",
+        "benefit": "users get clear error messages for malformed arguments before any API call is made"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-11.1",
+          "ears_pattern": "ubiquitous",
+          "system": "key=value parser",
+          "action": "split the input string on the first `=` character; the key is everything before the first `=` and the value is everything after it (the value may contain additional `=` characters)",
+          "return_contract": "returns (key string, value string) where value may contain `=` characters"
+        },
+        {
+          "id": "08-REQ-11.2",
+          "ears_pattern": "event_driven",
+          "system": "key=value parser",
+          "action": "split on commas first to obtain individual `key=value` tokens, then parse each token by splitting on the first `=`",
+          "return_contract": "returns a slice of (key, value) pairs; shell-level quoting is required for values containing commas",
+          "trigger": "the input string for a create command is comma-separated (e.g. `KEY1=val1,KEY2=val2`)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "key=value parser",
+          "action": "return an error without contacting the API",
+          "return_contract": "returns an error; the calling command returns `NewCLIError(2, message)` and exits 2",
+          "error_condition": "the input token contains no `=` character"
+        },
+        {
+          "id": "08-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "key=value parser",
+          "action": "return an error with a message identifying the zero-based position of the empty entry",
+          "return_contract": "returns an error such as \"empty key in argument at position N\"; the calling command returns `NewCLIError(2, message)` and exits 2",
+          "error_condition": "after comma-splitting, a token produces an empty or whitespace-only key (e.g. from `KEY=val,,KEY2=val2`)"
+        },
+        {
+          "id": "08-REQ-11.E3",
+          "ears_pattern": "ubiquitous",
+          "system": "key=value parser",
+          "action": "pass the key through to the API as-is without any additional validation beyond the empty/whitespace guard; all other key validation is performed server-side",
+          "return_contract": "the key string is forwarded unchanged in the API request body"
+        }
+      ]
+    },
+    {
+      "id": "08-REQ-12",
+      "title": "Ownership selector resolution \u2014 default to user scope when no flags provided",
+      "user_story": {
+        "role": "platform user",
+        "goal": "have commands default to my user scope when I omit ownership flags",
+        "benefit": "I can manage my own secrets and variables without typing `--user` every time"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "08-REQ-12.1",
+          "ears_pattern": "state_driven",
+          "system": "ownership selector resolver",
+          "action": "treat the command as targeting `user scope` and use the `user/secrets` or `user/vars` API path prefix",
+          "return_contract": "the API call is made to `/api/v1/user/secrets` or `/api/v1/user/vars` as appropriate",
+          "state": "all three ownership flag variables (`--user` bool, `--org` string, `--workspace` string) remain at their zero values after flag parsing"
+        },
+        {
+          "id": "08-REQ-12.2",
+          "ears_pattern": "ubiquitous",
+          "system": "ownership selector resolver",
+          "action": "define `--user` as a `BoolVar` with default `false`; detect the no-flags-provided case at runtime by checking whether all three flag variables are at zero values, rather than setting the `--user` default to `true`",
+          "return_contract": "the `--user` flag is a true opt-in boolean; the implicit default is handled by runtime logic, not flag defaults"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "08-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "ownership selector resolver",
+          "action": "return `NewCLIError(2, message)` before calling `DoRequest`",
+          "return_contract": "exits 2; stderr contains an error message stating that only one scope selector is allowed for this command",
+          "error_condition": "for list, update, or delete commands: two or more of `--user`, `--org`, and `--workspace` are provided simultaneously"
+        },
+        {
+          "id": "08-REQ-12.E2",
+          "ears_pattern": "event_driven",
+          "system": "ownership selector resolver",
+          "action": "execute three API calls in fixed order: user scope first, then org scope, then workspace scope; each call uses the appropriate API path prefix",
+          "return_contract": "all three scopes are targeted; API calls are made in deterministic user \u2192 org \u2192 workspace order",
+          "trigger": "for create commands: `--user`, `--org`, and `--workspace` are all provided"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "08-PROP-1",
+      "title": "Multi-scope create API call ordering is always user \u2192 org \u2192 workspace",
+      "for_any": "invocation of `afc secrets create` or `afc vars create` with any combination of `--user`, `--org`, and `--workspace` flags",
+      "invariant": "API calls to `DoRequest` are always made in the fixed order: `user scope` first (if `--user` is set or no flags are provided), then `org scope` (if `--org` is set), then `workspace scope` (if `--workspace` is set); this order is never permuted regardless of the order flags appear on the command line",
+      "validates": [
+        "08-REQ-2.4",
+        "08-REQ-6.2"
+      ]
+    },
+    {
+      "id": "08-PROP-2",
+      "title": "Partial multi-scope failure always yields exit code 1",
+      "for_any": "multi-scope create invocation where at least one scope's `DoRequest` call fails and at least one succeeds",
+      "invariant": "`hadError` is set to `true` on the first failure; all remaining scopes are still attempted in order; the command returns `NewCLIError(1, \"\")` after all scopes complete, yielding exit code 1 regardless of which scope failed",
+      "validates": [
+        "08-REQ-2.E4",
+        "08-REQ-6.E3"
+      ]
+    },
+    {
+      "id": "08-PROP-3",
+      "title": "DELETE commands never call CLIPrintResult",
+      "for_any": "any invocation of `afc secrets delete` or `afc vars delete` that receives a 204 No Content response (nil body from `DoRequest`)",
+      "invariant": "`CLIPrintResult` is never called; stdout remains empty; the confirmation message is written only to stderr via `fmt.Fprintf(cmd.ErrOrStderr(), ...)`",
+      "validates": [
+        "08-REQ-5.1",
+        "08-REQ-9.1"
+      ]
+    },
+    {
+      "id": "08-PROP-4",
+      "title": "No API call is made when argument parsing fails",
+      "for_any": "any command invocation where the positional argument fails parsing (missing `=`, empty key, wrong argument count)",
+      "invariant": "`CLIClientFromCmd` and `DoRequest` are never called; the command returns `NewCLIError(2, message)` immediately after detecting the parse error",
+      "validates": [
+        "08-REQ-2.E1",
+        "08-REQ-2.E2",
+        "08-REQ-2.E3",
+        "08-REQ-11.E1",
+        "08-REQ-11.E2"
+      ]
+    },
+    {
+      "id": "08-PROP-5",
+      "title": "Single-scope commands reject multiple ownership selectors",
+      "for_any": "any invocation of `afc secrets list`, `afc secrets update`, `afc secrets delete`, `afc vars list`, `afc vars update`, or `afc vars delete` with two or more of `--user`, `--org`, `--workspace` set",
+      "invariant": "the command returns `NewCLIError(2, message)` and exits 2 without calling `DoRequest`",
+      "validates": [
+        "08-REQ-3.E1",
+        "08-REQ-4.E2",
+        "08-REQ-5.E2",
+        "08-REQ-7.E1",
+        "08-REQ-8.E2",
+        "08-REQ-9.E2",
+        "08-REQ-12.E1"
+      ]
+    },
+    {
+      "id": "08-PROP-6",
+      "title": "No-flags default always resolves to user scope",
+      "for_any": "any command invocation where none of `--user`, `--org`, or `--workspace` flags are provided",
+      "invariant": "the command targets `user scope` and calls `DoRequest` with a path beginning with `/api/v1/user/`; this is detected by runtime zero-value checking, not by a `--user` BoolVar default of `true`",
+      "validates": [
+        "08-REQ-2.1",
+        "08-REQ-3.1",
+        "08-REQ-4.1",
+        "08-REQ-5.1",
+        "08-REQ-6.1",
+        "08-REQ-7.1",
+        "08-REQ-8.1",
+        "08-REQ-9.1",
+        "08-REQ-12.1"
+      ]
+    },
+    {
+      "id": "08-PROP-7",
+      "title": "CLIPrintResult receives the full DoRequest response without reshaping",
+      "for_any": "any non-DELETE command that receives a successful API response",
+      "invariant": "`CLIPrintResult` is called with the exact value returned by `DoRequest` \u2014 the CLI does not unwrap, reshape, or filter the response object before passing it to `CLIPrintResult`",
+      "validates": [
+        "08-REQ-2.1",
+        "08-REQ-3.1",
+        "08-REQ-6.1",
+        "08-REQ-7.1",
+        "08-REQ-10.1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "08-PATH-1",
+      "title": "Happy path: afc secrets create single scope (user default)",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc secrets create API_KEY=abc123` with no flags"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "parses `API_KEY=abc123` into key=`API_KEY`, value=`abc123`; detects all ownership flags at zero values; resolves to `user scope`"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "calls `CLIClientFromCmd` to obtain an authenticated `CLIClient`"
+        },
+        {
+          "actor": "CLIClient.DoRequest",
+          "action": "sends POST to `/api/v1/user/secrets` with body `{\"entries\":[{\"key\":\"API_KEY\",\"value\":\"abc123\"}]}`"
+        },
+        {
+          "actor": "Hub REST API (spec 07_secrets_variables)",
+          "action": "stores the secret and returns `{\"entries\":[{\"key\":\"API_KEY\",\"created_at\":\"...\",\"updated_at\":\"...\"}]}`"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "calls `CLIPrintResult` with the full response object"
+        },
+        {
+          "actor": "CLIPrintResult",
+          "action": "serializes the response as JSON and writes it to stdout; command exits 0"
+        }
+      ]
+    },
+    {
+      "id": "08-PATH-2",
+      "title": "Multi-scope create with partial failure: afc secrets create --user --org myorg",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc secrets create TOKEN=xyz --user --org myorg`"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "parses `TOKEN=xyz`; detects `--user` is true and `--org` is `myorg`; plans two API calls in order: user scope, then org scope"
+        },
+        {
+          "actor": "CLIClient.DoRequest",
+          "action": "sends POST to `/api/v1/user/secrets` with the entries body; call succeeds"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "calls `CLIPrintResult` with the user-scope response; stdout receives the first JSON object"
+        },
+        {
+          "actor": "CLIClient.DoRequest",
+          "action": "sends POST to `/api/v1/orgs/myorg/secrets` with the entries body; call fails with an API error"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "calls `CLIHandleError` for the org-scope failure; sets `hadError` to `true`"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "all scopes processed; `hadError` is `true`; returns `NewCLIError(1, \"\")` from `RunE`"
+        },
+        {
+          "actor": "Cobra error handler",
+          "action": "reads exit code 1 from the `CLIError` and terminates the process with exit code 1"
+        }
+      ]
+    },
+    {
+      "id": "08-PATH-3",
+      "title": "Happy path: afc secrets delete (user scope)",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc secrets delete MY_SECRET` with no flags"
+        },
+        {
+          "actor": "afc secrets delete (Cobra RunE)",
+          "action": "reads positional argument `MY_SECRET`; detects all ownership flags at zero values; resolves to `user scope`"
+        },
+        {
+          "actor": "CLIClient.DoRequest",
+          "action": "sends DELETE to `/api/v1/user/secrets/MY_SECRET`"
+        },
+        {
+          "actor": "Hub REST API (spec 07_secrets_variables)",
+          "action": "deletes the secret and returns 204 No Content; `DoRequest` returns nil body"
+        },
+        {
+          "actor": "afc secrets delete (Cobra RunE)",
+          "action": "detects nil body; skips `CLIPrintResult`; calls `fmt.Fprintf(cmd.ErrOrStderr(), \"Secret 'MY_SECRET' has been deleted.\\n\")`"
+        },
+        {
+          "actor": "afc secrets delete (Cobra RunE)",
+          "action": "returns nil from `RunE`; command exits 0 with stdout silent and confirmation on stderr"
+        }
+      ]
+    },
+    {
+      "id": "08-PATH-4",
+      "title": "Happy path: afc vars resolve (end-to-end through CLI and hub API)",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc vars resolve myworkspace`"
+        },
+        {
+          "actor": "afc vars resolve (Cobra RunE)",
+          "action": "reads positional argument `myworkspace`; validates no ownership flags are present"
+        },
+        {
+          "actor": "afc vars resolve (Cobra RunE)",
+          "action": "calls `CLIClientFromCmd` to obtain an authenticated `CLIClient`"
+        },
+        {
+          "actor": "CLIClient.DoRequest",
+          "action": "sends GET to `/api/v1/workspaces/myworkspace/vars/resolved`"
+        },
+        {
+          "actor": "Hub REST API (spec 07_secrets_variables, 07-REQ-16)",
+          "action": "merges user, org, and workspace variable tiers with precedence and returns a JSON array of `{key, value, origin, created_at, updated_at}` objects"
+        },
+        {
+          "actor": "afc vars resolve (Cobra RunE)",
+          "action": "calls `CLIPrintResult` with the full response array"
+        },
+        {
+          "actor": "CLIPrintResult",
+          "action": "serializes the merged variable set as JSON and writes it to stdout; command exits 0"
+        }
+      ]
+    },
+    {
+      "id": "08-PATH-5",
+      "title": "Argument validation failure: missing = in key=value argument",
+      "steps": [
+        {
+          "actor": "User",
+          "action": "runs `afc secrets create BADKEY` (no `=` character)"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "attempts to parse `BADKEY` as a `key=value` pair; finds no `=` character"
+        },
+        {
+          "actor": "afc secrets create (Cobra RunE)",
+          "action": "returns `NewCLIError(2, message)` from `RunE` without calling `CLIClientFromCmd` or `DoRequest`"
+        },
+        {
+          "actor": "Cobra error handler",
+          "action": "reads exit code 2 from the `CLIError`; writes the error message to stderr and terminates with exit code 2"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "08-ERR-1",
+      "condition": "A `key=value` argument contains no `=` character",
+      "behavior": "return `NewCLIError(2, message)` from `RunE` without calling `DoRequest`; Cobra prints the error message to stderr and exits with code 2",
+      "requirement_id": "08-REQ-11.E1"
+    },
+    {
+      "id": "08-ERR-2",
+      "condition": "Comma-splitting a create argument produces an empty or whitespace-only key at position N",
+      "behavior": "return `NewCLIError(2, \"empty key in argument at position N\")` from `RunE` without calling `DoRequest`; exits 2",
+      "requirement_id": "08-REQ-11.E2"
+    },
+    {
+      "id": "08-ERR-3",
+      "condition": "Multiple ownership flags are provided to a list, update, or delete command",
+      "behavior": "return `NewCLIError(2, message)` from `RunE` without calling `DoRequest`; exits 2 with an error message indicating only one scope selector is allowed",
+      "requirement_id": "08-REQ-12.E1"
+    },
+    {
+      "id": "08-ERR-4",
+      "condition": "`DoRequest` returns an error for a single-scope command",
+      "behavior": "call `CLIHandleError(cmd, err)` and return the resulting error from `RunE`; the API error envelope is printed to stderr; exits non-zero",
+      "requirement_id": "08-REQ-2.E5"
+    },
+    {
+      "id": "08-ERR-5",
+      "condition": "One or more scope calls fail during a multi-scope create",
+      "behavior": "call `CLIHandleError` immediately for each failing scope as it occurs; set `hadError` to `true`; continue remaining scopes; after all scopes complete, return `NewCLIError(1, \"\")` if `hadError` is `true`; exits 1",
+      "requirement_id": "08-REQ-2.E4"
+    },
+    {
+      "id": "08-ERR-6",
+      "condition": "`CLIClientFromCmd` returns an error (e.g. missing or invalid API key)",
+      "behavior": "return the error from `RunE` without calling `DoRequest`; exits non-zero with the client initialization error on stderr",
+      "requirement_id": "08-REQ-2.E6"
+    },
+    {
+      "id": "08-ERR-7",
+      "condition": "A required positional argument is missing (e.g. no key provided to delete, no slug to resolve)",
+      "behavior": "return `NewCLIError(2, message)` from `RunE` without calling `DoRequest`; exits 2 with a usage error message on stderr",
+      "requirement_id": "08-REQ-5.E1"
+    },
+    {
+      "id": "08-ERR-8",
+      "condition": "The API returns 404 for an update or delete on a key that does not exist",
+      "behavior": "call `CLIHandleError(cmd, err)` and return the resulting error from `RunE`; the JSON API error envelope is printed to stderr; exits non-zero; no confirmation message is printed for delete",
+      "requirement_id": "08-REQ-5.E3"
+    },
+    {
+      "id": "08-ERR-9",
+      "condition": "`afc vars resolve` receives an ownership flag alongside the workspace slug argument",
+      "behavior": "return `NewCLIError(2, message)` from `RunE` without calling `DoRequest`; exits 2 with an error message indicating ownership flags are not accepted by this command",
+      "requirement_id": "08-REQ-10.E4"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "apikit",
+      "version": "local (go.mod replace)",
+      "symbols": [
+        {
+          "name": "RootCommand",
+          "import_path": "apikit",
+          "signature": "func RootCommand() *cobra.Command",
+          "notes": "Returns the root Cobra command for the CLI."
+        },
+        {
+          "name": "CLIClientFromCmd",
+          "import_path": "apikit",
+          "signature": "func CLIClientFromCmd(cmd *cobra.Command) (*CLIClient, error)",
+          "notes": "Instantiates an authenticated CLIClient from the Cobra command context using the configured API key or PAT."
+        },
+        {
+          "name": "CLIPrintResult",
+          "import_path": "apikit",
+          "signature": "func CLIPrintResult(cmd *cobra.Command, v any) error",
+          "notes": "Serializes v as JSON and writes it to stdout. Called with the full DoRequest response as-is. Not called for DELETE commands (nil body)."
+        },
+        {
+          "name": "CLIHandleError",
+          "import_path": "apikit",
+          "signature": "func CLIHandleError(cmd *cobra.Command, err error) error",
+          "notes": "Prints the API error envelope to stderr and returns the error for propagation."
+        },
+        {
+          "name": "NewCLIError",
+          "import_path": "apikit",
+          "signature": "func NewCLIError(code int, message string) *CLIError",
+          "notes": "Constructs a CLIError with a specific exit code. Used for exit code 2 (argument errors) and exit code 1 (partial multi-scope failure sentinel)."
+        },
+        {
+          "name": "CLIClient.DoRequest",
+          "import_path": "apikit",
+          "signature": "func (c *CLIClient) DoRequest(ctx context.Context, method, path string, body any) (any, error)",
+          "notes": "Executes an HTTP request against the hub REST API. Returns nil body for 204 No Content responses."
+        }
+      ]
+    }
+  ]
+}
