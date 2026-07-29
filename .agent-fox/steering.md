@@ -1,77 +1,57 @@
 # Steering Directives
 
-## Authentication and Authorization in API Handlers
+## Authentication and Authorization
 
-All HTTP handlers in this project authenticate via apikit's middleware, which
-validates Bearer tokens and injects `*apikit.AuthInfo` into the request
-context. Handlers must use apikit's auth types directly — never define local
-auth structs, credential-type constants, or bridge/wrapper functions.
+All HTTP handlers authenticate via apikit's middleware (mounted by apikit's
+server bootstrap, not by handler packages), which validates Bearer tokens
+and injects `*apikit.AuthInfo` into the request context.
 
-### Rules
+**Core rules:**
 
-1. **Use `apikit.GetAuthInfo(c)` to retrieve auth state.** Returns `nil` when
-   no valid credential is present. Never read auth from Echo's `c.Get()` or
-   define your own context keys.
+- Call `apikit.GetAuthInfo(c)` to retrieve auth state (returns `nil` when
+  unauthenticated). Never use `c.Get()` or define custom context keys.
+- Use `*apikit.AuthInfo` everywhere -- in handler logic, function signatures,
+  and tests. Never define local auth structs, credential-type constants, or
+  wrapper functions.
+- Credential types are `"admin_token"` (full access), `"api_key"` (full user
+  access), and `"pat"` (scoped). Only PATs need permission checks via
+  `slices.Contains(auth.Permissions, "resource:action")`.
+- In tests, inject auth with `apikit.SetAuthInfo(c, &apikit.AuthInfo{...})`.
+  Never use `c.Set()` with a custom key.
+- Define standalone auth helpers (`isAdmin`, `isPAT`, `hasScope`, and
+  domain-specific permission helpers) as functions taking `*apikit.AuthInfo`,
+  not methods on local structs. See reference implementations for the pattern.
 
-2. **Use `*apikit.AuthInfo` as-is.** Do not define package-local `AuthInfo`
-   structs, `CredentialType` enums, or conversion functions. The canonical
-   type is `apikit.AuthInfo` (aliased from `authctx.AuthInfo`).
+**Reference implementations:**
 
-3. **Check credential types with string constants on `auth.CredentialType`:**
-   - `"admin_token"` — admin token (full access, no user identity)
-   - `"api_key"` — user API key (implicit full access for the user)
-   - `"pat"` — personal access token (scoped permissions)
+- `internal/workspace/auth.go` + `internal/workspace/handlers.go`
 
-4. **Check PAT permissions via `auth.Permissions` (a `[]string`).** Admin
-   tokens and API keys have implicit full access — only PATs need scope
-   checks. Use `slices.Contains` or a local `hasScope` helper.
+## Library Reuse
 
-5. **In tests, inject auth with `apikit.SetAuthInfo(c, &apikit.AuthInfo{...})`.**
-   Never use `c.Set()` with a custom key. Test helper functions like
-   `adminAuth()`, `userAuth()`, `patAuth()` must return `*apikit.AuthInfo`.
+Before implementing any functionality, check whether it already exists:
 
-### Handler Pattern
+1. **apikit** (`../apikit`) provides: server bootstrap and lifecycle, auth
+   middleware, `WriteAPIError` error envelope, ETag support, timestamp
+   utilities (`NowUTC`, `FormatUTC`, `ParseUTC`), database helpers
+   (`(*DB).WithTx`, sentinel errors), CLI scaffolding (Cobra commands,
+   `CLIClient`), SDK client with generics, and all shared domain types.
+2. **go.mod dependencies** -- check existing imports before adding new ones.
+3. **Standard library** -- prefer `net/http`, `slices`, `encoding/json`, etc.
+   over third-party alternatives.
 
-Every authenticated handler follows this structure:
+Never reimplement what apikit provides. Common violations to avoid:
 
-```go
-func handleFoo() echo.HandlerFunc {
-    return func(c echo.Context) error {
-        auth := apikit.GetAuthInfo(c)
-        if auth == nil {
-            return respondError(c, http.StatusUnauthorized, "authentication required")
-        }
-        if isPAT(auth) && !canFooWrite(auth) {
-            return respondError(c, http.StatusForbidden, "insufficient permission scope")
-        }
-        // ... handler logic using auth.UserID, isAdmin(auth), etc.
-    }
-}
-```
+- Use `apikit.WriteAPIError()`, not `c.JSON()` with a hand-built error map.
+- Use `apikit.NowUTC()` / `apikit.FormatUTC()`, not `time.Now().UTC().Format(...)`.
+- Use apikit's auth middleware, not custom credential resolution and hashing.
+- Use `apikit.SetETag()` / `apikit.CheckETag()` for conditional GET support.
 
-### Permission Helper Pattern
+## Documentation Freshness
 
-Define standalone functions that take `*apikit.AuthInfo`, not methods on a
-local struct. Group them at the top of your handlers file:
-
-```go
-func isAdmin(auth *apikit.AuthInfo) bool { return auth.CredentialType == "admin_token" }
-func isPAT(auth *apikit.AuthInfo) bool   { return auth.CredentialType == "pat" }
-
-func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
-    for _, s := range scopes {
-        if slices.Contains(auth.Permissions, s) {
-            return true
-        }
-    }
-    return false
-}
-
-func canFooRead(auth *apikit.AuthInfo) bool  { return hasScope(auth, "foo:read", "foo:manage") }
-func canFooWrite(auth *apikit.AuthInfo) bool { return hasScope(auth, "foo:write", "foo:manage") }
-```
-
-### Reference implementations
-
-- `internal/secrets/handlers.go` — secrets and variables handlers
-- `internal/workspace/auth.go` + `internal/workspace/handlers.go` — workspace handlers
+| What changed | Update |
+|---|---|
+| REST endpoints added/changed/removed | `docs/api.md` |
+| CLI commands or flags added/changed | `docs/cli.md` |
+| Permission scopes added/changed | `docs/permissions.md` |
+| Config keys or env vars added/changed | `docs/configuration.md` |
+| Setup, quickstart, or architecture changed | `README.md` |
