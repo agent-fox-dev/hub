@@ -9,6 +9,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
+	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
@@ -54,9 +55,15 @@ func main() {
 	// (04-REQ-10.1). MountWorkspaceHandlers calls MountHandlers internally.
 	server.OnAfterUserCreate(workspace.CreatePersonalOrg)
 
+	// Collect extra permission scopes from all modules.
+	var extraPerms []apikit.Permission
+	extraPerms = append(extraPerms, gitserver.GitPermissions()...)
+	extraPerms = append(extraPerms, secrets.Permissions()...)
+
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
-	// workspace handlers with workspace and git permission scopes registered.
-	if err := workspace.MountWorkspaceHandlers(server, database, gitserver.GitPermissions()...); err != nil {
+	// workspace handlers with workspace, git, secrets, and variables
+	// permission scopes registered.
+	if err := workspace.MountWorkspaceHandlers(server, database, extraPerms...); err != nil {
 		log.Fatal(err)
 	}
 
