@@ -57,6 +57,34 @@ func openTestDB(t *testing.T) *sql.DB {
 		}
 	}
 
+	// Create secrets and variables tables for cascade deletion (07-REQ-17).
+	// In production these are created by secrets.InitSchema at startup.
+	svSchemaSQL := []string{
+		`CREATE TABLE IF NOT EXISTS secrets (
+			owner_type TEXT NOT NULL CHECK(owner_type IN ('user', 'org', 'workspace')),
+			owner_id   TEXT NOT NULL,
+			key        TEXT NOT NULL,
+			value      TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (owner_type, owner_id, key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS variables (
+			owner_type TEXT NOT NULL CHECK(owner_type IN ('user', 'org', 'workspace')),
+			owner_id   TEXT NOT NULL,
+			key        TEXT NOT NULL,
+			value      TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (owner_type, owner_id, key)
+		)`,
+	}
+	for _, stmt := range svSchemaSQL {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("failed to create secrets/variables schema: %v", err)
+		}
+	}
+
 	return db
 }
 

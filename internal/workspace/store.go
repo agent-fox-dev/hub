@@ -193,9 +193,17 @@ func reactivateWorkspaceDB(db *sql.DB, slug string) (*Workspace, error) {
 	return getWorkspaceBySlug(db, slug)
 }
 
-// deleteWorkspace physically removes a workspace row from the workspaces table.
+// deleteWorkspace physically removes a workspace row and cascade-deletes all
+// associated secrets and variables within a single database transaction
+// (07-REQ-17.1, 07-REQ-17.2).
 func deleteWorkspace(db *sql.DB, slug string) error {
-	result, err := db.Exec(`DELETE FROM workspaces WHERE slug = ?`, slug)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete workspace %q: begin tx: %w", slug, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(`DELETE FROM workspaces WHERE slug = ?`, slug)
 	if err != nil {
 		return fmt.Errorf("delete workspace %q: %w", slug, err)
 	}
@@ -205,6 +213,18 @@ func deleteWorkspace(db *sql.DB, slug string) error {
 	}
 	if affected == 0 {
 		return fmt.Errorf("workspace %q not found", slug)
+	}
+
+	// Cascade-delete associated secrets and variables (07-REQ-17.1).
+	if _, err := tx.Exec(`DELETE FROM secrets WHERE owner_type = 'workspace' AND owner_id = ?`, slug); err != nil {
+		return fmt.Errorf("delete workspace %q secrets: %w", slug, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM variables WHERE owner_type = 'workspace' AND owner_id = ?`, slug); err != nil {
+		return fmt.Errorf("delete workspace %q variables: %w", slug, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete workspace %q: commit: %w", slug, err)
 	}
 	return nil
 }
