@@ -9,9 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
 // OrgMembershipCheckFunc is the signature for org membership checks.
@@ -117,6 +121,12 @@ type createWorkspaceRequest struct {
 	OrgID       *string `json:"org_id"`
 	DisplayName *string `json:"display_name"` // nullable: nil or empty → slug
 	Description *string `json:"description"`  // nullable: nil → ""
+
+	// Optional git credential fields (09-REQ-2.1).
+	// PAT and username/password are mutually exclusive.
+	GitPAT      *string `json:"git_pat,omitempty"`
+	GitUsername  *string `json:"git_username,omitempty"`
+	GitPassword *string `json:"git_password,omitempty"`
 }
 
 // normalizeDisplayName returns the display name to store. If input is nil or
@@ -186,6 +196,68 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
 
+		// 09-REQ-7.1: Capture credential values and zero out the fields on
+		// the struct immediately after binding — before any logging can access
+		// the struct. This ensures credential values never appear in logs
+		// regardless of middleware capabilities.
+		//
+		// Track whether each field was present in JSON (pointer non-nil)
+		// separately from the field's string value. An empty string ("") is
+		// present-but-empty, which is an error (09-REQ-2.E1/E2).
+		var gitPAT, gitUsername, gitPassword string
+		providedPAT := req.GitPAT != nil
+		providedUsername := req.GitUsername != nil
+		providedPassword := req.GitPassword != nil
+		if providedPAT {
+			gitPAT = *req.GitPAT
+			req.GitPAT = nil
+		}
+		if providedUsername {
+			gitUsername = *req.GitUsername
+			req.GitUsername = nil
+		}
+		if providedPassword {
+			gitPassword = *req.GitPassword
+			req.GitPassword = nil
+		}
+		hasCreds := providedPAT || providedUsername || providedPassword
+
+		// ---- Credential structural validation (09-REQ-2) ----
+
+		// 09-REQ-2.E1 / 09-REQ-2.E2: Reject empty credential values.
+		// A JSON field present as "" (empty string) is invalid.
+		if providedPAT && gitPAT == "" {
+			return respondError(c, http.StatusBadRequest, "git_pat must not be empty")
+		}
+		if providedUsername && gitUsername == "" {
+			return respondError(c, http.StatusBadRequest, "git_username must not be empty")
+		}
+		if providedPassword && gitPassword == "" {
+			return respondError(c, http.StatusBadRequest, "git_password must not be empty")
+		}
+
+		// 09-REQ-2.2 / 09-REQ-2.E3: Mutual exclusion — PAT and
+		// username/password cannot be provided together.
+		if providedPAT && (providedUsername || providedPassword) {
+			return respondError(c, http.StatusBadRequest,
+				"git_pat and git_username/git_password are mutually exclusive")
+		}
+
+		// 09-REQ-2.3: Pair completeness — username and password must both
+		// be present or both absent.
+		if providedUsername != providedPassword {
+			return respondError(c, http.StatusBadRequest,
+				"git_username and git_password must both be provided together")
+		}
+
+		// 09-REQ-2.4: HTTPS requirement — credentials require an https:// URL.
+		// This check runs before general git_url validation to ensure the
+		// spec-required error message is returned.
+		if hasCreds && !strings.HasPrefix(req.GitURL, "https://") {
+			return respondError(c, http.StatusBadRequest,
+				"git credentials require an HTTPS git_url")
+		}
+
 		// Validate slug.
 		if err := validateSlug(req.Slug); err != nil {
 			return respondError(c, http.StatusBadRequest, "invalid slug: "+err.Error())
@@ -213,6 +285,34 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 		description := normalizeDescription(req.Description)
 		if len(description) > 1024 {
 			return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
+		}
+
+		// ---- Credential validation via ls-remote (09-REQ-3) ----
+
+		if hasCreds && validateCredentialsFn != nil {
+			// Construct the appropriate BasicAuth for the credential type.
+			var authMethod *githttp.BasicAuth
+			if providedPAT {
+				// 09-REQ-3.E4: PAT uses "x-token-auth" as the username.
+				authMethod = &githttp.BasicAuth{
+					Username: "x-token-auth",
+					Password: gitPAT,
+				}
+			} else {
+				authMethod = &githttp.BasicAuth{
+					Username: gitUsername,
+					Password: gitPassword,
+				}
+			}
+
+			// 09-REQ-3.1: Validate credentials before any database operation.
+			if err := validateCredentialsFn(c.Request().Context(), req.GitURL, authMethod); err != nil {
+				// 09-REQ-3.2 / 09-REQ-7.2: Log the raw error server-side at
+				// ERROR level but return only a sanitised message to the client.
+				log.Printf("ERROR: credential validation failed for %s: %v", req.GitURL, err)
+				return respondError(c, http.StatusBadRequest,
+					fmt.Sprintf("credential validation failed for %s: unable to authenticate", req.GitURL))
+			}
 		}
 
 		// Validate org_id if provided, or auto-assign personal org if omitted.
@@ -265,6 +365,36 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 				return respondError(c, http.StatusConflict, "workspace with slug '"+req.Slug+"' already exists")
 			}
 			return respondError(c, http.StatusInternalServerError, "failed to create workspace")
+		}
+
+		// ---- Atomic credential storage (09-REQ-4) ----
+
+		if hasCreds {
+			var entries []secrets.EntryInput
+			if providedPAT {
+				entries = append(entries, secrets.EntryInput{Key: "GIT_PAT", Value: gitPAT})
+			} else {
+				entries = append(entries, secrets.EntryInput{Key: "GIT_USERNAME", Value: gitUsername})
+				entries = append(entries, secrets.EntryInput{Key: "GIT_PASSWORD", Value: gitPassword})
+			}
+
+			store := secrets.NewStore(db)
+			if _, err := store.CreateSecrets("workspace", ws.Slug, entries); err != nil {
+				// 09-REQ-4.2: CreateSecrets failed after workspace INSERT.
+				// Issue a compensating DELETE to undo the workspace row.
+				// Use a direct DELETE on the workspaces table rather than
+				// deleteWorkspace() which cascade-deletes secrets/variables
+				// and would fail if the secrets table is unavailable.
+				log.Printf("ERROR: CreateSecrets failed for workspace %q: %v", ws.Slug, err)
+
+				if _, delErr := db.Exec("DELETE FROM workspaces WHERE slug = ?", ws.Slug); delErr != nil {
+					// 09-REQ-4.3 / 09-REQ-7.E2: Both operations failed.
+					// Log at CRITICAL level with the slug but no credential values.
+					log.Printf("CRITICAL: compensating DELETE failed for workspace %q: %v", ws.Slug, delErr)
+				}
+
+				return respondError(c, http.StatusInternalServerError, "failed to store credentials")
+			}
 		}
 
 		// Enqueue a clone job for the newly created workspace.

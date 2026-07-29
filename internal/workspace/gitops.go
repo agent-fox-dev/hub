@@ -54,6 +54,7 @@ func InitCloneQueue(ctx context.Context, db *sql.DB, workspaceRoot string, worke
 	cloneFn = defaultCloneFn
 	archiveOpenAndPushFn = defaultArchiveOpenAndPushFn
 	archiveHeadFn = defaultArchiveHeadFn
+	validateCredentialsFn = defaultValidateCredentialsFn
 	defaultWorkspaceRoot = workspaceRoot
 	defaultQueue = NewJobQueue(ctx, db, workspaceRoot, workers)
 }
