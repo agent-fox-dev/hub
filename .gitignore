@@ -24,4 +24,4 @@ prompts.md
 admin_token
 **/config.toml
 .env
-secrets/
+/secrets/
