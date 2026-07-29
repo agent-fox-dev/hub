@@ -1,10 +1,14 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -503,6 +507,12 @@ func TestAtomicStorage_HappyPath_PAT(t *testing.T) {
 	}
 	defer func() { validateCredentialsFn = origFn }()
 
+	// Set up a test job queue to verify clone job enqueue.
+	q := &JobQueue{jobs: make(chan CloneJob, 10)}
+	oldQueue := defaultQueue
+	defaultQueue = q
+	defer func() { defaultQueue = oldQueue }()
+
 	body := `{"slug":"my-ws","git_url":"https://github.com/acme/private","git_pat":"ghp_abc123"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 
@@ -535,6 +545,16 @@ func TestAtomicStorage_HappyPath_PAT(t *testing.T) {
 	}
 	if !found {
 		t.Error("secret GIT_PAT not found for workspace 'my-ws'")
+	}
+
+	// Clone job should have been enqueued after successful credential storage.
+	select {
+	case job := <-q.jobs:
+		if job.Slug != "my-ws" {
+			t.Errorf("enqueued job slug = %q; want %q", job.Slug, "my-ws")
+		}
+	default:
+		t.Error("clone job was not enqueued after successful credential storage")
 	}
 }
 
@@ -588,6 +608,12 @@ func TestAtomicStorage_CompensatingDelete_Success(t *testing.T) {
 	}
 	defer func() { validateCredentialsFn = origFn }()
 
+	// Set up a test job queue to verify no clone job is enqueued on failure.
+	q := &JobQueue{jobs: make(chan CloneJob, 10)}
+	oldQueue := defaultQueue
+	defaultQueue = q
+	defer func() { defaultQueue = oldQueue }()
+
 	// To simulate CreateSecrets failure, we drop the secrets table so that
 	// the INSERT into secrets fails while the workspace INSERT already succeeded.
 	// This is a crude but effective way to force the error path.
@@ -608,6 +634,14 @@ func TestAtomicStorage_CompensatingDelete_Success(t *testing.T) {
 	if ws != nil {
 		t.Error("workspace should have been deleted by compensating DELETE")
 	}
+
+	// Clone job must NOT have been enqueued.
+	select {
+	case job := <-q.jobs:
+		t.Errorf("clone job was unexpectedly enqueued for slug %q after CreateSecrets failure", job.Slug)
+	default:
+		// Good — no job enqueued.
+	}
 }
 
 // TS-09-18: POST /workspaces handler emits a CRITICAL log entry with the
@@ -615,31 +649,53 @@ func TestAtomicStorage_CompensatingDelete_Success(t *testing.T) {
 // compensating DELETE fail.
 // Requirement: 09-REQ-4.3
 func TestAtomicStorage_CompensatingDelete_BothFail(t *testing.T) {
-	// This test verifies that when both CreateSecrets and the compensating
-	// DELETE fail, the handler returns HTTP 500.
-	// The CRITICAL log assertion is best done by capturing log output.
-	// For now we verify the HTTP 500 response.
-
 	env := newTestEnv(t)
 	auth := userAuth("alice-id")
 
-	origFn := validateCredentialsFn
+	// Capture log output to verify CRITICAL log emission.
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	origValidateFn := validateCredentialsFn
 	validateCredentialsFn = func(ctx context.Context, gitURL string, authMethod transport.AuthMethod) error {
 		return nil
 	}
-	defer func() { validateCredentialsFn = origFn }()
+	defer func() { validateCredentialsFn = origValidateFn }()
 
-	// Drop both secrets table and corrupt the ability to delete workspaces.
-	// We drop the secrets table to force CreateSecrets to fail, and we'll
-	// rely on the implementation to attempt a compensating DELETE.
-	// Even if the DELETE succeeds, the overall result is HTTP 500.
+	// Stub compensatingDeleteFn to simulate the DELETE also failing
+	// (09-REQ-4.3: both CreateSecrets and compensating DELETE fail).
+	origDeleteFn := compensatingDeleteFn
+	compensatingDeleteFn = func(db *sql.DB, slug string) error {
+		return fmt.Errorf("connection lost")
+	}
+	defer func() { compensatingDeleteFn = origDeleteFn }()
+
+	// Drop the secrets table to force CreateSecrets to fail.
 	_, _ = env.db.Exec("DROP TABLE IF EXISTS secrets")
 
 	body := `{"slug":"my-ws","git_url":"https://github.com/acme/private","git_pat":"ghp_abc123"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 
+	// Must return HTTP 500.
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d; want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+
+	// CRITICAL log must be emitted containing the workspace slug.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "CRITICAL") {
+		t.Error("expected CRITICAL log entry when both CreateSecrets and compensating DELETE fail")
+	}
+	if !strings.Contains(logOutput, "my-ws") {
+		t.Error("CRITICAL log entry must contain the workspace slug 'my-ws'")
+	}
+
+	// The workspace row should still exist (orphaned) since the
+	// compensating DELETE failed.
+	ws, _ := getWorkspaceBySlug(env.db, "my-ws")
+	if ws == nil {
+		t.Error("workspace 'my-ws' should still exist as an orphaned row when compensating DELETE fails")
 	}
 }
 

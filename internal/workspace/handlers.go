@@ -382,12 +382,14 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			if _, err := store.CreateSecrets("workspace", ws.Slug, entries); err != nil {
 				// 09-REQ-4.2: CreateSecrets failed after workspace INSERT.
 				// Issue a compensating DELETE to undo the workspace row.
-				// Use a direct DELETE on the workspaces table rather than
-				// deleteWorkspace() which cascade-deletes secrets/variables
-				// and would fail if the secrets table is unavailable.
+				// Uses compensatingDeleteFn (a direct DELETE on the workspaces
+				// table rather than deleteWorkspace() which cascade-deletes
+				// secrets/variables and would fail if the secrets table is
+				// unavailable). Tests can replace compensatingDeleteFn to
+				// simulate the double-failure path (09-REQ-4.3).
 				log.Printf("ERROR: CreateSecrets failed for workspace %q: %v", ws.Slug, err)
 
-				if _, delErr := db.Exec("DELETE FROM workspaces WHERE slug = ?", ws.Slug); delErr != nil {
+				if delErr := compensatingDeleteFn(db, ws.Slug); delErr != nil {
 					// 09-REQ-4.3 / 09-REQ-7.E2: Both operations failed.
 					// Log at CRITICAL level with the slug but no credential values.
 					log.Printf("CRITICAL: compensating DELETE failed for workspace %q: %v", ws.Slug, delErr)
