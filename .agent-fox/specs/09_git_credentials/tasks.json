@@ -49,7 +49,7 @@
             "09-REQ-1.1",
             "09-REQ-1.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -72,7 +72,7 @@
             "09-REQ-1.5",
             "09-REQ-1.6"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -97,7 +97,7 @@
             "09-REQ-2.2",
             "09-REQ-2.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -125,7 +125,7 @@
             "09-REQ-3.4",
             "09-REQ-3.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -150,7 +150,7 @@
             "09-REQ-4.3",
             "09-REQ-4.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -159,7 +159,7 @@
           "details": [],
           "test_spec_refs": [],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -297,7 +297,7 @@
             "Perform case-insensitive key lookup using `LOWER(key) = LOWER(?)` in the SQL query",
             "Base64-decode the stored value before returning it as plaintext",
             "Return `NotFoundError` (existing type) when no row matches the given ownerType, ownerID, and key",
-            "This method is internal-only \u2014 do NOT expose it via any HTTP endpoint"
+            "This method is internal-only — do NOT expose it via any HTTP endpoint"
           ],
           "test_spec_refs": [
             "TS-09-20",
@@ -343,7 +343,7 @@
           "GetSecretValue store tests pass: `go test ./internal/secrets/... -run 'TestGetSecretValue' -count=1 -v`",
           "All existing secrets tests still pass: `go test ./internal/secrets/... -count=1`",
           "No linter warnings: `go vet ./internal/secrets/...`",
-          "09-REQ-5.1, 09-REQ-5.2, 09-REQ-5.3 acceptance criteria met \u2014 case-insensitive lookup, base64 decode, NotFoundError returned"
+          "09-REQ-5.1, 09-REQ-5.2, 09-REQ-5.3 acceptance criteria met — case-insensitive lookup, base64 decode, NotFoundError returned"
         ]
       }
     },
@@ -424,7 +424,7 @@
           "id": "4.4",
           "title": "Implement credential validation call and sanitised error response",
           "details": [
-            "After API validation passes and credentials are present, construct the appropriate `transport.AuthMethod`: PAT \u2192 `&http.BasicAuth{Username: \"x-token-auth\", Password: *req.GitPAT}`; username/password \u2192 `&http.BasicAuth{Username: *req.GitUsername, Password: *req.GitPassword}`",
+            "After API validation passes and credentials are present, construct the appropriate `transport.AuthMethod`: PAT → `&http.BasicAuth{Username: \"x-token-auth\", Password: *req.GitPAT}`; username/password → `&http.BasicAuth{Username: *req.GitUsername, Password: *req.GitPassword}`",
             "Call `ValidateCredentialsFuncType(ctx, req.GitURL, authMethod)`",
             "On any error (including `context.DeadlineExceeded`), log the raw go-git error at ERROR level server-side, then return HTTP 400 with body `{\"error\": \"credential validation failed for <git_url>: unable to authenticate\"}`",
             "If no credentials are provided, skip the validation call entirely"
@@ -462,7 +462,7 @@
           "Handler validation tests pass: `go test ./internal/workspace/... -run 'TestHandlerCredential|TestValidateCredentials' -count=1 -v`",
           "All existing workspace handler tests still pass: `go test ./internal/workspace/... -count=1`",
           "No linter warnings: `go vet ./internal/workspace/...`",
-          "09-REQ-2.1\u20132.4 and 09-REQ-3.1\u20133.5 acceptance criteria met",
+          "09-REQ-2.1–2.4 and 09-REQ-3.1–3.5 acceptance criteria met",
           "Confirm `ValidateCredentialsFuncType` is injected and not hardcoded in the handler"
         ]
       }
@@ -477,7 +477,7 @@
           "title": "Store credentials as workspace-scoped secrets after validation",
           "details": [
             "After credential validation passes, create the workspace row in the database",
-            "Call `store.CreateSecrets(\"workspace\", slug, entries)` where entries map: PAT \u2192 `[{Key: \"GIT_PAT\", Value: *req.GitPAT}]`; username/password \u2192 `[{Key: \"GIT_USERNAME\", Value: *req.GitUsername}, {Key: \"GIT_PASSWORD\", Value: *req.GitPassword}]`",
+            "Call `store.CreateSecrets(\"workspace\", slug, entries)` where entries map: PAT → `[{Key: \"GIT_PAT\", Value: *req.GitPAT}]`; username/password → `[{Key: \"GIT_USERNAME\", Value: *req.GitUsername}, {Key: \"GIT_PASSWORD\", Value: *req.GitPassword}]`",
             "If no credentials are provided, skip the `CreateSecrets` call"
           ],
           "test_spec_refs": [
@@ -498,7 +498,7 @@
             "If `CreateSecrets` returns an error after the workspace row has been inserted, issue a compensating `DELETE` on the workspace row using the workspace slug",
             "If the compensating DELETE succeeds, return HTTP 500 to the client",
             "If the compensating DELETE also fails, emit a CRITICAL-level structured log entry including the workspace slug (e.g. `logger.Critical(\"compensating DELETE failed\", \"slug\", slug, \"error\", err)`), then return HTTP 500 to the client",
-            "Do NOT implement retry logic or a reconciliation job \u2014 the CRITICAL log is the operator signal"
+            "Do NOT implement retry logic or a reconciliation job — the CRITICAL log is the operator signal"
           ],
           "test_spec_refs": [
             "TS-09-17",
@@ -545,7 +545,7 @@
           "Atomic storage tests pass: `go test ./internal/workspace/... -run 'TestAtomicStorage' -count=1 -v`",
           "All existing workspace tests still pass: `go test ./internal/workspace/... -count=1`",
           "No linter warnings: `go vet ./internal/workspace/...`",
-          "09-REQ-4.1\u20134.4 acceptance criteria met \u2014 compensating DELETE emits CRITICAL log on double failure, HTTP 500 returned in both failure cases"
+          "09-REQ-4.1–4.4 acceptance criteria met — compensating DELETE emits CRITICAL log on double failure, HTTP 500 returned in both failure cases"
         ]
       }
     },
@@ -603,7 +603,7 @@
           "title": "Apply same credential lookup to reclone on reactivation",
           "details": [
             "Locate the reclone path triggered by workspace reactivation in the clone worker or reactivation handler",
-            "Apply the same credential lookup logic (GIT_PAT \u2192 GIT_USERNAME/GIT_PASSWORD \u2192 nil) before calling `CloneFuncType`",
+            "Apply the same credential lookup logic (GIT_PAT → GIT_USERNAME/GIT_PASSWORD → nil) before calling `CloneFuncType`",
             "Verify that credentials persisted in the secrets table across archive/reactivate cycles are correctly retrieved"
           ],
           "test_spec_refs": [
@@ -631,7 +631,7 @@
           "Clone worker credential tests pass: `go test ./internal/workspace/... -run 'TestWorkerCredential' -count=1 -v`",
           "All existing clone worker tests still pass: `go test ./internal/workspace/... -count=1`",
           "No linter warnings: `go vet ./internal/workspace/...`",
-          "09-REQ-6.1\u20136.4 acceptance criteria met \u2014 PAT, username/password, and no-credentials paths all produce correct `transport.AuthMethod` values",
+          "09-REQ-6.1–6.4 acceptance criteria met — PAT, username/password, and no-credentials paths all produce correct `transport.AuthMethod` values",
           "Confirm all existing call sites of `CloneFuncType` compile with the new signature"
         ]
       }
@@ -670,7 +670,7 @@
             "If any credential flag is provided and `--git-url` does not start with `https://`, return a cobra error",
             "When PAT is provided, include `git_pat` in the JSON request body sent to `POST /workspaces`",
             "When username/password are provided, include `git_username` and `git_password` in the JSON request body",
-            "Delegate all API error responses (including HTTP 400 from credential validation) to `apikit.CLIHandleError` \u2014 no special-case rendering"
+            "Delegate all API error responses (including HTTP 400 from credential validation) to `apikit.CLIHandleError` — no special-case rendering"
           ],
           "test_spec_refs": [
             "TS-09-4",
@@ -702,7 +702,7 @@
           "CLI credential flag tests pass: `go test ./internal/workspace/... -run 'TestCLICredential' -count=1 -v`",
           "All existing CLI workspace tests still pass: `go test ./... -count=1`",
           "No linter warnings: `go vet ./...`",
-          "09-REQ-1.1\u20131.6 acceptance criteria met \u2014 mutual exclusion, pair completeness, HTTPS-only, correct request body serialisation"
+          "09-REQ-1.1–1.6 acceptance criteria met — mutual exclusion, pair completeness, HTTPS-only, correct request body serialisation"
         ]
       }
     },
@@ -800,7 +800,7 @@
           "id": "9.1",
           "title": "Trace execution paths from CLI through API to secrets store",
           "details": [
-            "Verify that `afc workspace create --git-pat` \u2192 CLI flag parsing \u2192 `POST /workspaces` JSON body \u2192 Echo handler binding \u2192 API validation \u2192 `ValidateCredentialsFuncType` \u2192 `CreateSecrets` \u2192 clone job enqueue is fully wired with no stubs remaining",
+            "Verify that `afc workspace create --git-pat` → CLI flag parsing → `POST /workspaces` JSON body → Echo handler binding → API validation → `ValidateCredentialsFuncType` → `CreateSecrets` → clone job enqueue is fully wired with no stubs remaining",
             "Verify that `afc workspace create --git-username --git-password` follows the same path with `GIT_USERNAME`/`GIT_PASSWORD` secret keys",
             "Confirm `ValidateCredentialsFuncType` is set to the production `defaultValidateCredentialsFn` in the server wiring (not a stub or nil)",
             "Confirm `CloneFuncType` is set to `defaultCloneFn` in the server wiring and the new `auth` parameter is passed through"
@@ -856,7 +856,7 @@
           "id": "9.4",
           "title": "Cross-spec entry point verification",
           "details": [
-            "Verify that the extended `CloneFuncType` (spec 05 dependency) is called from the production clone worker with the new `auth` parameter \u2014 not just defined and tested",
+            "Verify that the extended `CloneFuncType` (spec 05 dependency) is called from the production clone worker with the new `auth` parameter — not just defined and tested",
             "Verify that `CreateSecrets` (spec 07 dependency) is called from the `POST /workspaces` handler in production code",
             "Verify that `GetSecretValue` (new method on spec 07's Store) is called from the production clone worker",
             "Confirm `MountHandlers` wires the updated handler with `ValidateCredentialsFuncType` set to the production implementation"
@@ -914,9 +914,9 @@
           "Full test suite passes with no failures: `go test ./... -count=1`",
           "No linter warnings: `go vet ./...`",
           "No stub markers found: `grep -rn 'panic(\"not implemented\")' --include='*.go' internal/` returns no results in credential-related files",
-          "ValidateCredentialsFuncType is set to production implementation in MountHandlers wiring \u2014 confirmed by code inspection",
-          "CloneFuncType auth parameter is passed through from clone worker to defaultCloneFn \u2014 confirmed by code inspection",
-          "GetSecretValue is called from production clone worker code \u2014 confirmed by grep: `grep -rn 'GetSecretValue' --include='*.go' internal/workspace/`",
+          "ValidateCredentialsFuncType is set to production implementation in MountHandlers wiring — confirmed by code inspection",
+          "CloneFuncType auth parameter is passed through from clone worker to defaultCloneFn — confirmed by code inspection",
+          "GetSecretValue is called from production clone worker code — confirmed by grep: `grep -rn 'GetSecretValue' --include='*.go' internal/workspace/`",
           "All spec tests TS-09-1 through TS-09-29 pass: `go test ./internal/workspace/... ./internal/secrets/... -count=1 -v`",
           "09-REQ-1 through 09-REQ-8 all acceptance criteria confirmed met"
         ]
