@@ -79,22 +79,8 @@ func TestCLIWorkspace_CreateWithoutOrg_NoOrgIDInBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 func TestCLIWorkspace_CreateWithOrg_OrgIDInBody(t *testing.T) {
 	var capturedBody map[string]any
-	resolvedOrgID := "team-org-uuid-456"
-
-	orgs := map[string]orgResp{
-		"my-team": {ID: resolvedOrgID, Slug: "my-team"},
-	}
 
 	mux := http.NewServeMux()
-
-	// GET /api/v1/user/orgs — list user orgs (used by CLIResolveOrgSlug).
-	mux.HandleFunc("GET /api/v1/user/orgs", func(w http.ResponseWriter, r *http.Request) {
-		var result []orgResp
-		for _, org := range orgs {
-			result = append(result, org)
-		}
-		writeJSON(w, http.StatusOK, result)
-	})
 
 	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
 		bodyBytes, err := io.ReadAll(r.Body)
@@ -130,21 +116,21 @@ func TestCLIWorkspace_CreateWithOrg_OrgIDInBody(t *testing.T) {
 		t.Fatalf("command returned error: %v", err)
 	}
 
-	// Assert: the CLI request body should contain 'org_id' with the resolved UUID.
+	// Assert: the CLI request body should contain 'org_id' with the slug passed via --org.
 	orgIDVal, hasOrgID := capturedBody["org_id"]
 	if !hasOrgID {
 		t.Fatal("request body is missing 'org_id'; want org_id to be present when --org is specified")
 	}
-	if orgIDVal != resolvedOrgID {
-		t.Errorf("request body org_id = %v; want %q", orgIDVal, resolvedOrgID)
+	if orgIDVal != "my-team" {
+		t.Errorf("request body org_id = %v; want %q", orgIDVal, "my-team")
 	}
 
-	// Assert: the response JSON should have the same org_id.
+	// Assert: the response JSON should echo back the same org_id.
 	var ws workspaceResp
 	if jsonErr := json.Unmarshal([]byte(stdout), &ws); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", jsonErr, stdout)
 	}
-	if ws.OrgID == nil || *ws.OrgID != resolvedOrgID {
-		t.Errorf("response org_id = %v; want %q", ws.OrgID, resolvedOrgID)
+	if ws.OrgID == nil || *ws.OrgID != "my-team" {
+		t.Errorf("response org_id = %v; want %q", ws.OrgID, "my-team")
 	}
 }

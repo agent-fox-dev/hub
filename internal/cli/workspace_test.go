@@ -292,14 +292,11 @@ func TestCLI_WorkspaceCreate_Success(t *testing.T) {
 	}
 }
 
-// TS-01-53: Verify that 'afc workspace create --org <org-slug>' resolves the
-// org slug to a UUID before calling the API and the workspace includes org_id.
+// TS-01-53: Verify that 'afc workspace create --org <org-slug>' passes the
+// org slug directly as org_id in the request body (server-side resolution).
 // Requirement: 01-REQ-11.2
 func TestCLI_WorkspaceCreate_WithOrg(t *testing.T) {
-	orgs := map[string]orgResp{
-		"my-org": {ID: "my-org-uuid", Slug: "my-org"},
-	}
-	server := mockAPIServer(t, make(map[string]workspaceResp), orgs)
+	server := mockAPIServer(t, make(map[string]workspaceResp), nil)
 	defer server.Close()
 
 	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
@@ -313,8 +310,8 @@ func TestCLI_WorkspaceCreate_WithOrg(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(stdout), &ws); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", jsonErr, stdout)
 	}
-	if ws.OrgID == nil || *ws.OrgID != "my-org-uuid" {
-		t.Errorf("org_id = %v; want %q", ws.OrgID, "my-org-uuid")
+	if ws.OrgID == nil || *ws.OrgID != "my-org" {
+		t.Errorf("org_id = %v; want %q", ws.OrgID, "my-org")
 	}
 }
 
@@ -360,11 +357,29 @@ func TestCLI_WorkspaceCreate_MissingFlags(t *testing.T) {
 }
 
 // TS-01-55: Verify that 'afc workspace create --org <nonexistent-slug>' prints
-// an error envelope to stdout and exits 1 without making the workspace create
-// API call.
+// an error envelope to stdout and exits 1 when the server rejects the unknown
+// org identifier.
 // Requirement: 01-REQ-11.4
 func TestCLI_WorkspaceCreate_OrgNotFound(t *testing.T) {
-	server := mockAPIServer(t, make(map[string]workspaceResp), make(map[string]orgResp))
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			OrgID *string `json:"org_id,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResp{})
+			return
+		}
+		if req.OrgID != nil && *req.OrgID == "nonexistent-org" {
+			e := errorResp{}
+			e.Error.Code = http.StatusNotFound
+			e.Error.Message = "organization not found"
+			writeJSON(w, http.StatusNotFound, e)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"slug": "my-ws"})
+	})
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
 	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
@@ -880,74 +895,6 @@ func TestCLI_NoOsExitInLibrary(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walking internal/: %v", err)
-	}
-}
-
-// TS-01-E13: Verify that when org slug resolution returns a success status
-// but with a missing or null org UUID, the CLI treats it as a resolution
-// failure and exits 1 without making the workspace create API call.
-// Requirement: 01-REQ-11.E1
-func TestEdgeCLI_WorkspaceCreate_OrgNullUUID(t *testing.T) {
-	var workspaceCreateCalled bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/user/orgs", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `[{"id":"","slug":"bad-org"}]`)
-	})
-	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
-		workspaceCreateCalled = true
-		w.WriteHeader(http.StatusCreated)
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
-		"--org", "bad-org")
-
-	if err == nil {
-		t.Error("expected error for null org UUID; got nil")
-	}
-	if !hasErrorEnvelope(stdout) {
-		t.Errorf("stdout should contain error envelope; got: %s", stdout)
-	}
-	if workspaceCreateCalled {
-		t.Error("POST /api/v1/workspaces was called; want no API call when org UUID is null")
-	}
-}
-
-// TS-01-E14: Verify that when org slug resolution returns an unexpected data
-// shape, the CLI exits 1 with an error envelope on stdout and does not make
-// the workspace create API call.
-// Requirement: 01-REQ-11.E2
-func TestEdgeCLI_WorkspaceCreate_OrgMalformedResponse(t *testing.T) {
-	var workspaceCreateCalled bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/user/orgs", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"unexpected":"shape","not":"an array"}`)
-	})
-	mux.HandleFunc("POST /api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
-		workspaceCreateCalled = true
-		w.WriteHeader(http.StatusCreated)
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"create", "--git-url", "https://github.com/org/repo", "--slug", "my-ws",
-		"--org", "bad-org")
-
-	if err == nil {
-		t.Error("expected error for malformed org response; got nil")
-	}
-	if !hasErrorEnvelope(stdout) {
-		t.Errorf("stdout should contain error envelope; got: %s", stdout)
-	}
-	if workspaceCreateCalled {
-		t.Error("POST /api/v1/workspaces was called; want no API call when org response is malformed")
 	}
 }
 

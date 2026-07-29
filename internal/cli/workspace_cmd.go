@@ -103,11 +103,7 @@ func newCreateCmd() *cobra.Command {
 			}
 
 			if org != "" {
-				orgID, err := apikit.CLIResolveOrgSlug(cmd.Context(), client, org)
-				if err != nil {
-					return apikit.CLIHandleError(cmd, err)
-				}
-				body["org_id"] = orgID
+				body["org_id"] = org
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces", body)
@@ -185,11 +181,7 @@ func newUpdateCmd() *cobra.Command {
 			if clearOrg {
 				body["org_id"] = nil
 			} else if hasOrg {
-				orgID, err := apikit.CLIResolveOrgSlug(ctx, client, org)
-				if err != nil {
-					return apikit.CLIHandleError(cmd, err)
-				}
-				body["org_id"] = orgID
+				body["org_id"] = org
 			}
 
 			result, err := client.DoRequest(ctx, http.MethodPatch, "/workspaces/"+slug, body)
