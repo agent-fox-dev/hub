@@ -67,6 +67,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Initialise the secrets and variables tables and mount their API
+	// routes. Must run after MountWorkspaceHandlers (which creates the
+	// API group via MountHandlers) and before Start.
+	if err := secrets.InitSchema(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+	if err := secrets.RegisterRoutes(server.APIGroup(), database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+
 	// Mount git smart HTTP handlers on the Echo instance. The git server
 	// registers routes at /git/:org/:slug.git/* outside the API group,
 	// with its own HTTP Basic auth middleware.
