@@ -27,5 +27,23 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.PATCH("/workspaces/:slug/secrets/:key", handleUpdateWorkspaceSecret(store, db))
 	api.DELETE("/workspaces/:slug/secrets/:key", handleDeleteWorkspaceSecret(store, db))
 
+	// Variable routes.
+	api.POST("/user/vars", handleCreateUserVars(store))
+	api.GET("/user/vars", handleListUserVars(store))
+	api.PATCH("/user/vars/:key", handleUpdateUserVar(store))
+	api.DELETE("/user/vars/:key", handleDeleteUserVar(store))
+
+	api.POST("/orgs/:slug/vars", handleCreateOrgVars(store, db))
+	api.GET("/orgs/:slug/vars", handleListOrgVars(store, db))
+	api.PATCH("/orgs/:slug/vars/:key", handleUpdateOrgVar(store, db))
+	api.DELETE("/orgs/:slug/vars/:key", handleDeleteOrgVar(store, db))
+
+	api.POST("/workspaces/:slug/vars", handleCreateWorkspaceVars(store, db))
+	api.GET("/workspaces/:slug/vars", handleListWorkspaceVars(store, db))
+	// Register resolved route before parameterized :key route.
+	api.GET("/workspaces/:slug/vars/resolved", handleResolvedWorkspaceVars(store, db))
+	api.PATCH("/workspaces/:slug/vars/:key", handleUpdateWorkspaceVar(store, db))
+	api.DELETE("/workspaces/:slug/vars/:key", handleDeleteWorkspaceVar(store, db))
+
 	return nil
 }

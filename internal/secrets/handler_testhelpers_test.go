@@ -251,3 +251,17 @@ func parseRawJSONArray(t *testing.T, rec *httptest.ResponseRecorder) []map[strin
 	}
 	return resp
 }
+
+// seedWorkspaceWithOrg inserts a workspace row with an org_id for resolved variable tests.
+func (env *handlerTestEnv) seedWorkspaceWithOrg(t *testing.T, slug, ownerID, orgID string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := env.db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, clone_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'active', ?, '', 'pending', ?, ?)`,
+		slug, "https://github.com/org/repo", ownerID, orgID, slug, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedWorkspaceWithOrg(%q) returned error: %v", slug, err)
+	}
+}

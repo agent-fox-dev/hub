@@ -218,3 +218,89 @@ func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 		return respondError(c, http.StatusNotImplemented, "not implemented")
 	}
 }
+
+// --- User-scoped variable handlers ---
+
+func handleCreateUserVars(store *Store) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleListUserVars(store *Store) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleUpdateUserVar(store *Store) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleDeleteUserVar(store *Store) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+// --- Org-scoped variable handlers ---
+
+func handleCreateOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleListOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleUpdateOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+// --- Workspace-scoped variable handlers ---
+
+func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleListWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleUpdateWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
+
+// --- Resolved variables handler ---
+
+func handleResolvedWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return respondError(c, http.StatusNotImplemented, "not implemented")
+	}
+}

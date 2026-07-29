@@ -34,3 +34,14 @@ type VariableEntry struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
+
+// ResolvedVariableEntry represents a variable in the resolved endpoint response.
+// It includes the Origin field indicating which tier (user, org, workspace)
+// the value was resolved from.
+type ResolvedVariableEntry struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Origin    string `json:"origin"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}

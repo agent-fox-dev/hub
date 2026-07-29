@@ -97,6 +97,15 @@ func seedSecrets(t *testing.T, db *sql.DB, ownerType, ownerID string, count int)
 	}
 }
 
+// seedVariables inserts count variables with sequential keys for the given scope.
+func seedVariables(t *testing.T, db *sql.DB, ownerType, ownerID string, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		key := fmt.Sprintf("VAR_%d", i)
+		seedVariable(t, db, ownerType, ownerID, key, fmt.Sprintf("value_%d", i))
+	}
+}
+
 // seedVariable inserts a variable row directly into the database for test setup.
 // The value is base64-encoded before insertion, mirroring the store's behavior.
 func seedVariable(t *testing.T, db *sql.DB, ownerType, ownerID, key, rawValue string) {
