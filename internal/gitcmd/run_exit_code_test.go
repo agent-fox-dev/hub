@@ -202,8 +202,13 @@ func TestRunExitCode_BinaryNotFound_ExitCodeZero(t *testing.T) {
 // cancellation causes SIGKILL signal termination.
 // Requirement: 10-REQ-3.3
 func TestRunExitCode_ContextCancelled_ReturnsNegativeOneExitCode(t *testing.T) {
-	t.Parallel()
-	workDir := initGitRepo(t)
+	// Cannot use t.Parallel() — t.Setenv modifies process-level env.
+	// Uses a fake slow git to ensure the subprocess is still running when
+	// context is cancelled (real git commands in empty repos complete too fast).
+	fakeDir := fakeSlowGitBin(t)
+	t.Setenv("PATH", fakeDir)
+
+	workDir := t.TempDir()
 	runner := NewRunner(workDir)
 	if runner == nil {
 		t.Skip("NewRunner returned nil — implementation not yet available")
@@ -228,8 +233,13 @@ func TestRunExitCode_ContextCancelled_ReturnsNegativeOneExitCode(t *testing.T) {
 // cancellation.
 // Requirement: 10-REQ-3.3
 func TestRunExitCode_ContextCancelled_ReturnsPartialOutput(t *testing.T) {
-	t.Parallel()
-	workDir := initGitRepo(t)
+	// Cannot use t.Parallel() — t.Setenv modifies process-level env.
+	// Uses a fake slow git to ensure the subprocess is still running when
+	// context is cancelled (real git commands in empty repos complete too fast).
+	fakeDir := fakeSlowGitBin(t)
+	t.Setenv("PATH", fakeDir)
+
+	workDir := t.TempDir()
 	runner := NewRunner(workDir)
 	if runner == nil {
 		t.Skip("NewRunner returned nil — implementation not yet available")
@@ -283,8 +293,13 @@ func TestRunExitCode_ContextAlreadyCancelled_ExitCodeZero(t *testing.T) {
 // -1 when context times out during execution.
 // Requirement: 10-REQ-3.3
 func TestRunExitCode_ContextTimeout_ReturnsError(t *testing.T) {
-	t.Parallel()
-	workDir := initGitRepo(t)
+	// Cannot use t.Parallel() — t.Setenv modifies process-level env.
+	// Uses a fake slow git to ensure the subprocess is still running when
+	// the context deadline expires.
+	fakeDir := fakeSlowGitBin(t)
+	t.Setenv("PATH", fakeDir)
+
+	workDir := t.TempDir()
 	runner := NewRunner(workDir)
 	if runner == nil {
 		t.Skip("NewRunner returned nil — implementation not yet available")
@@ -295,9 +310,7 @@ func TestRunExitCode_ContextTimeout_ReturnsError(t *testing.T) {
 
 	_, _, exitCode, err := runner.RunExitCode(ctx, "log", "--all")
 	if err == nil {
-		// If the command completed before timeout, it's not a failure of
-		// the test contract but the command was too fast. Skip.
-		t.Skip("command completed before timeout — cannot test signal termination")
+		t.Fatal("RunExitCode with timed-out context returned nil error; expected context deadline exceeded")
 	}
 	// When SIGKILL was sent, exitCode should be -1.
 	if exitCode != -1 {

@@ -331,8 +331,13 @@ func TestRun_BinaryNotFound_ReturnsExecError(t *testing.T) {
 // len(stdout) > 0 may be true simultaneously.
 // Requirement: 10-REQ-2.4
 func TestRun_ContextCancellation_ReturnsError(t *testing.T) {
-	t.Parallel()
-	workDir := initGitRepo(t)
+	// Cannot use t.Parallel() — t.Setenv modifies process-level env.
+	// Uses a fake slow git to ensure the subprocess is still running when
+	// context is cancelled (real git commands in empty repos complete too fast).
+	fakeDir := fakeSlowGitBin(t)
+	t.Setenv("PATH", fakeDir)
+
+	workDir := t.TempDir()
 	runner := NewRunner(workDir)
 	if runner == nil {
 		t.Skip("NewRunner returned nil — implementation not yet available")
@@ -344,12 +349,14 @@ func TestRun_ContextCancellation_ReturnsError(t *testing.T) {
 		cancel()
 	}()
 
-	_, _, err := runner.Run(ctx, "log", "--all")
+	stdout, _, err := runner.Run(ctx, "log", "--all")
 	if err == nil {
 		t.Error("Run with cancelled context returned nil error; expected context error")
 	}
-	// Note: both err != nil and len(stdout) >= 0 are valid simultaneously
-	// per 10-REQ-2.E3 — we only assert that err is non-nil.
+	// Both err != nil and len(stdout) > 0 may be true simultaneously
+	// per 10-REQ-2.E3. The fake git writes "partial-stdout\n" before
+	// sleeping, so partial output should be captured.
+	_ = stdout // partial output is valid
 }
 
 // 10-REQ-2.E1: Run with no args invokes 'git' with no subcommand; git prints
@@ -364,7 +371,7 @@ func TestRun_NoArgs_ReturnsGitError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, _, err := runner.Run(ctx)
+	stdout, _, err := runner.Run(ctx)
 	if err == nil {
 		t.Fatal("Run() with no args returned nil error; expected *GitError")
 	}
@@ -374,12 +381,14 @@ func TestRun_NoArgs_ReturnsGitError(t *testing.T) {
 		t.Fatalf("error is not *GitError: %T — %v", err, err)
 	}
 
-	// git with no subcommand should exit non-zero and print usage to stderr.
+	// git with no subcommand should exit non-zero and print usage. Some git
+	// versions write usage to stderr while others write it to stdout. The
+	// implementation correctly captures whatever git sends to each stream.
 	if gitErr.ExitCode == 0 {
 		t.Error("GitError.ExitCode is 0; expected non-zero for bare 'git' invocation")
 	}
-	if len(gitErr.Stderr) == 0 {
-		t.Error("GitError.Stderr is empty; expected git usage message")
+	if len(gitErr.Stderr) == 0 && len(stdout) == 0 {
+		t.Error("Both stdout and GitError.Stderr are empty; expected git usage message in at least one")
 	}
 }
 

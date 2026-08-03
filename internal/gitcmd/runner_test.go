@@ -54,6 +54,24 @@ func fakeGitBin(t *testing.T) string {
 	return dir
 }
 
+// fakeSlowGitBin creates a temporary directory containing a shell script named
+// "git" that writes partial output to stdout and stderr then sleeps for 60
+// seconds. This is used by context cancellation tests to ensure the subprocess
+// is still running when the context is cancelled, avoiding timing-dependent
+// failures with fast-completing commands like `git log --all` in empty repos.
+//
+// Returns the directory path containing the fake binary.
+func fakeSlowGitBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "git")
+	err := os.WriteFile(script, []byte("#!/bin/sh\necho partial-stdout\necho partial-stderr >&2\nsleep 60\n"), 0o755)
+	if err != nil {
+		t.Fatalf("failed to create fake slow git script: %v", err)
+	}
+	return dir
+}
+
 // envLines parses output from the fake git binary (or `env` command) into
 // individual environment variable lines.
 func envLines(stdout []byte) []string {
