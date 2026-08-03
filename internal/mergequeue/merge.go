@@ -83,7 +83,13 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 	_, stderr, exitCode, mergeTreeErr := deps.Git.RunExitCode(ctx,
 		"merge-tree", "--write-tree", targetHead, sourceHead)
 	if mergeTreeErr != nil {
-		return fmt.Errorf("merge-tree dry-run: %w", mergeTreeErr)
+		// Subprocess failure (not a conflict exit code) — re-enqueue with
+		// backoff rather than marking as conflict (11-REQ-4.E2, 11-REQ-4.E3).
+		slog.Error("merge-tree dry-run subprocess error",
+			"merge_job_id", job.ID,
+			"error", mergeTreeErr,
+		)
+		return reEnqueueWithBackoff(db, job, "")
 	}
 	if exitCode != 0 {
 		// Dry-run detected conflicts. Set status to conflict without acquiring mutex.
