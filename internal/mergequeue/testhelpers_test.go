@@ -341,6 +341,50 @@ func getJobNonce(t *testing.T, db *sql.DB, id string) string {
 	return nonce
 }
 
+// getJobUpdatedAt reads the updated_at from the database.
+func getJobUpdatedAt(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	var updatedAt string
+	err := db.QueryRow("SELECT updated_at FROM merge_jobs WHERE id = ?", id).Scan(&updatedAt)
+	if err != nil {
+		t.Fatalf("getJobUpdatedAt(%q) failed: %v", id, err)
+	}
+	return updatedAt
+}
+
+// getJobSourceRef reads the source_ref from the database.
+func getJobSourceRef(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	var sourceRef string
+	err := db.QueryRow("SELECT source_ref FROM merge_jobs WHERE id = ?", id).Scan(&sourceRef)
+	if err != nil {
+		t.Fatalf("getJobSourceRef(%q) failed: %v", id, err)
+	}
+	return sourceRef
+}
+
+// getJobTargetBranch reads the target_branch from the database.
+func getJobTargetBranch(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	var tb string
+	err := db.QueryRow("SELECT target_branch FROM merge_jobs WHERE id = ?", id).Scan(&tb)
+	if err != nil {
+		t.Fatalf("getJobTargetBranch(%q) failed: %v", id, err)
+	}
+	return tb
+}
+
+// getJobSubmittedBy reads the submitted_by from the database.
+func getJobSubmittedBy(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	var sb string
+	err := db.QueryRow("SELECT submitted_by FROM merge_jobs WHERE id = ?", id).Scan(&sb)
+	if err != nil {
+		t.Fatalf("getJobSubmittedBy(%q) failed: %v", id, err)
+	}
+	return sb
+}
+
 // insertTestCampaignSpec inserts a campaign_spec row into the test database.
 // branchSHA may be empty to represent a NULL branch_sha (branch not ready).
 func insertTestCampaignSpec(t *testing.T, db *sql.DB, campaignID, specID, status, branchSHA, now string) {
