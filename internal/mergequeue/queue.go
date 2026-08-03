@@ -51,7 +51,7 @@ func reEnqueueWithBackoff(db *sql.DB, job *MergeJob, reason CantMergeReason) err
 
 	_, err := db.Exec(
 		`UPDATE merge_jobs SET
-			retry_count = ?, available_at = ?, rejection_reason = ?, updated_at = ?
+			status = 'queued', retry_count = ?, available_at = ?, rejection_reason = ?, updated_at = ?
 		WHERE id = ?`,
 		newRetryCount, futureTime, string(reason), now, job.ID,
 	)

@@ -139,7 +139,13 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 	// Step 6: git fetch origin <targetBranch>.
 	_, _, err = deps.Git.Run(ctx, "fetch", "origin", job.TargetBranch)
 	if err != nil {
-		return fmt.Errorf("git fetch: %w", err)
+		// Fetch failed (e.g. subprocess hang killed by context cancellation).
+		// Re-enqueue the job with backoff rather than leaving it in running state.
+		slog.Error("git fetch failed; re-enqueuing with backoff",
+			"merge_job_id", job.ID,
+			"error", err,
+		)
+		return reEnqueueWithBackoff(db, job, "")
 	}
 
 	// Step 7: git rebase origin/<targetBranch>.
@@ -150,12 +156,14 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 	}
 
 	// Step 8: Execute CHECK_COMMAND if configured.
-	if deps.Variables != nil && deps.RunCheck != nil {
+	if deps.Variables != nil {
 		checkCmd, found, varErr := deps.Variables.GetVariable(ctx, job.WorkspaceSlug, "CHECK_COMMAND")
 		if varErr != nil {
-			return fmt.Errorf("get CHECK_COMMAND: %w", varErr)
+			// Variable store failure — set check_failed with the error message
+			// (11-REQ-5.E6).
+			return setCheckFailed(db, job.ID, varErr.Error())
 		}
-		if found && checkCmd != "" {
+		if found && checkCmd != "" && deps.RunCheck != nil {
 			// Get CHECK_TIMEOUT.
 			timeout := defaultCheckTimeout
 			timeoutStr, timeoutFound, _ := deps.Variables.GetVariable(ctx, job.WorkspaceSlug, "CHECK_TIMEOUT")
