@@ -35,14 +35,14 @@
     {
       "id": 1,
       "kind": "tests",
-      "title": "Write Tests \u2014 DAG Construction, Lifecycle States, and DB Schema",
+      "title": "Write Tests — DAG Construction, Lifecycle States, and DB Schema",
       "subtasks": [
         {
           "id": "1.1",
           "title": "Write tests for campaign lifecycle state transitions",
           "details": [
-            "Table-driven tests for valid transitions: pending\u2192active, active\u2192completed, active\u2192failed, active\u2192cancelled",
-            "Assert invalid transitions are rejected (e.g., completed\u2192active)",
+            "Table-driven tests for valid transitions: pending→active, active→completed, active→failed, active→cancelled",
+            "Assert invalid transitions are rejected (e.g., completed→active)",
             "Verify campaign status field values match the CHECK constraint enum"
           ],
           "test_spec_refs": [
@@ -55,16 +55,16 @@
           "requirement_refs": [
             "12-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
           "id": "1.2",
           "title": "Write tests for DAG construction and cycle detection",
           "details": [
-            "Test BuildDAG with a linear chain A\u2192B\u2192C: verify edges and topological order",
-            "Test BuildDAG with a diamond dependency (A\u2192B, A\u2192C, B\u2192D, C\u2192D): verify correct frontier",
-            "Test cycle detection: A\u2192B\u2192A must return an error",
+            "Test BuildDAG with a linear chain A→B→C: verify edges and topological order",
+            "Test BuildDAG with a diamond dependency (A→B, A→C, B→D, C→D): verify correct frontier",
+            "Test cycle detection: A→B→A must return an error",
             "Test that depends_on_spec referencing a spec outside the campaign is treated as pre-satisfied",
             "Test that sentinel field has no effect on edge construction"
           ],
@@ -78,7 +78,7 @@
           "requirement_refs": [
             "12-REQ-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -103,14 +103,14 @@
             "12-REQ-15",
             "12-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
           "id": "1.4",
           "title": "Write tests for DAG JSON serialization and conflict_details serialization",
           "details": [
-            "Test that dag column serializes to {specs:[...], edges:[{from,to,relationship}]} \u2014 from_group/to_group/sentinel excluded",
+            "Test that dag column serializes to {specs:[...], edges:[{from,to,relationship}]} — from_group/to_group/sentinel excluded",
             "Test round-trip: serialize DAG to JSON, deserialize, verify specs and edges match",
             "Test conflict_details serialized as JSON array of file path strings",
             "Test conflict_details null when spec is not blocked",
@@ -123,14 +123,14 @@
           "requirement_refs": [
             "12-REQ-16"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
           "id": "1.5",
           "title": "Write tests for spec branch naming convention",
           "details": [
-            "Test branch name derivation: spec directory '07_secrets_variables' \u2192 branch 'spec/07-secrets-variables'",
+            "Test branch name derivation: spec directory '07_secrets_variables' → branch 'spec/07-secrets-variables'",
             "Test snake_case to kebab-case conversion for various directory names",
             "Test that campaign ID is not included in branch name",
             "Test branch creation from integration branch HEAD using GitRunner mock"
@@ -143,7 +143,7 @@
           "requirement_refs": [
             "12-REQ-4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -160,7 +160,7 @@
     {
       "id": 2,
       "kind": "tests",
-      "title": "Write Tests \u2014 Spec Discovery, Branch Atomicity, REST API Create/List/Get",
+      "title": "Write Tests — Spec Discovery, Branch Atomicity, REST API Create/List/Get",
       "subtasks": [
         {
           "id": "2.1",
@@ -282,7 +282,7 @@
     {
       "id": 3,
       "kind": "tests",
-      "title": "Write Tests \u2014 PostMergeHook, Cascading Rebase, Blocking, Resolve Endpoint",
+      "title": "Write Tests — PostMergeHook, Cascading Rebase, Blocking, Resolve Endpoint",
       "subtasks": [
         {
           "id": "3.1",
@@ -327,7 +327,7 @@
           "id": "3.3",
           "title": "Write integration tests for cascading rebase with per-subtree conflict-stop",
           "details": [
-            "Integration test: rebase A, B (depends on A), C (independent) \u2014 conflict on A stops B but not C",
+            "Integration test: rebase A, B (depends on A), C (independent) — conflict on A stops B but not C",
             "Integration test: clean rebase updates branch_sha in campaign_specs",
             "Integration test: branches processed in topological order (roots before leaves)",
             "Integration test: conflict on B does not affect rebasing of C (independent subtree)",
@@ -370,11 +370,11 @@
           "id": "3.5",
           "title": "Write tests for resolve endpoint idempotency and verification",
           "details": [
-            "Test resolve on blocked spec: clean rebase \u2192 200 with new branch_sha, status=active",
-            "Test resolve on blocked spec: still conflicting \u2192 409 with updated conflict_details",
-            "Test resolve on already-active spec \u2192 200 with current status and SHA (no rebase)",
-            "Test resolve on already-merged spec \u2192 200 with current status and SHA (no rebase)",
-            "Test resolve on pending/failed/cancelled spec \u2192 409 (wrong state)",
+            "Test resolve on blocked spec: clean rebase → 200 with new branch_sha, status=active",
+            "Test resolve on blocked spec: still conflicting → 409 with updated conflict_details",
+            "Test resolve on already-active spec → 200 with current status and SHA (no rebase)",
+            "Test resolve on already-merged spec → 200 with current status and SHA (no rebase)",
+            "Test resolve on pending/failed/cancelled spec → 409 (wrong state)",
             "Test that resolve verifies against current integration branch HEAD, not blocked HEAD"
           ],
           "test_spec_refs": [
@@ -405,7 +405,7 @@
     {
       "id": 4,
       "kind": "tests",
-      "title": "Write Tests \u2014 Crash Recovery, Per-Campaign Mutex, and Smoke Tests",
+      "title": "Write Tests — Crash Recovery, Per-Campaign Mutex, and Smoke Tests",
       "subtasks": [
         {
           "id": "4.1",
@@ -451,10 +451,10 @@
           "title": "Write smoke tests for campaign end-to-end flows",
           "details": [
             "Smoke test TS-12-SMOKE-1: create implicit campaign, verify active status and frontier branches",
-            "Smoke test TS-12-SMOKE-2: full merge cycle \u2014 create campaign, merge spec, verify cascade rebase and frontier advance",
-            "Smoke test TS-12-SMOKE-3: conflict resolution flow \u2014 block spec, resolve, verify status restored to active",
-            "Smoke test TS-12-SMOKE-4: campaign cancellation \u2014 cancel, verify all specs cancelled, branches intact",
-            "Smoke test TS-12-SMOKE-5: dead-letter failure \u2014 PostMergeHook with DeadLetter=true fails entire campaign"
+            "Smoke test TS-12-SMOKE-2: full merge cycle — create campaign, merge spec, verify cascade rebase and frontier advance",
+            "Smoke test TS-12-SMOKE-3: conflict resolution flow — block spec, resolve, verify status restored to active",
+            "Smoke test TS-12-SMOKE-4: campaign cancellation — cancel, verify all specs cancelled, branches intact",
+            "Smoke test TS-12-SMOKE-5: dead-letter failure — PostMergeHook with DeadLetter=true fails entire campaign"
           ],
           "test_spec_refs": [
             "TS-12-1",
@@ -492,7 +492,7 @@
       "subtasks": [
         {
           "id": "5.1",
-          "title": "Implement internal/campaign/dag.go \u2014 DAG construction and validation",
+          "title": "Implement internal/campaign/dag.go — DAG construction and validation",
           "details": [
             "Define DAG struct with specs []string and edges []Edge{From, To, Relationship}",
             "Implement BuildDAG(specs []SpecInput) (*DAG, error) reading dependencies from tasks.json",
@@ -519,7 +519,7 @@
         },
         {
           "id": "5.2",
-          "title": "Implement internal/campaign/store.go \u2014 schema initialization and campaign CRUD",
+          "title": "Implement internal/campaign/store.go — schema initialization and campaign CRUD",
           "details": [
             "Implement InitSchema(db *sql.DB) error creating campaigns and campaign_specs tables",
             "Implement CreateCampaign(ctx, db, campaign) (Campaign, error) with UNIQUE(workspace_slug, name) enforcement",
@@ -584,7 +584,7 @@
           "id": "6.1",
           "title": "Implement spec branch naming and creation via GitRunner",
           "details": [
-            "Implement BranchName(specID, specDir string) string: convert NN_snake_case \u2192 spec/NN-kebab-case",
+            "Implement BranchName(specID, specDir string) string: convert NN_snake_case → spec/NN-kebab-case",
             "Implement CreateSpecBranch(ctx, runner GitRunner, integrationBranch, branchName string) (sha string, error) using internal/gitcmd",
             "Implement DeleteSpecBranch(ctx, runner GitRunner, branchName string) error for rollback",
             "Verify branch name format: spec/<spec_id>-<spec_name> with no campaign ID component"
@@ -608,7 +608,7 @@
             "On any branch creation error, iterate slice and call DeleteSpecBranch for each",
             "Do not persist campaign or campaign_specs rows if rollback is triggered",
             "Return HTTP 500 for git-level errors, HTTP 422 for missing integration branch",
-            "Ensure rollback is called via defer or explicit error path \u2014 no partial state left"
+            "Ensure rollback is called via defer or explicit error path — no partial state left"
           ],
           "test_spec_refs": [
             "TS-12-35",
@@ -660,7 +660,7 @@
     {
       "id": 7,
       "kind": "checkpoint",
-      "title": "Checkpoint \u2014 DAG, Store, and Branch Creation",
+      "title": "Checkpoint — DAG, Store, and Branch Creation",
       "subtasks": [
         {
           "id": "7.1",
@@ -692,7 +692,7 @@
           "details": [
             "Confirm DiscoverSpecs output feeds into BuildDAG without type mismatches",
             "Verify warnings from DiscoverSpecs are included in POST /campaigns response",
-            "Test implicit campaign creation end-to-end: discover \u2192 build DAG \u2192 create branches \u2192 activate"
+            "Test implicit campaign creation end-to-end: discover → build DAG → create branches → activate"
           ],
           "test_spec_refs": [
             "TS-12-17",
@@ -724,7 +724,7 @@
       "subtasks": [
         {
           "id": "8.1",
-          "title": "Implement internal/campaign/rebase.go \u2014 cascading rebase with per-subtree conflict-stop",
+          "title": "Implement internal/campaign/rebase.go — cascading rebase with per-subtree conflict-stop",
           "details": [
             "Implement CascadeRebase(ctx, runner GitRunner, dag *DAG, activeSpecs []CampaignSpec, integrationHead string) ([]RebaseResult, error)",
             "Process branches in topological order (roots first, leaves last) using TopologicalOrder",
@@ -746,7 +746,7 @@
         },
         {
           "id": "8.2",
-          "title": "Implement internal/campaign/authz.go \u2014 PushAuthorizer callback",
+          "title": "Implement internal/campaign/authz.go — PushAuthorizer callback",
           "details": [
             "Implement PushAuthorizer(ctx context.Context, branchName string, userID string) error checking campaign_specs.status",
             "Reject pushes to branches where campaign_specs.status=blocked",
@@ -773,7 +773,7 @@
             "Fetch current integration branch HEAD at resolve time (not the HEAD at blocking time)",
             "Attempt rebase onto current HEAD; on success: set status=active, update branch_sha, restore push access",
             "On conflict: return updated conflict_details file list; do not change status",
-            "Handle idempotent cases: active\u2192return current SHA, merged\u2192return current SHA, pending/failed/cancelled\u2192error"
+            "Handle idempotent cases: active→return current SHA, merged→return current SHA, pending/failed/cancelled→error"
           ],
           "test_spec_refs": [
             "TS-12-30",
@@ -807,7 +807,7 @@
       "subtasks": [
         {
           "id": "9.1",
-          "title": "Implement internal/campaign/scheduler.go \u2014 per-campaign mutex and PostMergeHook",
+          "title": "Implement internal/campaign/scheduler.go — per-campaign mutex and PostMergeHook",
           "details": [
             "Implement Scheduler struct with sync.Map of *sync.Mutex keyed by campaign ID",
             "Implement PostMergeHook(ctx context.Context, job mergequeue.MergeJob) acquiring per-campaign mutex before any state mutation",
@@ -853,7 +853,7 @@
         },
         {
           "id": "9.3",
-          "title": "Implement crash recovery \u2014 frontier recomputation on restart",
+          "title": "Implement crash recovery — frontier recomputation on restart",
           "details": [
             "Implement RecoverActiveCampaigns(ctx, db *sql.DB, runner GitRunner) error called at hub startup",
             "For each active campaign: recompute frontier from DAG and current campaign_specs status rows",
@@ -891,7 +891,7 @@
       "subtasks": [
         {
           "id": "10.1",
-          "title": "Implement internal/campaign/handlers.go \u2014 POST /campaigns and DELETE /campaigns/:id",
+          "title": "Implement internal/campaign/handlers.go — POST /campaigns and DELETE /campaigns/:id",
           "details": [
             "Implement CreateCampaignHandler: parse request body {name, spec_ids, integration_branch}, call DiscoverSpecs or use explicit spec_ids, build DAG, create branches, activate campaign, return HTTP 201",
             "Include warnings array in response for skipped specs; return HTTP 409 for duplicate active campaign on same branch",
@@ -938,8 +938,8 @@
           "title": "Implement POST /campaigns/:id/specs/:spec_id/resolve handler",
           "details": [
             "Implement ResolveConflictHandler: look up campaign spec, dispatch to VerifyResolve based on current status",
-            "Return HTTP 200 with {spec_id, status, branch_sha} for blocked\u2192clean rebase, already-active, already-merged",
-            "Return HTTP 409 with conflict_details for blocked\u2192still-conflicting",
+            "Return HTTP 200 with {spec_id, status, branch_sha} for blocked→clean rebase, already-active, already-merged",
+            "Return HTTP 409 with conflict_details for blocked→still-conflicting",
             "Return HTTP 409 for pending/failed/cancelled spec status (wrong state)",
             "Enforce campaigns:write permission scope"
           ],
@@ -995,7 +995,7 @@
     {
       "id": 11,
       "kind": "checkpoint",
-      "title": "Checkpoint \u2014 Full Campaign Package Integration",
+      "title": "Checkpoint — Full Campaign Package Integration",
       "subtasks": [
         {
           "id": "11.1",
@@ -1028,7 +1028,7 @@
           "details": [
             "Confirm internal/campaign imports internal/mergequeue.PostMergeHook type correctly",
             "Confirm internal/campaign imports internal/gitcmd.GitRunner interface correctly",
-            "Verify no circular imports: campaign\u2192mergequeue, campaign\u2192gitcmd, campaign\u2192gitserver",
+            "Verify no circular imports: campaign→mergequeue, campaign→gitcmd, campaign→gitserver",
             "Confirm MergeJob.DeadLetter field is accessible and used correctly in PostMergeHook"
           ],
           "test_spec_refs": [
@@ -1076,16 +1076,16 @@
     {
       "id": 12,
       "kind": "wiring_verification",
-      "title": "Wiring Verification \u2014 End-to-End Campaign Integration",
+      "title": "Wiring Verification — End-to-End Campaign Integration",
       "subtasks": [
         {
           "id": "12.1",
           "title": "Trace execution paths from HTTP request to campaign activation",
           "details": [
-            "Verify POST /campaigns \u2192 CreateCampaignHandler \u2192 DiscoverSpecs/BuildDAG \u2192 CreateSpecBranch \u2192 store.CreateCampaign \u2192 HTTP 201 chain has no stubs",
-            "Verify GET /campaigns \u2192 ListCampaignsHandler \u2192 store.ListCampaigns \u2192 JSON response chain",
-            "Verify DELETE /campaigns/:id \u2192 CancelCampaignHandler \u2192 CancelCampaign \u2192 DB update chain",
-            "Verify POST .../resolve \u2192 ResolveConflictHandler \u2192 VerifyResolve \u2192 PushAuthorizer restore chain",
+            "Verify POST /campaigns → CreateCampaignHandler → DiscoverSpecs/BuildDAG → CreateSpecBranch → store.CreateCampaign → HTTP 201 chain has no stubs",
+            "Verify GET /campaigns → ListCampaignsHandler → store.ListCampaigns → JSON response chain",
+            "Verify DELETE /campaigns/:id → CancelCampaignHandler → CancelCampaign → DB update chain",
+            "Verify POST .../resolve → ResolveConflictHandler → VerifyResolve → PushAuthorizer restore chain",
             "Confirm no panic(\"not implemented\") or bare TODO stubs remain in any execution path"
           ],
           "test_spec_refs": [
