@@ -7,6 +7,12 @@ import (
 	"github.com/agent-fox-dev/hub/internal/mergequeue"
 )
 
+// mutexEntry holds a per-campaign mutex used to serialize PostMergeHook
+// invocations for the same campaign.
+type mutexEntry struct {
+	mu sync.Mutex
+}
+
 // Scheduler manages campaign lifecycle transitions including completion
 // checking, failure propagation, and post-merge hook processing.
 type Scheduler struct {
@@ -15,7 +21,7 @@ type Scheduler struct {
 	authz        *Authz
 	rebaseEngine *RebaseEngine
 	repoPath     string
-	mutexes      sync.Map // per-campaign mutexes keyed by campaign ID
+	mutexes      sync.Map // per-campaign mutexes keyed by campaign ID → *mutexEntry
 }
 
 // NewScheduler creates a new campaign Scheduler.
@@ -43,4 +49,30 @@ func (s *Scheduler) PropagateSpecFailure(_ context.Context, _, _ string) error {
 // Jobs with NULL campaign_id are treated as no-ops.
 func (s *Scheduler) HandlePostMerge(_ context.Context, _ mergequeue.MergeJob) error {
 	return nil // stub
+}
+
+// RecoverFromDB re-evaluates all active campaigns by recomputing the
+// frontier from the DAG and current campaign_specs status rows in the DB.
+// It re-initializes the per-campaign mutex map as empty.
+// This is called on hub restart to heal any partial state from crashes.
+func (s *Scheduler) RecoverFromDB(_ context.Context) error {
+	return nil // stub
+}
+
+// GetFrontier returns the spec IDs that are currently in the frontier
+// for the given campaign — specs whose upstream dependencies are all
+// satisfied and which should be active.
+func (s *Scheduler) GetFrontier(_ string) []string {
+	return nil // stub
+}
+
+// MutexMapSize returns the number of entries in the per-campaign mutex map.
+// Used by tests to verify that the map is re-initialized as empty on restart.
+func (s *Scheduler) MutexMapSize() int {
+	count := 0
+	s.mutexes.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
 }

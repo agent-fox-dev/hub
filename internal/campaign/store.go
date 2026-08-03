@@ -83,3 +83,9 @@ func (s *Store) UpdateSpecBranchSHA(_ context.Context, _, _, _ string) error {
 func (s *Store) SetSpecBlocked(_ context.Context, _, _ string, _ []string, _ string) error {
 	return nil // stub
 }
+
+// ListActiveCampaigns returns all campaigns with status=active.
+// Used during crash recovery to recompute frontiers.
+func (s *Store) ListActiveCampaigns(_ context.Context) ([]Campaign, error) {
+	return nil, nil // stub
+}
