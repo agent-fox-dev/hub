@@ -597,7 +597,7 @@
           "requirement_refs": [
             "12-REQ-4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -618,7 +618,7 @@
             "12-REQ-11",
             "12-REQ-4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -642,7 +642,7 @@
             "12-REQ-11",
             "12-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

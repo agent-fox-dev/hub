@@ -264,15 +264,17 @@ func seedCampaignSpecFull(t *testing.T, db *sql.DB, campaignID, specID, status, 
 // mockGitOps implements GitOps for tests, tracking calls and optionally
 // failing on a specific create call.
 type mockGitOps struct {
-	createCalls     []string              // branch names passed to CreateBranch
-	deleteCalls     []string              // branch names passed to DeleteBranch
-	failOnNth       int                   // fail on the Nth CreateBranch call (1-indexed); 0 = never fail
-	callCount       int                   // internal counter for CreateBranch calls
-	defaultSHA      string                // SHA returned for successful CreateBranch/ResolveRef
-	rebaseCalls     []string              // branch names passed to Rebase, in call order
-	rebaseConflicts map[string][]string   // branch → conflict file paths; non-nil entry = conflict
-	rebaseErrors    map[string]error       // branch → error to return from Rebase
-	rebaseSHA       string                // SHA returned for clean rebases (defaults to defaultSHA)
+	createCalls      []string            // branch names passed to CreateBranch
+	deleteCalls      []string            // branch names passed to DeleteBranch
+	failOnNth        int                 // fail on the Nth CreateBranch call (1-indexed); 0 = never fail
+	callCount        int                 // internal counter for CreateBranch calls
+	defaultSHA       string              // SHA returned for successful CreateBranch/ResolveRef
+	rebaseCalls      []string            // branch names passed to Rebase, in call order
+	rebaseConflicts  map[string][]string // branch → conflict file paths; non-nil entry = conflict
+	rebaseErrors     map[string]error    // branch → error to return from Rebase
+	rebaseSHA        string              // SHA returned for clean rebases (defaults to defaultSHA)
+	resolveRefErrors map[string]error    // ref → error; allows simulating non-existent branches
+	existingBranches map[string]bool     // branch → true if BranchExists should return true
 }
 
 func newMockGitOps() *mockGitOps {
@@ -295,11 +297,19 @@ func (m *mockGitOps) DeleteBranch(_ context.Context, _, branchName string) error
 	return nil
 }
 
-func (m *mockGitOps) BranchExists(_ context.Context, _, _ string) (bool, error) {
+func (m *mockGitOps) BranchExists(_ context.Context, _, branchName string) (bool, error) {
+	if m.existingBranches != nil {
+		return m.existingBranches[branchName], nil
+	}
 	return false, nil
 }
 
-func (m *mockGitOps) ResolveRef(_ context.Context, _, _ string) (string, error) {
+func (m *mockGitOps) ResolveRef(_ context.Context, _, ref string) (string, error) {
+	if m.resolveRefErrors != nil {
+		if err, ok := m.resolveRefErrors[ref]; ok {
+			return "", err
+		}
+	}
 	return m.defaultSHA, nil
 }
 

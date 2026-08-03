@@ -151,6 +151,16 @@ func TestCreateCampaign_CreatesSpecBranches(t *testing.T) {
 	t.Parallel()
 	env := newHandlerTestEnv(t)
 
+	specTasks := map[string]*string{
+		"07_secrets_variables": strPtr(`{
+			"dependencies": [],
+			"tasks": [{"subtasks": [{"state": "pending"}]}]
+		}`),
+	}
+	root := setupWorkspaceDir(t, "ws-slug", specTasks)
+	env.handler.workspaceRoot = root
+	env.handler.gitOps = newMockGitOps()
+
 	body := `{"name":"test-branches","spec_ids":["07"],"integration_branch":"main"}`
 	rec := env.doRequest(t, "POST", "/api/v1/workspaces/ws-slug/campaigns", body, adminAuth())
 
@@ -205,42 +215,57 @@ func TestCreateCampaign_AtomicRollbackOnBranchFailure(t *testing.T) {
 	t.Parallel()
 	env := newHandlerTestEnv(t)
 
-	// This test requires simulating a branch creation failure for spec '08'.
-	// The stub handler returns 501, so this test will fail at the status code
-	// assertion. When the implementation is done with proper error injection,
-	// the test should pass.
+	// Configure mock GitOps that fails on the 2nd branch creation.
+	mock := newMockGitOps()
+	mock.failOnNth = 2
+	env.handler.gitOps = mock
+
+	specTasks := map[string]*string{
+		"07_secrets_variables": strPtr(`{
+			"dependencies": [],
+			"tasks": [{"subtasks": [{"state": "pending"}]}]
+		}`),
+		"08_other": strPtr(`{
+			"dependencies": [],
+			"tasks": [{"subtasks": [{"state": "pending"}]}]
+		}`),
+	}
+	root := setupWorkspaceDir(t, "ws-slug", specTasks)
+	env.handler.workspaceRoot = root
+
 	body := `{"name":"sprint-42","spec_ids":["07","08"],"integration_branch":"main"}`
 	rec := env.doRequest(t, "POST", "/api/v1/workspaces/ws-slug/campaigns", body, adminAuth())
 
 	// On branch creation failure, expect 500.
-	// NOTE: This test is structured to verify atomic rollback when implementation
-	// provides error injection. For now, any non-201 response + no persisted state
-	// is acceptable since the handler is a stub.
 	if rec.Code == 201 {
-		// If we got 201, verify no partial state leaked.
-		// Check that no campaign was persisted with this name.
-		var count int
-		err := env.db.QueryRow(
-			"SELECT COUNT(*) FROM campaigns WHERE name = ?", "sprint-42",
-		).Scan(&count)
-		if err != nil {
-			t.Fatalf("query campaigns failed: %v", err)
-		}
-		if count > 0 {
-			t.Error("campaign row should not be persisted after branch creation failure")
-		}
+		t.Fatal("expected non-201 response when branch creation fails")
+	}
+	if rec.Code != 500 {
+		t.Fatalf("status code = %d; want 500 for branch creation failure", rec.Code)
+	}
+
+	// Verify no campaign row was persisted.
+	var count int
+	err := env.db.QueryRow(
+		"SELECT COUNT(*) FROM campaigns WHERE name = ?", "sprint-42",
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("query campaigns failed: %v", err)
+	}
+	if count > 0 {
+		t.Error("campaign row should not be persisted after branch creation failure")
 	}
 
 	// Check no campaign_specs rows were persisted.
 	var specCount int
-	err := env.db.QueryRow(
+	err = env.db.QueryRow(
 		"SELECT COUNT(*) FROM campaign_specs WHERE campaign_id IN (SELECT id FROM campaigns WHERE name = ?)",
 		"sprint-42",
 	).Scan(&specCount)
 	if err != nil {
-		// Table might not exist yet (stub), which is expected failure.
-		t.Logf("query campaign_specs failed (expected in stub phase): %v", err)
-	} else if specCount > 0 {
+		t.Fatalf("query campaign_specs failed: %v", err)
+	}
+	if specCount > 0 {
 		t.Error("campaign_specs rows should not be persisted after branch creation failure")
 	}
 }
@@ -402,6 +427,9 @@ func TestCreateCampaign_422WhenIntegrationBranchNotExist(t *testing.T) {
 
 	// Configure mock GitOps that reports the integration branch doesn't exist.
 	mock := newMockGitOps()
+	mock.resolveRefErrors = map[string]error{
+		"nonexistent-branch": fmt.Errorf("reference not found"),
+	}
 	env.handler.gitOps = mock
 
 	body := `{"name":"sprint-42","spec_ids":["07"],"integration_branch":"nonexistent-branch"}`
@@ -542,8 +570,11 @@ func TestCreateCampaign_500WhenSpecBranchAlreadyExists(t *testing.T) {
 	t.Parallel()
 	env := newHandlerTestEnv(t)
 
-	// Configure mock GitOps that reports branch already exists.
+	// Configure mock GitOps that reports spec branch already exists.
 	mock := newMockGitOps()
+	mock.existingBranches = map[string]bool{
+		"spec/07-secrets-variables": true,
+	}
 	env.handler.gitOps = mock
 
 	specTasks := map[string]*string{
@@ -558,19 +589,17 @@ func TestCreateCampaign_500WhenSpecBranchAlreadyExists(t *testing.T) {
 	body := `{"name":"sprint-42","spec_ids":["07"],"integration_branch":"main"}`
 	rec := env.doRequest(t, "POST", "/api/v1/workspaces/ws-slug/campaigns", body, adminAuth())
 
-	// When branch already exists, expect 500 (branch creation failure).
-	if rec.Code == 201 {
-		// If the handler returned 201, verify it didn't create a duplicate branch.
-		resp := parseRawJSON(t, rec)
-		if _, ok := resp["error"]; !ok {
-			t.Log("handler should detect existing branch and return error")
-		}
+	if rec.Code != 500 {
+		t.Fatalf("status code = %d; want 500 for duplicate branch", rec.Code)
 	}
 
-	// Verify that the handler properly handles this case.
-	// The stub will return 501, which is a valid failure for now.
-	if rec.Code != 500 && rec.Code != 501 {
-		t.Logf("status code = %d; expected 500 for duplicate branch (501 acceptable in stub phase)", rec.Code)
+	resp := parseRawJSON(t, rec)
+	errMsg, ok := resp["error"].(string)
+	if !ok {
+		t.Fatal("response missing 'error' field")
+	}
+	if !strings.Contains(errMsg, "already exists") {
+		t.Errorf("error message should mention 'already exists', got: %q", errMsg)
 	}
 }
 

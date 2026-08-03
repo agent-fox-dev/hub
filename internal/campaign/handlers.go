@@ -167,10 +167,24 @@ func (h *Handler) createCampaign(c echo.Context) error {
 	}
 	var createdBranches []branchInfo
 
+	// rollbackBranches deletes all successfully created branches.
+	rollbackBranches := func() {
+		if h.gitOps == nil {
+			return
+		}
+		for _, b := range createdBranches {
+			if err := DeleteSpecBranch(ctx, h.gitOps, repoPath, b.branchName); err != nil {
+				// Log but continue — best-effort rollback (12-REQ-4.E4).
+				_ = err
+			}
+		}
+	}
+
 	if h.gitOps != nil {
-		frontierSet := make(map[string]bool, len(frontier))
-		for _, s := range frontier {
-			frontierSet[s] = true
+		// Verify integration branch exists before creating any spec branches (12-REQ-4.E1).
+		if _, err := h.gitOps.ResolveRef(ctx, repoPath, req.IntegrationBranch); err != nil {
+			return respondError(c, http.StatusUnprocessableEntity,
+				fmt.Sprintf("integration branch %q does not exist", req.IntegrationBranch))
 		}
 
 		for _, specID := range frontier {
@@ -179,13 +193,25 @@ func (h *Handler) createCampaign(c echo.Context) error {
 				dirName = specID
 			}
 			branchName := DeriveSpecBranchName(dirName)
-			sha, err := h.gitOps.CreateBranch(ctx, repoPath, branchName, req.IntegrationBranch)
+
+			// Check if the spec branch already exists (12-REQ-4.E2).
+			exists, err := h.gitOps.BranchExists(ctx, repoPath, branchName)
 			if err != nil {
-				// Rollback: delete already-created branches.
-				for _, b := range createdBranches {
-					_ = h.gitOps.DeleteBranch(ctx, repoPath, b.branchName)
-				}
-				return respondError(c, http.StatusInternalServerError, fmt.Sprintf("failed to create branch %s: %v", branchName, err))
+				rollbackBranches()
+				return respondError(c, http.StatusInternalServerError,
+					fmt.Sprintf("failed to check branch %s: %v", branchName, err))
+			}
+			if exists {
+				rollbackBranches()
+				return respondError(c, http.StatusInternalServerError,
+					fmt.Sprintf("branch %s already exists", branchName))
+			}
+
+			sha, err := CreateSpecBranch(ctx, h.gitOps, repoPath, branchName, req.IntegrationBranch)
+			if err != nil {
+				rollbackBranches()
+				return respondError(c, http.StatusInternalServerError,
+					fmt.Sprintf("failed to create branch %s: %v", branchName, err))
 			}
 			createdBranches = append(createdBranches, branchInfo{
 				specID:     specID,
@@ -216,12 +242,7 @@ func (h *Handler) createCampaign(c echo.Context) error {
 	}
 
 	if err := h.store.CreateCampaign(ctx, campaign); err != nil {
-		// Rollback branches.
-		if h.gitOps != nil {
-			for _, b := range createdBranches {
-				_ = h.gitOps.DeleteBranch(ctx, repoPath, b.branchName)
-			}
-		}
+		rollbackBranches()
 		return respondError(c, http.StatusInternalServerError, "failed to create campaign")
 	}
 
