@@ -373,24 +373,49 @@ These 2 permissions are registered by `GitPermissions()` in
 
 ---
 
+## Hub Campaign Permissions
+
+These 2 permissions are used by the campaign package
+(`hub/internal/campaign/auth.go`) and checked in campaign REST API handlers.
+
+### campaigns:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List and view campaigns, including DAG and per-spec status |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/campaigns`, `GET /api/v1/workspaces/:slug/campaigns/:id` |
+
+### campaigns:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Create and cancel campaigns, resolve spec conflicts |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/campaigns`, `DELETE /api/v1/workspaces/:slug/campaigns/:id`, `POST /api/v1/workspaces/:slug/campaigns/:id/specs/:spec_id/resolve` |
+
+---
+
 ## Complete Permission List
 
-All 12 registered permission scopes, sorted alphabetically:
+All 14 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
-| 1 | `git:read` | hub | git | read |
-| 2 | `git:write` | hub | git | write |
-| 3 | `keys:manage` | apikit | keys | manage |
-| 4 | `keys:read` | apikit | keys | read |
-| 5 | `orgs:read` | apikit | orgs | read |
-| 6 | `tokens:manage` | apikit | tokens | manage |
-| 7 | `tokens:read` | apikit | tokens | read |
-| 8 | `users:read` | apikit | users | read |
-| 9 | `workspaces:create` | hub | workspaces | create |
-| 10 | `workspaces:delete` | hub | workspaces | delete |
-| 11 | `workspaces:read` | hub | workspaces | read |
-| 12 | `workspaces:write` | hub | workspaces | write |
+| 1 | `campaigns:read` | hub | campaigns | read |
+| 2 | `campaigns:write` | hub | campaigns | write |
+| 3 | `git:read` | hub | git | read |
+| 4 | `git:write` | hub | git | write |
+| 5 | `keys:manage` | apikit | keys | manage |
+| 6 | `keys:read` | apikit | keys | read |
+| 7 | `orgs:read` | apikit | orgs | read |
+| 8 | `tokens:manage` | apikit | tokens | manage |
+| 9 | `tokens:read` | apikit | tokens | read |
+| 10 | `users:read` | apikit | users | read |
+| 11 | `workspaces:create` | hub | workspaces | create |
+| 12 | `workspaces:delete` | hub | workspaces | delete |
+| 13 | `workspaces:read` | hub | workspaces | read |
+| 14 | `workspaces:write` | hub | workspaces | write |
 
 ---
 

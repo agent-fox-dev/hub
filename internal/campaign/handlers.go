@@ -370,16 +370,105 @@ func (f *fileTasksReader) ReadTasksJSON(_ context.Context, specID string) (*Task
 	return &tj, nil
 }
 
+// validCampaignStatuses is the set of valid status values for campaign filtering.
+var validCampaignStatuses = map[string]bool{
+	"pending":   true,
+	"active":    true,
+	"completed": true,
+	"failed":    true,
+	"cancelled": true,
+}
+
 func (h *Handler) listCampaigns(c echo.Context) error {
-	return c.JSON(http.StatusNotImplemented, map[string]string{
-		"error": "not implemented",
-	})
+	ctx := c.Request().Context()
+	slug := c.Param("slug")
+
+	// Auth check (12-REQ-12.E2).
+	auth := apikit.GetAuthInfo(c)
+	if auth == nil {
+		return respondError(c, http.StatusUnauthorized, "authentication required")
+	}
+	if isPAT(auth) && !hasCampaignReadAccess(auth) {
+		return respondError(c, http.StatusForbidden, "campaigns:read scope required")
+	}
+
+	// Validate status query parameter (12-REQ-12.3).
+	statusFilter := c.QueryParam("status")
+	if statusFilter != "" && !validCampaignStatuses[statusFilter] {
+		return respondError(c, http.StatusUnprocessableEntity, "invalid status filter value")
+	}
+
+	campaigns, err := h.store.ListCampaigns(ctx, slug, statusFilter)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	// Build response array.
+	result := make([]campaignResponse, 0, len(campaigns))
+	for _, camp := range campaigns {
+		specs, err := h.store.GetCampaignSpecs(ctx, camp.ID)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		result = append(result, campaignResponse{
+			ID:                camp.ID,
+			WorkspaceSlug:     camp.WorkspaceSlug,
+			Name:              camp.Name,
+			IntegrationBranch: camp.IntegrationBranch,
+			Status:            camp.Status,
+			DAG:               camp.DAG,
+			Specs:             specs,
+			CreatedBy:         camp.CreatedBy,
+			CreatedAt:         camp.CreatedAt,
+			UpdatedAt:         camp.UpdatedAt,
+		})
+	}
+
+	return c.JSON(http.StatusOK, result)
 }
 
 func (h *Handler) getCampaign(c echo.Context) error {
-	return c.JSON(http.StatusNotImplemented, map[string]string{
-		"error": "not implemented",
-	})
+	ctx := c.Request().Context()
+	campaignID := c.Param("id")
+
+	// Auth check (12-REQ-12.E2).
+	auth := apikit.GetAuthInfo(c)
+	if auth == nil {
+		return respondError(c, http.StatusUnauthorized, "authentication required")
+	}
+	if isPAT(auth) && !hasCampaignReadAccess(auth) {
+		return respondError(c, http.StatusForbidden, "campaigns:read scope required")
+	}
+
+	// Load the campaign (12-REQ-12.E1).
+	campaign, err := h.store.GetCampaign(ctx, campaignID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	if campaign == nil {
+		return respondError(c, http.StatusNotFound, "campaign not found")
+	}
+
+	// Load specs for the campaign.
+	specs, err := h.store.GetCampaignSpecs(ctx, campaignID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	resp := campaignResponse{
+		ID:                campaign.ID,
+		WorkspaceSlug:     campaign.WorkspaceSlug,
+		Name:              campaign.Name,
+		IntegrationBranch: campaign.IntegrationBranch,
+		Status:            campaign.Status,
+		DAG:               campaign.DAG,
+		Specs:             specs,
+		CreatedBy:         campaign.CreatedBy,
+		CreatedAt:         campaign.CreatedAt,
+		UpdatedAt:         campaign.UpdatedAt,
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) cancelCampaign(c echo.Context) error {

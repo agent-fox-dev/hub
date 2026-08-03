@@ -438,6 +438,262 @@ database and resets the working tree to match the new HEAD.
 
 ---
 
+## Campaign Endpoints
+
+Campaigns are named sets of specs executed together against a shared
+integration branch. A dependency DAG sequences and parallelizes spec work,
+with cascading rebases after merges.
+
+### Campaign Response Schema
+
+```json
+{
+  "id": "uuid-string",
+  "workspace_slug": "ws-slug",
+  "name": "sprint-42",
+  "integration_branch": "main",
+  "status": "active",
+  "dag": {
+    "specs": ["07", "09"],
+    "edges": [{"from": "07", "to": "09", "relationship": "depends_on"}]
+  },
+  "specs": [
+    {
+      "campaign_id": "uuid-string",
+      "spec_id": "07",
+      "status": "active",
+      "branch_name": "spec/07-secrets-variables",
+      "branch_sha": "abcdef1234567890abcdef1234567890abcdef12",
+      "conflict_details": null,
+      "blocked_by_merge": "",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  ],
+  "warnings": [],
+  "created_by": "user-id",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string (UUID) | Unique campaign identifier |
+| `workspace_slug` | string | Workspace this campaign belongs to |
+| `name` | string | Human-readable campaign name; unique within a workspace |
+| `integration_branch` | string | Shared git branch (e.g., `main`) that spec branches are rebased against |
+| `status` | string | Lifecycle state: `pending`, `active`, `completed`, `failed`, or `cancelled` |
+| `dag` | object | Spec dependency graph with `specs` array and `edges` array |
+| `specs` | array | Per-spec status objects (see below) |
+| `warnings` | array or null | Human-readable warnings for skipped specs during creation; omitted when empty |
+| `created_by` | string | User or credential that created the campaign |
+| `created_at` | string (RFC 3339) | Creation timestamp |
+| `updated_at` | string (RFC 3339) | Last modification timestamp |
+
+#### Spec Status Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `spec_id` | string | Spec identifier (e.g., `"07"`) |
+| `status` | string | Per-spec state: `pending`, `active`, `blocked`, `merged`, `failed`, or `cancelled` |
+| `branch_name` | string | Git branch name (e.g., `spec/07-secrets-variables`); empty for pending specs |
+| `branch_sha` | string | 40-character hex SHA of branch HEAD; empty for pending specs |
+| `conflict_details` | array or null | List of conflicting file paths when status is `blocked` |
+| `blocked_by_merge` | string | UUID of the merge job that caused the conflict; empty when not blocked |
+
+### Campaign Error Response Schema
+
+Campaign endpoints use a flat JSON error format:
+
+```json
+{
+  "error": "description of the error"
+}
+```
+
+---
+
+### POST /api/v1/workspaces/:slug/campaigns
+
+Create a new campaign.
+
+**Authentication:** API Key, Admin Token, or PAT with `campaigns:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | Workspace slug |
+
+**Request Body:**
+
+```json
+{
+  "name": "sprint-42",
+  "spec_ids": ["07", "09"],
+  "integration_branch": "main"
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `name` | yes | string | Campaign name; must be unique within the workspace |
+| `integration_branch` | yes | string | Git branch to use as the integration target |
+| `spec_ids` | no | string[] | Explicit list of spec IDs. When omitted, specs are discovered by scanning `tasks.json` files for pending subtasks. |
+
+**Response:** HTTP 201 Created with campaign JSON (see Campaign Response Schema).
+
+On creation, the handler computes the initial DAG frontier (specs with no
+unmet dependencies), creates git branches for frontier specs, sets frontier
+specs to `active`, and sets the campaign to `active`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Invalid JSON in request body |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `campaigns:write` scope |
+| 409 | An active campaign already exists for the integration branch; or campaign name already exists |
+| 422 | Missing required fields (`name`, `integration_branch`); integration branch does not exist; no valid specs found |
+| 500 | Git branch creation failure; database error |
+
+---
+
+### GET /api/v1/workspaces/:slug/campaigns
+
+List campaigns for a workspace, optionally filtered by status.
+
+**Authentication:** API Key, Admin Token, or PAT with `campaigns:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | Workspace slug |
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by campaign status. Valid values: `pending`, `active`, `completed`, `failed`, `cancelled`. |
+
+**Response:** HTTP 200 OK with a JSON array of campaign objects. Returns an
+empty array `[]` when no campaigns match.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `campaigns:read` scope |
+| 422 | Invalid status filter value |
+
+---
+
+### GET /api/v1/workspaces/:slug/campaigns/:id
+
+Get a single campaign with full detail including DAG and per-spec status.
+
+**Authentication:** API Key, Admin Token, or PAT with `campaigns:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | Workspace slug |
+| `:id` | Campaign ID (UUID) |
+
+**Response:** HTTP 200 OK with campaign JSON (see Campaign Response Schema),
+including the `specs` array with `conflict_details` and `blocked_by_merge`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `campaigns:read` scope |
+| 404 | Campaign not found |
+
+---
+
+### DELETE /api/v1/workspaces/:slug/campaigns/:id
+
+Cancel an active campaign. Sets the campaign and all specs to `cancelled`
+status. Spec branches are left in place on the git server for debugging.
+
+**Authentication:** API Key, Admin Token, or PAT with `campaigns:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | Workspace slug |
+| `:id` | Campaign ID (UUID) |
+
+**Response:** HTTP 200 OK with the updated campaign JSON reflecting
+`cancelled` status for the campaign and all specs.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `campaigns:write` scope |
+| 404 | Campaign not found |
+| 409 | Campaign is already cancelled; or campaign is in `completed`/`failed` state |
+
+---
+
+### POST /api/v1/workspaces/:slug/campaigns/:id/specs/:spec_id/resolve
+
+Resolve a rebase conflict on a blocked spec branch. The hub rebases the spec
+branch onto the current integration branch HEAD and restores push access if
+the rebase is clean.
+
+**Authentication:** API Key, Admin Token, or PAT with `campaigns:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | Workspace slug |
+| `:id` | Campaign ID (UUID) |
+| `:spec_id` | Spec identifier (e.g., `"07"`) |
+
+**Response (clean rebase):** HTTP 200 OK
+
+```json
+{
+  "spec_id": "07",
+  "status": "active",
+  "branch_sha": "abcdef1234567890abcdef1234567890abcdef12"
+}
+```
+
+**Response (already active/merged):** HTTP 200 OK with current status and
+branch_sha (idempotent, no rebase performed).
+
+**Response (still conflicting):** HTTP 409 Conflict
+
+```json
+{
+  "conflict_details": ["file1.go", "file2.go"]
+}
+```
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `campaigns:write` scope |
+| 404 | Campaign not found; or spec not found in campaign |
+| 409 | Spec is in `pending`, `failed`, or `cancelled` status (wrong state for resolution); or rebase still has conflicts |
+| 500 | Git rebase subprocess error or timeout |
+
+---
+
 ## Non-Workspace Endpoints (apikit-provided)
 
 The following endpoints are provided by the `apikit` library and are available
