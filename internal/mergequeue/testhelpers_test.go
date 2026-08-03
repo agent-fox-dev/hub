@@ -183,3 +183,124 @@ func indexExists(t *testing.T, db *sql.DB, indexName string) bool {
 	}
 	return true
 }
+
+// openCanMergeTestDB opens an in-memory SQLite database with the merge_jobs,
+// campaigns, and campaign_specs tables created directly via SQL. This avoids
+// depending on InitSchema (which may still be a stub) while providing all
+// tables that CanMerge queries.
+func openCanMergeTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := openTestDBNoSchema(t)
+	setupMergeJobsTable(t, db)
+	setupCampaignTables(t, db)
+	return db
+}
+
+// setupMergeJobsTable creates the merge_jobs table directly via SQL,
+// bypassing InitSchema. Used by CanMerge tests that need the table to exist
+// before InitSchema is implemented.
+func setupMergeJobsTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS merge_jobs (
+			id               TEXT PRIMARY KEY,
+			nonce            TEXT NOT NULL UNIQUE,
+			campaign_id      TEXT,
+			spec_id          TEXT,
+			workspace_slug   TEXT NOT NULL,
+			target_branch    TEXT NOT NULL,
+			source_ref       TEXT NOT NULL,
+			status           TEXT NOT NULL
+				CHECK(status IN ('prepared','queued','running','merged',
+					'conflict','check_failed','cancelled','push_failed','dead_letter')),
+			rejection_reason TEXT,
+			retry_count      INTEGER NOT NULL,
+			available_at     TEXT NOT NULL,
+			base_sha         TEXT,
+			merged_sha       TEXT,
+			conflict_details TEXT,
+			check_output     TEXT,
+			submitted_by     TEXT NOT NULL,
+			created_at       TEXT NOT NULL,
+			updated_at       TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_merge_jobs_campaign
+			ON merge_jobs(campaign_id, status);
+		CREATE INDEX IF NOT EXISTS idx_merge_jobs_workspace
+			ON merge_jobs(workspace_slug, status, created_at);
+		CREATE INDEX IF NOT EXISTS idx_merge_jobs_available
+			ON merge_jobs(status, available_at);
+	`)
+	if err != nil {
+		t.Fatalf("setupMergeJobsTable() failed: %v", err)
+	}
+}
+
+// setupCampaignTables creates the campaigns and campaign_specs tables in the
+// test database. These tables are owned by the campaign package but queried
+// by CanMerge for dependency and spec-status checks.
+func setupCampaignTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS campaigns (
+			id                 TEXT PRIMARY KEY,
+			workspace_slug     TEXT NOT NULL,
+			name               TEXT NOT NULL,
+			integration_branch TEXT NOT NULL,
+			status             TEXT NOT NULL DEFAULT 'active',
+			dag                TEXT NOT NULL,
+			created_by         TEXT NOT NULL,
+			created_at         TEXT NOT NULL,
+			updated_at         TEXT NOT NULL,
+			UNIQUE(workspace_slug, name)
+		);
+		CREATE TABLE IF NOT EXISTS campaign_specs (
+			campaign_id      TEXT NOT NULL REFERENCES campaigns(id),
+			spec_id          TEXT NOT NULL,
+			status           TEXT NOT NULL DEFAULT 'pending',
+			branch_name      TEXT,
+			branch_sha       TEXT,
+			conflict_details TEXT,
+			blocked_by_merge TEXT,
+			updated_at       TEXT NOT NULL,
+			PRIMARY KEY(campaign_id, spec_id)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("setupCampaignTables() failed: %v", err)
+	}
+}
+
+// insertTestCampaign inserts a campaign row into the test database.
+func insertTestCampaign(t *testing.T, db *sql.DB, id, workspaceSlug, integrationBranch, dagJSON, now string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO campaigns (
+		id, workspace_slug, name, integration_branch, status, dag,
+		created_by, created_at, updated_at
+	) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+		id, workspaceSlug, "campaign-"+id[:8], integrationBranch,
+		dagJSON, newTestUUID("creator"), now, now,
+	)
+	if err != nil {
+		t.Fatalf("insertTestCampaign(%q) failed: %v", id, err)
+	}
+}
+
+// insertTestCampaignSpec inserts a campaign_spec row into the test database.
+// branchSHA may be empty to represent a NULL branch_sha (branch not ready).
+func insertTestCampaignSpec(t *testing.T, db *sql.DB, campaignID, specID, status, branchSHA, now string) {
+	t.Helper()
+	var sha *string
+	if branchSHA != "" {
+		sha = &branchSHA
+	}
+	_, err := db.Exec(`INSERT INTO campaign_specs (
+		campaign_id, spec_id, status, branch_name, branch_sha, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?)`,
+		campaignID, specID, status, "spec/"+specID, sha, now,
+	)
+	if err != nil {
+		t.Fatalf("insertTestCampaignSpec(%q, spec=%q, status=%q) failed: %v",
+			campaignID, specID, status, err)
+	}
+}
