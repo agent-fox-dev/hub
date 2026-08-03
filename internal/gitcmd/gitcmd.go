@@ -63,10 +63,26 @@ func (r *GitRunner) buildEnv() []string {
 	return nil // stub
 }
 
+// minMajor and minMinor define the minimum git version required (2.38).
+// These are deliberately unexported to prevent external dependence on the
+// specific version threshold.
+const (
+	minMajor = 2
+	minMinor = 38
+)
+
 // CheckGitVersion validates the host git binary meets the minimum version
 // requirement (2.38) at startup. Returns an error if below minimum.
 func CheckGitVersion(_ context.Context) error {
 	return nil // stub
+}
+
+// parseGitVersion extracts the version string (major.minor.patch) from
+// git --version output by taking the first three dot-separated numeric
+// components and ignoring trailing tokens (Apple Git suffix, rc suffix, etc.).
+// Returns an error if the output cannot be parsed into three numeric components.
+func parseGitVersion(_ string) (string, error) {
+	return "", nil // stub
 }
 
 // GitError is a structured error type returned by Run on non-zero git exit
