@@ -3,6 +3,7 @@ package campaign
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/agent-fox-dev/hub/internal/mergequeue"
@@ -23,6 +24,7 @@ type Scheduler struct {
 	rebaseEngine *RebaseEngine
 	repoPath     string
 	mutexes      sync.Map // per-campaign mutexes keyed by campaign ID → *mutexEntry
+	frontiers    sync.Map // per-campaign frontier cache keyed by campaign ID → []string
 }
 
 // NewScheduler creates a new campaign Scheduler.
@@ -182,15 +184,60 @@ func (s *Scheduler) advanceFrontier(ctx context.Context, campaign *Campaign) err
 // frontier from the DAG and current campaign_specs status rows in the DB.
 // It re-initializes the per-campaign mutex map as empty.
 // This is called on hub restart to heal any partial state from crashes.
-func (s *Scheduler) RecoverFromDB(_ context.Context) error {
-	return nil // stub
+func (s *Scheduler) RecoverFromDB(ctx context.Context) error {
+	// Re-initialize the per-campaign mutex map as empty (12-REQ-17.2).
+	s.mutexes = sync.Map{}
+	// Clear any cached frontiers from prior state.
+	s.frontiers = sync.Map{}
+
+	// List all active campaigns from the DB.
+	campaigns, err := s.store.ListActiveCampaigns(ctx)
+	if err != nil {
+		return fmt.Errorf("recover from DB: %w", err)
+	}
+
+	for _, campaign := range campaigns {
+		// Get all specs for this campaign.
+		specs, err := s.store.GetCampaignSpecs(ctx, campaign.ID)
+		if err != nil {
+			log.Printf("campaign %s: failed to get specs during recovery: %v", campaign.ID, err)
+			continue
+		}
+
+		// Build the set of merged specs for frontier computation.
+		mergedSpecs := make(map[string]bool)
+		for _, spec := range specs {
+			if spec.Status == "merged" {
+				mergedSpecs[spec.SpecID] = true
+			}
+		}
+
+		// Compute the frontier: specs whose upstream deps are all merged.
+		frontier := ComputeFrontier(campaign.DAG, mergedSpecs)
+
+		// Cache the frontier for GetFrontier lookups.
+		s.frontiers.Store(campaign.ID, frontier)
+
+		// Active and blocked specs are left as-is (12-REQ-14.2, 12-REQ-14.3).
+		// Only pending frontier specs need activation, but we do NOT activate
+		// them here — activation requires branch creation which is done by
+		// advanceFrontier during normal PostMergeHook processing.
+		// Recovery only recomputes what the frontier should be.
+	}
+
+	return nil
 }
 
 // GetFrontier returns the spec IDs that are currently in the frontier
 // for the given campaign — specs whose upstream dependencies are all
 // satisfied and which should be active.
-func (s *Scheduler) GetFrontier(_ string) []string {
-	return nil // stub
+func (s *Scheduler) GetFrontier(campaignID string) []string {
+	val, ok := s.frontiers.Load(campaignID)
+	if !ok {
+		return nil
+	}
+	frontier, _ := val.([]string)
+	return frontier
 }
 
 // MutexMapSize returns the number of entries in the per-campaign mutex map.

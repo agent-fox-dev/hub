@@ -383,9 +383,68 @@ func (h *Handler) getCampaign(c echo.Context) error {
 }
 
 func (h *Handler) cancelCampaign(c echo.Context) error {
-	return c.JSON(http.StatusNotImplemented, map[string]string{
-		"error": "not implemented",
-	})
+	ctx := c.Request().Context()
+	campaignID := c.Param("id")
+
+	// Auth check.
+	auth := apikit.GetAuthInfo(c)
+	if auth == nil {
+		return respondError(c, http.StatusUnauthorized, "authentication required")
+	}
+	if isPAT(auth) && !hasCampaignWriteAccess(auth) {
+		return respondError(c, http.StatusForbidden, "campaigns:write scope required")
+	}
+
+	// Load the campaign.
+	campaign, err := h.store.GetCampaign(ctx, campaignID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	if campaign == nil {
+		return respondError(c, http.StatusNotFound, "campaign not found")
+	}
+
+	// Only active campaigns can be cancelled.
+	switch campaign.Status {
+	case "active":
+		// Proceed with cancellation.
+	case "cancelled":
+		return respondError(c, http.StatusConflict, "campaign is already cancelled")
+	default:
+		return respondError(c, http.StatusConflict,
+			fmt.Sprintf("cannot cancel campaign in %s state", campaign.Status))
+	}
+
+	// Cancel campaign and all specs in a single transaction.
+	if err := h.store.CancelCampaign(ctx, campaignID); err != nil {
+		return respondError(c, http.StatusInternalServerError, "failed to cancel campaign")
+	}
+
+	// Reload campaign and specs to return updated state.
+	campaign, err = h.store.GetCampaign(ctx, campaignID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	specs, err := h.store.GetCampaignSpecs(ctx, campaignID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+
+	resp := campaignResponse{
+		ID:                campaign.ID,
+		WorkspaceSlug:     campaign.WorkspaceSlug,
+		Name:              campaign.Name,
+		IntegrationBranch: campaign.IntegrationBranch,
+		Status:            campaign.Status,
+		DAG:               campaign.DAG,
+		Specs:             specs,
+		CreatedBy:         campaign.CreatedBy,
+		CreatedAt:         campaign.CreatedAt,
+		UpdatedAt:         campaign.UpdatedAt,
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) resolveSpec(c echo.Context) error {
