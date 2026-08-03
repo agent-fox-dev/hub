@@ -8,9 +8,11 @@ import (
 
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/campaign"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
+	"github.com/agent-fox-dev/hub/internal/mergequeue"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
@@ -70,6 +72,7 @@ func main() {
 	var extraPerms []apikit.Permission
 	extraPerms = append(extraPerms, gitserver.GitPermissions()...)
 	extraPerms = append(extraPerms, secrets.Permissions()...)
+	extraPerms = append(extraPerms, campaign.Permissions()...)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace, git, secrets, and variables
@@ -88,12 +91,35 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Initialise the campaign tables and mount campaign API routes.
+	// Must run after MountWorkspaceHandlers and before Start.
+	if err := campaign.InitSchema(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+	campaignGitOps := campaign.NewGitRunnerAdapter()
+	campaignModule := campaign.SetupModule(
+		server.APIGroup(), database.SqlDB, campaignGitOps, cfg.Workspace.Path,
+	)
+
+	// Recover active campaigns on startup (12-REQ-14).
+	if err := campaignModule.RecoverActiveCampaigns(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	// Register the campaign's CanMerge check with the merge queue so that
+	// cancelled/blocked specs are rejected before merge processing.
+	mergequeue.SetCanMergeHook(campaignModule.CheckCanMerge())
+
 	// Mount git smart HTTP handlers on the Echo instance. The git server
 	// registers routes at /git/:org/:slug.git/* outside the API group,
 	// with its own HTTP Basic auth middleware.
 	if err := gitserver.MountGitHandlers(server.Echo(), database.SqlDB, cfg.Workspace.Path); err != nil {
 		log.Fatal(err)
 	}
+
+	// Register the campaign's PushAuthorizer with the git server to block
+	// pushes to conflicted spec branches and integration branches (12-REQ-9).
+	gitserver.SetPushAuthorizer(gitserver.PushAuthorizerFunc(campaignModule.PushAuthorizer()))
 
 	if err := server.Start(); err != nil {
 		log.Fatal(err)

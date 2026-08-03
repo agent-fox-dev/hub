@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 
 	"github.com/agent-fox-dev/hub/internal/mergequeue"
@@ -18,13 +19,27 @@ type mutexEntry struct {
 // Scheduler manages campaign lifecycle transitions including completion
 // checking, failure propagation, and post-merge hook processing.
 type Scheduler struct {
-	store        *Store
-	gitOps       GitOps
-	authz        *Authz
-	rebaseEngine *RebaseEngine
-	repoPath     string
-	mutexes      sync.Map // per-campaign mutexes keyed by campaign ID → *mutexEntry
-	frontiers    sync.Map // per-campaign frontier cache keyed by campaign ID → []string
+	store         *Store
+	gitOps        GitOps
+	authz         *Authz
+	rebaseEngine  *RebaseEngine
+	workspaceRoot string   // production: workspace root directory; repo path = workspaceRoot/<slug>/trunk
+	repoPath      string   // test override: direct repo path (takes precedence over workspaceRoot)
+	mutexes       sync.Map // per-campaign mutexes keyed by campaign ID → *mutexEntry
+	frontiers     sync.Map // per-campaign frontier cache keyed by campaign ID → []string
+}
+
+// resolveRepoPathForCampaign derives the git repository path for a campaign.
+// If repoPath is set (test override), it is returned directly.
+// Otherwise, the path is derived from workspaceRoot and the campaign's workspace slug.
+func (s *Scheduler) resolveRepoPathForCampaign(workspaceSlug string) string {
+	if s.repoPath != "" {
+		return s.repoPath
+	}
+	if s.workspaceRoot != "" {
+		return filepath.Join(s.workspaceRoot, workspaceSlug, "trunk")
+	}
+	return ""
 }
 
 // NewScheduler creates a new campaign Scheduler.
@@ -116,7 +131,8 @@ func (s *Scheduler) HandlePostMerge(ctx context.Context, job mergequeue.MergeJob
 
 		// Cascade rebase of remaining active branches.
 		if s.rebaseEngine != nil {
-			if _, err := s.rebaseEngine.CascadeRebase(ctx, campaignID, job.ID, campaign.IntegrationBranch, s.repoPath); err != nil {
+			repoPath := s.resolveRepoPathForCampaign(campaign.WorkspaceSlug)
+			if _, err := s.rebaseEngine.CascadeRebase(ctx, campaignID, job.ID, campaign.IntegrationBranch, repoPath); err != nil {
 				return fmt.Errorf("handle post merge: cascade rebase: %w", err)
 			}
 		}
@@ -155,6 +171,8 @@ func (s *Scheduler) advanceFrontier(ctx context.Context, campaign *Campaign) err
 	// Compute frontier: specs whose upstream dependencies are all merged.
 	frontier := ComputeFrontier(campaign.DAG, mergedSpecs)
 
+	repoPath := s.resolveRepoPathForCampaign(campaign.WorkspaceSlug)
+
 	for _, fSpecID := range frontier {
 		// Only activate specs that are currently pending.
 		if specStatus[fSpecID] != "pending" {
@@ -165,7 +183,7 @@ func (s *Scheduler) advanceFrontier(ctx context.Context, campaign *Campaign) err
 		branchName := DeriveSpecBranchName(fSpecID)
 		var sha string
 		if s.gitOps != nil {
-			sha, err = s.gitOps.CreateBranch(ctx, s.repoPath, branchName, campaign.IntegrationBranch)
+			sha, err = s.gitOps.CreateBranch(ctx, repoPath, branchName, campaign.IntegrationBranch)
 			if err != nil {
 				continue // Best effort: skip this spec if branch creation fails.
 			}

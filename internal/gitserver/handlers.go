@@ -2,6 +2,7 @@ package gitserver
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -18,6 +19,24 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 )
+
+// PushAuthorizerFunc is a callback that gates whether a push to the given
+// branch is allowed. It returns nil to allow or a non-nil error to reject
+// the push. The campaign package registers one to block pushes to conflicted
+// spec branches and direct pushes to integration branches.
+type PushAuthorizerFunc func(ctx context.Context, branch string) error
+
+// pushAuthorizer is the package-level PushAuthorizer callback. When set,
+// handleReceivePack calls it before accepting a push. Safe for concurrent
+// reads after MountGitHandlers returns.
+var pushAuthorizer PushAuthorizerFunc
+
+// SetPushAuthorizer registers a callback that the receive-pack handler
+// calls to gate pushes. Call this before Start and after MountGitHandlers.
+// Only one authorizer is supported; a second call overwrites the first.
+func SetPushAuthorizer(fn PushAuthorizerFunc) {
+	pushAuthorizer = fn
+}
 
 // MountGitHandlers registers git smart HTTP routes and the git auth middleware
 // on the Echo instance.
@@ -247,6 +266,19 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 		if err := req.Decode(bytes.NewReader(bodyBytes)); err != nil {
 			writeSessionError(c.Response(), err)
 			return nil
+		}
+
+		// Check PushAuthorizer for each target branch in the update request.
+		// This blocks pushes to conflicted spec branches and integration branches
+		// managed by campaigns (12-REQ-9).
+		if pushAuthorizer != nil {
+			for _, cmd := range req.Commands {
+				branchName := strings.TrimPrefix(cmd.Name.String(), "refs/heads/")
+				if authErr := pushAuthorizer(c.Request().Context(), branchName); authErr != nil {
+					writeSessionError(c.Response(), fmt.Errorf("push rejected: %s", authErr.Error()))
+					return nil
+				}
+			}
 		}
 
 		// Execute the receive-pack session.
