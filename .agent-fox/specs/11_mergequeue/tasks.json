@@ -294,7 +294,7 @@
             "11-REQ-5.1",
             "11-REQ-5.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -317,7 +317,7 @@
             "11-REQ-5.4",
             "11-REQ-5.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -339,7 +339,7 @@
             "11-REQ-5.E2",
             "11-REQ-5.E3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

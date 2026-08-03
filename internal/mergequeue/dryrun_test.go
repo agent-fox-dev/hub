@@ -251,7 +251,7 @@ func TestDryRun_MergeTreeCalledWithCorrectArgs(t *testing.T) {
 	mockGit := newDefaultMockGitOps(0, "", nil)
 	mockMu := newMockBranchLocker()
 
-	err := processMergeJob(context.Background(), db, job, mockGit, mockMu)
+	err := processMergeJob(context.Background(), db, job, MergeDeps{Git: mockGit, Locker: mockMu})
 	if err != nil {
 		t.Fatalf("processMergeJob() returned error: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestDryRun_NonZeroExitParsesConflictsAndSetsStatus(t *testing.T) {
 	mockGit := newDefaultMockGitOps(1, conflictStderr, nil)
 	mockMu := newMockBranchLocker()
 
-	err := processMergeJob(context.Background(), db, job, mockGit, mockMu)
+	err := processMergeJob(context.Background(), db, job, MergeDeps{Git: mockGit, Locker: mockMu})
 	if err != nil {
 		t.Fatalf("processMergeJob() returned error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestDryRun_ConflictCheckOutsideMutex(t *testing.T) {
 	mockMu := newMockBranchLocker()
 	mockMu.sharedLog = log
 
-	err := processMergeJob(context.Background(), db, job, mockGit, mockMu)
+	err := processMergeJob(context.Background(), db, job, MergeDeps{Git: mockGit, Locker: mockMu})
 	if err != nil {
 		t.Fatalf("processMergeJob() returned error: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestDryRun_TOCTOURebaseConflictAfterPassingDryRun(t *testing.T) {
 
 	mockMu := newMockBranchLocker()
 
-	err := processMergeJob(context.Background(), db, job, mockGit, mockMu)
+	err := processMergeJob(context.Background(), db, job, MergeDeps{Git: mockGit, Locker: mockMu})
 	if err != nil {
 		t.Fatalf("processMergeJob() returned error: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestDryRun_SubprocessErrorReenqueuesWithBackoff(t *testing.T) {
 	mockMu := newMockBranchLocker()
 
 	// processMergeJob should handle the error and re-enqueue.
-	_ = processMergeJob(context.Background(), db, job, mockGit, mockMu)
+	_ = processMergeJob(context.Background(), db, job, MergeDeps{Git: mockGit, Locker: mockMu})
 
 	// Job status must remain 'queued' (not 'conflict').
 	status := getJobStatus(t, db, job.ID)
@@ -581,7 +581,7 @@ func TestDryRun_ContextCancelledReenqueuesWithBackoff(t *testing.T) {
 	mockMu := newMockBranchLocker()
 
 	// processMergeJob should handle context cancellation gracefully.
-	_ = processMergeJob(ctx, db, job, mockGit, mockMu)
+	_ = processMergeJob(ctx, db, job, MergeDeps{Git: mockGit, Locker: mockMu})
 
 	// Job status must remain 'queued' (not 'conflict').
 	status := getJobStatus(t, db, job.ID)

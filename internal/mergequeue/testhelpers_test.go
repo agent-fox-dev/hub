@@ -184,6 +184,39 @@ func indexExists(t *testing.T, db *sql.DB, indexName string) bool {
 	return true
 }
 
+// getJobBaseSHA reads the base_sha from the database.
+func getJobBaseSHA(t *testing.T, db *sql.DB, id string) sql.NullString {
+	t.Helper()
+	var baseSHA sql.NullString
+	err := db.QueryRow("SELECT base_sha FROM merge_jobs WHERE id = ?", id).Scan(&baseSHA)
+	if err != nil {
+		t.Fatalf("getJobBaseSHA(%q) failed: %v", id, err)
+	}
+	return baseSHA
+}
+
+// getJobMergedSHA reads the merged_sha from the database.
+func getJobMergedSHA(t *testing.T, db *sql.DB, id string) sql.NullString {
+	t.Helper()
+	var mergedSHA sql.NullString
+	err := db.QueryRow("SELECT merged_sha FROM merge_jobs WHERE id = ?", id).Scan(&mergedSHA)
+	if err != nil {
+		t.Fatalf("getJobMergedSHA(%q) failed: %v", id, err)
+	}
+	return mergedSHA
+}
+
+// getJobCheckOutput reads the check_output from the database.
+func getJobCheckOutput(t *testing.T, db *sql.DB, id string) sql.NullString {
+	t.Helper()
+	var checkOutput sql.NullString
+	err := db.QueryRow("SELECT check_output FROM merge_jobs WHERE id = ?", id).Scan(&checkOutput)
+	if err != nil {
+		t.Fatalf("getJobCheckOutput(%q) failed: %v", id, err)
+	}
+	return checkOutput
+}
+
 // openCanMergeTestDB opens an in-memory SQLite database with the merge_jobs,
 // campaigns, and campaign_specs tables created directly via SQL. This avoids
 // depending on InitSchema (which may still be a stub) while providing all
