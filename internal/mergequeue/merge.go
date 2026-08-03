@@ -87,6 +87,7 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 		// backoff rather than marking as conflict (11-REQ-4.E2, 11-REQ-4.E3).
 		slog.Error("merge-tree dry-run subprocess error",
 			"merge_job_id", job.ID,
+			"workspace_slug", job.WorkspaceSlug,
 			"error", mergeTreeErr,
 		)
 		return reEnqueueWithBackoff(db, job, "")
@@ -116,6 +117,7 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 		// Nonce mismatch — another submission took over. Discard.
 		slog.Warn("nonce mismatch; discarding job",
 			"merge_job_id", job.ID,
+			"workspace_slug", job.WorkspaceSlug,
 			"expected_nonce", job.Nonce,
 			"db_nonce", dbJob.Nonce,
 		)
@@ -135,6 +137,11 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 	if err != nil {
 		return fmt.Errorf("transition to running: %w", err)
 	}
+	slog.Info("job status transition",
+		"merge_job_id", job.ID,
+		"workspace_slug", job.WorkspaceSlug,
+		"status", "running",
+	)
 
 	// Step 6: git fetch origin <targetBranch>.
 	_, _, err = deps.Git.Run(ctx, "fetch", "origin", job.TargetBranch)
@@ -143,6 +150,7 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 		// Re-enqueue the job with backoff rather than leaving it in running state.
 		slog.Error("git fetch failed; re-enqueuing with backoff",
 			"merge_job_id", job.ID,
+			"workspace_slug", job.WorkspaceSlug,
 			"error", err,
 		)
 		return reEnqueueWithBackoff(db, job, "")
@@ -204,6 +212,11 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 	if err != nil {
 		return fmt.Errorf("transition to merged: %w", err)
 	}
+	slog.Info("job status transition",
+		"merge_job_id", job.ID,
+		"workspace_slug", job.WorkspaceSlug,
+		"status", "merged",
+	)
 
 	// Step 12: Invoke PostMergeHook for campaign merges.
 	if job.CampaignID.Valid && job.CampaignID.String != "" && deps.Hook != nil {
@@ -212,12 +225,14 @@ func processMergeJob(ctx context.Context, db *sql.DB, job *MergeJob, deps MergeD
 		if readErr != nil {
 			slog.Error("failed to re-read merged job for hook",
 				"merge_job_id", job.ID,
+				"workspace_slug", job.WorkspaceSlug,
 				"error", readErr,
 			)
 		} else if mergedJob != nil {
 			if hookErr := deps.Hook(ctx, *mergedJob); hookErr != nil {
 				slog.Error("PostMergeHook failed",
 					"merge_job_id", job.ID,
+					"workspace_slug", job.WorkspaceSlug,
 					"error", hookErr,
 				)
 				// Hook errors are logged but do not change job status.
@@ -268,6 +283,12 @@ func setConflictStatus(db *sql.DB, jobID string, conflictFiles []string) error {
 		`UPDATE merge_jobs SET status = 'conflict', conflict_details = ?, updated_at = ? WHERE id = ?`,
 		string(detailsJSON), now, jobID,
 	)
+	if err == nil {
+		slog.Info("job status transition",
+			"merge_job_id", jobID,
+			"status", "conflict",
+		)
+	}
 	return err
 }
 
@@ -305,6 +326,12 @@ func setCheckFailed(db *sql.DB, jobID, output string) error {
 		`UPDATE merge_jobs SET status = 'check_failed', check_output = ?, updated_at = ? WHERE id = ?`,
 		output, now, jobID,
 	)
+	if err == nil {
+		slog.Info("job status transition",
+			"merge_job_id", jobID,
+			"status", "check_failed",
+		)
+	}
 	return err
 }
 
@@ -315,6 +342,12 @@ func setPushFailed(db *sql.DB, jobID string) error {
 		`UPDATE merge_jobs SET status = 'push_failed', updated_at = ? WHERE id = ?`,
 		now, jobID,
 	)
+	if err == nil {
+		slog.Info("job status transition",
+			"merge_job_id", jobID,
+			"status", "push_failed",
+		)
+	}
 	return err
 }
 

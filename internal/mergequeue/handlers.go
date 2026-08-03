@@ -110,13 +110,15 @@ func mergeJobListItem(job *MergeJob) map[string]interface{} {
 }
 
 // RegisterMergeRoutes registers merge queue HTTP routes on the given API group.
-func RegisterMergeRoutes(api *echo.Group, db *sql.DB) error {
+// The queue parameter is optional — when non-nil, submit and requeue handlers
+// call queue.Notify() to wake the worker goroutine immediately.
+func RegisterMergeRoutes(api *echo.Group, db *sql.DB, queue *Queue) error {
 	ws := api.Group("/workspaces/:slug")
-	ws.POST("/merges", handleSubmitMerge(db))
+	ws.POST("/merges", handleSubmitMerge(db, queue))
 	ws.GET("/merges", handleListMerges(db))
 	ws.GET("/merges/:id", handleGetMerge(db))
 	ws.DELETE("/merges/:id", handleCancelMerge(db))
-	ws.POST("/merges/:id/requeue", handleRequeueMerge(db))
+	ws.POST("/merges/:id/requeue", handleRequeueMerge(db, queue))
 	return nil
 }
 
@@ -158,7 +160,7 @@ func workspaceExists(db *sql.DB, slug string) (bool, error) {
 }
 
 // handleSubmitMerge handles POST /api/v1/workspaces/:slug/merges.
-func handleSubmitMerge(db *sql.DB) echo.HandlerFunc {
+func handleSubmitMerge(db *sql.DB, queue *Queue) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth, err := requireAuth(c, "merges:write")
 		if err != nil {
@@ -249,6 +251,11 @@ func handleSubmitMerge(db *sql.DB) echo.HandlerFunc {
 		job, err = GetMergeJob(db, jobID)
 		if err != nil || job == nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to read merge job")
+		}
+
+		// Wake the worker goroutine to pick up the new job immediately.
+		if queue != nil {
+			queue.Notify()
 		}
 
 		return c.JSON(http.StatusAccepted, mergeJobResponse(job))
@@ -430,7 +437,7 @@ func handleCancelMerge(db *sql.DB) echo.HandlerFunc {
 }
 
 // handleRequeueMerge handles POST /api/v1/workspaces/:slug/merges/:id/requeue.
-func handleRequeueMerge(db *sql.DB) echo.HandlerFunc {
+func handleRequeueMerge(db *sql.DB, queue *Queue) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth, err := requireAuth(c, "merges:write")
 		if err != nil {
@@ -490,6 +497,11 @@ func handleRequeueMerge(db *sql.DB) echo.HandlerFunc {
 
 		if insertErr := InsertMergeJob(db, newJob); insertErr != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to create requeued job")
+		}
+
+		// Wake the worker goroutine to pick up the requeued job immediately.
+		if queue != nil {
+			queue.Notify()
 		}
 
 		return c.JSON(http.StatusAccepted, mergeJobResponse(newJob))

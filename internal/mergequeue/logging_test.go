@@ -36,12 +36,21 @@ type logEntry struct {
 }
 
 // captureLogBuffer creates a slog.Logger that writes JSON log entries to a
-// buffer for test assertions. Returns the buffer and the logger.
+// buffer for test assertions. It also sets the default slog handler so that
+// production code using slog.Info/Error/Warn writes to the same buffer.
+// The previous default handler is restored on test cleanup.
+// Returns the buffer and the logger.
 func captureLogBuffer(t *testing.T) (*bytes.Buffer, *slog.Logger) {
 	t.Helper()
 	var buf bytes.Buffer
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(handler)
+
+	// Redirect the global slog default so production code writes to our buffer.
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	return &buf, logger
 }
 

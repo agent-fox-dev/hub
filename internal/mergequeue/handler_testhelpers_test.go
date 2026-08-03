@@ -37,7 +37,7 @@ func newMergeHTTPTestEnv(t *testing.T) *mergeHTTPTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(mergeTestAuthMiddleware())
 
-	if err := RegisterMergeRoutes(api, db); err != nil {
+	if err := RegisterMergeRoutes(api, db, nil); err != nil {
 		t.Fatalf("RegisterMergeRoutes() returned error: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func newMergeHTTPTestEnvWithCampaigns(t *testing.T) *mergeHTTPTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(mergeTestAuthMiddleware())
 
-	if err := RegisterMergeRoutes(api, db); err != nil {
+	if err := RegisterMergeRoutes(api, db, nil); err != nil {
 		t.Fatalf("RegisterMergeRoutes() returned error: %v", err)
 	}
 

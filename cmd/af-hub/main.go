@@ -73,6 +73,7 @@ func main() {
 	extraPerms = append(extraPerms, gitserver.GitPermissions()...)
 	extraPerms = append(extraPerms, secrets.Permissions()...)
 	extraPerms = append(extraPerms, campaign.Permissions()...)
+	extraPerms = append(extraPerms, mergequeue.Permissions()...)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace, git, secrets, and variables
@@ -109,6 +110,26 @@ func main() {
 	// Register the campaign's CanMerge check with the merge queue so that
 	// cancelled/blocked specs are rejected before merge processing.
 	mergequeue.SetCanMergeHook(campaignModule.CheckCanMerge())
+
+	// Initialise the merge queue schema and worker. Must run after
+	// campaign.SetupModule (for PostMergeHook) and SetCanMergeHook.
+	if err := mergequeue.InitSchema(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+	mqDeps := mergequeue.MergeDeps{
+		Git:           gitcmd.NewRunner(cfg.Workspace.Path),
+		Locker:        mergequeue.NewInMemoryBranchLocker(),
+		Hook:          campaignModule.PostMergeHook(),
+		RunCheck:      mergequeue.DefaultCheckRunner,
+		WorkspaceRoot: cfg.Workspace.Path,
+	}
+	mqQueue := mergequeue.NewQueue(database.SqlDB, mqDeps, mergequeue.CanMerge)
+	mqQueue.Start()
+	defer mqQueue.Stop()
+
+	if err := mergequeue.RegisterMergeRoutes(server.APIGroup(), database.SqlDB, mqQueue); err != nil {
+		log.Fatal(err)
+	}
 
 	// Mount git smart HTTP handlers on the Echo instance. The git server
 	// registers routes at /git/:org/:slug.git/* outside the API group,

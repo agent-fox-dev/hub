@@ -117,6 +117,7 @@ func processJobByID(ctx context.Context, db *sql.DB, jobID string, deps MergeDep
 	case "merged", "conflict", "check_failed", "push_failed", "cancelled", "dead_letter", "running":
 		slog.Info("skipping job in non-queued status",
 			"merge_job_id", job.ID,
+			"workspace_slug", job.WorkspaceSlug,
 			"status", job.Status,
 		)
 		return nil
@@ -149,7 +150,9 @@ func processJobByID(ctx context.Context, db *sql.DB, jobID string, deps MergeDep
 					}
 					slog.Info("job dead-lettered after max retries",
 						"merge_job_id", job.ID,
-						"reason", string(reason),
+						"workspace_slug", job.WorkspaceSlug,
+						"status", "dead_letter",
+						"rejection_reason", string(reason),
 						"retry_count", newCount,
 					)
 					return nil
@@ -159,7 +162,9 @@ func processJobByID(ctx context.Context, db *sql.DB, jobID string, deps MergeDep
 				}
 				slog.Info("job re-enqueued with backoff",
 					"merge_job_id", job.ID,
-					"reason", string(reason),
+					"workspace_slug", job.WorkspaceSlug,
+					"status", "queued",
+					"rejection_reason", string(reason),
 					"retry_count", newCount,
 				)
 				return nil
