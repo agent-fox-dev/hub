@@ -1447,7 +1447,7 @@
             "11-REQ-8.1",
             "11-REQ-7.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1473,7 +1473,7 @@
             "11-REQ-11.3",
             "11-REQ-11.4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1495,7 +1495,7 @@
             "11-REQ-15.2",
             "11-REQ-15.E1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

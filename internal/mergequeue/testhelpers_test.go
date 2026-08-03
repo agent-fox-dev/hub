@@ -385,6 +385,43 @@ func getJobSubmittedBy(t *testing.T, db *sql.DB, id string) string {
 	return sb
 }
 
+// setupWorkspacesTable creates a minimal workspaces table in the test database.
+// The merge queue handler queries this table to validate workspace existence.
+func setupWorkspacesTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS workspaces (
+			slug         TEXT PRIMARY KEY,
+			git_url      TEXT NOT NULL DEFAULT '',
+			branch       TEXT,
+			owner_id     TEXT NOT NULL DEFAULT '',
+			org_id       TEXT,
+			status       TEXT NOT NULL DEFAULT 'active',
+			display_name TEXT NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			clone_status TEXT NOT NULL DEFAULT 'pending',
+			head_sha     TEXT,
+			clone_error  TEXT,
+			created_at   TEXT NOT NULL DEFAULT '',
+			updated_at   TEXT NOT NULL DEFAULT ''
+		)
+	`)
+	if err != nil {
+		t.Fatalf("setupWorkspacesTable() failed: %v", err)
+	}
+}
+
+// insertTestWorkspace inserts a workspace row with the given slug.
+func insertTestWorkspace(t *testing.T, db *sql.DB, slug string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(`INSERT INTO workspaces (slug, owner_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?)`, slug, newTestUUID("owner"), now, now)
+	if err != nil {
+		t.Fatalf("insertTestWorkspace(%q) failed: %v", slug, err)
+	}
+}
+
 // insertTestCampaignSpec inserts a campaign_spec row into the test database.
 // branchSHA may be empty to represent a NULL branch_sha (branch not ready).
 func insertTestCampaignSpec(t *testing.T, db *sql.DB, campaignID, specID, status, branchSHA, now string) {

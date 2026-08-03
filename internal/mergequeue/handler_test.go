@@ -776,10 +776,11 @@ func TestHandlerList_InvalidStatus_Returns400(t *testing.T) {
 	}
 
 	// The error message should contain the invalid status name.
-	// Check both flat error strings and nested apikit envelopes.
-	bodyStr := rec.Body.String()
+	// Re-serialize decoded body for substring checks (Decode consumed the buffer).
+	bodyBytes, _ := json.Marshal(respBody)
+	bodyStr := string(bodyBytes)
 	if !bodyContains(bodyStr, "invalid_status") {
-		t.Error("error body does not contain 'invalid_status'; want the invalid value to be listed")
+		t.Errorf("error body does not contain 'invalid_status'; want the invalid value to be listed; got: %s", bodyStr)
 	}
 
 	// Should list at least some valid status values.
@@ -791,7 +792,7 @@ func TestHandlerList_InvalidStatus_Returns400(t *testing.T) {
 		}
 	}
 	if !hasValidStatus {
-		t.Error("error body does not list any valid status values; want valid options to be included")
+		t.Errorf("error body does not list any valid status values; want valid options to be included; got: %s", bodyStr)
 	}
 }
 

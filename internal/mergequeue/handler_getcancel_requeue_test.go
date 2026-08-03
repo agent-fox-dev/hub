@@ -340,9 +340,11 @@ func TestHandlerCancel_RunningJob_Returns409(t *testing.T) {
 	}
 
 	// The response should contain the current status 'running'.
-	bodyStr := rec.Body.String()
+	// Re-serialize decoded body for substring checks (Decode consumed the buffer).
+	bodyBytes, _ := json.Marshal(respBody)
+	bodyStr := string(bodyBytes)
 	if !bodyContains(bodyStr, "running") {
-		t.Error("error body does not contain 'running'; want current status in error message")
+		t.Errorf("error body does not contain 'running'; want current status in error message; got: %s", bodyStr)
 	}
 }
 
@@ -581,9 +583,11 @@ func TestHandlerCancel_RaceCondition_Returns409WithUpdatedStatus(t *testing.T) {
 	}
 
 	// The response should contain the current status 'running'.
-	bodyStr := rec.Body.String()
+	// Re-serialize decoded body for substring checks (Decode consumed the buffer).
+	bodyBytes, _ := json.Marshal(respBody)
+	bodyStr := string(bodyBytes)
 	if !bodyContains(bodyStr, "running") {
-		t.Error("error body does not contain 'running'; want current status in error message after race condition")
+		t.Errorf("error body does not contain 'running'; want current status in error message after race condition; got: %s", bodyStr)
 	}
 }
 

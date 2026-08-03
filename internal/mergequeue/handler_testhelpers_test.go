@@ -30,6 +30,8 @@ func newMergeHTTPTestEnv(t *testing.T) *mergeHTTPTestEnv {
 	t.Helper()
 	db := openTestDBNoSchema(t)
 	setupMergeJobsTable(t, db)
+	setupWorkspacesTable(t, db)
+	insertTestWorkspace(t, db, "my-workspace")
 
 	e := echo.New()
 	api := e.Group("/api/v1")
@@ -110,6 +112,8 @@ func newMergeHTTPTestEnvWithCampaigns(t *testing.T) *mergeHTTPTestEnv {
 	db := openTestDBNoSchema(t)
 	setupMergeJobsTable(t, db)
 	setupCampaignTables(t, db)
+	setupWorkspacesTable(t, db)
+	insertTestWorkspace(t, db, "my-workspace")
 
 	e := echo.New()
 	api := e.Group("/api/v1")

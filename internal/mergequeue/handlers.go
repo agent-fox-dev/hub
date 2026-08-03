@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"regexp"
 	"slices"
@@ -77,12 +78,14 @@ func mergeJobResponse(job *MergeJob) map[string]interface{} {
 	}
 
 	if job.ConflictDetails.Valid {
-		// Deserialize from TEXT to native JSON array.
+		// Deserialize from TEXT to native JSON array per REQ-15.1.
 		var files []string
 		if err := json.Unmarshal([]byte(job.ConflictDetails.String), &files); err == nil {
 			resp["conflict_details"] = files
 		} else {
-			resp["conflict_details"] = job.ConflictDetails.String
+			// Malformed JSON: log with merge_job_id and return null per REQ-15.E1.
+			log.Printf("mergequeue: failed to parse conflict_details for job %s: %v", job.ID, err)
+			resp["conflict_details"] = nil
 		}
 	} else {
 		resp["conflict_details"] = nil
@@ -144,6 +147,16 @@ func requireAuth(c echo.Context, scope string) (*apikit.AuthInfo, error) {
 	return auth, nil
 }
 
+// workspaceExists checks whether a workspace with the given slug exists.
+func workspaceExists(db *sql.DB, slug string) (bool, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE slug = ?", slug).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // handleSubmitMerge handles POST /api/v1/workspaces/:slug/merges.
 func handleSubmitMerge(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -153,6 +166,15 @@ func handleSubmitMerge(db *sql.DB) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
+
+		// Verify workspace exists.
+		wsExists, wsErr := workspaceExists(db, slug)
+		if wsErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
+		}
+		if !wsExists {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		}
 
 		// Parse request body.
 		var req submitMergeRequest
