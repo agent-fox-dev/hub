@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	"log"
+	"time"
 
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/secrets"
@@ -33,6 +35,15 @@ func main() {
 		AdminEmail: *adminEmail,
 		ResetToken: *resetToken,
 	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Validate git binary meets minimum version requirement (>= 2.38) before
+	// any git-dependent operations (clone queue, git smart HTTP). The 5-second
+	// deadline is the recommended timeout per the gitcmd package documentation.
+	versionCtx, versionCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer versionCancel()
+	if err := gitcmd.CheckGitVersion(versionCtx); err != nil {
 		log.Fatal(err)
 	}
 
