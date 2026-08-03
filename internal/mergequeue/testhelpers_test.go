@@ -319,6 +319,28 @@ func insertTestCampaign(t *testing.T, db *sql.DB, id, workspaceSlug, integration
 	}
 }
 
+// getJobRejectionReason reads the rejection_reason from the database.
+func getJobRejectionReason(t *testing.T, db *sql.DB, id string) sql.NullString {
+	t.Helper()
+	var reason sql.NullString
+	err := db.QueryRow("SELECT rejection_reason FROM merge_jobs WHERE id = ?", id).Scan(&reason)
+	if err != nil {
+		t.Fatalf("getJobRejectionReason(%q) failed: %v", id, err)
+	}
+	return reason
+}
+
+// getJobNonce reads the nonce from the database.
+func getJobNonce(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	var nonce string
+	err := db.QueryRow("SELECT nonce FROM merge_jobs WHERE id = ?", id).Scan(&nonce)
+	if err != nil {
+		t.Fatalf("getJobNonce(%q) failed: %v", id, err)
+	}
+	return nonce
+}
+
 // insertTestCampaignSpec inserts a campaign_spec row into the test database.
 // branchSHA may be empty to represent a NULL branch_sha (branch not ready).
 func insertTestCampaignSpec(t *testing.T, db *sql.DB, campaignID, specID, status, branchSHA, now string) {
