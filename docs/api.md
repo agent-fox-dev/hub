@@ -694,6 +694,193 @@ branch_sha (idempotent, no rebase performed).
 
 ---
 
+## Merge Queue Endpoints
+
+The merge queue serializes integration operations, providing a FIFO queue
+with rebase-then-fast-forward semantics that prevents merge races and silent
+work loss when multiple agents complete work on separate spec branches
+concurrently.
+
+### Merge Job Response Schema
+
+```json
+{
+  "id": "uuid-string",
+  "workspace_slug": "ws-slug",
+  "target_branch": "main",
+  "source_ref": "spec/07-secrets-variables",
+  "status": "queued",
+  "campaign_id": "uuid-string-or-null",
+  "spec_id": "07-or-null",
+  "rejection_reason": null,
+  "retry_count": 0,
+  "available_at": "2026-01-01T00:00:00Z",
+  "base_sha": null,
+  "merged_sha": null,
+  "conflict_details": null,
+  "check_output": null,
+  "submitted_by": "uuid-string",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | UUID of the merge job |
+| `workspace_slug` | string | URL-safe workspace identifier |
+| `target_branch` | string | Git branch to merge into (e.g. `main`) |
+| `source_ref` | string | Git branch to merge from (e.g. `spec/07-secrets-variables`) |
+| `status` | string | One of: `prepared`, `queued`, `running`, `merged`, `conflict`, `check_failed`, `cancelled`, `push_failed`, `dead_letter` |
+| `campaign_id` | string\|null | UUID of the associated campaign, if any |
+| `spec_id` | string\|null | Spec identifier inferred from `source_ref` |
+| `rejection_reason` | string\|null | Why the merge was rejected (`BeforeDependency`, `WouldConflict`, `AlreadyMerged`, `BranchNotReady`, `SpecBlocked`) |
+| `retry_count` | integer | Number of retries attempted |
+| `available_at` | string | RFC 3339 timestamp when the job becomes eligible for processing |
+| `base_sha` | string\|null | SHA of the target branch HEAD when the job started running |
+| `merged_sha` | string\|null | SHA of the target branch HEAD after a successful merge |
+| `conflict_details` | string[]\|null | Array of conflicting file paths (deserialized from stored JSON) |
+| `check_output` | string\|null | Captured stdout/stderr from the post-rebase check command (included only in single-job responses, omitted from list) |
+| `submitted_by` | string | UUID of the user or agent who submitted the job |
+| `created_at` | string | RFC 3339 creation timestamp |
+| `updated_at` | string | RFC 3339 last-update timestamp |
+
+**Note:** The `nonce` field is never included in API responses. The
+`check_output` field is included in single-job responses (GET by ID) but
+omitted from list responses.
+
+### Submit Merge Job
+
+#### POST /api/v1/workspaces/:slug/merges
+
+Submit a new merge job to the queue.
+
+**Authentication:** API Key, Admin Token, or PAT with `merges:write` scope.
+
+**Request Body:**
+
+```json
+{
+  "target_branch": "main",
+  "source_ref": "spec/07-secrets-variables"
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `target_branch` | yes | string | Git branch to merge into |
+| `source_ref` | yes | string | Git branch to merge from |
+
+**Response:** HTTP 202 Accepted with the merge job JSON object (status
+will be `queued`).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `target_branch` or `source_ref` |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Workspace not found |
+| 409 | Active merge job already exists for the same `(workspace_slug, source_ref)` pair. Response includes `existing_job_id`. |
+
+### List Merge Jobs
+
+#### GET /api/v1/workspaces/:slug/merges
+
+List merge jobs for a workspace with optional filtering and cursor-based
+pagination.
+
+**Authentication:** API Key, Admin Token, or PAT with `merges:read` scope.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `status` | string | *(none)* | Filter by a single status value |
+| `limit` | integer | 50 | Maximum items per page (max 100) |
+| `after` | string | *(none)* | UUID of the last job on the previous page (cursor) |
+
+**Response:** HTTP 200 OK
+
+```json
+{
+  "items": [ /* merge job objects (without check_output) */ ],
+  "next_cursor": "uuid-or-null"
+}
+```
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Invalid `status`, `limit`, or `after` parameter |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:read` scope |
+
+### Get Single Merge Job
+
+#### GET /api/v1/workspaces/:slug/merges/:id
+
+Retrieve the full details of a single merge job, including `check_output`
+and `conflict_details` deserialized as a native JSON array.
+
+**Authentication:** API Key, Admin Token, or PAT with `merges:read` scope.
+
+**Response:** HTTP 200 OK with the full merge job JSON object.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:read` scope |
+| 404 | Job not found, or job belongs to a different workspace (anti-enumeration) |
+
+### Cancel Queued Merge Job
+
+#### DELETE /api/v1/workspaces/:slug/merges/:id
+
+Cancel a merge job that is in `queued` status. Jobs in any other status
+cannot be cancelled.
+
+**Authentication:** API Key, Admin Token, or PAT with `merges:write` scope.
+
+**Response:** HTTP 204 No Content on successful cancellation.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Job not found, or job belongs to a different workspace |
+| 409 | Job is not in `queued` status. Response includes the current `status` value. Also returned if the job transitions from `queued` to `running` between the status check and the update (race condition). |
+
+### Requeue Dead-Lettered Merge Job
+
+#### POST /api/v1/workspaces/:slug/merges/:id/requeue
+
+Create a new merge job from a dead-lettered job, giving it a fresh retry
+budget. The original dead-lettered job is left unchanged for audit purposes.
+
+**Authentication:** API Key, Admin Token, or PAT with `merges:write` scope.
+
+**Response:** HTTP 202 Accepted with the new merge job JSON object. The new
+job has a fresh UUID, `status=queued`, `retry_count=0`, `available_at=now()`,
+and `submitted_by` set to the authenticated caller's UUID.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Job not found, or job belongs to a different workspace |
+| 409 | Job is not in `dead_letter` status; or an active job already exists for the same `(workspace_slug, source_ref)` pair (duplicate guard). When a duplicate exists, the response includes `existing_job_id`. |
+
+---
+
 ## Non-Workspace Endpoints (apikit-provided)
 
 The following endpoints are provided by the `apikit` library and are available

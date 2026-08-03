@@ -396,9 +396,33 @@ These 2 permissions are used by the campaign package
 
 ---
 
+## Hub Merge Queue Permissions
+
+These 2 permissions are used by the merge queue package
+(`hub/internal/mergequeue/handlers.go`) and checked in merge queue REST API
+handlers.
+
+### merges:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | View and list merge jobs, including full job details with check_output and conflict_details |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/merges`, `GET /api/v1/workspaces/:slug/merges/:id` |
+
+### merges:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Submit, cancel, and requeue merge jobs |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/merges/:id/requeue` |
+
+---
+
 ## Complete Permission List
 
-All 14 registered permission scopes, sorted alphabetically:
+All 16 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -408,14 +432,16 @@ All 14 registered permission scopes, sorted alphabetically:
 | 4 | `git:write` | hub | git | write |
 | 5 | `keys:manage` | apikit | keys | manage |
 | 6 | `keys:read` | apikit | keys | read |
-| 7 | `orgs:read` | apikit | orgs | read |
-| 8 | `tokens:manage` | apikit | tokens | manage |
-| 9 | `tokens:read` | apikit | tokens | read |
-| 10 | `users:read` | apikit | users | read |
-| 11 | `workspaces:create` | hub | workspaces | create |
-| 12 | `workspaces:delete` | hub | workspaces | delete |
-| 13 | `workspaces:read` | hub | workspaces | read |
-| 14 | `workspaces:write` | hub | workspaces | write |
+| 7 | `merges:read` | hub | merges | read |
+| 8 | `merges:write` | hub | merges | write |
+| 9 | `orgs:read` | apikit | orgs | read |
+| 10 | `tokens:manage` | apikit | tokens | manage |
+| 11 | `tokens:read` | apikit | tokens | read |
+| 12 | `users:read` | apikit | users | read |
+| 13 | `workspaces:create` | hub | workspaces | create |
+| 14 | `workspaces:delete` | hub | workspaces | delete |
+| 15 | `workspaces:read` | hub | workspaces | read |
+| 16 | `workspaces:write` | hub | workspaces | write |
 
 ---
 
