@@ -43,7 +43,7 @@
             "11-REQ-1.2",
             "11-REQ-1.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -62,14 +62,14 @@
             "11-REQ-1.E1",
             "11-REQ-1.E2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
           "id": "1.3",
           "title": "Write unit tests for state machine valid and invalid transitions",
           "details": [
-            "Table-driven tests covering all valid transitions: prepared\u2192queued, queued\u2192running, running\u2192merged, running\u2192conflict, running\u2192check_failed, running\u2192push_failed, queued\u2192cancelled, queued\u2192dead_letter",
+            "Table-driven tests covering all valid transitions: prepared→queued, queued→running, running→merged, running→conflict, running→check_failed, running→push_failed, queued→cancelled, queued→dead_letter",
             "Test that transitioning from terminal states (merged, conflict, cancelled, dead_letter) is rejected",
             "Test that cancellation from running/merged/dead_letter returns an appropriate error"
           ],
@@ -83,7 +83,7 @@
             "11-REQ-2.2",
             "11-REQ-2.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -102,7 +102,7 @@
             "11-REQ-2.E1",
             "11-REQ-2.E2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -245,7 +245,7 @@
           "title": "Write edge-case tests for dry-run failure modes",
           "details": [
             "Test that a GitRunner error (not a conflict exit code) during dry-run is propagated as an error, not a conflict",
-            "Test that the dry-run is performed outside the per-target-branch mutex (TOCTOU by design \u2014 verify mutex is not held during RunExitCode call)",
+            "Test that the dry-run is performed outside the per-target-branch mutex (TOCTOU by design — verify mutex is not held during RunExitCode call)",
             "Test that a stale-passing dry-run followed by a real rebase conflict still results in conflict status with no dirty state"
           ],
           "test_spec_refs": [
@@ -267,14 +267,14 @@
         "checks": [
           "go test ./internal/mergequeue/... -run TestDryRun -count=1 -race passes",
           "go vet ./internal/mergequeue/... reports no issues",
-          "Requirements 11-REQ-4.1, 11-REQ-4.2, 11-REQ-4.3 and edge cases E1\u2013E3 acceptance criteria covered"
+          "Requirements 11-REQ-4.1, 11-REQ-4.2, 11-REQ-4.3 and edge cases E1–E3 acceptance criteria covered"
         ]
       }
     },
     {
       "id": 4,
       "kind": "tests",
-      "title": "Write Tests: Merge Algorithm \u2014 Fetch, Rebase, Check, Push (REQ-5, Part 1)",
+      "title": "Write Tests: Merge Algorithm — Fetch, Rebase, Check, Push (REQ-5, Part 1)",
       "subtasks": [
         {
           "id": "4.1",
@@ -282,7 +282,7 @@
           "details": [
             "Create internal/mergequeue/merge_integration_test.go",
             "Use t.TempDir() and git init to create real local git repos for source and target branches",
-            "Test full processMergeJob pipeline: CanMerge \u2192 dry-run \u2192 acquire mutex \u2192 validate nonce \u2192 set running \u2192 fetch \u2192 rebase \u2192 push \u2192 set merged",
+            "Test full processMergeJob pipeline: CanMerge → dry-run → acquire mutex → validate nonce → set running → fetch → rebase → push → set merged",
             "Verify base_sha is recorded when status transitions to running",
             "Verify merged_sha is recorded after successful fast-forward push"
           ],
@@ -348,14 +348,14 @@
         "checks": [
           "go test ./internal/mergequeue/... -run TestMergeIntegration -count=1 -race passes",
           "go vet ./internal/mergequeue/... reports no issues",
-          "Requirements 11-REQ-5.1 through 11-REQ-5.5 and E1\u2013E3 acceptance criteria covered"
+          "Requirements 11-REQ-5.1 through 11-REQ-5.5 and E1–E3 acceptance criteria covered"
         ]
       }
     },
     {
       "id": 5,
       "kind": "tests",
-      "title": "Write Tests: Merge Algorithm \u2014 Push Failure, Fetch, Rebase Ref (REQ-5, Part 2)",
+      "title": "Write Tests: Merge Algorithm — Push Failure, Fetch, Rebase Ref (REQ-5, Part 2)",
       "subtasks": [
         {
           "id": "5.1",
@@ -454,7 +454,7 @@
           "title": "Write edge-case tests for backoff cap and dead-letter boundary",
           "details": [
             "Test that retry delay is capped at 2h per attempt (not total elapsed time)",
-            "Test that retries 12\u201320 all use the 2h cap (2^12 \u00d7 2s \u2248 2.3h > 2h cap)",
+            "Test that retries 12–20 all use the 2h cap (2^12 × 2s ≈ 2.3h > 2h cap)",
             "Test that a dead-lettered job is not automatically re-enqueued by the worker"
           ],
           "test_spec_refs": [
@@ -474,7 +474,7 @@
           "details": [
             "Create internal/mergequeue/nonce_test.go",
             "Test that the hub generates a UUID nonce on job creation (not caller-supplied)",
-            "Test that the queue handler validates the nonce before executing: if prepared/queued \u2192 execute; if running/merged \u2192 skip",
+            "Test that the queue handler validates the nonce before executing: if prepared/queued → execute; if running/merged → skip",
             "Test that if no record exists (transaction rolled back), the job ID is discarded without error"
           ],
           "test_spec_refs": [
@@ -571,7 +571,7 @@
           "id": "7.2",
           "title": "Write unit tests for worker three-way select and fallback poll",
           "details": [
-            "Test that the worker's select handles: (1) stopCh closed \u2192 exit, (2) wakeup channel \u2192 process job, (3) 10-second timer \u2192 poll DB for available jobs",
+            "Test that the worker's select handles: (1) stopCh closed → exit, (2) wakeup channel → process job, (3) 10-second timer → poll DB for available jobs",
             "Test that the fallback 10-second timer picks up backoff-delayed jobs whose available_at has elapsed",
             "Test that the worker polling query filters WHERE status='queued' AND available_at <= now()"
           ],
@@ -613,14 +613,14 @@
           "go test ./internal/mergequeue/... -run TestWorker -count=1 -race passes",
           "go test ./internal/mergequeue/... -run TestGracefulShutdown -count=1 -race passes",
           "go vet ./internal/mergequeue/... reports no issues",
-          "Requirements 11-REQ-9.1 through 11-REQ-9.3 and E1\u2013E3 acceptance criteria covered"
+          "Requirements 11-REQ-9.1 through 11-REQ-9.3 and E1–E3 acceptance criteria covered"
         ]
       }
     },
     {
       "id": 8,
       "kind": "tests",
-      "title": "Write Tests: REST Endpoints \u2014 Submit and List (REQ-10, REQ-11)",
+      "title": "Write Tests: REST Endpoints — Submit and List (REQ-10, REQ-11)",
       "subtasks": [
         {
           "id": "8.1",
@@ -669,10 +669,10 @@
         },
         {
           "id": "8.3",
-          "title": "Write handler tests for GET /merges list endpoint \u2014 basic and pagination",
+          "title": "Write handler tests for GET /merges list endpoint — basic and pagination",
           "details": [
             "Test that GET /api/v1/workspaces/:slug/merges returns HTTP 200 with items array and next_cursor",
-            "Test that results are ordered (created_at ASC, id ASC) \u2014 oldest first",
+            "Test that results are ordered (created_at ASC, id ASC) — oldest first",
             "Test that default limit is 50 and maximum is 100",
             "Test that after cursor returns jobs created after the referenced job ID"
           ],
@@ -689,7 +689,7 @@
         },
         {
           "id": "8.4",
-          "title": "Write handler tests for GET /merges list endpoint \u2014 filtering and response shape",
+          "title": "Write handler tests for GET /merges list endpoint — filtering and response shape",
           "details": [
             "Test that status filter returns only jobs matching the given status",
             "Test that next_cursor is null when no further pages exist",
@@ -748,7 +748,7 @@
     {
       "id": 9,
       "kind": "tests",
-      "title": "Write Tests: REST Endpoints \u2014 Get, Cancel, Requeue (REQ-12, REQ-13, REQ-14)",
+      "title": "Write Tests: REST Endpoints — Get, Cancel, Requeue (REQ-12, REQ-13, REQ-14)",
       "subtasks": [
         {
           "id": "9.1",
@@ -1219,7 +1219,7 @@
         "checks": [
           "go test ./internal/mergequeue/... -run TestDryRun -count=1 -race passes",
           "go vet ./internal/mergequeue/... reports no issues",
-          "Requirements 11-REQ-4.1 through 11-REQ-4.3 and E1\u2013E3 acceptance criteria met",
+          "Requirements 11-REQ-4.1 through 11-REQ-4.3 and E1–E3 acceptance criteria met",
           "No panic(\"not implemented\") stubs remain in merge.go dry-run functions"
         ]
       }
@@ -1231,7 +1231,7 @@
       "subtasks": [
         {
           "id": "14.1",
-          "title": "Implement processMergeJob steps 1\u20135: CanMerge, dry-run, mutex acquire, nonce validate, set running",
+          "title": "Implement processMergeJob steps 1–5: CanMerge, dry-run, mutex acquire, nonce validate, set running",
           "details": [
             "Implement processMergeJob(ctx context.Context, db *sql.DB, runner *gitcmd.GitRunner, job MergeJob, hook PostMergeHook) error in merge.go",
             "Step 1: call CanMerge; route BeforeDependency/BranchNotReady/SpecBlocked to re-enqueue with backoff; AlreadyMerged to set merged; WouldConflict to set conflict",
@@ -1255,7 +1255,7 @@
         },
         {
           "id": "14.2",
-          "title": "Implement processMergeJob steps 6\u20137: fetch and rebase with conflict handling",
+          "title": "Implement processMergeJob steps 6–7: fetch and rebase with conflict handling",
           "details": [
             "Step 6: call runner.Run(ctx, \"fetch\", \"origin\", targetBranch) to update remote tracking ref",
             "Step 7: call runner.Run(ctx, \"rebase\", \"origin/\"+targetBranch)",
@@ -1278,7 +1278,7 @@
         },
         {
           "id": "14.3",
-          "title": "Implement processMergeJob steps 8\u201311: check command, push, merged, hook",
+          "title": "Implement processMergeJob steps 8–11: check command, push, merged, hook",
           "details": [
             "Step 8: fetch CHECK_COMMAND from workspace variables; if set, execute via os/exec.CommandContext with sh -c and CHECK_TIMEOUT (default 10m); on failure set status=check_failed, store check_output, release mutex",
             "Step 9: call runner.Run(ctx, \"push\", \"origin\", targetBranch); on failure set status=push_failed, release mutex",
@@ -1546,7 +1546,7 @@
             "Return HTTP 204 No Content on successful cancellation of a queued job",
             "Return HTTP 409 Conflict with current status in error message if job is not in queued status",
             "Return HTTP 404 if job not found or belongs to a different workspace",
-            "Use TransitionStatus to atomically validate and apply queued\u2192cancelled transition"
+            "Use TransitionStatus to atomically validate and apply queued→cancelled transition"
           ],
           "test_spec_refs": [
             "TS-11-75",
@@ -1701,7 +1701,7 @@
           "title": "Run full end-to-end integration test with real git repos",
           "details": [
             "Execute go test ./internal/mergequeue/... -run TestMergeIntegration -count=1 -race -v",
-            "Verify the full pipeline: submit \u2192 enqueue \u2192 worker picks up \u2192 CanMerge \u2192 dry-run \u2192 mutex \u2192 nonce \u2192 running \u2192 fetch \u2192 rebase \u2192 check \u2192 push \u2192 merged \u2192 hook",
+            "Verify the full pipeline: submit → enqueue → worker picks up → CanMerge → dry-run → mutex → nonce → running → fetch → rebase → check → push → merged → hook",
             "Confirm base_sha and merged_sha are correctly recorded",
             "Confirm PostMergeHook is called for campaign merges and skipped for standalone merges"
           ],
@@ -1807,9 +1807,9 @@
           "id": "20.1",
           "title": "Trace execution paths from HTTP handler through queue to git operations",
           "details": [
-            "Verify POST /merges handler calls FindActiveJob \u2192 InsertMergeJob \u2192 queue.Enqueue in production code (not just in tests)",
-            "Verify queue.Enqueue sends wakeup signal and worker calls NextAvailableJob \u2192 processMergeJob",
-            "Verify processMergeJob calls CanMerge \u2192 runDryRunConflictCheck \u2192 getMutex \u2192 ValidateNonce \u2192 GitRunner.Run (fetch, rebase, push)",
+            "Verify POST /merges handler calls FindActiveJob → InsertMergeJob → queue.Enqueue in production code (not just in tests)",
+            "Verify queue.Enqueue sends wakeup signal and worker calls NextAvailableJob → processMergeJob",
+            "Verify processMergeJob calls CanMerge → runDryRunConflictCheck → getMutex → ValidateNonce → GitRunner.Run (fetch, rebase, push)",
             "Confirm no execution path terminates at a stub or TODO before reaching the git subprocess layer"
           ],
           "test_spec_refs": [
