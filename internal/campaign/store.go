@@ -391,6 +391,50 @@ func (s *Store) SetSpecBlocked(_ context.Context, campaignID, specID string, con
 	return nil
 }
 
+// ActivateSpec transitions a pending spec to active with its branch info.
+// Used when advancing the DAG frontier after a successful merge.
+func (s *Store) ActivateSpec(_ context.Context, campaignID, specID, branchName, branchSHA string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(
+		`UPDATE campaign_specs SET status = 'active', branch_name = ?, branch_sha = ?, updated_at = ?
+		 WHERE campaign_id = ? AND spec_id = ?`,
+		branchName, branchSHA, now, campaignID, specID,
+	)
+	if err != nil {
+		return fmt.Errorf("activate spec %q/%q: %w", campaignID, specID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("activate spec %q/%q: rows affected: %w", campaignID, specID, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("campaign spec %q/%q not found", campaignID, specID)
+	}
+	return nil
+}
+
+// ResolveSpec transitions a blocked spec back to active after a clean rebase.
+// Clears conflict_details and blocked_by_merge, and updates the branch_sha.
+func (s *Store) ResolveSpec(_ context.Context, campaignID, specID, branchSHA string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(
+		`UPDATE campaign_specs SET status = 'active', branch_sha = ?, conflict_details = NULL, blocked_by_merge = NULL, updated_at = ?
+		 WHERE campaign_id = ? AND spec_id = ?`,
+		branchSHA, now, campaignID, specID,
+	)
+	if err != nil {
+		return fmt.Errorf("resolve spec %q/%q: %w", campaignID, specID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("resolve spec %q/%q: rows affected: %w", campaignID, specID, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("campaign spec %q/%q not found", campaignID, specID)
+	}
+	return nil
+}
+
 // ListActiveCampaigns returns all campaigns with status=active.
 // Used during crash recovery to recompute frontiers.
 func (s *Store) ListActiveCampaigns(_ context.Context) ([]Campaign, error) {

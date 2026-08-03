@@ -389,7 +389,86 @@ func (h *Handler) cancelCampaign(c echo.Context) error {
 }
 
 func (h *Handler) resolveSpec(c echo.Context) error {
-	return c.JSON(http.StatusNotImplemented, map[string]string{
-		"error": "not implemented",
-	})
+	ctx := c.Request().Context()
+	campaignID := c.Param("id")
+	specID := c.Param("spec_id")
+	slug := c.Param("slug")
+
+	// Auth check (12-REQ-10.E3).
+	auth := apikit.GetAuthInfo(c)
+	if auth == nil {
+		return respondError(c, http.StatusUnauthorized, "authentication required")
+	}
+	if isPAT(auth) && !hasCampaignWriteAccess(auth) {
+		return respondError(c, http.StatusForbidden, "campaigns:write scope required")
+	}
+
+	// Load campaign.
+	campaign, err := h.store.GetCampaign(ctx, campaignID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	if campaign == nil {
+		return respondError(c, http.StatusNotFound, "campaign not found")
+	}
+
+	// Load spec (12-REQ-10.E1).
+	spec, err := h.store.GetCampaignSpec(ctx, campaignID, specID)
+	if err != nil {
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	if spec == nil {
+		return respondError(c, http.StatusNotFound, fmt.Sprintf("spec %s not found in campaign", specID))
+	}
+
+	// Route by spec status.
+	switch spec.Status {
+	case "active", "merged":
+		// Idempotent: return current state without performing any rebase
+		// (12-REQ-10.3, 12-REQ-10.4).
+		return c.JSON(http.StatusOK, map[string]string{
+			"spec_id":    specID,
+			"status":     spec.Status,
+			"branch_sha": spec.BranchSHA,
+		})
+
+	case "pending", "failed", "cancelled":
+		// Spec is in a wrong state for resolution (12-REQ-10.5).
+		return respondError(c, http.StatusConflict, "spec is not in a resolvable state")
+
+	case "blocked":
+		// Attempt rebase verification against current integration HEAD (12-REQ-10.1).
+		repoPath := filepath.Join(h.workspaceRoot, slug, "trunk")
+
+		newSHA, conflictFiles, rebaseErr := h.gitOps.Rebase(ctx, repoPath, spec.BranchName, campaign.IntegrationBranch)
+		if rebaseErr != nil {
+			// Unexpected error during rebase (12-REQ-10.E2).
+			return respondError(c, http.StatusInternalServerError, fmt.Sprintf("rebase error: %v", rebaseErr))
+		}
+
+		if len(conflictFiles) > 0 {
+			// Still conflicts after agent's fix (12-REQ-10.2, 12-REQ-10.E4):
+			// update conflict details in DB and return 409.
+			_ = h.store.SetSpecBlocked(ctx, campaignID, specID, conflictFiles, spec.BlockedByMerge)
+			return c.JSON(http.StatusConflict, map[string]any{
+				"conflict_details": conflictFiles,
+			})
+		}
+
+		// Clean rebase: restore spec to active (12-REQ-10.1).
+		if err := h.store.ResolveSpec(ctx, campaignID, specID, newSHA); err != nil {
+			return respondError(c, http.StatusInternalServerError, "failed to resolve spec")
+		}
+		if h.authz != nil {
+			h.authz.UnblockBranch(spec.BranchName)
+		}
+
+		return c.JSON(http.StatusOK, map[string]string{
+			"spec_id":    specID,
+			"status":     "active",
+			"branch_sha": newSHA,
+		})
+	}
+
+	return respondError(c, http.StatusInternalServerError, "unknown spec status")
 }

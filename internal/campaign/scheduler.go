@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/agent-fox-dev/hub/internal/mergequeue"
@@ -66,8 +67,115 @@ func (s *Scheduler) PropagateSpecFailure(ctx context.Context, campaignID, specID
 // for campaign completion. For dead-letter jobs (status="dead_letter"), it
 // sets the spec and campaign to failed status without performing rebase.
 // Jobs with NULL campaign_id are treated as no-ops.
-func (s *Scheduler) HandlePostMerge(_ context.Context, _ mergequeue.MergeJob) error {
-	return nil // stub
+func (s *Scheduler) HandlePostMerge(ctx context.Context, job mergequeue.MergeJob) error {
+	// No-op for standalone merges (no campaign).
+	if !job.CampaignID.Valid {
+		return nil
+	}
+	campaignID := job.CampaignID.String
+
+	// Acquire per-campaign mutex to serialize hook processing.
+	entry, _ := s.mutexes.LoadOrStore(campaignID, &mutexEntry{})
+	mu := entry.(*mutexEntry)
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+
+	// Load the campaign.
+	campaign, err := s.store.GetCampaign(ctx, campaignID)
+	if err != nil {
+		return fmt.Errorf("handle post merge: get campaign: %w", err)
+	}
+	if campaign == nil {
+		return nil
+	}
+
+	// Skip if campaign is not active (already failed, completed, or cancelled).
+	if campaign.Status != "active" {
+		return nil
+	}
+
+	// Handle dead-letter: set spec and campaign to failed, no rebase.
+	if job.Status == "dead_letter" {
+		if job.SpecID.Valid {
+			// Best-effort: ignore error if spec not found.
+			_ = s.store.UpdateSpecStatus(ctx, campaignID, job.SpecID.String, "failed")
+		}
+		return s.store.UpdateCampaignStatus(ctx, campaignID, "failed")
+	}
+
+	// Handle successful merge.
+	if job.Status == "merged" && job.SpecID.Valid {
+		specID := job.SpecID.String
+
+		// Mark the merged spec as merged.
+		if err := s.store.UpdateSpecStatus(ctx, campaignID, specID, "merged"); err != nil {
+			return fmt.Errorf("handle post merge: mark spec merged: %w", err)
+		}
+
+		// Cascade rebase of remaining active branches.
+		if s.rebaseEngine != nil {
+			if _, err := s.rebaseEngine.CascadeRebase(ctx, campaignID, job.ID, campaign.IntegrationBranch, s.repoPath); err != nil {
+				return fmt.Errorf("handle post merge: cascade rebase: %w", err)
+			}
+		}
+
+		// Advance frontier: activate pending specs whose dependencies are satisfied.
+		if err := s.advanceFrontier(ctx, campaign); err != nil {
+			return fmt.Errorf("handle post merge: advance frontier: %w", err)
+		}
+
+		// Check if all specs are merged → complete campaign.
+		return s.CheckCompletion(ctx, campaignID)
+	}
+
+	return nil
+}
+
+// advanceFrontier computes the current DAG frontier and activates any pending
+// specs that are newly eligible (all upstream dependencies merged).
+func (s *Scheduler) advanceFrontier(ctx context.Context, campaign *Campaign) error {
+	specs, err := s.store.GetCampaignSpecs(ctx, campaign.ID)
+	if err != nil {
+		return err
+	}
+
+	// Build the set of merged specs.
+	mergedSpecs := make(map[string]bool)
+	// Build a lookup of spec status.
+	specStatus := make(map[string]string)
+	for _, spec := range specs {
+		specStatus[spec.SpecID] = spec.Status
+		if spec.Status == "merged" {
+			mergedSpecs[spec.SpecID] = true
+		}
+	}
+
+	// Compute frontier: specs whose upstream dependencies are all merged.
+	frontier := ComputeFrontier(campaign.DAG, mergedSpecs)
+
+	for _, fSpecID := range frontier {
+		// Only activate specs that are currently pending.
+		if specStatus[fSpecID] != "pending" {
+			continue
+		}
+
+		// Create a branch for the newly-activated spec.
+		branchName := DeriveSpecBranchName(fSpecID)
+		var sha string
+		if s.gitOps != nil {
+			sha, err = s.gitOps.CreateBranch(ctx, s.repoPath, branchName, campaign.IntegrationBranch)
+			if err != nil {
+				continue // Best effort: skip this spec if branch creation fails.
+			}
+		}
+
+		// Transition spec to active with branch info.
+		if err := s.store.ActivateSpec(ctx, campaign.ID, fSpecID, branchName, sha); err != nil {
+			continue // Best effort.
+		}
+	}
+
+	return nil
 }
 
 // RecoverFromDB re-evaluates all active campaigns by recomputing the

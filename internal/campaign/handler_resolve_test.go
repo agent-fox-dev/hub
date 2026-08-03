@@ -21,7 +21,7 @@ func TestResolveEndpoint_BlockedSpec_CleanRebase_Returns200(t *testing.T) {
 
 	// Set up mock git ops for clean rebase.
 	gitOps := newMockGitOps()
-	gitOps.rebaseSHA = "new-sha-2222222222222222222222222222222222"
+	gitOps.rebaseSHA = "new-sha-22222222222222222222222222222222"
 	env.handler.gitOps = gitOps
 	env.handler.authz = NewAuthz()
 	env.handler.rebaseEngine = NewRebaseEngine(env.handler.store, gitOps, env.handler.authz)
