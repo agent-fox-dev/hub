@@ -1,0 +1,1584 @@
+{
+  "$schema": null,
+  "spec_id": "11",
+  "spec_name": "mergequeue",
+  "schema_version": 1,
+  "introduction": "The merge queue serializes integration operations for the af-hub campaign execution system, providing a FIFO queue with rebase-then-fast-forward semantics that prevents merge races, dirty repository states, and silent work loss when multiple agents complete work on separate spec branches concurrently.",
+  "glossary": {
+    "AlreadyMerged": "CantMergeReason value indicating the source branch is already integrated into the target",
+    "BeforeDependency": "CantMergeReason value indicating an upstream spec has not yet been merged",
+    "BranchNotReady": "CantMergeReason value indicating no new commits exist on the source branch",
+    "CHECK_COMMAND": "Workspace variable containing the shell command to run after rebase as a post-rebase check; executed via sh -c",
+    "CHECK_TIMEOUT": "Workspace variable specifying the timeout for CHECK_COMMAND execution (e.g. 5m, 15m); defaults to 10 minutes",
+    "CanMerge": "Package-level function in internal/mergequeue that evaluates whether a merge job is eligible to proceed, returning (bool, CantMergeReason, error)",
+    "CantMergeReason": "Typed Go enum returned by CanMerge indicating why a merge cannot proceed (BeforeDependency, WouldConflict, AlreadyMerged, BranchNotReady, SpecBlocked)",
+    "GetAuthInfo": "apikit function that retrieves the authenticated caller's identity (UUID and scopes) from the request context",
+    "GitRunner": "Struct from internal/gitcmd that executes git subprocesses with safety environment defaults",
+    "InitSchema": "Function in store.go that applies the merge_jobs table schema at startup using CREATE TABLE IF NOT EXISTS",
+    "MergeJob": "Go struct representing a single merge request with all fields from the merge_jobs table",
+    "PostMergeHook": "Function type injected at Queue construction time, called after a successful merge to notify the campaign scheduler",
+    "RunExitCode": "GitRunner method that executes a git command and returns the raw exit code and combined output without treating non-zero exits as errors",
+    "SpecBlocked": "CantMergeReason value indicating the spec is in blocked status in the campaign",
+    "WORKSPACE_ROOT": "Environment variable or configuration value specifying the root directory where workspace repositories are stored on disk",
+    "WouldConflict": "CantMergeReason value indicating a dry-run detected merge conflicts",
+    "after": "Cursor-based pagination query parameter containing the UUID of the last job seen on the previous page",
+    "available_at": "RFC 3339 timestamp column on merge_jobs controlling when a queued job becomes visible to the worker; set to now() on creation, set to a future time during backoff",
+    "base_sha": "SHA of the target branch HEAD recorded when a merge job transitions to running status",
+    "campaign_id": "Nullable UUID linking a merge job to a campaign; NULL for standalone merges",
+    "cancelled": "Terminal merge job status indicating the job was cancelled by the user while in queued status",
+    "check_failed": "Terminal merge job status indicating the post-rebase check command failed",
+    "check_output": "Captured stdout and stderr from the CHECK_COMMAND execution, stored on failure",
+    "conflict": "Terminal merge job status indicating a rebase or dry-run detected merge conflicts",
+    "conflict_details": "JSON array of conflicting file paths stored as TEXT in SQLite; deserialized to a native JSON array by the HTTP handler before responding",
+    "dead_letter": "Terminal merge job status assigned after exceeding max retries (20); requires operator intervention via the requeue endpoint",
+    "existing_job_id": "Field in HTTP 409 Conflict responses identifying the UUID of the conflicting active merge job",
+    "idx_merge_jobs_available": "SQLite index on (status, available_at) used by the worker polling query",
+    "idx_merge_jobs_campaign": "SQLite index on (campaign_id, status) used by campaign-scoped queries",
+    "idx_merge_jobs_workspace": "SQLite index on (workspace_slug, status, created_at) used by list queries",
+    "merge_jobs": "SQLite table storing merge job records with lifecycle state, retry metadata, and git operation results",
+    "merged": "Terminal merge job status indicating successful integration",
+    "merged_sha": "SHA of the target branch HEAD after a successful fast-forward push",
+    "merges:read": "PAT scope granting permission to query and list merge jobs",
+    "merges:write": "PAT scope granting permission to submit, cancel, and requeue merge jobs",
+    "next_cursor": "Pagination field in list responses containing the UUID of the last item on the current page, or null when no further pages exist",
+    "nonce": "Server-generated UUID stored in the merge_jobs table for idempotency; never exposed in API responses or accepted from callers",
+    "prepared": "Initial merge job status after INSERT; not yet visible to the queue worker",
+    "processMergeJob": "Internal function in merge.go that executes the full merge algorithm for a single job",
+    "push_failed": "Terminal merge job status indicating the fast-forward push to origin failed",
+    "queued": "Merge job status indicating the job is ready for processing by the worker",
+    "rejection_reason": "Nullable column storing the CantMergeReason enum value when a merge job is rejected",
+    "retry_count": "Integer count of how many times a merge job has been retried due to retriable failures",
+    "running": "Merge job status indicating the job is actively being processed (rebase + check + push)",
+    "source_ref": "Git branch name to merge from (e.g. spec/07-secrets-variables)",
+    "spec_id": "Nullable identifier of the spec being merged, inferred from source_ref by the handler",
+    "stopCh": "Channel closed by Stop() to broadcast a shutdown signal to all worker goroutines",
+    "stopWaitGroup": "sync.WaitGroup used to block until all in-flight merge operations complete during graceful shutdown",
+    "submitted_by": "UUID of the authenticated user or agent who submitted the merge job, populated by the handler from GetAuthInfo and never accepted from request bodies",
+    "target_branch": "Git branch name to merge into (e.g. main)",
+    "wakeup channel": "Buffered(1) channel used to interrupt the worker's poll sleep when a new job is enqueued",
+    "workspace_slug": "URL-safe identifier for a workspace, used as a path parameter and foreign key",
+    "merge_job_id": "Structured log field containing the UUID of the merge job being processed; used for correlating log entries across the merge lifecycle",
+    "CanMerge(ctx, db, job)": "Call signature of the CanMerge function; see CanMerge",
+    "GitRunner.RunExitCode": "Method on GitRunner that executes a git command and returns the raw exit code without treating non-zero exits as errors; see RunExitCode",
+    "GitRunner.Run": "Method on GitRunner that executes a git command and returns output or *GitError on non-zero exit; see GitRunner",
+    "PostMergeHook(ctx, job)": "Call signature of the PostMergeHook function type; see PostMergeHook",
+    "(workspace_slug, source_ref)": "Composite key used by the duplicate submission guard to enforce at most one active merge job per source branch per workspace",
+    "limit": "Query parameter on the list endpoint controlling the maximum number of items per page; defaults to 50, maximum 100",
+    "status": "Query parameter on the list endpoint for filtering merge jobs by a single status value from the allowed set",
+    "NewQueue": "Constructor function that creates and returns a new merge Queue; accepts a database handle and an optional PostMergeHook"
+  },
+  "requirements": [
+    {
+      "id": "11-REQ-1",
+      "title": "Merge Job Data Model and Schema Initialization",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have merge job records persisted in a well-defined SQLite schema with all required fields and indexes",
+        "benefit": "merge operations can be tracked, queried, and recovered across process restarts"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "`InitSchema`",
+          "action": "executes CREATE TABLE IF NOT EXISTS for `merge_jobs` with all columns (id, `nonce`, `campaign_id`, `spec_id`, `workspace_slug`, `target_branch`, `source_ref`, status, `rejection_reason`, `retry_count`, `available_at`, `base_sha`, `merged_sha`, `conflict_details`, `check_output`, `submitted_by`, created_at, updated_at) and creates indexes `idx_merge_jobs_campaign`, `idx_merge_jobs_workspace`, and `idx_merge_jobs_available`",
+          "return_contract": "returns nil on success; returns a non-nil error if the DDL fails",
+          "trigger": "the hub process starts"
+        },
+        {
+          "id": "11-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "`merge_jobs` table",
+          "action": "enforces a CHECK constraint on status accepting only: prepared, `queued`, `running`, `merged`, `conflict`, `check_failed`, `cancelled`, `push_failed`, `dead_letter`",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "`merge_jobs` table",
+          "action": "enforces a UNIQUE constraint on `nonce` and a NOT NULL constraint on `workspace_slug`, `target_branch`, `source_ref`, status, `retry_count`, `available_at`, `submitted_by`, created_at, updated_at",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "`InitSchema`",
+          "action": "returns the database error to the caller without calling os.Exit",
+          "return_contract": "returns a non-nil error describing the DDL failure",
+          "error_condition": "the SQLite database file is read-only or the DDL statement fails"
+        },
+        {
+          "id": "11-REQ-1.E2",
+          "ears_pattern": "event_driven",
+          "system": "`InitSchema`",
+          "action": "completes without error and without altering existing data, because CREATE TABLE IF NOT EXISTS is idempotent",
+          "return_contract": "returns nil",
+          "trigger": "`InitSchema` is called on a database that already contains the `merge_jobs` table"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-2",
+      "title": "Merge Job Status State Machine",
+      "user_story": {
+        "role": "developer",
+        "goal": "have merge jobs follow a well-defined state machine with typed transitions",
+        "benefit": "the system can route jobs correctly and prevent invalid state transitions"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-2.1",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue",
+          "action": "enforces the state machine: `prepared` \u2192 `queued` \u2192 `running` \u2192 `merged`; from `running`: \u2192 `conflict`, \u2192 `check_failed`, \u2192 `push_failed`; from `queued`: \u2192 `cancelled`, \u2192 `dead_letter`",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-2.2",
+          "ears_pattern": "state_driven",
+          "system": "merge queue worker",
+          "action": "transitions the job to `running` status and begins processing",
+          "return_contract": null,
+          "state": "a job is in `queued` status and `available_at` <= now()"
+        },
+        {
+          "id": "11-REQ-2.3",
+          "ears_pattern": "state_driven",
+          "system": "merge queue worker",
+          "action": "transitions the job to `merged` status and records `merged_sha`",
+          "return_contract": null,
+          "state": "a job is in `running` status and all merge steps succeed"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue",
+          "action": "rejects the transition and logs an error with the `merge_job_id`",
+          "return_contract": "returns a non-nil error to the caller",
+          "error_condition": "an attempt is made to transition a job from `merged`, `conflict`, `check_failed`, `push_failed`, `cancelled`, or `dead_letter` to any other status"
+        },
+        {
+          "id": "11-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge queue",
+          "action": "treats the job as stale and does not re-execute it; logs a warning with the `merge_job_id`",
+          "return_contract": "the worker does not re-execute the stale job; no status transition occurs",
+          "error_condition": "a job in `running` status is found in the database at worker startup (indicating a crash during a previous run)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-3",
+      "title": "CanMerge Pre-Check with Typed Rejection Reasons",
+      "user_story": {
+        "role": "merge queue worker",
+        "goal": "evaluate whether a merge job is eligible to proceed before acquiring the mutex",
+        "benefit": "ineligible jobs are deferred or rejected early without holding the per-target-branch lock"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "`CanMerge`",
+          "action": "returns (true, \"\", nil) indicating the merge may proceed",
+          "return_contract": "returns (true, \"\", nil)",
+          "trigger": "the merge queue worker calls `CanMerge(ctx, db, job)` for a job where all prerequisites are satisfied"
+        },
+        {
+          "id": "11-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "`CanMerge`",
+          "action": "returns (false, `BeforeDependency`, nil)",
+          "return_contract": "returns (false, BeforeDependency, nil)",
+          "trigger": "the merge queue worker calls `CanMerge` for a job where an upstream spec has not yet been merged"
+        },
+        {
+          "id": "11-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "`CanMerge`",
+          "action": "returns (false, `AlreadyMerged`, nil)",
+          "return_contract": "returns (false, AlreadyMerged, nil)",
+          "trigger": "the merge queue worker calls `CanMerge` for a job where the source branch is already integrated"
+        },
+        {
+          "id": "11-REQ-3.4",
+          "ears_pattern": "event_driven",
+          "system": "`CanMerge`",
+          "action": "returns (false, `BranchNotReady`, nil)",
+          "return_contract": "returns (false, BranchNotReady, nil)",
+          "trigger": "the merge queue worker calls `CanMerge` for a job where no new commits exist on `source_ref`"
+        },
+        {
+          "id": "11-REQ-3.5",
+          "ears_pattern": "event_driven",
+          "system": "`CanMerge`",
+          "action": "returns (false, `SpecBlocked`, nil)",
+          "return_contract": "returns (false, SpecBlocked, nil)",
+          "trigger": "the merge queue worker calls `CanMerge` for a job where the spec is in blocked status in the campaign"
+        },
+        {
+          "id": "11-REQ-3.6",
+          "ears_pattern": "state_driven",
+          "system": "`CanMerge`",
+          "action": "skips the `BeforeDependency` and `SpecBlocked` checks and evaluates only branch-readiness conditions",
+          "return_contract": "returns (true, \"\", nil) when branch-readiness conditions pass",
+          "state": "the merge job has `campaign_id` == \"\" (standalone merge)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "`CanMerge`",
+          "action": "returns (false, \"\", err) with the database error",
+          "return_contract": "returns (false, \"\", non-nil error)",
+          "error_condition": "a database query inside `CanMerge` fails with an unexpected error"
+        },
+        {
+          "id": "11-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "`CanMerge`",
+          "action": "returns immediately with the context error without executing database queries",
+          "return_contract": "returns (false, \"\", context.Canceled or context.DeadlineExceeded)",
+          "error_condition": "the context passed to `CanMerge` is already cancelled"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-4",
+      "title": "Dry-Run Conflict Check via merge-tree",
+      "user_story": {
+        "role": "merge queue worker",
+        "goal": "detect merge conflicts before acquiring the per-target-branch mutex",
+        "benefit": "obviously conflicting merges are rejected early without dirtying the integration branch or holding the lock"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "calls `GitRunner.RunExitCode` with args \"merge-tree\", \"--write-tree\", targetHead, sourceHead before acquiring the per-target-branch mutex",
+          "return_contract": "returns exit code 0 when no conflicts are detected",
+          "trigger": "the worker begins processing a merge job after `CanMerge` returns true"
+        },
+        {
+          "id": "11-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "parses conflicting file paths from the merge-tree stderr output following git's standard conflict-reporting format, sets job status to `conflict`, stores the parsed paths in `conflict_details`, and skips the real rebase",
+          "return_contract": null,
+          "trigger": "`RunExitCode` returns a non-zero exit code from merge-tree"
+        },
+        {
+          "id": "11-REQ-4.3",
+          "ears_pattern": "ubiquitous",
+          "system": "`processMergeJob`",
+          "action": "performs the dry-run conflict check outside the per-target-branch mutex as a best-effort early exit; the real rebase inside the mutex is the authoritative conflict check",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "transitions the job to `conflict` status with the conflict file paths from the real rebase; the integration branch is never left in a dirty state",
+          "return_contract": "job status is set to conflict with conflict_details populated from the real rebase; the integration branch is left clean",
+          "error_condition": "the dry-run passes but the real rebase inside the mutex detects a conflict (TOCTOU window: a concurrent merge completed between the dry-run and the rebase)"
+        },
+        {
+          "id": "11-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "logs the error with `merge_job_id` and re-enqueues the job with backoff rather than marking it as `conflict`",
+          "return_contract": "the job remains in queued status with retry_count incremented and available_at set to a future timestamp",
+          "error_condition": "`RunExitCode` returns a non-nil error (not a non-zero exit code) during the merge-tree dry-run, indicating a subprocess failure"
+        },
+        {
+          "id": "11-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "the context cancellation kills the subprocess; the job is not transitioned to `conflict` and is re-enqueued with backoff",
+          "return_contract": "the job remains in queued status with retry_count incremented and available_at set to a future timestamp",
+          "error_condition": "the merge-tree subprocess hangs and does not return within the operation's context deadline"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-5",
+      "title": "Merge Algorithm: Fetch, Rebase, Check, Push",
+      "user_story": {
+        "role": "merge queue worker",
+        "goal": "integrate a source branch into the target branch using rebase-then-fast-forward semantics inside the per-target-branch mutex",
+        "benefit": "merges are serialized and the integration branch is always left in a clean state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "acquires the per-target-branch mutex, validates the `nonce` against the database record, sets status to `running`, records `base_sha` from the current target HEAD, then calls `GitRunner.Run` with args \"fetch\", \"origin\", targetBranch",
+          "return_contract": null,
+          "trigger": "the dry-run conflict check passes"
+        },
+        {
+          "id": "11-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "calls `GitRunner.Run` with args \"rebase\", \"origin/<targetBranch>\" to rebase `source_ref` onto the freshly fetched remote tracking ref",
+          "return_contract": null,
+          "trigger": "the fetch succeeds"
+        },
+        {
+          "id": "11-REQ-5.3",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "executes `CHECK_COMMAND` via sh -c with a working directory of <`WORKSPACE_ROOT`>/<slug>/trunk, captures stdout and stderr, and enforces the `CHECK_TIMEOUT` (defaulting to 10 minutes) using os/exec.CommandContext",
+          "return_contract": null,
+          "trigger": "the rebase succeeds and `CHECK_COMMAND` is configured"
+        },
+        {
+          "id": "11-REQ-5.4",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "calls `GitRunner.Run` with args \"push\", \"origin\", targetBranch to fast-forward push the rebased HEAD, then sets status to `merged` and records `merged_sha`",
+          "return_contract": null,
+          "trigger": "the check step passes (or is skipped because `CHECK_COMMAND` is not configured)"
+        },
+        {
+          "id": "11-REQ-5.5",
+          "ears_pattern": "event_driven",
+          "system": "`processMergeJob`",
+          "action": "invokes `PostMergeHook(ctx, job)` synchronously; if the hook returns an error, logs the error with `merge_job_id` but does not change the job status from `merged`",
+          "return_contract": null,
+          "trigger": "the job status is set to `merged` and `campaign_id` is non-NULL"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "calls `GitRunner.Run` with args \"diff\", \"--name-only\", \"--diff-filter=U\" to collect unmerged file paths, then calls `GitRunner.Run` with args \"rebase\", \"--abort\"; sets status to `conflict` and stores the collected paths in `conflict_details`; releases the mutex; errors from the diff or abort commands are logged but do not change the `conflict` outcome",
+          "return_contract": "job status is set to conflict with conflict_details populated; the mutex is released and the integration branch is left clean after rebase --abort",
+          "error_condition": "git rebase exits with a non-zero exit code indicating a conflict"
+        },
+        {
+          "id": "11-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "sets job status to `check_failed`, stores captured stdout and stderr in `check_output`, and releases the mutex",
+          "return_contract": "job status is set to check_failed with check_output containing the captured stdout and stderr; the mutex is released",
+          "error_condition": "the check command exits with a non-zero exit code"
+        },
+        {
+          "id": "11-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "sets job status to `push_failed` and releases the mutex",
+          "return_contract": "job status is set to push_failed; the mutex is released",
+          "error_condition": "the fast-forward push fails (e.g. the remote rejected the push)"
+        },
+        {
+          "id": "11-REQ-5.E4",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "discards the job without executing the merge and releases the mutex",
+          "return_contract": "the job is discarded without executing; no git operations are performed; the mutex is released",
+          "error_condition": "the `nonce` in the database record does not match the job's `nonce` at the point of validation inside the mutex"
+        },
+        {
+          "id": "11-REQ-5.E5",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "os/exec.CommandContext cancels and kills the subprocess; sets job status to `check_failed` and stores the timeout error message in `check_output`",
+          "return_contract": "job status is set to check_failed with check_output containing a timeout error message; the mutex is released",
+          "error_condition": "the check command exceeds the `CHECK_TIMEOUT` duration"
+        },
+        {
+          "id": "11-REQ-5.E6",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "sets job status to `check_failed` and records the error in `check_output`",
+          "return_contract": "job status is set to check_failed with check_output containing the variable store error; the mutex is released",
+          "error_condition": "fetching `CHECK_COMMAND` from the workspace variables store fails (e.g. secret-store error)"
+        },
+        {
+          "id": "11-REQ-5.E7",
+          "ears_pattern": "unwanted",
+          "system": "`processMergeJob`",
+          "action": "the context cancellation kills the subprocess; the job is re-enqueued with backoff and the mutex is released",
+          "return_contract": "the job remains in queued status with retry_count incremented and available_at set to a future timestamp; the mutex is released",
+          "error_condition": "the git fetch subprocess hangs and does not return"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-6",
+      "title": "Exponential Backoff and Dead-Letter Handling",
+      "user_story": {
+        "role": "merge queue worker",
+        "goal": "re-enqueue retriable failed jobs with exponentially increasing delays and move permanently failing jobs to dead-letter status",
+        "benefit": "transient failures are retried automatically while permanently stuck jobs are surfaced for operator intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "merge queue worker",
+          "action": "re-enqueues the job by setting `available_at` to now() + (2s \u00d7 2^`retry_count`) capped at 2 hours per attempt, increments `retry_count`, and leaves status as `queued`",
+          "return_contract": null,
+          "trigger": "`CanMerge` returns `BeforeDependency`, `BranchNotReady`, or `SpecBlocked`"
+        },
+        {
+          "id": "11-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "merge queue worker",
+          "action": "transitions the job to `dead_letter` status and preserves the `rejection_reason` from the last failure",
+          "return_contract": null,
+          "trigger": "a retriable job's `retry_count` reaches 20"
+        },
+        {
+          "id": "11-REQ-6.3",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue worker polling query",
+          "action": "filters `merge_jobs` with WHERE status = 'queued' AND `available_at` <= now() using `idx_merge_jobs_available`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-6.E1",
+          "ears_pattern": "ubiquitous",
+          "system": "backoff calculation",
+          "action": "caps each individual retry delay at 2 hours regardless of `retry_count`; retries 12 through 20 each use the 2-hour cap",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "logs the error with `merge_job_id` and does not crash the worker goroutine",
+          "return_contract": "the error is logged with merge_job_id; the worker goroutine continues running",
+          "error_condition": "the database update to set `available_at` for a backoff re-enqueue fails"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-7",
+      "title": "Prepare-Then-Enqueue with Nonce Idempotency",
+      "user_story": {
+        "role": "hub server",
+        "goal": "use a two-phase prepare-then-enqueue pattern with server-generated nonces to prevent double-merges",
+        "benefit": "crashes, retries, and transaction rollbacks cannot cause the same merge to execute twice"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "generates a UUID `nonce` server-side, INSERTs a `merge_jobs` record with status=`prepared` and `available_at`=now() inside the caller's database transaction, then sends the job ID to the queue channel setting status to `queued`",
+          "return_contract": "returns HTTP 202 Accepted with the merge job object",
+          "trigger": "a caller submits a valid merge request"
+        },
+        {
+          "id": "11-REQ-7.2",
+          "ears_pattern": "event_driven",
+          "system": "merge queue worker",
+          "action": "fetches the record from the database, validates the `nonce` matches, and checks that status is `prepared` or `queued` before executing; if status is `running` or `merged`, skips; if no record exists (caller's transaction rolled back), discards",
+          "return_contract": null,
+          "trigger": "the worker dequeues a job ID from the channel"
+        },
+        {
+          "id": "11-REQ-7.3",
+          "ears_pattern": "ubiquitous",
+          "system": "hub server",
+          "action": "never accepts a `nonce` value from external API callers; the `nonce` is always server-generated and is never included in any API response",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "the worker finds no record for the job ID and discards the job without error",
+          "return_contract": "the worker discards the job without error; no merge is executed",
+          "error_condition": "the caller's database transaction is rolled back after the job ID is sent to the queue channel"
+        },
+        {
+          "id": "11-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "the second dequeue finds status=`running` or `merged` and skips execution",
+          "return_contract": "the worker skips execution; no duplicate merge occurs",
+          "error_condition": "the worker receives the same job ID twice on the queue channel (e.g. due to a retry)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-8",
+      "title": "Duplicate Submission Guard",
+      "user_story": {
+        "role": "API caller",
+        "goal": "be prevented from submitting a duplicate merge for a source branch that already has an active job",
+        "benefit": "at most one merge job per (workspace_slug, source_ref) pair is in queued or running status at any time"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 409 Conflict with a JSON body containing the `existing_job_id` of the conflicting job",
+          "return_contract": "returns HTTP 409 with body {\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"UUID\"}",
+          "trigger": "a caller submits a merge request for a `(workspace_slug, source_ref)` pair that already has a job in `queued` or `running` status"
+        },
+        {
+          "id": "11-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "proceeds with the pre-insert SELECT check passing and inserts the new merge job",
+          "return_contract": "returns HTTP 202 Accepted",
+          "trigger": "no active job exists for the `(workspace_slug, source_ref)` pair"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 500 with an apikit error body; does not insert the new job",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "the pre-insert SELECT check query fails due to a database error"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-9",
+      "title": "Worker Goroutine with Wakeup-on-Enqueue and Graceful Shutdown",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have a single worker goroutine that processes merge jobs with low latency and shuts down cleanly",
+        "benefit": "in-flight merges complete before the process exits and newly enqueued jobs are picked up immediately without busy-waiting"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-9.1",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue worker",
+          "action": "runs as a single global goroutine that processes all target branches sequentially, using a three-way select on: `stopCh` closure (shutdown), wakeup channel receive (new job enqueued), and a 10-second timer (fallback poll for backoff-delayed jobs)",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "merge queue",
+          "action": "performs a non-blocking send on the buffered(1) wakeup channel to interrupt the worker's poll sleep; multiple rapid enqueues coalesce into a single wakeup",
+          "return_contract": null,
+          "trigger": "a new job is enqueued"
+        },
+        {
+          "id": "11-REQ-9.3",
+          "ears_pattern": "event_driven",
+          "system": "merge queue",
+          "action": "closes `stopCh` to broadcast the shutdown signal, then blocks on `stopWaitGroup`.Wait() until all in-flight merge operations complete",
+          "return_contract": "Stop() returns only after all in-flight operations finish",
+          "trigger": "Stop() is called"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "the worker returns to the three-way select and waits for the next wakeup or 10-second timer tick without spinning",
+          "return_contract": "the worker returns to the three-way select without spinning; no busy-wait occurs",
+          "error_condition": "the worker's polling query returns no eligible jobs"
+        },
+        {
+          "id": "11-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "the in-flight operation runs to completion (or until its context is cancelled by graceful shutdown); the worker does not start any new jobs after detecting the shutdown signal",
+          "return_contract": "the in-flight operation completes; no new jobs are dispatched after shutdown signal",
+          "error_condition": "`stopCh` is closed while a merge operation is in progress"
+        },
+        {
+          "id": "11-REQ-9.E3",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "logs the error with structured fields and waits for the next timer tick or wakeup before retrying; does not crash the worker goroutine",
+          "return_contract": "the error is logged with structured fields; the worker goroutine continues running",
+          "error_condition": "the database polling query fails with an error"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-10",
+      "title": "Submit Merge Job REST Endpoint",
+      "user_story": {
+        "role": "API caller",
+        "goal": "submit a merge request via POST /api/v1/workspaces/:slug/merges",
+        "benefit": "merge jobs are enqueued asynchronously and the caller receives immediate confirmation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "infers `campaign_id` and `spec_id` from `source_ref` (following the spec/<spec_id>-<spec_name> convention), populates `submitted_by` from `GetAuthInfo`, generates a UUID `nonce`, inserts the job with status=`prepared`, then enqueues it",
+          "return_contract": "returns HTTP 202 Accepted with the full merge job JSON object (excluding `nonce`)",
+          "trigger": "an authenticated caller with `merges:write` scope submits {\"target_branch\": string, \"source_ref\": string}"
+        },
+        {
+          "id": "11-REQ-10.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "accepts the merge as a standalone merge with `campaign_id`=NULL and `spec_id`=NULL",
+          "return_contract": "returns HTTP 202 Accepted with campaign_id and spec_id as null in the response",
+          "trigger": "`source_ref` does not match any active campaign's spec branch pattern"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 400 Bad Request with an apikit error body describing the missing fields",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "the request body is missing `target_branch` or `source_ref`"
+        },
+        {
+          "id": "11-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 401 or HTTP 403 as enforced by apikit middleware",
+          "return_contract": "returns HTTP 401 or HTTP 403 with apikit error body",
+          "error_condition": "the caller is unauthenticated or lacks `merges:write` scope"
+        },
+        {
+          "id": "11-REQ-10.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 404 with an apikit error body",
+          "return_contract": "returns HTTP 404 with apikit error body",
+          "error_condition": "the workspace identified by :slug does not exist"
+        },
+        {
+          "id": "11-REQ-10.E4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "ignores the caller-supplied values; `submitted_by` is always set from `GetAuthInfo` and `nonce` is always server-generated",
+          "return_contract": "returns HTTP 202 Accepted with server-determined submitted_by and no nonce in response",
+          "error_condition": "the request body includes a `submitted_by` or `nonce` field"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-11",
+      "title": "List Merge Jobs REST Endpoint",
+      "user_story": {
+        "role": "API caller",
+        "goal": "list merge jobs for a workspace with filtering and cursor-based pagination",
+        "benefit": "callers can efficiently browse merge history without loading all records at once"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns merge jobs ordered by (created_at ASC, id ASC) up to `limit` (default 50, max 100), wrapped in a pagination envelope with `next_cursor`",
+          "return_contract": "returns HTTP 200 with body {\"items\": [...], \"next_cursor\": \"UUID | null\"}; each item omits `check_output`",
+          "trigger": "an authenticated caller with `merges:read` scope requests the list endpoint"
+        },
+        {
+          "id": "11-REQ-11.2",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns only jobs where (created_at, id) > (after_created_at, after_id), using the referenced job's created_at for the comparison",
+          "return_contract": "returns HTTP 200 with paginated results starting after the cursor job",
+          "trigger": "the caller supplies an `after` cursor parameter"
+        },
+        {
+          "id": "11-REQ-11.3",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns only jobs matching the specified status",
+          "return_contract": "returns HTTP 200 with filtered results",
+          "trigger": "the caller supplies a `status` filter parameter with a valid status value"
+        },
+        {
+          "id": "11-REQ-11.4",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "sets `next_cursor` to null in the response envelope",
+          "return_contract": "returns HTTP 200 with next_cursor: null",
+          "trigger": "there are no further pages beyond the current result set"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 400 Bad Request with an apikit error body listing the invalid value and the set of valid status values",
+          "return_contract": "returns HTTP 400 with apikit error body listing valid status values",
+          "error_condition": "the `status` query parameter contains an unrecognized value"
+        },
+        {
+          "id": "11-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 400 Bad Request with an apikit error body",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "the `limit` parameter exceeds 100"
+        },
+        {
+          "id": "11-REQ-11.E3",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 400 Bad Request with an apikit error body",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "the `after` cursor references a job ID that does not exist"
+        },
+        {
+          "id": "11-REQ-11.E4",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 401 or HTTP 403 as enforced by apikit middleware",
+          "return_contract": "returns HTTP 401 or HTTP 403 with apikit error body",
+          "error_condition": "the caller is unauthenticated or lacks `merges:read` scope"
+        },
+        {
+          "id": "11-REQ-11.E5",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/merges handler",
+          "action": "returns an empty items array with next_cursor: null",
+          "return_contract": "returns HTTP 200 with body {\"items\": [], \"next_cursor\": null}",
+          "trigger": "the result set is empty (no jobs match the filter)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-12",
+      "title": "Get Single Merge Job REST Endpoint",
+      "user_story": {
+        "role": "API caller",
+        "goal": "retrieve the full details of a single merge job including check_output",
+        "benefit": "callers can inspect the complete state of a merge job including large check command output"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns the full merge job object including `check_output` and `conflict_details` deserialized to a native JSON array; `nonce` is excluded from the response",
+          "return_contract": "returns HTTP 200 with the full merge job JSON object",
+          "trigger": "an authenticated caller with `merges:read` scope requests a merge job by ID"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 404 with an apikit error body",
+          "return_contract": "returns HTTP 404 with apikit error body",
+          "error_condition": "the job ID does not exist in the database"
+        },
+        {
+          "id": "11-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 404 with an apikit error body (anti-enumeration)",
+          "return_contract": "returns HTTP 404 with apikit error body",
+          "error_condition": "the job exists but belongs to a different `workspace_slug` than the one in the URL path"
+        },
+        {
+          "id": "11-REQ-12.E3",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 401 or HTTP 403 as enforced by apikit middleware",
+          "return_contract": "returns HTTP 401 or HTTP 403 with apikit error body",
+          "error_condition": "the caller is unauthenticated or lacks `merges:read` scope"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-13",
+      "title": "Cancel Queued Merge Job REST Endpoint",
+      "user_story": {
+        "role": "API caller",
+        "goal": "cancel a merge job that is in queued status via DELETE /api/v1/workspaces/:slug/merges/:id",
+        "benefit": "operators can stop a pending merge before it begins executing"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "transitions the job to `cancelled` status and updates updated_at",
+          "return_contract": "returns HTTP 204 No Content",
+          "trigger": "an authenticated caller with `merges:write` scope cancels a job in `queued` status"
+        },
+        {
+          "id": "11-REQ-13.2",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 409 Conflict with an apikit error body that includes the current job status",
+          "return_contract": "returns HTTP 409 with apikit error body including the current status value",
+          "error_condition": "the job is in any status other than `queued` (e.g. `running`, `merged`, `dead_letter`, `cancelled`)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 404 with an apikit error body",
+          "return_contract": "returns HTTP 404 with apikit error body",
+          "error_condition": "the job ID does not exist"
+        },
+        {
+          "id": "11-REQ-13.E2",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 401 or HTTP 403 as enforced by apikit middleware",
+          "return_contract": "returns HTTP 401 or HTTP 403 with apikit error body",
+          "error_condition": "the caller is unauthenticated or lacks `merges:write` scope"
+        },
+        {
+          "id": "11-REQ-13.E3",
+          "ears_pattern": "unwanted",
+          "system": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "the UPDATE affects zero rows; the handler re-reads the current status and returns HTTP 409 with the updated status",
+          "return_contract": "returns HTTP 409 with apikit error body including the current status",
+          "error_condition": "the job transitions from `queued` to `running` between the status check and the UPDATE (race condition in the single-process model)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-14",
+      "title": "Requeue Dead-Lettered Merge Job REST Endpoint",
+      "user_story": {
+        "role": "operator",
+        "goal": "requeue a dead-lettered merge job via POST /api/v1/workspaces/:slug/merges/:id/requeue",
+        "benefit": "permanently failed jobs can be retried with a fresh retry budget after the underlying issue is resolved"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges/:id/requeue handler",
+          "action": "creates a new `merge_jobs` record with a fresh server-generated `nonce`, status=`queued`, `retry_count`=0, `available_at`=now(), copying `source_ref` and `target_branch` from the original job, and setting `submitted_by` to the authenticated caller's UUID from `GetAuthInfo`; leaves the original dead-lettered job unchanged",
+          "return_contract": "returns HTTP 202 Accepted with the new merge job JSON object",
+          "trigger": "an authenticated caller with `merges:write` scope requeues a job in `dead_letter` status"
+        },
+        {
+          "id": "11-REQ-14.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges/:id/requeue handler",
+          "action": "returns HTTP 409 Conflict with an apikit error body",
+          "return_contract": "returns HTTP 409 with apikit error body",
+          "error_condition": "the job is not in `dead_letter` status"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges/:id/requeue handler",
+          "action": "returns HTTP 404 with an apikit error body",
+          "return_contract": "returns HTTP 404 with apikit error body",
+          "error_condition": "the job ID does not exist"
+        },
+        {
+          "id": "11-REQ-14.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges/:id/requeue handler",
+          "action": "returns HTTP 401 or HTTP 403 as enforced by apikit middleware",
+          "return_contract": "returns HTTP 401 or HTTP 403 with apikit error body",
+          "error_condition": "the caller is unauthenticated or lacks `merges:write` scope"
+        },
+        {
+          "id": "11-REQ-14.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/merges/:id/requeue handler",
+          "action": "returns HTTP 409 Conflict with the `existing_job_id` of the conflicting active job",
+          "return_contract": "returns HTTP 409 with body {\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"UUID\"}",
+          "error_condition": "an active job already exists for the same `(workspace_slug, source_ref)` pair (duplicate submission guard applies to requeue as well)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-15",
+      "title": "conflict_details Serialization Boundary",
+      "user_story": {
+        "role": "API caller",
+        "goal": "receive conflict_details as a native JSON array of file paths, never as a JSON-encoded string",
+        "benefit": "clients can directly iterate over conflicting file paths without additional parsing"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-15.1",
+          "ears_pattern": "ubiquitous",
+          "system": "HTTP handler layer",
+          "action": "unmarshals the raw TEXT value of `conflict_details` from the store into a native JSON array before serializing the HTTP response; clients always receive a proper JSON array or null, never a JSON-encoded string",
+          "return_contract": "conflict_details in responses is either null or a JSON array of strings (e.g. [\"file1.go\", \"file2.go\"])"
+        },
+        {
+          "id": "11-REQ-15.2",
+          "ears_pattern": "state_driven",
+          "system": "HTTP handler layer",
+          "action": "serializes `conflict_details` as null in the response",
+          "return_contract": "conflict_details is null in the JSON response",
+          "state": "no conflicts were recorded for the merge job"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-15.E1",
+          "ears_pattern": "unwanted",
+          "system": "HTTP handler layer",
+          "action": "logs the parse error with `merge_job_id` and returns null for `conflict_details` in the response rather than returning HTTP 500",
+          "return_contract": "conflict_details is null in the JSON response; HTTP 200 is still returned",
+          "error_condition": "the `conflict_details` TEXT column contains malformed JSON that cannot be unmarshaled"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-16",
+      "title": "PostMergeHook Decoupling and Campaign Notification",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "be notified after a successful merge via an injected PostMergeHook",
+        "benefit": "the merge queue is decoupled from campaign types and the campaign package owns the concrete hook implementation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-16.1",
+          "ears_pattern": "event_driven",
+          "system": "merge queue",
+          "action": "invokes `PostMergeHook(ctx, job)` synchronously after recording `merged_sha`; if the hook returns an error, logs it with `merge_job_id` but leaves job status as `merged`",
+          "return_contract": null,
+          "trigger": "a merge job transitions to `merged` status and `campaign_id` is non-NULL"
+        },
+        {
+          "id": "11-REQ-16.2",
+          "ears_pattern": "state_driven",
+          "system": "merge queue",
+          "action": "skips the hook invocation entirely",
+          "return_contract": null,
+          "state": "`campaign_id` is NULL (standalone merge) or `PostMergeHook` is nil"
+        },
+        {
+          "id": "11-REQ-16.3",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue",
+          "action": "accepts `PostMergeHook` as a constructor parameter to `NewQueue`; the campaign package supplies the concrete implementation and wires it at startup",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-16.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue",
+          "action": "the hook invocation is interrupted by context cancellation; the job remains in `merged` status; the hook error is logged",
+          "return_contract": "the job remains in merged status; the hook error is logged with merge_job_id",
+          "error_condition": "`PostMergeHook` blocks for an extended period and graceful shutdown cancels the merge job's context"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-17",
+      "title": "Structured Logging for State Transitions",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have all significant merge queue state transitions and errors logged with structured fields",
+        "benefit": "operational issues can be diagnosed by correlating log entries using merge_job_id"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-17.1",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue",
+          "action": "logs all significant state transitions and errors with structured fields: `merge_job_id`, `workspace_slug`, status, error (if applicable), `retry_count` (for backoff events), and `rejection_reason` (if applicable)",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-17.2",
+          "ears_pattern": "event_driven",
+          "system": "merge queue",
+          "action": "logs the error with `merge_job_id` and error fields; does not surface the error in any API response",
+          "return_contract": null,
+          "trigger": "`PostMergeHook` returns an error"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-17.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue",
+          "action": "the merge queue continues processing; logging failures do not affect job state transitions",
+          "return_contract": "the merge queue continues processing; job state transitions are unaffected",
+          "error_condition": "a log write fails (e.g. stdout is closed)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-18",
+      "title": "Standalone Merge Support",
+      "user_story": {
+        "role": "operator",
+        "goal": "submit a merge request without a campaign context",
+        "benefit": "non-campaign merges (e.g. manual branch integration) are supported without requiring campaign infrastructure"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-18.1",
+          "ears_pattern": "state_driven",
+          "system": "merge queue worker",
+          "action": "processes the merge without campaign-specific logic: skips `BeforeDependency` and `SpecBlocked` checks in `CanMerge`, skips `PostMergeHook` invocation, and performs no cascading rebase or DAG advancement",
+          "return_contract": null,
+          "state": "a merge job has `campaign_id`=NULL"
+        },
+        {
+          "id": "11-REQ-18.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "creates the merge job with `campaign_id`=NULL and `spec_id`=NULL and proceeds normally",
+          "return_contract": "returns HTTP 202 Accepted with campaign_id: null and spec_id: null",
+          "trigger": "`source_ref` does not match any active campaign's spec branch"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-18.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue worker",
+          "action": "transitions the job to `conflict` status with `conflict_details` populated; no campaign notification is attempted",
+          "return_contract": "job status is set to conflict with conflict_details populated; no campaign notification is attempted",
+          "error_condition": "a standalone merge job (campaign_id=NULL) encounters a `WouldConflict` result from the dry-run"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-19",
+      "title": "Per-Target-Branch Mutex for Merge Serialization",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have merges to the same target branch serialized via an in-process mutex",
+        "benefit": "concurrent merge operations to the same branch cannot race and leave the integration branch in a dirty state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-19.1",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue",
+          "action": "maintains an in-process map of sync.Mutex values keyed by target branch identifier; acquires the appropriate mutex before steps 4\u201310 of the merge algorithm and releases it after step 10 or on any failure within those steps",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-19.2",
+          "ears_pattern": "ubiquitous",
+          "system": "merge queue",
+          "action": "never evicts entries from the per-target-branch mutex map; entries accumulate for the lifetime of the process (the number of distinct target branches is small and bounded in practice)",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-19.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge queue",
+          "action": "the deferred mutex release fires via defer, preventing a deadlock; the panic propagates to the worker goroutine's recover handler",
+          "return_contract": "the mutex is released via defer; the panic propagates to the worker goroutine recover handler",
+          "error_condition": "a panic occurs inside the mutex-protected section of `processMergeJob`"
+        },
+        {
+          "id": "11-REQ-19.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge queue",
+          "action": "the second job blocks on mutex acquisition until the first job releases it; no data race occurs",
+          "return_contract": "the second job blocks until the first releases the mutex; no data race occurs",
+          "error_condition": "two jobs targeting the same `target_branch` are dequeued concurrently (should not happen with a single worker, but must be safe)"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "11-PROP-1",
+      "title": "At Most One Active Job Per Source Branch",
+      "for_any": "workspace_slug and source_ref pair",
+      "invariant": "at most one `merge_jobs` record has status in ('queued', 'running') at any point in time",
+      "validates": [
+        "11-REQ-8.1",
+        "11-REQ-8.2"
+      ]
+    },
+    {
+      "id": "11-PROP-2",
+      "title": "Nonce Uniqueness",
+      "for_any": "pair of distinct merge job records",
+      "invariant": "no two records in `merge_jobs` share the same `nonce` value",
+      "validates": [
+        "11-REQ-7.1",
+        "11-REQ-7.3"
+      ]
+    },
+    {
+      "id": "11-PROP-3",
+      "title": "Retry Count Bounded by Max Retries",
+      "for_any": "merge job record",
+      "invariant": "`retry_count` never exceeds 20; when `retry_count` reaches 20 on a retriable failure, status transitions to `dead_letter`",
+      "validates": [
+        "11-REQ-6.1",
+        "11-REQ-6.2"
+      ]
+    },
+    {
+      "id": "11-PROP-4",
+      "title": "Backoff Delay Cap Per Attempt",
+      "for_any": "backoff delay calculation at any `retry_count` value",
+      "invariant": "the computed delay (2s \u00d7 2^`retry_count`) is capped at 2 hours; no single retry delay exceeds 7200 seconds",
+      "validates": [
+        "11-REQ-6.1",
+        "11-REQ-6.E1"
+      ]
+    },
+    {
+      "id": "11-PROP-5",
+      "title": "Integration Branch Never Left Dirty",
+      "for_any": "merge job that fails during rebase",
+      "invariant": "git rebase --abort is always called after a rebase conflict before the mutex is released; the target branch HEAD is never left in a mid-rebase state",
+      "validates": [
+        "11-REQ-5.E1",
+        "11-REQ-4.E1"
+      ]
+    },
+    {
+      "id": "11-PROP-6",
+      "title": "Nonce Never Exposed in API Responses",
+      "for_any": "HTTP response from any merge queue endpoint",
+      "invariant": "the `nonce` field is absent from all JSON response bodies",
+      "validates": [
+        "11-REQ-7.3",
+        "11-REQ-10.1"
+      ]
+    },
+    {
+      "id": "11-PROP-7",
+      "title": "Merged SHA Recorded on Success",
+      "for_any": "merge job that transitions to `merged` status",
+      "invariant": "`merged_sha` is non-NULL and equals the HEAD SHA of the target branch after the fast-forward push",
+      "validates": [
+        "11-REQ-5.4",
+        "11-REQ-2.3"
+      ]
+    },
+    {
+      "id": "11-PROP-8",
+      "title": "PostMergeHook Not Called for Standalone Merges",
+      "for_any": "merge job with campaign_id = NULL",
+      "invariant": "`PostMergeHook` is never invoked regardless of the merge outcome",
+      "validates": [
+        "11-REQ-16.2",
+        "11-REQ-18.1"
+      ]
+    },
+    {
+      "id": "11-PROP-9",
+      "title": "Merged Status Is Terminal",
+      "for_any": "merge job in `merged` status",
+      "invariant": "the status never changes from `merged` to any other value, even if `PostMergeHook` returns an error",
+      "validates": [
+        "11-REQ-16.1",
+        "11-REQ-2.1"
+      ]
+    },
+    {
+      "id": "11-PROP-10",
+      "title": "available_at Set to Now on Initial Creation",
+      "for_any": "newly created merge job (initial submission or requeue)",
+      "invariant": "`available_at` is set to the current time (not a future time) so the job is immediately eligible for processing",
+      "validates": [
+        "11-REQ-7.1",
+        "11-REQ-14.1"
+      ]
+    },
+    {
+      "id": "11-PROP-11",
+      "title": "conflict_details Always a JSON Array or Null in Responses",
+      "for_any": "HTTP response containing a merge job object",
+      "invariant": "`conflict_details` in the response is either a JSON array of strings or JSON null; it is never a JSON-encoded string",
+      "validates": [
+        "11-REQ-15.1",
+        "11-REQ-15.2"
+      ]
+    },
+    {
+      "id": "11-PROP-12",
+      "title": "submitted_by Always Reflects Authenticated Caller",
+      "for_any": "merge job created by any endpoint (submit or requeue)",
+      "invariant": "`submitted_by` equals the UUID returned by `GetAuthInfo` for the request that created the job; it is never the value supplied in the request body",
+      "validates": [
+        "11-REQ-10.1",
+        "11-REQ-14.1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "11-PATH-1",
+      "title": "Happy Path: Campaign Merge Submitted, Processed, and Hook Fired",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces/:slug/merges with {target_branch: \"main\", source_ref: \"spec/07-secrets-variables\"}"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "calls GetAuthInfo to obtain submitted_by UUID, checks for duplicate active job via pre-insert SELECT, infers campaign_id and spec_id from source_ref, generates UUID nonce, INSERTs merge job with status=prepared and available_at=now()"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "sends job ID to wakeup channel and sets status=queued; returns HTTP 202 Accepted with merge job JSON"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "receives wakeup signal, polls merge_jobs WHERE status='queued' AND available_at <= now(), dequeues the job"
+        },
+        {
+          "actor": "CanMerge",
+          "action": "evaluates prerequisites: checks upstream dependency status and branch readiness; returns (true, \"\", nil)"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "calls GitRunner.RunExitCode with \"merge-tree\", \"--write-tree\", targetHead, sourceHead; receives exit code 0 (no conflicts)"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "acquires per-target-branch mutex, validates nonce against DB record, sets status=running, records base_sha"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "executes git fetch origin main to update origin/main remote tracking ref"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "executes git rebase origin/main on source_ref; rebase succeeds"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "fetches CHECK_COMMAND from workspace variables store; executes sh -c \"<CHECK_COMMAND>\" via os/exec.CommandContext with CHECK_TIMEOUT; command exits 0"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "executes git push origin main (fast-forward push); push succeeds"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "sets status=merged, records merged_sha, releases per-target-branch mutex"
+        },
+        {
+          "actor": "PostMergeHook",
+          "action": "invoked synchronously with the completed MergeJob; campaign scheduler enqueues downstream work"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-2",
+      "title": "Conflict Detection Path: Dry-Run Rejects Merge Early",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces/:slug/merges with conflicting source_ref"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "inserts merge job with status=prepared, enqueues job ID, returns HTTP 202 Accepted"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "dequeues the job; CanMerge returns (true, \"\", nil)"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "calls GitRunner.RunExitCode with \"merge-tree\", \"--write-tree\", targetHead, sourceHead; receives non-zero exit code"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "parses conflicting file paths from merge-tree stderr output; sets status=conflict; stores parsed paths in conflict_details"
+        },
+        {
+          "actor": "API caller",
+          "action": "calls GET /api/v1/workspaces/:slug/merges/:id and receives status=conflict with conflict_details as a native JSON array"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-3",
+      "title": "Backoff and Dead-Letter Path: BeforeDependency Exhausts Retries",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces/:slug/merges for a spec whose upstream dependency is not yet merged"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "inserts merge job with status=prepared, enqueues, returns HTTP 202 Accepted"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "dequeues job; CanMerge returns (false, BeforeDependency, nil)"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "increments retry_count, sets available_at = now() + backoff delay, leaves status=queued"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "repeats dequeue-and-backoff cycle until retry_count reaches 20"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "transitions job to dead_letter status with rejection_reason=BeforeDependency preserved"
+        },
+        {
+          "actor": "operator",
+          "action": "calls GET /api/v1/workspaces/:slug/merges/:id and observes status=dead_letter"
+        },
+        {
+          "actor": "operator",
+          "action": "calls POST /api/v1/workspaces/:slug/merges/:id/requeue after resolving the upstream dependency"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges/:id/requeue handler",
+          "action": "creates new merge job with fresh nonce, retry_count=0, status=queued, available_at=now(), submitted_by=operator UUID; original dead-lettered job unchanged"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "dequeues new job; CanMerge now returns (true, \"\", nil); merge proceeds to completion"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-4",
+      "title": "Cancellation Path: Operator Cancels Queued Job",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces/:slug/merges; receives HTTP 202 with job in queued status"
+        },
+        {
+          "actor": "operator",
+          "action": "sends DELETE /api/v1/workspaces/:slug/merges/:id while job is in queued status"
+        },
+        {
+          "actor": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "verifies job is in queued status, updates status=cancelled, updates updated_at"
+        },
+        {
+          "actor": "DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "action": "returns HTTP 204 No Content"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "when the worker next polls, the job is no longer in queued status and is not picked up for processing"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-5",
+      "title": "Graceful Shutdown Path: In-Flight Merge Completes Before Exit",
+      "steps": [
+        {
+          "actor": "merge queue worker",
+          "action": "is actively executing processMergeJob (rebase step) for a job in running status"
+        },
+        {
+          "actor": "hub process",
+          "action": "receives SIGTERM; calls Queue.Stop()"
+        },
+        {
+          "actor": "Queue.Stop()",
+          "action": "closes stopCh to broadcast shutdown signal to the worker goroutine"
+        },
+        {
+          "actor": "merge queue worker",
+          "action": "detects stopCh closure in the three-way select but does not interrupt the in-flight merge operation"
+        },
+        {
+          "actor": "processMergeJob",
+          "action": "completes the rebase, check, and push steps; sets status=merged; releases mutex"
+        },
+        {
+          "actor": "Queue.Stop()",
+          "action": "stopWaitGroup.Wait() returns; Stop() returns to the caller"
+        },
+        {
+          "actor": "hub process",
+          "action": "exits cleanly after Stop() returns"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-6",
+      "title": "Duplicate Submission Rejected with HTTP 409",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces/:slug/merges for source_ref=spec/07-secrets-variables; receives HTTP 202 with job ID A in queued status"
+        },
+        {
+          "actor": "API caller",
+          "action": "sends a second POST /api/v1/workspaces/:slug/merges for the same source_ref before job A completes"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "executes pre-insert SELECT finding job A in queued status for the same (workspace_slug, source_ref)"
+        },
+        {
+          "actor": "POST /api/v1/workspaces/:slug/merges handler",
+          "action": "returns HTTP 409 Conflict with body {\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"<job A UUID>\"}"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "11-ERR-1",
+      "condition": "git rebase exits with a non-zero exit code indicating a conflict inside the mutex",
+      "behavior": "runs git diff --name-only --diff-filter=U to collect unmerged paths, runs git rebase --abort, sets job status to conflict with conflict_details populated, releases mutex; errors from diff or abort are logged but do not change the conflict outcome",
+      "requirement_id": "11-REQ-5.E1"
+    },
+    {
+      "id": "11-ERR-2",
+      "condition": "CHECK_COMMAND exits with a non-zero exit code",
+      "behavior": "sets job status to check_failed, stores captured stdout and stderr in check_output, releases mutex",
+      "requirement_id": "11-REQ-5.E2"
+    },
+    {
+      "id": "11-ERR-3",
+      "condition": "CHECK_COMMAND exceeds CHECK_TIMEOUT duration",
+      "behavior": "os/exec.CommandContext cancels and kills the subprocess; sets job status to check_failed and stores the timeout error in check_output",
+      "requirement_id": "11-REQ-5.E5"
+    },
+    {
+      "id": "11-ERR-4",
+      "condition": "fast-forward push to origin fails",
+      "behavior": "sets job status to push_failed and releases the per-target-branch mutex",
+      "requirement_id": "11-REQ-5.E3"
+    },
+    {
+      "id": "11-ERR-5",
+      "condition": "CanMerge returns BeforeDependency, BranchNotReady, or SpecBlocked and retry_count < 20",
+      "behavior": "re-enqueues the job with available_at = now() + exponential backoff delay (capped at 2 hours per attempt), increments retry_count, leaves status as queued",
+      "requirement_id": "11-REQ-6.1"
+    },
+    {
+      "id": "11-ERR-6",
+      "condition": "retry_count reaches 20 on a retriable failure",
+      "behavior": "transitions job to dead_letter status with rejection_reason preserved; job is no longer automatically retried",
+      "requirement_id": "11-REQ-6.2"
+    },
+    {
+      "id": "11-ERR-7",
+      "condition": "duplicate merge submission: a job in queued or running status already exists for the same (workspace_slug, source_ref)",
+      "behavior": "returns HTTP 409 Conflict with body {\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"UUID\"}",
+      "requirement_id": "11-REQ-8.1"
+    },
+    {
+      "id": "11-ERR-8",
+      "condition": "cancellation attempted on a job not in queued status",
+      "behavior": "returns HTTP 409 Conflict with an apikit error body including the current job status",
+      "requirement_id": "11-REQ-13.2"
+    },
+    {
+      "id": "11-ERR-9",
+      "condition": "requeue attempted on a job not in dead_letter status",
+      "behavior": "returns HTTP 409 Conflict with an apikit error body",
+      "requirement_id": "11-REQ-14.2"
+    },
+    {
+      "id": "11-ERR-10",
+      "condition": "PostMergeHook returns an error after a successful merge",
+      "behavior": "logs the error with merge_job_id; job status remains merged; error is not surfaced in any API response",
+      "requirement_id": "11-REQ-16.1"
+    },
+    {
+      "id": "11-ERR-11",
+      "condition": "status query parameter on GET /merges contains an unrecognized value",
+      "behavior": "returns HTTP 400 Bad Request with an apikit error body listing the invalid value and the set of valid status values",
+      "requirement_id": "11-REQ-11.E1"
+    },
+    {
+      "id": "11-ERR-12",
+      "condition": "nonce validation fails inside the mutex (record not found or nonce mismatch)",
+      "behavior": "discards the job without executing the merge and releases the mutex",
+      "requirement_id": "11-REQ-7.2"
+    },
+    {
+      "id": "11-ERR-13",
+      "condition": "fetching CHECK_COMMAND from the workspace variables store fails",
+      "behavior": "sets job status to check_failed and records the error in check_output",
+      "requirement_id": "11-REQ-5.E6"
+    },
+    {
+      "id": "11-ERR-14",
+      "condition": "merge-tree dry-run subprocess hangs and does not return",
+      "behavior": "context cancellation kills the subprocess; job is re-enqueued with backoff rather than marked as conflict",
+      "requirement_id": "11-REQ-4.E3"
+    },
+    {
+      "id": "11-ERR-15",
+      "condition": "worker polling query fails with a database error",
+      "behavior": "logs the error with structured fields and waits for the next timer tick or wakeup before retrying; worker goroutine does not crash",
+      "requirement_id": "11-REQ-9.E3"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "internal/gitcmd",
+      "version": "spec 10",
+      "symbols": [
+        {
+          "name": "NewRunner",
+          "import_path": "internal/gitcmd",
+          "signature": "func NewRunner(workDir string) *GitRunner",
+          "notes": "Creates a GitRunner rooted at the given working directory with safety env vars applied to every subprocess"
+        },
+        {
+          "name": "GitRunner.Run",
+          "import_path": "internal/gitcmd",
+          "signature": "func (r *GitRunner) Run(ctx context.Context, args ...string) (output string, err error)",
+          "notes": "Executes a git command; returns *GitError on non-zero exit code"
+        },
+        {
+          "name": "GitRunner.RunExitCode",
+          "import_path": "internal/gitcmd",
+          "signature": "func (r *GitRunner) RunExitCode(ctx context.Context, args ...string) (exitCode int, output string, err error)",
+          "notes": "Executes a git command and returns the raw exit code; does not treat non-zero exits as errors"
+        },
+        {
+          "name": "CheckGitVersion",
+          "import_path": "internal/gitcmd",
+          "signature": "func CheckGitVersion(ctx context.Context) error",
+          "notes": "Returns an error if installed git version is below 2.38; called once by hub main at startup, not by mergequeue internally"
+        },
+        {
+          "name": "GitError",
+          "import_path": "internal/gitcmd",
+          "signature": "type GitError struct { ExitCode int; Output string }; func (e *GitError) Error() string",
+          "notes": "Returned by Run when git exits with a non-zero exit code; mergequeue inspects ExitCode and Output to classify failures"
+        }
+      ]
+    }
+  ]
+}

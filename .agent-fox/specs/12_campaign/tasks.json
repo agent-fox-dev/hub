@@ -1,0 +1,1542 @@
+{
+  "$schema": null,
+  "spec_id": "12",
+  "spec_name": "campaign",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/campaign/... -count=1 -v -race",
+    "all_tests": "go test ./... -count=1 -race",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "10",
+      "from_group": 7,
+      "to_group": 1,
+      "relationship": "Uses GitRunner for all git operations (rebase, branch creation, fetch)",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "11",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Imports PostMergeHook type and MergeJob (including DeadLetter field) from mergequeue; campaign provides the concrete hook implementation",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "06",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Registers PushAuthorizer callback with receive-pack handler",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests \u2014 DAG Construction, Lifecycle States, and DB Schema",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for campaign lifecycle state transitions",
+          "details": [
+            "Table-driven tests for valid transitions: pending\u2192active, active\u2192completed, active\u2192failed, active\u2192cancelled",
+            "Assert invalid transitions are rejected (e.g., completed\u2192active)",
+            "Verify campaign status field values match the CHECK constraint enum"
+          ],
+          "test_spec_refs": [
+            "TS-12-1",
+            "TS-12-2",
+            "TS-12-3",
+            "TS-12-4",
+            "TS-12-5"
+          ],
+          "requirement_refs": [
+            "12-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for DAG construction and cycle detection",
+          "details": [
+            "Test BuildDAG with a linear chain A\u2192B\u2192C: verify edges and topological order",
+            "Test BuildDAG with a diamond dependency (A\u2192B, A\u2192C, B\u2192D, C\u2192D): verify correct frontier",
+            "Test cycle detection: A\u2192B\u2192A must return an error",
+            "Test that depends_on_spec referencing a spec outside the campaign is treated as pre-satisfied",
+            "Test that sentinel field has no effect on edge construction"
+          ],
+          "test_spec_refs": [
+            "TS-12-9",
+            "TS-12-10",
+            "TS-12-11",
+            "TS-12-12",
+            "TS-12-13"
+          ],
+          "requirement_refs": [
+            "12-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for database schema initialization and CRUD",
+          "details": [
+            "Test InitSchema creates campaigns and campaign_specs tables with correct columns and constraints",
+            "Test UNIQUE(workspace_slug, name) constraint is enforced across all statuses",
+            "Test campaign_specs PRIMARY KEY(campaign_id, spec_id) constraint",
+            "Test CHECK constraints on status columns for both tables",
+            "Use SQLite in-memory DB for all store tests"
+          ],
+          "test_spec_refs": [
+            "TS-12-45",
+            "TS-12-46",
+            "TS-12-47",
+            "TS-12-6",
+            "TS-12-7",
+            "TS-12-8"
+          ],
+          "requirement_refs": [
+            "12-REQ-15",
+            "12-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write tests for DAG JSON serialization and conflict_details serialization",
+          "details": [
+            "Test that dag column serializes to {specs:[...], edges:[{from,to,relationship}]} \u2014 from_group/to_group/sentinel excluded",
+            "Test round-trip: serialize DAG to JSON, deserialize, verify specs and edges match",
+            "Test conflict_details serialized as JSON array of file path strings",
+            "Test conflict_details null when spec is not blocked",
+            "Test blocked_by_merge stored as plain TEXT UUID, not a foreign key"
+          ],
+          "test_spec_refs": [
+            "TS-12-48",
+            "TS-12-49"
+          ],
+          "requirement_refs": [
+            "12-REQ-16"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write tests for spec branch naming convention",
+          "details": [
+            "Test branch name derivation: spec directory '07_secrets_variables' \u2192 branch 'spec/07-secrets-variables'",
+            "Test snake_case to kebab-case conversion for various directory names",
+            "Test that campaign ID is not included in branch name",
+            "Test branch creation from integration branch HEAD using GitRunner mock"
+          ],
+          "test_spec_refs": [
+            "TS-12-14",
+            "TS-12-15",
+            "TS-12-16"
+          ],
+          "requirement_refs": [
+            "12-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/campaign/...",
+          "Test stubs exist for all TS-12-1 through TS-12-16, TS-12-45 through TS-12-49 test cases",
+          "No linter warnings introduced: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-1, 12-REQ-2, 12-REQ-3, 12-REQ-4, 12-REQ-15, 12-REQ-16 test coverage scaffolded"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests \u2014 Spec Discovery, Branch Atomicity, REST API Create/List/Get",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for implicit campaign spec discovery",
+          "details": [
+            "Test that specs with any subtask state=pending are included in implicit campaign",
+            "Test that specs with no tasks.json are silently skipped (no warning)",
+            "Test that specs with malformed tasks.json are skipped and added to warnings array",
+            "Test that explicit spec_ids with missing/malformed tasks.json also produce warnings",
+            "Verify warnings array is omitted/empty when no specs are skipped"
+          ],
+          "test_spec_refs": [
+            "TS-12-17",
+            "TS-12-18"
+          ],
+          "requirement_refs": [
+            "12-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for atomic branch creation rollback on POST /campaigns failure",
+          "details": [
+            "Test that if any frontier branch creation fails, all previously created branches are deleted",
+            "Test that no campaign row or campaign_specs rows are persisted on branch creation failure",
+            "Test that HTTP 500 is returned for git-level branch creation failure",
+            "Test that HTTP 422 is returned when integration branch does not exist",
+            "Use a mock GitRunner that fails on the Nth branch creation call"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-36"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for POST /campaigns synchronous activation",
+          "details": [
+            "Test that POST /campaigns returns HTTP 201 with status=active (never pending)",
+            "Test that frontier spec branches exist in git before response is returned",
+            "Test that frontier specs have status=active in campaign_specs before response",
+            "Test HTTP 409 when an active campaign already exists for the same integration branch",
+            "Test that campaign name uniqueness is enforced across all statuses (completed, cancelled)"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-36",
+            "TS-12-6",
+            "TS-12-7",
+            "TS-12-8"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write tests for GET /campaigns list and GET /campaigns/:id",
+          "details": [
+            "Test list endpoint returns all campaigns when no status filter provided",
+            "Test list endpoint filters by status=active, completed, failed, cancelled",
+            "Test GET /campaigns/:id returns full campaign with dag, specs array, conflict_details",
+            "Test GET /campaigns/:id returns 404 for unknown campaign ID",
+            "Test that branch_name and branch_sha are null for pending specs"
+          ],
+          "test_spec_refs": [
+            "TS-12-37",
+            "TS-12-38",
+            "TS-12-39"
+          ],
+          "requirement_refs": [
+            "12-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write tests for cancellation semantics",
+          "details": [
+            "Test DELETE /campaigns/:id sets campaign status to cancelled",
+            "Test that all campaign_specs statuses are set to cancelled",
+            "Test that spec branches are left in place (not deleted) after cancellation",
+            "Test that CanMerge returns false/rejected for cancelled spec",
+            "Test that already-cancelled campaign returns appropriate response on re-cancel"
+          ],
+          "test_spec_refs": [
+            "TS-12-40",
+            "TS-12-41"
+          ],
+          "requirement_refs": [
+            "12-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/campaign/...",
+          "Test stubs exist for TS-12-17, TS-12-18, TS-12-35, TS-12-36, TS-12-37, TS-12-38, TS-12-39, TS-12-40, TS-12-41",
+          "No linter warnings introduced: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-5, 12-REQ-11, 12-REQ-12, 12-REQ-13 test coverage scaffolded"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests \u2014 PostMergeHook, Cascading Rebase, Blocking, Resolve Endpoint",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for PostMergeHook successful merge processing",
+          "details": [
+            "Test that PostMergeHook with DeadLetter=false triggers cascading rebase of sibling branches",
+            "Test that merged spec status is set to merged in campaign_specs",
+            "Test that newly-unblocked specs have branches created and status set to active",
+            "Test that campaign status is set to completed when all specs are merged",
+            "Test that PostMergeHook is a no-op for campaign_id=NULL (standalone merge)"
+          ],
+          "test_spec_refs": [
+            "TS-12-19",
+            "TS-12-20",
+            "TS-12-21"
+          ],
+          "requirement_refs": [
+            "12-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for PostMergeHook dead-letter failure propagation",
+          "details": [
+            "Test that PostMergeHook with DeadLetter=true sets spec status to failed",
+            "Test that campaign status is immediately set to failed when any spec fails",
+            "Test that failed campaign does not continue processing other specs",
+            "Test that per-campaign mutex is released after dead-letter handling"
+          ],
+          "test_spec_refs": [
+            "TS-12-22"
+          ],
+          "requirement_refs": [
+            "12-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration tests for cascading rebase with per-subtree conflict-stop",
+          "details": [
+            "Integration test: rebase A, B (depends on A), C (independent) \u2014 conflict on A stops B but not C",
+            "Integration test: clean rebase updates branch_sha in campaign_specs",
+            "Integration test: branches processed in topological order (roots before leaves)",
+            "Integration test: conflict on B does not affect rebasing of C (independent subtree)",
+            "Use real git repos for rebase integration tests"
+          ],
+          "test_spec_refs": [
+            "TS-12-23",
+            "TS-12-24",
+            "TS-12-25",
+            "TS-12-26"
+          ],
+          "requirement_refs": [
+            "12-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write tests for spec branch blocking via PushAuthorizer",
+          "details": [
+            "Test that blocked spec has status=blocked in campaign_specs",
+            "Test that PushAuthorizer rejects pushes to blocked spec branch",
+            "Test that PushAuthorizer rejects direct pushes to integration branch",
+            "Test that conflict_details and blocked_by_merge are recorded correctly",
+            "Test that push access is restored when spec is unblocked"
+          ],
+          "test_spec_refs": [
+            "TS-12-27",
+            "TS-12-28",
+            "TS-12-29"
+          ],
+          "requirement_refs": [
+            "12-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests for resolve endpoint idempotency and verification",
+          "details": [
+            "Test resolve on blocked spec: clean rebase \u2192 200 with new branch_sha, status=active",
+            "Test resolve on blocked spec: still conflicting \u2192 409 with updated conflict_details",
+            "Test resolve on already-active spec \u2192 200 with current status and SHA (no rebase)",
+            "Test resolve on already-merged spec \u2192 200 with current status and SHA (no rebase)",
+            "Test resolve on pending/failed/cancelled spec \u2192 409 (wrong state)",
+            "Test that resolve verifies against current integration branch HEAD, not blocked HEAD"
+          ],
+          "test_spec_refs": [
+            "TS-12-30",
+            "TS-12-31",
+            "TS-12-32",
+            "TS-12-33",
+            "TS-12-34"
+          ],
+          "requirement_refs": [
+            "12-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/campaign/...",
+          "Test stubs exist for TS-12-19 through TS-12-34",
+          "Integration test files reference real git repo setup helpers",
+          "No linter warnings introduced: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-6, 12-REQ-7, 12-REQ-8, 12-REQ-9, 12-REQ-10 test coverage scaffolded"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write Tests \u2014 Crash Recovery, Per-Campaign Mutex, and Smoke Tests",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write tests for crash recovery frontier recomputation",
+          "details": [
+            "Test that on restart, active campaigns recompute frontier from campaign_specs status rows",
+            "Test that specs with status=active are assumed to still have agents working",
+            "Test that specs with status=blocked retain their blocked state after restart",
+            "Test that per-campaign mutex map is re-initialized empty on restart"
+          ],
+          "test_spec_refs": [
+            "TS-12-42",
+            "TS-12-43",
+            "TS-12-44"
+          ],
+          "requirement_refs": [
+            "12-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write tests for per-campaign mutex serialization of PostMergeHook",
+          "details": [
+            "Test that concurrent PostMergeHook invocations for the same campaign are serialized",
+            "Test using goroutines and -race flag: two concurrent hooks do not produce data races",
+            "Test that hooks for different campaigns do not block each other",
+            "Test that mutex is keyed by campaign ID using sync.Map"
+          ],
+          "test_spec_refs": [
+            "TS-12-50",
+            "TS-12-51"
+          ],
+          "requirement_refs": [
+            "12-REQ-17"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write smoke tests for campaign end-to-end flows",
+          "details": [
+            "Smoke test TS-12-SMOKE-1: create implicit campaign, verify active status and frontier branches",
+            "Smoke test TS-12-SMOKE-2: full merge cycle \u2014 create campaign, merge spec, verify cascade rebase and frontier advance",
+            "Smoke test TS-12-SMOKE-3: conflict resolution flow \u2014 block spec, resolve, verify status restored to active",
+            "Smoke test TS-12-SMOKE-4: campaign cancellation \u2014 cancel, verify all specs cancelled, branches intact",
+            "Smoke test TS-12-SMOKE-5: dead-letter failure \u2014 PostMergeHook with DeadLetter=true fails entire campaign"
+          ],
+          "test_spec_refs": [
+            "TS-12-1",
+            "TS-12-19",
+            "TS-12-30",
+            "TS-12-40",
+            "TS-12-22"
+          ],
+          "requirement_refs": [
+            "12-REQ-1",
+            "12-REQ-6",
+            "12-REQ-8",
+            "12-REQ-10",
+            "12-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/campaign/...",
+          "Smoke test stubs TS-12-SMOKE-1 through TS-12-SMOKE-5 exist in test files",
+          "Concurrent hook test uses t.Parallel() and go test -race",
+          "No linter warnings introduced: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-14, 12-REQ-17 test coverage scaffolded"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement DAG Construction and Store Layer",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement internal/campaign/dag.go \u2014 DAG construction and validation",
+          "details": [
+            "Define DAG struct with specs []string and edges []Edge{From, To, Relationship}",
+            "Implement BuildDAG(specs []SpecInput) (*DAG, error) reading dependencies from tasks.json",
+            "Implement cycle detection via Kahn's algorithm (topological sort); return error on cycle",
+            "Implement ComputeFrontier(dag *DAG, mergedSpecs map[string]bool) []string",
+            "Implement TopologicalOrder(dag *DAG) []string for rebase ordering",
+            "Treat depends_on_spec referencing specs outside the campaign as pre-satisfied; ignore sentinel field"
+          ],
+          "test_spec_refs": [
+            "TS-12-9",
+            "TS-12-10",
+            "TS-12-11",
+            "TS-12-12",
+            "TS-12-13",
+            "TS-12-48",
+            "TS-12-49"
+          ],
+          "requirement_refs": [
+            "12-REQ-3",
+            "12-REQ-16"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement internal/campaign/store.go \u2014 schema initialization and campaign CRUD",
+          "details": [
+            "Implement InitSchema(db *sql.DB) error creating campaigns and campaign_specs tables",
+            "Implement CreateCampaign(ctx, db, campaign) (Campaign, error) with UNIQUE(workspace_slug, name) enforcement",
+            "Implement GetCampaign(ctx, db, id) (Campaign, error) and ListCampaigns(ctx, db, slug, statusFilter) ([]Campaign, error)",
+            "Implement UpdateCampaignStatus(ctx, db, id, status) error",
+            "Implement CreateCampaignSpec, UpdateCampaignSpec, GetCampaignSpec CRUD functions",
+            "Serialize/deserialize dag column as JSON {specs, edges}; serialize conflict_details as JSON array"
+          ],
+          "test_spec_refs": [
+            "TS-12-45",
+            "TS-12-46",
+            "TS-12-47",
+            "TS-12-6",
+            "TS-12-7",
+            "TS-12-8"
+          ],
+          "requirement_refs": [
+            "12-REQ-15",
+            "12-REQ-16",
+            "12-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement spec discovery for implicit campaigns",
+          "details": [
+            "Implement DiscoverSpecs(workspaceRoot, slug string) ([]SpecInput, []string, error) scanning .agent-fox/specs/*/tasks.json",
+            "Include specs with any subtask state=pending; skip specs with no tasks.json silently",
+            "Add warning string for malformed/unparseable tasks.json; continue with remaining specs",
+            "Return (specs, warnings, error) tuple; warnings is nil/empty when no specs skipped"
+          ],
+          "test_spec_refs": [
+            "TS-12-17",
+            "TS-12-18"
+          ],
+          "requirement_refs": [
+            "12-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "DAG unit tests pass: go test ./internal/campaign/... -run TestDAG -count=1",
+          "Store unit tests pass with in-memory SQLite: go test ./internal/campaign/... -run TestStore -count=1",
+          "Spec discovery tests pass: go test ./internal/campaign/... -run TestDiscover -count=1",
+          "No linter warnings: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-3, 12-REQ-5, 12-REQ-15, 12-REQ-16 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement Spec Branch Management and Atomic Creation",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement spec branch naming and creation via GitRunner",
+          "details": [
+            "Implement BranchName(specID, specDir string) string: convert NN_snake_case \u2192 spec/NN-kebab-case",
+            "Implement CreateSpecBranch(ctx, runner GitRunner, integrationBranch, branchName string) (sha string, error) using internal/gitcmd",
+            "Implement DeleteSpecBranch(ctx, runner GitRunner, branchName string) error for rollback",
+            "Verify branch name format: spec/<spec_id>-<spec_name> with no campaign ID component"
+          ],
+          "test_spec_refs": [
+            "TS-12-14",
+            "TS-12-15",
+            "TS-12-16"
+          ],
+          "requirement_refs": [
+            "12-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement atomic branch creation rollback on campaign creation failure",
+          "details": [
+            "In campaign creation flow, track all successfully created branches in a slice",
+            "On any branch creation error, iterate slice and call DeleteSpecBranch for each",
+            "Do not persist campaign or campaign_specs rows if rollback is triggered",
+            "Return HTTP 500 for git-level errors, HTTP 422 for missing integration branch",
+            "Ensure rollback is called via defer or explicit error path \u2014 no partial state left"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-36"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement synchronous campaign activation in POST /campaigns",
+          "details": [
+            "Compute initial frontier using ComputeFrontier after DAG construction",
+            "Create spec branches for all frontier specs before persisting campaign",
+            "Persist campaign with status=active and frontier campaign_specs with status=active in a single DB transaction",
+            "Return HTTP 201 with campaign in active status; pending status never observable externally",
+            "Enforce one active campaign per integration branch: query for existing active campaign, return HTTP 409 if found"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-36",
+            "TS-12-6",
+            "TS-12-7",
+            "TS-12-8"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Branch naming tests pass: go test ./internal/campaign/... -run TestBranch -count=1",
+          "Atomic rollback tests pass: go test ./internal/campaign/... -run TestAtomicRollback -count=1",
+          "Synchronous activation tests pass: go test ./internal/campaign/... -run TestCampaignCreate -count=1",
+          "No linter warnings: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-4, 12-REQ-11, 12-REQ-2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "checkpoint",
+      "title": "Checkpoint \u2014 DAG, Store, and Branch Creation",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Verify DAG construction, store, and branch creation integration",
+          "details": [
+            "Run all DAG, store, and branch tests together and confirm no regressions",
+            "Verify that BuildDAG output feeds correctly into ComputeFrontier and CreateSpecBranch",
+            "Confirm that campaign creation with a 3-spec DAG (linear chain) creates only frontier branches",
+            "Confirm that dag JSON column round-trips correctly through store layer"
+          ],
+          "test_spec_refs": [
+            "TS-12-9",
+            "TS-12-14",
+            "TS-12-45",
+            "TS-12-48"
+          ],
+          "requirement_refs": [
+            "12-REQ-3",
+            "12-REQ-4",
+            "12-REQ-15",
+            "12-REQ-16"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Verify spec discovery and warnings integration with campaign creation",
+          "details": [
+            "Confirm DiscoverSpecs output feeds into BuildDAG without type mismatches",
+            "Verify warnings from DiscoverSpecs are included in POST /campaigns response",
+            "Test implicit campaign creation end-to-end: discover \u2192 build DAG \u2192 create branches \u2192 activate"
+          ],
+          "test_spec_refs": [
+            "TS-12-17",
+            "TS-12-18",
+            "TS-12-35"
+          ],
+          "requirement_refs": [
+            "12-REQ-5",
+            "12-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "All campaign package tests pass: go test ./internal/campaign/... -count=1 -race",
+          "No linter warnings: go vet ./internal/campaign/...",
+          "No panic(\"not implemented\") stubs remain in dag.go, store.go, or branch creation code",
+          "Requirements 12-REQ-3, 12-REQ-4, 12-REQ-5, 12-REQ-11, 12-REQ-15, 12-REQ-16 acceptance criteria verified"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Cascading Rebase and PushAuthorizer",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement internal/campaign/rebase.go \u2014 cascading rebase with per-subtree conflict-stop",
+          "details": [
+            "Implement CascadeRebase(ctx, runner GitRunner, dag *DAG, activeSpecs []CampaignSpec, integrationHead string) ([]RebaseResult, error)",
+            "Process branches in topological order (roots first, leaves last) using TopologicalOrder",
+            "On clean rebase: update branch_sha in campaign_specs via store",
+            "On conflict: set spec status=blocked, record conflict_details (file list) and blocked_by_merge UUID",
+            "Skip downstream dependents of a conflicted branch; continue rebasing independent branches"
+          ],
+          "test_spec_refs": [
+            "TS-12-23",
+            "TS-12-24",
+            "TS-12-25",
+            "TS-12-26"
+          ],
+          "requirement_refs": [
+            "12-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement internal/campaign/authz.go \u2014 PushAuthorizer callback",
+          "details": [
+            "Implement PushAuthorizer(ctx context.Context, branchName string, userID string) error checking campaign_specs.status",
+            "Reject pushes to branches where campaign_specs.status=blocked",
+            "Reject direct pushes to the integration branch (all merges must go through merge queue)",
+            "Restore push access when spec status transitions from blocked to active",
+            "Register PushAuthorizer with internal/gitserver receive-pack handler at wiring time"
+          ],
+          "test_spec_refs": [
+            "TS-12-27",
+            "TS-12-28",
+            "TS-12-29"
+          ],
+          "requirement_refs": [
+            "12-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement resolve endpoint verification in rebase.go",
+          "details": [
+            "Implement VerifyResolve(ctx, runner GitRunner, db *sql.DB, campaignID, specID string) (ResolveResult, error)",
+            "Fetch current integration branch HEAD at resolve time (not the HEAD at blocking time)",
+            "Attempt rebase onto current HEAD; on success: set status=active, update branch_sha, restore push access",
+            "On conflict: return updated conflict_details file list; do not change status",
+            "Handle idempotent cases: active\u2192return current SHA, merged\u2192return current SHA, pending/failed/cancelled\u2192error"
+          ],
+          "test_spec_refs": [
+            "TS-12-30",
+            "TS-12-31",
+            "TS-12-32",
+            "TS-12-33",
+            "TS-12-34"
+          ],
+          "requirement_refs": [
+            "12-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Cascading rebase integration tests pass with real git repos: go test ./internal/campaign/... -run TestCascadeRebase -count=1 -race",
+          "PushAuthorizer unit tests pass: go test ./internal/campaign/... -run TestPushAuthorizer -count=1",
+          "Resolve endpoint tests pass: go test ./internal/campaign/... -run TestVerifyResolve -count=1",
+          "No linter warnings: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-8, 12-REQ-9, 12-REQ-10 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement PostMergeHook, Scheduler, and Cancellation",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement internal/campaign/scheduler.go \u2014 per-campaign mutex and PostMergeHook",
+          "details": [
+            "Implement Scheduler struct with sync.Map of *sync.Mutex keyed by campaign ID",
+            "Implement PostMergeHook(ctx context.Context, job mergequeue.MergeJob) acquiring per-campaign mutex before any state mutation",
+            "On DeadLetter=true: set spec status=failed, set campaign status=failed, release mutex, return",
+            "On DeadLetter=false: call CascadeRebase, advance frontier (create branches for newly-unblocked specs), check completion",
+            "Set campaign status=completed when all specs are merged; propagate any spec failed status to campaign failed"
+          ],
+          "test_spec_refs": [
+            "TS-12-19",
+            "TS-12-20",
+            "TS-12-21",
+            "TS-12-22",
+            "TS-12-50",
+            "TS-12-51"
+          ],
+          "requirement_refs": [
+            "12-REQ-6",
+            "12-REQ-7",
+            "12-REQ-17"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement cancellation in scheduler.go",
+          "details": [
+            "Implement CancelCampaign(ctx, db *sql.DB, campaignID string) error",
+            "Set campaign status=cancelled and all campaign_specs statuses=cancelled in a single DB transaction",
+            "Do not delete spec branches (left in place for operator inspection)",
+            "Do not drain merge queue; cancelled specs are rejected at CanMerge time via PushAuthorizer/status check",
+            "Return appropriate error if campaign is already in a terminal state"
+          ],
+          "test_spec_refs": [
+            "TS-12-40",
+            "TS-12-41"
+          ],
+          "requirement_refs": [
+            "12-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Implement crash recovery \u2014 frontier recomputation on restart",
+          "details": [
+            "Implement RecoverActiveCampaigns(ctx, db *sql.DB, runner GitRunner) error called at hub startup",
+            "For each active campaign: recompute frontier from DAG and current campaign_specs status rows",
+            "Specs with status=active are left as-is (agents assumed working); blocked specs retain blocked state",
+            "Re-initialize per-campaign mutex map empty; locks re-acquired as hooks arrive",
+            "Log a warning for any campaign where frontier recomputation detects inconsistency"
+          ],
+          "test_spec_refs": [
+            "TS-12-42",
+            "TS-12-43",
+            "TS-12-44"
+          ],
+          "requirement_refs": [
+            "12-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "PostMergeHook tests pass with -race flag: go test ./internal/campaign/... -run TestPostMergeHook -count=1 -race",
+          "Cancellation tests pass: go test ./internal/campaign/... -run TestCancelCampaign -count=1",
+          "Crash recovery tests pass: go test ./internal/campaign/... -run TestRecoverActiveCampaigns -count=1",
+          "No linter warnings: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-6, 12-REQ-7, 12-REQ-13, 12-REQ-14, 12-REQ-17 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement REST API Handlers",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement internal/campaign/handlers.go \u2014 POST /campaigns and DELETE /campaigns/:id",
+          "details": [
+            "Implement CreateCampaignHandler: parse request body {name, spec_ids, integration_branch}, call DiscoverSpecs or use explicit spec_ids, build DAG, create branches, activate campaign, return HTTP 201",
+            "Include warnings array in response for skipped specs; return HTTP 409 for duplicate active campaign on same branch",
+            "Implement CancelCampaignHandler: call CancelCampaign, return HTTP 200 or appropriate error",
+            "Enforce campaigns:write permission scope using apikit GetAuthInfo/AuthInfo patterns",
+            "Return HTTP 422 for invalid input (missing integration branch, malformed request body)"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-36",
+            "TS-12-40",
+            "TS-12-41"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement GET /campaigns and GET /campaigns/:id handlers",
+          "details": [
+            "Implement ListCampaignsHandler: query ?status= filter, call ListCampaigns, return JSON array",
+            "Implement GetCampaignHandler: call GetCampaign, return full campaign JSON with dag, specs array, conflict_details",
+            "Return HTTP 404 for unknown campaign ID",
+            "Enforce campaigns:read permission scope",
+            "Serialize branch_name and branch_sha as null for pending specs; serialize conflict_details as JSON array"
+          ],
+          "test_spec_refs": [
+            "TS-12-37",
+            "TS-12-38",
+            "TS-12-39"
+          ],
+          "requirement_refs": [
+            "12-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement POST /campaigns/:id/specs/:spec_id/resolve handler",
+          "details": [
+            "Implement ResolveConflictHandler: look up campaign spec, dispatch to VerifyResolve based on current status",
+            "Return HTTP 200 with {spec_id, status, branch_sha} for blocked\u2192clean rebase, already-active, already-merged",
+            "Return HTTP 409 with conflict_details for blocked\u2192still-conflicting",
+            "Return HTTP 409 for pending/failed/cancelled spec status (wrong state)",
+            "Enforce campaigns:write permission scope"
+          ],
+          "test_spec_refs": [
+            "TS-12-30",
+            "TS-12-31",
+            "TS-12-32",
+            "TS-12-33",
+            "TS-12-34"
+          ],
+          "requirement_refs": [
+            "12-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Implement MountHandlers and route registration",
+          "details": [
+            "Implement MountHandlers(router gin.IRouter, db *sql.DB, scheduler *Scheduler, runner GitRunner, authorizer PushAuthorizer) registering all 5 campaign endpoints",
+            "Register routes: POST /api/v1/workspaces/:slug/campaigns, GET list, GET :id, DELETE :id, POST :id/specs/:spec_id/resolve",
+            "Apply apikit middleware for authentication and permission enforcement on each route",
+            "Ensure MountHandlers is called from application startup wiring"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-37",
+            "TS-12-40",
+            "TS-12-30"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-12",
+            "12-REQ-13",
+            "12-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Handler tests pass: go test ./internal/campaign/... -run TestHandler -count=1",
+          "All REST endpoint routes registered and reachable in test server",
+          "Permission enforcement verified: campaigns:read and campaigns:write scopes enforced",
+          "No linter warnings: go vet ./internal/campaign/...",
+          "Requirements 12-REQ-10, 12-REQ-11, 12-REQ-12, 12-REQ-13 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "checkpoint",
+      "title": "Checkpoint \u2014 Full Campaign Package Integration",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Run full campaign package test suite and verify coverage",
+          "details": [
+            "Run go test ./internal/campaign/... -count=1 -race and confirm all tests pass",
+            "Verify no data races detected by -race flag in concurrent hook tests",
+            "Confirm all TS-12-1 through TS-12-51 test cases are implemented and passing",
+            "Check test coverage for critical paths: PostMergeHook, CascadeRebase, VerifyResolve"
+          ],
+          "test_spec_refs": [
+            "TS-12-19",
+            "TS-12-23",
+            "TS-12-30",
+            "TS-12-50",
+            "TS-12-51"
+          ],
+          "requirement_refs": [
+            "12-REQ-6",
+            "12-REQ-8",
+            "12-REQ-10",
+            "12-REQ-17"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Verify cross-package interfaces with mergequeue and gitcmd",
+          "details": [
+            "Confirm internal/campaign imports internal/mergequeue.PostMergeHook type correctly",
+            "Confirm internal/campaign imports internal/gitcmd.GitRunner interface correctly",
+            "Verify no circular imports: campaign\u2192mergequeue, campaign\u2192gitcmd, campaign\u2192gitserver",
+            "Confirm MergeJob.DeadLetter field is accessible and used correctly in PostMergeHook"
+          ],
+          "test_spec_refs": [
+            "TS-12-22",
+            "TS-12-19"
+          ],
+          "requirement_refs": [
+            "12-REQ-6",
+            "12-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Verify PushAuthorizer registration with gitserver",
+          "details": [
+            "Confirm PushAuthorizer callback is registered with internal/gitserver receive-pack handler",
+            "Verify integration branch push protection is active (direct pushes rejected)",
+            "Confirm blocked spec branch pushes are rejected end-to-end",
+            "Test that push access restoration works after resolve"
+          ],
+          "test_spec_refs": [
+            "TS-12-27",
+            "TS-12-28",
+            "TS-12-29"
+          ],
+          "requirement_refs": [
+            "12-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Full package test suite passes: go test ./internal/campaign/... -count=1 -race",
+          "No circular import errors: go build ./...",
+          "No linter warnings: go vet ./...",
+          "All cross-spec interfaces (PostMergeHook, GitRunner, PushAuthorizer) correctly typed and used"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification \u2014 End-to-End Campaign Integration",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Trace execution paths from HTTP request to campaign activation",
+          "details": [
+            "Verify POST /campaigns \u2192 CreateCampaignHandler \u2192 DiscoverSpecs/BuildDAG \u2192 CreateSpecBranch \u2192 store.CreateCampaign \u2192 HTTP 201 chain has no stubs",
+            "Verify GET /campaigns \u2192 ListCampaignsHandler \u2192 store.ListCampaigns \u2192 JSON response chain",
+            "Verify DELETE /campaigns/:id \u2192 CancelCampaignHandler \u2192 CancelCampaign \u2192 DB update chain",
+            "Verify POST .../resolve \u2192 ResolveConflictHandler \u2192 VerifyResolve \u2192 PushAuthorizer restore chain",
+            "Confirm no panic(\"not implemented\") or bare TODO stubs remain in any execution path"
+          ],
+          "test_spec_refs": [
+            "TS-12-35",
+            "TS-12-37",
+            "TS-12-40",
+            "TS-12-30"
+          ],
+          "requirement_refs": [
+            "12-REQ-11",
+            "12-REQ-12",
+            "12-REQ-13",
+            "12-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Stub and dead-code audit across all campaign package files",
+          "details": [
+            "Search for panic(\"not implemented\") in dag.go, scheduler.go, rebase.go, store.go, authz.go, handlers.go",
+            "Search for bare return nil in non-trivial function bodies that should return data",
+            "Search for // TODO comments indicating unfinished implementation",
+            "Verify all functions defined in acceptance criteria are called from production code paths, not just tested in isolation",
+            "Confirm MountHandlers is called from application startup (main.go or equivalent wiring file)"
+          ],
+          "test_spec_refs": [
+            "TS-12-1",
+            "TS-12-19",
+            "TS-12-23",
+            "TS-12-27",
+            "TS-12-30"
+          ],
+          "requirement_refs": [
+            "12-REQ-1",
+            "12-REQ-6",
+            "12-REQ-8",
+            "12-REQ-9",
+            "12-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Run smoke tests with real components",
+          "details": [
+            "Run TS-12-SMOKE-1: implicit campaign creation with real git repo and SQLite DB",
+            "Run TS-12-SMOKE-2: full merge cycle with PostMergeHook, cascade rebase, frontier advance",
+            "Run TS-12-SMOKE-3: conflict resolution flow with real git rebase conflict",
+            "Run TS-12-SMOKE-4: campaign cancellation with branch retention verification",
+            "Run TS-12-SMOKE-5: dead-letter failure propagation to campaign failed status"
+          ],
+          "test_spec_refs": [
+            "TS-12-1",
+            "TS-12-19",
+            "TS-12-23",
+            "TS-12-30",
+            "TS-12-40",
+            "TS-12-22",
+            "TS-12-SMOKE-1",
+            "TS-12-SMOKE-2",
+            "TS-12-SMOKE-3",
+            "TS-12-SMOKE-4",
+            "TS-12-SMOKE-5",
+            "TS-12-SMOKE-6"
+          ],
+          "requirement_refs": [
+            "12-REQ-1",
+            "12-REQ-6",
+            "12-REQ-8",
+            "12-REQ-10",
+            "12-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.4",
+          "title": "Verify PostMergeHook registration and cross-spec entry point wiring",
+          "details": [
+            "Confirm PostMergeHook is registered with the merge queue worker at application startup",
+            "Verify the hook is called from internal/mergequeue production code (not just tested in isolation)",
+            "Confirm RecoverActiveCampaigns is called at hub startup for crash recovery",
+            "Verify InitSchema is called at startup before any campaign operations",
+            "Confirm PushAuthorizer is registered with internal/gitserver receive-pack handler in production wiring"
+          ],
+          "test_spec_refs": [
+            "TS-12-19",
+            "TS-12-22",
+            "TS-12-42",
+            "TS-12-45",
+            "TS-12-27"
+          ],
+          "requirement_refs": [
+            "12-REQ-6",
+            "12-REQ-7",
+            "12-REQ-14",
+            "12-REQ-15",
+            "12-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.5",
+          "title": "Run full test suite and verify return value propagation",
+          "details": [
+            "Run go test ./... -count=1 -race and confirm all existing tests still pass",
+            "Verify that CascadeRebase results (conflict_details, blocked_by_merge) are propagated to store and API response",
+            "Verify that VerifyResolve return values (new branch_sha, updated conflict_details) are propagated to HTTP response",
+            "Verify that BuildDAG errors are propagated to HTTP 422 response in CreateCampaignHandler",
+            "Run go vet ./... and confirm no new warnings introduced"
+          ],
+          "test_spec_refs": [
+            "TS-12-23",
+            "TS-12-30",
+            "TS-12-9",
+            "TS-12-48"
+          ],
+          "requirement_refs": [
+            "12-REQ-8",
+            "12-REQ-10",
+            "12-REQ-3",
+            "12-REQ-16"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "All smoke tests pass: go test ./internal/campaign/... -run TestSmoke -count=1 -race",
+          "Full test suite passes with race detector: go test ./... -count=1 -race",
+          "No panic(\"not implemented\"), bare TODO, or dead-code stubs found in internal/campaign/",
+          "No linter warnings: go vet ./...",
+          "MountHandlers, PostMergeHook, RecoverActiveCampaigns, InitSchema, and PushAuthorizer all called from production wiring code",
+          "TS-12-SMOKE-1 through TS-12-SMOKE-5 all pass with real git repos and SQLite in-memory DB",
+          "Requirements 12-REQ-1 through 12-REQ-17 all acceptance criteria verified end-to-end"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "12-REQ-1.1",
+      "test_spec_id": "TS-12-1",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.2",
+      "test_spec_id": "TS-12-2",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.3",
+      "test_spec_id": "TS-12-3",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.4",
+      "test_spec_id": "TS-12-4",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.5",
+      "test_spec_id": "TS-12-5",
+      "task_id": "1.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-2.1",
+      "test_spec_id": "TS-12-6",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-2.2",
+      "test_spec_id": "TS-12-7",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-2.3",
+      "test_spec_id": "TS-12-8",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.1",
+      "test_spec_id": "TS-12-9",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.2",
+      "test_spec_id": "TS-12-10",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.3",
+      "test_spec_id": "TS-12-11",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.4",
+      "test_spec_id": "TS-12-12",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.5",
+      "test_spec_id": "TS-12-13",
+      "task_id": "1.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-4.1",
+      "test_spec_id": "TS-12-14",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-4.2",
+      "test_spec_id": "TS-12-15",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-4.3",
+      "test_spec_id": "TS-12-16",
+      "task_id": "1.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-5.1",
+      "test_spec_id": "TS-12-17",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-5.2",
+      "test_spec_id": "TS-12-18",
+      "task_id": "2.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.1",
+      "test_spec_id": "TS-12-19",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.2",
+      "test_spec_id": "TS-12-20",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.3",
+      "test_spec_id": "TS-12-21",
+      "task_id": "3.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-7.1",
+      "test_spec_id": "TS-12-22",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-8.1",
+      "test_spec_id": "TS-12-23",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-8.2",
+      "test_spec_id": "TS-12-24",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-8.3",
+      "test_spec_id": "TS-12-25",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-8.4",
+      "test_spec_id": "TS-12-26",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.1",
+      "test_spec_id": "TS-12-27",
+      "task_id": "3.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.2",
+      "test_spec_id": "TS-12-28",
+      "task_id": "3.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.3",
+      "test_spec_id": "TS-12-29",
+      "task_id": "3.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.1",
+      "test_spec_id": "TS-12-30",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.2",
+      "test_spec_id": "TS-12-31",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.3",
+      "test_spec_id": "TS-12-32",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.4",
+      "test_spec_id": "TS-12-33",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.5",
+      "test_spec_id": "TS-12-34",
+      "task_id": "3.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-11.1",
+      "test_spec_id": "TS-12-35",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-11.2",
+      "test_spec_id": "TS-12-36",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.1",
+      "test_spec_id": "TS-12-37",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.2",
+      "test_spec_id": "TS-12-38",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.3",
+      "test_spec_id": "TS-12-39",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-13.1",
+      "test_spec_id": "TS-12-40",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-13.2",
+      "test_spec_id": "TS-12-41",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-14.1",
+      "test_spec_id": "TS-12-42",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-14.2",
+      "test_spec_id": "TS-12-43",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-14.3",
+      "test_spec_id": "TS-12-44",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-15.1",
+      "test_spec_id": "TS-12-45",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-15.2",
+      "test_spec_id": "TS-12-46",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-15.3",
+      "test_spec_id": "TS-12-47",
+      "task_id": "1.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-16.1",
+      "test_spec_id": "TS-12-48",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-16.2",
+      "test_spec_id": "TS-12-49",
+      "task_id": "1.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-17.1",
+      "test_spec_id": "TS-12-50",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-17.2",
+      "test_spec_id": "TS-12-51",
+      "task_id": "4.2",
+      "test_path": null
+    }
+  ]
+}

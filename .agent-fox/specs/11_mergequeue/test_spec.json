@@ -1,0 +1,2631 @@
+{
+  "$schema": null,
+  "spec_id": "11",
+  "spec_name": "mergequeue",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-11-1",
+      "requirement_id": "11-REQ-1.1",
+      "kind": "unit",
+      "description": "InitSchema creates the merge_jobs table and all three indexes when called on a fresh in-memory SQLite database.",
+      "preconditions": [
+        "An empty SQLite :memory: database is open via database/sql",
+        "No merge_jobs table exists"
+      ],
+      "input": "Call InitSchema(db) on the empty database",
+      "expected": {
+        "return": "nil error",
+        "side_effects": [
+          "merge_jobs table exists with all 20 columns",
+          "idx_merge_jobs_campaign index exists",
+          "idx_merge_jobs_workspace index exists",
+          "idx_merge_jobs_available index exists"
+        ]
+      },
+      "assertion_pseudocode": "err = InitSchema(db); assert err == nil; rows = db.Query(\"SELECT name FROM sqlite_master WHERE type='table' AND name='merge_jobs'\"); assert rows has one result; for each index in ['idx_merge_jobs_campaign','idx_merge_jobs_workspace','idx_merge_jobs_available']: rows = db.Query(\"SELECT name FROM sqlite_master WHERE type='index' AND name=?\", index); assert rows has one result"
+    },
+    {
+      "id": "TS-11-2",
+      "requirement_id": "11-REQ-1.2",
+      "kind": "unit",
+      "description": "The merge_jobs table CHECK constraint rejects any status value not in the allowed set.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table created via InitSchema"
+      ],
+      "input": "Attempt to INSERT a merge_jobs row with status='invalid_status'",
+      "expected": {
+        "return": "non-nil error from database/sql containing 'CHECK constraint failed'"
+      },
+      "assertion_pseudocode": "InitSchema(db); err = db.Exec(\"INSERT INTO merge_jobs(id,nonce,workspace_slug,target_branch,source_ref,status,retry_count,available_at,submitted_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)\", uuid(), uuid(), 'ws', 'main', 'spec/01', 'invalid_status', 0, now(), uuid(), now(), now()); assert err != nil; assert err.Error() contains 'CHECK constraint failed'"
+    },
+    {
+      "id": "TS-11-3",
+      "requirement_id": "11-REQ-1.3",
+      "kind": "unit",
+      "description": "The merge_jobs table enforces UNIQUE constraint on nonce and NOT NULL constraints on required columns.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table created via InitSchema",
+        "One merge_jobs row already inserted with nonce='test-nonce-123'"
+      ],
+      "input": "Attempt to INSERT a second row with the same nonce value 'test-nonce-123'",
+      "expected": {
+        "return": "non-nil error containing 'UNIQUE constraint failed: merge_jobs.nonce'"
+      },
+      "assertion_pseudocode": "InitSchema(db); insertRow(db, nonce='test-nonce-123'); err = insertRow(db, nonce='test-nonce-123'); assert err != nil; assert err.Error() contains 'UNIQUE constraint failed'; err2 = db.Exec(\"INSERT INTO merge_jobs(id,nonce,workspace_slug,...) VALUES(?,NULL,...)\"); assert err2 != nil and err2.Error() contains 'NOT NULL'"
+    },
+    {
+      "id": "TS-11-4",
+      "requirement_id": "11-REQ-1.E1",
+      "kind": "unit",
+      "description": "InitSchema returns a non-nil error when the database is read-only and does not call os.Exit.",
+      "preconditions": [
+        "A SQLite database opened in read-only mode (e.g. via file URI with ?mode=ro)"
+      ],
+      "input": "Call InitSchema(readOnlyDB)",
+      "expected": {
+        "return": "non-nil error describing the DDL failure; process does not exit"
+      },
+      "assertion_pseudocode": "db = openReadOnlyDB(); err = InitSchema(db); assert err != nil; assert err.Error() contains 'readonly' or 'unable to open'"
+    },
+    {
+      "id": "TS-11-5",
+      "requirement_id": "11-REQ-1.E2",
+      "kind": "unit",
+      "description": "InitSchema called on a database that already has the merge_jobs table returns nil without altering existing data.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table already created via InitSchema",
+        "One row inserted into merge_jobs"
+      ],
+      "input": "Call InitSchema(db) a second time on the same database",
+      "expected": {
+        "return": "nil error",
+        "side_effects": [
+          "Existing row is still present; row count is 1"
+        ]
+      },
+      "assertion_pseudocode": "InitSchema(db); insertRow(db, id='row1'); err = InitSchema(db); assert err == nil; count = db.QueryRow(\"SELECT COUNT(*) FROM merge_jobs\").Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-11-6",
+      "requirement_id": "11-REQ-2.1",
+      "kind": "unit",
+      "description": "The state machine allows only the documented transitions and the merge queue enforces them.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "A merge job in 'prepared' status"
+      ],
+      "input": "Transition job through prepared -> queued -> running -> merged",
+      "expected": {
+        "return": "each transition succeeds; final status is 'merged'"
+      },
+      "assertion_pseudocode": "job = createJob(status='prepared'); transitionTo(job, 'queued'); assert getStatus(job) == 'queued'; transitionTo(job, 'running'); assert getStatus(job) == 'running'; transitionTo(job, 'merged'); assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-7",
+      "requirement_id": "11-REQ-2.2",
+      "kind": "unit",
+      "description": "The worker transitions a queued job with available_at <= now() to running status before processing.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "A merge job with status='queued' and available_at set to 1 second in the past"
+      ],
+      "input": "Worker polls for eligible jobs and dequeues the job",
+      "expected": {
+        "side_effects": [
+          "Job status is updated to 'running' in the database before merge steps execute"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(status='queued', available_at=now()-1s); worker.pollOnce(); assert getStatus(job) == 'running'"
+    },
+    {
+      "id": "TS-11-8",
+      "requirement_id": "11-REQ-2.3",
+      "kind": "unit",
+      "description": "After all merge steps succeed, the worker transitions the job to merged status and records merged_sha.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "A merge job in 'running' status",
+        "Mock GitRunner returns success for fetch, rebase, and push",
+        "No CHECK_COMMAND configured"
+      ],
+      "input": "Worker completes all merge steps successfully",
+      "expected": {
+        "side_effects": [
+          "Job status is 'merged'",
+          "merged_sha is non-empty string"
+        ]
+      },
+      "assertion_pseudocode": "job = createRunningJob(); mockGit.fetchReturns(success); mockGit.rebaseReturns(success); mockGit.pushReturns(sha='abc123'); worker.processJob(job); assert getStatus(job) == 'merged'; assert getMergedSha(job) == 'abc123'"
+    },
+    {
+      "id": "TS-11-9",
+      "requirement_id": "11-REQ-2.E1",
+      "kind": "unit",
+      "description": "Attempting to transition a terminal-status job (e.g. merged) to another status is rejected with a non-nil error.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "A merge job with status='merged'"
+      ],
+      "input": "Attempt to call transitionStatus(job, 'queued')",
+      "expected": {
+        "return": "non-nil error; job status remains 'merged' in the database"
+      },
+      "assertion_pseudocode": "job = createJob(status='merged'); err = transitionStatus(db, job.id, 'queued'); assert err != nil; assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-10",
+      "requirement_id": "11-REQ-2.E2",
+      "kind": "unit",
+      "description": "A job found in 'running' status at worker startup is treated as stale and not re-executed.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "A merge job with status='running' (simulating a crash during a previous run)"
+      ],
+      "input": "Worker starts and polls for eligible jobs",
+      "expected": {
+        "side_effects": [
+          "The stale 'running' job is not picked up for execution",
+          "A warning is logged with merge_job_id"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(status='running'); worker.start(); sleep(100ms); assert getStatus(job) == 'running'; assert logContains(level='warn', merge_job_id=job.id)"
+    },
+    {
+      "id": "TS-11-11",
+      "requirement_id": "11-REQ-3.1",
+      "kind": "unit",
+      "description": "CanMerge returns (true, empty string, nil) when all prerequisites for a campaign merge are satisfied.",
+      "preconditions": [
+        "SQLite :memory: database with required tables",
+        "Upstream dependency spec is in 'merged' status",
+        "Source branch has new commits",
+        "Spec is not in blocked status"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where job has campaign_id set and all conditions pass",
+      "expected": {
+        "return": "(true, \"\", nil)"
+      },
+      "assertion_pseudocode": "setupDB(upstreamMerged=true, branchReady=true, specBlocked=false); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == true; assert reason == \"\"; assert err == nil"
+    },
+    {
+      "id": "TS-11-12",
+      "requirement_id": "11-REQ-3.2",
+      "kind": "unit",
+      "description": "CanMerge returns (false, BeforeDependency, nil) when an upstream spec has not yet been merged.",
+      "preconditions": [
+        "SQLite :memory: database with required tables",
+        "Upstream dependency spec is in 'queued' status (not merged)"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where job has campaign_id set and upstream is not merged",
+      "expected": {
+        "return": "(false, BeforeDependency, nil)"
+      },
+      "assertion_pseudocode": "setupDB(upstreamMerged=false); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == BeforeDependency; assert err == nil"
+    },
+    {
+      "id": "TS-11-13",
+      "requirement_id": "11-REQ-3.3",
+      "kind": "unit",
+      "description": "CanMerge returns (false, AlreadyMerged, nil) when the source branch is already integrated into the target.",
+      "preconditions": [
+        "SQLite :memory: database with required tables",
+        "Source branch commits are already present in target branch history"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where source_ref is already integrated",
+      "expected": {
+        "return": "(false, AlreadyMerged, nil)"
+      },
+      "assertion_pseudocode": "setupDB(alreadyMerged=true); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == AlreadyMerged; assert err == nil"
+    },
+    {
+      "id": "TS-11-14",
+      "requirement_id": "11-REQ-3.4",
+      "kind": "unit",
+      "description": "CanMerge returns (false, BranchNotReady, nil) when no new commits exist on source_ref.",
+      "preconditions": [
+        "SQLite :memory: database with required tables",
+        "Source branch has no new commits relative to target"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where source_ref has no new commits",
+      "expected": {
+        "return": "(false, BranchNotReady, nil)"
+      },
+      "assertion_pseudocode": "setupDB(branchReady=false); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == BranchNotReady; assert err == nil"
+    },
+    {
+      "id": "TS-11-15",
+      "requirement_id": "11-REQ-3.5",
+      "kind": "unit",
+      "description": "CanMerge returns (false, SpecBlocked, nil) when the spec is in blocked status in the campaign.",
+      "preconditions": [
+        "SQLite :memory: database with required tables",
+        "Spec record has status='blocked' in the campaign"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where spec is blocked",
+      "expected": {
+        "return": "(false, SpecBlocked, nil)"
+      },
+      "assertion_pseudocode": "setupDB(specBlocked=true); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == SpecBlocked; assert err == nil"
+    },
+    {
+      "id": "TS-11-16",
+      "requirement_id": "11-REQ-3.6",
+      "kind": "unit",
+      "description": "CanMerge skips BeforeDependency and SpecBlocked checks for standalone merges (campaign_id is empty).",
+      "preconditions": [
+        "SQLite :memory: database with required tables",
+        "Upstream dependency is not merged, spec is blocked",
+        "Job has campaign_id = '' (standalone)"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where job.campaign_id == \"\"",
+      "expected": {
+        "return": "(true, \"\", nil) — dependency and blocked checks are skipped"
+      },
+      "assertion_pseudocode": "job.campaign_id = ''; setupDB(upstreamMerged=false, specBlocked=true, branchReady=true); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == true; assert reason == ''; assert err == nil"
+    },
+    {
+      "id": "TS-11-17",
+      "requirement_id": "11-REQ-3.E1",
+      "kind": "unit",
+      "description": "CanMerge returns (false, empty string, non-nil error) when a database query fails unexpectedly.",
+      "preconditions": [
+        "A database connection that returns an error on query (e.g. closed connection)"
+      ],
+      "input": "Call CanMerge(ctx, db, job) where db.Query returns an error",
+      "expected": {
+        "return": "(false, \"\", non-nil error)"
+      },
+      "assertion_pseudocode": "db = brokenDB(); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == ''; assert err != nil"
+    },
+    {
+      "id": "TS-11-18",
+      "requirement_id": "11-REQ-3.E2",
+      "kind": "unit",
+      "description": "CanMerge returns immediately with context error when the context is already cancelled.",
+      "preconditions": [
+        "A cancelled context (context.WithCancel, already cancelled)"
+      ],
+      "input": "Call CanMerge(cancelledCtx, db, job)",
+      "expected": {
+        "return": "(false, \"\", context.Canceled)"
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == ''; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-11-19",
+      "requirement_id": "11-REQ-4.1",
+      "kind": "unit",
+      "description": "processMergeJob calls GitRunner.RunExitCode with merge-tree --write-tree args before acquiring the mutex.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner that records calls",
+        "CanMerge returns (true, '', nil)"
+      ],
+      "input": "Worker processes the merge job",
+      "expected": {
+        "side_effects": [
+          "RunExitCode is called with args ['merge-tree', '--write-tree', targetHead, sourceHead]",
+          "RunExitCode is called before mutex acquisition"
+        ]
+      },
+      "assertion_pseudocode": "mockGit = newRecordingGitRunner(); mockGit.runExitCodeReturns(0, '', nil); worker.processJob(job, mockGit); calls = mockGit.recordedCalls(); assert calls[0].method == 'RunExitCode'; assert calls[0].args == ['merge-tree', '--write-tree', targetHead, sourceHead]"
+    },
+    {
+      "id": "TS-11-20",
+      "requirement_id": "11-REQ-4.2",
+      "kind": "unit",
+      "description": "When merge-tree returns a non-zero exit code, processMergeJob parses conflict file paths from stderr, sets status to conflict, and stores paths in conflict_details.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner.RunExitCode returns exit code 1 with stderr listing conflicting files"
+      ],
+      "input": "Worker processes the merge job; merge-tree reports conflicts in 'file1.go' and 'file2.go'",
+      "expected": {
+        "side_effects": [
+          "Job status is 'conflict' in the database",
+          "conflict_details TEXT column contains JSON array '[\"file1.go\",\"file2.go\"]'"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runExitCodeReturns(1, 'CONFLICT (content): Merge conflict in file1.go\\nCONFLICT (content): Merge conflict in file2.go', nil); worker.processJob(job, mockGit); assert getStatus(job) == 'conflict'; details = getConflictDetails(job); assert details contains 'file1.go'; assert details contains 'file2.go'"
+    },
+    {
+      "id": "TS-11-21",
+      "requirement_id": "11-REQ-4.3",
+      "kind": "unit",
+      "description": "The dry-run conflict check is performed outside the per-target-branch mutex as a best-effort early exit.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner and mutex instrumented to record acquisition order"
+      ],
+      "input": "Worker processes the merge job with a conflicting dry-run result",
+      "expected": {
+        "side_effects": [
+          "RunExitCode (merge-tree) is called before mutex.Lock()",
+          "Mutex is never acquired when dry-run detects conflicts"
+        ]
+      },
+      "assertion_pseudocode": "events = []; mockGit.runExitCodeHook = () => events.append('dry-run'); mutex.lockHook = () => events.append('mutex-lock'); mockGit.runExitCodeReturns(1, conflictOutput, nil); worker.processJob(job, mockGit); assert 'dry-run' in events; assert 'mutex-lock' not in events"
+    },
+    {
+      "id": "TS-11-22",
+      "requirement_id": "11-REQ-4.E1",
+      "kind": "unit",
+      "description": "When dry-run passes but real rebase detects a conflict (TOCTOU), job transitions to conflict status and integration branch is not left dirty.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner: RunExitCode returns 0 (dry-run passes), Run('rebase') returns *GitError (conflict)"
+      ],
+      "input": "Worker processes the merge job; dry-run passes but rebase fails with conflict",
+      "expected": {
+        "side_effects": [
+          "Job status is 'conflict'",
+          "Run('rebase --abort') is called",
+          "conflict_details is populated from git diff --name-only output"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runExitCodeReturns(0, '', nil); mockGit.runReturns('rebase', GitError{ExitCode:1}); mockGit.runReturns('diff --name-only --diff-filter=U', 'file1.go\\n', nil); mockGit.runReturns('rebase --abort', '', nil); worker.processJob(job, mockGit); assert getStatus(job) == 'conflict'; assert mockGit.wasCalled('rebase', '--abort')"
+    },
+    {
+      "id": "TS-11-23",
+      "requirement_id": "11-REQ-4.E2",
+      "kind": "unit",
+      "description": "When RunExitCode returns a non-nil error (subprocess failure) during dry-run, the job is re-enqueued with backoff rather than marked as conflict.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job (retry_count=0)",
+        "Mock GitRunner.RunExitCode returns (0, '', non-nil error)"
+      ],
+      "input": "Worker processes the merge job; merge-tree subprocess fails with an error",
+      "expected": {
+        "side_effects": [
+          "Job status remains 'queued'",
+          "retry_count is incremented to 1",
+          "available_at is set to a future timestamp"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runExitCodeReturns(0, '', errors.New('subprocess error')); worker.processJob(job, mockGit); assert getStatus(job) == 'queued'; assert getRetryCount(job) == 1; assert getAvailableAt(job) > now()"
+    },
+    {
+      "id": "TS-11-24",
+      "requirement_id": "11-REQ-4.E3",
+      "kind": "unit",
+      "description": "When the merge-tree subprocess hangs and the context is cancelled, the job is re-enqueued with backoff and not marked as conflict.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner.RunExitCode blocks until context is cancelled, then returns context error"
+      ],
+      "input": "Worker processes the merge job with a short-deadline context that expires during merge-tree",
+      "expected": {
+        "side_effects": [
+          "Job status remains 'queued'",
+          "retry_count is incremented",
+          "available_at is set to a future timestamp"
+        ]
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 10ms); mockGit.runExitCodeBlocksUntilCtxDone(); worker.processJob(job, mockGit, ctx); assert getStatus(job) == 'queued'; assert getRetryCount(job) >= 1"
+    },
+    {
+      "id": "TS-11-25",
+      "requirement_id": "11-REQ-5.1",
+      "kind": "unit",
+      "description": "processMergeJob acquires the per-target-branch mutex, validates the nonce, sets status to running, records base_sha, and calls git fetch origin <targetBranch>.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job with known nonce",
+        "Mock GitRunner returning success for all operations",
+        "CanMerge returns (true, '', nil)",
+        "Dry-run returns exit code 0"
+      ],
+      "input": "Worker processes the merge job through the fetch step",
+      "expected": {
+        "side_effects": [
+          "Job status is 'running'",
+          "base_sha is non-empty",
+          "Run is called with args ['fetch', 'origin', 'main']"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runExitCodeReturns(0, '', nil); mockGit.runReturns('fetch', '', nil); worker.processJobUpToFetch(job, mockGit); assert getStatus(job) == 'running'; assert getBaseSha(job) != ''; assert mockGit.wasCalled('fetch', 'origin', 'main')"
+    },
+    {
+      "id": "TS-11-26",
+      "requirement_id": "11-REQ-5.2",
+      "kind": "unit",
+      "description": "After a successful fetch, processMergeJob calls git rebase origin/<targetBranch> to rebase source_ref onto the freshly fetched remote tracking ref.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: fetch returns success"
+      ],
+      "input": "Worker processes the merge job through the rebase step",
+      "expected": {
+        "side_effects": [
+          "Run is called with args ['rebase', 'origin/main']"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runReturns('fetch', '', nil); mockGit.runReturns('rebase', '', nil); worker.processJob(job, mockGit); assert mockGit.wasCalled('rebase', 'origin/main')"
+    },
+    {
+      "id": "TS-11-27",
+      "requirement_id": "11-REQ-5.3",
+      "kind": "unit",
+      "description": "When CHECK_COMMAND is configured, processMergeJob executes it via sh -c with the correct working directory and CHECK_TIMEOUT.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Workspace variable CHECK_COMMAND='make test'",
+        "Workspace variable CHECK_TIMEOUT='5m'",
+        "Mock GitRunner: fetch and rebase return success"
+      ],
+      "input": "Worker processes the merge job through the check step",
+      "expected": {
+        "side_effects": [
+          "os/exec.CommandContext is called with sh -c 'make test'",
+          "Working directory is <WORKSPACE_ROOT>/<slug>/trunk",
+          "Timeout is 5 minutes"
+        ]
+      },
+      "assertion_pseudocode": "setWorkspaceVar('CHECK_COMMAND', 'make test'); setWorkspaceVar('CHECK_TIMEOUT', '5m'); capturedCmd = nil; execHook = (cmd) => capturedCmd = cmd; worker.processJob(job, mockGit, execHook); assert capturedCmd.args == ['sh', '-c', 'make test']; assert capturedCmd.dir == workspaceRoot+'/'+slug+'/trunk'; assert capturedCmd.timeout == 5*time.Minute"
+    },
+    {
+      "id": "TS-11-28",
+      "requirement_id": "11-REQ-5.4",
+      "kind": "unit",
+      "description": "After the check step passes (or is skipped), processMergeJob calls git push origin <targetBranch> and sets status to merged with merged_sha recorded.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: fetch, rebase, push all return success",
+        "No CHECK_COMMAND configured"
+      ],
+      "input": "Worker processes the merge job through the push step",
+      "expected": {
+        "side_effects": [
+          "Run is called with args ['push', 'origin', 'main']",
+          "Job status is 'merged'",
+          "merged_sha is non-empty"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runReturns('push', 'abc123', nil); worker.processJob(job, mockGit); assert mockGit.wasCalled('push', 'origin', 'main'); assert getStatus(job) == 'merged'; assert getMergedSha(job) == 'abc123'"
+    },
+    {
+      "id": "TS-11-29",
+      "requirement_id": "11-REQ-5.5",
+      "kind": "unit",
+      "description": "PostMergeHook is invoked synchronously after merged status is set for campaign merges; hook errors are logged but do not change job status.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job with non-empty campaign_id",
+        "Mock GitRunner: all steps succeed",
+        "PostMergeHook returns a non-nil error"
+      ],
+      "input": "Worker processes the merge job to completion; hook returns error",
+      "expected": {
+        "side_effects": [
+          "PostMergeHook is called with the completed MergeJob",
+          "Job status remains 'merged'",
+          "Error is logged with merge_job_id field"
+        ]
+      },
+      "assertion_pseudocode": "hookCalled = false; hook = (ctx, job) => { hookCalled = true; return errors.New('hook error') }; worker.processJob(job, mockGit, hook); assert hookCalled == true; assert getStatus(job) == 'merged'; assert logContains(merge_job_id=job.id, error='hook error')"
+    },
+    {
+      "id": "TS-11-30",
+      "requirement_id": "11-REQ-5.E1",
+      "kind": "unit",
+      "description": "When git rebase exits with a conflict, processMergeJob runs git diff --name-only --diff-filter=U, then git rebase --abort, sets status to conflict with conflict_details, and releases the mutex.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: rebase returns *GitError{ExitCode:1}",
+        "Mock GitRunner: diff --name-only returns 'file1.go\\nfile2.go\\n'",
+        "Mock GitRunner: rebase --abort returns success"
+      ],
+      "input": "Worker processes the merge job; rebase fails with conflict",
+      "expected": {
+        "side_effects": [
+          "Run called with ['diff', '--name-only', '--diff-filter=U']",
+          "Run called with ['rebase', '--abort']",
+          "Job status is 'conflict'",
+          "conflict_details contains 'file1.go' and 'file2.go'"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runReturns('rebase origin/main', GitError{ExitCode:1}); mockGit.runReturns('diff --name-only --diff-filter=U', 'file1.go\\nfile2.go\\n', nil); mockGit.runReturns('rebase --abort', '', nil); worker.processJob(job, mockGit); assert getStatus(job) == 'conflict'; assert mockGit.wasCalled('diff', '--name-only', '--diff-filter=U'); assert mockGit.wasCalled('rebase', '--abort'); details = getConflictDetails(job); assert 'file1.go' in details; assert 'file2.go' in details"
+    },
+    {
+      "id": "TS-11-31",
+      "requirement_id": "11-REQ-5.E2",
+      "kind": "unit",
+      "description": "When the check command exits with a non-zero exit code, processMergeJob sets status to check_failed and stores captured output in check_output.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: fetch and rebase succeed",
+        "CHECK_COMMAND='make test' configured",
+        "Check command exits with code 1 and output 'FAIL: test_foo'"
+      ],
+      "input": "Worker processes the merge job; check command fails",
+      "expected": {
+        "side_effects": [
+          "Job status is 'check_failed'",
+          "check_output contains 'FAIL: test_foo'"
+        ]
+      },
+      "assertion_pseudocode": "setWorkspaceVar('CHECK_COMMAND', 'make test'); mockExec.returns(exitCode=1, output='FAIL: test_foo'); worker.processJob(job, mockGit, mockExec); assert getStatus(job) == 'check_failed'; assert getCheckOutput(job) == 'FAIL: test_foo'"
+    },
+    {
+      "id": "TS-11-32",
+      "requirement_id": "11-REQ-5.E3",
+      "kind": "unit",
+      "description": "When the fast-forward push fails, processMergeJob sets status to push_failed and releases the mutex.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: fetch and rebase succeed, push returns *GitError"
+      ],
+      "input": "Worker processes the merge job; push fails",
+      "expected": {
+        "side_effects": [
+          "Job status is 'push_failed'",
+          "Mutex is released"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runReturns('push', GitError{ExitCode:1, Output:'rejected'}); worker.processJob(job, mockGit); assert getStatus(job) == 'push_failed'; assert mutexIsReleased(targetBranch='main')"
+    },
+    {
+      "id": "TS-11-33",
+      "requirement_id": "11-REQ-5.E4",
+      "kind": "unit",
+      "description": "When the nonce in the database does not match the job's nonce at validation time, the job is discarded without executing the merge.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job whose nonce has been changed to a different value",
+        "Mock GitRunner"
+      ],
+      "input": "Worker dequeues the job and validates the nonce; nonce mismatch detected",
+      "expected": {
+        "side_effects": [
+          "No git operations are executed",
+          "Job status is unchanged",
+          "Mutex is released"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(nonce='original-nonce'); db.Exec(\"UPDATE merge_jobs SET nonce=? WHERE id=?\", 'different-nonce', job.id); worker.processJob(job, mockGit); assert mockGit.callCount() == 0; assert getStatus(job) != 'running'"
+    },
+    {
+      "id": "TS-11-34",
+      "requirement_id": "11-REQ-5.E5",
+      "kind": "unit",
+      "description": "When the check command exceeds CHECK_TIMEOUT, the subprocess is killed and job status is set to check_failed with timeout error in check_output.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "CHECK_COMMAND='sleep 999' configured",
+        "CHECK_TIMEOUT='1s' configured",
+        "Mock GitRunner: fetch and rebase succeed"
+      ],
+      "input": "Worker processes the merge job; check command times out after 1 second",
+      "expected": {
+        "side_effects": [
+          "Job status is 'check_failed'",
+          "check_output contains timeout-related error message"
+        ]
+      },
+      "assertion_pseudocode": "setWorkspaceVar('CHECK_COMMAND', 'sleep 999'); setWorkspaceVar('CHECK_TIMEOUT', '1s'); worker.processJob(job, mockGit); assert getStatus(job) == 'check_failed'; assert getCheckOutput(job) contains 'timeout' or 'deadline exceeded' or 'killed'"
+    },
+    {
+      "id": "TS-11-35",
+      "requirement_id": "11-REQ-5.E6",
+      "kind": "unit",
+      "description": "When fetching CHECK_COMMAND from the workspace variables store fails, processMergeJob sets status to check_failed and records the error in check_output.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: fetch and rebase succeed",
+        "Workspace variables store returns an error when queried for CHECK_COMMAND"
+      ],
+      "input": "Worker processes the merge job; variable store fetch fails",
+      "expected": {
+        "side_effects": [
+          "Job status is 'check_failed'",
+          "check_output contains the store error message"
+        ]
+      },
+      "assertion_pseudocode": "mockVarStore.getReturns('CHECK_COMMAND', '', errors.New('store unavailable')); worker.processJob(job, mockGit, mockVarStore); assert getStatus(job) == 'check_failed'; assert getCheckOutput(job) contains 'store unavailable'"
+    },
+    {
+      "id": "TS-11-36",
+      "requirement_id": "11-REQ-5.E7",
+      "kind": "unit",
+      "description": "When the git fetch subprocess hangs and the context is cancelled, the job is re-enqueued with backoff and the mutex is released.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: RunExitCode (dry-run) returns 0, Run('fetch') blocks until context cancelled"
+      ],
+      "input": "Worker processes the merge job; fetch hangs and context times out",
+      "expected": {
+        "side_effects": [
+          "Job status is 'queued'",
+          "retry_count is incremented",
+          "available_at is set to a future timestamp",
+          "Mutex is released"
+        ]
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 50ms); mockGit.runBlocksUntilCtxDone('fetch'); worker.processJob(job, mockGit, ctx); assert getStatus(job) == 'queued'; assert getRetryCount(job) >= 1; assert mutexIsReleased('main')"
+    },
+    {
+      "id": "TS-11-37",
+      "requirement_id": "11-REQ-6.1",
+      "kind": "unit",
+      "description": "When CanMerge returns BeforeDependency, the worker re-enqueues the job with available_at = now() + (2s * 2^retry_count) and increments retry_count.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job with retry_count=0",
+        "CanMerge returns (false, BeforeDependency, nil)"
+      ],
+      "input": "Worker processes the merge job; CanMerge returns BeforeDependency",
+      "expected": {
+        "side_effects": [
+          "Job status remains 'queued'",
+          "retry_count is 1",
+          "available_at is approximately now() + 2 seconds"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(status='queued', retry_count=0); mockCanMerge.returns(false, BeforeDependency, nil); before = now(); worker.processJob(job); assert getStatus(job) == 'queued'; assert getRetryCount(job) == 1; delay = getAvailableAt(job) - before; assert delay >= 1.9s and delay <= 2.1s"
+    },
+    {
+      "id": "TS-11-38",
+      "requirement_id": "11-REQ-6.2",
+      "kind": "unit",
+      "description": "When a retriable job's retry_count reaches 20, the worker transitions it to dead_letter status with rejection_reason preserved.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job with retry_count=19",
+        "CanMerge returns (false, BranchNotReady, nil)"
+      ],
+      "input": "Worker processes the merge job; CanMerge returns BranchNotReady for the 20th time",
+      "expected": {
+        "side_effects": [
+          "Job status is 'dead_letter'",
+          "rejection_reason is 'BranchNotReady'"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(status='queued', retry_count=19); mockCanMerge.returns(false, BranchNotReady, nil); worker.processJob(job); assert getStatus(job) == 'dead_letter'; assert getRejectionReason(job) == 'BranchNotReady'"
+    },
+    {
+      "id": "TS-11-39",
+      "requirement_id": "11-REQ-6.3",
+      "kind": "unit",
+      "description": "The worker polling query filters merge_jobs with WHERE status='queued' AND available_at <= now(), using the idx_merge_jobs_available index.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Two queued jobs: one with available_at in the past, one with available_at 1 hour in the future"
+      ],
+      "input": "Worker polls for eligible jobs",
+      "expected": {
+        "return": "Only the job with available_at <= now() is returned"
+      },
+      "assertion_pseudocode": "pastJob = createJob(status='queued', available_at=now()-10s); futureJob = createJob(status='queued', available_at=now()+3600s); jobs = store.PollEligibleJobs(db); assert len(jobs) == 1; assert jobs[0].id == pastJob.id"
+    },
+    {
+      "id": "TS-11-40",
+      "requirement_id": "11-REQ-6.E1",
+      "kind": "unit",
+      "description": "Backoff delay is capped at 2 hours (7200 seconds) per attempt regardless of retry_count; retries 12-20 all use the 2-hour cap.",
+      "preconditions": [
+        "Backoff calculation function available"
+      ],
+      "input": "Calculate backoff delay for retry_count values 0 through 20",
+      "expected": {
+        "return": "For retry_count=12: delay == 7200s; for retry_count=20: delay == 7200s; for retry_count=0: delay == 2s"
+      },
+      "assertion_pseudocode": "for rc in range(0, 21): delay = calculateBackoff(rc); assert delay <= 7200; assert delay == min(2 * pow(2, rc), 7200); assert calculateBackoff(0) == 2; assert calculateBackoff(12) == 7200; assert calculateBackoff(20) == 7200"
+    },
+    {
+      "id": "TS-11-41",
+      "requirement_id": "11-REQ-6.E2",
+      "kind": "unit",
+      "description": "When the database update for backoff re-enqueue fails, the worker logs the error and does not crash.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Database update for available_at is mocked to return an error",
+        "CanMerge returns (false, BeforeDependency, nil)"
+      ],
+      "input": "Worker processes the merge job; backoff DB update fails",
+      "expected": {
+        "side_effects": [
+          "Error is logged with merge_job_id",
+          "Worker goroutine continues running"
+        ]
+      },
+      "assertion_pseudocode": "mockDB.updateReturns('merge_jobs', errors.New('db error')); worker.processJob(job); assert logContains(merge_job_id=job.id, error='db error'); assert worker.isRunning() == true"
+    },
+    {
+      "id": "TS-11-42",
+      "requirement_id": "11-REQ-7.1",
+      "kind": "unit",
+      "description": "The POST /merges handler generates a UUID nonce server-side, inserts a merge job with status=prepared and available_at=now(), then enqueues it setting status to queued.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:write scope",
+        "No existing active job for the workspace/source_ref pair"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"spec/07-secrets\"}",
+      "expected": {
+        "body": "JSON merge job object with status='queued', campaign_id inferred, no nonce field",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07-secrets'}, auth=validToken); assert resp.status == 202; body = resp.json(); assert body.status == 'queued'; assert 'nonce' not in body; job = db.QueryRow('SELECT * FROM merge_jobs WHERE id=?', body.id); assert job.nonce != ''; assert job.available_at <= now()"
+    },
+    {
+      "id": "TS-11-43",
+      "requirement_id": "11-REQ-7.2",
+      "kind": "unit",
+      "description": "The worker validates the nonce and checks status before executing; skips if status is running or merged.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'merged' status",
+        "Worker receives the job ID on the queue channel"
+      ],
+      "input": "Worker dequeues the job ID; job is already in 'merged' status",
+      "expected": {
+        "side_effects": [
+          "No git operations are executed",
+          "Job status remains 'merged'"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(status='merged'); queue.send(job.id); worker.processNextFromChannel(); assert mockGit.callCount() == 0; assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-44",
+      "requirement_id": "11-REQ-7.3",
+      "kind": "unit",
+      "description": "The hub server never accepts a nonce from external API callers; nonce is always server-generated and never included in any API response.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:write scope"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"spec/07\",\"nonce\":\"caller-supplied-nonce\"}",
+      "expected": {
+        "body": "JSON merge job object; nonce field is absent; server-generated nonce is stored in DB (not caller-supplied)",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07', nonce:'caller-supplied-nonce'}, auth=validToken); assert resp.status == 202; body = resp.json(); assert 'nonce' not in body; dbNonce = db.QueryRow('SELECT nonce FROM merge_jobs WHERE id=?', body.id); assert dbNonce != 'caller-supplied-nonce'"
+    },
+    {
+      "id": "TS-11-45",
+      "requirement_id": "11-REQ-7.E1",
+      "kind": "unit",
+      "description": "When the caller's database transaction is rolled back after the job ID is sent to the queue channel, the worker finds no record and discards the job.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Job ID sent to queue channel but no corresponding DB record exists"
+      ],
+      "input": "Worker dequeues a job ID that has no corresponding database record",
+      "expected": {
+        "side_effects": [
+          "No git operations are executed",
+          "No error is returned; job is silently discarded"
+        ]
+      },
+      "assertion_pseudocode": "nonExistentID = uuid(); queue.send(nonExistentID); worker.processNextFromChannel(); assert mockGit.callCount() == 0"
+    },
+    {
+      "id": "TS-11-46",
+      "requirement_id": "11-REQ-7.E2",
+      "kind": "unit",
+      "description": "When the worker receives the same job ID twice, the second dequeue finds status=running or merged and skips execution.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job",
+        "Job ID sent to queue channel twice"
+      ],
+      "input": "Worker processes the job ID twice; first time succeeds and sets status to merged",
+      "expected": {
+        "side_effects": [
+          "Git operations are executed exactly once",
+          "Job status is 'merged' after both dequeues"
+        ]
+      },
+      "assertion_pseudocode": "queue.send(job.id); queue.send(job.id); worker.processNextFromChannel(); worker.processNextFromChannel(); assert mockGit.callCount('push') == 1; assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-47",
+      "requirement_id": "11-REQ-8.1",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 409 with existing_job_id when a job in queued or running status already exists for the same (workspace_slug, source_ref).",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Existing merge job with workspace_slug='my-workspace', source_ref='spec/07', status='queued'"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"spec/07\"}",
+      "expected": {
+        "body": "{\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"<UUID of existing job>\"}",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "existingJob = createJob(workspace_slug='my-workspace', source_ref='spec/07', status='queued'); resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=validToken); assert resp.status == 409; body = resp.json(); assert body.error == 'merge already in progress for this source branch'; assert body.existing_job_id == existingJob.id"
+    },
+    {
+      "id": "TS-11-48",
+      "requirement_id": "11-REQ-8.2",
+      "kind": "unit",
+      "description": "POST /merges proceeds with insert and returns HTTP 202 when no active job exists for the (workspace_slug, source_ref) pair.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "No existing job for workspace_slug='my-workspace', source_ref='spec/07'"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"spec/07\"}",
+      "expected": {
+        "body": "JSON merge job object with status='queued'",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=validToken); assert resp.status == 202; body = resp.json(); assert body.status == 'queued'; assert body.workspace_slug == 'my-workspace'"
+    },
+    {
+      "id": "TS-11-49",
+      "requirement_id": "11-REQ-8.E1",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 500 when the pre-insert SELECT check query fails due to a database error.",
+      "preconditions": [
+        "Database connection that returns an error on SELECT queries"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with valid body",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 500
+      },
+      "assertion_pseudocode": "mockDB.selectReturns(errors.New('db error')); resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=validToken); assert resp.status == 500; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-50",
+      "requirement_id": "11-REQ-9.1",
+      "kind": "unit",
+      "description": "The merge queue runs as a single global worker goroutine using a three-way select on stopCh, wakeup channel, and 10-second timer.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Queue constructed with NewQueue"
+      ],
+      "input": "Start the queue; observe worker goroutine behavior",
+      "expected": {
+        "side_effects": [
+          "Exactly one worker goroutine is running",
+          "Worker uses three-way select (verified by goroutine count and behavior)"
+        ]
+      },
+      "assertion_pseudocode": "q = NewQueue(db, mockGit, nil); q.Start(); goroutinesBefore = runtime.NumGoroutine(); q.Start(); goroutinesAfter = runtime.NumGoroutine(); assert goroutinesAfter - goroutinesBefore == 0; // second Start does not add goroutines; assert q.workerCount() == 1"
+    },
+    {
+      "id": "TS-11-51",
+      "requirement_id": "11-REQ-9.2",
+      "kind": "unit",
+      "description": "When a new job is enqueued, a non-blocking send on the buffered(1) wakeup channel interrupts the worker's poll sleep; multiple rapid enqueues coalesce into a single wakeup.",
+      "preconditions": [
+        "Queue with worker in poll-sleep state (no eligible jobs)",
+        "Wakeup channel instrumented to count sends"
+      ],
+      "input": "Enqueue three jobs in rapid succession",
+      "expected": {
+        "side_effects": [
+          "Wakeup channel receives at most 1 send (coalesced)",
+          "Worker wakes up and processes jobs"
+        ]
+      },
+      "assertion_pseudocode": "wakeupCount = 0; q = NewQueueWithWakeupHook(db, () => wakeupCount++); q.enqueue(job1); q.enqueue(job2); q.enqueue(job3); sleep(50ms); assert wakeupCount <= 3; // channel is buffered(1) so at most 1 pending; assert worker processed jobs"
+    },
+    {
+      "id": "TS-11-52",
+      "requirement_id": "11-REQ-9.3",
+      "kind": "unit",
+      "description": "Stop() closes stopCh and blocks on stopWaitGroup.Wait() until all in-flight merge operations complete before returning.",
+      "preconditions": [
+        "Queue with one in-flight merge operation (worker is in the middle of processing)",
+        "In-flight operation takes ~100ms to complete"
+      ],
+      "input": "Call Stop() while a merge operation is in progress",
+      "expected": {
+        "return": "Stop() returns only after the in-flight operation completes (after ~100ms)"
+      },
+      "assertion_pseudocode": "q = NewQueue(db, slowMockGit(delay=100ms), nil); q.Start(); q.enqueue(job); sleep(10ms); // let worker start; start = now(); q.Stop(); elapsed = now() - start; assert elapsed >= 90ms; assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-53",
+      "requirement_id": "11-REQ-9.E1",
+      "kind": "unit",
+      "description": "When the polling query returns no eligible jobs, the worker returns to the three-way select and waits without spinning.",
+      "preconditions": [
+        "Queue with no eligible jobs in the database",
+        "Worker is running"
+      ],
+      "input": "Worker polls and finds no eligible jobs",
+      "expected": {
+        "side_effects": [
+          "Worker does not spin; CPU usage is negligible",
+          "Worker waits for next wakeup or 10-second timer"
+        ]
+      },
+      "assertion_pseudocode": "q = NewQueue(db, mockGit, nil); q.Start(); sleep(50ms); assert mockGit.callCount() == 0; // no jobs processed; assert worker.isBlocked() == true // blocked on select"
+    },
+    {
+      "id": "TS-11-54",
+      "requirement_id": "11-REQ-9.E2",
+      "kind": "unit",
+      "description": "When stopCh is closed while a merge operation is in progress, the in-flight operation runs to completion and no new jobs are started.",
+      "preconditions": [
+        "Queue with one in-flight merge operation",
+        "A second job is queued and eligible"
+      ],
+      "input": "Stop() is called while the first job is being processed",
+      "expected": {
+        "side_effects": [
+          "First job completes (status='merged')",
+          "Second job is not started after shutdown signal"
+        ]
+      },
+      "assertion_pseudocode": "q = NewQueue(db, slowMockGit(delay=100ms), nil); q.Start(); q.enqueue(job1); q.enqueue(job2); sleep(10ms); q.Stop(); assert getStatus(job1) == 'merged'; assert getStatus(job2) == 'queued' // not processed"
+    },
+    {
+      "id": "TS-11-55",
+      "requirement_id": "11-REQ-9.E3",
+      "kind": "unit",
+      "description": "When the database polling query fails, the worker logs the error and waits for the next timer tick without crashing.",
+      "preconditions": [
+        "Queue with worker running",
+        "Database query for eligible jobs returns an error"
+      ],
+      "input": "Worker's polling query fails with a database error",
+      "expected": {
+        "side_effects": [
+          "Error is logged with structured fields",
+          "Worker goroutine continues running",
+          "Worker retries on next timer tick"
+        ]
+      },
+      "assertion_pseudocode": "mockDB.pollReturns(nil, errors.New('db error')); q = NewQueue(mockDB, mockGit, nil); q.Start(); sleep(50ms); assert logContains(error='db error'); assert q.workerIsRunning() == true"
+    },
+    {
+      "id": "TS-11-56",
+      "requirement_id": "11-REQ-10.1",
+      "kind": "unit",
+      "description": "POST /merges infers campaign_id and spec_id from source_ref, populates submitted_by from GetAuthInfo, generates nonce, inserts with status=prepared, and returns HTTP 202 with full job JSON excluding nonce.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table and an active campaign for spec '07'",
+        "Authenticated caller with UUID 'user-uuid-123' and merges:write scope"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"spec/07-secrets-variables\"}",
+      "expected": {
+        "body": "JSON with campaign_id non-null, spec_id='07', submitted_by='user-uuid-123', status='queued', no nonce field",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07-secrets-variables'}, auth=tokenFor('user-uuid-123')); assert resp.status == 202; body = resp.json(); assert body.campaign_id != null; assert body.spec_id == '07'; assert body.submitted_by == 'user-uuid-123'; assert 'nonce' not in body; assert body.status == 'queued'"
+    },
+    {
+      "id": "TS-11-57",
+      "requirement_id": "11-REQ-10.2",
+      "kind": "unit",
+      "description": "POST /merges accepts a standalone merge with campaign_id=null and spec_id=null when source_ref does not match any active campaign.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "No active campaign matching source_ref 'feature/my-branch'"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"feature/my-branch\"}",
+      "expected": {
+        "body": "JSON with campaign_id=null, spec_id=null, status='queued'",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'feature/my-branch'}, auth=validToken); assert resp.status == 202; body = resp.json(); assert body.campaign_id == null; assert body.spec_id == null"
+    },
+    {
+      "id": "TS-11-58",
+      "requirement_id": "11-REQ-10.E1",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 400 when the request body is missing target_branch or source_ref.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:write scope"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\"} (missing source_ref)",
+      "expected": {
+        "body": "apikit error body describing the missing field",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main'}, auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body; assert 'source_ref' in body.error"
+    },
+    {
+      "id": "TS-11-59",
+      "requirement_id": "11-REQ-10.E2",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:write scope.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with no auth token",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": "401 or 403"
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=nil); assert resp.status in [401, 403]; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-60",
+      "requirement_id": "11-REQ-10.E3",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 404 when the workspace identified by :slug does not exist.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "No workspace with slug 'nonexistent-workspace'"
+      ],
+      "input": "POST /api/v1/workspaces/nonexistent-workspace/merges with valid body and auth",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-61",
+      "requirement_id": "11-REQ-10.E4",
+      "kind": "unit",
+      "description": "POST /merges ignores caller-supplied submitted_by and nonce fields; submitted_by is always from GetAuthInfo and nonce is always server-generated.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with UUID 'real-user-uuid' and merges:write scope"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"spec/07\",\"submitted_by\":\"attacker-uuid\",\"nonce\":\"attacker-nonce\"}",
+      "expected": {
+        "body": "JSON with submitted_by='real-user-uuid', no nonce field; DB nonce != 'attacker-nonce'",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07', submitted_by:'attacker-uuid', nonce:'attacker-nonce'}, auth=tokenFor('real-user-uuid')); assert resp.status == 202; body = resp.json(); assert body.submitted_by == 'real-user-uuid'; assert 'nonce' not in body; dbNonce = db.QueryRow('SELECT nonce FROM merge_jobs WHERE id=?', body.id); assert dbNonce != 'attacker-nonce'"
+    },
+    {
+      "id": "TS-11-62",
+      "requirement_id": "11-REQ-11.1",
+      "kind": "unit",
+      "description": "GET /merges returns merge jobs ordered by (created_at ASC, id ASC) up to limit (default 50) in a pagination envelope with next_cursor; check_output is omitted from each item.",
+      "preconditions": [
+        "SQLite :memory: database with 5 merge jobs in various statuses",
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges",
+      "expected": {
+        "body": "{\"items\": [...5 items ordered oldest first...], \"next_cursor\": null}; each item lacks check_output field",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges', auth=validToken); assert resp.status == 200; body = resp.json(); assert 'items' in body; assert 'next_cursor' in body; assert len(body.items) == 5; for item in body.items: assert 'check_output' not in item; // verify ordering: for i in range(1, len(body.items)): assert (body.items[i].created_at, body.items[i].id) > (body.items[i-1].created_at, body.items[i-1].id)"
+    },
+    {
+      "id": "TS-11-63",
+      "requirement_id": "11-REQ-11.2",
+      "kind": "unit",
+      "description": "GET /merges with an 'after' cursor returns only jobs where (created_at, id) > (after_created_at, after_id).",
+      "preconditions": [
+        "SQLite :memory: database with 10 merge jobs",
+        "First page fetched; last item has id='cursor-job-id'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?after=cursor-job-id&limit=5",
+      "expected": {
+        "body": "Items starting after cursor-job-id; none of the first 5 jobs appear",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "firstPage = client.get('/api/v1/workspaces/my-workspace/merges?limit=5', auth=validToken).json(); cursor = firstPage.next_cursor; secondPage = client.get('/api/v1/workspaces/my-workspace/merges?after='+cursor+'&limit=5', auth=validToken).json(); firstPageIds = set(item.id for item in firstPage.items); for item in secondPage.items: assert item.id not in firstPageIds"
+    },
+    {
+      "id": "TS-11-64",
+      "requirement_id": "11-REQ-11.3",
+      "kind": "unit",
+      "description": "GET /merges with a valid status filter returns only jobs matching that status.",
+      "preconditions": [
+        "SQLite :memory: database with 3 'merged' jobs and 2 'queued' jobs"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?status=merged",
+      "expected": {
+        "body": "items array contains exactly 3 items, all with status='merged'",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?status=merged', auth=validToken); assert resp.status == 200; body = resp.json(); assert len(body.items) == 3; for item in body.items: assert item.status == 'merged'"
+    },
+    {
+      "id": "TS-11-65",
+      "requirement_id": "11-REQ-11.4",
+      "kind": "unit",
+      "description": "GET /merges sets next_cursor to null when there are no further pages beyond the current result set.",
+      "preconditions": [
+        "SQLite :memory: database with exactly 3 merge jobs",
+        "limit=10 (more than the total count)"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?limit=10",
+      "expected": {
+        "body": "{\"items\": [...3 items...], \"next_cursor\": null}",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?limit=10', auth=validToken); assert resp.status == 200; body = resp.json(); assert len(body.items) == 3; assert body.next_cursor == null"
+    },
+    {
+      "id": "TS-11-66",
+      "requirement_id": "11-REQ-11.E1",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 400 with an apikit error body listing the invalid value and valid options when status parameter is unrecognized.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?status=invalid_status",
+      "expected": {
+        "body": "apikit error body containing 'invalid_status' and listing valid status values",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?status=invalid_status', auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body; assert 'invalid_status' in body.error; assert any(s in body.error for s in ['queued','merged','conflict','dead_letter'])"
+    },
+    {
+      "id": "TS-11-67",
+      "requirement_id": "11-REQ-11.E2",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 400 when the limit parameter exceeds 100.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?limit=101",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?limit=101', auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-68",
+      "requirement_id": "11-REQ-11.E3",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 400 when the 'after' cursor references a job ID that does not exist.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?after=nonexistent-uuid",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?after=nonexistent-uuid', auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-69",
+      "requirement_id": "11-REQ-11.E4",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:read scope.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges with no auth token",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": "401 or 403"
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges', auth=nil); assert resp.status in [401, 403]; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-70",
+      "requirement_id": "11-REQ-11.E5",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 200 with an empty items array and next_cursor=null when no jobs match the filter.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table but no jobs with status='conflict'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?status=conflict",
+      "expected": {
+        "body": "{\"items\": [], \"next_cursor\": null}",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?status=conflict', auth=validToken); assert resp.status == 200; body = resp.json(); assert body.items == []; assert body.next_cursor == null"
+    },
+    {
+      "id": "TS-11-71",
+      "requirement_id": "11-REQ-12.1",
+      "kind": "unit",
+      "description": "GET /merges/:id returns the full merge job object including check_output and conflict_details as a native JSON array; nonce is excluded.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'check_failed' status with check_output='FAIL: test_foo' and conflict_details='[\"file1.go\"]'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id>",
+      "expected": {
+        "body": "Full merge job JSON with check_output='FAIL: test_foo', conflict_details=[\"file1.go\"], no nonce field",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 200; body = resp.json(); assert body.check_output == 'FAIL: test_foo'; assert body.conflict_details == ['file1.go']; assert 'nonce' not in body; assert body.id == job.id"
+    },
+    {
+      "id": "TS-11-72",
+      "requirement_id": "11-REQ-12.E1",
+      "kind": "unit",
+      "description": "GET /merges/:id returns HTTP 404 when the job ID does not exist in the database.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table (empty)"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/nonexistent-uuid",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges/nonexistent-uuid', auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-73",
+      "requirement_id": "11-REQ-12.E2",
+      "kind": "unit",
+      "description": "GET /merges/:id returns HTTP 404 (anti-enumeration) when the job exists but belongs to a different workspace_slug.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job belonging to workspace_slug='other-workspace'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id-from-other-workspace>",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "job = createJob(workspace_slug='other-workspace'); resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-74",
+      "requirement_id": "11-REQ-12.E3",
+      "kind": "unit",
+      "description": "GET /merges/:id returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:read scope.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id> with no auth token",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": "401 or 403"
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=nil); assert resp.status in [401, 403]; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-75",
+      "requirement_id": "11-REQ-13.1",
+      "kind": "unit",
+      "description": "DELETE /merges/:id transitions a queued job to cancelled status and returns HTTP 204 No Content.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'queued' status",
+        "Authenticated caller with merges:write scope"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/<job-id>",
+      "expected": {
+        "http_status": 204,
+        "side_effects": [
+          "Job status is 'cancelled' in the database",
+          "updated_at is updated"
+        ]
+      },
+      "assertion_pseudocode": "job = createJob(status='queued'); resp = client.delete('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 204; assert getStatus(job) == 'cancelled'; assert getUpdatedAt(job) > job.created_at"
+    },
+    {
+      "id": "TS-11-76",
+      "requirement_id": "11-REQ-13.2",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 409 with the current job status when the job is not in queued status.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'running' status",
+        "Authenticated caller with merges:write scope"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/<job-id> where job is in 'running' status",
+      "expected": {
+        "body": "apikit error body including the current status value 'running'",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "job = createJob(status='running'); resp = client.delete('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 409; body = resp.json(); assert 'error' in body; assert 'running' in body.error or body.status == 'running'"
+    },
+    {
+      "id": "TS-11-77",
+      "requirement_id": "11-REQ-13.E1",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 404 when the job ID does not exist.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table (empty)"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/nonexistent-uuid",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/my-workspace/merges/nonexistent-uuid', auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-78",
+      "requirement_id": "11-REQ-13.E2",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:write scope.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'queued' status"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/<job-id> with no auth token",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": "401 or 403"
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=nil); assert resp.status in [401, 403]; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-79",
+      "requirement_id": "11-REQ-13.E3",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 409 with the updated status when the job transitions from queued to running between the status check and the UPDATE.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'queued' status",
+        "Database UPDATE is mocked to affect zero rows (simulating race condition)"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/<job-id>; UPDATE affects 0 rows",
+      "expected": {
+        "body": "apikit error body including the current status (e.g. 'running')",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "job = createJob(status='queued'); mockDB.updateReturnsRowsAffected(0); // simulate race; db.Exec('UPDATE merge_jobs SET status=? WHERE id=?', 'running', job.id); resp = client.delete('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 409; body = resp.json(); assert 'running' in body.error or body.current_status == 'running'"
+    },
+    {
+      "id": "TS-11-80",
+      "requirement_id": "11-REQ-14.1",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue creates a new merge job with fresh nonce, status=queued, retry_count=0, available_at=now(), and submitted_by from GetAuthInfo; original dead-lettered job is unchanged.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'dead_letter' status",
+        "Authenticated caller with UUID 'operator-uuid' and merges:write scope"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/<dead-letter-job-id>/requeue",
+      "expected": {
+        "body": "New merge job JSON with status='queued', retry_count=0, submitted_by='operator-uuid', same source_ref and target_branch as original",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "deadJob = createJob(status='dead_letter', source_ref='spec/07', target_branch='main'); resp = client.post('/api/v1/workspaces/my-workspace/merges/'+deadJob.id+'/requeue', {}, auth=tokenFor('operator-uuid')); assert resp.status == 202; body = resp.json(); assert body.id != deadJob.id; assert body.status == 'queued'; assert body.retry_count == 0; assert body.submitted_by == 'operator-uuid'; assert body.source_ref == 'spec/07'; assert body.target_branch == 'main'; assert getStatus(deadJob) == 'dead_letter' // original unchanged"
+    },
+    {
+      "id": "TS-11-81",
+      "requirement_id": "11-REQ-14.2",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 409 when the job is not in dead_letter status.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'queued' status"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/<queued-job-id>/requeue",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "job = createJob(status='queued'); resp = client.post('/api/v1/workspaces/my-workspace/merges/'+job.id+'/requeue', {}, auth=validToken); assert resp.status == 409; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-82",
+      "requirement_id": "11-REQ-14.E1",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 404 when the job ID does not exist.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table (empty)"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/nonexistent-uuid/requeue",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges/nonexistent-uuid/requeue', {}, auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-83",
+      "requirement_id": "11-REQ-14.E2",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:write scope.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'dead_letter' status"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/<job-id>/requeue with no auth token",
+      "expected": {
+        "body": "apikit error body",
+        "http_status": "401 or 403"
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges/'+job.id+'/requeue', {}, auth=nil); assert resp.status in [401, 403]; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-84",
+      "requirement_id": "11-REQ-14.E3",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 409 with existing_job_id when an active job already exists for the same (workspace_slug, source_ref).",
+      "preconditions": [
+        "SQLite :memory: database with a dead_letter job and an existing queued job for the same source_ref"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/<dead-letter-job-id>/requeue",
+      "expected": {
+        "body": "{\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"<UUID of active job>\"}",
+        "http_status": 409
+      },
+      "assertion_pseudocode": "deadJob = createJob(status='dead_letter', source_ref='spec/07'); activeJob = createJob(status='queued', source_ref='spec/07'); resp = client.post('/api/v1/workspaces/my-workspace/merges/'+deadJob.id+'/requeue', {}, auth=validToken); assert resp.status == 409; body = resp.json(); assert body.existing_job_id == activeJob.id"
+    },
+    {
+      "id": "TS-11-85",
+      "requirement_id": "11-REQ-15.1",
+      "kind": "unit",
+      "description": "The HTTP handler unmarshals conflict_details TEXT from the store into a native JSON array before responding; clients receive a proper array, never a JSON-encoded string.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job where conflict_details TEXT = '[\"file1.go\",\"file2.go\"]'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id>",
+      "expected": {
+        "body": "conflict_details is a JSON array [\"file1.go\",\"file2.go\"], not a string",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "job = createJob(conflict_details='[\"file1.go\",\"file2.go\"]'); resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); body = resp.json(); assert typeof(body.conflict_details) == 'array'; assert body.conflict_details == ['file1.go', 'file2.go']"
+    },
+    {
+      "id": "TS-11-86",
+      "requirement_id": "11-REQ-15.2",
+      "kind": "unit",
+      "description": "When no conflicts were recorded, conflict_details is serialized as null in the HTTP response.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job where conflict_details is NULL"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id>",
+      "expected": {
+        "body": "conflict_details is JSON null",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "job = createJob(conflict_details=NULL); resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); body = resp.json(); assert body.conflict_details == null"
+    },
+    {
+      "id": "TS-11-87",
+      "requirement_id": "11-REQ-15.E1",
+      "kind": "unit",
+      "description": "When conflict_details TEXT contains malformed JSON, the handler logs the parse error and returns null for conflict_details rather than HTTP 500.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job where conflict_details TEXT = 'not-valid-json'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id>",
+      "expected": {
+        "body": "conflict_details is null; error is logged with merge_job_id",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "job = createJob(conflict_details='not-valid-json'); resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 200; body = resp.json(); assert body.conflict_details == null; assert logContains(merge_job_id=job.id)"
+    },
+    {
+      "id": "TS-11-88",
+      "requirement_id": "11-REQ-16.1",
+      "kind": "unit",
+      "description": "PostMergeHook is invoked synchronously after merged_sha is recorded for campaign merges; hook errors are logged but job status remains merged.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job with non-empty campaign_id",
+        "PostMergeHook returns errors.New('hook failed')"
+      ],
+      "input": "Worker completes merge successfully; PostMergeHook is called",
+      "expected": {
+        "side_effects": [
+          "PostMergeHook called with the MergeJob after merged_sha is set",
+          "Job status remains 'merged'",
+          "Error logged with merge_job_id"
+        ]
+      },
+      "assertion_pseudocode": "hookArgs = nil; hook = (ctx, job) => { hookArgs = job; return errors.New('hook failed') }; worker.processJob(campaignJob, mockGit, hook); assert hookArgs != nil; assert hookArgs.merged_sha != ''; assert getStatus(campaignJob) == 'merged'; assert logContains(merge_job_id=campaignJob.id, error='hook failed')"
+    },
+    {
+      "id": "TS-11-89",
+      "requirement_id": "11-REQ-16.2",
+      "kind": "unit",
+      "description": "PostMergeHook is not invoked for standalone merges (campaign_id=NULL) or when PostMergeHook is nil.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job with campaign_id=NULL",
+        "Mock GitRunner: all steps succeed"
+      ],
+      "input": "Worker processes a standalone merge job to completion",
+      "expected": {
+        "side_effects": [
+          "PostMergeHook is never called",
+          "Job status is 'merged'"
+        ]
+      },
+      "assertion_pseudocode": "hookCalled = false; hook = (ctx, job) => { hookCalled = true; return nil }; standaloneJob = createJob(campaign_id=''); worker.processJob(standaloneJob, mockGit, hook); assert hookCalled == false; assert getStatus(standaloneJob) == 'merged'"
+    },
+    {
+      "id": "TS-11-90",
+      "requirement_id": "11-REQ-16.3",
+      "kind": "unit",
+      "description": "NewQueue accepts PostMergeHook as a constructor parameter; the campaign package supplies the concrete implementation.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table"
+      ],
+      "input": "Call NewQueue(db, gitRunner, hook) where hook is a non-nil PostMergeHook function",
+      "expected": {
+        "return": "Queue instance with the hook stored; hook is called on successful campaign merges"
+      },
+      "assertion_pseudocode": "hookCalled = false; hook = PostMergeHook(func(ctx, job) error { hookCalled = true; return nil }); q = NewQueue(db, mockGit, hook); assert q != nil; // process a campaign job; q.processJob(campaignJob); assert hookCalled == true"
+    },
+    {
+      "id": "TS-11-91",
+      "requirement_id": "11-REQ-16.E1",
+      "kind": "unit",
+      "description": "When PostMergeHook blocks and graceful shutdown cancels the context, the hook invocation is interrupted and the job remains in merged status.",
+      "preconditions": [
+        "SQLite :memory: database with a campaign merge job",
+        "PostMergeHook blocks until context is cancelled"
+      ],
+      "input": "Worker completes merge; hook starts; Stop() is called cancelling the context",
+      "expected": {
+        "side_effects": [
+          "Hook invocation is interrupted by context cancellation",
+          "Job status remains 'merged'",
+          "Hook error is logged"
+        ]
+      },
+      "assertion_pseudocode": "hook = (ctx, job) => { <-ctx.Done(); return ctx.Err() }; q = NewQueue(db, mockGit, hook); q.Start(); q.enqueue(campaignJob); sleep(50ms); q.Stop(); assert getStatus(campaignJob) == 'merged'"
+    },
+    {
+      "id": "TS-11-92",
+      "requirement_id": "11-REQ-17.1",
+      "kind": "unit",
+      "description": "All significant state transitions are logged with structured fields: merge_job_id, workspace_slug, status, error, retry_count, and rejection_reason.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Structured log capture enabled",
+        "CanMerge returns (false, BeforeDependency, nil)"
+      ],
+      "input": "Worker processes the merge job; CanMerge returns BeforeDependency",
+      "expected": {
+        "side_effects": [
+          "Log entry contains merge_job_id, workspace_slug, status='queued', retry_count=1, rejection_reason='BeforeDependency'"
+        ]
+      },
+      "assertion_pseudocode": "logs = captureStructuredLogs(); worker.processJob(job); entry = findLogEntry(logs, merge_job_id=job.id); assert entry.workspace_slug == job.workspace_slug; assert entry.rejection_reason == 'BeforeDependency'; assert entry.retry_count == 1"
+    },
+    {
+      "id": "TS-11-93",
+      "requirement_id": "11-REQ-17.2",
+      "kind": "unit",
+      "description": "When PostMergeHook returns an error, the error is logged with merge_job_id and is not surfaced in any API response.",
+      "preconditions": [
+        "SQLite :memory: database with a campaign merge job",
+        "PostMergeHook returns errors.New('hook error')",
+        "Structured log capture enabled"
+      ],
+      "input": "Worker completes merge; PostMergeHook returns error",
+      "expected": {
+        "side_effects": [
+          "Log entry contains merge_job_id and error='hook error'",
+          "GET /merges/:id response does not contain hook error"
+        ]
+      },
+      "assertion_pseudocode": "logs = captureStructuredLogs(); worker.processJob(campaignJob, mockGit, errorHook); entry = findLogEntry(logs, merge_job_id=campaignJob.id, error='hook error'); assert entry != nil; resp = client.get('/api/v1/workspaces/my-workspace/merges/'+campaignJob.id, auth=validToken); body = resp.json(); assert 'hook error' not in json.dumps(body)"
+    },
+    {
+      "id": "TS-11-94",
+      "requirement_id": "11-REQ-17.E1",
+      "kind": "unit",
+      "description": "When a log write fails, the merge queue continues processing and job state transitions are not affected.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Log writer mocked to return an error"
+      ],
+      "input": "Worker processes the merge job; log write fails",
+      "expected": {
+        "side_effects": [
+          "Job status transitions normally (e.g. to 'merged')",
+          "Worker goroutine continues running"
+        ]
+      },
+      "assertion_pseudocode": "mockLogger.writeReturns(errors.New('log write failed')); worker.processJob(job, mockGit); assert getStatus(job) == 'merged'; assert worker.isRunning() == true"
+    },
+    {
+      "id": "TS-11-95",
+      "requirement_id": "11-REQ-18.1",
+      "kind": "unit",
+      "description": "For standalone merges (campaign_id=NULL), the worker skips BeforeDependency and SpecBlocked checks, skips PostMergeHook, and performs no cascading rebase.",
+      "preconditions": [
+        "SQLite :memory: database with a standalone merge job (campaign_id=NULL)",
+        "Mock GitRunner: all steps succeed",
+        "PostMergeHook instrumented to detect calls"
+      ],
+      "input": "Worker processes the standalone merge job",
+      "expected": {
+        "side_effects": [
+          "Job status is 'merged'",
+          "PostMergeHook is never called",
+          "No BeforeDependency or SpecBlocked DB queries are made"
+        ]
+      },
+      "assertion_pseudocode": "hookCalled = false; hook = (ctx, job) => { hookCalled = true; return nil }; standaloneJob = createJob(campaign_id=''); worker.processJob(standaloneJob, mockGit, hook); assert getStatus(standaloneJob) == 'merged'; assert hookCalled == false"
+    },
+    {
+      "id": "TS-11-96",
+      "requirement_id": "11-REQ-18.2",
+      "kind": "unit",
+      "description": "POST /merges creates a standalone merge job with campaign_id=null and spec_id=null when source_ref does not match any active campaign's spec branch.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "No active campaign matching source_ref 'hotfix/urgent-fix'"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\",\"source_ref\":\"hotfix/urgent-fix\"}",
+      "expected": {
+        "body": "JSON with campaign_id=null, spec_id=null",
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'hotfix/urgent-fix'}, auth=validToken); assert resp.status == 202; body = resp.json(); assert body.campaign_id == null; assert body.spec_id == null"
+    },
+    {
+      "id": "TS-11-97",
+      "requirement_id": "11-REQ-18.E1",
+      "kind": "unit",
+      "description": "A standalone merge job (campaign_id=NULL) that encounters WouldConflict transitions to conflict status with conflict_details populated; no campaign notification is attempted.",
+      "preconditions": [
+        "SQLite :memory: database with a standalone merge job",
+        "Mock GitRunner.RunExitCode returns exit code 1 with conflict output"
+      ],
+      "input": "Worker processes the standalone merge job; dry-run detects conflicts",
+      "expected": {
+        "side_effects": [
+          "Job status is 'conflict'",
+          "conflict_details is populated",
+          "PostMergeHook is never called"
+        ]
+      },
+      "assertion_pseudocode": "hookCalled = false; hook = (ctx, job) => { hookCalled = true; return nil }; standaloneJob = createJob(campaign_id=''); mockGit.runExitCodeReturns(1, 'CONFLICT in file1.go', nil); worker.processJob(standaloneJob, mockGit, hook); assert getStatus(standaloneJob) == 'conflict'; assert getConflictDetails(standaloneJob) != ''; assert hookCalled == false"
+    },
+    {
+      "id": "TS-11-98",
+      "requirement_id": "11-REQ-19.1",
+      "kind": "unit",
+      "description": "The merge queue maintains an in-process map of sync.Mutex values keyed by target branch; acquires the mutex before steps 4-10 and releases it after step 10 or on any failure.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job targeting 'main'",
+        "Mutex map instrumented to track lock/unlock events"
+      ],
+      "input": "Worker processes the merge job",
+      "expected": {
+        "side_effects": [
+          "Mutex for 'main' is acquired before nonce validation",
+          "Mutex for 'main' is released after status is set to 'merged'"
+        ]
+      },
+      "assertion_pseudocode": "events = []; mutexMap = instrumentedMutexMap(events); worker.processJob(job, mockGit, mutexMap); assert events contains ('lock', 'main'); assert events contains ('unlock', 'main'); lockIdx = events.index(('lock','main')); unlockIdx = events.index(('unlock','main')); assert lockIdx < unlockIdx"
+    },
+    {
+      "id": "TS-11-99",
+      "requirement_id": "11-REQ-19.2",
+      "kind": "unit",
+      "description": "The per-target-branch mutex map never evicts entries; entries accumulate for the lifetime of the process.",
+      "preconditions": [
+        "Queue with in-process mutex map"
+      ],
+      "input": "Process merge jobs for 5 different target branches",
+      "expected": {
+        "side_effects": [
+          "Mutex map contains 5 entries after processing",
+          "No entries are evicted"
+        ]
+      },
+      "assertion_pseudocode": "branches = ['main', 'release/1.0', 'release/2.0', 'staging', 'dev']; for branch in branches: processJob(targetBranch=branch); assert len(mutexMap) == 5; for branch in branches: assert branch in mutexMap"
+    },
+    {
+      "id": "TS-11-100",
+      "requirement_id": "11-REQ-19.E1",
+      "kind": "unit",
+      "description": "When a panic occurs inside the mutex-protected section, the deferred mutex release fires and the panic propagates to the worker's recover handler.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner panics during the rebase step"
+      ],
+      "input": "Worker processes the merge job; panic occurs inside mutex-protected section",
+      "expected": {
+        "side_effects": [
+          "Mutex for target branch is released (no deadlock)",
+          "Panic is recovered by the worker goroutine's recover handler"
+        ]
+      },
+      "assertion_pseudocode": "mockGit.runPanicsOn('rebase'); defer func() { if r := recover(); r != nil { assert mutexIsReleased('main') } }(); worker.processJob(job, mockGit)"
+    },
+    {
+      "id": "TS-11-101",
+      "requirement_id": "11-REQ-19.E2",
+      "kind": "unit",
+      "description": "When two jobs targeting the same target_branch are dequeued concurrently, the second blocks on mutex acquisition until the first releases it; no data race occurs.",
+      "preconditions": [
+        "SQLite :memory: database with two queued merge jobs both targeting 'main'",
+        "go test -race flag enabled"
+      ],
+      "input": "Two goroutines each call processJob for the same target branch concurrently",
+      "expected": {
+        "side_effects": [
+          "No data race detected by -race detector",
+          "Both jobs complete sequentially"
+        ]
+      },
+      "assertion_pseudocode": "job1 = createJob(target_branch='main'); job2 = createJob(target_branch='main'); wg = WaitGroup(); wg.Add(2); go func() { worker.processJob(job1, mockGit); wg.Done() }(); go func() { worker.processJob(job2, mockGit); wg.Done() }(); wg.Wait(); assert getStatus(job1) == 'merged'; assert getStatus(job2) == 'merged'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-11-P1",
+      "property_id": "11-PROP-1",
+      "validates": [
+        "11-REQ-8.1",
+        "11-REQ-8.2"
+      ],
+      "description": "For any workspace_slug and source_ref pair, at most one merge_jobs record has status in ('queued', 'running') at any point in time.",
+      "for_any_strategy": "Generate 10-50 random (workspace_slug, source_ref) pairs; for each pair, attempt to submit 2-5 concurrent merge requests via the POST /merges handler using goroutines; sample across various timing windows",
+      "invariant_check": "After all submissions complete, query: SELECT COUNT(*) FROM merge_jobs WHERE workspace_slug=? AND source_ref=? AND status IN ('queued','running'); assert count <= 1 for every (workspace_slug, source_ref) pair"
+    },
+    {
+      "id": "TS-11-P2",
+      "property_id": "11-PROP-2",
+      "validates": [
+        "11-REQ-7.1",
+        "11-REQ-7.3"
+      ],
+      "description": "No two records in merge_jobs share the same nonce value.",
+      "for_any_strategy": "Insert 100-1000 merge job records via the store layer using valid inputs; vary workspace_slug, source_ref, target_branch, and campaign_id across all insertions",
+      "invariant_check": "SELECT COUNT(*) FROM merge_jobs GROUP BY nonce HAVING COUNT(*) > 1; assert result set is empty (no duplicate nonces)"
+    },
+    {
+      "id": "TS-11-P3",
+      "property_id": "11-PROP-3",
+      "validates": [
+        "11-REQ-6.1",
+        "11-REQ-6.2"
+      ],
+      "description": "retry_count never exceeds 20; when retry_count reaches 20 on a retriable failure, status transitions to dead_letter.",
+      "for_any_strategy": "For any merge job with CanMerge always returning (false, BranchNotReady, nil), simulate the worker processing the job repeatedly until it reaches a terminal state; sample retry_count values 0-25",
+      "invariant_check": "After each worker iteration: assert getRetryCount(job) <= 20; after terminal state reached: if getRetryCount(job) == 20 then assert getStatus(job) == 'dead_letter'"
+    },
+    {
+      "id": "TS-11-P4",
+      "property_id": "11-PROP-4",
+      "validates": [
+        "11-REQ-6.1",
+        "11-REQ-6.E1"
+      ],
+      "description": "The computed backoff delay (2s * 2^retry_count) is capped at 2 hours (7200 seconds); no single retry delay exceeds 7200 seconds.",
+      "for_any_strategy": "For any retry_count value in range [0, 100] (including values well beyond the cap threshold of 12), compute calculateBackoff(retry_count)",
+      "invariant_check": "assert calculateBackoff(rc) <= 7200 for all rc in [0, 100]; assert calculateBackoff(rc) == min(2 * pow(2, rc), 7200)"
+    },
+    {
+      "id": "TS-11-P5",
+      "property_id": "11-PROP-5",
+      "validates": [
+        "11-REQ-5.E1",
+        "11-REQ-4.E1"
+      ],
+      "description": "For any merge job that fails during rebase, git rebase --abort is always called before the mutex is released; the target branch HEAD is never left in a mid-rebase state.",
+      "for_any_strategy": "For any merge job where git rebase returns a non-zero exit code (simulated via mock GitRunner), record all git commands called in order",
+      "invariant_check": "In the recorded command sequence: assert 'rebase --abort' appears after 'rebase origin/<branch>' and before mutex release; assert no subsequent git commands modify the target branch after the conflict"
+    },
+    {
+      "id": "TS-11-P6",
+      "property_id": "11-PROP-6",
+      "validates": [
+        "11-REQ-7.3",
+        "11-REQ-10.1"
+      ],
+      "description": "The nonce field is absent from all JSON response bodies from any merge queue endpoint.",
+      "for_any_strategy": "For any merge job in any status (prepared, queued, running, merged, conflict, check_failed, cancelled, push_failed, dead_letter), call GET /merges/:id and GET /merges; sample 50 jobs across all statuses",
+      "invariant_check": "For every HTTP response body: assert 'nonce' not in json.keys(body) and 'nonce' not in json.keys(item) for item in body.items"
+    },
+    {
+      "id": "TS-11-P7",
+      "property_id": "11-PROP-7",
+      "validates": [
+        "11-REQ-5.4",
+        "11-REQ-2.3"
+      ],
+      "description": "For any merge job that transitions to merged status, merged_sha is non-NULL and equals the HEAD SHA of the target branch after the fast-forward push.",
+      "for_any_strategy": "For any merge job processed to completion by the worker with a real local git repo (created via t.TempDir() and git init), capture the HEAD SHA after push",
+      "invariant_check": "assert getMergedSha(job) != ''; assert getMergedSha(job) == gitHeadSha(targetBranch) after push completes"
+    },
+    {
+      "id": "TS-11-P8",
+      "property_id": "11-PROP-8",
+      "validates": [
+        "11-REQ-16.2",
+        "11-REQ-18.1"
+      ],
+      "description": "PostMergeHook is never invoked for any merge job with campaign_id = NULL, regardless of the merge outcome.",
+      "for_any_strategy": "For any standalone merge job (campaign_id='') in any outcome (merged, conflict, check_failed, push_failed), process the job with an instrumented PostMergeHook; sample 20 jobs across all terminal outcomes",
+      "invariant_check": "assert hookCallCount == 0 after processing any standalone merge job to any terminal state"
+    },
+    {
+      "id": "TS-11-P9",
+      "property_id": "11-PROP-9",
+      "validates": [
+        "11-REQ-16.1",
+        "11-REQ-2.1"
+      ],
+      "description": "The status of a merge job in 'merged' status never changes to any other value, even if PostMergeHook returns an error.",
+      "for_any_strategy": "For any merge job that has reached 'merged' status, attempt to call transitionStatus with any other status value; also simulate PostMergeHook returning various errors",
+      "invariant_check": "assert getStatus(job) == 'merged' after any transitionStatus call or PostMergeHook error; assert no UPDATE statement changes status away from 'merged'"
+    },
+    {
+      "id": "TS-11-P10",
+      "property_id": "11-PROP-10",
+      "validates": [
+        "11-REQ-7.1",
+        "11-REQ-14.1"
+      ],
+      "description": "For any newly created merge job (initial submission or requeue), available_at is set to the current time so the job is immediately eligible for processing.",
+      "for_any_strategy": "For any merge job created via POST /merges or POST /merges/:id/requeue, record the time before and after the request; sample 50 submissions",
+      "invariant_check": "assert job.available_at >= before_request_time; assert job.available_at <= after_request_time + 1s; assert job.available_at <= now() (job is immediately eligible)"
+    },
+    {
+      "id": "TS-11-P11",
+      "property_id": "11-PROP-11",
+      "validates": [
+        "11-REQ-15.1",
+        "11-REQ-15.2"
+      ],
+      "description": "conflict_details in any HTTP response is either a JSON array of strings or JSON null; it is never a JSON-encoded string.",
+      "for_any_strategy": "For any merge job with conflict_details TEXT column containing various values (null, valid JSON array, malformed JSON, empty string), call GET /merges/:id and GET /merges; sample 30 jobs",
+      "invariant_check": "For every response: assert typeof(body.conflict_details) in ['array', 'null']; assert typeof(body.conflict_details) != 'string'"
+    },
+    {
+      "id": "TS-11-P12",
+      "property_id": "11-PROP-12",
+      "validates": [
+        "11-REQ-10.1",
+        "11-REQ-14.1"
+      ],
+      "description": "submitted_by in any merge job created by any endpoint equals the UUID returned by GetAuthInfo for the request; it is never the value supplied in the request body.",
+      "for_any_strategy": "For any authenticated caller with UUID X, submit merge jobs via POST /merges and POST /merges/:id/requeue with various submitted_by values in the request body; sample 20 requests with different caller UUIDs",
+      "invariant_check": "assert job.submitted_by == GetAuthInfo(request).UUID for every created job; assert job.submitted_by != request_body.submitted_by when request_body.submitted_by is present and different from caller UUID"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-11-E1",
+      "requirement_id": "11-REQ-1.E1",
+      "kind": "unit",
+      "description": "InitSchema returns a non-nil error when the SQLite database is read-only and does not call os.Exit.",
+      "preconditions": [
+        "A SQLite database file opened in read-only mode"
+      ],
+      "input": "Call InitSchema(readOnlyDB)",
+      "expected": "non-nil error; process continues running",
+      "assertion_pseudocode": "db = openReadOnlyDB(); err = InitSchema(db); assert err != nil"
+    },
+    {
+      "id": "TS-11-E2",
+      "requirement_id": "11-REQ-1.E2",
+      "kind": "unit",
+      "description": "InitSchema called on a database that already has the merge_jobs table returns nil and does not alter existing data.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table already created",
+        "One row inserted"
+      ],
+      "input": "Call InitSchema(db) a second time",
+      "expected": "nil error; existing row count is unchanged",
+      "assertion_pseudocode": "InitSchema(db); insertRow(db); err = InitSchema(db); assert err == nil; count = db.QueryRow('SELECT COUNT(*) FROM merge_jobs').Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-11-E3",
+      "requirement_id": "11-REQ-2.E1",
+      "kind": "unit",
+      "description": "Attempting to transition a terminal-status job to another status is rejected with a non-nil error and the status is unchanged.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'merged' status"
+      ],
+      "input": "Call transitionStatus(db, job.id, 'queued')",
+      "expected": "non-nil error; job status remains 'merged'",
+      "assertion_pseudocode": "job = createJob(status='merged'); err = transitionStatus(db, job.id, 'queued'); assert err != nil; assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-E4",
+      "requirement_id": "11-REQ-2.E2",
+      "kind": "unit",
+      "description": "A job found in 'running' status at worker startup is treated as stale and not re-executed; a warning is logged.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'running' status"
+      ],
+      "input": "Worker starts and polls for eligible jobs",
+      "expected": "Stale running job is not picked up; warning logged with merge_job_id",
+      "assertion_pseudocode": "job = createJob(status='running'); worker.start(); sleep(100ms); assert mockGit.callCount() == 0; assert logContains(level='warn', merge_job_id=job.id)"
+    },
+    {
+      "id": "TS-11-E5",
+      "requirement_id": "11-REQ-3.E1",
+      "kind": "unit",
+      "description": "CanMerge returns (false, empty string, non-nil error) when a database query fails unexpectedly.",
+      "preconditions": [
+        "A database connection that returns an error on query"
+      ],
+      "input": "Call CanMerge(ctx, brokenDB, job)",
+      "expected": "(false, \"\", non-nil error)",
+      "assertion_pseudocode": "canMerge, reason, err = CanMerge(ctx, brokenDB, job); assert canMerge == false; assert reason == ''; assert err != nil"
+    },
+    {
+      "id": "TS-11-E6",
+      "requirement_id": "11-REQ-3.E2",
+      "kind": "unit",
+      "description": "CanMerge returns immediately with context.Canceled when the context is already cancelled.",
+      "preconditions": [
+        "A cancelled context"
+      ],
+      "input": "Call CanMerge(cancelledCtx, db, job)",
+      "expected": "(false, \"\", context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); canMerge, reason, err = CanMerge(ctx, db, job); assert canMerge == false; assert reason == ''; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-11-E7",
+      "requirement_id": "11-REQ-4.E1",
+      "kind": "unit",
+      "description": "When dry-run passes but real rebase detects a conflict (TOCTOU), job transitions to conflict status and integration branch is never left dirty.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner: RunExitCode returns 0, Run('rebase') returns GitError"
+      ],
+      "input": "Worker processes the merge job; dry-run passes but rebase conflicts",
+      "expected": "Job status is 'conflict'; git rebase --abort was called; no dirty state",
+      "assertion_pseudocode": "mockGit.runExitCodeReturns(0, '', nil); mockGit.runReturns('rebase', GitError{ExitCode:1}); mockGit.runReturns('diff --name-only --diff-filter=U', 'file1.go\\n', nil); worker.processJob(job, mockGit); assert getStatus(job) == 'conflict'; assert mockGit.wasCalled('rebase', '--abort')"
+    },
+    {
+      "id": "TS-11-E8",
+      "requirement_id": "11-REQ-4.E2",
+      "kind": "unit",
+      "description": "When RunExitCode returns a non-nil error (subprocess failure) during dry-run, the job is re-enqueued with backoff rather than marked as conflict.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job (retry_count=0)",
+        "Mock GitRunner.RunExitCode returns (0, '', non-nil error)"
+      ],
+      "input": "Worker processes the merge job; merge-tree subprocess fails",
+      "expected": "Job status remains 'queued'; retry_count incremented; available_at is future",
+      "assertion_pseudocode": "mockGit.runExitCodeReturns(0, '', errors.New('subprocess error')); worker.processJob(job, mockGit); assert getStatus(job) == 'queued'; assert getRetryCount(job) == 1; assert getAvailableAt(job) > now()"
+    },
+    {
+      "id": "TS-11-E9",
+      "requirement_id": "11-REQ-4.E3",
+      "kind": "unit",
+      "description": "When the merge-tree subprocess hangs and the context is cancelled, the job is re-enqueued with backoff and not marked as conflict.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner.RunExitCode blocks until context cancelled"
+      ],
+      "input": "Worker processes the merge job with a short-deadline context",
+      "expected": "Job status remains 'queued'; retry_count incremented",
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 10ms); mockGit.runExitCodeBlocksUntilCtxDone(); worker.processJob(job, mockGit, ctx); assert getStatus(job) == 'queued'; assert getRetryCount(job) >= 1"
+    },
+    {
+      "id": "TS-11-E10",
+      "requirement_id": "11-REQ-5.E1",
+      "kind": "unit",
+      "description": "When git rebase exits with a conflict, processMergeJob runs git diff --name-only --diff-filter=U, then git rebase --abort, sets status to conflict with conflict_details.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: rebase returns GitError, diff returns file list, abort succeeds"
+      ],
+      "input": "Worker processes the merge job; rebase fails with conflict",
+      "expected": "Job status is 'conflict'; conflict_details populated; rebase --abort called",
+      "assertion_pseudocode": "mockGit.runReturns('rebase origin/main', GitError{ExitCode:1}); mockGit.runReturns('diff --name-only --diff-filter=U', 'file1.go\\n', nil); mockGit.runReturns('rebase --abort', '', nil); worker.processJob(job, mockGit); assert getStatus(job) == 'conflict'; assert 'file1.go' in getConflictDetails(job)"
+    },
+    {
+      "id": "TS-11-E11",
+      "requirement_id": "11-REQ-5.E2",
+      "kind": "unit",
+      "description": "When the check command exits with a non-zero exit code, processMergeJob sets status to check_failed and stores captured output in check_output.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "CHECK_COMMAND configured; check exits with code 1 and output 'FAIL'"
+      ],
+      "input": "Worker processes the merge job; check command fails",
+      "expected": "Job status is 'check_failed'; check_output contains 'FAIL'",
+      "assertion_pseudocode": "mockExec.returns(exitCode=1, output='FAIL'); worker.processJob(job, mockGit, mockExec); assert getStatus(job) == 'check_failed'; assert getCheckOutput(job) == 'FAIL'"
+    },
+    {
+      "id": "TS-11-E12",
+      "requirement_id": "11-REQ-5.E3",
+      "kind": "unit",
+      "description": "When the fast-forward push fails, processMergeJob sets status to push_failed and releases the mutex.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: push returns GitError"
+      ],
+      "input": "Worker processes the merge job; push fails",
+      "expected": "Job status is 'push_failed'; mutex released",
+      "assertion_pseudocode": "mockGit.runReturns('push', GitError{ExitCode:1}); worker.processJob(job, mockGit); assert getStatus(job) == 'push_failed'; assert mutexIsReleased('main')"
+    },
+    {
+      "id": "TS-11-E13",
+      "requirement_id": "11-REQ-5.E4",
+      "kind": "unit",
+      "description": "When the nonce in the database does not match the job's nonce, the job is discarded without executing the merge.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job whose nonce has been changed"
+      ],
+      "input": "Worker dequeues the job; nonce mismatch detected",
+      "expected": "No git operations executed; job status unchanged; mutex released",
+      "assertion_pseudocode": "job = createJob(nonce='original'); db.Exec('UPDATE merge_jobs SET nonce=? WHERE id=?', 'different', job.id); worker.processJob(job, mockGit); assert mockGit.callCount() == 0"
+    },
+    {
+      "id": "TS-11-E14",
+      "requirement_id": "11-REQ-5.E5",
+      "kind": "unit",
+      "description": "When the check command exceeds CHECK_TIMEOUT, the subprocess is killed and job status is set to check_failed with timeout error in check_output.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "CHECK_COMMAND='sleep 999', CHECK_TIMEOUT='1s'"
+      ],
+      "input": "Worker processes the merge job; check command times out",
+      "expected": "Job status is 'check_failed'; check_output contains timeout error",
+      "assertion_pseudocode": "setWorkspaceVar('CHECK_COMMAND', 'sleep 999'); setWorkspaceVar('CHECK_TIMEOUT', '1s'); worker.processJob(job, mockGit); assert getStatus(job) == 'check_failed'; assert getCheckOutput(job) contains 'timeout' or 'killed'"
+    },
+    {
+      "id": "TS-11-E15",
+      "requirement_id": "11-REQ-5.E6",
+      "kind": "unit",
+      "description": "When fetching CHECK_COMMAND from the workspace variables store fails, processMergeJob sets status to check_failed and records the error in check_output.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Workspace variables store returns error for CHECK_COMMAND"
+      ],
+      "input": "Worker processes the merge job; variable store fetch fails",
+      "expected": "Job status is 'check_failed'; check_output contains store error",
+      "assertion_pseudocode": "mockVarStore.getReturns('CHECK_COMMAND', '', errors.New('store error')); worker.processJob(job, mockGit, mockVarStore); assert getStatus(job) == 'check_failed'; assert getCheckOutput(job) contains 'store error'"
+    },
+    {
+      "id": "TS-11-E16",
+      "requirement_id": "11-REQ-5.E7",
+      "kind": "unit",
+      "description": "When the git fetch subprocess hangs and the context is cancelled, the job is re-enqueued with backoff and the mutex is released.",
+      "preconditions": [
+        "SQLite :memory: database with a running merge job",
+        "Mock GitRunner: dry-run returns 0, fetch blocks until context cancelled"
+      ],
+      "input": "Worker processes the merge job; fetch hangs and context times out",
+      "expected": "Job status is 'queued'; retry_count incremented; mutex released",
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 50ms); mockGit.runBlocksUntilCtxDone('fetch'); worker.processJob(job, mockGit, ctx); assert getStatus(job) == 'queued'; assert getRetryCount(job) >= 1; assert mutexIsReleased('main')"
+    },
+    {
+      "id": "TS-11-E17",
+      "requirement_id": "11-REQ-6.E1",
+      "kind": "unit",
+      "description": "Backoff delay is capped at 7200 seconds (2 hours) per attempt; retries 12-20 all use the 2-hour cap.",
+      "preconditions": [
+        "Backoff calculation function available"
+      ],
+      "input": "Calculate backoff delay for retry_count values 0 through 20",
+      "expected": "calculateBackoff(0)==2s; calculateBackoff(12)==7200s; calculateBackoff(20)==7200s; all values <= 7200s",
+      "assertion_pseudocode": "for rc in range(0, 21): delay = calculateBackoff(rc); assert delay <= 7200; assert calculateBackoff(0) == 2; assert calculateBackoff(12) == 7200; assert calculateBackoff(20) == 7200"
+    },
+    {
+      "id": "TS-11-E18",
+      "requirement_id": "11-REQ-6.E2",
+      "kind": "unit",
+      "description": "When the database update for backoff re-enqueue fails, the worker logs the error and does not crash the worker goroutine.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Database update mocked to return an error",
+        "CanMerge returns (false, BeforeDependency, nil)"
+      ],
+      "input": "Worker processes the merge job; backoff DB update fails",
+      "expected": "Error logged with merge_job_id; worker goroutine continues running",
+      "assertion_pseudocode": "mockDB.updateReturns('merge_jobs', errors.New('db error')); worker.processJob(job); assert logContains(merge_job_id=job.id, error='db error'); assert worker.isRunning() == true"
+    },
+    {
+      "id": "TS-11-E19",
+      "requirement_id": "11-REQ-7.E1",
+      "kind": "unit",
+      "description": "When the caller's database transaction is rolled back after the job ID is sent to the queue channel, the worker finds no record and discards the job without error.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Job ID sent to queue channel but no corresponding DB record"
+      ],
+      "input": "Worker dequeues a job ID with no corresponding database record",
+      "expected": "No git operations executed; no error; job silently discarded",
+      "assertion_pseudocode": "nonExistentID = uuid(); queue.send(nonExistentID); worker.processNextFromChannel(); assert mockGit.callCount() == 0"
+    },
+    {
+      "id": "TS-11-E20",
+      "requirement_id": "11-REQ-7.E2",
+      "kind": "unit",
+      "description": "When the worker receives the same job ID twice, the second dequeue finds status=merged and skips execution.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job",
+        "Job ID sent to queue channel twice"
+      ],
+      "input": "Worker processes the job ID twice",
+      "expected": "Git operations executed exactly once; job status is 'merged' after both dequeues",
+      "assertion_pseudocode": "queue.send(job.id); queue.send(job.id); worker.processNextFromChannel(); worker.processNextFromChannel(); assert mockGit.callCount('push') == 1; assert getStatus(job) == 'merged'"
+    },
+    {
+      "id": "TS-11-E21",
+      "requirement_id": "11-REQ-8.E1",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 500 when the pre-insert SELECT check query fails due to a database error.",
+      "preconditions": [
+        "Database connection that returns an error on SELECT queries"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with valid body",
+      "expected": "HTTP 500 with apikit error body; no new job inserted",
+      "assertion_pseudocode": "mockDB.selectReturns(errors.New('db error')); resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=validToken); assert resp.status == 500; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E22",
+      "requirement_id": "11-REQ-9.E1",
+      "kind": "unit",
+      "description": "When the polling query returns no eligible jobs, the worker returns to the three-way select and waits without spinning.",
+      "preconditions": [
+        "Queue with no eligible jobs in the database",
+        "Worker is running"
+      ],
+      "input": "Worker polls and finds no eligible jobs",
+      "expected": "Worker does not spin; waits for next wakeup or 10-second timer",
+      "assertion_pseudocode": "q = NewQueue(db, mockGit, nil); q.Start(); sleep(50ms); assert mockGit.callCount() == 0; assert worker.isBlocked() == true"
+    },
+    {
+      "id": "TS-11-E23",
+      "requirement_id": "11-REQ-9.E2",
+      "kind": "unit",
+      "description": "When stopCh is closed while a merge operation is in progress, the in-flight operation runs to completion and no new jobs are started.",
+      "preconditions": [
+        "Queue with one in-flight merge operation and a second queued job"
+      ],
+      "input": "Stop() called while first job is being processed",
+      "expected": "First job completes (status='merged'); second job is not started",
+      "assertion_pseudocode": "q = NewQueue(db, slowMockGit(delay=100ms), nil); q.Start(); q.enqueue(job1); q.enqueue(job2); sleep(10ms); q.Stop(); assert getStatus(job1) == 'merged'; assert getStatus(job2) == 'queued'"
+    },
+    {
+      "id": "TS-11-E24",
+      "requirement_id": "11-REQ-9.E3",
+      "kind": "unit",
+      "description": "When the database polling query fails, the worker logs the error and waits for the next timer tick without crashing.",
+      "preconditions": [
+        "Queue with worker running",
+        "Database query for eligible jobs returns an error"
+      ],
+      "input": "Worker's polling query fails with a database error",
+      "expected": "Error logged with structured fields; worker goroutine continues running",
+      "assertion_pseudocode": "mockDB.pollReturns(nil, errors.New('db error')); q = NewQueue(mockDB, mockGit, nil); q.Start(); sleep(50ms); assert logContains(error='db error'); assert q.workerIsRunning() == true"
+    },
+    {
+      "id": "TS-11-E25",
+      "requirement_id": "11-REQ-10.E1",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 400 when the request body is missing target_branch or source_ref.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table",
+        "Authenticated caller with merges:write scope"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body {\"target_branch\":\"main\"} (missing source_ref)",
+      "expected": "HTTP 400 with apikit error body describing the missing field",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main'}, auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E26",
+      "requirement_id": "11-REQ-10.E2",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:write scope.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with no auth token",
+      "expected": "HTTP 401 or 403 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=nil); assert resp.status in [401, 403]"
+    },
+    {
+      "id": "TS-11-E27",
+      "requirement_id": "11-REQ-10.E3",
+      "kind": "unit",
+      "description": "POST /merges returns HTTP 404 when the workspace identified by :slug does not exist.",
+      "preconditions": [
+        "No workspace with slug 'nonexistent-workspace'"
+      ],
+      "input": "POST /api/v1/workspaces/nonexistent-workspace/merges with valid body and auth",
+      "expected": "HTTP 404 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-workspace/merges', {target_branch:'main', source_ref:'spec/07'}, auth=validToken); assert resp.status == 404"
+    },
+    {
+      "id": "TS-11-E28",
+      "requirement_id": "11-REQ-10.E4",
+      "kind": "unit",
+      "description": "POST /merges ignores caller-supplied submitted_by and nonce; submitted_by is always from GetAuthInfo and nonce is always server-generated.",
+      "preconditions": [
+        "Authenticated caller with UUID 'real-user-uuid'"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges with body including submitted_by='attacker-uuid' and nonce='attacker-nonce'",
+      "expected": "HTTP 202; submitted_by='real-user-uuid'; no nonce in response; DB nonce != 'attacker-nonce'",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges', {target_branch:'main', source_ref:'spec/07', submitted_by:'attacker-uuid', nonce:'attacker-nonce'}, auth=tokenFor('real-user-uuid')); assert resp.status == 202; body = resp.json(); assert body.submitted_by == 'real-user-uuid'; assert 'nonce' not in body"
+    },
+    {
+      "id": "TS-11-E29",
+      "requirement_id": "11-REQ-11.E1",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 400 with an apikit error body listing the invalid value and valid options when status parameter is unrecognized.",
+      "preconditions": [
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?status=invalid_status",
+      "expected": "HTTP 400 with apikit error body containing 'invalid_status' and listing valid status values",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?status=invalid_status', auth=validToken); assert resp.status == 400; body = resp.json(); assert 'invalid_status' in body.error"
+    },
+    {
+      "id": "TS-11-E30",
+      "requirement_id": "11-REQ-11.E2",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 400 when the limit parameter exceeds 100.",
+      "preconditions": [
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?limit=101",
+      "expected": "HTTP 400 with apikit error body",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?limit=101', auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E31",
+      "requirement_id": "11-REQ-11.E3",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 400 when the 'after' cursor references a job ID that does not exist.",
+      "preconditions": [
+        "Authenticated caller with merges:read scope"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?after=nonexistent-uuid",
+      "expected": "HTTP 400 with apikit error body",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?after=nonexistent-uuid', auth=validToken); assert resp.status == 400; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E32",
+      "requirement_id": "11-REQ-11.E4",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:read scope.",
+      "preconditions": [
+        "No auth token provided"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges with no auth token",
+      "expected": "HTTP 401 or 403 with apikit error body",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges', auth=nil); assert resp.status in [401, 403]"
+    },
+    {
+      "id": "TS-11-E33",
+      "requirement_id": "11-REQ-11.E5",
+      "kind": "unit",
+      "description": "GET /merges returns HTTP 200 with empty items array and next_cursor=null when no jobs match the filter.",
+      "preconditions": [
+        "SQLite :memory: database with no jobs in 'conflict' status"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges?status=conflict",
+      "expected": "HTTP 200 with {\"items\": [], \"next_cursor\": null}",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges?status=conflict', auth=validToken); assert resp.status == 200; body = resp.json(); assert body.items == []; assert body.next_cursor == null"
+    },
+    {
+      "id": "TS-11-E34",
+      "requirement_id": "11-REQ-12.E1",
+      "kind": "unit",
+      "description": "GET /merges/:id returns HTTP 404 when the job ID does not exist in the database.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table (empty)"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/nonexistent-uuid",
+      "expected": "HTTP 404 with apikit error body",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges/nonexistent-uuid', auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E35",
+      "requirement_id": "11-REQ-12.E2",
+      "kind": "unit",
+      "description": "GET /merges/:id returns HTTP 404 (anti-enumeration) when the job exists but belongs to a different workspace_slug.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job belonging to 'other-workspace'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id-from-other-workspace>",
+      "expected": "HTTP 404 with apikit error body",
+      "assertion_pseudocode": "job = createJob(workspace_slug='other-workspace'); resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 404"
+    },
+    {
+      "id": "TS-11-E36",
+      "requirement_id": "11-REQ-12.E3",
+      "kind": "unit",
+      "description": "GET /merges/:id returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:read scope.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id> with no auth token",
+      "expected": "HTTP 401 or 403 with apikit error body",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=nil); assert resp.status in [401, 403]"
+    },
+    {
+      "id": "TS-11-E37",
+      "requirement_id": "11-REQ-13.E1",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 404 when the job ID does not exist.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table (empty)"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/nonexistent-uuid",
+      "expected": "HTTP 404 with apikit error body",
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/my-workspace/merges/nonexistent-uuid', auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E38",
+      "requirement_id": "11-REQ-13.E2",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:write scope.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'queued' status"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/<job-id> with no auth token",
+      "expected": "HTTP 401 or 403 with apikit error body",
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=nil); assert resp.status in [401, 403]"
+    },
+    {
+      "id": "TS-11-E39",
+      "requirement_id": "11-REQ-13.E3",
+      "kind": "unit",
+      "description": "DELETE /merges/:id returns HTTP 409 with the updated status when the job transitions from queued to running between the status check and the UPDATE.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'queued' status",
+        "Database UPDATE mocked to affect zero rows"
+      ],
+      "input": "DELETE /api/v1/workspaces/my-workspace/merges/<job-id>; UPDATE affects 0 rows",
+      "expected": "HTTP 409 with apikit error body including the current status",
+      "assertion_pseudocode": "job = createJob(status='queued'); mockDB.updateReturnsRowsAffected(0); db.Exec('UPDATE merge_jobs SET status=? WHERE id=?', 'running', job.id); resp = client.delete('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 409; body = resp.json(); assert 'running' in body.error or body.current_status == 'running'"
+    },
+    {
+      "id": "TS-11-E40",
+      "requirement_id": "11-REQ-14.E1",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 404 when the job ID does not exist.",
+      "preconditions": [
+        "SQLite :memory: database with merge_jobs table (empty)"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/nonexistent-uuid/requeue",
+      "expected": "HTTP 404 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges/nonexistent-uuid/requeue', {}, auth=validToken); assert resp.status == 404; body = resp.json(); assert 'error' in body"
+    },
+    {
+      "id": "TS-11-E41",
+      "requirement_id": "11-REQ-14.E2",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 401 or 403 when the caller is unauthenticated or lacks merges:write scope.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job in 'dead_letter' status"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/<job-id>/requeue with no auth token",
+      "expected": "HTTP 401 or 403 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/merges/'+job.id+'/requeue', {}, auth=nil); assert resp.status in [401, 403]"
+    },
+    {
+      "id": "TS-11-E42",
+      "requirement_id": "11-REQ-14.E3",
+      "kind": "unit",
+      "description": "POST /merges/:id/requeue returns HTTP 409 with existing_job_id when an active job already exists for the same (workspace_slug, source_ref).",
+      "preconditions": [
+        "SQLite :memory: database with a dead_letter job and an existing queued job for the same source_ref"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/merges/<dead-letter-job-id>/requeue",
+      "expected": "HTTP 409 with body {\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"<UUID of active job>\"}",
+      "assertion_pseudocode": "deadJob = createJob(status='dead_letter', source_ref='spec/07'); activeJob = createJob(status='queued', source_ref='spec/07'); resp = client.post('/api/v1/workspaces/my-workspace/merges/'+deadJob.id+'/requeue', {}, auth=validToken); assert resp.status == 409; body = resp.json(); assert body.existing_job_id == activeJob.id"
+    },
+    {
+      "id": "TS-11-E43",
+      "requirement_id": "11-REQ-15.E1",
+      "kind": "unit",
+      "description": "When conflict_details TEXT contains malformed JSON, the handler logs the parse error and returns null for conflict_details rather than HTTP 500.",
+      "preconditions": [
+        "SQLite :memory: database with a merge job where conflict_details TEXT = 'not-valid-json'"
+      ],
+      "input": "GET /api/v1/workspaces/my-workspace/merges/<job-id>",
+      "expected": "HTTP 200; conflict_details is null; error logged with merge_job_id",
+      "assertion_pseudocode": "job = createJob(conflict_details='not-valid-json'); resp = client.get('/api/v1/workspaces/my-workspace/merges/'+job.id, auth=validToken); assert resp.status == 200; body = resp.json(); assert body.conflict_details == null; assert logContains(merge_job_id=job.id)"
+    },
+    {
+      "id": "TS-11-E44",
+      "requirement_id": "11-REQ-16.E1",
+      "kind": "unit",
+      "description": "When PostMergeHook blocks and graceful shutdown cancels the context, the hook invocation is interrupted and the job remains in merged status.",
+      "preconditions": [
+        "SQLite :memory: database with a campaign merge job",
+        "PostMergeHook blocks until context is cancelled"
+      ],
+      "input": "Worker completes merge; hook starts; Stop() is called",
+      "expected": "Hook invocation interrupted; job status remains 'merged'; hook error logged",
+      "assertion_pseudocode": "hook = (ctx, job) => { <-ctx.Done(); return ctx.Err() }; q = NewQueue(db, mockGit, hook); q.Start(); q.enqueue(campaignJob); sleep(50ms); q.Stop(); assert getStatus(campaignJob) == 'merged'"
+    },
+    {
+      "id": "TS-11-E45",
+      "requirement_id": "11-REQ-17.E1",
+      "kind": "unit",
+      "description": "When a log write fails, the merge queue continues processing and job state transitions are not affected.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Log writer mocked to return an error"
+      ],
+      "input": "Worker processes the merge job; log write fails",
+      "expected": "Job status transitions normally to 'merged'; worker goroutine continues running",
+      "assertion_pseudocode": "mockLogger.writeReturns(errors.New('log write failed')); worker.processJob(job, mockGit); assert getStatus(job) == 'merged'; assert worker.isRunning() == true"
+    },
+    {
+      "id": "TS-11-E46",
+      "requirement_id": "11-REQ-18.E1",
+      "kind": "unit",
+      "description": "A standalone merge job (campaign_id=NULL) that encounters WouldConflict transitions to conflict status with conflict_details populated; no campaign notification is attempted.",
+      "preconditions": [
+        "SQLite :memory: database with a standalone merge job",
+        "Mock GitRunner.RunExitCode returns exit code 1 with conflict output"
+      ],
+      "input": "Worker processes the standalone merge job; dry-run detects conflicts",
+      "expected": "Job status is 'conflict'; conflict_details populated; PostMergeHook never called",
+      "assertion_pseudocode": "hookCalled = false; hook = (ctx, job) => { hookCalled = true; return nil }; standaloneJob = createJob(campaign_id=''); mockGit.runExitCodeReturns(1, 'CONFLICT in file1.go', nil); worker.processJob(standaloneJob, mockGit, hook); assert getStatus(standaloneJob) == 'conflict'; assert hookCalled == false"
+    },
+    {
+      "id": "TS-11-E47",
+      "requirement_id": "11-REQ-19.E1",
+      "kind": "unit",
+      "description": "When a panic occurs inside the mutex-protected section, the deferred mutex release fires and the panic propagates to the worker's recover handler.",
+      "preconditions": [
+        "SQLite :memory: database with a queued merge job",
+        "Mock GitRunner panics during the rebase step"
+      ],
+      "input": "Worker processes the merge job; panic occurs inside mutex-protected section",
+      "expected": "Mutex for target branch is released (no deadlock); panic is recovered",
+      "assertion_pseudocode": "mockGit.runPanicsOn('rebase'); recovered = false; defer func() { if r := recover(); r != nil { recovered = true; assert mutexIsReleased('main') } }(); worker.processJob(job, mockGit); assert recovered == true"
+    },
+    {
+      "id": "TS-11-E48",
+      "requirement_id": "11-REQ-19.E2",
+      "kind": "unit",
+      "description": "When two jobs targeting the same target_branch are processed concurrently, the second blocks on mutex acquisition until the first releases it; no data race occurs.",
+      "preconditions": [
+        "SQLite :memory: database with two queued merge jobs both targeting 'main'",
+        "go test -race flag enabled"
+      ],
+      "input": "Two goroutines each call processJob for the same target branch concurrently",
+      "expected": "No data race detected; both jobs complete sequentially",
+      "assertion_pseudocode": "job1 = createJob(target_branch='main'); job2 = createJob(target_branch='main'); wg = WaitGroup(); wg.Add(2); go func() { worker.processJob(job1, mockGit); wg.Done() }(); go func() { worker.processJob(job2, mockGit); wg.Done() }(); wg.Wait(); assert getStatus(job1) == 'merged'; assert getStatus(job2) == 'merged'"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-11-SMOKE-1",
+      "execution_path_id": "11-PATH-1",
+      "description": "Happy path: a campaign merge job is submitted, processed through the full merge algorithm, and PostMergeHook is fired.",
+      "trigger": "POST /api/v1/workspaces/my-workspace/merges with {target_branch: 'main', source_ref: 'spec/07-secrets-variables'} using a valid merges:write token",
+      "real_components": [
+        "POST /api/v1/workspaces/:slug/merges HTTP handler",
+        "merge queue worker goroutine",
+        "CanMerge function",
+        "processMergeJob function",
+        "GitRunner (real local git repo via t.TempDir())",
+        "SQLite :memory: database with InitSchema applied",
+        "PostMergeHook (instrumented real implementation)",
+        "GetAuthInfo apikit middleware"
+      ],
+      "mockable": [
+        "Workspace variables store (CHECK_COMMAND, CHECK_TIMEOUT)",
+        "Campaign database records (upstream dependency status)"
+      ],
+      "expected_effects": [
+        "POST /merges returns HTTP 202 Accepted with merge job JSON; status='queued'; no nonce field",
+        "Worker picks up the job within 100ms (wakeup channel)",
+        "CanMerge returns (true, '', nil)",
+        "GitRunner.RunExitCode called with merge-tree --write-tree args; returns exit code 0",
+        "Per-target-branch mutex acquired; nonce validated; status set to 'running'; base_sha recorded",
+        "git fetch origin main executed successfully",
+        "git rebase origin/main executed successfully",
+        "Check step skipped (CHECK_COMMAND not configured)",
+        "git push origin main executed successfully",
+        "Job status is 'merged'; merged_sha is non-empty",
+        "PostMergeHook called with the completed MergeJob",
+        "GET /merges/:id returns HTTP 200 with status='merged' and merged_sha set"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-2",
+      "execution_path_id": "11-PATH-2",
+      "description": "Conflict detection path: a merge job with conflicting changes is rejected early by the dry-run conflict check.",
+      "trigger": "POST /api/v1/workspaces/my-workspace/merges with a source_ref that has conflicting changes relative to target_branch",
+      "real_components": [
+        "POST /api/v1/workspaces/:slug/merges HTTP handler",
+        "merge queue worker goroutine",
+        "CanMerge function",
+        "processMergeJob function",
+        "GitRunner (real local git repo with conflicting commits via t.TempDir())",
+        "SQLite :memory: database with InitSchema applied",
+        "GetAuthInfo apikit middleware"
+      ],
+      "mockable": [
+        "Workspace variables store"
+      ],
+      "expected_effects": [
+        "POST /merges returns HTTP 202 Accepted with status='queued'",
+        "Worker picks up the job",
+        "CanMerge returns (true, '', nil)",
+        "GitRunner.RunExitCode called with merge-tree --write-tree; returns non-zero exit code",
+        "Conflicting file paths parsed from merge-tree stderr",
+        "Job status is 'conflict' in the database",
+        "conflict_details TEXT column contains JSON array of conflicting file paths",
+        "Per-target-branch mutex is never acquired",
+        "GET /merges/:id returns HTTP 200 with status='conflict' and conflict_details as a native JSON array"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-3",
+      "execution_path_id": "11-PATH-3",
+      "description": "Backoff and dead-letter path: a merge job exhausts all 20 retries due to BeforeDependency and is moved to dead_letter; operator requeues it successfully.",
+      "trigger": "POST /api/v1/workspaces/my-workspace/merges for a spec whose upstream dependency is not yet merged; then POST /merges/:id/requeue after resolving the dependency",
+      "real_components": [
+        "POST /api/v1/workspaces/:slug/merges HTTP handler",
+        "POST /api/v1/workspaces/:slug/merges/:id/requeue HTTP handler",
+        "GET /api/v1/workspaces/:slug/merges/:id HTTP handler",
+        "merge queue worker goroutine",
+        "CanMerge function",
+        "processMergeJob function",
+        "SQLite :memory: database with InitSchema applied",
+        "GetAuthInfo apikit middleware"
+      ],
+      "mockable": [
+        "GitRunner (not needed until requeue succeeds)",
+        "Workspace variables store",
+        "Time (accelerate backoff delays for test speed)"
+      ],
+      "expected_effects": [
+        "Initial POST /merges returns HTTP 202 with status='queued'",
+        "Worker processes job 20 times; each time CanMerge returns (false, BeforeDependency, nil)",
+        "retry_count increments from 0 to 19; available_at set to future timestamps with exponential backoff",
+        "On 20th retry, job transitions to 'dead_letter' with rejection_reason='BeforeDependency'",
+        "GET /merges/:id returns status='dead_letter'",
+        "POST /merges/:id/requeue returns HTTP 202 with new job; new job has retry_count=0, status='queued', submitted_by=operator UUID",
+        "Original dead-lettered job remains in 'dead_letter' status unchanged",
+        "New job is processed successfully by the worker (CanMerge now returns true)"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-4",
+      "execution_path_id": "11-PATH-4",
+      "description": "Cancellation path: an operator cancels a queued merge job before it is processed.",
+      "trigger": "POST /api/v1/workspaces/my-workspace/merges to create a queued job; then DELETE /api/v1/workspaces/my-workspace/merges/:id while job is in queued status",
+      "real_components": [
+        "POST /api/v1/workspaces/:slug/merges HTTP handler",
+        "DELETE /api/v1/workspaces/:slug/merges/:id HTTP handler",
+        "GET /api/v1/workspaces/:slug/merges/:id HTTP handler",
+        "merge queue worker goroutine",
+        "SQLite :memory: database with InitSchema applied",
+        "GetAuthInfo apikit middleware"
+      ],
+      "mockable": [
+        "GitRunner (job should not reach git operations)",
+        "Workspace variables store"
+      ],
+      "expected_effects": [
+        "POST /merges returns HTTP 202 with status='queued'",
+        "DELETE /merges/:id returns HTTP 204 No Content",
+        "Job status is 'cancelled' in the database; updated_at is updated",
+        "Worker does not pick up the cancelled job for processing",
+        "GET /merges/:id returns HTTP 200 with status='cancelled'"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-5",
+      "execution_path_id": "11-PATH-5",
+      "description": "Graceful shutdown path: an in-flight merge operation completes before the process exits after Stop() is called.",
+      "trigger": "Enqueue a merge job; wait for worker to start processing; call Queue.Stop() while the rebase step is in progress",
+      "real_components": [
+        "merge queue worker goroutine",
+        "Queue.Stop() method",
+        "processMergeJob function",
+        "GitRunner (real local git repo via t.TempDir())",
+        "SQLite :memory: database with InitSchema applied",
+        "stopCh and stopWaitGroup"
+      ],
+      "mockable": [
+        "Workspace variables store",
+        "PostMergeHook"
+      ],
+      "expected_effects": [
+        "Worker is actively processing a merge job (rebase step in progress)",
+        "Queue.Stop() closes stopCh",
+        "In-flight merge operation completes (rebase, push, status=merged)",
+        "stopWaitGroup.Wait() returns only after the in-flight operation finishes",
+        "Stop() returns to the caller",
+        "No new jobs are started after Stop() is called",
+        "Job status is 'merged' after Stop() returns"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-6",
+      "execution_path_id": "11-PATH-6",
+      "description": "Duplicate submission rejected: a second POST /merges for the same source_ref while the first job is active returns HTTP 409 with existing_job_id.",
+      "trigger": "POST /api/v1/workspaces/my-workspace/merges for source_ref='spec/07-secrets-variables'; then immediately POST again for the same source_ref",
+      "real_components": [
+        "POST /api/v1/workspaces/:slug/merges HTTP handler",
+        "SQLite :memory: database with InitSchema applied",
+        "GetAuthInfo apikit middleware"
+      ],
+      "mockable": [
+        "merge queue worker goroutine (paused to keep first job in queued status)",
+        "GitRunner",
+        "Workspace variables store"
+      ],
+      "expected_effects": [
+        "First POST /merges returns HTTP 202 with job ID A in status='queued'",
+        "Second POST /merges returns HTTP 409 Conflict",
+        "Response body: {\"error\": \"merge already in progress for this source branch\", \"existing_job_id\": \"<job A UUID>\"}",
+        "No new merge job record is inserted for the second request",
+        "Database contains exactly one merge job for the (workspace_slug, source_ref) pair"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

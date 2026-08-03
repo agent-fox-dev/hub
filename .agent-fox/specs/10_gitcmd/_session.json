@@ -1,0 +1,537 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"gitcmd\" PRD is well-structured and largely complete. It has a clear intent, measurable goals, explicit non-goals, detailed functional requirements with code-level specifics, and a defined tech stack. There are no external API dependencies (git CLI is a local subprocess, not a network API), so that dimension is not applicable. The spec is foundational infrastructure with no cross-spec overlaps that would block progress, though it is worth noting a potential relationship with the active `workspace_checkout` and `git_server` specs that also invoke git operations. One minor gap exists: the spec claims safety env vars \"cannot be overridden by the caller's environment\" but does not specify the exact mechanism (prepend vs. explicit override), which could affect correctness. Overall the spec is ready to proceed to artifact generation with minor clarifications recommended but not blocking.",
+      "gaps": [
+        "The spec states safety environment variables are 'prepended to the command's environment so they cannot be overridden by the caller's environment,' but os/exec on Linux uses last-wins semantics for duplicate env keys, meaning prepending alone does NOT prevent caller override. The enforcement mechanism needs to be clarified (e.g., deduplication logic, explicit override after caller env, or stripping conflicting keys).",
+        "The `Env []string` field on `GitRunner` is exposed publicly \u2014 the spec does not clarify whether callers are permitted to append additional env vars, and how that interacts with the safety defaults guarantee.",
+        "The `git >= 2.38` requirement is stated as a host dependency but there is no mention of how the hub validates or surfaces this requirement at startup or test time.",
+        "The spec mentions `merge-tree --write-tree` as the reason for the git version floor but does not describe how this command will be invoked through `gitcmd` \u2014 this could belong here or in a future spec, but the boundary is slightly ambiguous.",
+        "The `workspace_checkout` spec (active) uses go-git (`PlainCloneContext`, `PlainOpen`, `PushOptions`) for git operations, and `git_server` (active) also handles git protocol interactions. While `gitcmd` deliberately excludes clone (non-goal), there is no explicit statement of how these specs co-exist or whether future callers of `gitcmd` could duplicate logic already in `workspace_checkout`."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How exactly are safety environment variables protected from caller override in the `Run`/`RunExitCode` implementation? Since `os/exec` uses last-wins semantics for duplicate env keys, prepending alone won't prevent a caller from overriding them if `Env` is publicly writable.",
+          "context": "The spec guarantees safety defaults 'cannot be overridden by the caller's environment,' but the stated mechanism (prepend) is insufficient on Linux. The implementation strategy needs to be explicit to avoid a security regression.",
+          "options": [
+            "Deduplicate env slice after merging, keeping the safety-default value and discarding duplicates",
+            "Append safety defaults last (after caller env) so they always win",
+            "Strip conflicting keys from caller-supplied env before appending safety defaults",
+            "Make the safety defaults private and never expose them to callers via the Env field"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Should the `GitRunner.Env` field be exported (public) or unexported (private)? If it is exported, callers could directly mutate the slice and bypass safety defaults.",
+          "context": "The struct definition shows `Env []string` as a public field. If callers can freely set this, the safety guarantee documented in the Goals section could be violated at call sites.",
+          "options": [
+            "Make Env unexported; expose an AddEnv(key, value string) method for safe additions",
+            "Keep Env exported but document it as append-only (callers must not remove safety vars)",
+            "Keep Env exported; it is the caller's responsibility to preserve safety vars"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should the hub validate the host git version (>= 2.38) at startup, and if so, where should that check live \u2014 in `gitcmd` itself (e.g., a `CheckGitVersion()` function) or in the consuming package (merge queue)?",
+          "context": "The spec mandates git >= 2.38 for `merge-tree --write-tree` support but does not specify runtime enforcement. A missing or silent version mismatch could cause confusing failures in production.",
+          "options": [
+            "Add a `CheckGitVersion(ctx context.Context) error` function to `internal/gitcmd/` that callers invoke at startup",
+            "Leave version validation to the consuming merge queue/campaign spec",
+            "Document it as an ops/deployment requirement only with no runtime check"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Are you aware that the active `workspace_checkout` spec uses go-git for clone/push operations? Should `gitcmd` document an explicit boundary clarifying that it is only used for operations go-git does not support (rebase, merge-tree, ls-remote with exit-code semantics)?",
+          "context": "Two active specs (`workspace_checkout`, `git_server`) already handle git operations using go-git. Documenting the boundary between go-git usage and gitcmd subprocess usage would prevent future contributors from duplicating or conflicting logic.",
+          "options": [
+            "Yes \u2014 add a 'Relationship to go-git' sub-section under Non-Goals or Technical Boundaries",
+            "No \u2014 the existing Non-Goal ('Clone operations continue to use go-git directly') is sufficient",
+            "Add a formal dependency or reference to workspace_checkout in the Dependencies section"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and detailed for a foundational infrastructure package. The intent, non-goals, functional requirements, and technical boundaries are clearly articulated. However, several gaps exist that could lead to ambiguity during implementation: testing strategy and expectations are absent, error formatting is described but not specified precisely, context cancellation/timeout behavior is not defined, and there are open questions around `AddEnv` thread-safety, the `RunExitCode` error contract, and platform assumptions (Linux last-wins semantics).",
+      "gaps": [
+        "No testing strategy is specified \u2014 unit tests, integration tests (real git binary vs. mocked), or table-driven test expectations are not mentioned.",
+        "The exact format of GitError.Error() is not defined (e.g. 'git rebase exit 1: <stderr>' vs. some other shape), which could lead to inconsistent error messages consumed by callers.",
+        "Context cancellation and timeout behavior is not specified: what happens to the subprocess when ctx is cancelled (e.g. SIGKILL vs. SIGTERM), and whether stderr/stdout are still captured.",
+        "Thread-safety of GitRunner (specifically AddEnv concurrent with Run) is not addressed.",
+        "The RunExitCode method's error contract for 'system-level failure' is described loosely \u2014 it is unclear whether a context cancellation surfaces as err!=nil with exitCode=0, or some other convention.",
+        "Platform scope is not declared: the PRD notes Linux last-wins env semantics but does not state whether macOS or Windows are in scope or explicitly excluded.",
+        "No definition of what happens when git is not found on PATH in Run/RunExitCode \u2014 whether this surfaces as a GitError or a raw os/exec error.",
+        "No mention of stdout/stderr size limits or protections against unbounded output from runaway git processes."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the exact string format of GitError.Error()? For example: `git <command> exited with code <N>: <stderr>` \u2014 please confirm or provide the exact template.",
+          "context": "Callers (merge queue, campaign) and log consumers will parse or display this string. A defined format prevents divergence across the codebase.",
+          "options": [
+            "git <args> exited with code <N>: <stderr>",
+            "gitcmd: <args>: exit status <N>: <stderr>",
+            "No preference \u2014 leave to implementer"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the expected behavior when the context is cancelled or times out while a git subprocess is running? Specifically: (a) is the process killed immediately (SIGKILL) or gracefully (SIGTERM then SIGKILL)? (b) are partial stdout/stderr captured and returned?",
+          "context": "exec.CommandContext kills with SIGKILL by default in Go. If the merge queue cancels a long rebase, the caller needs to know whether it receives partial output or an opaque error.",
+          "options": [
+            "SIGKILL immediately, no partial output returned",
+            "SIGTERM with a grace period then SIGKILL, no partial output",
+            "SIGKILL immediately, return whatever stdout/stderr was buffered",
+            "Leave to implementer"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Is GitRunner required to be safe for concurrent use (i.e., can multiple goroutines call Run/AddEnv simultaneously on the same instance)?",
+          "context": "If the merge queue or campaign package shares a single GitRunner across goroutines, AddEnv with a concurrent Run could cause a data race on the env slice.",
+          "options": [
+            "Yes \u2014 must be goroutine-safe (use sync.Mutex or make GitRunner immutable after construction)",
+            "No \u2014 one GitRunner per goroutine/operation is the expected usage pattern",
+            "AddEnv should be removed; env should only be set at construction time via NewRunner options"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What testing approach is expected for this package? Should tests run against a real git binary, a fake/stub, or both?",
+          "context": "Without a testing strategy, implementers may produce a package that is hard to test in CI (e.g., requires git 2.38+ on CI runners) or that lacks meaningful coverage of failure paths.",
+          "options": [
+            "Real git binary only (integration-style)",
+            "Fake exec.Cmd via an injectable executor interface (unit tests)",
+            "Both: unit tests with a fake executor + integration tests gated on git availability",
+            "No test requirement specified in this spec \u2014 leave to implementer"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should Linux be the only supported platform, or must this package also work on macOS and/or Windows?",
+          "context": "The PRD explicitly mentions Linux last-wins env semantics. On Windows, os/exec environment handling differs. Clarifying scope prevents silent breakage if the package is used on developer macOS machines or Windows CI.",
+          "options": [
+            "Linux only (production target)",
+            "Linux and macOS (developer machines + production)",
+            "Linux, macOS, and Windows",
+            "No explicit platform restriction \u2014 document the Linux assumption and move on"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "Should there be any protection against unbounded stdout/stderr output (e.g., a max buffer size), or is unbounded buffering acceptable given the expected git commands?",
+          "context": "Commands like git ls-remote on a large repo could return megabytes of refs. If the runner buffers all output in memory, this could be a latency or OOM risk.",
+          "options": [
+            "No limit needed \u2014 commands used are known to produce small output",
+            "Enforce a configurable max buffer size (e.g., 10 MB default)",
+            "Stream stdout to a writer instead of buffering",
+            "Leave to implementer"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This PRD is exceptionally well-written and thorough. It clearly defines a focused, foundational Go package with unambiguous behavioral contracts, explicit security rationale, concrete API signatures, structured error formats, and a realistic testing strategy. The scope is tightly bounded, non-goals are explicit, and dependencies are clearly delineated. Only a few minor gaps exist that could further harden the spec.",
+      "gaps": [
+        "The minimum git version (2.38) is hard-coded in the spec but it is not explicitly stated whether this value should be a named constant in the package (e.g., `MinGitVersion`) or remain an internal implementation detail, which affects how consumers reference or override it in tests.",
+        "The exact parsing strategy for `git --version` output is not specified (e.g., regex, `fmt.Sscanf`, semver library). Edge cases like `git version 2.38.0.rc1` or vendor-patched strings (e.g., Apple Git-145) are not addressed.",
+        "The behavior of `Run` and `RunExitCode` when `workDir` does not exist at call time is unspecified \u2014 it is unclear whether the runner should validate the directory at construction, at call time, or propagate the raw `os/exec` error.",
+        "There is no explicit signal or mechanism for the caller to know whether a `GitError` originated from `Run` vs. `RunExitCode` \u2014 this may matter for upstream error handling in the merge queue.",
+        "The spec does not address whether stdout and stderr are captured via `bytes.Buffer` or `strings.Builder`, which has minor GC implications for high-frequency callers.",
+        "No explicit timeout is documented for `CheckGitVersion` \u2014 callers are expected to pass a context, but no guidance is given on a recommended or maximum timeout for this startup check."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should `MinGitVersion` (2.38) be exported as a named constant from the `gitcmd` package, or remain an unexported implementation detail?",
+          "context": "If exported, consumers (e.g., test helpers or CI tooling) can reference the constant directly rather than duplicating the magic number. If unexported, the API surface stays minimal but the value is harder to reference externally.",
+          "options": [
+            "Export it as `MinGitVersion` (e.g., a string or `[2]int`)",
+            "Keep it unexported \u2014 internal implementation detail only"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "How should `CheckGitVersion` handle non-standard `git --version` output, such as Apple Git vendor strings (e.g., `git version 2.39.3 (Apple Git-145)`) or release candidates (e.g., `2.38.0.rc1`)?",
+          "context": "macOS ships with Apple Git, which appends a vendor suffix. If the parser is too strict, `CheckGitVersion` will fail on a valid development machine. The spec currently does not address this edge case.",
+          "options": [
+            "Parse only the first three numeric components (major.minor.patch), ignoring any trailing tokens \u2014 Apple Git and RC strings both pass",
+            "Reject any version string that does not match `git version X.Y.Z` exactly",
+            "Treat pre-release suffixes (rc, beta) as below the floor version"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What should `NewRunner` or `Run`/`RunExitCode` do if `workDir` does not exist at the time of the call?",
+          "context": "If the working directory is missing, `exec.Cmd` will return a system-level error. The spec is silent on whether this should be validated eagerly (at construction) or lazily (at call time), and whether a descriptive error or the raw OS error should be returned.",
+          "options": [
+            "Validate at construction time in `NewRunner` \u2014 return an error immediately if `workDir` is not a valid directory",
+            "Validate lazily at call time in `Run`/`RunExitCode` \u2014 wrap the OS error with context about the working directory",
+            "Return the raw `os/exec` error as-is \u2014 the caller is responsible for ensuring `workDir` exists"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Should the `BranchExists` convenience function be a method on `GitRunner` or a standalone package-level function that accepts a `GitRunner` (or `*GitRunner`) as a parameter?",
+          "context": "The spec currently shows it as a standalone function signature but does not clarify its receiver. Making it a method keeps the API consistent with `Run` and `RunExitCode`; a standalone function is easier to mock or replace in tests.",
+          "options": [
+            "Method on `*GitRunner` \u2014 consistent with Run/RunExitCode",
+            "Package-level function accepting a `*GitRunner` parameter",
+            "Package-level function with no GitRunner dependency (creates its own runner internally)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "When context cancellation occurs mid-command, should the partial stdout/stderr bytes be returned alongside the context error, or should they be discarded?",
+          "context": "The spec currently states partial output IS returned alongside the context error for debugging purposes. This is a deliberate design choice but has implications: callers must handle the case where both err != nil and len(stdout) > 0 simultaneously. Please confirm this is intentional.",
+          "options": [
+            "Confirmed \u2014 return partial output alongside the context error (current spec behavior)",
+            "Discard partial output on cancellation \u2014 return nil bytes with the context error only"
+          ],
+          "required": true
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for a focused foundational package. The intent is crisp, goals are concrete and implementation-specific, non-goals are explicit, and the functional requirements are detailed with precise contracts. The tech stack, platform scope, and dependency boundaries are all clearly defined. The testing strategy is thorough and philosophy-driven. Only a few minor gaps remain worth clarifying before implementation begins.",
+      "gaps": [
+        "The minimum git version (2.38) is described as an unexported implementation detail, but it is also referenced as a CI requirement and a production prerequisite \u2014 it is unclear whether it should be surfaced in documentation or configuration outside the package.",
+        "The `GitError.Command` field is described as holding the args string, but the struct definition shows it as a single `Command string` field \u2014 it is ambiguous whether this holds just the subcommand (e.g. 'rebase') or the full reconstructed invocation (e.g. 'git rebase origin/main').",
+        "There is no specification for how `SIGKILL` vs `SIGTERM` is chosen on context cancellation \u2014 the PRD states Go's default (SIGKILL) but does not address whether a graceful shutdown window is ever desirable for long-running git operations like rebase.",
+        "The `env` slice ordering guarantee (last-wins) is asserted for Linux and macOS but not verified against Go's `os/exec` documentation \u2014 if this is a platform assumption rather than a Go guarantee, it should be noted as such.",
+        "No maximum timeout or default deadline is specified for `CheckGitVersion` or `BranchExists` \u2014 callers must supply a context, but there is no guidance on recommended timeout values.",
+        "The `BranchExists` unreachable-remote test path (exit code 1) relies on using an invalid local path as a remote \u2014 the mechanism to reliably trigger exit code 1 (vs. exit code 128 which git may return for some auth/network failures) is not specified."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should the `GitError.Command` field store the full reconstructed invocation string (e.g. `git rebase origin/main`) or only the subcommand arguments joined (e.g. `rebase origin/main`), and how is the `Command` field populated from `args ...string`?",
+          "context": "The `Error()` format string shows `git <args>`, but the struct field is named `Command`. Clarifying what `Command` holds ensures consistent log output and that `errors.As` consumers can reliably parse or display the error.",
+          "options": [
+            "Command holds the full string including the 'git' binary prefix (e.g. 'git rebase origin/main')",
+            "Command holds only the joined args without the binary prefix (e.g. 'rebase origin/main'), and 'git' is prepended only in Error()",
+            "Command holds the subcommand only (e.g. 'rebase'), and full args are stored in a separate field"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "For the `BranchExists` integration test covering exit code 1 (network/auth failure), what mechanism should be used to reliably trigger git exit code 1 specifically, as opposed to exit code 128 which git returns for many connection and config errors?",
+          "context": "Git's exit code behavior for unreachable remotes can vary \u2014 some failure modes return 128 rather than 1. If exit code 128 is possible in practice, the three-way discrimination table may need a fourth case, or the test approach needs to be specified precisely.",
+          "options": [
+            "Use a syntactically valid but unreachable URL (e.g. ssh://localhost:1/nonexistent) and assert exit code 1",
+            "Expand the discrimination table to treat exit code 128 the same as exit code 1 (network/auth failure)",
+            "Document that exit code 1 is the only tested failure path; exit code 128 is treated as an unexpected system error and surfaced via err != nil from RunExitCode",
+            "Use a bare repo with permissions removed to simulate auth failure and verify the resulting exit code empirically"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Should `CheckGitVersion` and `BranchExists` enforce or document a recommended context timeout, or is that entirely the caller's responsibility with no guidance in this package?",
+          "context": "Without a timeout, a hung git subprocess (e.g. during ls-remote against a slow remote) will block indefinitely if the caller passes a background context. Guidance here prevents misuse by future callers of this foundational package.",
+          "options": [
+            "Entirely the caller's responsibility \u2014 no timeout guidance in this package",
+            "Document a recommended timeout (e.g. 30s for BranchExists, 5s for CheckGitVersion) in godoc comments without enforcing it",
+            "Enforce a hardcoded internal timeout as a fallback if the provided context has no deadline"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Is the last-wins duplicate environment variable behavior in os/exec on Linux and macOS a verified Go runtime guarantee, or a platform-level assumption that should be explicitly noted as such in the spec?",
+          "context": "If Go's os/exec does not document last-wins semantics as a stable guarantee, the safety defaults mechanism may silently break in a future Go version. Clarifying whether this has been verified against Go documentation or source code prevents a latent correctness risk.",
+          "options": [
+            "It is a verified Go runtime behavior and can be stated as a guarantee in the spec",
+            "It is a platform (Linux/macOS) behavior and should be noted as a platform assumption rather than a Go guarantee",
+            "Add an explicit deduplication step in the runner to remove earlier occurrences of safety-default keys, making the guarantee implementation-owned rather than platform-assumed"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for a small but security-critical foundational package. The intent is crisp and single-paragraph, goals are concrete and verifiable, non-goals are explicit and well-reasoned, and the background provides sufficient context for an unfamiliar reader. The functional requirements are unusually thorough \u2014 covering concurrency guarantees, env deduplication ordering, context cancellation semantics, partial output behavior, and error contract details. The testing strategy avoids mocking and grounds all verification in real git behavior. Only a handful of minor gaps remain, detailed below.",
+      "gaps": [
+        "Minimum Go version is listed as 1.26+, but Go 1.26 has not been released as of the latest stable toolchain (1.23.x). This may be a typo for 1.21 or 1.22, or a forward-looking placeholder \u2014 it should be confirmed to avoid CI confusion.",
+        "The GIT_ALLOW_PROTOCOL allowlist (file:https:ssh) is enforced as a hard-coded constant. There is no mention of whether this list is configurable at construction time or intentionally immutable. If some future caller legitimately needs git+ssh or another protocol, the extension point (or explicit statement that there is none) is missing.",
+        "CheckGitVersion returns an error but its exact error message format is not specified. Unlike GitError (which has a documented format), a version-too-old error message is left to implementers. This could produce inconsistent startup log output across future changes.",
+        "The RunExitCode error contract states exitCode is 0 on system-level failure, but does not clarify what happens when exec.ExitError is returned with a signal-based termination (exit code -1 in Go). This edge case is relevant given SIGKILL is used on context cancellation.",
+        "BranchExists hardcodes refs/heads/<branch> but does not document whether tag refs or other ref namespaces are in scope or explicitly excluded. A caller passing a full ref string could be surprised by double-prefixing.",
+        "The testing strategy does not mention test helper teardown for the temporary bare repos and git init directories \u2014 specifically whether t.TempDir() or manual cleanup is used, and whether tests are safe to run in parallel (t.Parallel())."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Go 1.26+ is listed as the language version requirement. Is this intentional (a forward-looking target), or is it a typo for an existing stable release such as 1.21 or 1.22?",
+          "context": "Go 1.26 does not exist yet. Specifying a nonexistent version will break CI toolchain pinning and confuse contributors setting up local environments.",
+          "options": [
+            "Go 1.21 (current LTS-style minimum)",
+            "Go 1.22",
+            "Go 1.23 (latest stable)",
+            "Intentionally forward-looking \u2014 will be updated when 1.26 ships"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Is the GIT_ALLOW_PROTOCOL allowlist (file:https:ssh) intentionally immutable, or should NewRunner accept an option to extend or override it for specific use cases?",
+          "context": "If a future caller needs a protocol not in the default list (e.g. git+ssh, or a restricted subset), there is currently no extension point. Explicitly documenting immutability (or adding an option) prevents ad-hoc workarounds later.",
+          "options": [
+            "Immutable \u2014 the allowlist is a security invariant and must never be caller-configurable",
+            "Configurable \u2014 NewRunner should accept a functional option or parameter to override the allowlist",
+            "Immutable for now, with a TODO comment reserving the option for a future spec"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What should the error message format be when CheckGitVersion finds a version below the 2.38 minimum? Please provide a concrete example string or template.",
+          "context": "GitError has a documented format (git <args> exited with code <N>: <stderr>). CheckGitVersion's version-too-old error is unformatted, which could produce inconsistent startup log output. A concrete format prevents implementer drift.",
+          "options": [
+            "git version <installed> is below minimum required version 2.38",
+            "requires git >= 2.38, found <installed>",
+            "No preference \u2014 leave to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "When context cancellation causes SIGKILL and Go reports exit code -1 (signal termination), what should RunExitCode return for exitCode \u2014 0, -1, or the raw value from ExitCode()?",
+          "context": "Go's exec.ExitError.ExitCode() returns -1 for signal-terminated processes. The current spec says exitCode is 0 on system-level failure, but SIGKILL via context cancellation sits in a grey area: the process did exit, just not via a numeric code. Callers need a deterministic value to avoid confusion.",
+          "options": [
+            "Return 0 (treat as system-level failure, consistent with the documented contract)",
+            "Return -1 (the raw value from ExitCode(), letting callers distinguish signal termination)",
+            "Return the raw ExitCode() value and document that -1 means signal termination"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Should BranchExists accept a full ref path (e.g. refs/heads/main) in addition to a bare branch name, or is it strictly a branch-name-only API that always prepends refs/heads/?",
+          "context": "The current spec hardcodes refs/heads/<branch>. A caller passing refs/heads/main would produce refs/heads/refs/heads/main, silently returning false. Explicitly scoping the API prevents misuse.",
+          "options": [
+            "Branch name only \u2014 always prepend refs/heads/; document that full ref paths must not be passed",
+            "Accept full ref paths \u2014 if the input starts with refs/, use it as-is; otherwise prepend refs/heads/",
+            "Rename to BranchExists to make the branch-only contract self-documenting and add a separate RefExists method for full refs"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for a foundational Go package. It demonstrates exceptional clarity across nearly all dimensions: the intent is crisp and scoped, goals are concrete and verifiable, non-goals are explicit and well-reasoned, background context is thorough, and the technical surface (API, types, contracts, error formats) is precisely specified. The testing strategy is unusually detailed and integration-grounded. Minor gaps exist around observability/logging conventions, the exact `GitError` construction in `RunExitCode` for system-level errors, and tracing/context propagation expectations \u2014 but none of these are blockers for implementation.",
+      "gaps": [
+        "No observability/logging contract is specified \u2014 it is unclear whether the package should emit structured logs (e.g. via slog) for every subprocess invocation, or whether logging is entirely the caller's responsibility. This matters for diagnosing latency and failures in production without requiring callers to re-wrap errors.",
+        "The error returned by RunExitCode for system-level failures (binary not found, context cancelled) is unspecified by type \u2014 it is unclear whether these are raw os/exec errors, a GitError, or some other sentinel. The spec states RunExitCode 'does not produce a GitError on non-zero exit' but does not explicitly confirm the type for system-level err != nil cases.",
+        "No explicit contract for what happens when args is empty (i.e. Run(ctx) with no args) \u2014 does git error naturally, or should the runner guard against this?",
+        "The recommended 30-second timeout for BranchExists and 5-second timeout for CheckGitVersion are documented as caller guidance in prose, but there is no corresponding test coverage requirement listed for timeout/deadline enforcement behavior in the testing strategy section.",
+        "The minimum version constant (2.38) is described as an unexported implementation detail, but there is no guidance on how operators discover the requirement outside of the error message itself \u2014 the reference to 'CI setup notes and host environment prerequisites' is mentioned but not linked or further specified.",
+        "No mention of whether the package should support or expose a way to override the git binary path (e.g. for testing with a fake git binary or for environments where git is not on PATH but at a known absolute path)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should the package emit any structured logs (e.g. via log/slog) for subprocess invocations \u2014 such as the full command, duration, and exit code \u2014 or is all observability the caller's responsibility?",
+          "context": "Without a logging contract, different callers may inconsistently log git subprocess activity, making production diagnosis harder. Defining this in the package spec prevents fragmented observability.",
+          "options": [
+            "Package emits a structured DEBUG-level log line per invocation (command, duration, exit code) using log/slog",
+            "Package emits logs only on error (non-zero exit or system failure)",
+            "No logging in the package \u2014 callers are fully responsible for observability",
+            "Logging is out of scope for this spec and will be addressed in a follow-up"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "For RunExitCode system-level failures (binary not found, context cancelled), what is the concrete error type returned \u2014 raw os/exec error, a wrapped error, or something else?",
+          "context": "The spec says RunExitCode does not produce a GitError on non-zero exit, but does not specify the error type for system-level failures. Callers using errors.As or errors.Is need to know what to target.",
+          "options": [
+            "Raw *exec.Error or *exec.ExitError from os/exec, unwrapped",
+            "Wrapped with fmt.Errorf('%w', ...) preserving the os/exec error for errors.Is/As",
+            "A distinct SystemError type defined in this package",
+            "Same as Run \u2014 the distinction only applies to non-zero git exit codes, not system errors"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Should the package support an optional git binary path override (e.g. via NewRunner or a package-level variable) to allow tests or operators to point to a specific git binary rather than relying on PATH resolution?",
+          "context": "Environments with multiple git versions or non-standard installations may need to target a specific binary. This also enables test isolation using a fake or stub git binary without manipulating PATH.",
+          "options": [
+            "Yes \u2014 add an optional functional option or field to NewRunner for binary path override",
+            "Yes \u2014 expose a package-level variable (e.g. GitBinary = 'git') that can be overridden in tests",
+            "No \u2014 PATH resolution is sufficient; callers control PATH before launching the hub",
+            "Out of scope for this spec; can be added later if needed"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What should Run and RunExitCode do when called with zero args? Should the package guard against this explicitly (returning an error), or let git's own error propagate naturally?",
+          "context": "Calling git with no subcommand produces a usage message and non-zero exit. An explicit guard would produce a clearer error message and catch programmer mistakes earlier, but adds a code path that may never be exercised in practice.",
+          "options": [
+            "Return an explicit error immediately (e.g. 'gitcmd: at least one argument required')",
+            "Let os/exec and git handle it naturally \u2014 the GitError with git's stderr is clear enough",
+            "Panic with a descriptive message, since zero-args is always a programmer error"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-written PRD. It is detailed, internally consistent, and covers all six quality dimensions thoroughly. Intent is clear and single-paragraph. Goals are concrete and implementation-specific. Non-Goals are explicit and well-reasoned. Background establishes ecosystem context clearly. The external API surface is fully documented with method signatures, error contracts, and behavioral edge cases. The tech stack is named with language, package path, and test tooling rationale. Only a handful of minor clarifications could strengthen it further, and none are blockers.",
+      "gaps": [
+        "The minimum supported Go version is listed as '1.26+' with a note it is 'intentionally forward-looking' \u2014 this may cause confusion for contributors setting up the toolchain today. A currently stable floor (e.g. 1.22 or 1.23) alongside the aspirational target would be clearer.",
+        "The `BranchExists` caller guidance recommends a 30-second timeout but no corresponding guidance or default is mentioned for `Run` or `RunExitCode` in general. Readers may wonder whether those methods also need caller-supplied deadlines.",
+        "The `GitError.Command` field stores joined args as a single string. There is no mention of whether args are shell-escaped or raw, which could matter for log parsing if args contain spaces or special characters.",
+        "The deduplication step for safety-default env keys is described in prose but the exact algorithm (e.g. last-write-wins via a loop, or a map pass) is not specified. An implementer could choose different approaches with subtly different behavior if an env entry appears multiple times in os.Environ().",
+        "There is no explicit statement about whether `NewRunner` is safe to call with a zero-value `workDir` (empty string), and what behavior callers should expect in that case."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the minimum stable Go version that contributors should use today when building and testing this package, separate from the aspirational Go 1.26 target?",
+          "context": "The PRD states 'Go (1.26+, intentionally forward-looking)' but Go 1.26 has not shipped. Without a current stable floor, contributors may be uncertain about which toolchain to install, and CI configuration is ambiguous.",
+          "options": [
+            "Go 1.22 (current LTS-style stable)",
+            "Go 1.23",
+            "Go 1.24",
+            "Match whatever version is in the project's go.mod today \u2014 no separate floor needed"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should `Run` and `RunExitCode` callers also be advised to set a deadline/timeout on the context, similar to the explicit guidance given for `BranchExists` (30 s) and `CheckGitVersion` (5 s)?",
+          "context": "Without guidance, callers of `Run` (used for rebase, merge-tree) may pass background contexts against operations that could hang, especially in network-adjacent scenarios. Explicit guidance or a note that it is the caller's responsibility would close this gap.",
+          "options": [
+            "Yes \u2014 add a caller guidance note recommending a timeout (and suggest a value)",
+            "No \u2014 leave timeout policy entirely to callers; the PRD is already clear that observability and policy are caller responsibilities",
+            "Add a general note in the Observability or Testing section that all methods inherit context cancellation semantics and callers are responsible for deadlines"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Are the `args` stored in `GitError.Command` raw (as passed by the caller) or shell-quoted/escaped in any way?",
+          "context": "If args contain spaces or special characters (e.g. a branch name with a slash or a commit message), the joined string may be ambiguous when parsed from logs. Clarifying this prevents implementer ambiguity.",
+          "options": [
+            "Raw \u2014 args are joined with a single space, no escaping",
+            "Shell-quoted \u2014 args are quoted so the string is unambiguous",
+            "No specification needed \u2014 the format is for human log readability only, not machine parsing"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What behavior should callers expect if `NewRunner` is called with an empty string (`\"\"`) as `workDir`?",
+          "context": "The PRD states no validation is performed at construction time and that os/exec errors are returned as-is. However, an empty workDir causes exec to inherit the process's current directory, which may be surprising and hard to diagnose. A brief note on this case would prevent misuse.",
+          "options": [
+            "Document it explicitly: empty workDir causes the subprocess to inherit the process working directory (os/exec default behavior)",
+            "Add a panic or error return from NewRunner for empty workDir",
+            "Leave it undocumented \u2014 callers are responsible for passing a valid path"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Append safety defaults last (after caller env) so they always win. The Run/RunExitCode methods build the env slice as: os.Environ() first, then any runner.Env entries, then safety defaults last. Since os/exec uses last-wins on Linux, appending safety defaults guarantees they cannot be overridden.",
+        "q2": "Make Env unexported; expose an AddEnv(key, value string) method for safe additions. This prevents callers from accidentally removing safety vars while still allowing additional env vars (e.g., GIT_AUTHOR_NAME for merge commits).",
+        "q3": "Add a CheckGitVersion(ctx context.Context) error function to internal/gitcmd/ that callers invoke at startup. The function runs 'git --version', parses the output, and returns an error if the version is below 2.38. The hub calls this during initialization before starting the merge queue.",
+        "q4": "The existing Non-Goal is sufficient. The boundary is clear: go-git handles clone/push (already implemented), gitcmd handles rebase/merge-tree/ls-remote (new). No additional documentation section is needed."
+      },
+      "timestamp": "2026-08-03T12:19:07.748589+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "git <args> exited with code <N>: <stderr> \u2014 this is clear, descriptive, and easy to parse in logs.",
+        "q2": "SIGKILL immediately, return whatever stdout/stderr was buffered. Go's exec.CommandContext sends SIGKILL by default; we accept this behavior. Partial output is useful for debugging what happened before cancellation.",
+        "q3": "AddEnv should be removed; env should only be set at construction time via NewRunner options. The runner is constructed once per workspace and shared by the merge queue and campaign scheduler. Making it immutable after construction avoids concurrency concerns entirely. Use NewRunner(workDir string, env ...string) to accept additional env at construction time.",
+        "q4": "Real git binary only (integration-style). The package is thin (~50 lines of production code) and its value is in correctly interfacing with the real git binary. Mocking exec.Cmd would test the mock, not the safety guarantees. CI runners have git installed.",
+        "q5": "Linux and macOS (developer machines + production). The hub runs on Linux in production and macOS for development. Windows is not in scope.",
+        "q6": "No limit needed \u2014 commands used are known to produce small output. The merge queue uses merge-tree (output is a tree SHA or conflict markers), rebase (status messages), and ls-remote (a few lines of refs). None produce megabytes."
+      },
+      "timestamp": "2026-08-03T12:20:31.964250+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Keep it unexported \u2014 internal implementation detail only. The API surface should stay minimal.",
+        "q2": "Parse only the first three numeric components (major.minor.patch), ignoring any trailing tokens \u2014 Apple Git and RC strings both pass. macOS is a supported development platform.",
+        "q3": "Return the raw os/exec error as-is \u2014 the caller is responsible for ensuring workDir exists. The workspace root is validated at server boot; directories under it are created by the clone queue. No additional validation is warranted.",
+        "q4": "Method on *GitRunner \u2014 consistent with Run/RunExitCode.",
+        "q5": "Confirmed \u2014 return partial output alongside the context error (current spec behavior). Callers in the merge queue already handle err != nil cases and the partial output aids debugging."
+      },
+      "timestamp": "2026-08-03T12:22:06.502894+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "Command holds only the joined args without the binary prefix (e.g. 'rebase origin/main'), and 'git' is prepended only in Error(). This matches the Error() format template and keeps the Command field focused on what varies per invocation.",
+        "q2": "Expand the discrimination table to treat exit code 128 the same as exit code 1 (network/auth failure). In practice, git returns 128 for many connection and authentication failures. The three-way table becomes: 0 = exists, 2 = genuinely missing, anything else (1, 128, etc.) = network/auth/system failure surfaced as error.",
+        "q3": "Document a recommended timeout (e.g. 30s for BranchExists, 5s for CheckGitVersion) in godoc comments without enforcing it. Callers should set deadlines, but the package should not impose them.",
+        "q4": "Add an explicit deduplication step in the runner to remove earlier occurrences of safety-default keys, making the guarantee implementation-owned rather than platform-assumed. This eliminates the platform assumption entirely."
+      },
+      "timestamp": "2026-08-03T12:24:00.678304+00:00"
+    },
+    {
+      "assessment_index": 4,
+      "answers": {
+        "q1": "Intentionally forward-looking \u2014 will be updated when 1.26 ships. The project go.mod already specifies the target version. This is consistent across all specs in this project.",
+        "q2": "Immutable \u2014 the allowlist is a security invariant and must never be caller-configurable. If a future use case needs a different protocol set, it should go through a design review and PRD update.",
+        "q3": "requires git >= 2.38, found <installed> \u2014 concise and actionable.",
+        "q4": "Return the raw ExitCode() value and document that -1 means signal termination. This gives callers maximum information. The merge queue already handles err != nil as the primary signal; exitCode is secondary context.",
+        "q5": "Branch name only \u2014 always prepend refs/heads/; document that full ref paths must not be passed. The method is named BranchExists, and branch-only semantics match its name."
+      },
+      "timestamp": "2026-08-03T12:26:06.354810+00:00"
+    },
+    {
+      "assessment_index": 5,
+      "answers": {
+        "q1": "No logging in the package \u2014 callers are fully responsible for observability. The package is thin infrastructure; logging belongs at the call site where context is available.",
+        "q2": "Wrapped with fmt.Errorf('%w', ...) preserving the os/exec error for errors.Is/As. Callers can unwrap to the original exec.Error or exec.ExitError.",
+        "q3": "Out of scope for this spec; can be added later if needed. PATH resolution is standard and sufficient.",
+        "q4": "Let os/exec and git handle it naturally \u2014 the GitError with git's stderr is clear enough. No need for an extra guard."
+      },
+      "timestamp": "2026-08-03T12:28:27.710111+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

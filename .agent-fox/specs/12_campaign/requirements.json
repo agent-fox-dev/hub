@@ -1,0 +1,1504 @@
+{
+  "$schema": null,
+  "spec_id": "12",
+  "spec_name": "campaign",
+  "schema_version": 1,
+  "introduction": "The campaign execution and scheduling system manages the lifecycle of campaigns \u2014 named sets of specs executed together against a shared integration branch \u2014 using a dependency DAG to sequence and parallelize spec work, cascading rebases after merges, and a REST API for campaign management. Note: requirements referencing internal/gitcmd, internal/mergequeue, and internal/gitserver APIs are based on PRD descriptions and should be cross-checked against the installed packages before implementation.",
+  "glossary": {
+    "CanMerge": "A function in internal/mergequeue that the campaign package implements to gate whether a spec branch may be merged, checking campaign_specs.status.",
+    "DAG": "Directed Acyclic Graph of spec dependencies, where an edge from spec A to spec B means spec B cannot start until spec A has fully merged.",
+    "DeadLetter": "A boolean field on MergeJob indicating the merge job exhausted all retries and entered dead-letter status, triggering spec and campaign failure.",
+    "GitRunner": "The interface defined in internal/gitcmd used to execute git subprocesses (rebase, branch creation, fetch, etc.).",
+    "MergeJob": "A struct defined in internal/mergequeue representing a merge queue job, including a DeadLetter bool field indicating whether the job exhausted all retries.",
+    "PostMergeHook": "A callback function of type `func(ctx context.Context, job MergeJob)` defined in internal/mergequeue that the campaign scheduler implements and registers with the merge queue worker.",
+    "PushAuthorizer": "A callback registered with the git server (internal/gitserver) that the campaign package uses to revoke or restore push access to spec branches.",
+    "WORKSPACE_ROOT": "The filesystem root directory under which workspace clones are stored.",
+    "blocked": "A per-spec status indicating the spec branch has a rebase conflict; push access is revoked and the agent must resolve the conflict before work can continue.",
+    "blocked_by_merge": "The UUID of the MergeJob whose successful merge triggered the rebase conflict; stored in campaign_specs for audit purposes only, not a foreign key.",
+    "branch_name": "The full git branch name for a spec within a campaign, formatted as spec/<spec_id>-<spec_name>.",
+    "branch_sha": "The 40-character hex SHA of the current HEAD commit on a spec branch, stored in campaign_specs and returned in API responses.",
+    "campaign": "A named execution of a set of specs against a shared integration branch within a single workspace, tracked through a lifecycle of pending \u2192 active \u2192 completed/failed/cancelled.",
+    "campaign_specs": "The database table tracking per-spec status, branch info, and conflict details within a campaign (columns: campaign_id, spec_id, status, branch_name, branch_sha, conflict_details, blocked_by_merge, updated_at).",
+    "campaigns": "The database table storing campaign metadata (columns: id, workspace_slug, name, integration_branch, status, dag, created_by, created_at, updated_at).",
+    "campaigns:read": "An API permission scope granting read access to campaign status and DAG.",
+    "campaigns:write": "An API permission scope granting write access to create, cancel campaigns, and resolve conflicts.",
+    "cascading rebase": "The process of rebasing all active spec branches onto the new integration branch HEAD after each successful merge, in topological DAG order, with per-subtree conflict-stop semantics.",
+    "conflict-stop": "The behavior where a rebase conflict on a spec branch halts rebasing only for that branch's downstream dependents in the DAG, leaving unrelated branches unaffected.",
+    "conflict_details": "A JSON array of conflicting file path strings stored in campaign_specs.conflict_details TEXT column, serialized identically to the API response.",
+    "dag": "The JSON column in the campaigns table storing the spec dependency graph as {specs: [...], edges: [{from, to, relationship}]}.",
+    "dead-letter": "The state of a merge queue job that has exhausted all retry attempts, signalled to the campaign via PostMergeHook with DeadLetter=true.",
+    "depends_on_spec": "A field in a tasks.json dependency entry identifying the spec ID of the upstream dependency.",
+    "explicit campaign": "A campaign created with a specific list of spec_ids provided by the caller.",
+    "frontier": "The set of specs in a campaign whose upstream dependencies are all satisfied (merged or pre-satisfied) and which are therefore eligible to be activated next.",
+    "implicit campaign": "A campaign created without explicit spec_ids, where the hub discovers specs by scanning tasks.json files for any subtask with state=pending.",
+    "integration_branch": "The shared git branch (e.g., main) against which all spec branches in a campaign are rebased and eventually merged.",
+    "internal/campaign": "The Go package implementing campaign lifecycle, DAG construction, scheduling, rebase, store, authz, and REST handlers.",
+    "internal/gitcmd": "The Go package (spec 10) providing the GitRunner interface for executing git subprocesses safely.",
+    "internal/gitserver": "The Go package (spec 06) providing the git smart HTTP server and PushAuthorizer hook.",
+    "internal/mergequeue": "The Go package (spec 11) defining the PostMergeHook interface and MergeJob struct.",
+    "sentinel": "A boolean field in a tasks.json dependency entry reserved for future use; has no effect on DAG edge construction or scheduling in this iteration.",
+    "spec branch": "A git branch created per spec in a campaign, named spec/<spec_id>-<spec_name>, branched from the integration branch HEAD.",
+    "spec_id": "A short string identifier for a spec (e.g., '07'), used as a path parameter and in branch naming.",
+    "spec_name": "The kebab-case name component of a spec branch, derived from the spec directory name by converting the snake_case suffix to kebab-case.",
+    "sync.Map": "A Go standard library concurrent map used to store per-campaign mutexes keyed by campaign ID.",
+    "tasks.json": "A JSON file in each spec directory at <WORKSPACE_ROOT>/<slug>/trunk/.agent-fox/specs/<spec_dir>/tasks.json that declares spec dependencies and subtask states.",
+    "warnings": "An array of human-readable strings in the campaign creation response describing specs that were skipped due to missing or malformed tasks.json files.",
+    "workspace_slug": "The URL-safe identifier for a workspace, used as a path parameter in REST endpoints and as a foreign key in campaign tables."
+  },
+  "requirements": [
+    {
+      "id": "12-REQ-1",
+      "title": "Campaign Lifecycle States",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "track campaigns through a well-defined lifecycle",
+        "benefit": "I can observe campaign progress and react to failures or completions"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "campaign store",
+          "action": "enforce that campaign status is one of pending, active, completed, failed, or cancelled via a CHECK constraint on the campaigns table",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "transition the campaign from pending to active synchronously before returning the HTTP 201 response, so the campaign is always active in the response body",
+          "return_contract": "returns HTTP 201 with JSON body containing status: active",
+          "trigger": "a POST /api/v1/workspaces/:slug/campaigns request completes successfully"
+        },
+        {
+          "id": "12-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "transition the campaign status to completed",
+          "return_contract": null,
+          "trigger": "all specs in a campaign reach merged status"
+        },
+        {
+          "id": "12-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "immediately transition the campaign status to failed",
+          "return_contract": null,
+          "trigger": "any spec in a campaign reaches terminal failed status"
+        },
+        {
+          "id": "12-REQ-1.5",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "set campaign status to cancelled and set all campaign_specs statuses to cancelled, leaving spec branches in place",
+          "return_contract": "returns HTTP 200 with JSON body reflecting cancelled status",
+          "trigger": "a DELETE /api/v1/workspaces/:slug/campaigns/:id request is received"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the cancellation with an appropriate error",
+          "return_contract": "returns HTTP 409 with JSON body {error: string} indicating the campaign is not in a cancellable state",
+          "error_condition": "a DELETE request targets a campaign that is already completed, failed, or cancelled"
+        },
+        {
+          "id": "12-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign store",
+          "action": "reject the update and return an error to the caller",
+          "return_contract": "returns a non-nil error to the calling function; no DB row is modified",
+          "error_condition": "a campaign status transition is attempted to an invalid state (e.g., completed \u2192 active)"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-2",
+      "title": "Campaign Creation \u2014 Scope Constraint and Name Uniqueness",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "enforce one active campaign per integration branch and unique campaign names per workspace",
+        "benefit": "I avoid conflicting concurrent campaigns and have an unambiguous audit trail"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-2.1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the request without creating any campaign or spec branches",
+          "return_contract": "returns HTTP 409 with JSON body {error: string}",
+          "error_condition": "a POST /api/v1/workspaces/:slug/campaigns request is received for a workspace/integration_branch combination that already has an active campaign"
+        },
+        {
+          "id": "12-REQ-2.2",
+          "ears_pattern": "ubiquitous",
+          "system": "campaigns table",
+          "action": "enforce a UNIQUE(workspace_slug, name) constraint across all campaign statuses so that campaign names are permanent identifiers within a workspace",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-2.3",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 409 with JSON body {error: string} indicating the name is already taken",
+          "error_condition": "a POST /api/v1/workspaces/:slug/campaigns request uses a name that already exists in the workspace (regardless of status)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the request with a validation error",
+          "return_contract": "returns HTTP 422 with JSON body {error: string}",
+          "error_condition": "the integration_branch field is missing or empty in the POST request body"
+        },
+        {
+          "id": "12-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the request with a validation error",
+          "return_contract": "returns HTTP 422 with JSON body {error: string}",
+          "error_condition": "the name field is missing or empty in the POST request body"
+        },
+        {
+          "id": "12-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the request without creating any campaign",
+          "return_contract": "returns HTTP 403 with JSON body {error: string}",
+          "error_condition": "the caller lacks the campaigns:write permission scope"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-3",
+      "title": "DAG Construction and Validation",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "build and validate a spec dependency DAG from tasks.json files",
+        "benefit": "specs are executed in the correct dependency order and cycles are detected early"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "DAG builder in internal/campaign",
+          "action": "read the dependencies array from each spec's tasks.json, extract depends_on_spec fields, and build a directed graph where vertices are spec IDs and edges represent 'upstream must merge before downstream starts'",
+          "return_contract": null,
+          "trigger": "a campaign is being created"
+        },
+        {
+          "id": "12-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "DAG builder",
+          "action": "perform a topological sort to verify the graph is acyclic; if a cycle is detected, abort campaign creation",
+          "return_contract": "returns HTTP 422 with JSON body {error: string} describing the cycle",
+          "trigger": "the DAG is constructed"
+        },
+        {
+          "id": "12-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "DAG builder",
+          "action": "treat dependency entries whose depends_on_spec references a spec outside the campaign as pre-satisfied, not as an error",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-3.4",
+          "ears_pattern": "ubiquitous",
+          "system": "DAG builder",
+          "action": "store only spec-level edges (from, to, relationship) in the dag column; discard from_group, to_group, and sentinel fields after edge construction",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-3.5",
+          "ears_pattern": "ubiquitous",
+          "system": "DAG builder",
+          "action": "treat the sentinel field in tasks.json dependency entries as having no effect on edge construction or scheduling",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "DAG builder",
+          "action": "skip the spec silently without adding it to the campaign",
+          "return_contract": "the spec is silently omitted from the campaign; no warning is generated and no error is returned to the caller",
+          "error_condition": "a tasks.json file is missing from a spec directory during implicit campaign discovery"
+        },
+        {
+          "id": "12-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "skip the spec and add a human-readable entry to the warnings array in the response; continue creating the campaign with all valid specs",
+          "return_contract": "returns HTTP 201 with warnings array containing the skip reason",
+          "error_condition": "a tasks.json file is malformed or unparseable during campaign creation"
+        },
+        {
+          "id": "12-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "skip the spec and add an entry to the warnings array",
+          "return_contract": "returns HTTP 201 with warnings array containing the skip reason",
+          "error_condition": "an explicit spec_id provided in the POST request body cannot be discovered or its tasks.json cannot be parsed"
+        },
+        {
+          "id": "12-REQ-3.E4",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the campaign creation with a validation error",
+          "return_contract": "returns HTTP 422 with JSON body {error: string} indicating no valid specs were found",
+          "error_condition": "all specs are skipped due to missing or malformed tasks.json, leaving an empty spec set"
+        },
+        {
+          "id": "12-REQ-3.E5",
+          "ears_pattern": "unwanted",
+          "system": "DAG builder",
+          "action": "treat the malformed entry as a parse error for that tasks.json and skip the spec with a warning",
+          "return_contract": "returns HTTP 201 with warnings array entry for the affected spec",
+          "error_condition": "a dependency entry is missing the required depends_on_spec field"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-4",
+      "title": "Spec Branch Creation and Naming",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "create per-spec git branches from the integration branch HEAD for frontier specs",
+        "benefit": "agents have isolated branches to work on without interfering with each other"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "create a git branch named spec/<spec_id>-<spec_name> from the current integration branch HEAD using GitRunner, record branch_name and branch_sha in campaign_specs, and set the spec status to active",
+          "return_contract": null,
+          "trigger": "a spec is added to the campaign frontier (either at creation or after a merge advances the frontier)"
+        },
+        {
+          "id": "12-REQ-4.2",
+          "ears_pattern": "ubiquitous",
+          "system": "campaign scheduler",
+          "action": "derive the spec_name component of the branch name deterministically from the spec directory name by taking the snake_case suffix of the NN_snake_case_name convention and converting it to kebab-case",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-4.3",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "delete all spec branches successfully created during the current request, do not persist the campaign or any campaign_specs rows, and return an error",
+          "return_contract": "returns HTTP 500 for internal git errors or HTTP 422 for invalid input such as a non-existent integration branch",
+          "trigger": "any frontier spec branch fails to be created at the git level during POST /api/v1/workspaces/:slug/campaigns"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "abort campaign creation without creating any branches or persisting any rows",
+          "return_contract": "returns HTTP 422 with JSON body {error: string}",
+          "error_condition": "the integration branch does not exist in the repository at campaign creation time"
+        },
+        {
+          "id": "12-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "treat this as a branch creation failure, trigger the atomic rollback of all created branches, and abort campaign creation",
+          "return_contract": "returns HTTP 500 with JSON body {error: string}",
+          "error_condition": "a spec branch with the same name already exists in the repository"
+        },
+        {
+          "id": "12-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "cancel the git subprocess, trigger rollback of any created branches, and abort campaign creation",
+          "return_contract": "returns HTTP 500 with JSON body {error: string}",
+          "error_condition": "the GitRunner call to create a branch hangs or does not return within a reasonable timeout"
+        },
+        {
+          "id": "12-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "log each deletion failure and continue attempting to delete remaining branches; return the original creation error to the caller",
+          "return_contract": "returns HTTP 500 with JSON body {error: string}; partial branch cleanup failures are logged but do not change the HTTP response",
+          "error_condition": "rollback branch deletion fails for one or more branches after a partial creation failure"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-5",
+      "title": "Implicit Campaign Spec Discovery",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "create a campaign without specifying spec IDs and have the system discover all pending specs automatically",
+        "benefit": "I don't need to enumerate specs manually when starting a campaign"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign handler",
+          "action": "scan tasks.json files at <WORKSPACE_ROOT>/<slug>/trunk/.agent-fox/specs/<spec_dir>/tasks.json for each spec directory and include specs that have at least one subtask with state=pending",
+          "return_contract": null,
+          "trigger": "a POST /api/v1/workspaces/:slug/campaigns request is received with spec_ids omitted or empty"
+        },
+        {
+          "id": "12-REQ-5.2",
+          "ears_pattern": "ubiquitous",
+          "system": "campaign handler",
+          "action": "include a spec in an implicit campaign only if its tasks.json contains at least one subtask with state equal to pending",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return an error indicating no specs were found",
+          "return_contract": "returns HTTP 422 with JSON body {error: string}",
+          "error_condition": "no spec directories exist under the workspace's .agent-fox/specs path"
+        },
+        {
+          "id": "12-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return an internal error",
+          "return_contract": "returns HTTP 500 with JSON body {error: string}",
+          "error_condition": "the workspace clone directory does not exist or is inaccessible at WORKSPACE_ROOT"
+        },
+        {
+          "id": "12-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return an error indicating no pending specs were found",
+          "return_contract": "returns HTTP 422 with JSON body {error: string}",
+          "error_condition": "all discovered specs have no pending subtasks"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-6",
+      "title": "PostMergeHook \u2014 Successful Merge Processing",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "process successful merge completions from the merge queue",
+        "benefit": "the campaign advances its frontier and keeps spec branches up to date after each merge"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "acquire the per-campaign mutex keyed by campaign ID, perform cascading rebase of active sibling branches in topological DAG order, advance the DAG frontier by marking the merged spec complete and creating branches for newly-unblocked specs, check for campaign completion, and release the mutex",
+          "return_contract": null,
+          "trigger": "the PostMergeHook is invoked with a MergeJob where DeadLetter is false"
+        },
+        {
+          "id": "12-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "treat the hook as a no-op and return immediately",
+          "return_contract": null,
+          "trigger": "the PostMergeHook is invoked for a MergeJob with campaign_id equal to NULL"
+        },
+        {
+          "id": "12-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "set the campaign status to completed",
+          "return_contract": null,
+          "trigger": "the merged spec's merge is processed and all specs in the campaign have status merged"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "serialize them via the in-memory per-campaign mutex so that state mutations (rebase cascade, frontier advancement, status transitions) do not interleave",
+          "return_contract": "the second invocation blocks until the first completes; both execute sequentially with no interleaved state mutations",
+          "error_condition": "two PostMergeHook invocations for the same campaign arrive concurrently"
+        },
+        {
+          "id": "12-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "on restart, recompute the frontier from current campaign_specs status rows in the DB; the next PostMergeHook invocation heals any partial cascade since rebasing an already-rebased branch is a no-op",
+          "return_contract": "on restart, the campaign frontier is consistent with DB state; subsequent hook invocations produce correct cascading behavior",
+          "error_condition": "the hub crashes mid-hook after a merge completes but before all state mutations finish"
+        },
+        {
+          "id": "12-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "skip all state mutations and return immediately",
+          "return_contract": "the hook returns without modifying any campaign or campaign_specs rows in the database",
+          "error_condition": "the PostMergeHook is invoked for a campaign that is already in failed or cancelled status"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-7",
+      "title": "PostMergeHook \u2014 Dead-Letter Failure Propagation",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "propagate spec failure from merge-queue dead-letter jobs to the campaign",
+        "benefit": "the campaign immediately reflects failure when a spec exhausts all merge retries"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "set the corresponding spec status to failed in campaign_specs, immediately set the campaign status to failed, release the per-campaign mutex, and return without performing any rebase or frontier advancement",
+          "return_contract": null,
+          "trigger": "the PostMergeHook is invoked with a MergeJob where DeadLetter is true"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "log the anomaly and set the campaign status to failed as a safety measure",
+          "return_contract": "the campaign status is set to failed in the database; the anomaly is logged for operator investigation",
+          "error_condition": "the spec referenced in the dead-letter MergeJob is not found in campaign_specs"
+        },
+        {
+          "id": "12-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "log the error and release the mutex; the next hook invocation or restart will recompute state from the DB",
+          "return_contract": "the per-campaign mutex is released; the error is logged; DB state may be stale until the next hook invocation or restart recomputes it",
+          "error_condition": "the DB update to set spec or campaign status to failed fails"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-8",
+      "title": "Cascading Rebase with Per-Subtree Conflict-Stop",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "rebase all active spec branches onto the new integration branch HEAD after each merge",
+        "benefit": "spec branches stay current and conflicts are detected early without blocking unrelated branches"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "rebase engine in internal/campaign",
+          "action": "rebase all active spec branches onto the new integration branch HEAD in topological DAG order (roots first, leaves last) using GitRunner",
+          "return_contract": null,
+          "trigger": "a successful merge is processed by the PostMergeHook"
+        },
+        {
+          "id": "12-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "rebase engine",
+          "action": "update the branch_sha in campaign_specs to the new HEAD SHA; the agent continues working unaware of the rebase",
+          "return_contract": null,
+          "trigger": "a spec branch rebases cleanly"
+        },
+        {
+          "id": "12-REQ-8.3",
+          "ears_pattern": "event_driven",
+          "system": "rebase engine",
+          "action": "set the spec status to blocked in campaign_specs, revoke push access via PushAuthorizer, record the conflicting file paths in conflict_details, record the triggering MergeJob UUID in blocked_by_merge, and skip rebasing all downstream dependents of that branch in the DAG",
+          "return_contract": null,
+          "trigger": "a spec branch has a rebase conflict"
+        },
+        {
+          "id": "12-REQ-8.4",
+          "ears_pattern": "ubiquitous",
+          "system": "rebase engine",
+          "action": "apply conflict-stop semantics per branch subtree only \u2014 a conflict in one branch does not prevent rebasing of branches in unrelated parts of the DAG",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "rebase engine",
+          "action": "enforce a timeout on the subprocess; if the timeout fires, kill the subprocess, treat the branch as conflicted, set it to blocked, and continue with the next branch",
+          "return_contract": "the timed-out branch is set to blocked status in campaign_specs with conflict_details recording the timeout; the cascade continues for remaining branches",
+          "error_condition": "a GitRunner rebase subprocess hangs and does not return"
+        },
+        {
+          "id": "12-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "rebase engine",
+          "action": "log the error, treat the branch as blocked, and continue rebasing unrelated branches",
+          "return_contract": "the errored branch is set to blocked status in campaign_specs; the error is logged; the cascade continues for unrelated branches",
+          "error_condition": "the GitRunner rebase call returns an unexpected error (not a conflict)"
+        },
+        {
+          "id": "12-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "rebase engine",
+          "action": "treat the rebase as a no-op (already up to date) and continue",
+          "return_contract": "the branch status and branch_sha remain unchanged in campaign_specs; the cascade continues to the next branch",
+          "error_condition": "a branch that was already rebased is encountered again in the cascade (idempotency scenario after crash recovery)"
+        },
+        {
+          "id": "12-REQ-8.E4",
+          "ears_pattern": "unwanted",
+          "system": "rebase engine",
+          "action": "log the error and still set the spec status to blocked in campaign_specs; the branch may temporarily accept pushes but the status is authoritative",
+          "return_contract": "the spec status is set to blocked in campaign_specs; the PushAuthorizer failure is logged but does not prevent the status update",
+          "error_condition": "PushAuthorizer callback fails when revoking push access for a blocked branch"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-9",
+      "title": "Spec Branch Blocking via PushAuthorizer",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "prevent agents from pushing to conflicted spec branches",
+        "benefit": "agents cannot push invalid state to a branch that has an unresolved rebase conflict"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "authz module in internal/campaign",
+          "action": "register a PushAuthorizer callback with internal/gitserver that rejects push attempts to the blocked branch",
+          "return_contract": null,
+          "trigger": "a spec branch is set to blocked status"
+        },
+        {
+          "id": "12-REQ-9.2",
+          "ears_pattern": "ubiquitous",
+          "system": "PushAuthorizer",
+          "action": "reject direct pushes to the integration branch for any campaign, requiring all merges to go through the merge queue",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-9.3",
+          "ears_pattern": "event_driven",
+          "system": "authz module",
+          "action": "restore push access to the branch via PushAuthorizer",
+          "return_contract": null,
+          "trigger": "a blocked spec branch is successfully resolved and set back to active"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "PushAuthorizer",
+          "action": "reject the push because CanMerge checks campaign_specs.status and finds cancelled",
+          "return_contract": "git push is rejected with an error message",
+          "error_condition": "a cancelled campaign's spec branches receive push attempts"
+        },
+        {
+          "id": "12-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "PushAuthorizer",
+          "action": "allow the push (no campaign constraint applies)",
+          "return_contract": "PushAuthorizer returns nil, allowing the push to proceed without restriction",
+          "error_condition": "the PushAuthorizer is called for a branch not tracked in any active campaign"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-10",
+      "title": "Conflict Resolution Endpoint",
+      "user_story": {
+        "role": "agent",
+        "goal": "signal that a rebase conflict has been resolved locally and request verification",
+        "benefit": "the hub verifies the fix against the current integration branch HEAD and restores my ability to push"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-10.1",
+          "ears_pattern": "state_driven",
+          "system": "resolve endpoint",
+          "action": "rebase the spec branch onto the current integration branch HEAD using GitRunner; if clean, restore push access via PushAuthorizer, set spec status to active, update branch_sha, and return success",
+          "return_contract": "returns HTTP 200 with JSON body {spec_id: string, status: active, branch_sha: string}",
+          "state": "the spec is in blocked status"
+        },
+        {
+          "id": "12-REQ-10.2",
+          "ears_pattern": "state_driven",
+          "system": "resolve endpoint",
+          "action": "return the updated conflict file list without changing spec status",
+          "return_contract": "returns HTTP 409 with JSON body {conflict_details: [string]}",
+          "state": "the spec is in blocked status and the rebase still conflicts after the agent's local fix"
+        },
+        {
+          "id": "12-REQ-10.3",
+          "ears_pattern": "state_driven",
+          "system": "resolve endpoint",
+          "action": "return the current spec status and branch_sha without performing any rebase",
+          "return_contract": "returns HTTP 200 with JSON body {spec_id: string, status: active, branch_sha: string}",
+          "state": "the spec is in active status when the resolve endpoint is called"
+        },
+        {
+          "id": "12-REQ-10.4",
+          "ears_pattern": "state_driven",
+          "system": "resolve endpoint",
+          "action": "return the current spec status and branch_sha without performing any rebase",
+          "return_contract": "returns HTTP 200 with JSON body {spec_id: string, status: merged, branch_sha: string}",
+          "state": "the spec is in merged status when the resolve endpoint is called"
+        },
+        {
+          "id": "12-REQ-10.5",
+          "ears_pattern": "state_driven",
+          "system": "resolve endpoint",
+          "action": "reject the request as the spec is in a wrong state for resolution",
+          "return_contract": "returns HTTP 409 with JSON body {error: string}",
+          "state": "the spec is in pending, failed, or cancelled status when the resolve endpoint is called"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "resolve endpoint",
+          "action": "return a not found error",
+          "return_contract": "returns HTTP 404 with JSON body {error: string}",
+          "error_condition": "the resolve endpoint is called for a spec_id that does not exist in the campaign"
+        },
+        {
+          "id": "12-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "resolve endpoint",
+          "action": "enforce a timeout; if it fires, kill the subprocess and return an error without changing spec status",
+          "return_contract": "returns HTTP 500 with JSON body {error: string}",
+          "error_condition": "the GitRunner rebase call during resolve verification hangs"
+        },
+        {
+          "id": "12-REQ-10.E3",
+          "ears_pattern": "unwanted",
+          "system": "resolve endpoint",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON body {error: string}",
+          "error_condition": "the caller lacks the campaigns:write permission scope"
+        },
+        {
+          "id": "12-REQ-10.E4",
+          "ears_pattern": "unwanted",
+          "system": "resolve endpoint",
+          "action": "return the updated conflict file list reflecting the new conflicts; the agent must resolve again",
+          "return_contract": "returns HTTP 409 with JSON body {conflict_details: [string]}",
+          "error_condition": "newer merges have occurred since the agent's local fix, introducing new conflicts during resolve verification"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-11",
+      "title": "Campaign REST API \u2014 Create",
+      "user_story": {
+        "role": "external controller",
+        "goal": "create a campaign via the REST API",
+        "benefit": "I get an immediately actionable active campaign with frontier branches ready for agent dispatch"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign handler",
+          "action": "compute the initial DAG frontier, create spec branches for all frontier specs, set frontier specs to active, set the campaign to active, persist the campaign and campaign_specs rows, and return the campaign response",
+          "return_contract": "returns HTTP 201 with JSON body {id, workspace_slug, name, integration_branch, status: active, dag, specs, warnings, created_by, created_at, updated_at}",
+          "trigger": "a POST /api/v1/workspaces/:slug/campaigns request is received with valid input"
+        },
+        {
+          "id": "12-REQ-11.2",
+          "ears_pattern": "ubiquitous",
+          "system": "campaign handler",
+          "action": "omit the warnings field or return it as an empty array when no specs are skipped during campaign creation",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return a not found error",
+          "return_contract": "returns HTTP 404 with JSON body {error: string}",
+          "error_condition": "the workspace identified by :slug does not exist"
+        },
+        {
+          "id": "12-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return a parse error",
+          "return_contract": "returns HTTP 400 with JSON body {error: string}",
+          "error_condition": "the request body is not valid JSON"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-12",
+      "title": "Campaign REST API \u2014 List and Get",
+      "user_story": {
+        "role": "external controller",
+        "goal": "list and query campaigns by status",
+        "benefit": "I can poll for active campaigns to dispatch agents and monitor campaign progress"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign handler",
+          "action": "return all campaigns for the workspace; if the status query parameter is provided, filter to only campaigns matching that status",
+          "return_contract": "returns HTTP 200 with JSON array of campaign objects",
+          "trigger": "a GET /api/v1/workspaces/:slug/campaigns request is received"
+        },
+        {
+          "id": "12-REQ-12.2",
+          "ears_pattern": "event_driven",
+          "system": "campaign handler",
+          "action": "return the full campaign object including dag and specs array with per-spec status, branch_name, branch_sha, conflict_details, and blocked_by_merge",
+          "return_contract": "returns HTTP 200 with JSON body {id, workspace_slug, name, integration_branch, status, dag, specs, created_by, created_at, updated_at}",
+          "trigger": "a GET /api/v1/workspaces/:slug/campaigns/:id request is received"
+        },
+        {
+          "id": "12-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return a validation error",
+          "return_contract": "returns HTTP 422 with JSON body {error: string}",
+          "error_condition": "the status query parameter is provided with an invalid value"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return a not found error",
+          "return_contract": "returns HTTP 404 with JSON body {error: string}",
+          "error_condition": "the campaign ID in GET /campaigns/:id does not exist"
+        },
+        {
+          "id": "12-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON body {error: string}",
+          "error_condition": "the caller lacks the campaigns:read permission scope"
+        },
+        {
+          "id": "12-REQ-12.E3",
+          "ears_pattern": "event_driven",
+          "system": "campaign handler",
+          "action": "return an empty array",
+          "return_contract": "returns HTTP 200 with JSON body []",
+          "trigger": "a GET /api/v1/workspaces/:slug/campaigns request is received with no campaigns in the workspace"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-13",
+      "title": "Cancellation Semantics",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "cancel an active campaign without deleting spec branches",
+        "benefit": "I can stop a campaign and inspect work-in-progress branches for debugging"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign handler",
+          "action": "set campaign status to cancelled, set all campaign_specs statuses to cancelled, leave spec branches in place on the git server, and return the updated campaign",
+          "return_contract": "returns HTTP 200 with JSON body reflecting cancelled status for campaign and all specs",
+          "trigger": "a DELETE /api/v1/workspaces/:slug/campaigns/:id request is received for an active campaign"
+        },
+        {
+          "id": "12-REQ-13.2",
+          "ears_pattern": "state_driven",
+          "system": "CanMerge implementation",
+          "action": "reject any merge queue job for that spec by returning a non-nil CantMergeReason, preventing orphaned merge queue jobs from completing",
+          "return_contract": "returns a non-nil CantMergeReason indicating the spec is cancelled",
+          "state": "a campaign spec has been cancelled"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return an error indicating the campaign is already cancelled",
+          "return_contract": "returns HTTP 409 with JSON body {error: string}",
+          "error_condition": "a DELETE request targets a campaign that is already cancelled"
+        },
+        {
+          "id": "12-REQ-13.E2",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "return an error indicating the campaign cannot be cancelled in its current state",
+          "return_contract": "returns HTTP 409 with JSON body {error: string}",
+          "error_condition": "a DELETE request targets a campaign that is completed or failed"
+        },
+        {
+          "id": "12-REQ-13.E3",
+          "ears_pattern": "unwanted",
+          "system": "campaign handler",
+          "action": "roll back the transaction so the campaign and all specs remain in their previous state",
+          "return_contract": "returns HTTP 500 with JSON body {error: string}",
+          "error_condition": "the DB update to set campaign_specs statuses to cancelled fails partway through"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-14",
+      "title": "Crash Recovery \u2014 Frontier Recomputation on Restart",
+      "user_story": {
+        "role": "hub process",
+        "goal": "recover campaign state correctly after a crash or restart",
+        "benefit": "campaigns resume correctly without manual intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "re-evaluate all active campaigns by recomputing the frontier from the DAG and current campaign_specs status rows in the DB; re-initialize the per-campaign mutex map as empty",
+          "return_contract": null,
+          "trigger": "the hub process restarts"
+        },
+        {
+          "id": "12-REQ-14.2",
+          "ears_pattern": "state_driven",
+          "system": "campaign scheduler",
+          "action": "assume an agent is still working on the spec and take no action; the spec remains active",
+          "return_contract": null,
+          "state": "a spec has status active after hub restart"
+        },
+        {
+          "id": "12-REQ-14.3",
+          "ears_pattern": "state_driven",
+          "system": "campaign scheduler",
+          "action": "retain the blocked state; the agent must call the resolve endpoint to unblock",
+          "return_contract": null,
+          "state": "a spec has status blocked after hub restart"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "fail startup with a clear error message rather than starting with incomplete state",
+          "return_contract": "process exits with a non-zero exit code and logs the DB error",
+          "error_condition": "the DB is unavailable during hub restart"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-15",
+      "title": "Database Schema Initialization",
+      "user_story": {
+        "role": "hub process",
+        "goal": "initialize the campaign database schema on startup",
+        "benefit": "the campaigns and campaign_specs tables exist before any API requests are handled"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-15.1",
+          "ears_pattern": "event_driven",
+          "system": "store module in internal/campaign",
+          "action": "execute CREATE TABLE IF NOT EXISTS for campaigns and campaign_specs with all columns, constraints, and CHECK constraints as specified in the DB schema",
+          "return_contract": null,
+          "trigger": "the hub initializes the campaign store"
+        },
+        {
+          "id": "12-REQ-15.2",
+          "ears_pattern": "ubiquitous",
+          "system": "campaigns table",
+          "action": "enforce CHECK(status IN ('pending','active','completed','failed','cancelled')) and UNIQUE(workspace_slug, name) constraints",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-15.3",
+          "ears_pattern": "ubiquitous",
+          "system": "campaign_specs table",
+          "action": "enforce CHECK(status IN ('pending','active','merged','blocked','failed','cancelled')) and a REFERENCES campaigns(id) foreign key on campaign_id",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-15.E1",
+          "ears_pattern": "unwanted",
+          "system": "store module",
+          "action": "return a non-nil error to the caller; do not panic or call os.Exit",
+          "return_contract": "returns (*Store, error) with a non-nil error",
+          "error_condition": "the schema initialization SQL fails (e.g., DB file is read-only)"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-16",
+      "title": "DAG JSON Serialization",
+      "user_story": {
+        "role": "campaign store",
+        "goal": "serialize and deserialize the DAG to and from the campaigns.dag JSON column",
+        "benefit": "the DAG is persisted and retrieved correctly without data loss"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-16.1",
+          "ears_pattern": "ubiquitous",
+          "system": "store module",
+          "action": "serialize the DAG as JSON with shape {specs: [string], edges: [{from: string, to: string, relationship: string}]} into the dag TEXT column; deserialize it back to the same shape for API responses",
+          "return_contract": null
+        },
+        {
+          "id": "12-REQ-16.2",
+          "ears_pattern": "ubiquitous",
+          "system": "store module",
+          "action": "serialize conflict_details as a JSON array of file path strings into the campaign_specs.conflict_details TEXT column; deserialize it directly into the API response array",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-16.E1",
+          "ears_pattern": "unwanted",
+          "system": "store module",
+          "action": "return a non-nil error to the caller",
+          "return_contract": "returns a non-nil error; no partial DAG is returned",
+          "error_condition": "the dag column contains malformed JSON when reading from the DB"
+        },
+        {
+          "id": "12-REQ-16.E2",
+          "ears_pattern": "unwanted",
+          "system": "store module",
+          "action": "return a non-nil error to the caller",
+          "return_contract": "returns a non-nil error; no partial spec row is returned",
+          "error_condition": "the conflict_details column contains malformed JSON when reading from the DB"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-17",
+      "title": "Per-Campaign Mutex for Hook Serialization",
+      "user_story": {
+        "role": "campaign scheduler",
+        "goal": "serialize concurrent PostMergeHook executions for the same campaign",
+        "benefit": "concurrent hook invocations do not cause data races or inconsistent state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-17.1",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "acquire an in-memory mutex from a sync.Map keyed by campaign ID before performing any state mutations, and release it after all mutations complete or on early return",
+          "return_contract": null,
+          "trigger": "a PostMergeHook invocation begins for a campaign"
+        },
+        {
+          "id": "12-REQ-17.2",
+          "ears_pattern": "event_driven",
+          "system": "campaign scheduler",
+          "action": "re-initialize the sync.Map as empty; locks are re-acquired as PostMergeHook invocations arrive",
+          "return_contract": null,
+          "trigger": "the hub restarts"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-17.E1",
+          "ears_pattern": "unwanted",
+          "system": "campaign scheduler",
+          "action": "recover from the panic, release the mutex, log the panic, and set the campaign status to failed",
+          "return_contract": "the per-campaign mutex is released; the campaign status is set to failed in the database; the panic is logged and does not crash the hub process",
+          "error_condition": "a PostMergeHook goroutine panics while holding the per-campaign mutex"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "12-PROP-1",
+      "title": "DAG Acyclicity Invariant",
+      "for_any": "campaign in the campaigns table",
+      "invariant": "the dag column, when deserialized, represents a directed acyclic graph \u2014 no sequence of edges forms a cycle",
+      "validates": [
+        "12-REQ-3.2"
+      ]
+    },
+    {
+      "id": "12-PROP-2",
+      "title": "One Active Campaign Per Integration Branch",
+      "for_any": "pair of (workspace_slug, integration_branch)",
+      "invariant": "at most one campaign with status=active exists for any given workspace_slug and integration_branch combination",
+      "validates": [
+        "12-REQ-2.1"
+      ]
+    },
+    {
+      "id": "12-PROP-3",
+      "title": "Campaign Name Uniqueness Within Workspace",
+      "for_any": "pair of (workspace_slug, name)",
+      "invariant": "at most one campaign row exists with any given (workspace_slug, name) pair, regardless of status",
+      "validates": [
+        "12-REQ-2.2",
+        "12-REQ-2.3"
+      ]
+    },
+    {
+      "id": "12-PROP-4",
+      "title": "Frontier Specs Are Always Active",
+      "for_any": "spec in campaign_specs where all upstream dependencies have status=merged",
+      "invariant": "the spec has status=active or status=blocked or status=merged (never pending once its dependencies are satisfied and the campaign is active)",
+      "validates": [
+        "12-REQ-6.1",
+        "12-REQ-11.1"
+      ]
+    },
+    {
+      "id": "12-PROP-5",
+      "title": "Campaign Failure Propagation Is Immediate",
+      "for_any": "campaign where any campaign_specs row has status=failed",
+      "invariant": "the campaign's own status is also failed",
+      "validates": [
+        "12-REQ-7.1",
+        "12-REQ-1.4"
+      ]
+    },
+    {
+      "id": "12-PROP-6",
+      "title": "Blocked Spec Has Conflict Details",
+      "for_any": "campaign_specs row with status=blocked",
+      "invariant": "conflict_details is a non-null, non-empty JSON array of file path strings and blocked_by_merge is a non-null UUID string",
+      "validates": [
+        "12-REQ-8.3"
+      ]
+    },
+    {
+      "id": "12-PROP-7",
+      "title": "Cancelled Campaign Has All Specs Cancelled",
+      "for_any": "campaign with status=cancelled",
+      "invariant": "every campaign_specs row for that campaign also has status=cancelled",
+      "validates": [
+        "12-REQ-13.1"
+      ]
+    },
+    {
+      "id": "12-PROP-8",
+      "title": "Atomic Campaign Creation \u2014 No Partial State",
+      "for_any": "POST /api/v1/workspaces/:slug/campaigns request that returns a non-201 response",
+      "invariant": "no campaigns row and no campaign_specs rows are persisted, and no spec branches created during the request remain in the git repository",
+      "validates": [
+        "12-REQ-4.3",
+        "12-REQ-11.1"
+      ]
+    },
+    {
+      "id": "12-PROP-9",
+      "title": "Resolve Endpoint Idempotency for Active/Merged Specs",
+      "for_any": "POST resolve call on a spec with status=active or status=merged",
+      "invariant": "the response is HTTP 200 with the current status and branch_sha, and no rebase is performed",
+      "validates": [
+        "12-REQ-10.3",
+        "12-REQ-10.4"
+      ]
+    },
+    {
+      "id": "12-PROP-10",
+      "title": "Conflict-Stop Is Per-Subtree, Not Global",
+      "for_any": "cascading rebase where spec A conflicts and spec B is in an unrelated DAG subtree",
+      "invariant": "spec B is rebased regardless of spec A's conflict; only downstream dependents of spec A in the DAG are skipped",
+      "validates": [
+        "12-REQ-8.4"
+      ]
+    },
+    {
+      "id": "12-PROP-11",
+      "title": "Completed Campaign Has All Specs Merged",
+      "for_any": "campaign with status=completed",
+      "invariant": "every campaign_specs row for that campaign has status=merged",
+      "validates": [
+        "12-REQ-1.3",
+        "12-REQ-6.3"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "12-PATH-1",
+      "title": "Explicit Campaign Creation \u2014 Synchronous Activation",
+      "steps": [
+        {
+          "actor": "external controller",
+          "action": "sends POST /api/v1/workspaces/:slug/campaigns with name, spec_ids, and integration_branch"
+        },
+        {
+          "actor": "campaign handler",
+          "action": "validates input, checks for active campaign on the integration branch (HTTP 409 if conflict), checks name uniqueness"
+        },
+        {
+          "actor": "DAG builder",
+          "action": "reads tasks.json for each spec_id, extracts dependency edges, builds the DAG, validates acyclicity via topological sort"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "computes the initial frontier (specs with no unmet dependencies)"
+        },
+        {
+          "actor": "GitRunner (internal/gitcmd)",
+          "action": "creates spec branches named spec/<spec_id>-<spec_name> from integration branch HEAD for each frontier spec"
+        },
+        {
+          "actor": "campaign store",
+          "action": "persists the campaigns row (status=active) and campaign_specs rows (frontier specs status=active, others status=pending) in a single transaction"
+        },
+        {
+          "actor": "campaign handler",
+          "action": "returns HTTP 201 with campaign JSON body including status=active, dag, specs, and warnings array"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-2",
+      "title": "Successful Merge \u2014 Cascade Rebase and Frontier Advancement",
+      "steps": [
+        {
+          "actor": "merge queue (internal/mergequeue)",
+          "action": "completes a merge for a campaign spec branch and invokes PostMergeHook with DeadLetter=false"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "acquires the per-campaign mutex keyed by campaign ID"
+        },
+        {
+          "actor": "rebase engine",
+          "action": "iterates active spec branches in topological DAG order and calls GitRunner to rebase each onto the new integration branch HEAD"
+        },
+        {
+          "actor": "rebase engine",
+          "action": "for clean rebases, updates branch_sha in campaign_specs; for conflicts, sets spec to blocked, revokes push access via PushAuthorizer, records conflict_details and blocked_by_merge"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "marks the merged spec as merged in campaign_specs, computes newly-unblocked specs"
+        },
+        {
+          "actor": "GitRunner (internal/gitcmd)",
+          "action": "creates spec branches for newly-unblocked frontier specs"
+        },
+        {
+          "actor": "campaign store",
+          "action": "persists all status updates and new branch records"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "checks if all specs are merged; if so, sets campaign status to completed; releases the mutex"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-3",
+      "title": "Dead-Letter Failure \u2014 Campaign Failure Propagation",
+      "steps": [
+        {
+          "actor": "merge queue (internal/mergequeue)",
+          "action": "exhausts all retries for a campaign spec merge job and invokes PostMergeHook with DeadLetter=true"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "acquires the per-campaign mutex keyed by campaign ID"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "sets the spec status to failed in campaign_specs"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "sets the campaign status to failed in campaigns"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "releases the mutex and returns without performing any rebase or frontier advancement"
+        },
+        {
+          "actor": "external controller",
+          "action": "polls GET /api/v1/workspaces/:slug/campaigns/:id and observes status=failed"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-4",
+      "title": "Conflict Resolution \u2014 Agent Resolves Blocked Spec Branch",
+      "steps": [
+        {
+          "actor": "agent",
+          "action": "resolves the rebase conflict locally on the spec branch"
+        },
+        {
+          "actor": "agent",
+          "action": "sends POST /api/v1/workspaces/:slug/campaigns/:id/specs/:spec_id/resolve"
+        },
+        {
+          "actor": "resolve endpoint",
+          "action": "looks up spec in campaign_specs, confirms status=blocked"
+        },
+        {
+          "actor": "rebase engine",
+          "action": "calls GitRunner to rebase the spec branch onto the current integration branch HEAD (not the blocked HEAD)"
+        },
+        {
+          "actor": "rebase engine",
+          "action": "if clean: restores push access via PushAuthorizer, sets spec status to active, updates branch_sha in campaign_specs"
+        },
+        {
+          "actor": "resolve endpoint",
+          "action": "returns HTTP 200 with {spec_id, status: active, branch_sha}"
+        },
+        {
+          "actor": "agent",
+          "action": "resumes pushing work to the now-unblocked spec branch"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-5",
+      "title": "Campaign Cancellation \u2014 Soft Cancel with Branch Retention",
+      "steps": [
+        {
+          "actor": "platform operator",
+          "action": "sends DELETE /api/v1/workspaces/:slug/campaigns/:id"
+        },
+        {
+          "actor": "campaign handler",
+          "action": "validates the campaign is in active status"
+        },
+        {
+          "actor": "campaign store",
+          "action": "sets campaign status to cancelled and all campaign_specs statuses to cancelled in a single transaction"
+        },
+        {
+          "actor": "campaign handler",
+          "action": "returns HTTP 200 with updated campaign JSON reflecting cancelled status"
+        },
+        {
+          "actor": "merge queue (internal/mergequeue)",
+          "action": "calls CanMerge for any pending merge jobs; CanMerge finds campaign_specs.status=cancelled and returns a non-nil CantMergeReason, rejecting the merge"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-6",
+      "title": "End-to-End: Implicit Campaign Creation Through Merge Completion",
+      "steps": [
+        {
+          "actor": "external controller",
+          "action": "sends POST /api/v1/workspaces/:slug/campaigns with only name and integration_branch (no spec_ids)"
+        },
+        {
+          "actor": "campaign handler",
+          "action": "scans tasks.json files at WORKSPACE_ROOT/<slug>/trunk/.agent-fox/specs/<spec_dir>/tasks.json for each spec directory"
+        },
+        {
+          "actor": "DAG builder",
+          "action": "includes specs with at least one subtask with state=pending, skips missing/malformed tasks.json with warnings, builds and validates the DAG"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "computes the initial frontier"
+        },
+        {
+          "actor": "GitRunner (internal/gitcmd)",
+          "action": "creates spec branches for frontier specs from integration branch HEAD"
+        },
+        {
+          "actor": "campaign store",
+          "action": "persists campaigns and campaign_specs rows; campaign status=active"
+        },
+        {
+          "actor": "campaign handler",
+          "action": "returns HTTP 201 with active campaign, dag, specs, and any warnings"
+        },
+        {
+          "actor": "external controller",
+          "action": "polls GET /api/v1/workspaces/:slug/campaigns?status=active and dispatches agents to active spec branches"
+        },
+        {
+          "actor": "agent",
+          "action": "pushes work to spec branch and submits merge request to merge queue (internal/mergequeue)"
+        },
+        {
+          "actor": "merge queue (internal/mergequeue)",
+          "action": "serializes and executes the merge, then invokes PostMergeHook"
+        },
+        {
+          "actor": "campaign scheduler",
+          "action": "processes the hook: cascades rebase, advances frontier, creates new branches via GitRunner (internal/gitcmd), updates campaign_specs via campaign store"
+        },
+        {
+          "actor": "external controller",
+          "action": "polls GET /api/v1/workspaces/:slug/campaigns/:id and observes status=completed when all specs are merged"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "12-ERR-1",
+      "condition": "POST /campaigns targets a workspace/integration_branch with an existing active campaign",
+      "behavior": "return HTTP 409 with JSON body {error: string}; no campaign or spec branches are created",
+      "requirement_id": "12-REQ-2.1"
+    },
+    {
+      "id": "12-ERR-2",
+      "condition": "POST /campaigns uses a name already taken in the workspace",
+      "behavior": "return HTTP 409 with JSON body {error: string}; no campaign is created",
+      "requirement_id": "12-REQ-2.3"
+    },
+    {
+      "id": "12-ERR-3",
+      "condition": "DAG construction detects a cycle in spec dependencies",
+      "behavior": "return HTTP 422 with JSON body {error: string} describing the cycle; no campaign is created",
+      "requirement_id": "12-REQ-3.2"
+    },
+    {
+      "id": "12-ERR-4",
+      "condition": "Any frontier spec branch fails to be created at the git level during POST /campaigns",
+      "behavior": "delete all branches created during the request, do not persist any DB rows, return HTTP 500 (git error) or HTTP 422 (invalid input)",
+      "requirement_id": "12-REQ-4.3"
+    },
+    {
+      "id": "12-ERR-5",
+      "condition": "integration_branch does not exist in the repository at campaign creation time",
+      "behavior": "return HTTP 422 with JSON body {error: string}; no campaign is created",
+      "requirement_id": "12-REQ-4.E1"
+    },
+    {
+      "id": "12-ERR-6",
+      "condition": "tasks.json is malformed or unparseable during campaign creation",
+      "behavior": "skip the spec, add a warning entry to the warnings array in the HTTP 201 response; campaign creation continues for valid specs",
+      "requirement_id": "12-REQ-3.E2"
+    },
+    {
+      "id": "12-ERR-7",
+      "condition": "PostMergeHook is invoked with DeadLetter=true",
+      "behavior": "set spec status to failed, set campaign status to failed, release per-campaign mutex, return without rebase or frontier advancement",
+      "requirement_id": "12-REQ-7.1"
+    },
+    {
+      "id": "12-ERR-8",
+      "condition": "Resolve endpoint called when spec is in pending, failed, or cancelled status",
+      "behavior": "return HTTP 409 with JSON body {error: string}",
+      "requirement_id": "12-REQ-10.5"
+    },
+    {
+      "id": "12-ERR-9",
+      "condition": "Resolve endpoint rebase verification still conflicts after agent's local fix",
+      "behavior": "return HTTP 409 with JSON body {conflict_details: [string]}; spec remains blocked",
+      "requirement_id": "12-REQ-10.2"
+    },
+    {
+      "id": "12-ERR-10",
+      "condition": "DELETE /campaigns/:id targets a campaign that is already completed, failed, or cancelled",
+      "behavior": "return HTTP 409 with JSON body {error: string}; no state change is made",
+      "requirement_id": "12-REQ-1.E1"
+    },
+    {
+      "id": "12-ERR-11",
+      "condition": "Caller lacks campaigns:read permission on a GET endpoint",
+      "behavior": "return HTTP 403 with JSON body {error: string}",
+      "requirement_id": "12-REQ-12.E2"
+    },
+    {
+      "id": "12-ERR-12",
+      "condition": "Caller lacks campaigns:write permission on a POST or DELETE endpoint",
+      "behavior": "return HTTP 403 with JSON body {error: string}",
+      "requirement_id": "12-REQ-2.E3"
+    },
+    {
+      "id": "12-ERR-13",
+      "condition": "GitRunner rebase subprocess hangs during cascading rebase",
+      "behavior": "enforce timeout, kill subprocess, treat branch as conflicted, set to blocked, continue with next branch",
+      "requirement_id": "12-REQ-8.E1"
+    },
+    {
+      "id": "12-ERR-14",
+      "condition": "GitRunner rebase subprocess hangs during resolve endpoint verification",
+      "behavior": "enforce timeout, kill subprocess, return HTTP 500 without changing spec status",
+      "requirement_id": "12-REQ-10.E2"
+    },
+    {
+      "id": "12-ERR-15",
+      "condition": "dag column contains malformed JSON when reading from DB",
+      "behavior": "return a non-nil error to the caller; no partial DAG is returned",
+      "requirement_id": "12-REQ-16.E1"
+    },
+    {
+      "id": "12-ERR-16",
+      "condition": "All specs are skipped due to missing or malformed tasks.json, leaving an empty spec set",
+      "behavior": "return HTTP 422 with JSON body {error: string} indicating no valid specs were found",
+      "requirement_id": "12-REQ-3.E4"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "internal/mergequeue",
+      "version": "spec-11",
+      "symbols": [
+        {
+          "name": "PostMergeHook",
+          "import_path": "internal/mergequeue",
+          "signature": "type PostMergeHook func(ctx context.Context, job MergeJob)",
+          "notes": "Defined in spec 11. The campaign package implements this interface and registers it with the merge queue worker at startup."
+        },
+        {
+          "name": "MergeJob",
+          "import_path": "internal/mergequeue",
+          "signature": "type MergeJob struct { /* ... */ DeadLetter bool /* ... */ }",
+          "notes": "Carries DeadLetter bool field. When true, the job exhausted all retries. campaign_id field (if present) identifies the owning campaign; NULL means standalone merge."
+        },
+        {
+          "name": "CanMerge",
+          "import_path": "internal/mergequeue",
+          "signature": "type CanMerge func(ctx context.Context, job MergeJob) (CantMergeReason, error)",
+          "notes": "The campaign package implements CanMerge to reject merges for cancelled or blocked specs by checking campaign_specs.status."
+        },
+        {
+          "name": "CantMergeReason",
+          "import_path": "internal/mergequeue",
+          "signature": "type CantMergeReason string",
+          "notes": "Non-empty value returned by CanMerge to reject a merge. Empty string means merge is allowed."
+        }
+      ]
+    },
+    {
+      "package": "internal/gitcmd",
+      "version": "spec-10",
+      "symbols": [
+        {
+          "name": "GitRunner",
+          "import_path": "internal/gitcmd",
+          "signature": "type GitRunner interface { /* Run, RunExitCode, etc. */ }",
+          "notes": "Used for all git subprocess operations: rebase, branch creation, fetch. Exact method signatures should be verified against spec 10 before implementation."
+        }
+      ]
+    },
+    {
+      "package": "internal/gitserver",
+      "version": "spec-06",
+      "symbols": [
+        {
+          "name": "PushAuthorizer",
+          "import_path": "internal/gitserver",
+          "signature": "type PushAuthorizer func(ctx context.Context, branch string) error",
+          "notes": "Callback registered with the receive-pack handler. Returns non-nil error to reject a push. Exact signature should be verified against spec 06 before implementation."
+        }
+      ]
+    }
+  ]
+}

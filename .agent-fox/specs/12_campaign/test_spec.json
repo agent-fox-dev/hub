@@ -1,0 +1,2433 @@
+{
+  "$schema": null,
+  "spec_id": "12",
+  "spec_name": "campaign",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-12-1",
+      "requirement_id": "12-REQ-1.1",
+      "kind": "unit",
+      "description": "Campaign store enforces that status must be one of pending, active, completed, failed, or cancelled via a CHECK constraint, rejecting any other value.",
+      "preconditions": [
+        "SQLite in-memory database is initialized with the campaigns table via InitSchema",
+        "A valid campaigns row exists for insertion"
+      ],
+      "input": {
+        "status": "running"
+      },
+      "expected": {
+        "db_error": "CHECK constraint failed: status IN ('pending','active','completed','failed','cancelled')"
+      },
+      "assertion_pseudocode": "err = db.Exec(\"INSERT INTO campaigns (id, workspace_slug, name, integration_branch, status, dag, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\", uuid, 'ws', 'camp', 'main', 'running', '{}', 'user', now, now); assert err != nil; assert err.Error() contains 'CHECK constraint failed'"
+    },
+    {
+      "id": "TS-12-2",
+      "requirement_id": "12-REQ-1.2",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 201 with status=active in the response body, confirming the campaign is synchronously activated before the response is returned.",
+      "preconditions": [
+        "Hub is running with SQLite in-memory DB",
+        "Workspace 'ws-slug' exists",
+        "Integration branch 'main' exists in the workspace git repo",
+        "No active campaign exists for 'ws-slug'/'main'",
+        "Valid tasks.json files exist for spec '07' and '08' with pending subtasks"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07",
+            "08"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "status": "active"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','08'], integration_branch: 'main'}); assert resp.status == 201; assert resp.body.status == 'active'; assert resp.body.name == 'sprint-42'"
+    },
+    {
+      "id": "TS-12-3",
+      "requirement_id": "12-REQ-1.3",
+      "kind": "unit",
+      "description": "Campaign scheduler transitions campaign status to completed when all specs in the campaign reach merged status.",
+      "preconditions": [
+        "SQLite in-memory DB initialized with campaigns and campaign_specs tables",
+        "Campaign with id='camp-1' exists with status=active",
+        "campaign_specs rows for 'camp-1' have spec_ids '07' and '08' both with status=active"
+      ],
+      "input": {
+        "all_specs_merged": true,
+        "campaign_id": "camp-1"
+      },
+      "expected": {
+        "campaign_status": "completed"
+      },
+      "assertion_pseudocode": "store.UpdateSpecStatus(ctx, 'camp-1', '07', 'merged'); store.UpdateSpecStatus(ctx, 'camp-1', '08', 'merged'); scheduler.CheckCompletion(ctx, 'camp-1'); campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'completed'"
+    },
+    {
+      "id": "TS-12-4",
+      "requirement_id": "12-REQ-1.4",
+      "kind": "unit",
+      "description": "Campaign scheduler immediately transitions campaign status to failed when any single spec reaches terminal failed status.",
+      "preconditions": [
+        "SQLite in-memory DB initialized",
+        "Campaign 'camp-1' with status=active",
+        "campaign_specs rows for 'camp-1': spec '07' status=active, spec '08' status=active"
+      ],
+      "input": {
+        "campaign_id": "camp-1",
+        "new_status": "failed",
+        "spec_id": "07"
+      },
+      "expected": {
+        "campaign_status": "failed"
+      },
+      "assertion_pseudocode": "scheduler.PropagateSpecFailure(ctx, 'camp-1', '07'); campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'failed'"
+    },
+    {
+      "id": "TS-12-5",
+      "requirement_id": "12-REQ-1.5",
+      "kind": "integration",
+      "description": "DELETE /campaigns/:id sets campaign status to cancelled and all campaign_specs statuses to cancelled, leaving spec branches in place.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Campaign 'camp-1' with status=active exists for workspace 'ws-slug'",
+        "campaign_specs rows for 'camp-1': spec '07' status=active with branch_name='spec/07-secrets-variables'",
+        "Spec branch 'spec/07-secrets-variables' exists in the git repo"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "body": {
+          "status": "cancelled"
+        },
+        "branch_still_exists": true,
+        "spec_statuses": [
+          "cancelled"
+        ],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 200; assert resp.body.status == 'cancelled'; specs = store.GetCampaignSpecs(ctx, 'camp-1'); for spec in specs { assert spec.Status == 'cancelled' }; assert gitRunner.BranchExists('spec/07-secrets-variables') == true"
+    },
+    {
+      "id": "TS-12-6",
+      "requirement_id": "12-REQ-2.1",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 409 when a campaign already exists in active status for the same workspace/integration_branch combination.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Campaign 'camp-existing' with status=active exists for workspace 'ws-slug' and integration_branch='main'"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-43",
+          "spec_ids": [
+            "09"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "active campaign already exists for this integration branch"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-43', spec_ids: ['09'], integration_branch: 'main'}); assert resp.status == 409; assert resp.body.error contains 'active campaign'"
+    },
+    {
+      "id": "TS-12-7",
+      "requirement_id": "12-REQ-2.2",
+      "kind": "unit",
+      "description": "The campaigns table enforces UNIQUE(workspace_slug, name) across all statuses, preventing duplicate campaign names within a workspace.",
+      "preconditions": [
+        "SQLite in-memory DB initialized with campaigns table",
+        "Campaign row with workspace_slug='ws-slug' and name='sprint-42' and status='completed' already exists"
+      ],
+      "input": {
+        "name": "sprint-42",
+        "status": "active",
+        "workspace_slug": "ws-slug"
+      },
+      "expected": {
+        "db_error": "UNIQUE constraint failed: campaigns.workspace_slug, campaigns.name"
+      },
+      "assertion_pseudocode": "err = db.Exec(\"INSERT INTO campaigns (id, workspace_slug, name, integration_branch, status, dag, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\", newUUID, 'ws-slug', 'sprint-42', 'main', 'active', '{}', 'user', now, now); assert err != nil; assert err.Error() contains 'UNIQUE constraint failed'"
+    },
+    {
+      "id": "TS-12-8",
+      "requirement_id": "12-REQ-2.3",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 409 when the campaign name already exists in the workspace, regardless of the existing campaign's status.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Campaign 'sprint-42' with status=completed exists for workspace 'ws-slug'"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "feature-branch",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "campaign name already exists in this workspace"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07'], integration_branch: 'feature-branch'}); assert resp.status == 409; assert resp.body.error contains 'name'"
+    },
+    {
+      "id": "TS-12-9",
+      "requirement_id": "12-REQ-3.1",
+      "kind": "unit",
+      "description": "DAG builder reads the dependencies array from each spec's tasks.json and builds a directed graph with spec IDs as vertices and dependency relationships as edges.",
+      "preconditions": [
+        "tasks.json for spec '09' contains dependency entry {depends_on_spec: '07', from_group: 3, to_group: 1, relationship: 'Uses secrets Store', sentinel: false}",
+        "tasks.json for spec '07' has no dependencies"
+      ],
+      "input": {
+        "spec_ids": [
+          "07",
+          "09"
+        ]
+      },
+      "expected": {
+        "dag": {
+          "edges": [
+            {
+              "from": "07",
+              "relationship": "Uses secrets Store",
+              "to": "09"
+            }
+          ],
+          "specs": [
+            "07",
+            "09"
+          ]
+        }
+      },
+      "assertion_pseudocode": "dag, err = BuildDAG(ctx, ['07', '09'], tasksReader); assert err == nil; assert len(dag.Specs) == 2; assert len(dag.Edges) == 1; assert dag.Edges[0].From == '07'; assert dag.Edges[0].To == '09'; assert dag.Edges[0].Relationship == 'Uses secrets Store'"
+    },
+    {
+      "id": "TS-12-10",
+      "requirement_id": "12-REQ-3.2",
+      "kind": "unit",
+      "description": "DAG builder detects a cycle in spec dependencies and returns HTTP 422 with an error describing the cycle.",
+      "preconditions": [
+        "tasks.json for spec '07' has dependency on spec '09'",
+        "tasks.json for spec '09' has dependency on spec '07'"
+      ],
+      "input": {
+        "spec_ids": [
+          "07",
+          "09"
+        ]
+      },
+      "expected": {
+        "error": "cycle detected in spec dependency graph"
+      },
+      "assertion_pseudocode": "dag, err = BuildDAG(ctx, ['07', '09'], tasksReader); assert err != nil; assert err.Error() contains 'cycle'; resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'cyclic', spec_ids: ['07','09'], integration_branch: 'main'}); assert resp.status == 422; assert resp.body.error contains 'cycle'"
+    },
+    {
+      "id": "TS-12-11",
+      "requirement_id": "12-REQ-3.3",
+      "kind": "unit",
+      "description": "DAG builder treats dependency entries referencing specs outside the campaign as pre-satisfied, not as an error.",
+      "preconditions": [
+        "tasks.json for spec '09' has dependency on spec '05' which is not in the campaign",
+        "Spec '05' is not included in the spec_ids list"
+      ],
+      "input": {
+        "spec_ids": [
+          "09"
+        ]
+      },
+      "expected": {
+        "dag_built_successfully": true,
+        "spec_09_in_frontier": true
+      },
+      "assertion_pseudocode": "dag, err = BuildDAG(ctx, ['09'], tasksReader); assert err == nil; frontier = ComputeFrontier(dag, {}); assert '09' in frontier"
+    },
+    {
+      "id": "TS-12-12",
+      "requirement_id": "12-REQ-3.4",
+      "kind": "unit",
+      "description": "DAG builder stores only spec-level edges (from, to, relationship) in the dag column and discards from_group, to_group, and sentinel fields.",
+      "preconditions": [
+        "tasks.json for spec '09' contains {depends_on_spec: '07', from_group: 3, to_group: 1, relationship: 'Uses secrets', sentinel: true}"
+      ],
+      "input": {
+        "spec_ids": [
+          "07",
+          "09"
+        ]
+      },
+      "expected": {
+        "stored_dag_has_no_from_group": true,
+        "stored_dag_has_no_sentinel": true,
+        "stored_dag_has_no_to_group": true
+      },
+      "assertion_pseudocode": "dag, err = BuildDAG(ctx, ['07','09'], tasksReader); assert err == nil; dagJSON = SerializeDAG(dag); assert dagJSON does not contain 'from_group'; assert dagJSON does not contain 'to_group'; assert dagJSON does not contain 'sentinel'; assert dagJSON contains 'relationship'"
+    },
+    {
+      "id": "TS-12-13",
+      "requirement_id": "12-REQ-3.5",
+      "kind": "unit",
+      "description": "DAG builder treats the sentinel field in tasks.json dependency entries as having no effect on edge construction or scheduling.",
+      "preconditions": [
+        "tasks.json for spec '09' has two dependency entries: one with sentinel=true and one with sentinel=false, both depending on spec '07'"
+      ],
+      "input": {
+        "spec_ids": [
+          "07",
+          "09"
+        ]
+      },
+      "expected": {
+        "edges_count": 1,
+        "sentinel_has_no_effect": true
+      },
+      "assertion_pseudocode": "dag_with_sentinel, _ = BuildDAG(ctx, ['07','09'], tasksReaderSentinelTrue); dag_without_sentinel, _ = BuildDAG(ctx, ['07','09'], tasksReaderSentinelFalse); assert len(dag_with_sentinel.Edges) == len(dag_without_sentinel.Edges); assert dag_with_sentinel.Edges[0].From == dag_without_sentinel.Edges[0].From"
+    },
+    {
+      "id": "TS-12-14",
+      "requirement_id": "12-REQ-4.1",
+      "kind": "integration",
+      "description": "Campaign scheduler creates a git branch named spec/<spec_id>-<spec_name> from integration branch HEAD for each frontier spec, records branch_name and branch_sha in campaign_specs, and sets spec status to active.",
+      "preconditions": [
+        "Hub running with real git repo for workspace 'ws-slug'",
+        "Integration branch 'main' exists with HEAD SHA 'abc123'",
+        "Spec directory '07_secrets_variables' exists under .agent-fox/specs"
+      ],
+      "input": {
+        "integration_branch": "main",
+        "spec_id": "07",
+        "spec_name": "secrets-variables"
+      },
+      "expected": {
+        "branch_name": "spec/07-secrets-variables",
+        "branch_sha": "abc123",
+        "spec_status": "active"
+      },
+      "assertion_pseudocode": "campaign = createCampaign(ctx, {name: 'test', spec_ids: ['07'], integration_branch: 'main'}); spec = getSpecFromCampaign(campaign, '07'); assert spec.BranchName == 'spec/07-secrets-variables'; assert spec.BranchSHA == 'abc123'; assert spec.Status == 'active'; assert gitRunner.BranchExists('spec/07-secrets-variables') == true"
+    },
+    {
+      "id": "TS-12-15",
+      "requirement_id": "12-REQ-4.2",
+      "kind": "unit",
+      "description": "Spec branch name is derived deterministically from the spec directory name by converting the snake_case suffix of NN_snake_case_name to kebab-case.",
+      "preconditions": [
+        "Spec directory name is '07_secrets_variables'"
+      ],
+      "input": {
+        "spec_dir": "07_secrets_variables"
+      },
+      "expected": {
+        "branch_name": "spec/07-secrets-variables"
+      },
+      "assertion_pseudocode": "branchName = DeriveSpecBranchName('07_secrets_variables'); assert branchName == 'spec/07-secrets-variables'"
+    },
+    {
+      "id": "TS-12-16",
+      "requirement_id": "12-REQ-4.3",
+      "kind": "integration",
+      "description": "POST /campaigns deletes all successfully created spec branches and returns an error without persisting any DB rows when any frontier spec branch fails to be created at the git level.",
+      "preconditions": [
+        "Hub running with real git repo for workspace 'ws-slug'",
+        "Integration branch 'main' exists",
+        "Spec '07' branch creation succeeds but spec '08' branch creation fails (simulated git error)"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07",
+            "08"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "no_campaign_row_persisted": true,
+        "no_campaign_specs_rows_persisted": true,
+        "spec_07_branch_deleted": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','08'], integration_branch: 'main'}); assert resp.status == 500; assert store.GetCampaignByName(ctx, 'ws-slug', 'sprint-42') == nil; assert gitRunner.BranchExists('spec/07-secrets-variables') == false"
+    },
+    {
+      "id": "TS-12-17",
+      "requirement_id": "12-REQ-5.1",
+      "kind": "integration",
+      "description": "POST /campaigns with spec_ids omitted scans tasks.json files at the workspace path and includes specs with at least one pending subtask.",
+      "preconditions": [
+        "Hub running with workspace 'ws-slug' cloned at WORKSPACE_ROOT/ws-slug/trunk",
+        "Spec directory '07_secrets_variables' has tasks.json with one subtask with state=pending",
+        "Spec directory '08_other' has tasks.json with all subtasks state=done",
+        "Integration branch 'main' exists"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "implicit-camp"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "excluded_specs": [
+          "08"
+        ],
+        "included_specs": [
+          "07"
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'implicit-camp', integration_branch: 'main'}); assert resp.status == 201; specIDs = [s.spec_id for s in resp.body.specs]; assert '07' in specIDs; assert '08' not in specIDs"
+    },
+    {
+      "id": "TS-12-18",
+      "requirement_id": "12-REQ-5.2",
+      "kind": "unit",
+      "description": "Implicit campaign discovery includes a spec only if its tasks.json contains at least one subtask with state equal to pending.",
+      "preconditions": [
+        "tasks.json for spec '07' has subtasks: [{state: 'done'}, {state: 'pending'}]",
+        "tasks.json for spec '08' has subtasks: [{state: 'done'}, {state: 'done'}]"
+      ],
+      "input": {
+        "slug": "ws-slug",
+        "workspace_root": "/tmp/ws"
+      },
+      "expected": {
+        "excluded": [
+          "08"
+        ],
+        "included": [
+          "07"
+        ]
+      },
+      "assertion_pseudocode": "specs, warnings, err = DiscoverPendingSpecs(ctx, '/tmp/ws', 'ws-slug'); assert err == nil; assert '07' in specs; assert '08' not in specs"
+    },
+    {
+      "id": "TS-12-19",
+      "requirement_id": "12-REQ-6.1",
+      "kind": "integration",
+      "description": "PostMergeHook with DeadLetter=false acquires the per-campaign mutex, performs cascading rebase in topological order, advances the DAG frontier, checks completion, and releases the mutex.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active exists",
+        "campaign_specs: spec '07' status=active (just merged), spec '09' status=active (depends on '07')",
+        "Real git repo with integration branch 'main' and spec branches for '09'"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "mutex_released": true,
+        "spec_07_status": "merged",
+        "spec_09_rebased": true
+      },
+      "assertion_pseudocode": "hook = scheduler.PostMergeHook; hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: false}); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'merged'; spec09 = store.GetSpec(ctx, 'camp-1', '09'); assert spec09.BranchSHA != originalSHA"
+    },
+    {
+      "id": "TS-12-20",
+      "requirement_id": "12-REQ-6.2",
+      "kind": "unit",
+      "description": "PostMergeHook is a no-op and returns immediately when invoked for a MergeJob with campaign_id equal to NULL.",
+      "preconditions": [
+        "Campaign scheduler is initialized"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": null,
+          "dead_letter": false,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "no_db_mutations": true,
+        "returns_immediately": true
+      },
+      "assertion_pseudocode": "callCount = 0; hook = scheduler.PostMergeHook; hook(ctx, MergeJob{CampaignID: '', SpecID: '07', DeadLetter: false}); assert store.MutationCallCount() == 0"
+    },
+    {
+      "id": "TS-12-21",
+      "requirement_id": "12-REQ-6.3",
+      "kind": "unit",
+      "description": "Campaign scheduler sets campaign status to completed when the last spec's merge is processed and all specs have status merged.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "campaign_specs: spec '07' status=active (being merged now), spec '08' status=merged"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "campaign_status": "completed"
+      },
+      "assertion_pseudocode": "hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: false}); campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'completed'"
+    },
+    {
+      "id": "TS-12-22",
+      "requirement_id": "12-REQ-7.1",
+      "kind": "unit",
+      "description": "PostMergeHook with DeadLetter=true sets spec status to failed, immediately sets campaign status to failed, releases the mutex, and returns without performing any rebase or frontier advancement.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "campaign_specs: spec '07' status=active, spec '08' status=active"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": true,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "campaign_status": "failed",
+        "no_rebase_performed": true,
+        "spec_07_status": "failed"
+      },
+      "assertion_pseudocode": "rebaseCallCount = 0; hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: true}); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'failed'; campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'failed'; assert rebaseCallCount == 0"
+    },
+    {
+      "id": "TS-12-23",
+      "requirement_id": "12-REQ-8.1",
+      "kind": "integration",
+      "description": "Rebase engine rebases all active spec branches onto the new integration branch HEAD in topological DAG order (roots first, leaves last) after a successful merge.",
+      "preconditions": [
+        "Real git repo with integration branch 'main'",
+        "Campaign 'camp-1' with DAG: '07' -> '09' (07 is root, 09 depends on 07)",
+        "Spec branches 'spec/07-secrets-variables' and 'spec/09-other' both exist and are active"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false,
+          "spec_id": "05"
+        }
+      },
+      "expected": {
+        "both_branches_rebased": true,
+        "rebase_order": [
+          "07",
+          "09"
+        ]
+      },
+      "assertion_pseudocode": "rebaseOrder = []; hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '05', DeadLetter: false}); assert rebaseOrder == ['07', '09']"
+    },
+    {
+      "id": "TS-12-24",
+      "requirement_id": "12-REQ-8.2",
+      "kind": "integration",
+      "description": "Rebase engine updates branch_sha in campaign_specs to the new HEAD SHA when a spec branch rebases cleanly.",
+      "preconditions": [
+        "Real git repo with integration branch 'main' at SHA 'new-sha'",
+        "Spec branch 'spec/07-secrets-variables' exists with old SHA 'old-sha'",
+        "Campaign 'camp-1' with spec '07' status=active and branch_sha='old-sha'"
+      ],
+      "input": {
+        "integration_branch_sha": "new-sha",
+        "spec_id": "07"
+      },
+      "expected": {
+        "spec_07_branch_sha": "new-sha-after-rebase"
+      },
+      "assertion_pseudocode": "rebaseEngine.RebaseBranch(ctx, 'camp-1', '07', 'main'); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.BranchSHA != 'old-sha'; assert spec07.Status == 'active'"
+    },
+    {
+      "id": "TS-12-25",
+      "requirement_id": "12-REQ-8.3",
+      "kind": "integration",
+      "description": "Rebase engine sets spec status to blocked, revokes push access via PushAuthorizer, records conflicting file paths in conflict_details, records blocked_by_merge UUID, and skips downstream dependents when a spec branch has a rebase conflict.",
+      "preconditions": [
+        "Real git repo with conflicting changes on integration branch 'main'",
+        "Campaign 'camp-1' with DAG: '07' -> '09'",
+        "Spec '07' branch has conflicting changes with 'main'",
+        "Spec '09' is active and depends on '07'"
+      ],
+      "input": {
+        "merge_job_uuid": "merge-uuid-1"
+      },
+      "expected": {
+        "push_access_revoked_for_07": true,
+        "spec_07_blocked_by_merge": "merge-uuid-1",
+        "spec_07_conflict_details": [
+          "file1.go"
+        ],
+        "spec_07_status": "blocked",
+        "spec_09_not_rebased": true
+      },
+      "assertion_pseudocode": "rebaseEngine.CascadeRebase(ctx, 'camp-1', 'merge-uuid-1', 'main'); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'; assert len(spec07.ConflictDetails) > 0; assert spec07.BlockedByMerge == 'merge-uuid-1'; assert pushAuthorizer.IsBlocked('spec/07-secrets-variables') == true; spec09 = store.GetSpec(ctx, 'camp-1', '09'); assert spec09.Status == 'active'"
+    },
+    {
+      "id": "TS-12-26",
+      "requirement_id": "12-REQ-8.4",
+      "kind": "integration",
+      "description": "Rebase engine applies conflict-stop semantics per branch subtree only — a conflict in one branch does not prevent rebasing of branches in unrelated parts of the DAG.",
+      "preconditions": [
+        "Real git repo with integration branch 'main'",
+        "Campaign 'camp-1' with DAG: '07' -> '09' (subtree A), '08' standalone (subtree B)",
+        "Spec '07' branch conflicts with 'main'",
+        "Spec '08' branch rebases cleanly"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false
+        }
+      },
+      "expected": {
+        "spec_07_status": "blocked",
+        "spec_08_rebased": true,
+        "spec_09_skipped": true
+      },
+      "assertion_pseudocode": "rebaseEngine.CascadeRebase(ctx, 'camp-1', 'merge-uuid', 'main'); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'; spec09 = store.GetSpec(ctx, 'camp-1', '09'); assert spec09.Status == 'active'; spec08 = store.GetSpec(ctx, 'camp-1', '08'); assert spec08.BranchSHA != originalSHA08"
+    },
+    {
+      "id": "TS-12-27",
+      "requirement_id": "12-REQ-9.1",
+      "kind": "unit",
+      "description": "Authz module registers a PushAuthorizer callback with internal/gitserver that rejects push attempts to a blocked spec branch.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' status=blocked",
+        "PushAuthorizer registered with git server"
+      ],
+      "input": {
+        "branch": "spec/07-secrets-variables"
+      },
+      "expected": {
+        "error_message": "branch is blocked due to rebase conflict",
+        "push_rejected": true
+      },
+      "assertion_pseudocode": "err = pushAuthorizer(ctx, 'spec/07-secrets-variables'); assert err != nil; assert err.Error() contains 'blocked'"
+    },
+    {
+      "id": "TS-12-28",
+      "requirement_id": "12-REQ-9.2",
+      "kind": "unit",
+      "description": "PushAuthorizer rejects direct pushes to the integration branch, requiring all merges to go through the merge queue.",
+      "preconditions": [
+        "Campaign 'camp-1' with integration_branch='main' is active",
+        "PushAuthorizer registered with git server"
+      ],
+      "input": {
+        "branch": "main"
+      },
+      "expected": {
+        "error_message": "direct pushes to integration branch are not allowed",
+        "push_rejected": true
+      },
+      "assertion_pseudocode": "err = pushAuthorizer(ctx, 'main'); assert err != nil; assert err.Error() contains 'integration branch'"
+    },
+    {
+      "id": "TS-12-29",
+      "requirement_id": "12-REQ-9.3",
+      "kind": "unit",
+      "description": "Authz module restores push access to a spec branch via PushAuthorizer when a blocked spec is successfully resolved and set back to active.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' status=blocked",
+        "Push access revoked for 'spec/07-secrets-variables'"
+      ],
+      "input": {
+        "new_status": "active",
+        "spec_id": "07"
+      },
+      "expected": {
+        "push_access_restored": true
+      },
+      "assertion_pseudocode": "authz.RestorePushAccess(ctx, 'spec/07-secrets-variables'); err = pushAuthorizer(ctx, 'spec/07-secrets-variables'); assert err == nil"
+    },
+    {
+      "id": "TS-12-30",
+      "requirement_id": "12-REQ-10.1",
+      "kind": "integration",
+      "description": "Resolve endpoint rebases spec branch onto current integration branch HEAD, restores push access, sets spec status to active, updates branch_sha, and returns HTTP 200 with spec_id, status=active, and branch_sha when spec is blocked and rebase is clean.",
+      "preconditions": [
+        "Real git repo with integration branch 'main'",
+        "Campaign 'camp-1' with spec '07' status=blocked",
+        "Agent has resolved conflict locally; spec branch now rebases cleanly onto 'main'"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "branch_sha": "<40-char-hex>",
+          "spec_id": "07",
+          "status": "active"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 200; assert resp.body.spec_id == '07'; assert resp.body.status == 'active'; assert len(resp.body.branch_sha) == 40; spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'active'; assert pushAuthorizer.IsBlocked('spec/07-secrets-variables') == false"
+    },
+    {
+      "id": "TS-12-31",
+      "requirement_id": "12-REQ-10.2",
+      "kind": "integration",
+      "description": "Resolve endpoint returns HTTP 409 with updated conflict file list when spec is blocked and rebase still conflicts after agent's local fix.",
+      "preconditions": [
+        "Real git repo with conflicting changes on 'main'",
+        "Campaign 'camp-1' with spec '07' status=blocked",
+        "Spec branch still conflicts with current 'main' HEAD"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "conflict_details": [
+            "file1.go"
+          ]
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 409; assert resp.body.conflict_details != nil; assert len(resp.body.conflict_details) > 0; spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'"
+    },
+    {
+      "id": "TS-12-32",
+      "requirement_id": "12-REQ-10.3",
+      "kind": "unit",
+      "description": "Resolve endpoint returns HTTP 200 with current status and branch_sha without performing any rebase when spec is already in active status.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' status=active and branch_sha='abc123'"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "branch_sha": "abc123",
+          "spec_id": "07",
+          "status": "active"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "rebaseCallCount = 0; resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 200; assert resp.body.status == 'active'; assert resp.body.branch_sha == 'abc123'; assert rebaseCallCount == 0"
+    },
+    {
+      "id": "TS-12-33",
+      "requirement_id": "12-REQ-10.4",
+      "kind": "unit",
+      "description": "Resolve endpoint returns HTTP 200 with current status=merged and branch_sha without performing any rebase when spec is already in merged status.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' status=merged and branch_sha='def456'"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "branch_sha": "def456",
+          "spec_id": "07",
+          "status": "merged"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "rebaseCallCount = 0; resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 200; assert resp.body.status == 'merged'; assert resp.body.branch_sha == 'def456'; assert rebaseCallCount == 0"
+    },
+    {
+      "id": "TS-12-34",
+      "requirement_id": "12-REQ-10.5",
+      "kind": "unit",
+      "description": "Resolve endpoint returns HTTP 409 with an error message when spec is in pending, failed, or cancelled status.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' status=pending"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "error": "spec is not in a resolvable state"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "for status in ['pending', 'failed', 'cancelled'] { store.SetSpecStatus(ctx, 'camp-1', '07', status); resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 409; assert resp.body.error contains 'state' }"
+    },
+    {
+      "id": "TS-12-35",
+      "requirement_id": "12-REQ-11.1",
+      "kind": "integration",
+      "description": "POST /campaigns computes the initial DAG frontier, creates spec branches, sets frontier specs to active, sets campaign to active, persists all rows, and returns HTTP 201 with the full campaign response.",
+      "preconditions": [
+        "Hub running with real git repo for workspace 'ws-slug'",
+        "Integration branch 'main' exists",
+        "tasks.json for spec '07' has no dependencies and has pending subtasks",
+        "tasks.json for spec '09' depends on '07' and has pending subtasks"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07",
+            "09"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "dag": {
+            "edges": [
+              {
+                "from": "07",
+                "to": "09"
+              }
+            ],
+            "specs": [
+              "07",
+              "09"
+            ]
+          },
+          "specs": [
+            {
+              "spec_id": "07",
+              "status": "active"
+            },
+            {
+              "spec_id": "09",
+              "status": "pending"
+            }
+          ],
+          "status": "active"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','09'], integration_branch: 'main'}); assert resp.status == 201; assert resp.body.status == 'active'; assert resp.body.id != ''; spec07 = findSpec(resp.body.specs, '07'); assert spec07.status == 'active'; assert spec07.branch_name == 'spec/07-secrets-variables'; spec09 = findSpec(resp.body.specs, '09'); assert spec09.status == 'pending'"
+    },
+    {
+      "id": "TS-12-36",
+      "requirement_id": "12-REQ-11.2",
+      "kind": "unit",
+      "description": "Campaign creation response omits the warnings field or returns it as an empty array when no specs are skipped.",
+      "preconditions": [
+        "All spec tasks.json files are valid and parseable",
+        "No specs are skipped during campaign creation"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "clean-camp",
+          "spec_ids": [
+            "07"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "status": 201,
+        "warnings_absent_or_empty": true
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'clean-camp', spec_ids: ['07'], integration_branch: 'main'}); assert resp.status == 201; assert resp.body.warnings == nil || len(resp.body.warnings) == 0"
+    },
+    {
+      "id": "TS-12-37",
+      "requirement_id": "12-REQ-12.1",
+      "kind": "integration",
+      "description": "GET /campaigns returns all campaigns for the workspace; when status query parameter is provided, only campaigns matching that status are returned.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Workspace 'ws-slug' has campaigns: 'camp-active' (status=active), 'camp-completed' (status=completed)"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-slug/campaigns?status=active"
+      },
+      "expected": {
+        "body": [
+          {
+            "name": "camp-active",
+            "status": "active"
+          }
+        ],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws-slug/campaigns?status=active'); assert resp.status == 200; assert len(resp.body) == 1; assert resp.body[0].status == 'active'; assert resp.body[0].name == 'camp-active'"
+    },
+    {
+      "id": "TS-12-38",
+      "requirement_id": "12-REQ-12.2",
+      "kind": "integration",
+      "description": "GET /campaigns/:id returns the full campaign object including dag and specs array with per-spec status, branch_name, branch_sha, conflict_details, and blocked_by_merge.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Campaign 'camp-1' exists with dag, and campaign_specs including spec '07' with status=blocked, conflict_details=['file1.go'], blocked_by_merge='merge-uuid'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "body": {
+          "dag": {
+            "edges": [],
+            "specs": [
+              "07"
+            ]
+          },
+          "id": "camp-1",
+          "specs": [
+            {
+              "blocked_by_merge": "merge-uuid",
+              "conflict_details": [
+                "file1.go"
+              ],
+              "spec_id": "07",
+              "status": "blocked"
+            }
+          ]
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 200; assert resp.body.dag != nil; assert len(resp.body.specs) > 0; spec07 = findSpec(resp.body.specs, '07'); assert spec07.status == 'blocked'; assert spec07.conflict_details == ['file1.go']; assert spec07.blocked_by_merge == 'merge-uuid'"
+    },
+    {
+      "id": "TS-12-39",
+      "requirement_id": "12-REQ-12.3",
+      "kind": "unit",
+      "description": "GET /campaigns returns HTTP 422 with a validation error when the status query parameter is provided with an invalid value.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-slug/campaigns?status=invalid_status"
+      },
+      "expected": {
+        "body": {
+          "error": "invalid status filter value"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws-slug/campaigns?status=invalid_status'); assert resp.status == 422; assert resp.body.error contains 'status'"
+    },
+    {
+      "id": "TS-12-40",
+      "requirement_id": "12-REQ-13.1",
+      "kind": "integration",
+      "description": "DELETE /campaigns/:id sets campaign status to cancelled and all campaign_specs statuses to cancelled, leaving spec branches in place on the git server.",
+      "preconditions": [
+        "Hub running with real git repo",
+        "Campaign 'camp-1' with status=active",
+        "campaign_specs: spec '07' status=active with branch 'spec/07-secrets-variables' in git repo"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "all_spec_statuses": "cancelled",
+        "branch_exists": true,
+        "campaign_status": "cancelled",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 200; assert resp.body.status == 'cancelled'; specs = store.GetCampaignSpecs(ctx, 'camp-1'); for spec in specs { assert spec.Status == 'cancelled' }; assert gitRunner.BranchExists('spec/07-secrets-variables') == true"
+    },
+    {
+      "id": "TS-12-41",
+      "requirement_id": "12-REQ-13.2",
+      "kind": "unit",
+      "description": "CanMerge implementation rejects any merge queue job for a cancelled campaign spec by returning a non-nil CantMergeReason.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=cancelled",
+        "campaign_specs: spec '07' status=cancelled"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "cant_merge_reason": "spec is cancelled"
+      },
+      "assertion_pseudocode": "reason, err = canMerge(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07'}); assert err == nil; assert reason != ''; assert string(reason) contains 'cancel'"
+    },
+    {
+      "id": "TS-12-42",
+      "requirement_id": "12-REQ-14.1",
+      "kind": "unit",
+      "description": "Campaign scheduler re-evaluates all active campaigns by recomputing the frontier from the DAG and current campaign_specs status rows in the DB on hub restart, and re-initializes the per-campaign mutex map as empty.",
+      "preconditions": [
+        "SQLite DB with campaign 'camp-1' status=active",
+        "campaign_specs: spec '07' status=merged, spec '09' status=pending (depends on '07')"
+      ],
+      "input": {
+        "event": "hub_restart"
+      },
+      "expected": {
+        "frontier_includes_09": true,
+        "mutex_map_empty": true
+      },
+      "assertion_pseudocode": "scheduler = NewScheduler(ctx, store, gitRunner, pushAuthorizer); err = scheduler.RecoverFromDB(ctx); assert err == nil; frontier = scheduler.GetFrontier('camp-1'); assert '09' in frontier; assert scheduler.MutexMapSize() == 0"
+    },
+    {
+      "id": "TS-12-43",
+      "requirement_id": "12-REQ-14.2",
+      "kind": "unit",
+      "description": "Campaign scheduler assumes an agent is still working on a spec with status=active after hub restart and takes no action, leaving the spec active.",
+      "preconditions": [
+        "SQLite DB with campaign 'camp-1' status=active",
+        "campaign_specs: spec '07' status=active"
+      ],
+      "input": {
+        "event": "hub_restart"
+      },
+      "expected": {
+        "spec_07_status_after_recovery": "active"
+      },
+      "assertion_pseudocode": "scheduler.RecoverFromDB(ctx); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'active'"
+    },
+    {
+      "id": "TS-12-44",
+      "requirement_id": "12-REQ-14.3",
+      "kind": "unit",
+      "description": "Campaign scheduler retains blocked state for a spec with status=blocked after hub restart; the agent must call the resolve endpoint to unblock.",
+      "preconditions": [
+        "SQLite DB with campaign 'camp-1' status=active",
+        "campaign_specs: spec '07' status=blocked with conflict_details=['file1.go']"
+      ],
+      "input": {
+        "event": "hub_restart"
+      },
+      "expected": {
+        "conflict_details_preserved": true,
+        "spec_07_status_after_recovery": "blocked"
+      },
+      "assertion_pseudocode": "scheduler.RecoverFromDB(ctx); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'; assert spec07.ConflictDetails == ['file1.go']"
+    },
+    {
+      "id": "TS-12-45",
+      "requirement_id": "12-REQ-15.1",
+      "kind": "unit",
+      "description": "Store module executes CREATE TABLE IF NOT EXISTS for campaigns and campaign_specs with all columns, constraints, and CHECK constraints on hub initialization.",
+      "preconditions": [
+        "Fresh SQLite in-memory database with no tables"
+      ],
+      "input": {
+        "event": "InitSchema"
+      },
+      "expected": {
+        "campaign_specs_table_exists": true,
+        "campaigns_table_exists": true
+      },
+      "assertion_pseudocode": "store, err = NewStore(db); assert err == nil; row = db.QueryRow(\"SELECT name FROM sqlite_master WHERE type='table' AND name='campaigns'\"); assert row != nil; row2 = db.QueryRow(\"SELECT name FROM sqlite_master WHERE type='table' AND name='campaign_specs'\"); assert row2 != nil"
+    },
+    {
+      "id": "TS-12-46",
+      "requirement_id": "12-REQ-15.2",
+      "kind": "unit",
+      "description": "Campaigns table enforces CHECK(status IN ('pending','active','completed','failed','cancelled')) and UNIQUE(workspace_slug, name) constraints.",
+      "preconditions": [
+        "SQLite in-memory DB initialized with campaigns table"
+      ],
+      "input": {
+        "duplicate_name": "sprint-42",
+        "invalid_status": "running"
+      },
+      "expected": {
+        "check_constraint_error_on_invalid_status": true,
+        "unique_constraint_error_on_duplicate_name": true
+      },
+      "assertion_pseudocode": "err1 = db.Exec(INSERT campaigns with status='running'); assert err1 != nil; assert err1.Error() contains 'CHECK constraint'; db.Exec(INSERT campaigns with name='sprint-42', status='active'); err2 = db.Exec(INSERT campaigns with name='sprint-42', status='completed'); assert err2 != nil; assert err2.Error() contains 'UNIQUE constraint'"
+    },
+    {
+      "id": "TS-12-47",
+      "requirement_id": "12-REQ-15.3",
+      "kind": "unit",
+      "description": "Campaign_specs table enforces CHECK(status IN ('pending','active','merged','blocked','failed','cancelled')) and a REFERENCES campaigns(id) foreign key on campaign_id.",
+      "preconditions": [
+        "SQLite in-memory DB initialized with campaigns and campaign_specs tables"
+      ],
+      "input": {
+        "invalid_campaign_id": "nonexistent-id",
+        "invalid_status": "running"
+      },
+      "expected": {
+        "check_constraint_error_on_invalid_status": true
+      },
+      "assertion_pseudocode": "err = db.Exec(INSERT campaign_specs with status='running', campaign_id='camp-1'); assert err != nil; assert err.Error() contains 'CHECK constraint'"
+    },
+    {
+      "id": "TS-12-48",
+      "requirement_id": "12-REQ-16.1",
+      "kind": "unit",
+      "description": "Store module serializes the DAG as JSON with shape {specs, edges: [{from, to, relationship}]} into the dag TEXT column and deserializes it back to the same shape for API responses.",
+      "preconditions": [
+        "SQLite in-memory DB initialized"
+      ],
+      "input": {
+        "dag": {
+          "edges": [
+            {
+              "from": "07",
+              "relationship": "Uses secrets Store",
+              "to": "09"
+            }
+          ],
+          "specs": [
+            "07",
+            "09"
+          ]
+        }
+      },
+      "expected": {
+        "deserialized_matches_input": true,
+        "serialized_json": "{\"specs\":[\"07\",\"09\"],\"edges\":[{\"from\":\"07\",\"to\":\"09\",\"relationship\":\"Uses secrets Store\"}]}"
+      },
+      "assertion_pseudocode": "dagJSON, err = SerializeDAG(dag); assert err == nil; assert dagJSON contains '\"specs\"'; assert dagJSON contains '\"edges\"'; assert dagJSON contains '\"from\"'; assert dagJSON contains '\"relationship\"'; deserialized, err2 = DeserializeDAG(dagJSON); assert err2 == nil; assert deserialized.Specs == ['07','09']; assert deserialized.Edges[0].From == '07'"
+    },
+    {
+      "id": "TS-12-49",
+      "requirement_id": "12-REQ-16.2",
+      "kind": "unit",
+      "description": "Store module serializes conflict_details as a JSON array of file path strings into campaign_specs.conflict_details TEXT column and deserializes it directly into the API response array.",
+      "preconditions": [
+        "SQLite in-memory DB initialized with campaign_specs table"
+      ],
+      "input": {
+        "conflict_details": [
+          "file1.go",
+          "file2.go"
+        ]
+      },
+      "expected": {
+        "deserialized_matches_input": true,
+        "serialized_json": "[\"file1.go\",\"file2.go\"]"
+      },
+      "assertion_pseudocode": "json, err = SerializeConflictDetails(['file1.go','file2.go']); assert err == nil; assert json == '[\"file1.go\",\"file2.go\"]'; deserialized, err2 = DeserializeConflictDetails(json); assert err2 == nil; assert deserialized == ['file1.go','file2.go']"
+    },
+    {
+      "id": "TS-12-50",
+      "requirement_id": "12-REQ-17.1",
+      "kind": "unit",
+      "description": "Campaign scheduler acquires an in-memory mutex from a sync.Map keyed by campaign ID before performing any state mutations in PostMergeHook, and releases it after all mutations complete.",
+      "preconditions": [
+        "Campaign scheduler initialized with empty sync.Map",
+        "Campaign 'camp-1' with status=active"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false
+        }
+      },
+      "expected": {
+        "mutex_acquired_before_mutations": true,
+        "mutex_released_after_mutations": true
+      },
+      "assertion_pseudocode": "mutexAcquiredAt = nil; mutexReleasedAt = nil; scheduler.OnMutexAcquire = func() { mutexAcquiredAt = now() }; scheduler.OnMutexRelease = func() { mutexReleasedAt = now() }; hook(ctx, MergeJob{CampaignID: 'camp-1', DeadLetter: false}); assert mutexAcquiredAt != nil; assert mutexReleasedAt != nil; assert mutexReleasedAt >= mutexAcquiredAt"
+    },
+    {
+      "id": "TS-12-51",
+      "requirement_id": "12-REQ-17.2",
+      "kind": "unit",
+      "description": "Campaign scheduler re-initializes the sync.Map as empty on hub restart; locks are re-acquired as PostMergeHook invocations arrive.",
+      "preconditions": [
+        "Campaign scheduler was previously running with populated mutex map"
+      ],
+      "input": {
+        "event": "hub_restart"
+      },
+      "expected": {
+        "mutex_map_size_after_restart": 0
+      },
+      "assertion_pseudocode": "scheduler = NewScheduler(ctx, store, gitRunner, pushAuthorizer); assert scheduler.MutexMapSize() == 0"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-12-P1",
+      "property_id": "12-PROP-1",
+      "validates": [
+        "12-REQ-3.2"
+      ],
+      "description": "For any campaign in the campaigns table, the dag column when deserialized represents a directed acyclic graph with no cycles.",
+      "for_any_strategy": "Sample 50 random sets of 2-10 spec IDs with randomly generated dependency edges (using Go's math/rand seeded with test iteration); build the DAG via BuildDAG; only accept inputs where BuildDAG returns no error (i.e., acyclic inputs); persist to SQLite in-memory DB",
+      "invariant_check": "for each persisted campaign, deserialize dag column; run topological sort on the deserialized graph; assert topological sort succeeds (no cycle detected) and returns all spec IDs"
+    },
+    {
+      "id": "TS-12-P2",
+      "property_id": "12-PROP-2",
+      "validates": [
+        "12-REQ-2.1"
+      ],
+      "description": "For any pair of (workspace_slug, integration_branch), at most one campaign with status=active exists at any time.",
+      "for_any_strategy": "Sample 20 random (workspace_slug, integration_branch) pairs; for each pair, attempt to create 2-5 campaigns concurrently via goroutines; use SQLite in-memory DB with real store",
+      "invariant_check": "after all creation attempts complete, query campaigns table for each (workspace_slug, integration_branch) pair; assert COUNT(*) WHERE status='active' <= 1"
+    },
+    {
+      "id": "TS-12-P3",
+      "property_id": "12-PROP-3",
+      "validates": [
+        "12-REQ-2.2",
+        "12-REQ-2.3"
+      ],
+      "description": "For any pair of (workspace_slug, name), at most one campaign row exists regardless of status.",
+      "for_any_strategy": "Sample 30 random (workspace_slug, name) pairs; attempt to insert 2-3 campaigns with the same (workspace_slug, name) but different statuses into SQLite in-memory DB",
+      "invariant_check": "after all insertions, query campaigns table for each (workspace_slug, name) pair; assert COUNT(*) == 1 (only the first insertion succeeded)"
+    },
+    {
+      "id": "TS-12-P4",
+      "property_id": "12-PROP-4",
+      "validates": [
+        "12-REQ-6.1",
+        "12-REQ-11.1"
+      ],
+      "description": "For any spec in campaign_specs where all upstream dependencies have status=merged, the spec has status=active, blocked, or merged — never pending once the campaign is active.",
+      "for_any_strategy": "Sample 20 random DAGs with 3-8 specs; simulate sequential merges of upstream specs using the real scheduler with SQLite in-memory DB; after each merge, check all specs whose upstream deps are all merged",
+      "invariant_check": "for each spec where all upstream deps have status=merged and campaign status=active, assert spec.Status in ['active', 'blocked', 'merged']"
+    },
+    {
+      "id": "TS-12-P5",
+      "property_id": "12-PROP-5",
+      "validates": [
+        "12-REQ-7.1",
+        "12-REQ-1.4"
+      ],
+      "description": "For any campaign where any campaign_specs row has status=failed, the campaign's own status is also failed.",
+      "for_any_strategy": "Sample 20 random campaigns with 2-6 specs; randomly trigger dead-letter PostMergeHook for one spec; use real scheduler with SQLite in-memory DB",
+      "invariant_check": "after triggering dead-letter hook, query campaigns table; assert campaign.Status == 'failed' whenever any campaign_specs.status == 'failed'"
+    },
+    {
+      "id": "TS-12-P6",
+      "property_id": "12-PROP-6",
+      "validates": [
+        "12-REQ-8.3"
+      ],
+      "description": "For any campaign_specs row with status=blocked, conflict_details is a non-null non-empty JSON array of file path strings and blocked_by_merge is a non-null UUID string.",
+      "for_any_strategy": "Sample 15 random rebase conflict scenarios using real git repos with conflicting changes; trigger cascading rebase via PostMergeHook; use real store with SQLite in-memory DB",
+      "invariant_check": "query all campaign_specs rows where status='blocked'; for each row, assert conflict_details IS NOT NULL; assert JSON parse of conflict_details yields non-empty array; assert blocked_by_merge IS NOT NULL and is a valid UUID string"
+    },
+    {
+      "id": "TS-12-P7",
+      "property_id": "12-PROP-7",
+      "validates": [
+        "12-REQ-13.1"
+      ],
+      "description": "For any campaign with status=cancelled, every campaign_specs row for that campaign also has status=cancelled.",
+      "for_any_strategy": "Sample 20 random campaigns with 2-8 specs in various statuses (active, blocked, pending); cancel each via DELETE endpoint; use real store with SQLite in-memory DB",
+      "invariant_check": "after cancellation, query campaign_specs WHERE campaign_id = cancelled_campaign_id; assert all rows have status='cancelled'"
+    },
+    {
+      "id": "TS-12-P8",
+      "property_id": "12-PROP-8",
+      "validates": [
+        "12-REQ-4.3",
+        "12-REQ-11.1"
+      ],
+      "description": "For any POST /campaigns request that returns a non-201 response, no campaigns row and no campaign_specs rows are persisted, and no spec branches created during the request remain in the git repository.",
+      "for_any_strategy": "Sample 15 failure scenarios: duplicate name, duplicate active campaign, invalid integration branch, git branch creation failure (injected at random spec index); use real git repo and SQLite in-memory DB",
+      "invariant_check": "after each failed POST, assert campaigns table has no new row; assert campaign_specs table has no new rows; assert git repo has no new branches matching 'spec/*' pattern created during the request"
+    },
+    {
+      "id": "TS-12-P9",
+      "property_id": "12-PROP-9",
+      "validates": [
+        "12-REQ-10.3",
+        "12-REQ-10.4"
+      ],
+      "description": "For any POST resolve call on a spec with status=active or status=merged, the response is HTTP 200 with the current status and branch_sha, and no rebase is performed.",
+      "for_any_strategy": "Sample 20 random (campaign, spec) pairs where spec status is active or merged; call resolve endpoint; use real store with SQLite in-memory DB and mock GitRunner that records rebase calls",
+      "invariant_check": "assert resp.status == 200; assert resp.body.status in ['active', 'merged']; assert resp.body.branch_sha == spec.BranchSHA before call; assert gitRunner.RebaseCallCount() == 0"
+    },
+    {
+      "id": "TS-12-P10",
+      "property_id": "12-PROP-10",
+      "validates": [
+        "12-REQ-8.4"
+      ],
+      "description": "For any cascading rebase where spec A conflicts and spec B is in an unrelated DAG subtree, spec B is rebased regardless of spec A's conflict.",
+      "for_any_strategy": "Sample 20 random DAGs with at least 2 independent subtrees (no shared ancestors); inject conflict for a random spec in subtree A; run cascading rebase with real git repos",
+      "invariant_check": "after cascade, for each spec in subtree B (unrelated to conflicting spec A), assert spec.BranchSHA has been updated (rebase occurred); assert spec.Status != 'blocked'"
+    },
+    {
+      "id": "TS-12-P11",
+      "property_id": "12-PROP-11",
+      "validates": [
+        "12-REQ-1.3",
+        "12-REQ-6.3"
+      ],
+      "description": "For any campaign with status=completed, every campaign_specs row for that campaign has status=merged.",
+      "for_any_strategy": "Sample 15 random campaigns with 2-6 specs; simulate sequential merges of all specs via PostMergeHook with DeadLetter=false; use real scheduler with SQLite in-memory DB",
+      "invariant_check": "when campaign.Status == 'completed', query all campaign_specs for that campaign; assert every row has status='merged'"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-12-E1",
+      "requirement_id": "12-REQ-1.E1",
+      "kind": "unit",
+      "description": "DELETE /campaigns/:id returns HTTP 409 when the campaign is already completed, failed, or cancelled.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Campaign 'camp-1' with status=completed exists"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "body": {
+          "error": "campaign is not in a cancellable state"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "for status in ['completed', 'failed', 'cancelled'] { store.SetCampaignStatus(ctx, 'camp-1', status); resp = client.delete('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 409; assert resp.body.error contains 'cancellable' }"
+    },
+    {
+      "id": "TS-12-E2",
+      "requirement_id": "12-REQ-1.E2",
+      "kind": "unit",
+      "description": "Campaign store returns a non-nil error and makes no DB modification when an invalid status transition is attempted.",
+      "preconditions": [
+        "SQLite in-memory DB initialized",
+        "Campaign 'camp-1' with status=completed"
+      ],
+      "input": {
+        "campaign_id": "camp-1",
+        "new_status": "active"
+      },
+      "expected": {
+        "campaign_status_unchanged": "completed",
+        "error_returned": true
+      },
+      "assertion_pseudocode": "err = store.TransitionCampaignStatus(ctx, 'camp-1', 'completed', 'active'); assert err != nil; campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'completed'"
+    },
+    {
+      "id": "TS-12-E3",
+      "requirement_id": "12-REQ-2.E1",
+      "kind": "unit",
+      "description": "POST /campaigns returns HTTP 422 when the integration_branch field is missing or empty in the request body.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB"
+      ],
+      "input": {
+        "body": {
+          "name": "sprint-42",
+          "spec_ids": [
+            "07"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "integration_branch is required"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07']}); assert resp.status == 422; assert resp.body.error contains 'integration_branch'"
+    },
+    {
+      "id": "TS-12-E4",
+      "requirement_id": "12-REQ-2.E2",
+      "kind": "unit",
+      "description": "POST /campaigns returns HTTP 422 when the name field is missing or empty in the request body.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "spec_ids": [
+            "07"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "name is required"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {spec_ids: ['07'], integration_branch: 'main'}); assert resp.status == 422; assert resp.body.error contains 'name'"
+    },
+    {
+      "id": "TS-12-E5",
+      "requirement_id": "12-REQ-2.E3",
+      "kind": "unit",
+      "description": "POST /campaigns returns HTTP 403 when the caller lacks the campaigns:write permission scope.",
+      "preconditions": [
+        "Hub running with auth middleware",
+        "Caller has only campaigns:read scope"
+      ],
+      "input": {
+        "auth_scope": "campaigns:read",
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "insufficient permissions"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', integration_branch: 'main'}, headers={Authorization: readOnlyToken}); assert resp.status == 403; assert resp.body.error contains 'permission'"
+    },
+    {
+      "id": "TS-12-E6",
+      "requirement_id": "12-REQ-3.E1",
+      "kind": "unit",
+      "description": "DAG builder silently skips a spec with no tasks.json during implicit campaign discovery without adding it to the campaign.",
+      "preconditions": [
+        "Workspace 'ws-slug' has spec directory '07_secrets_variables' with no tasks.json file",
+        "Workspace has spec directory '08_other' with valid tasks.json with pending subtasks"
+      ],
+      "input": {
+        "slug": "ws-slug",
+        "workspace_root": "/tmp/ws"
+      },
+      "expected": {
+        "excluded_specs": [
+          "07"
+        ],
+        "included_specs": [
+          "08"
+        ],
+        "no_warning_for_missing": true
+      },
+      "assertion_pseudocode": "specs, warnings, err = DiscoverPendingSpecs(ctx, '/tmp/ws', 'ws-slug'); assert err == nil; assert '07' not in specs; assert '08' in specs; assert no warning entry mentions '07'"
+    },
+    {
+      "id": "TS-12-E7",
+      "requirement_id": "12-REQ-3.E2",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 201 with a warnings array entry for a spec whose tasks.json is malformed, while continuing to create the campaign with all valid specs.",
+      "preconditions": [
+        "Workspace 'ws-slug' has spec '07' with valid tasks.json and spec '11' with malformed tasks.json (unexpected EOF)",
+        "Integration branch 'main' exists"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "included_specs": [
+          "07"
+        ],
+        "status": 201,
+        "warnings": [
+          "spec/11: tasks.json is malformed"
+        ]
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', integration_branch: 'main'}); assert resp.status == 201; specIDs = [s.spec_id for s in resp.body.specs]; assert '07' in specIDs; assert '11' not in specIDs; assert len(resp.body.warnings) == 1; assert resp.body.warnings[0] contains '11'"
+    },
+    {
+      "id": "TS-12-E8",
+      "requirement_id": "12-REQ-3.E3",
+      "kind": "integration",
+      "description": "POST /campaigns with explicit spec_ids returns HTTP 201 with a warnings array entry when a provided spec_id cannot be discovered or its tasks.json cannot be parsed.",
+      "preconditions": [
+        "Workspace 'ws-slug' has spec '07' with valid tasks.json",
+        "Spec '99' does not exist in the workspace"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07",
+            "99"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "included_specs": [
+          "07"
+        ],
+        "status": 201,
+        "warnings": [
+          "spec/99: not found or tasks.json cannot be parsed"
+        ]
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','99'], integration_branch: 'main'}); assert resp.status == 201; specIDs = [s.spec_id for s in resp.body.specs]; assert '07' in specIDs; assert '99' not in specIDs; assert len(resp.body.warnings) >= 1; assert any(w contains '99' for w in resp.body.warnings)"
+    },
+    {
+      "id": "TS-12-E9",
+      "requirement_id": "12-REQ-3.E4",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 422 when all specs are skipped due to missing or malformed tasks.json, leaving an empty spec set.",
+      "preconditions": [
+        "Workspace 'ws-slug' has only spec '07' with malformed tasks.json",
+        "No other valid specs exist"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "no valid specs found for campaign"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', integration_branch: 'main'}); assert resp.status == 422; assert resp.body.error contains 'no valid specs'"
+    },
+    {
+      "id": "TS-12-E10",
+      "requirement_id": "12-REQ-3.E5",
+      "kind": "unit",
+      "description": "DAG builder treats a dependency entry missing the required depends_on_spec field as a parse error for that tasks.json and skips the spec with a warning in the HTTP 201 response.",
+      "preconditions": [
+        "tasks.json for spec '09' has a dependency entry missing the depends_on_spec field: {from_group: 3, to_group: 1}",
+        "tasks.json for spec '07' is valid"
+      ],
+      "input": {
+        "spec_ids": [
+          "07",
+          "09"
+        ]
+      },
+      "expected": {
+        "included_specs": [
+          "07"
+        ],
+        "status": 201,
+        "warnings_contains_09": true
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','09'], integration_branch: 'main'}); assert resp.status == 201; specIDs = [s.spec_id for s in resp.body.specs]; assert '07' in specIDs; assert '09' not in specIDs; assert any(w contains '09' for w in resp.body.warnings)"
+    },
+    {
+      "id": "TS-12-E11",
+      "requirement_id": "12-REQ-4.E1",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 422 when the integration branch does not exist in the repository at campaign creation time.",
+      "preconditions": [
+        "Hub running with real git repo for workspace 'ws-slug'",
+        "Branch 'nonexistent-branch' does not exist in the repo"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "nonexistent-branch",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "integration branch does not exist"
+        },
+        "no_campaign_persisted": true,
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07'], integration_branch: 'nonexistent-branch'}); assert resp.status == 422; assert resp.body.error contains 'branch'; assert store.GetCampaignByName(ctx, 'ws-slug', 'sprint-42') == nil"
+    },
+    {
+      "id": "TS-12-E12",
+      "requirement_id": "12-REQ-4.E2",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 500 and triggers atomic rollback of all created branches when a spec branch with the same name already exists in the repository.",
+      "preconditions": [
+        "Hub running with real git repo for workspace 'ws-slug'",
+        "Branch 'spec/07-secrets-variables' already exists in the repo",
+        "Integration branch 'main' exists"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "no_campaign_persisted": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07'], integration_branch: 'main'}); assert resp.status == 500; assert store.GetCampaignByName(ctx, 'ws-slug', 'sprint-42') == nil"
+    },
+    {
+      "id": "TS-12-E13",
+      "requirement_id": "12-REQ-4.E3",
+      "kind": "integration",
+      "description": "POST /campaigns returns HTTP 500 and triggers rollback of any created branches when a GitRunner branch creation call hangs beyond the timeout.",
+      "preconditions": [
+        "Hub running with a mock GitRunner that hangs indefinitely on branch creation for spec '08'",
+        "Spec '07' branch creation succeeds before the hang"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42",
+          "spec_ids": [
+            "07",
+            "08"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "no_campaign_persisted": true,
+        "spec_07_branch_deleted": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','08'], integration_branch: 'main'}); assert resp.status == 500; assert store.GetCampaignByName(ctx, 'ws-slug', 'sprint-42') == nil; assert gitRunner.BranchExists('spec/07-secrets-variables') == false"
+    },
+    {
+      "id": "TS-12-E14",
+      "requirement_id": "12-REQ-4.E4",
+      "kind": "unit",
+      "description": "Campaign scheduler logs each deletion failure and continues attempting to delete remaining branches during rollback, returning the original creation error to the caller.",
+      "preconditions": [
+        "Mock GitRunner that fails branch creation for spec '08' and also fails branch deletion for spec '07'",
+        "Spec '07' branch was created before the failure"
+      ],
+      "input": {
+        "rollback_deletion_fails_for": [
+          "07"
+        ]
+      },
+      "expected": {
+        "deletion_failure_logged": true,
+        "original_error_returned": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "logOutput = captureLog(); resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'sprint-42', spec_ids: ['07','08'], integration_branch: 'main'}); assert resp.status == 500; assert logOutput contains 'failed to delete branch'; assert resp.body.error contains original creation error message"
+    },
+    {
+      "id": "TS-12-E15",
+      "requirement_id": "12-REQ-5.E1",
+      "kind": "integration",
+      "description": "POST /campaigns with implicit discovery returns HTTP 422 when no spec directories exist under the workspace's .agent-fox/specs path.",
+      "preconditions": [
+        "Workspace 'ws-slug' cloned at WORKSPACE_ROOT/ws-slug/trunk",
+        ".agent-fox/specs directory is empty (no spec subdirectories)"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "implicit-camp"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "no specs found in workspace"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'implicit-camp', integration_branch: 'main'}); assert resp.status == 422; assert resp.body.error contains 'no specs'"
+    },
+    {
+      "id": "TS-12-E16",
+      "requirement_id": "12-REQ-5.E2",
+      "kind": "integration",
+      "description": "POST /campaigns with implicit discovery returns HTTP 500 when the workspace clone directory does not exist or is inaccessible at WORKSPACE_ROOT.",
+      "preconditions": [
+        "WORKSPACE_ROOT is set to '/tmp/nonexistent'",
+        "Workspace 'ws-slug' clone directory does not exist"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "implicit-camp"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "workspace clone directory not accessible"
+        },
+        "status": 500
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'implicit-camp', integration_branch: 'main'}); assert resp.status == 500; assert resp.body.error contains 'workspace'"
+    },
+    {
+      "id": "TS-12-E17",
+      "requirement_id": "12-REQ-5.E3",
+      "kind": "integration",
+      "description": "POST /campaigns with implicit discovery returns HTTP 422 when all discovered specs have no pending subtasks.",
+      "preconditions": [
+        "Workspace 'ws-slug' has spec '07' with tasks.json where all subtasks have state=done"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "implicit-camp"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "no pending specs found"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', {name: 'implicit-camp', integration_branch: 'main'}); assert resp.status == 422; assert resp.body.error contains 'pending'"
+    },
+    {
+      "id": "TS-12-E18",
+      "requirement_id": "12-REQ-6.E1",
+      "kind": "integration",
+      "description": "Concurrent PostMergeHook invocations for the same campaign are serialized via the in-memory per-campaign mutex so that state mutations do not interleave.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "campaign_specs: spec '07' and spec '08' both status=active",
+        "Go test run with -race flag enabled"
+      ],
+      "input": {
+        "concurrent_hooks": [
+          {
+            "campaign_id": "camp-1",
+            "dead_letter": false,
+            "spec_id": "07"
+          },
+          {
+            "campaign_id": "camp-1",
+            "dead_letter": false,
+            "spec_id": "08"
+          }
+        ]
+      },
+      "expected": {
+        "final_state_consistent": true,
+        "no_data_race_detected": true
+      },
+      "assertion_pseudocode": "wg = WaitGroup; wg.Add(2); go func() { hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: false}); wg.Done() }(); go func() { hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '08', DeadLetter: false}); wg.Done() }(); wg.Wait(); campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status in ['active', 'completed']"
+    },
+    {
+      "id": "TS-12-E19",
+      "requirement_id": "12-REQ-6.E2",
+      "kind": "unit",
+      "description": "On hub restart after a mid-hook crash, the scheduler recomputes the frontier from current campaign_specs status rows in the DB; the next PostMergeHook invocation heals any partial cascade.",
+      "preconditions": [
+        "SQLite DB with campaign 'camp-1' status=active",
+        "campaign_specs: spec '07' status=merged (merge completed), spec '09' status=active (rebase not yet done due to crash)"
+      ],
+      "input": {
+        "event": "hub_restart_after_mid_hook_crash"
+      },
+      "expected": {
+        "frontier_recomputed_correctly": true,
+        "spec_09_still_active": true
+      },
+      "assertion_pseudocode": "scheduler = NewScheduler(ctx, store, gitRunner, pushAuthorizer); scheduler.RecoverFromDB(ctx); spec09 = store.GetSpec(ctx, 'camp-1', '09'); assert spec09.Status == 'active'; hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: false}); spec09After = store.GetSpec(ctx, 'camp-1', '09'); assert spec09After.BranchSHA != originalSHA"
+    },
+    {
+      "id": "TS-12-E20",
+      "requirement_id": "12-REQ-6.E3",
+      "kind": "unit",
+      "description": "PostMergeHook skips all state mutations and returns immediately when invoked for a campaign that is already in failed or cancelled status.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=failed"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "no_db_mutations": true,
+        "returns_immediately": true
+      },
+      "assertion_pseudocode": "mutationCount = 0; store.OnMutation = func() { mutationCount++ }; hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: false}); assert mutationCount == 0"
+    },
+    {
+      "id": "TS-12-E21",
+      "requirement_id": "12-REQ-7.E1",
+      "kind": "unit",
+      "description": "Campaign scheduler logs the anomaly and sets campaign status to failed when the spec referenced in a dead-letter MergeJob is not found in campaign_specs.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "campaign_specs does not contain spec '99'"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": true,
+          "spec_id": "99"
+        }
+      },
+      "expected": {
+        "anomaly_logged": true,
+        "campaign_status": "failed"
+      },
+      "assertion_pseudocode": "logOutput = captureLog(); hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '99', DeadLetter: true}); campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'failed'; assert logOutput contains 'spec not found' or logOutput contains 'anomaly'"
+    },
+    {
+      "id": "TS-12-E22",
+      "requirement_id": "12-REQ-7.E2",
+      "kind": "unit",
+      "description": "Campaign scheduler logs the error and releases the mutex when the DB update to set spec or campaign status to failed fails.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "Mock store that returns an error on UpdateCampaignStatus"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": true,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "error_logged": true,
+        "mutex_released": true
+      },
+      "assertion_pseudocode": "logOutput = captureLog(); mutexReleased = false; scheduler.OnMutexRelease = func() { mutexReleased = true }; hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: true}); assert logOutput contains 'error'; assert mutexReleased == true"
+    },
+    {
+      "id": "TS-12-E23",
+      "requirement_id": "12-REQ-8.E1",
+      "kind": "integration",
+      "description": "Rebase engine enforces a timeout on a hanging GitRunner rebase subprocess, kills it, treats the branch as conflicted, sets it to blocked, and continues with the next branch.",
+      "preconditions": [
+        "Campaign 'camp-1' with specs '07' and '08' both active",
+        "Mock GitRunner that hangs indefinitely for spec '07' rebase but succeeds for spec '08'"
+      ],
+      "input": {
+        "cascade_rebase": true
+      },
+      "expected": {
+        "spec_07_status": "blocked",
+        "spec_08_rebased": true,
+        "timeout_enforced": true
+      },
+      "assertion_pseudocode": "rebaseEngine.CascadeRebase(ctx, 'camp-1', 'merge-uuid', 'main'); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'; spec08 = store.GetSpec(ctx, 'camp-1', '08'); assert spec08.BranchSHA != originalSHA08"
+    },
+    {
+      "id": "TS-12-E24",
+      "requirement_id": "12-REQ-8.E2",
+      "kind": "unit",
+      "description": "Rebase engine logs the error, treats the branch as blocked, and continues rebasing unrelated branches when GitRunner returns an unexpected non-conflict error.",
+      "preconditions": [
+        "Campaign 'camp-1' with specs '07' (standalone) and '08' (standalone) both active",
+        "Mock GitRunner returns unexpected error for spec '07' rebase"
+      ],
+      "input": {
+        "unexpected_error_for": "07"
+      },
+      "expected": {
+        "error_logged": true,
+        "spec_07_status": "blocked",
+        "spec_08_rebased": true
+      },
+      "assertion_pseudocode": "logOutput = captureLog(); rebaseEngine.CascadeRebase(ctx, 'camp-1', 'merge-uuid', 'main'); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'; assert logOutput contains 'unexpected error'; spec08 = store.GetSpec(ctx, 'camp-1', '08'); assert spec08.BranchSHA != originalSHA08"
+    },
+    {
+      "id": "TS-12-E25",
+      "requirement_id": "12-REQ-8.E3",
+      "kind": "unit",
+      "description": "Rebase engine treats an already-rebased branch as a no-op (already up to date) and continues without error in idempotency/crash-recovery scenarios.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' active",
+        "Spec '07' branch is already at the current integration branch HEAD (already rebased)"
+      ],
+      "input": {
+        "already_rebased": true,
+        "spec_id": "07"
+      },
+      "expected": {
+        "no_error": true,
+        "spec_07_status": "active"
+      },
+      "assertion_pseudocode": "err = rebaseEngine.RebaseBranch(ctx, 'camp-1', '07', 'main'); assert err == nil; spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'active'"
+    },
+    {
+      "id": "TS-12-E26",
+      "requirement_id": "12-REQ-8.E4",
+      "kind": "unit",
+      "description": "Rebase engine logs the error and still sets spec status to blocked in campaign_specs when PushAuthorizer callback fails when revoking push access for a blocked branch.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' active",
+        "Mock PushAuthorizer that returns an error on revoke"
+      ],
+      "input": {
+        "push_authorizer_revoke_fails": true,
+        "spec_id": "07"
+      },
+      "expected": {
+        "error_logged": true,
+        "spec_07_status": "blocked"
+      },
+      "assertion_pseudocode": "logOutput = captureLog(); rebaseEngine.RebaseBranch(ctx, 'camp-1', '07', 'main'); spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'; assert logOutput contains 'PushAuthorizer' or logOutput contains 'revoke'"
+    },
+    {
+      "id": "TS-12-E27",
+      "requirement_id": "12-REQ-9.E1",
+      "kind": "unit",
+      "description": "PushAuthorizer rejects push attempts to a cancelled campaign's spec branches because CanMerge checks campaign_specs.status and finds cancelled.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=cancelled",
+        "campaign_specs: spec '07' status=cancelled"
+      ],
+      "input": {
+        "branch": "spec/07-secrets-variables"
+      },
+      "expected": {
+        "error_message": "spec is cancelled",
+        "push_rejected": true
+      },
+      "assertion_pseudocode": "reason, err = canMerge(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07'}); assert err == nil; assert reason != ''; assert string(reason) contains 'cancel'"
+    },
+    {
+      "id": "TS-12-E28",
+      "requirement_id": "12-REQ-9.E2",
+      "kind": "unit",
+      "description": "PushAuthorizer allows a push when called for a branch not tracked in any active campaign.",
+      "preconditions": [
+        "No active campaign tracks branch 'feature/untracked-branch'"
+      ],
+      "input": {
+        "branch": "feature/untracked-branch"
+      },
+      "expected": {
+        "push_allowed": true
+      },
+      "assertion_pseudocode": "err = pushAuthorizer(ctx, 'feature/untracked-branch'); assert err == nil"
+    },
+    {
+      "id": "TS-12-E29",
+      "requirement_id": "12-REQ-10.E1",
+      "kind": "unit",
+      "description": "Resolve endpoint returns HTTP 404 when called for a spec_id that does not exist in the campaign.",
+      "preconditions": [
+        "Campaign 'camp-1' exists with spec '07' only"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/99/resolve"
+      },
+      "expected": {
+        "body": {
+          "error": "spec not found in campaign"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/99/resolve'); assert resp.status == 404; assert resp.body.error contains 'not found'"
+    },
+    {
+      "id": "TS-12-E30",
+      "requirement_id": "12-REQ-10.E2",
+      "kind": "integration",
+      "description": "Resolve endpoint enforces a timeout on a hanging GitRunner rebase call, kills the subprocess, and returns HTTP 500 without changing spec status.",
+      "preconditions": [
+        "Campaign 'camp-1' with spec '07' status=blocked",
+        "Mock GitRunner that hangs indefinitely on rebase during resolve"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "error": "rebase timed out"
+        },
+        "spec_07_status_unchanged": "blocked",
+        "status": 500
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 500; assert resp.body.error contains 'timeout' or resp.body.error contains 'timed out'; spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'"
+    },
+    {
+      "id": "TS-12-E31",
+      "requirement_id": "12-REQ-10.E3",
+      "kind": "unit",
+      "description": "Resolve endpoint returns HTTP 403 when the caller lacks the campaigns:write permission scope.",
+      "preconditions": [
+        "Hub running with auth middleware",
+        "Caller has only campaigns:read scope",
+        "Campaign 'camp-1' with spec '07' status=blocked"
+      ],
+      "input": {
+        "auth_scope": "campaigns:read",
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "error": "insufficient permissions"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve', headers={Authorization: readOnlyToken}); assert resp.status == 403; assert resp.body.error contains 'permission'"
+    },
+    {
+      "id": "TS-12-E32",
+      "requirement_id": "12-REQ-10.E4",
+      "kind": "integration",
+      "description": "Resolve endpoint returns HTTP 409 with updated conflict file list when newer merges since the agent's local fix introduce new conflicts during resolve verification.",
+      "preconditions": [
+        "Real git repo with integration branch 'main' that has advanced since the agent's local fix",
+        "Campaign 'camp-1' with spec '07' status=blocked",
+        "New merge on 'main' introduces conflicts with spec '07' branch"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve"
+      },
+      "expected": {
+        "body": {
+          "conflict_details": [
+            "new_conflict_file.go"
+          ]
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve'); assert resp.status == 409; assert resp.body.conflict_details != nil; assert len(resp.body.conflict_details) > 0; spec07 = store.GetSpec(ctx, 'camp-1', '07'); assert spec07.Status == 'blocked'"
+    },
+    {
+      "id": "TS-12-E33",
+      "requirement_id": "12-REQ-11.E1",
+      "kind": "unit",
+      "description": "POST /campaigns returns HTTP 404 when the workspace identified by :slug does not exist.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Workspace 'nonexistent-slug' does not exist"
+      ],
+      "input": {
+        "body": {
+          "integration_branch": "main",
+          "name": "sprint-42"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/nonexistent-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "workspace not found"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-slug/campaigns', {name: 'sprint-42', integration_branch: 'main'}); assert resp.status == 404; assert resp.body.error contains 'workspace'"
+    },
+    {
+      "id": "TS-12-E34",
+      "requirement_id": "12-REQ-11.E2",
+      "kind": "unit",
+      "description": "POST /campaigns returns HTTP 400 when the request body is not valid JSON.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB"
+      ],
+      "input": {
+        "body": "not-valid-json",
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "invalid JSON"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws-slug/campaigns', rawBody='not-valid-json', contentType='application/json'); assert resp.status == 400; assert resp.body.error contains 'JSON' or resp.body.error contains 'parse'"
+    },
+    {
+      "id": "TS-12-E35",
+      "requirement_id": "12-REQ-12.E1",
+      "kind": "unit",
+      "description": "GET /campaigns/:id returns HTTP 404 when the campaign ID does not exist.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "No campaign with id='nonexistent-id' exists"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/nonexistent-id"
+      },
+      "expected": {
+        "body": {
+          "error": "campaign not found"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws-slug/campaigns/nonexistent-id'); assert resp.status == 404; assert resp.body.error contains 'not found'"
+    },
+    {
+      "id": "TS-12-E36",
+      "requirement_id": "12-REQ-12.E2",
+      "kind": "unit",
+      "description": "GET /campaigns returns HTTP 403 when the caller lacks the campaigns:read permission scope.",
+      "preconditions": [
+        "Hub running with auth middleware",
+        "Caller has no campaign-related scopes"
+      ],
+      "input": {
+        "auth_scope": "none",
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": {
+          "error": "insufficient permissions"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws-slug/campaigns', headers={Authorization: noScopeToken}); assert resp.status == 403; assert resp.body.error contains 'permission'"
+    },
+    {
+      "id": "TS-12-E37",
+      "requirement_id": "12-REQ-12.E3",
+      "kind": "unit",
+      "description": "GET /campaigns returns HTTP 200 with an empty array when no campaigns exist in the workspace.",
+      "preconditions": [
+        "Hub running with SQLite in-memory DB",
+        "Workspace 'ws-slug' exists but has no campaigns"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-slug/campaigns"
+      },
+      "expected": {
+        "body": [],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws-slug/campaigns'); assert resp.status == 200; assert resp.body == []"
+    },
+    {
+      "id": "TS-12-E38",
+      "requirement_id": "12-REQ-13.E1",
+      "kind": "unit",
+      "description": "DELETE /campaigns/:id returns HTTP 409 when the campaign is already cancelled.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=cancelled"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "body": {
+          "error": "campaign is already cancelled"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 409; assert resp.body.error contains 'cancel'"
+    },
+    {
+      "id": "TS-12-E39",
+      "requirement_id": "12-REQ-13.E2",
+      "kind": "unit",
+      "description": "DELETE /campaigns/:id returns HTTP 409 when the campaign is in completed or failed status.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=completed"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "body": {
+          "error": "campaign cannot be cancelled in its current state"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "for status in ['completed', 'failed'] { store.SetCampaignStatus(ctx, 'camp-1', status); resp = client.delete('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 409; assert resp.body.error contains 'cancel' }"
+    },
+    {
+      "id": "TS-12-E40",
+      "requirement_id": "12-REQ-13.E3",
+      "kind": "unit",
+      "description": "DELETE /campaigns/:id returns HTTP 500 and rolls back the transaction so campaign and all specs remain in their previous state when the DB update to set campaign_specs statuses to cancelled fails partway through.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "Mock store that fails on UpdateAllSpecStatuses after updating the first spec"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-slug/campaigns/camp-1"
+      },
+      "expected": {
+        "all_spec_statuses_unchanged": true,
+        "campaign_status_unchanged": "active",
+        "status": 500
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/ws-slug/campaigns/camp-1'); assert resp.status == 500; campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'active'; specs = store.GetCampaignSpecs(ctx, 'camp-1'); for spec in specs { assert spec.Status != 'cancelled' }"
+    },
+    {
+      "id": "TS-12-E41",
+      "requirement_id": "12-REQ-14.E1",
+      "kind": "unit",
+      "description": "Campaign scheduler fails startup with a clear error message and non-zero exit code when the DB is unavailable during hub restart.",
+      "preconditions": [
+        "SQLite DB file is inaccessible or corrupted"
+      ],
+      "input": {
+        "event": "hub_restart_with_unavailable_db"
+      },
+      "expected": {
+        "error_logged": true,
+        "startup_fails": true
+      },
+      "assertion_pseudocode": "store, err = NewStore(unavailableDB); assert err != nil; assert err.Error() contains 'database'"
+    },
+    {
+      "id": "TS-12-E42",
+      "requirement_id": "12-REQ-15.E1",
+      "kind": "unit",
+      "description": "Store module returns a non-nil error to the caller without panicking or calling os.Exit when schema initialization SQL fails due to a read-only DB.",
+      "preconditions": [
+        "SQLite DB file opened in read-only mode"
+      ],
+      "input": {
+        "event": "InitSchema_on_readonly_db"
+      },
+      "expected": {
+        "error_returned": true,
+        "no_panic": true
+      },
+      "assertion_pseudocode": "store, err = NewStore(readOnlyDB); assert err != nil; assert err.Error() contains 'read-only' or err.Error() contains 'CREATE TABLE'"
+    },
+    {
+      "id": "TS-12-E43",
+      "requirement_id": "12-REQ-16.E1",
+      "kind": "unit",
+      "description": "Store module returns a non-nil error to the caller when the dag column contains malformed JSON when reading from the DB.",
+      "preconditions": [
+        "SQLite in-memory DB with campaigns table",
+        "Campaign row with dag column set to 'not-valid-json'"
+      ],
+      "input": {
+        "campaign_id": "camp-1"
+      },
+      "expected": {
+        "error_returned": true,
+        "no_partial_dag_returned": true
+      },
+      "assertion_pseudocode": "db.Exec(\"UPDATE campaigns SET dag = 'not-valid-json' WHERE id = 'camp-1'\"); campaign, err = store.GetCampaign(ctx, 'camp-1'); assert err != nil; assert campaign == nil"
+    },
+    {
+      "id": "TS-12-E44",
+      "requirement_id": "12-REQ-16.E2",
+      "kind": "unit",
+      "description": "Store module returns a non-nil error to the caller when the conflict_details column contains malformed JSON when reading from the DB.",
+      "preconditions": [
+        "SQLite in-memory DB with campaign_specs table",
+        "campaign_specs row with conflict_details set to 'not-valid-json'"
+      ],
+      "input": {
+        "campaign_id": "camp-1",
+        "spec_id": "07"
+      },
+      "expected": {
+        "error_returned": true,
+        "no_partial_spec_row_returned": true
+      },
+      "assertion_pseudocode": "db.Exec(\"UPDATE campaign_specs SET conflict_details = 'not-valid-json' WHERE campaign_id = 'camp-1' AND spec_id = '07'\"); spec, err = store.GetSpec(ctx, 'camp-1', '07'); assert err != nil; assert spec == nil"
+    },
+    {
+      "id": "TS-12-E45",
+      "requirement_id": "12-REQ-17.E1",
+      "kind": "unit",
+      "description": "Campaign scheduler recovers from a panic in a PostMergeHook goroutine while holding the per-campaign mutex, releases the mutex, logs the panic, and sets campaign status to failed.",
+      "preconditions": [
+        "Campaign 'camp-1' with status=active",
+        "Mock hook implementation that panics after acquiring the mutex"
+      ],
+      "input": {
+        "merge_job": {
+          "campaign_id": "camp-1",
+          "dead_letter": false,
+          "spec_id": "07"
+        }
+      },
+      "expected": {
+        "campaign_status": "failed",
+        "mutex_released": true,
+        "panic_logged": true,
+        "panic_recovered": true
+      },
+      "assertion_pseudocode": "logOutput = captureLog(); mutexReleased = false; scheduler.OnMutexRelease = func() { mutexReleased = true }; scheduler.InjectPanic('camp-1'); hook(ctx, MergeJob{CampaignID: 'camp-1', SpecID: '07', DeadLetter: false}); assert mutexReleased == true; assert logOutput contains 'panic'; campaign = store.GetCampaign(ctx, 'camp-1'); assert campaign.Status == 'failed'"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-12-SMOKE-1",
+      "execution_path_id": "12-PATH-1",
+      "description": "Explicit campaign creation synchronously activates the campaign, creates frontier spec branches, and returns HTTP 201 with status=active before the response is sent.",
+      "trigger": "Send POST /api/v1/workspaces/ws-slug/campaigns with name='sprint-42', spec_ids=['07','09'], integration_branch='main'",
+      "real_components": [
+        "campaign handler",
+        "DAG builder",
+        "campaign scheduler",
+        "GitRunner (internal/gitcmd)",
+        "campaign store"
+      ],
+      "mockable": [
+        "filesystem tasks.json reads"
+      ],
+      "expected_effects": [
+        "HTTP 201 response with body containing status='active', id (UUID), dag with specs=['07','09'] and edges=[{from:'07',to:'09'}], specs array with spec '07' status='active' and branch_name='spec/07-secrets-variables', spec '09' status='pending'",
+        "Git branch 'spec/07-secrets-variables' exists in the workspace repo",
+        "campaigns table has one row with status='active' and name='sprint-42'",
+        "campaign_specs table has two rows: spec '07' status='active' with branch_sha set, spec '09' status='pending'"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-2",
+      "execution_path_id": "12-PATH-2",
+      "description": "Successful merge triggers cascading rebase of sibling branches in topological order, advances the DAG frontier by creating branches for newly-unblocked specs, and sets campaign to completed when all specs are merged.",
+      "trigger": "Invoke PostMergeHook with MergeJob{CampaignID:'camp-1', SpecID:'07', DeadLetter:false} for a campaign with DAG '07'->'09'",
+      "real_components": [
+        "merge queue (internal/mergequeue)",
+        "campaign scheduler",
+        "rebase engine",
+        "GitRunner (internal/gitcmd)",
+        "campaign store",
+        "PushAuthorizer"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "campaign_specs row for spec '07' has status='merged'",
+        "campaign_specs row for spec '09' has updated branch_sha (rebased) or status='blocked' if conflict",
+        "Git branch 'spec/09-other' created if '09' was previously pending and is now unblocked",
+        "campaign_specs row for spec '09' has status='active' if it was unblocked",
+        "campaigns row has status='completed' if '09' was the last spec and also merged"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-3",
+      "execution_path_id": "12-PATH-3",
+      "description": "Dead-letter merge job triggers immediate campaign failure: spec status set to failed, campaign status set to failed, no rebase or frontier advancement performed.",
+      "trigger": "Invoke PostMergeHook with MergeJob{CampaignID:'camp-1', SpecID:'07', DeadLetter:true}",
+      "real_components": [
+        "merge queue (internal/mergequeue)",
+        "campaign scheduler",
+        "campaign store"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "campaign_specs row for spec '07' has status='failed'",
+        "campaigns row for 'camp-1' has status='failed'",
+        "No rebase operations performed (GitRunner rebase not called)",
+        "No new spec branches created",
+        "GET /api/v1/workspaces/ws-slug/campaigns/camp-1 returns status='failed'"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-4",
+      "execution_path_id": "12-PATH-4",
+      "description": "Agent resolves a blocked spec branch conflict: resolve endpoint rebases onto current integration HEAD, restores push access, sets spec to active, and returns HTTP 200 with new branch_sha.",
+      "trigger": "Send POST /api/v1/workspaces/ws-slug/campaigns/camp-1/specs/07/resolve after agent has resolved conflict locally",
+      "real_components": [
+        "resolve endpoint",
+        "rebase engine",
+        "GitRunner (internal/gitcmd)",
+        "campaign store",
+        "PushAuthorizer"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with body {spec_id:'07', status:'active', branch_sha:<40-char-hex>}",
+        "campaign_specs row for spec '07' has status='active' and updated branch_sha",
+        "Push access restored for branch 'spec/07-secrets-variables' (PushAuthorizer no longer rejects pushes)",
+        "conflict_details and blocked_by_merge cleared in campaign_specs row"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-5",
+      "execution_path_id": "12-PATH-5",
+      "description": "Campaign cancellation sets campaign and all spec statuses to cancelled, leaves spec branches in place, and causes CanMerge to reject any pending merge jobs for cancelled specs.",
+      "trigger": "Send DELETE /api/v1/workspaces/ws-slug/campaigns/camp-1 for an active campaign",
+      "real_components": [
+        "campaign handler",
+        "campaign store",
+        "merge queue (internal/mergequeue)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with body reflecting campaign status='cancelled' and all spec statuses='cancelled'",
+        "campaigns table row has status='cancelled'",
+        "All campaign_specs rows have status='cancelled'",
+        "Git branch 'spec/07-secrets-variables' still exists in the repo (not deleted)",
+        "CanMerge called for spec '07' returns non-nil CantMergeReason containing 'cancel'"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-6",
+      "execution_path_id": "12-PATH-6",
+      "description": "End-to-end implicit campaign creation through merge completion: hub discovers pending specs, creates campaign, agents work on branches, merges complete, campaign reaches completed status.",
+      "trigger": "Send POST /api/v1/workspaces/ws-slug/campaigns with only name='e2e-camp' and integration_branch='main' (no spec_ids); then simulate full merge cycle",
+      "real_components": [
+        "campaign handler",
+        "DAG builder",
+        "campaign scheduler",
+        "rebase engine",
+        "GitRunner (internal/gitcmd)",
+        "campaign store",
+        "merge queue (internal/mergequeue)",
+        "PushAuthorizer"
+      ],
+      "mockable": [
+        "filesystem tasks.json reads"
+      ],
+      "expected_effects": [
+        "HTTP 201 response with status='active', specs array containing only specs with pending subtasks, warnings array for any skipped specs",
+        "GET /api/v1/workspaces/ws-slug/campaigns?status=active returns the new campaign",
+        "After all spec merges via PostMergeHook, GET /api/v1/workspaces/ws-slug/campaigns/camp-id returns status='completed'",
+        "All campaign_specs rows have status='merged'",
+        "No spec branches deleted (left in place)"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

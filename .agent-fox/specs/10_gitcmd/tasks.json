@@ -1,0 +1,951 @@
+{
+  "$schema": null,
+  "spec_id": "10",
+  "spec_name": "gitcmd",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/gitcmd/... -count=1 -race -v",
+    "all_tests": "go test ./... -count=1 -race",
+    "linter": "go vet ./internal/gitcmd/..."
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: GitRunner construction, safety defaults, and deduplication",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for NewRunner construction and immutability",
+          "details": [
+            "Create internal/gitcmd/runner_test.go",
+            "Test NewRunner sets workDir and stores caller-supplied env key=value strings",
+            "Test that NewRunner accepts variadic env strings (e.g. 'GIT_AUTHOR_NAME=Bot')",
+            "Test that runner is safe for concurrent use: launch multiple goroutines calling Run simultaneously and assert no data race (use -race flag)",
+            "Test that AddEnv does not exist on GitRunner (compile-time check via absence of method)"
+          ],
+          "test_spec_refs": [
+            "TS-10-1",
+            "TS-10-2",
+            "TS-10-3",
+            "TS-10-4"
+          ],
+          "requirement_refs": [
+            "10-REQ-1.1",
+            "10-REQ-1.2",
+            "10-REQ-1.3",
+            "10-REQ-1.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for safety environment defaults presence",
+          "details": [
+            "Write a test that runs a git command which prints its environment (e.g. 'git rev-parse --show-toplevel' in a temp repo, or use a helper that inspects env)",
+            "Assert GIT_ALLOW_PROTOCOL=file:https:ssh is present in the subprocess environment",
+            "Assert GIT_TERMINAL_PROMPT=0 is present in the subprocess environment",
+            "Assert GIT_CONFIG_NOSYSTEM=1 is present in the subprocess environment",
+            "Use t.TempDir() and git init via the runner for test repo setup"
+          ],
+          "test_spec_refs": [
+            "TS-10-2",
+            "TS-10-3"
+          ],
+          "requirement_refs": [
+            "10-REQ-7.1",
+            "10-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for safety default deduplication overriding caller-supplied values",
+          "details": [
+            "Write a test that constructs NewRunner with GIT_TERMINAL_PROMPT=1 in the env parameter",
+            "Assert that the subprocess sees GIT_TERMINAL_PROMPT=0 (safety default wins)",
+            "Write a test that constructs NewRunner with GIT_ALLOW_PROTOCOL=ext:: in the env parameter",
+            "Assert that the subprocess sees GIT_ALLOW_PROTOCOL=file:https:ssh (safety default wins)",
+            "Write a test that constructs NewRunner with GIT_CONFIG_NOSYSTEM=0 in the env parameter",
+            "Assert that the subprocess sees GIT_CONFIG_NOSYSTEM=1 (safety default wins)"
+          ],
+          "test_spec_refs": [
+            "TS-10-4"
+          ],
+          "requirement_refs": [
+            "10-REQ-7.1",
+            "10-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestNewRunner passes",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestSafetyDefaults passes",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestDeduplication passes",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-1.1 through 10-REQ-1.4 and 10-REQ-7.1 and 10-REQ-7.2 acceptance criteria are covered by test cases"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: Run method and GitError structured error type",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for Run method success and stdout/stderr capture",
+          "details": [
+            "Create internal/gitcmd/run_test.go",
+            "Write a test that calls Run with a valid git command (e.g. 'git --version') and asserts stdout is non-empty and err is nil",
+            "Write a test that calls Run with a command producing stderr (e.g. 'git status' in a non-repo dir) and asserts both stdout and stderr are captured",
+            "Use t.TempDir() and git init via the runner for test repo setup",
+            "Call t.Parallel() for tests that do not share mutable state"
+          ],
+          "test_spec_refs": [
+            "TS-10-5",
+            "TS-10-6"
+          ],
+          "requirement_refs": [
+            "10-REQ-2.1",
+            "10-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for Run method non-zero exit producing GitError",
+          "details": [
+            "Write a table-driven test covering multiple git commands that exit non-zero",
+            "Assert that err is a *GitError (use errors.As)",
+            "Assert GitError.Command contains joined args without 'git' prefix (e.g. 'rebase origin/main')",
+            "Assert GitError.ExitCode matches the expected non-zero exit code",
+            "Assert GitError.Stderr is non-empty and contains git's error output",
+            "Assert GitError.Error() matches format 'git <args> exited with code <N>: <stderr>'"
+          ],
+          "test_spec_refs": [
+            "TS-10-7",
+            "TS-10-17",
+            "TS-10-18",
+            "TS-10-19"
+          ],
+          "requirement_refs": [
+            "10-REQ-2.3",
+            "10-REQ-5.1",
+            "10-REQ-5.2",
+            "10-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for Run method binary-not-found and context cancellation",
+          "details": [
+            "Write a test that cancels the context mid-execution and asserts err != nil",
+            "Assert that partial stdout/stderr bytes are returned alongside the context error when cancellation occurs",
+            "Write a test verifying that when git binary is not found, Run returns a raw os/exec error (not a GitError)",
+            "Use errors.As to confirm the returned error is NOT a *GitError for binary-not-found case"
+          ],
+          "test_spec_refs": [
+            "TS-10-8"
+          ],
+          "requirement_refs": [
+            "10-REQ-2.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestRun passes",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestGitError passes",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-2.1 through 10-REQ-2.4 and 10-REQ-5.1 through 10-REQ-5.3 acceptance criteria are covered by test cases TS-10-5 through TS-10-8 and TS-10-17 through TS-10-19"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: RunExitCode method",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for RunExitCode success and exit code passthrough",
+          "details": [
+            "Create internal/gitcmd/run_exit_code_test.go",
+            "Write a test that calls RunExitCode with a command that exits 0 and asserts err == nil, exitCode == 0",
+            "Write a test that calls RunExitCode with a command that exits non-zero (e.g. 'git ls-remote --exit-code <bare-repo> refs/heads/nonexistent') and asserts err == nil, exitCode == 2",
+            "Assert stdout and stderr are captured correctly in both cases",
+            "Use t.TempDir() and a bare git repo for test setup"
+          ],
+          "test_spec_refs": [
+            "TS-10-9",
+            "TS-10-10"
+          ],
+          "requirement_refs": [
+            "10-REQ-3.1",
+            "10-REQ-3.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for RunExitCode system-level error wrapping and signal termination",
+          "details": [
+            "Write a test that triggers a 'binary not found' scenario and asserts err != nil",
+            "Assert errors.As(err, &exec.Error{}) succeeds (underlying os/exec error is preserved via fmt.Errorf('%w', ...))",
+            "Assert that no GitError is produced by RunExitCode (errors.As(err, &GitError{}) returns false)",
+            "Write a test that cancels a context mid-execution and asserts err != nil and exitCode == -1",
+            "Assert partial stdout/stderr bytes are returned alongside the error on cancellation"
+          ],
+          "test_spec_refs": [
+            "TS-10-11",
+            "TS-10-12"
+          ],
+          "requirement_refs": [
+            "10-REQ-3.3",
+            "10-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestRunExitCode passes",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-3.1 through 10-REQ-3.4 acceptance criteria are covered by test cases TS-10-9 through TS-10-12"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: BranchExists three-way exit code discrimination",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write test infrastructure for BranchExists using a local bare repo",
+          "details": [
+            "Create internal/gitcmd/branch_exists_test.go",
+            "Write a helper that creates a bare git repo in t.TempDir() and pushes a known branch to it",
+            "Write a test that calls BranchExists with a bare branch name (e.g. 'main') against the bare repo and asserts true, nil (exit 0 path)",
+            "Verify that refs/heads/ is prepended internally by checking the git ls-remote invocation"
+          ],
+          "test_spec_refs": [
+            "TS-10-13"
+          ],
+          "requirement_refs": [
+            "10-REQ-4.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write tests for BranchExists exit 2 (branch missing) and network failure paths",
+          "details": [
+            "Write a test that queries a branch name that does not exist on the bare repo and asserts false, nil (exit 2 path)",
+            "Write a test that passes an invalid/nonexistent path as the remote URL and asserts false, err != nil (exit 1/128 catch-all path)",
+            "Assert that the error message for the network/auth failure path is non-empty and meaningful",
+            "Write a test that verifies passing a full ref path (e.g. 'refs/heads/main') as branch name would produce refs/heads/refs/heads/main (document the caller contract violation)"
+          ],
+          "test_spec_refs": [
+            "TS-10-14",
+            "TS-10-15",
+            "TS-10-16"
+          ],
+          "requirement_refs": [
+            "10-REQ-4.2",
+            "10-REQ-4.3",
+            "10-REQ-4.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestBranchExists passes",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-4.1 through 10-REQ-4.4 acceptance criteria are covered by test cases TS-10-13 through TS-10-16"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write tests: CheckGitVersion version parsing and validation",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write table-driven tests for version string parsing",
+          "details": [
+            "Create internal/gitcmd/version_test.go",
+            "Write a table-driven test covering: standard 'git version 2.39.1', Apple Git 'git version 2.39.3 (Apple Git-145)', release candidate 'git version 2.38.0.rc1'",
+            "Assert all three parse to their respective major.minor.patch without trailing tokens",
+            "Write a test for an unparseable version string and assert a parse error is returned",
+            "Write a test that calls CheckGitVersion against the real installed git binary and asserts no error (CI has git >= 2.38)"
+          ],
+          "test_spec_refs": [
+            "TS-10-20",
+            "TS-10-21"
+          ],
+          "requirement_refs": [
+            "10-REQ-6.1",
+            "10-REQ-6.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write tests for CheckGitVersion below-minimum error message format",
+          "details": [
+            "Write a test that injects a fake version string below 2.38 (e.g. '2.35.1') and asserts the error message matches 'requires git >= 2.38, found 2.35.1'",
+            "Assert the error format is exactly 'requires git >= 2.38, found <installed>' with no extra whitespace or punctuation",
+            "Write a test that verifies the minimum version floor (2.38) is enforced: version 2.37.x returns error, version 2.38.0 returns nil",
+            "Write a test verifying that the minimum version constant is not exported in the package API (compile-time check)"
+          ],
+          "test_spec_refs": [
+            "TS-10-22",
+            "TS-10-23"
+          ],
+          "requirement_refs": [
+            "10-REQ-6.3",
+            "10-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestCheckGitVersion passes",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestVersionParsing passes",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-6.1 through 10-REQ-6.4 acceptance criteria are covered by test cases TS-10-20 through TS-10-23"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement package scaffold and GitError type",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Create internal/gitcmd/ package with package declaration and doc comment",
+          "details": [
+            "Create internal/gitcmd/gitcmd.go with package gitcmd declaration",
+            "Add package-level doc comment describing the package as a hardened git subprocess runner",
+            "Ensure the package is under internal/ so it is not importable outside the module",
+            "Verify the package compiles with go build ./internal/gitcmd/..."
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement GitError struct and Error() method",
+          "details": [
+            "Define GitError struct with Command string, ExitCode int, Stderr string fields",
+            "Implement Error() string method using fmt.Sprintf producing 'git %s exited with code %d: %s'",
+            "Command field holds joined args without 'git' binary prefix (e.g. 'rebase origin/main')",
+            "Ensure GitError implements the error interface",
+            "Add a doc comment explaining the Command field convention (no binary prefix)"
+          ],
+          "test_spec_refs": [
+            "TS-10-17",
+            "TS-10-18",
+            "TS-10-19"
+          ],
+          "requirement_refs": [
+            "10-REQ-5.1",
+            "10-REQ-5.2",
+            "10-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement safety defaults constants and deduplication helper",
+          "details": [
+            "Define unexported constants for safety default keys and values: gitAllowProtocol='file:https:ssh', gitTerminalPrompt='0', gitConfigNoSystem='1'",
+            "Implement an unexported buildEnv(inherited []string, callerEnv []string) []string function",
+            "buildEnv: start with os.Environ(), append callerEnv, then remove any earlier occurrences of safety-default keys, then append safety defaults last",
+            "Ensure deduplication removes ALL earlier occurrences of safety-default keys from both inherited and caller-supplied env",
+            "Add unit-level doc comment on buildEnv explaining the deduplication guarantee"
+          ],
+          "test_spec_refs": [
+            "TS-10-2",
+            "TS-10-3",
+            "TS-10-4"
+          ],
+          "requirement_refs": [
+            "10-REQ-7.1",
+            "10-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "go build ./internal/gitcmd/... succeeds with no errors",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestGitError passes (TS-10-17, TS-10-18, TS-10-19)",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestDeduplication passes (TS-10-4)",
+          "Requirements 10-REQ-5.1 through 10-REQ-5.3 and 10-REQ-7.1 and 10-REQ-7.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement GitRunner struct, NewRunner, Run, and RunExitCode",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement GitRunner struct and NewRunner constructor",
+          "details": [
+            "Define GitRunner struct with unexported workDir string and env []string fields",
+            "Implement NewRunner(workDir string, env ...string) *GitRunner",
+            "Store a copy of the env slice at construction time to prevent external mutation",
+            "Do NOT validate workDir existence at construction time (raw os/exec error is returned at Run time)",
+            "Do NOT provide an AddEnv method — all env must be supplied at construction time",
+            "Add doc comment noting the runner is safe for concurrent use after construction"
+          ],
+          "test_spec_refs": [
+            "TS-10-1",
+            "TS-10-2",
+            "TS-10-3",
+            "TS-10-4"
+          ],
+          "requirement_refs": [
+            "10-REQ-1.1",
+            "10-REQ-1.2",
+            "10-REQ-1.3",
+            "10-REQ-1.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement Run method with GitError on non-zero exit",
+          "details": [
+            "Implement Run(ctx context.Context, args ...string) (stdout []byte, stderr []byte, err error)",
+            "Use exec.CommandContext(ctx, 'git', args...) with cmd.Dir = r.workDir",
+            "Set cmd.Env using buildEnv(os.Environ(), r.env) to apply safety defaults with deduplication",
+            "Capture stdout and stderr using bytes.Buffer (cmd.Stdout, cmd.Stderr)",
+            "On non-zero exit: return stdout, stderr, and a *GitError{Command: strings.Join(args, ' '), ExitCode: exitCode, Stderr: stderr}",
+            "On binary-not-found or other os/exec error: return the raw error directly (not wrapped in GitError)",
+            "On context cancellation: return partial stdout/stderr alongside the context error"
+          ],
+          "test_spec_refs": [
+            "TS-10-5",
+            "TS-10-6",
+            "TS-10-7",
+            "TS-10-8"
+          ],
+          "requirement_refs": [
+            "10-REQ-2.1",
+            "10-REQ-2.2",
+            "10-REQ-2.3",
+            "10-REQ-2.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement RunExitCode method with system-error wrapping",
+          "details": [
+            "Implement RunExitCode(ctx context.Context, args ...string) (stdout []byte, stderr []byte, exitCode int, err error)",
+            "Use same exec.CommandContext setup as Run (workDir, buildEnv, stdout/stderr capture)",
+            "On successful subprocess run (including non-zero exit): return stdout, stderr, exitCode, nil",
+            "On system-level failure: return partial stdout/stderr, raw ExitCode from exec.ExitError.ExitCode() (may be -1 for SIGKILL), and fmt.Errorf('%w', originalErr)",
+            "Do NOT produce a GitError from RunExitCode — system errors are wrapped via fmt.Errorf('%w', ...)",
+            "Document that exitCode == -1 means signal termination and should be treated as secondary context only when err != nil"
+          ],
+          "test_spec_refs": [
+            "TS-10-9",
+            "TS-10-10",
+            "TS-10-11",
+            "TS-10-12"
+          ],
+          "requirement_refs": [
+            "10-REQ-3.1",
+            "10-REQ-3.2",
+            "10-REQ-3.3",
+            "10-REQ-3.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestNewRunner passes (TS-10-1 through TS-10-4)",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestRun passes (TS-10-5 through TS-10-8)",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestRunExitCode passes (TS-10-9 through TS-10-12)",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-1.1 through 10-REQ-1.4, 10-REQ-2.1 through 10-REQ-2.4, 10-REQ-3.1 through 10-REQ-3.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement BranchExists and CheckGitVersion",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement BranchExists method with three-way exit code discrimination",
+          "details": [
+            "Implement func (r *GitRunner) BranchExists(ctx context.Context, remote string, branch string) (bool, error)",
+            "Always prepend 'refs/heads/' to the branch parameter before passing to git ls-remote",
+            "Call RunExitCode with args: 'ls-remote', '--exit-code', remote, 'refs/heads/'+branch",
+            "Exit 0: return true, nil",
+            "Exit 2: return false, nil (branch genuinely missing)",
+            "Any other non-zero exit (1, 128, etc.): return false, fmt.Errorf('git ls-remote exited with code %d: %s', exitCode, stderr)",
+            "Add doc comment warning callers not to pass full ref paths and recommending a 30-second context deadline"
+          ],
+          "test_spec_refs": [
+            "TS-10-13",
+            "TS-10-14",
+            "TS-10-15",
+            "TS-10-16"
+          ],
+          "requirement_refs": [
+            "10-REQ-4.1",
+            "10-REQ-4.2",
+            "10-REQ-4.3",
+            "10-REQ-4.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement CheckGitVersion with version string parsing",
+          "details": [
+            "Implement func CheckGitVersion(ctx context.Context) error as a package-level function",
+            "Run 'git --version' using exec.CommandContext (not via GitRunner, since no workDir is needed)",
+            "Parse the output by extracting the first three dot-separated numeric components using regexp or strings scanning",
+            "Handle standard, Apple Git (trailing parenthetical), and release candidate (trailing .rc1) version strings",
+            "If fewer than three numeric components are found, return a parse error",
+            "If parsed version < 2.38, return error with format 'requires git >= 2.38, found <installed>'",
+            "Keep the minimum version floor (2.38) as an unexported constant — do not export it",
+            "Add doc comment recommending a 5-second context deadline for callers"
+          ],
+          "test_spec_refs": [
+            "TS-10-20",
+            "TS-10-21",
+            "TS-10-22",
+            "TS-10-23"
+          ],
+          "requirement_refs": [
+            "10-REQ-6.1",
+            "10-REQ-6.2",
+            "10-REQ-6.3",
+            "10-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -run TestBranchExists passes (TS-10-13 through TS-10-16)",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestCheckGitVersion passes (TS-10-20 through TS-10-23)",
+          "go test ./internal/gitcmd/... -count=1 -race -run TestVersionParsing passes (TS-10-21, TS-10-22)",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "Requirements 10-REQ-4.1 through 10-REQ-4.4 and 10-REQ-6.1 through 10-REQ-6.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Full test suite pass and coverage review",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run full gitcmd test suite with race detector and verify all tests pass",
+          "details": [
+            "Run go test ./internal/gitcmd/... -count=1 -race -v and confirm all tests pass",
+            "Confirm no data races are detected by the race detector",
+            "Confirm all 23 test cases (TS-10-1 through TS-10-23) are exercised",
+            "Review test output for any skipped or flaky tests and address them"
+          ],
+          "test_spec_refs": [
+            "TS-10-1",
+            "TS-10-5",
+            "TS-10-9",
+            "TS-10-13",
+            "TS-10-17",
+            "TS-10-20"
+          ],
+          "requirement_refs": [
+            "10-REQ-1.1",
+            "10-REQ-2.1",
+            "10-REQ-3.1",
+            "10-REQ-4.1",
+            "10-REQ-5.1",
+            "10-REQ-6.1",
+            "10-REQ-7.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Run go vet and confirm no linter warnings",
+          "details": [
+            "Run go vet ./internal/gitcmd/... and confirm zero warnings",
+            "Run go build ./... and confirm the entire module compiles cleanly",
+            "Check that no exported symbols were accidentally added beyond the intended public API (GitRunner, GitError, NewRunner, CheckGitVersion, BranchExists, Run, RunExitCode)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Verify standard library only — no external dependencies introduced",
+          "details": [
+            "Inspect go.mod and go.sum to confirm no new external dependencies were added by the gitcmd package",
+            "Confirm only standard library packages are imported: os/exec, context, bytes, fmt, strings, regexp (or equivalent stdlib)",
+            "Run go mod tidy and confirm go.mod is unchanged"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race passes with zero failures",
+          "go vet ./internal/gitcmd/... reports zero warnings",
+          "go build ./... succeeds with no errors",
+          "go mod tidy produces no changes to go.mod or go.sum",
+          "All 23 test cases TS-10-1 through TS-10-23 are confirmed passing"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: integration, stub audit, and call-site confirmation",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths and confirm no stubs remain",
+          "details": [
+            "Audit internal/gitcmd/ for stub markers: grep -r 'panic(\"not implemented\")' ./internal/gitcmd/ must return no results",
+            "Audit for bare 'return nil' in non-trivial paths (Run, RunExitCode, BranchExists, CheckGitVersion) — each must return meaningful values",
+            "Audit for '// TODO' comments that indicate unfinished implementation",
+            "Confirm NewRunner → buildEnv → exec.CommandContext chain is fully wired with no intermediate stubs",
+            "Confirm BranchExists calls RunExitCode and applies three-way discrimination logic (not a stub returning false, nil)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-1.1",
+            "10-REQ-2.1",
+            "10-REQ-3.1",
+            "10-REQ-4.1",
+            "10-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Verify return value propagation across all methods",
+          "details": [
+            "Confirm Run returns (stdout, stderr, *GitError) and callers can use errors.As to unwrap GitError",
+            "Confirm RunExitCode returns (stdout, stderr, exitCode, err) and the err is wrapped via fmt.Errorf('%w', ...) preserving os/exec error for errors.Is/errors.As",
+            "Confirm BranchExists returns (false, error) for non-zero non-2 exit codes and the error is non-nil and descriptive",
+            "Confirm CheckGitVersion returns an error matching 'requires git >= 2.38, found <installed>' for below-minimum versions"
+          ],
+          "test_spec_refs": [
+            "TS-10-7",
+            "TS-10-11",
+            "TS-10-14"
+          ],
+          "requirement_refs": [
+            "10-REQ-2.3",
+            "10-REQ-3.3",
+            "10-REQ-4.2",
+            "10-REQ-5.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Verify safety default deduplication is wired into every exec.Cmd invocation",
+          "details": [
+            "Confirm buildEnv is called in Run, RunExitCode, and any other method that creates an exec.Cmd",
+            "Confirm GIT_ALLOW_PROTOCOL=file:https:ssh, GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1 are always the last occurrences in cmd.Env",
+            "Confirm that caller-supplied values for safety-default keys are removed by the deduplication step before safety defaults are appended",
+            "Run go test ./internal/gitcmd/... -count=1 -race -run TestSafetyDefaults and confirm pass"
+          ],
+          "test_spec_refs": [
+            "TS-10-2",
+            "TS-10-3",
+            "TS-10-4"
+          ],
+          "requirement_refs": [
+            "10-REQ-7.1",
+            "10-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Run smoke tests and confirm end-to-end integration with real git binary",
+          "details": [
+            "Run go test ./internal/gitcmd/... -count=1 -race -v and confirm all integration tests pass against the real git binary",
+            "Confirm CheckGitVersion passes against the CI-installed git binary (>= 2.38)",
+            "Confirm BranchExists returns true for a branch pushed to a local bare repo and false for a missing branch",
+            "Confirm Run returns a *GitError with correct format for a failing git command",
+            "Confirm RunExitCode returns exitCode == -1 and err != nil when context is cancelled mid-execution"
+          ],
+          "test_spec_refs": [
+            "TS-10-SMOKE-1",
+            "TS-10-SMOKE-2",
+            "TS-10-SMOKE-3",
+            "TS-10-SMOKE-4",
+            "TS-10-SMOKE-5",
+            "TS-10-SMOKE-6",
+            "TS-10-SMOKE-7",
+            "TS-10-SMOKE-8"
+          ],
+          "requirement_refs": [
+            "10-REQ-1.1",
+            "10-REQ-2.1",
+            "10-REQ-4.1",
+            "10-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.5",
+          "title": "Confirm CheckGitVersion is called from hub startup (call-site wiring)",
+          "details": [
+            "Search the hub's main package or server initialization code for a call to gitcmd.CheckGitVersion",
+            "Confirm the call occurs before the merge queue or any other gitcmd consumer is started",
+            "If CheckGitVersion is not yet wired into the startup path, add the call and document the integration point",
+            "Confirm the startup call uses a context with a deadline (recommended: 5 seconds) as documented in the package"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-6.1",
+            "10-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "go test ./internal/gitcmd/... -count=1 -race -v passes with all 23 test cases green (TS-10-1 through TS-10-23)",
+          "grep -r 'panic(\"not implemented\")' ./internal/gitcmd/ returns no results (stub audit)",
+          "grep -r '// TODO' ./internal/gitcmd/ returns no unresolved implementation TODOs",
+          "go vet ./internal/gitcmd/... reports zero warnings",
+          "go build ./... succeeds with no errors",
+          "gitcmd.CheckGitVersion is confirmed called from hub startup before merge queue initialization",
+          "Safety defaults (GIT_ALLOW_PROTOCOL, GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM) are confirmed present in every exec.Cmd.Env via TS-10-2, TS-10-3, TS-10-4",
+          "BranchExists three-way discrimination confirmed via TS-10-13, TS-10-14, TS-10-15 passing against real git binary"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "10-REQ-1.1",
+      "test_spec_id": "TS-10-1",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-1.2",
+      "test_spec_id": "TS-10-2",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-1.3",
+      "test_spec_id": "TS-10-3",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-1.4",
+      "test_spec_id": "TS-10-4",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.1",
+      "test_spec_id": "TS-10-5",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.2",
+      "test_spec_id": "TS-10-6",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.3",
+      "test_spec_id": "TS-10-7",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.4",
+      "test_spec_id": "TS-10-8",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.1",
+      "test_spec_id": "TS-10-9",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.2",
+      "test_spec_id": "TS-10-10",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.3",
+      "test_spec_id": "TS-10-11",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.4",
+      "test_spec_id": "TS-10-12",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.1",
+      "test_spec_id": "TS-10-13",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.2",
+      "test_spec_id": "TS-10-14",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.3",
+      "test_spec_id": "TS-10-15",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.4",
+      "test_spec_id": "TS-10-16",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.1",
+      "test_spec_id": "TS-10-17",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.2",
+      "test_spec_id": "TS-10-18",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.3",
+      "test_spec_id": "TS-10-19",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.1",
+      "test_spec_id": "TS-10-20",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.2",
+      "test_spec_id": "TS-10-21",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.3",
+      "test_spec_id": "TS-10-22",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.4",
+      "test_spec_id": "TS-10-23",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-7.1",
+      "test_spec_id": "TS-10-24",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-7.2",
+      "test_spec_id": "TS-10-25",
+      "task_id": "6.3",
+      "test_path": null
+    }
+  ]
+}
