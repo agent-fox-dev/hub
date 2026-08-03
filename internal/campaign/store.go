@@ -60,3 +60,14 @@ func (s *Store) HasActiveCampaignForBranch(_ context.Context, _, _ string) (bool
 func (s *Store) CancelCampaign(_ context.Context, _ string) error {
 	return nil // stub
 }
+
+// ListCampaigns returns campaigns for a workspace, optionally filtered by status.
+// If status is empty, all campaigns are returned.
+func (s *Store) ListCampaigns(_ context.Context, _, _ string) ([]Campaign, error) {
+	return nil, nil // stub
+}
+
+// GetCampaignSpec retrieves a single campaign_specs row by campaign ID and spec ID.
+func (s *Store) GetCampaignSpec(_ context.Context, _, _ string) (*CampaignSpec, error) {
+	return nil, nil // stub
+}

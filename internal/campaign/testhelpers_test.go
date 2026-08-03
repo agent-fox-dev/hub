@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -115,11 +116,14 @@ func seedCampaignSpec(t *testing.T, db *sql.DB, campaignID, specID, status, bran
 
 // handlerTestEnv holds a test HTTP server and database for integration tests.
 type handlerTestEnv struct {
-	echo *echo.Echo
-	db   *sql.DB
+	echo    *echo.Echo
+	db      *sql.DB
+	handler *Handler
 }
 
 // newHandlerTestEnv creates an echo server with campaign routes mounted for testing.
+// The handler is accessible via env.handler for injecting test dependencies
+// (e.g., gitOps, workspaceRoot).
 func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	t.Helper()
 	db := openTestDB(t)
@@ -130,12 +134,17 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	// Apply test auth middleware.
 	api.Use(testAuthMiddleware())
 
-	// Register campaign routes.
-	if err := RegisterRoutes(api, db); err != nil {
-		t.Fatalf("RegisterRoutes() returned error: %v", err)
-	}
+	// Create handler directly so tests can access it.
+	h := NewHandler(db)
 
-	return &handlerTestEnv{echo: e, db: db}
+	// Register all campaign routes.
+	campaigns := api.Group("/workspaces/:slug/campaigns")
+	campaigns.POST("", h.createCampaign)
+	campaigns.GET("", h.listCampaigns)
+	campaigns.GET("/:id", h.getCampaign)
+	campaigns.DELETE("/:id", h.cancelCampaign)
+
+	return &handlerTestEnv{echo: e, db: db, handler: h}
 }
 
 // testAuthMiddleware returns middleware that reads apikit.AuthInfo from the
@@ -234,4 +243,119 @@ func (m *mockTasksReader) ReadTasksJSON(_ context.Context, specID string) (*Task
 		return tj, nil
 	}
 	return nil, fmt.Errorf("no tasks.json for spec %s", specID)
+}
+
+// seedCampaignSpecFull inserts a campaign_specs row with all fields including
+// conflict_details and blocked_by_merge for test setup.
+func seedCampaignSpecFull(t *testing.T, db *sql.DB, campaignID, specID, status, branchName, branchSHA, conflictDetails, blockedByMerge string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(
+		`INSERT INTO campaign_specs (campaign_id, spec_id, status, branch_name, branch_sha, conflict_details, blocked_by_merge, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		campaignID, specID, status, branchName, branchSHA, conflictDetails, blockedByMerge, now,
+	)
+	if err != nil {
+		t.Fatalf("seedCampaignSpecFull(%q, %q) returned error: %v", campaignID, specID, err)
+	}
+}
+
+// mockGitOps implements GitOps for tests, tracking calls and optionally
+// failing on a specific create call.
+type mockGitOps struct {
+	createCalls []string // branch names passed to CreateBranch
+	deleteCalls []string // branch names passed to DeleteBranch
+	failOnNth   int      // fail on the Nth CreateBranch call (1-indexed); 0 = never fail
+	callCount   int      // internal counter for CreateBranch calls
+	defaultSHA  string   // SHA returned for successful CreateBranch/ResolveRef
+}
+
+func newMockGitOps() *mockGitOps {
+	return &mockGitOps{
+		defaultSHA: "abcdef1234567890abcdef1234567890abcdef12",
+	}
+}
+
+func (m *mockGitOps) CreateBranch(_ context.Context, _, branchName, _ string) (string, error) {
+	m.callCount++
+	m.createCalls = append(m.createCalls, branchName)
+	if m.failOnNth > 0 && m.callCount == m.failOnNth {
+		return "", fmt.Errorf("mock git error: failed to create branch %s", branchName)
+	}
+	return m.defaultSHA, nil
+}
+
+func (m *mockGitOps) DeleteBranch(_ context.Context, _, branchName string) error {
+	m.deleteCalls = append(m.deleteCalls, branchName)
+	return nil
+}
+
+func (m *mockGitOps) BranchExists(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockGitOps) ResolveRef(_ context.Context, _, _ string) (string, error) {
+	return m.defaultSHA, nil
+}
+
+// setupWorkspaceDir creates a temporary workspace directory structure with
+// spec directories containing tasks.json files. Returns the workspace root path.
+//
+// specTasks maps spec directory names (e.g., "07_secrets_variables") to their
+// tasks.json content as raw JSON strings. Pass nil to omit tasks.json for a spec.
+func setupWorkspaceDir(t *testing.T, slug string, specTasks map[string]*string) string {
+	t.Helper()
+	root := t.TempDir()
+
+	specsDir := fmt.Sprintf("%s/%s/trunk/.agent-fox/specs", root, slug)
+
+	for specDir, content := range specTasks {
+		dir := fmt.Sprintf("%s/%s", specsDir, specDir)
+		if err := mkdirAll(dir); err != nil {
+			t.Fatalf("failed to create spec dir %s: %v", dir, err)
+		}
+		if content != nil {
+			path := fmt.Sprintf("%s/tasks.json", dir)
+			if err := writeFile(path, *content); err != nil {
+				t.Fatalf("failed to write tasks.json for %s: %v", specDir, err)
+			}
+		}
+	}
+
+	return root
+}
+
+// mkdirAll creates a directory and all parents. Test helper wrapping os.MkdirAll.
+func mkdirAll(path string) error {
+	return os.MkdirAll(path, 0o755)
+}
+
+// writeFile writes content to a file. Test helper wrapping os.WriteFile.
+func writeFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// strPtr returns a pointer to s. Useful for optional string arguments in test helpers.
+func strPtr(s string) *string {
+	return &s
+}
+
+// parseJSONArray parses the response body as a JSON array for list endpoint tests.
+func parseJSONArray(t *testing.T, rec *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+	var resp []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode JSON array response: %v", err)
+	}
+	return resp
+}
+
+// readAuth returns an apikit.AuthInfo for a PAT with campaigns:read scope.
+func readAuth(userID string) *apikit.AuthInfo {
+	return patAuth(userID, "campaigns:read")
+}
+
+// readWriteAuth returns an apikit.AuthInfo for a PAT with both read and write scopes.
+func readWriteAuth(userID string) *apikit.AuthInfo {
+	return patAuth(userID, "campaigns:read", "campaigns:write")
 }

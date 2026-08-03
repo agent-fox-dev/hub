@@ -9,9 +9,11 @@ import (
 
 // Handler implements the campaign REST API endpoints.
 type Handler struct {
-	store     *Store
-	scheduler *Scheduler
-	db        *sql.DB
+	store         *Store
+	scheduler     *Scheduler
+	db            *sql.DB
+	gitOps        GitOps
+	workspaceRoot string
 }
 
 // NewHandler creates a new campaign Handler.
@@ -31,12 +33,26 @@ func RegisterRoutes(g *echo.Group, db *sql.DB) error {
 
 	campaigns := g.Group("/workspaces/:slug/campaigns")
 	campaigns.POST("", h.createCampaign)
+	campaigns.GET("", h.listCampaigns)
+	campaigns.GET("/:id", h.getCampaign)
 	campaigns.DELETE("/:id", h.cancelCampaign)
 
 	return nil
 }
 
 func (h *Handler) createCampaign(c echo.Context) error {
+	return c.JSON(http.StatusNotImplemented, map[string]string{
+		"error": "not implemented",
+	})
+}
+
+func (h *Handler) listCampaigns(c echo.Context) error {
+	return c.JSON(http.StatusNotImplemented, map[string]string{
+		"error": "not implemented",
+	})
+}
+
+func (h *Handler) getCampaign(c echo.Context) error {
 	return c.JSON(http.StatusNotImplemented, map[string]string{
 		"error": "not implemented",
 	})

@@ -27,3 +27,8 @@ func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 func hasCampaignWriteAccess(auth *apikit.AuthInfo) bool {
 	return hasScope(auth, "campaigns:write")
 }
+
+// hasCampaignReadAccess reports whether the credential can read campaign status and DAG.
+func hasCampaignReadAccess(auth *apikit.AuthInfo) bool {
+	return hasScope(auth, "campaigns:read")
+}
