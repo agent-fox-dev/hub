@@ -92,3 +92,32 @@ func mergeWriteAuth(userID string) *apikit.AuthInfo {
 		Permissions:    []string{"merges:write"},
 	}
 }
+
+// mergeReadAuth returns an AuthInfo for a user with merges:read scope.
+func mergeReadAuth(userID string) *apikit.AuthInfo {
+	return &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         userID,
+		Permissions:    []string{"merges:read"},
+	}
+}
+
+// newMergeHTTPTestEnvWithCampaigns creates a test environment with both
+// merge_jobs and campaign tables. Used for tests that need campaign_id
+// and spec_id inference from source_ref.
+func newMergeHTTPTestEnvWithCampaigns(t *testing.T) *mergeHTTPTestEnv {
+	t.Helper()
+	db := openTestDBNoSchema(t)
+	setupMergeJobsTable(t, db)
+	setupCampaignTables(t, db)
+
+	e := echo.New()
+	api := e.Group("/api/v1")
+	api.Use(mergeTestAuthMiddleware())
+
+	if err := RegisterMergeRoutes(api, db); err != nil {
+		t.Fatalf("RegisterMergeRoutes() returned error: %v", err)
+	}
+
+	return &mergeHTTPTestEnv{e: e, db: db}
+}
