@@ -143,6 +143,7 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	campaigns.GET("", h.listCampaigns)
 	campaigns.GET("/:id", h.getCampaign)
 	campaigns.DELETE("/:id", h.cancelCampaign)
+	campaigns.POST("/:id/specs/:spec_id/resolve", h.resolveSpec)
 
 	return &handlerTestEnv{echo: e, db: db, handler: h}
 }
@@ -263,11 +264,15 @@ func seedCampaignSpecFull(t *testing.T, db *sql.DB, campaignID, specID, status, 
 // mockGitOps implements GitOps for tests, tracking calls and optionally
 // failing on a specific create call.
 type mockGitOps struct {
-	createCalls []string // branch names passed to CreateBranch
-	deleteCalls []string // branch names passed to DeleteBranch
-	failOnNth   int      // fail on the Nth CreateBranch call (1-indexed); 0 = never fail
-	callCount   int      // internal counter for CreateBranch calls
-	defaultSHA  string   // SHA returned for successful CreateBranch/ResolveRef
+	createCalls     []string              // branch names passed to CreateBranch
+	deleteCalls     []string              // branch names passed to DeleteBranch
+	failOnNth       int                   // fail on the Nth CreateBranch call (1-indexed); 0 = never fail
+	callCount       int                   // internal counter for CreateBranch calls
+	defaultSHA      string                // SHA returned for successful CreateBranch/ResolveRef
+	rebaseCalls     []string              // branch names passed to Rebase, in call order
+	rebaseConflicts map[string][]string   // branch → conflict file paths; non-nil entry = conflict
+	rebaseErrors    map[string]error       // branch → error to return from Rebase
+	rebaseSHA       string                // SHA returned for clean rebases (defaults to defaultSHA)
 }
 
 func newMockGitOps() *mockGitOps {
@@ -296,6 +301,25 @@ func (m *mockGitOps) BranchExists(_ context.Context, _, _ string) (bool, error) 
 
 func (m *mockGitOps) ResolveRef(_ context.Context, _, _ string) (string, error) {
 	return m.defaultSHA, nil
+}
+
+func (m *mockGitOps) Rebase(_ context.Context, _, branchName, _ string) (string, []string, error) {
+	m.rebaseCalls = append(m.rebaseCalls, branchName)
+	if m.rebaseErrors != nil {
+		if err, ok := m.rebaseErrors[branchName]; ok {
+			return "", nil, err
+		}
+	}
+	if m.rebaseConflicts != nil {
+		if conflicts, ok := m.rebaseConflicts[branchName]; ok && len(conflicts) > 0 {
+			return "", conflicts, nil
+		}
+	}
+	sha := m.rebaseSHA
+	if sha == "" {
+		sha = m.defaultSHA
+	}
+	return sha, nil, nil
 }
 
 // setupWorkspaceDir creates a temporary workspace directory structure with

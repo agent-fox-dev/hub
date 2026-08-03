@@ -13,6 +13,8 @@ type Handler struct {
 	scheduler     *Scheduler
 	db            *sql.DB
 	gitOps        GitOps
+	rebaseEngine  *RebaseEngine
+	authz         *Authz
 	workspaceRoot string
 }
 
@@ -36,6 +38,7 @@ func RegisterRoutes(g *echo.Group, db *sql.DB) error {
 	campaigns.GET("", h.listCampaigns)
 	campaigns.GET("/:id", h.getCampaign)
 	campaigns.DELETE("/:id", h.cancelCampaign)
+	campaigns.POST("/:id/specs/:spec_id/resolve", h.resolveSpec)
 
 	return nil
 }
@@ -59,6 +62,12 @@ func (h *Handler) getCampaign(c echo.Context) error {
 }
 
 func (h *Handler) cancelCampaign(c echo.Context) error {
+	return c.JSON(http.StatusNotImplemented, map[string]string{
+		"error": "not implemented",
+	})
+}
+
+func (h *Handler) resolveSpec(c echo.Context) error {
 	return c.JSON(http.StatusNotImplemented, map[string]string{
 		"error": "not implemented",
 	})

@@ -17,4 +17,10 @@ type GitOps interface {
 
 	// ResolveRef returns the SHA for the given ref (branch name, HEAD, etc.).
 	ResolveRef(ctx context.Context, repoPath, ref string) (sha string, err error)
+
+	// Rebase rebases branchName onto ontoRef. For a clean rebase, returns
+	// (newSHA, nil, nil). For a conflict, returns ("", conflictFiles, nil)
+	// where conflictFiles lists the conflicting file paths. For unexpected
+	// errors, returns ("", nil, err).
+	Rebase(ctx context.Context, repoPath, branchName, ontoRef string) (newSHA string, conflictFiles []string, err error)
 }

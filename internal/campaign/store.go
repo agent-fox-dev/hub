@@ -71,3 +71,15 @@ func (s *Store) ListCampaigns(_ context.Context, _, _ string) ([]Campaign, error
 func (s *Store) GetCampaignSpec(_ context.Context, _, _ string) (*CampaignSpec, error) {
 	return nil, nil // stub
 }
+
+// UpdateSpecBranchSHA updates the branch_sha for a campaign spec after a
+// clean rebase.
+func (s *Store) UpdateSpecBranchSHA(_ context.Context, _, _, _ string) error {
+	return nil // stub
+}
+
+// SetSpecBlocked sets a spec to blocked status with conflict details and the
+// ID of the merge job that triggered the conflict.
+func (s *Store) SetSpecBlocked(_ context.Context, _, _ string, _ []string, _ string) error {
+	return nil // stub
+}
