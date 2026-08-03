@@ -31,14 +31,33 @@ func NewScheduler(store *Store) *Scheduler {
 
 // CheckCompletion checks if all specs in the campaign have merged status
 // and transitions the campaign to completed if so.
-func (s *Scheduler) CheckCompletion(_ context.Context, _ string) error {
-	return nil // stub
+func (s *Scheduler) CheckCompletion(ctx context.Context, campaignID string) error {
+	specs, err := s.store.GetCampaignSpecs(ctx, campaignID)
+	if err != nil {
+		return err
+	}
+
+	allMerged := true
+	for _, spec := range specs {
+		if spec.Status != "merged" {
+			allMerged = false
+			break
+		}
+	}
+
+	if allMerged {
+		return s.store.UpdateCampaignStatus(ctx, campaignID, "completed")
+	}
+	return nil
 }
 
 // PropagateSpecFailure marks a spec as failed and immediately transitions
 // the campaign to failed status.
-func (s *Scheduler) PropagateSpecFailure(_ context.Context, _, _ string) error {
-	return nil // stub
+func (s *Scheduler) PropagateSpecFailure(ctx context.Context, campaignID, specID string) error {
+	if err := s.store.UpdateSpecStatus(ctx, campaignID, specID, "failed"); err != nil {
+		return err
+	}
+	return s.store.UpdateCampaignStatus(ctx, campaignID, "failed")
 }
 
 // HandlePostMerge processes a completed merge job. For successful merges
