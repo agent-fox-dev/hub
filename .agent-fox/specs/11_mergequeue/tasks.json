@@ -1188,7 +1188,7 @@
             "11-REQ-4.1",
             "11-REQ-4.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1210,7 +1210,7 @@
             "11-REQ-4.E1",
             "11-REQ-4.E2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
