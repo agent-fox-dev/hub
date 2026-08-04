@@ -40,6 +40,7 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--org` | no | string | Organization slug to associate the workspace with (resolved to UUID) |
 | `--display-name` | no | string | Human-readable label; defaults to slug value if omitted |
 | `--description` | no | string | Free-form text describing the workspace; defaults to empty string |
+| `--sync-mode` | no | string | Upstream sync mode: `pull_only` (default) or `disabled`; invalid values are rejected client-side |
 | `--git-pat` | no | string | Personal access token for authenticating against a private repository |
 | `--git-username` | no | string | Git username for HTTP basic auth (must be paired with `--git-password`) |
 | `--git-password` | no | string | Git password for HTTP basic auth (must be paired with `--git-username`) |

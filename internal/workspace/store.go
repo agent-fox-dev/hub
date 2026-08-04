@@ -200,11 +200,11 @@ func updateWorkspaceStatus(db *sql.DB, slug, status string) (*Workspace, error) 
 // updated_at. This is used by the PATCH handler after loading the current state
 // and applying only the provided field changes to the in-memory struct.
 // Returns the updated workspace, or an error if the update fails.
-func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID *string) (*Workspace, error) {
+func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID *string, syncMode string) (*Workspace, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`UPDATE workspaces SET display_name = ?, description = ?, org_id = ?, updated_at = ? WHERE slug = ?`,
-		displayName, description, orgID, now, slug,
+		`UPDATE workspaces SET display_name = ?, description = ?, org_id = ?, sync_mode = ?, updated_at = ? WHERE slug = ?`,
+		displayName, description, orgID, syncMode, now, slug,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update workspace %q: %w", slug, err)

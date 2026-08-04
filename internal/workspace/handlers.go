@@ -132,6 +132,13 @@ func buildHubURLMap(db *sql.DB, workspaces []*Workspace) map[string]*string {
 	return result
 }
 
+// validSyncModes lists the accepted values for the sync_mode field.
+// Used by both the create and PATCH handlers for validation.
+var validSyncModes = map[string]bool{
+	"pull_only": true,
+	"disabled":  true,
+}
+
 // createWorkspaceRequest represents the JSON body of a create workspace request.
 type createWorkspaceRequest struct {
 	Slug        string  `json:"slug"`
@@ -140,6 +147,7 @@ type createWorkspaceRequest struct {
 	OrgID       *string `json:"org_id"`
 	DisplayName *string `json:"display_name"` // nullable: nil or empty → slug
 	Description *string `json:"description"`  // nullable: nil → ""
+	SyncMode    *string `json:"sync_mode"`    // nullable: nil → "pull_only" (13-REQ-2.1)
 
 	// Optional git credential fields (09-REQ-2.1).
 	// PAT and username/password are mutually exclusive.
@@ -306,6 +314,16 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
 		}
 
+		// 13-REQ-2.1: Validate sync_mode if provided.
+		syncMode := "pull_only" // default
+		if req.SyncMode != nil {
+			if !validSyncModes[*req.SyncMode] {
+				return respondError(c, http.StatusBadRequest,
+					"invalid sync_mode value: must be 'pull_only' or 'disabled'")
+			}
+			syncMode = *req.SyncMode
+		}
+
 		// ---- Credential validation via ls-remote (09-REQ-3) ----
 
 		if hasCreds && validateCredentialsFn != nil {
@@ -376,6 +394,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			DisplayName: displayName,
 			Description: description,
 			CloneStatus: "pending",
+			SyncMode:    syncMode,
 		}
 
 		if err := insertWorkspace(db, ws); err != nil {
@@ -510,6 +529,8 @@ type updatePatchFields struct {
 	Description    *string // nil = JSON null, non-nil = provided value
 	SetOrgID       bool
 	OrgID          *string // nil = JSON null, non-nil = provided value
+	SetSyncMode    bool
+	SyncMode       *string // nil = JSON null, non-nil = provided value (13-REQ-2.2)
 }
 
 // handleUpdateWorkspace handles PATCH /api/v1/workspaces/:slug.
@@ -586,6 +607,28 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		// 13-REQ-2.2: Parse sync_mode from the PATCH body.
+		if raw, ok := rawBody["sync_mode"]; ok {
+			fields.SetSyncMode = true
+			mutableCount++
+			if string(raw) != "null" {
+				var s string
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return respondError(c, http.StatusBadRequest, "invalid sync_mode value")
+				}
+				// 13-REQ-2.E1: Validate sync_mode value before proceeding.
+				if !validSyncModes[s] {
+					return respondError(c, http.StatusBadRequest,
+						"invalid sync_mode value: must be 'pull_only' or 'disabled'")
+				}
+				fields.SyncMode = &s
+			} else {
+				// null sync_mode is not a valid value — reject it.
+				return respondError(c, http.StatusBadRequest,
+					"invalid sync_mode value: must be 'pull_only' or 'disabled'")
+			}
+		}
+
 		// Reject empty body (no mutable fields provided).
 		if mutableCount == 0 {
 			return respondError(c, http.StatusBadRequest, "request body must contain at least one updatable field")
@@ -633,9 +676,14 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		// 13-REQ-2.2: Apply sync_mode if provided.
+		if fields.SetSyncMode {
+			ws.SyncMode = *fields.SyncMode
+		}
+
 		// Persist the update: write all mutable fields (unchanged ones retain
 		// their loaded values) and refresh updated_at.
-		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID)
+		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID, ws.SyncMode)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
 		}

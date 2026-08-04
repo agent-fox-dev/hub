@@ -72,6 +72,7 @@ func newCreateCmd() *cobra.Command {
 		org         string
 		displayName string
 		description string
+		syncMode    string
 		gitPAT      string
 		gitUsername  string
 		gitPassword string
@@ -129,6 +130,15 @@ func newCreateCmd() *cobra.Command {
 					"git credentials require an HTTPS git_url"))
 			}
 
+			// 13-REQ-2.E3: Validate --sync-mode flag before making any API call.
+			if cmd.Flags().Changed("sync-mode") {
+				validModes := map[string]bool{"pull_only": true, "disabled": true}
+				if !validModes[syncMode] {
+					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+						"invalid --sync-mode value: must be 'pull_only' or 'disabled'"))
+				}
+			}
+
 			client, err := apikit.CLIClientFromCmd(cmd)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
@@ -146,6 +156,9 @@ func newCreateCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("description") {
 				body["description"] = description
+			}
+			if cmd.Flags().Changed("sync-mode") {
+				body["sync_mode"] = syncMode
 			}
 
 			if org != "" {
@@ -178,6 +191,7 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&org, "org", "", "Organization slug (optional)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "Workspace display name (optional)")
 	cmd.Flags().StringVar(&description, "description", "", "Workspace description (optional)")
+	cmd.Flags().StringVar(&syncMode, "sync-mode", "", "Sync mode: 'pull_only' (default) or 'disabled' (optional)")
 	cmd.Flags().StringVar(&gitPAT, "git-pat", "", "Personal access token for private repo (optional)")
 	cmd.Flags().StringVar(&gitUsername, "git-username", "", "Git username for private repo (optional)")
 	cmd.Flags().StringVar(&gitPassword, "git-password", "", "Git password for private repo (optional)")

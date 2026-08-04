@@ -88,6 +88,11 @@ schema:
   "clone_status": "ready",
   "head_sha": "abc123def456...",
   "clone_error": null,
+  "sync_mode": "pull_only",
+  "sync_status": "idle",
+  "upstream_head_sha": null,
+  "last_sync_at": null,
+  "sync_error": null,
   "created_at": "2024-01-01T00:00:00Z",
   "updated_at": "2024-01-01T00:00:00Z"
 }
@@ -107,6 +112,11 @@ schema:
 | `clone_status` | string | Clone lifecycle state: `"pending"`, `"cloning"`, `"ready"`, `"failed"`, or `"archived"` |
 | `head_sha` | string or null | 40-character hex SHA of the HEAD commit. Set when clone_status is `"ready"` or `"archived"`. Null otherwise. |
 | `clone_error` | string or null | Error message when clone_status is `"failed"`. Null otherwise. |
+| `sync_mode` | string | Upstream sync mode: `"pull_only"` (default) or `"disabled"` |
+| `sync_status` | string | Current sync state: `"idle"` (default), `"syncing"`, or `"error"` |
+| `upstream_head_sha` | string or null | HEAD SHA of the upstream tracking branch at last fetch. Null until first sync. |
+| `last_sync_at` | string (RFC 3339) or null | Timestamp of the last successful sync. Null until first sync. |
+| `sync_error` | string or null | Error message from the most recent failed sync. Null when no error. |
 | `created_at` | string (RFC 3339) | Timestamp of workspace creation; immutable |
 | `updated_at` | string (RFC 3339) | Timestamp of last modification |
 
@@ -145,6 +155,7 @@ workspace requires a real user as owner.
   "org_id": "uuid-string",
   "display_name": "My Project",
   "description": "A description of the workspace",
+  "sync_mode": "pull_only",
   "git_pat": "ghp_xxxxxxxxxxxx",
   "git_username": "user",
   "git_password": "token-or-password"
@@ -159,6 +170,7 @@ workspace requires a real user as owner.
 | `org_id` | no | string (UUID) | Must reference an org the owner is a member of; when omitted or empty, the server auto-assigns the user's personal organization |
 | `display_name` | no | string | Max 128 characters; defaults to slug value if omitted or empty |
 | `description` | no | string | Max 1024 characters; defaults to empty string if omitted |
+| `sync_mode` | no | string | Upstream sync mode: `"pull_only"` (default) or `"disabled"`; invalid values are rejected with HTTP 400 |
 | `git_pat` | no | string | Personal access token for private repo auth; mutually exclusive with `git_username`/`git_password`; requires HTTPS `git_url` |
 | `git_username` | no | string | Git username for HTTP basic auth; must be paired with `git_password`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
 | `git_password` | no | string | Git password for HTTP basic auth; must be paired with `git_username`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
@@ -263,7 +275,8 @@ mutable fields. At least one field must be provided.
 {
   "display_name": "New Display Name",
   "description": "Updated description",
-  "org_id": "uuid-string"
+  "org_id": "uuid-string",
+  "sync_mode": "disabled"
 }
 ```
 
@@ -272,6 +285,7 @@ mutable fields. At least one field must be provided.
 | `display_name` | string or null | Max 128 characters | Setting to `null` clears the display name back to the workspace slug |
 | `description` | string or null | Max 1024 characters | Setting to `null` clears the description to an empty string |
 | `org_id` | string (UUID) or null | Must reference an org the owner is a member of | Setting to `null` removes the organization association |
+| `sync_mode` | string | Must be `"pull_only"` or `"disabled"` | Setting to `null` is rejected with HTTP 400 |
 
 **Partial Update Behavior:**
 
@@ -288,7 +302,7 @@ mutable fields. At least one field must be provided.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields |
+| 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields; `sync_mode` value is invalid or null |
 | 401 | Unauthenticated request |
 | 403 | Workspace owner is not a member of the organization specified in `org_id` |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
