@@ -61,8 +61,10 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 		t.Fatalf("rows iteration error: %v", err)
 	}
 
-	if len(columns) != 13 {
-		t.Errorf("got %d columns; want 13", len(columns))
+	// 13 original columns + 5 sync columns (sync_mode, sync_status,
+	// upstream_head_sha, last_sync_at, sync_error) = 18 total.
+	if len(columns) != 18 {
+		t.Errorf("got %d columns; want 18", len(columns))
 	}
 
 	// Verify each column's properties.

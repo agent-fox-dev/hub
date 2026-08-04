@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/labstack/echo/v4"
 	_ "modernc.org/sqlite"
 )
 
@@ -347,33 +348,115 @@ func TestSyncSchema_CreateDefaultValues(t *testing.T) {
 // 13-REQ-1.E2: Verifies that workspace API responses treat NULL sync_mode as
 // 'pull_only' and NULL sync_status as 'idle'. This tests defensive NULL
 // coalescing in the response serialization layer for pre-migration rows.
+//
+// The workspaces table uses NOT NULL DEFAULT for sync_mode and sync_status,
+// so NULL values cannot occur via normal INSERT/UPDATE. To test the coalescing
+// logic, this test creates a database with the old schema (pre-sync columns),
+// then adds sync columns WITHOUT NOT NULL constraints to simulate a
+// partially-applied or legacy migration where NULLs could appear.
 func TestSyncSchema_NullSyncFieldsCoalesced(t *testing.T) {
-	env := newTestEnv(t)
-	auth := adminAuth()
-
-	// Seed workspace directly in the database.
-	env.seedWorkspace(t, &Workspace{
-		Slug:        "premigration-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
-	})
-
-	// Simulate a pre-migration row by setting sync_mode and sync_status to NULL.
-	// This will fail if the columns do not exist yet or have NOT NULL constraints.
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = NULL, sync_status = NULL WHERE slug = ?`,
-		"premigration-ws",
-	)
+	// Build a database that simulates the pre-migration state: the workspaces
+	// table exists without sync columns, then we add them as nullable.
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		t.Fatalf("failed to set sync fields to NULL (column may not exist): %v", err)
+		t.Fatalf("failed to open in-memory database: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	t.Cleanup(func() { db.Close() })
+
+	// Create the old-style workspaces table (no sync columns).
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
+		slug         TEXT PRIMARY KEY,
+		git_url      TEXT NOT NULL,
+		branch       TEXT,
+		owner_id     TEXT NOT NULL,
+		org_id       TEXT,
+		status       TEXT NOT NULL DEFAULT 'active',
+		display_name TEXT NOT NULL DEFAULT '',
+		description  TEXT NOT NULL DEFAULT '',
+		clone_status TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
+		head_sha     TEXT,
+		clone_error  TEXT,
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("failed to create old workspaces table: %v", err)
 	}
 
+	// Add sync columns WITHOUT NOT NULL (simulating a legacy migration that
+	// does not enforce NOT NULL — the scenario 13-REQ-1.E2 describes).
+	legacyMigrations := []string{
+		`ALTER TABLE workspaces ADD COLUMN sync_mode TEXT`,
+		`ALTER TABLE workspaces ADD COLUMN sync_status TEXT`,
+		`ALTER TABLE workspaces ADD COLUMN upstream_head_sha TEXT`,
+		`ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT`,
+		`ALTER TABLE workspaces ADD COLUMN sync_error TEXT`,
+	}
+	for _, ddl := range legacyMigrations {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatalf("legacy migration failed: %v", err)
+		}
+	}
+
+	// Create org tables needed by RegisterRoutes → handler lookups.
+	orgSchemaSQL := []string{
+		`CREATE TABLE IF NOT EXISTS orgs (
+			id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+			slug TEXT NOT NULL UNIQUE, url TEXT, owner_id TEXT,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS org_members (
+			org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL, created_at TEXT NOT NULL,
+			PRIMARY KEY (org_id, user_id)
+		)`,
+	}
+	for _, stmt := range orgSchemaSQL {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("failed to create org schema: %v", err)
+		}
+	}
+
+	// Insert a workspace row with NULL sync_mode and sync_status (pre-migration row).
+	_, err = db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+		"premigration-ws", "https://github.com/example/repo.git", "alice-id", "active", "ready",
+	)
+	if err != nil {
+		t.Fatalf("failed to insert pre-migration workspace: %v", err)
+	}
+
+	// Verify sync fields are actually NULL in the database.
+	var syncMode, syncStatus *string
+	err = db.QueryRow(`SELECT sync_mode, sync_status FROM workspaces WHERE slug = ?`, "premigration-ws").Scan(&syncMode, &syncStatus)
+	if err != nil {
+		t.Fatalf("failed to read sync fields: %v", err)
+	}
+	if syncMode != nil {
+		t.Fatalf("precondition: sync_mode should be NULL; got %q", *syncMode)
+	}
+	if syncStatus != nil {
+		t.Fatalf("precondition: sync_status should be NULL; got %q", *syncStatus)
+	}
+
+	// Wire up a test server using this database.
+	e := echo.New()
+	api := e.Group("/api/v1")
+	api.Use(testAuthMiddleware())
+	if err := RegisterRoutes(api, db); err != nil {
+		t.Fatalf("RegisterRoutes() returned error: %v", err)
+	}
+
+	auth := adminAuth()
+
 	// GET the workspace and verify sync fields are coalesced to defaults.
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/premigration-ws", "", auth)
+	rec := (&testEnv{echo: e, db: db}).doRequest(t, http.MethodGet, "/api/v1/workspaces/premigration-ws", "", auth)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET returned %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET returned %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
 	var resp map[string]any

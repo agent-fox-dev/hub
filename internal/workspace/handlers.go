@@ -43,22 +43,41 @@ func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB) error
 
 // workspaceResponse converts a Workspace to a JSON-serializable map.
 // hubURL is included as-is; pass nil for workspaces without a hub URL.
+//
+// sync_mode and sync_status are coalesced to their defaults ("pull_only" and
+// "idle" respectively) when empty, providing defensive handling for
+// pre-migration rows (13-REQ-1.E2).
 func workspaceResponse(ws *Workspace, hubURL *string) map[string]any {
+	// 13-REQ-1.E2: Coalesce empty sync_mode/sync_status to defaults.
+	syncMode := ws.SyncMode
+	if syncMode == "" {
+		syncMode = "pull_only"
+	}
+	syncStatus := ws.SyncStatus
+	if syncStatus == "" {
+		syncStatus = "idle"
+	}
+
 	return map[string]any{
-		"slug":         ws.Slug,
-		"git_url":      ws.GitURL,
-		"hub_url":      hubURL,
-		"branch":       ws.Branch,
-		"owner_id":     ws.OwnerID,
-		"org_id":       ws.OrgID,
-		"status":       ws.Status,
-		"display_name": ws.DisplayName,
-		"description":  ws.Description,
-		"clone_status": ws.CloneStatus,
-		"head_sha":     ws.HeadSHA,
-		"clone_error":  ws.CloneError,
-		"created_at":   ws.CreatedAt,
-		"updated_at":   ws.UpdatedAt,
+		"slug":              ws.Slug,
+		"git_url":           ws.GitURL,
+		"hub_url":           hubURL,
+		"branch":            ws.Branch,
+		"owner_id":          ws.OwnerID,
+		"org_id":            ws.OrgID,
+		"status":            ws.Status,
+		"display_name":      ws.DisplayName,
+		"description":       ws.Description,
+		"clone_status":      ws.CloneStatus,
+		"head_sha":          ws.HeadSHA,
+		"clone_error":       ws.CloneError,
+		"created_at":        ws.CreatedAt,
+		"updated_at":        ws.UpdatedAt,
+		"sync_mode":         syncMode,
+		"sync_status":       syncStatus,
+		"upstream_head_sha": ws.UpstreamHeadSHA,
+		"last_sync_at":      ws.LastSyncAt,
+		"sync_error":        ws.SyncError,
 	}
 }
 
