@@ -845,8 +845,11 @@ func (q *Queue) Stop() error {
 // Returns ErrNotCancellable for jobs in running, completed, or dead_letter status.
 // Returns a not-found error if the job ID does not exist.
 func (q *Queue) CancelJob(jobID string) error {
-	var status string
-	err := q.db.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&status)
+	var status, typ, key string
+	var retryCount int
+	err := q.db.QueryRow(
+		"SELECT status, type, key, retry_count FROM jobs WHERE id = ?", jobID,
+	).Scan(&status, &typ, &key, &retryCount)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("jobqueue: job %q not found", jobID)
 	}
@@ -856,27 +859,37 @@ func (q *Queue) CancelJob(jobID string) error {
 
 	switch status {
 	case StatusCancelled:
-		return nil // Idempotent.
-	case StatusQueued, StatusFailed:
+		return nil // Idempotent (10-REQ-10.2).
+	case StatusQueued:
 		// Can be cancelled.
 	default:
+		// running, completed, dead_letter, failed → not cancellable (10-REQ-10.3).
 		return ErrNotCancellable
 	}
 
+	// Atomic cancel with WHERE status='queued' guard so a concurrent worker
+	// claim (queued→running) causes 0 rows affected (10-REQ-10.E2).
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = q.db.Exec(
-		"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-		StatusCancelled, now, jobID,
+	res, execErr := q.db.Exec(
+		"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+		StatusCancelled, now, jobID, StatusQueued,
 	)
-	if err != nil {
-		return fmt.Errorf("jobqueue: cancel job: %w", err)
+	if execErr != nil {
+		return fmt.Errorf("jobqueue: cancel job: %w", execErr)
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// The job was concurrently claimed by a worker (now running).
+		return ErrNotCancellable
 	}
 
 	q.logger.Debug("job cancelled",
 		"job_id", jobID,
-		"type", "",
-		"key", "",
+		"type", typ,
+		"key", key,
 		"status", StatusCancelled,
+		"retry_count", retryCount,
 	)
 
 	return nil
@@ -1007,7 +1020,7 @@ func (q *Queue) RequeueDeadLetter(jobID string) (string, error) {
 	}
 
 	if status != StatusDeadLetter {
-		return "", fmt.Errorf("jobqueue: job %q is in status %q, not dead_letter", jobID, status)
+		return "", fmt.Errorf("jobqueue: job %q is not in dead_letter status (current: %q)", jobID, status)
 	}
 
 	// Check for active (type, key) duplicate.
@@ -1021,12 +1034,27 @@ func (q *Queue) RequeueDeadLetter(jobID string) (string, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = q.db.Exec(
-		"UPDATE jobs SET status = ?, retry_count = 0, available_at = ?, updated_at = ? WHERE id = ?",
-		StatusQueued, now, now, jobID,
+	res, execErr := q.db.Exec(
+		"UPDATE jobs SET status = ?, retry_count = 0, available_at = ?, updated_at = ? WHERE id = ? AND status = ?",
+		StatusQueued, now, now, jobID, StatusDeadLetter,
 	)
-	if err != nil {
-		return "", fmt.Errorf("jobqueue: requeue: %w", err)
+	if execErr != nil {
+		return "", fmt.Errorf("jobqueue: requeue: %w", execErr)
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Another concurrent RequeueDeadLetter call already requeued this job.
+		// The job is now active (queued), so return it as a duplicate (10-REQ-7.E2).
+		var nowActiveID string
+		activeErr := q.db.QueryRow(
+			"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?)",
+			typ, key, StatusQueued, StatusRunning,
+		).Scan(&nowActiveID)
+		if activeErr == nil {
+			return nowActiveID, fmt.Errorf("jobqueue: active job %q exists for (%s, %s)", nowActiveID, typ, key)
+		}
+		return "", fmt.Errorf("jobqueue: job %q was concurrently modified", jobID)
 	}
 
 	// Wake a worker.
