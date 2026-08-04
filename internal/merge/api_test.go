@@ -59,7 +59,7 @@ func newMergeTestEnv(t *testing.T, branchRegistry map[string]bool) *mergeTestEnv
 
 	// Register the merge handler so merge-type jobs can be enqueued.
 	// Note: this will fail until RegisterHandler is implemented (task group 8).
-	_ = RegisterHandler(q)
+	_ = RegisterHandler(q, nil)
 
 	e := echo.New()
 	api := e.Group("/api/v1")
@@ -661,7 +661,7 @@ func newMergeTestEnvWithRebase(t *testing.T, branchRegistry map[string]bool, reb
 		t.Fatalf("jobqueue.New() returned error: %v", err)
 	}
 
-	_ = RegisterHandler(q)
+	_ = RegisterHandler(q, nil)
 
 	e := echo.New()
 	api := e.Group("/api/v1")

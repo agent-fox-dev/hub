@@ -18,7 +18,7 @@ import (
 func TestRegisterHandler_MergeType(t *testing.T) {
 	q, _ := newTestQueue(t)
 
-	err := RegisterHandler(q)
+	err := RegisterHandler(q, nil)
 	if err != nil {
 		t.Fatalf("RegisterHandler() returned error: %v", err)
 	}
@@ -48,13 +48,13 @@ func TestRegisterHandler_MergeType(t *testing.T) {
 func TestRegisterHandler_DuplicateRegistrationFails(t *testing.T) {
 	q, _ := newTestQueue(t)
 
-	err := RegisterHandler(q)
+	err := RegisterHandler(q, nil)
 	if err != nil {
 		t.Fatalf("first RegisterHandler() returned error: %v", err)
 	}
 
 	// Second registration must fail.
-	err = RegisterHandler(q)
+	err = RegisterHandler(q, nil)
 	if err == nil {
 		t.Fatal("expected error on duplicate RegisterHandler(), got nil")
 	}
@@ -72,7 +72,7 @@ func TestEnqueueMergeJob_KeyAndGroupFormat(t *testing.T) {
 	q, db := newTestQueue(t)
 
 	// Register the merge handler so the queue accepts merge-type jobs.
-	if err := RegisterHandler(q); err != nil {
+	if err := RegisterHandler(q, nil); err != nil {
 		t.Fatalf("RegisterHandler() returned error: %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestEnqueueMergeJob_KeyAndGroupFormat(t *testing.T) {
 func TestEnqueueMergeJob_SubmittedByAPIKey(t *testing.T) {
 	q, db := newTestQueue(t)
 
-	if err := RegisterHandler(q); err != nil {
+	if err := RegisterHandler(q, nil); err != nil {
 		t.Fatalf("RegisterHandler() returned error: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestEnqueueMergeJob_SubmittedByAPIKey(t *testing.T) {
 func TestEnqueueMergeJob_SubmittedByAdminToken(t *testing.T) {
 	q, db := newTestQueue(t)
 
-	if err := RegisterHandler(q); err != nil {
+	if err := RegisterHandler(q, nil); err != nil {
 		t.Fatalf("RegisterHandler() returned error: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestEnqueueMergeJob_SubmittedByAdminToken(t *testing.T) {
 func TestEnqueueMergeJob_SubmittedByPAT(t *testing.T) {
 	q, db := newTestQueue(t)
 
-	if err := RegisterHandler(q); err != nil {
+	if err := RegisterHandler(q, nil); err != nil {
 		t.Fatalf("RegisterHandler() returned error: %v", err)
 	}
 

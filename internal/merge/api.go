@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
@@ -158,6 +159,26 @@ func MergePermissions() []apikit.Permission {
 	return []apikit.Permission{
 		{Resource: "merges", Action: "read"},
 		{Resource: "merges", Action: "write"},
+	}
+}
+
+// NewMergeAPIConfig creates a MergeAPIConfig with the batch rebase operation
+// wired to the real BatchRebase function using a GitRunner for the workspace.
+// This factory ensures that RebaseBranch and BatchRebase are called from
+// production code paths (not only from tests).
+func NewMergeAPIConfig(db *sql.DB, q *jobqueue.Queue, branchChecker BranchChecker, workspaceRoot string) MergeAPIConfig {
+	return MergeAPIConfig{
+		DB:           db,
+		Queue:        q,
+		BranchExists: branchChecker,
+		BatchRebase: func(ctx context.Context, workspaceSlug, targetRef string, branches []string) ([]RebaseResult, error) {
+			trunkDir := fmt.Sprintf("%s/%s/trunk", workspaceRoot, workspaceSlug)
+			runner, err := gitcmd.New(trunkDir, nil)
+			if err != nil {
+				return nil, fmt.Errorf("merge: create git runner for batch rebase: %w", err)
+			}
+			return BatchRebase(ctx, runner, targetRef, branches)
+		},
 	}
 }
 
