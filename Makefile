@@ -65,8 +65,16 @@ hub-reset:
 		$(IMAGE):$(IMAGE_TAG) \
 		/usr/bin/hub --admin-email=hello@micku.me
 
-# Run the af-hub container with bin/ mounted for config and data
+# Run bin/hub directly using config/data created by hub-reset
 hub-run:
+	-mv bin/config/admin_token bin/config/token
+	XDG_CONFIG_HOME=$(CURDIR)/bin/config \
+	XDG_DATA_HOME=$(CURDIR)/bin/data \
+	ADMIN_TOKEN=$$(cat bin/config/token) \
+	./bin/hub
+
+# Run the af-hub container with bin/ mounted for config and data
+hub-runc:
 	-mv bin/config/admin_token bin/config/token
 	podman run --rm -it \
 		-p $(PORT):8080 \
