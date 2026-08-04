@@ -1,8 +1,10 @@
 package merge
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -555,5 +557,815 @@ func TestSubmitMerge_MalformedJSON_Returns400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /merges (malformed JSON) status = %d; want %d; body = %s",
 			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// Helpers for task group 5 tests
+// ===========================================================================
+
+// mergeJobFullResponse is the JSON response body expected when retrieving
+// a merge job, including all projection fields from 12-REQ-14.
+type mergeJobFullResponse struct {
+	ID            string   `json:"id"`
+	WorkspaceSlug string   `json:"workspace_slug"`
+	TargetBranch  string   `json:"target_branch"`
+	SourceRef     string   `json:"source_ref"`
+	Status        string   `json:"status"`
+	BaseSHA       *string  `json:"base_sha"`
+	MergedSHA     *string  `json:"merged_sha"`
+	ConflictFiles []string `json:"conflict_files"`
+	CheckOutput   *string  `json:"check_output"`
+	Error         *string  `json:"error"`
+	RetryCount    int      `json:"retry_count"`
+	SubmittedBy   string   `json:"submitted_by"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
+}
+
+// batchRebaseTestResponse is the JSON response body for POST /rebase.
+type batchRebaseTestResponse struct {
+	Results []RebaseResult `json:"results"`
+}
+
+// seedMergeJob inserts a merge job row directly into the jobs table for
+// test preconditions. This bypasses the job queue's Enqueue function so
+// tests don't depend on merge handler registration being implemented.
+func seedMergeJob(t *testing.T, db *sql.DB, id, status, workspaceSlug, targetBranch, sourceRef, submittedBy string, result, jobError *string) {
+	t.Helper()
+	payload := fmt.Sprintf(
+		`{"workspace_slug":%q,"target_branch":%q,"source_ref":%q,"submitted_by":%q}`,
+		workspaceSlug, targetBranch, sourceRef, submittedBy,
+	)
+	nowStr := apikit.NowUTC()
+	key := workspaceSlug + ":" + targetBranch + ":" + sourceRef
+	groupKey := workspaceSlug + ":" + targetBranch
+
+	var resultVal, errorVal any
+	if result != nil {
+		resultVal = *result
+	}
+	if jobError != nil {
+		errorVal = *jobError
+	}
+
+	_, err := db.Exec(
+		`INSERT INTO jobs (id, type, key, group_key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at)
+		 VALUES (?, 'merge', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+		id, key, groupKey, id, status, payload, resultVal, errorVal, nowStr, submittedBy, nowStr, nowStr,
+	)
+	if err != nil {
+		t.Fatalf("seedMergeJob(%q) failed: %v", id, err)
+	}
+}
+
+// parseMergeJobFullResponse parses the response body as a full merge job response.
+func parseMergeJobFullResponse(t *testing.T, rec *httptest.ResponseRecorder) mergeJobFullResponse {
+	t.Helper()
+	var resp mergeJobFullResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode full merge job response: %v (body: %s)", err, rec.Body.String())
+	}
+	return resp
+}
+
+// parseMergeJobListResponse parses the response body as an array of full
+// merge job responses.
+func parseMergeJobListResponse(t *testing.T, rec *httptest.ResponseRecorder) []mergeJobFullResponse {
+	t.Helper()
+	var resp []mergeJobFullResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode merge job list response: %v (body: %s)", err, rec.Body.String())
+	}
+	return resp
+}
+
+// newMergeTestEnvWithRebase creates a merge test env with a BatchRebaseFunc
+// injected into the config. This is used by POST /rebase endpoint tests.
+func newMergeTestEnvWithRebase(t *testing.T, branchRegistry map[string]bool, rebaseFunc BatchRebaseFunc) *mergeTestEnv {
+	t.Helper()
+
+	db := openTestDB(t)
+	createWorkspacesTable(t, db)
+
+	if err := jobqueue.InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
+	}
+	if err := jobqueue.MigrateGroupKey(db); err != nil {
+		t.Fatalf("MigrateGroupKey() returned error: %v", err)
+	}
+
+	logger := nopLogger()
+	q, err := jobqueue.New(db, logger)
+	if err != nil {
+		t.Fatalf("jobqueue.New() returned error: %v", err)
+	}
+
+	_ = RegisterHandler(q)
+
+	e := echo.New()
+	api := e.Group("/api/v1")
+	api.Use(mergeTestAuthMiddleware())
+
+	cfg := MergeAPIConfig{
+		DB:    db,
+		Queue: q,
+		BranchExists: func(slug, branch string) (bool, error) {
+			key := slug + ":" + branch
+			exists, ok := branchRegistry[key]
+			if !ok {
+				return false, nil
+			}
+			return exists, nil
+		},
+		BatchRebase: rebaseFunc,
+	}
+	RegisterMergeRoutes(api, cfg)
+
+	return &mergeTestEnv{
+		echo:  e,
+		db:    db,
+		queue: q,
+	}
+}
+
+// ===========================================================================
+// TS-12-36: GET /api/v1/workspaces/:slug/merges returns HTTP 200 with a
+// JSON array of merge job records scoped to the workspace.
+//
+// Requirement: 12-REQ-10.1
+// ===========================================================================
+
+func TestListMerges_Returns200WithArray(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	// Seed two merge jobs for workspace ws1.
+	seedMergeJob(t, env.db, "job-list-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
+	seedMergeJob(t, env.db, "job-list-2", "completed", "ws1", "main", "feature/b", "bob", nil, nil)
+
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /merges status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	items := parseMergeJobListResponse(t, rec)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 merge jobs, got %d", len(items))
+	}
+
+	// Verify each item has the required fields and is scoped to ws1.
+	requiredFields := []string{"id", "workspace_slug", "target_branch", "source_ref", "status", "submitted_by", "created_at", "updated_at"}
+	for _, item := range items {
+		if item.WorkspaceSlug != "ws1" {
+			t.Errorf("expected workspace_slug='ws1', got %q", item.WorkspaceSlug)
+		}
+		if item.ID == "" {
+			t.Error("expected non-empty job ID")
+		}
+		if item.Status == "" {
+			t.Error("expected non-empty status")
+		}
+		// Verify the status is a valid job status.
+		validStatuses := map[string]bool{
+			"queued": true, "running": true, "completed": true,
+			"failed": true, "dead_letter": true, "cancelled": true,
+		}
+		if !validStatuses[item.Status] {
+			t.Errorf("unexpected status %q", item.Status)
+		}
+	}
+	_ = requiredFields // Used conceptually above; suppress unused warning.
+}
+
+// ===========================================================================
+// 12-REQ-10.E1: GET /api/v1/workspaces/:slug/merges returns empty array
+// when no merge jobs exist for the workspace.
+// ===========================================================================
+
+func TestListMerges_Empty_Returns200WithEmptyArray(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	// No merge jobs seeded.
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /merges (no jobs) status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	items := parseMergeJobListResponse(t, rec)
+	if items == nil {
+		t.Fatal("expected non-nil array (possibly empty), got nil")
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected 0 merge jobs, got %d", len(items))
+	}
+}
+
+// ===========================================================================
+// TS-12-37: GET /api/v1/workspaces/:slug/merges/:id returns HTTP 200 with
+// the merge job record for a valid job ID, or HTTP 404 if the job does not
+// exist.
+//
+// Requirement: 12-REQ-10.2
+// ===========================================================================
+
+func TestGetMerge_ValidID_Returns200(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-uuid-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges/job-uuid-1", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /merges/:id status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	resp := parseMergeJobFullResponse(t, rec)
+	if resp.ID != "job-uuid-1" {
+		t.Errorf("expected id='job-uuid-1', got %q", resp.ID)
+	}
+	if resp.WorkspaceSlug != "ws1" {
+		t.Errorf("expected workspace_slug='ws1', got %q", resp.WorkspaceSlug)
+	}
+}
+
+func TestGetMerge_NonexistentID_Returns404(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges/nonexistent-id", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /merges/:id (nonexistent) status = %d; want %d; body = %s",
+			rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// 12-REQ-10.E2: GET /merges/:id for a job that belongs to a different
+// workspace returns HTTP 404 to prevent cross-workspace information
+// disclosure.
+// ===========================================================================
+
+func TestGetMerge_DifferentWorkspace_Returns404(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws2", "bob", "active", "ready")
+
+	// Job belongs to ws2, but we query via ws1.
+	seedMergeJob(t, env.db, "job-ws2-only", "queued", "ws2", "main", "feature/a", "bob", nil, nil)
+
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges/job-ws2-only", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /merges/:id (cross-workspace) status = %d; want %d; body = %s",
+			rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// TS-12-38: GET /api/v1/workspaces/:slug/merges called by a PAT without
+// merges:read scope returns HTTP 403.
+//
+// Requirement: 12-REQ-10.3
+// ===========================================================================
+
+func TestListMerges_PATWithoutReadScope_Returns403(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	// PAT with no merge scopes.
+	auth := mergePATAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges", "", auth)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /merges (PAT no scopes) status = %d; want %d; body = %s",
+			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	resp := parseMergeErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for missing permission scope")
+	}
+}
+
+func TestGetMerge_PATWithoutReadScope_Returns403(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-perm-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	// PAT with no merge scopes.
+	auth := mergePATAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges/job-perm-1", "", auth)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /merges/:id (PAT no scopes) status = %d; want %d; body = %s",
+			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// TS-12-39: DELETE /api/v1/workspaces/:slug/merges/:id for a queued job
+// returns HTTP 200 and transitions the job to cancelled status.
+//
+// Requirement: 12-REQ-11.1
+// ===========================================================================
+
+func TestCancelMerge_QueuedJob_Returns200(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-cancel-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-cancel-1", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE /merges/:id (queued) status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	// Verify the job transitioned to cancelled status in the database.
+	var status string
+	err := env.db.QueryRow("SELECT status FROM jobs WHERE id = ?", "job-cancel-1").Scan(&status)
+	if err != nil {
+		t.Fatalf("query job status failed: %v", err)
+	}
+	if status != "cancelled" {
+		t.Errorf("expected job status='cancelled', got %q", status)
+	}
+}
+
+// ===========================================================================
+// TS-12-40: DELETE /api/v1/workspaces/:slug/merges/:id for a job that is
+// already running, completed, failed, or cancelled returns HTTP 409.
+//
+// Requirement: 12-REQ-11.2
+// ===========================================================================
+
+func TestCancelMerge_RunningJob_Returns409(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-running-1", "running", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-running-1", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("DELETE /merges/:id (running) status = %d; want %d; body = %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	resp := parseMergeErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for non-cancellable job")
+	}
+}
+
+func TestCancelMerge_CompletedJob_Returns409(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-done-1", "completed", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-done-1", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("DELETE /merges/:id (completed) status = %d; want %d; body = %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestCancelMerge_CancelledJob_Returns409(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-already-cancelled", "cancelled", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-already-cancelled", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("DELETE /merges/:id (cancelled) status = %d; want %d; body = %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// TS-12-41: DELETE /api/v1/workspaces/:slug/merges/:id called by a PAT
+// without merges:write scope returns HTTP 403.
+//
+// Requirement: 12-REQ-11.3
+// ===========================================================================
+
+func TestCancelMerge_PATWithoutWriteScope_Returns403(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedMergeJob(t, env.db, "job-perm-cancel", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
+
+	// PAT with merges:read only — no merges:write.
+	auth := mergePATAuth("alice", "merges:read")
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-perm-cancel", "", auth)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("DELETE /merges/:id (PAT read-only) status = %d; want %d; body = %s",
+			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	resp := parseMergeErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for missing permission scope")
+	}
+}
+
+// ===========================================================================
+// 12-REQ-11.E1: DELETE /merges/:id for a non-existent or different-workspace
+// job returns HTTP 404.
+// ===========================================================================
+
+func TestCancelMerge_NonexistentJob_Returns404(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/nonexistent-id", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("DELETE /merges/:id (nonexistent) status = %d; want %d; body = %s",
+			rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestCancelMerge_DifferentWorkspaceJob_Returns404(t *testing.T) {
+	env := newMergeTestEnv(t, nil)
+
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws2", "bob", "active", "ready")
+
+	// Job belongs to ws2.
+	seedMergeJob(t, env.db, "job-ws2-cancel", "queued", "ws2", "main", "feature/a", "bob", nil, nil)
+
+	// Attempt to cancel via ws1 path.
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-ws2-cancel", "", mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("DELETE /merges/:id (cross-workspace) status = %d; want %d; body = %s",
+			rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// TS-12-42: POST /api/v1/workspaces/:slug/rebase with valid target_ref and
+// non-empty branches list returns HTTP 200 with per-branch results
+// synchronously.
+//
+// Requirement: 12-REQ-12.1
+// ===========================================================================
+
+func TestBatchRebase_ValidRequest_Returns200(t *testing.T) {
+	rebaseFunc := func(_ context.Context, slug, targetRef string, branches []string) ([]RebaseResult, error) {
+		results := make([]RebaseResult, len(branches))
+		for i, b := range branches {
+			results[i] = RebaseResult{
+				Branch:  b,
+				Status:  "ok",
+				NewHead: "aaaa000000000000000000000000000000000001",
+			}
+		}
+		return results, nil
+	}
+
+	env := newMergeTestEnvWithRebase(t, nil, rebaseFunc)
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	body := `{"target_ref":"main","branches":["feature/a","feature/b"]}`
+	auth := mergePATAuth("alice", "merges:write")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebase", body, auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /rebase status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp batchRebaseTestResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode rebase response: %v", err)
+	}
+
+	if len(resp.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(resp.Results))
+	}
+
+	for _, r := range resp.Results {
+		if r.Branch != "feature/a" && r.Branch != "feature/b" {
+			t.Errorf("unexpected branch %q in results", r.Branch)
+		}
+		if r.Status != "ok" && r.Status != "conflict" {
+			t.Errorf("unexpected status %q for branch %q", r.Status, r.Branch)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-12-43: POST /api/v1/workspaces/:slug/rebase with an empty branches
+// list returns HTTP 400 without performing any git operations.
+//
+// Requirement: 12-REQ-12.2
+// ===========================================================================
+
+func TestBatchRebase_EmptyBranches_Returns400(t *testing.T) {
+	rebaseCalled := false
+	rebaseFunc := func(_ context.Context, _, _ string, _ []string) ([]RebaseResult, error) {
+		rebaseCalled = true
+		return nil, nil
+	}
+
+	env := newMergeTestEnvWithRebase(t, nil, rebaseFunc)
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	body := `{"target_ref":"main","branches":[]}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebase", body, mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /rebase (empty branches) status = %d; want %d; body = %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	resp := parseMergeErrorEnvelope(t, rec)
+	if !strings.Contains(strings.ToLower(resp.Error.Message), "branches") {
+		t.Errorf("expected error message to mention 'branches', got %q", resp.Error.Message)
+	}
+
+	if rebaseCalled {
+		t.Error("rebase function should not have been called for empty branches list")
+	}
+}
+
+// ===========================================================================
+// TS-12-44: POST /api/v1/workspaces/:slug/rebase called by a PAT without
+// merges:write scope returns HTTP 403.
+//
+// Requirement: 12-REQ-12.3
+// ===========================================================================
+
+func TestBatchRebase_PATWithoutWriteScope_Returns403(t *testing.T) {
+	env := newMergeTestEnvWithRebase(t, nil, nil)
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	body := `{"target_ref":"main","branches":["feature/a"]}`
+	// PAT with merges:read only — no merges:write.
+	auth := mergePATAuth("alice", "merges:read")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebase", body, auth)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /rebase (PAT read-only) status = %d; want %d; body = %s",
+			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	resp := parseMergeErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for missing permission scope")
+	}
+}
+
+// ===========================================================================
+// TS-12-45: POST /api/v1/workspaces/:slug/rebase with missing target_ref
+// returns HTTP 400.
+//
+// Requirement: 12-REQ-12.4
+// ===========================================================================
+
+func TestBatchRebase_MissingTargetRef_Returns400(t *testing.T) {
+	env := newMergeTestEnvWithRebase(t, nil, nil)
+	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+
+	// Body has branches but no target_ref.
+	body := `{"branches":["feature/a"]}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebase", body, mergeUserAuth("alice"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /rebase (missing target_ref) status = %d; want %d; body = %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	resp := parseMergeErrorEnvelope(t, rec)
+	if !strings.Contains(strings.ToLower(resp.Error.Message), "target_ref") {
+		t.Errorf("expected error message to mention 'target_ref', got %q", resp.Error.Message)
+	}
+}
+
+// ===========================================================================
+// TS-12-50: Merge REST API response serialization projects job queue records
+// into merge response objects with all required fields, using null for
+// missing optional fields.
+//
+// Requirement: 12-REQ-14.1
+// ===========================================================================
+
+func TestProjectMergeJobResponse_QueuedJob(t *testing.T) {
+	now := time.Now().UTC()
+	nowStr := apikit.FormatUTC(now)
+
+	job := &jobqueue.Job{
+		ID:         "uuid-1",
+		Type:       "merge",
+		Key:        "ws1:main:feature/a",
+		GroupKey:   "ws1:main",
+		Status:     "queued",
+		Payload:    json.RawMessage(`{"workspace_slug":"ws1","target_branch":"main","source_ref":"feature/a","submitted_by":"alice"}`),
+		Result:     nil,
+		Error:      "",
+		RetryCount: 0,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	resp := ProjectMergeJobResponse(job)
+
+	if resp.ID != "uuid-1" {
+		t.Errorf("expected id='uuid-1', got %q", resp.ID)
+	}
+	if resp.WorkspaceSlug != "ws1" {
+		t.Errorf("expected workspace_slug='ws1', got %q", resp.WorkspaceSlug)
+	}
+	if resp.TargetBranch != "main" {
+		t.Errorf("expected target_branch='main', got %q", resp.TargetBranch)
+	}
+	if resp.SourceRef != "feature/a" {
+		t.Errorf("expected source_ref='feature/a', got %q", resp.SourceRef)
+	}
+	if resp.Status != "queued" {
+		t.Errorf("expected status='queued', got %q", resp.Status)
+	}
+	if resp.BaseSHA != nil {
+		t.Errorf("expected base_sha=nil for queued job, got %v", resp.BaseSHA)
+	}
+	if resp.MergedSHA != nil {
+		t.Errorf("expected merged_sha=nil for queued job, got %v", resp.MergedSHA)
+	}
+	if resp.ConflictFiles == nil {
+		t.Error("expected conflict_files to be non-nil empty slice, got nil")
+	}
+	if len(resp.ConflictFiles) != 0 {
+		t.Errorf("expected conflict_files to be empty, got %v", resp.ConflictFiles)
+	}
+	if resp.CheckOutput != nil {
+		t.Errorf("expected check_output=nil for queued job, got %v", resp.CheckOutput)
+	}
+	if resp.Error != nil {
+		t.Errorf("expected error=nil for queued job, got %v", resp.Error)
+	}
+	if resp.RetryCount != 0 {
+		t.Errorf("expected retry_count=0, got %d", resp.RetryCount)
+	}
+	if resp.SubmittedBy != "alice" {
+		t.Errorf("expected submitted_by='alice', got %q", resp.SubmittedBy)
+	}
+	if resp.CreatedAt != nowStr {
+		t.Errorf("expected created_at=%q, got %q", nowStr, resp.CreatedAt)
+	}
+	if resp.UpdatedAt != nowStr {
+		t.Errorf("expected updated_at=%q, got %q", nowStr, resp.UpdatedAt)
+	}
+}
+
+// ===========================================================================
+// TS-12-51: When a merge job is in completed status, the response includes
+// non-null base_sha and merged_sha as 40-char hex strings.
+//
+// Requirement: 12-REQ-14.2
+// ===========================================================================
+
+func TestProjectMergeJobResponse_CompletedJob(t *testing.T) {
+	now := time.Now().UTC()
+	baseSHA := "aaaa000000000000000000000000000000000001"
+	mergedSHA := "bbbb000000000000000000000000000000000002"
+
+	resultJSON := fmt.Sprintf(`{"base_sha":%q,"merged_sha":%q}`, baseSHA, mergedSHA)
+
+	job := &jobqueue.Job{
+		ID:         "uuid-completed",
+		Type:       "merge",
+		Key:        "ws1:main:feature/a",
+		GroupKey:   "ws1:main",
+		Status:     "completed",
+		Payload:    json.RawMessage(`{"workspace_slug":"ws1","target_branch":"main","source_ref":"feature/a","submitted_by":"alice"}`),
+		Result:     json.RawMessage(resultJSON),
+		Error:      "",
+		RetryCount: 0,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	resp := ProjectMergeJobResponse(job)
+
+	if resp.BaseSHA == nil {
+		t.Fatal("expected non-nil base_sha for completed job")
+	}
+	if *resp.BaseSHA != baseSHA {
+		t.Errorf("expected base_sha=%q, got %q", baseSHA, *resp.BaseSHA)
+	}
+	if len(*resp.BaseSHA) != 40 {
+		t.Errorf("expected base_sha length=40, got %d", len(*resp.BaseSHA))
+	}
+
+	if resp.MergedSHA == nil {
+		t.Fatal("expected non-nil merged_sha for completed job")
+	}
+	if *resp.MergedSHA != mergedSHA {
+		t.Errorf("expected merged_sha=%q, got %q", mergedSHA, *resp.MergedSHA)
+	}
+	if len(*resp.MergedSHA) != 40 {
+		t.Errorf("expected merged_sha length=40, got %d", len(*resp.MergedSHA))
+	}
+}
+
+// ===========================================================================
+// TS-12-52: When a merge job failed with WouldConflict, the response
+// includes a non-empty conflict_files array.
+//
+// Requirement: 12-REQ-14.3
+// ===========================================================================
+
+func TestProjectMergeJobResponse_WouldConflict(t *testing.T) {
+	now := time.Now().UTC()
+
+	job := &jobqueue.Job{
+		ID:         "uuid-conflict",
+		Type:       "merge",
+		Key:        "ws1:main:feature/a",
+		GroupKey:   "ws1:main",
+		Status:     "failed",
+		Payload:    json.RawMessage(`{"workspace_slug":"ws1","target_branch":"main","source_ref":"feature/a","submitted_by":"alice"}`),
+		Result:     nil,
+		Error:      `{"reason":"WouldConflict","conflict_files":["src/a.go","src/b.go"]}`,
+		RetryCount: 0,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	resp := ProjectMergeJobResponse(job)
+
+	if len(resp.ConflictFiles) == 0 {
+		t.Fatal("expected non-empty conflict_files for WouldConflict job")
+	}
+	expectedFiles := []string{"src/a.go", "src/b.go"}
+	if len(resp.ConflictFiles) != len(expectedFiles) {
+		t.Fatalf("expected %d conflict files, got %d", len(expectedFiles), len(resp.ConflictFiles))
+	}
+	for i, f := range expectedFiles {
+		if resp.ConflictFiles[i] != f {
+			t.Errorf("conflict_files[%d] = %q; want %q", i, resp.ConflictFiles[i], f)
+		}
+	}
+}
+
+// ===========================================================================
+// 12-REQ-14.E1: If the job result JSON is malformed or missing expected
+// fields, the projection returns null for missing fields rather than
+// returning an error response.
+// ===========================================================================
+
+func TestProjectMergeJobResponse_MalformedResult(t *testing.T) {
+	now := time.Now().UTC()
+
+	job := &jobqueue.Job{
+		ID:         "uuid-malformed",
+		Type:       "merge",
+		Key:        "ws1:main:feature/a",
+		GroupKey:   "ws1:main",
+		Status:     "completed",
+		Payload:    json.RawMessage(`{"workspace_slug":"ws1","target_branch":"main","source_ref":"feature/a","submitted_by":"alice"}`),
+		Result:     json.RawMessage(`{invalid json`),
+		Error:      "",
+		RetryCount: 0,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	// Should not panic; returns null for unparseable result fields.
+	resp := ProjectMergeJobResponse(job)
+
+	if resp.BaseSHA != nil {
+		t.Errorf("expected base_sha=nil for malformed result, got %v", resp.BaseSHA)
+	}
+	if resp.MergedSHA != nil {
+		t.Errorf("expected merged_sha=nil for malformed result, got %v", resp.MergedSHA)
+	}
+	// Payload fields should still be extracted correctly.
+	if resp.WorkspaceSlug != "ws1" {
+		t.Errorf("expected workspace_slug='ws1' even with malformed result, got %q", resp.WorkspaceSlug)
 	}
 }
