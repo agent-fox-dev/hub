@@ -57,6 +57,7 @@ func BuildRootCommand() *cobra.Command {
 		CredentialHelperCmd(),
 		SecretsCmd(),
 		VarsCmd(),
+		MergeCmd(),
 	)
 
 	return root
