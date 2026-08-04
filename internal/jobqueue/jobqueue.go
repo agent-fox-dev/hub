@@ -898,14 +898,14 @@ func (q *Queue) CancelJob(jobID string) error {
 // GetByID returns a single job record by its UUID.
 func (q *Queue) GetByID(jobID string) (*Job, error) {
 	var j Job
-	var result, errStr sql.NullString
+	var payload, result, errStr sql.NullString
 	var availableAt, createdAt, updatedAt string
 
 	err := q.db.QueryRow(
 		`SELECT id, type, key, nonce, status, payload, result, error,
 		  retry_count, available_at, submitted_by, created_at, updated_at
 		 FROM jobs WHERE id = ?`, jobID,
-	).Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status, &j.Payload,
+	).Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status, &payload,
 		&result, &errStr, &j.RetryCount, &availableAt, &j.SubmittedBy,
 		&createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
@@ -915,6 +915,9 @@ func (q *Queue) GetByID(jobID string) (*Job, error) {
 		return nil, fmt.Errorf("jobqueue: query job: %w", err)
 	}
 
+	if payload.Valid {
+		j.Payload = json.RawMessage(payload.String)
+	}
 	if result.Valid {
 		j.Result = json.RawMessage(result.String)
 	}
@@ -948,10 +951,14 @@ func (q *Queue) ListByType(typeName string, opts ListOpts) ([]*Job, error) {
 
 	query += " ORDER BY created_at DESC"
 
-	if opts.Limit > 0 {
-		query += " LIMIT ?"
-		args = append(args, opts.Limit)
+	// Apply default limit of 50 when caller passes 0 (10-REQ-11.E2).
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
 	}
+	query += " LIMIT ?"
+	args = append(args, limit)
+
 	if opts.Offset > 0 {
 		query += " OFFSET ?"
 		args = append(args, opts.Offset)
@@ -1077,15 +1084,18 @@ func (q *Queue) queryJobs(query string, args ...any) ([]*Job, error) {
 	jobs := make([]*Job, 0)
 	for rows.Next() {
 		var j Job
-		var result, errStr sql.NullString
+		var payload, result, errStr sql.NullString
 		var availableAt, createdAt, updatedAt string
 
 		if err := rows.Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status,
-			&j.Payload, &result, &errStr, &j.RetryCount, &availableAt,
+			&payload, &result, &errStr, &j.RetryCount, &availableAt,
 			&j.SubmittedBy, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("jobqueue: scan: %w", err)
 		}
 
+		if payload.Valid {
+			j.Payload = json.RawMessage(payload.String)
+		}
 		if result.Valid {
 			j.Result = json.RawMessage(result.String)
 		}
