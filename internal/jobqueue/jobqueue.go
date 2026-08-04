@@ -7,8 +7,22 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
+)
+
+// Status constants for job lifecycle states.
+const (
+	StatusQueued     = "queued"
+	StatusRunning    = "running"
+	StatusCompleted  = "completed"
+	StatusFailed     = "failed"
+	StatusDeadLetter = "dead_letter"
+	StatusCancelled  = "cancelled"
 )
 
 // ErrNotCancellable is returned by CancelJob when the target job is in a
@@ -30,6 +44,36 @@ type RetryPolicy struct {
 	Multiplier float64
 	Cap        time.Duration
 	MaxRetries int
+}
+
+// DefaultRetryPolicy returns a RetryPolicy with default values:
+// Base=2s, Multiplier=2, Cap=2h, MaxRetries=20.
+func DefaultRetryPolicy() RetryPolicy {
+	return RetryPolicy{
+		Base:       2 * time.Second,
+		Multiplier: 2,
+		Cap:        2 * time.Hour,
+		MaxRetries: 20,
+	}
+}
+
+// withDefaults returns a copy of the policy with zero-value fields replaced
+// by defaults.
+func (p RetryPolicy) withDefaults() RetryPolicy {
+	d := DefaultRetryPolicy()
+	if p.Base == 0 {
+		p.Base = d.Base
+	}
+	if p.Multiplier == 0 {
+		p.Multiplier = d.Multiplier
+	}
+	if p.Cap == 0 {
+		p.Cap = d.Cap
+	}
+	if p.MaxRetries == 0 {
+		p.MaxRetries = d.MaxRetries
+	}
+	return p
 }
 
 // EnqueueParams holds the parameters for enqueueing a new job.
@@ -66,117 +110,776 @@ type Job struct {
 	UpdatedAt   time.Time
 }
 
+// registration holds a registered handler and its retry policy.
+type registration struct {
+	handler HandlerFunc
+	policy  RetryPolicy
+}
+
+// inflight tracks a running handler's cancel function and job metadata.
+type inflight struct {
+	cancel context.CancelFunc
+	jobID  string
+}
+
 // Queue is the durable job queue backed by SQLite.
 type Queue struct {
+	db           *sql.DB
+	logger       *slog.Logger
 	workerCount  int
 	pollInterval time.Duration
 	gracePeriod  time.Duration
-	wakeupCh     chan struct{}
+
+	// Handler registry: type name -> registration.
+	mu       sync.RWMutex
+	handlers map[string]registration
+
+	// Lifecycle state.
+	started    bool
+	startedMu  sync.Mutex
+	stopCh     chan struct{}
+	shutdownFn sync.Once
+	wg         sync.WaitGroup
+	wakeupCh   chan struct{}
+
+	// In-flight handler tracking for graceful shutdown.
+	inflightMu sync.Mutex
+	inflights  map[int]*inflight // workerID -> inflight
 }
 
 // Option configures the Queue constructor.
-type Option func(*Queue)
+type Option func(*Queue) error
 
-// InitSchema creates the jobs table and required indexes using
-// CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
-// The caller's *sql.DB must be configured with PRAGMA journal_mode=WAL
-// and PRAGMA busy_timeout before calling this function.
-func InitSchema(_ *sql.DB) error {
-	return nil
+// WithWorkers sets the number of worker goroutines (default 4).
+func WithWorkers(n int) Option {
+	return func(q *Queue) error {
+		if n <= 0 {
+			return fmt.Errorf("jobqueue: worker count must be positive, got %d", n)
+		}
+		q.workerCount = n
+		return nil
+	}
+}
+
+// WithPollInterval sets the duration between poll cycles (default 5s).
+func WithPollInterval(d time.Duration) Option {
+	return func(q *Queue) error {
+		q.pollInterval = d
+		return nil
+	}
+}
+
+// WithGracePeriod sets the maximum duration to wait for in-flight handlers
+// to complete during graceful shutdown (default 30s).
+func WithGracePeriod(d time.Duration) Option {
+	return func(q *Queue) error {
+		q.gracePeriod = d
+		return nil
+	}
 }
 
 // New creates a new Queue instance with default configuration (4 workers,
 // 5s poll interval, 30s grace period) overridden by any provided options.
 // Does not start worker goroutines.
 // Returns (nil, non-nil error) if configuration is invalid or db is nil.
-func New(_ *sql.DB, _ *slog.Logger, _ ...Option) (*Queue, error) {
-	return &Queue{}, nil
+func New(db *sql.DB, logger *slog.Logger, opts ...Option) (*Queue, error) {
+	if db == nil {
+		return nil, fmt.Errorf("jobqueue: db must not be nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	q := &Queue{
+		db:           db,
+		logger:       logger,
+		workerCount:  4,
+		pollInterval: 5 * time.Second,
+		gracePeriod:  30 * time.Second,
+		handlers:     make(map[string]registration),
+		stopCh:       make(chan struct{}),
+		wakeupCh:     make(chan struct{}, 1),
+		inflights:    make(map[int]*inflight),
+	}
+
+	for _, opt := range opts {
+		if err := opt(q); err != nil {
+			return nil, err
+		}
+	}
+
+	return q, nil
 }
 
 // Register registers a job type with its handler and optional retry policy.
 // Must be called before the queue is started.
-func (q *Queue) Register(_ string, _ HandlerFunc, _ *RetryPolicy) error {
+// Returns an error if the type name is empty, the handler is nil, the type
+// is already registered, or the queue has already been started.
+func (q *Queue) Register(typeName string, handler HandlerFunc, policy *RetryPolicy) error {
+	if typeName == "" {
+		return fmt.Errorf("jobqueue: type name must not be empty")
+	}
+	if handler == nil {
+		return fmt.Errorf("jobqueue: handler must not be nil")
+	}
+
+	q.startedMu.Lock()
+	isStarted := q.started
+	q.startedMu.Unlock()
+
+	if isStarted {
+		return fmt.Errorf("jobqueue: cannot register type %q after queue has started", typeName)
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if _, exists := q.handlers[typeName]; exists {
+		return fmt.Errorf("jobqueue: type %q already registered", typeName)
+	}
+
+	var rp RetryPolicy
+	if policy != nil {
+		rp = policy.withDefaults()
+	} else {
+		rp = DefaultRetryPolicy()
+	}
+
+	q.handlers[typeName] = registration{
+		handler: handler,
+		policy:  rp,
+	}
+
 	return nil
+}
+
+// getPolicy returns the retry policy registered for the given type name,
+// with defaults applied for any zero-value fields.
+func (q *Queue) getPolicy(typeName string) RetryPolicy {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	reg, ok := q.handlers[typeName]
+	if !ok {
+		return DefaultRetryPolicy()
+	}
+	return reg.policy
+}
+
+// getHandler returns the handler for the given type name.
+func (q *Queue) getHandler(typeName string) (HandlerFunc, bool) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	reg, ok := q.handlers[typeName]
+	if !ok {
+		return nil, false
+	}
+	return reg.handler, true
 }
 
 // Enqueue enqueues a new job for execution.
-func (q *Queue) Enqueue(_ EnqueueParams) (jobID string, duplicate bool, err error) {
-	return "", false, nil
-}
+// It validates the type is registered, checks nonce uniqueness, checks for
+// active (type, key) duplicates, and inserts the job record.
+// Returns (jobID, duplicate, err) where duplicate=true indicates a (type, key)
+// dedup match and duplicate=false indicates either a new job or a nonce match.
+func (q *Queue) Enqueue(params EnqueueParams) (jobID string, duplicate bool, err error) {
+	// Validate type is registered.
+	q.mu.RLock()
+	_, registered := q.handlers[params.Type]
+	q.mu.RUnlock()
+	if !registered {
+		return "", false, fmt.Errorf("jobqueue: type %q not registered", params.Type)
+	}
 
-// WithWorkers sets the number of worker goroutines (default 4).
-func WithWorkers(_ int) Option {
-	return func(q *Queue) {}
-}
+	// Check nonce uniqueness: if a job with this nonce exists, return it.
+	var existingID string
+	nonceErr := q.db.QueryRow(
+		"SELECT id FROM jobs WHERE nonce = ?", params.Nonce,
+	).Scan(&existingID)
+	if nonceErr == nil {
+		// Nonce match: return existing job (idempotent retransmission).
+		return existingID, false, nil
+	}
+	if nonceErr != sql.ErrNoRows {
+		return "", false, fmt.Errorf("jobqueue: nonce check: %w", nonceErr)
+	}
 
-// WithPollInterval sets the duration between poll cycles (default 5s).
-func WithPollInterval(_ time.Duration) Option {
-	return func(q *Queue) {}
-}
+	// Check for active (type, key) duplicate: queued or running.
+	var activeID string
+	activeErr := q.db.QueryRow(
+		"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?)",
+		params.Type, params.Key, StatusQueued, StatusRunning,
+	).Scan(&activeID)
+	if activeErr == nil {
+		// Active job exists for this (type, key).
+		return activeID, true, nil
+	}
+	if activeErr != sql.ErrNoRows {
+		return "", false, fmt.Errorf("jobqueue: active check: %w", activeErr)
+	}
 
-// WithGracePeriod sets the maximum duration to wait for in-flight handlers
-// to complete during graceful shutdown (default 30s).
-func WithGracePeriod(_ time.Duration) Option {
-	return func(q *Queue) {}
+	// Insert new job.
+	id := uuid.New().String()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, insertErr := q.db.Exec(
+		`INSERT INTO jobs (id, type, key, nonce, status, payload, result, error,
+		  retry_count, available_at, submitted_by, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?)`,
+		id, params.Type, params.Key, params.Nonce, StatusQueued,
+		string(params.Payload), now, params.SubmittedBy, now, now,
+	)
+	if insertErr != nil {
+		return "", false, fmt.Errorf("jobqueue: insert job: %w", insertErr)
+	}
+
+	// Non-blocking send on wakeup channel to wake an idle worker.
+	select {
+	case q.wakeupCh <- struct{}{}:
+	default:
+	}
+
+	return id, false, nil
 }
 
 // Start performs crash recovery and launches worker goroutines.
+// Returns an error if crash recovery fails or if the queue is already started.
 func (q *Queue) Start() error {
+	q.startedMu.Lock()
+	if q.started {
+		q.startedMu.Unlock()
+		return fmt.Errorf("jobqueue: queue is already started")
+	}
+	q.started = true
+	q.startedMu.Unlock()
+
+	// Crash recovery: reset all running jobs back to queued.
+	if err := q.recoverRunningJobs(); err != nil {
+		// Roll back started state since workers were never launched.
+		q.startedMu.Lock()
+		q.started = false
+		q.startedMu.Unlock()
+		return fmt.Errorf("jobqueue: crash recovery failed: %w", err)
+	}
+
+	// Start worker goroutines.
+	for i := 0; i < q.workerCount; i++ {
+		q.wg.Add(1)
+		go q.workerLoop(i)
+	}
+
+	q.logger.Info("queue started", "workers", q.workerCount)
+
 	return nil
+}
+
+// recoverRunningJobs resets any jobs in running status back to queued with
+// available_at set to now. This handles the case where the hub crashed or was
+// killed while handlers were executing. Handlers must be idempotent because
+// crash recovery may re-dispatch a job whose handler had already partially
+// executed.
+func (q *Queue) recoverRunningJobs() error {
+	rows, err := q.db.Query(
+		"SELECT id FROM jobs WHERE status = ?", StatusRunning,
+	)
+	if err != nil {
+		return fmt.Errorf("query running jobs: %w", err)
+	}
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan running job id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate running jobs: %w", err)
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, id := range ids {
+		_, err := q.db.Exec(
+			"UPDATE jobs SET status = ?, available_at = ?, updated_at = ? WHERE id = ?",
+			StatusQueued, now, now, id,
+		)
+		if err != nil {
+			return fmt.Errorf("reset job %s: %w", id, err)
+		}
+		q.logger.Warn("crash recovery: reset running job to queued",
+			"job_id", id,
+		)
+	}
+
+	return nil
+}
+
+// workerLoop is the main loop for a worker goroutine.
+// It polls for available jobs, claims them, and executes their handlers.
+func (q *Queue) workerLoop(workerID int) {
+	defer q.wg.Done()
+
+	for {
+		select {
+		case <-q.stopCh:
+			return
+		default:
+		}
+
+		// Promote failed jobs whose available_at has passed.
+		q.promoteFailedJobs()
+
+		// Try to claim and execute a job.
+		claimed := q.claimAndExecute(workerID)
+
+		if !claimed {
+			// No work available; wait for wakeup or poll interval.
+			select {
+			case <-q.stopCh:
+				return
+			case <-q.wakeupCh:
+				// New job enqueued; loop back to poll.
+			case <-time.After(q.pollInterval):
+				// Poll interval elapsed; loop back to poll.
+			}
+		}
+	}
+}
+
+// promoteFailedJobs transitions failed jobs whose available_at has passed
+// back to queued status so they can be re-polled.
+func (q *Queue) promoteFailedJobs() {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Collect IDs first, then close rows before running updates.
+	// This avoids holding the connection open during Exec calls,
+	// which would deadlock with MaxOpenConns(1).
+	rows, err := q.db.Query(
+		"SELECT id FROM jobs WHERE status = ? AND available_at <= ?",
+		StatusFailed, now,
+	)
+	if err != nil {
+		return
+	}
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		_, _ = q.db.Exec(
+			"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+			StatusQueued, now, id, StatusFailed,
+		)
+		q.logger.Debug("promoted failed job to queued",
+			"job_id", id,
+		)
+	}
+}
+
+// claimAndExecute attempts to claim the oldest available queued job and
+// execute its handler. Returns true if a job was claimed and executed.
+func (q *Queue) claimAndExecute(workerID int) bool {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Find the oldest queued job whose available_at has passed and that
+	// has no active (running) job for the same (type, key).
+	var id, typ, key, nonce, payloadStr, submittedBy, createdAt string
+	var retryCount int
+	err := q.db.QueryRow(`
+		SELECT id, type, key, nonce, payload, retry_count, submitted_by, created_at
+		FROM jobs
+		WHERE status = ? AND available_at <= ?
+		  AND NOT EXISTS (
+		    SELECT 1 FROM jobs AS j2
+		    WHERE j2.type = jobs.type AND j2.key = jobs.key
+		      AND j2.status = ? AND j2.id != jobs.id
+		  )
+		ORDER BY available_at ASC, created_at ASC
+		LIMIT 1`,
+		StatusQueued, now, StatusRunning,
+	).Scan(&id, &typ, &key, &nonce, &payloadStr, &retryCount, &submittedBy, &createdAt)
+	if err != nil {
+		return false
+	}
+
+	// Atomically claim: update status to running WHERE status=queued.
+	res, claimErr := q.db.Exec(
+		"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+		StatusRunning, now, id, StatusQueued,
+	)
+	if claimErr != nil {
+		return false
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return false // Someone else claimed it.
+	}
+
+	q.logger.Debug("job claimed",
+		"job_id", id,
+		"type", typ,
+		"key", key,
+		"status", StatusRunning,
+		"retry_count", retryCount,
+	)
+
+	// Execute the handler.
+	handler, ok := q.getHandler(typ)
+	if !ok {
+		// Should not happen if registration is enforced on enqueue.
+		q.finalizeJob(id, typ, key, retryCount, nil, false, fmt.Errorf("handler not found for type %q", typ))
+		return true
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Track inflight handler for graceful shutdown context cancellation.
+	q.inflightMu.Lock()
+	q.inflights[workerID] = &inflight{cancel: cancel, jobID: id}
+	q.inflightMu.Unlock()
+
+	// Run handler, capturing panics.
+	result, retryable, handlerErr := q.safeCallHandler(ctx, cancel, handler, json.RawMessage(payloadStr), id)
+
+	// Remove from inflight tracking.
+	q.inflightMu.Lock()
+	delete(q.inflights, workerID)
+	q.inflightMu.Unlock()
+	cancel()
+
+	q.finalizeJob(id, typ, key, retryCount, result, retryable, handlerErr)
+	return true
+}
+
+// safeCallHandler invokes the handler, recovering from panics.
+func (q *Queue) safeCallHandler(ctx context.Context, cancel context.CancelFunc, handler HandlerFunc, payload json.RawMessage, jobID string) (result any, retryable bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handler panicked: %v", r)
+			retryable = false
+		}
+	}()
+
+	return handler(ctx, payload)
+}
+
+// finalizeJob updates the job record after handler execution.
+func (q *Queue) finalizeJob(id, typ, key string, retryCount int, result any, retryable bool, handlerErr error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	policy := q.getPolicy(typ)
+
+	if handlerErr == nil {
+		// Success: store result and mark completed.
+		var resultJSON []byte
+		if result != nil {
+			var marshalErr error
+			resultJSON, marshalErr = json.Marshal(result)
+			if marshalErr != nil {
+				q.logger.Warn("failed to marshal handler result",
+					"job_id", id,
+					"type", typ,
+					"key", key,
+					"status", StatusCompleted,
+					"error", marshalErr.Error(),
+				)
+				resultJSON = []byte("null")
+			}
+		}
+
+		var resultPtr *string
+		if resultJSON != nil {
+			s := string(resultJSON)
+			resultPtr = &s
+		}
+
+		_, _ = q.db.Exec(
+			"UPDATE jobs SET status = ?, result = ?, updated_at = ? WHERE id = ?",
+			StatusCompleted, resultPtr, now, id,
+		)
+		q.logger.Debug("job completed",
+			"job_id", id,
+			"type", typ,
+			"key", key,
+			"status", StatusCompleted,
+			"retry_count", retryCount,
+		)
+		return
+	}
+
+	// Error path.
+	errMsg := handlerErr.Error()
+
+	if !retryable || retryCount >= policy.MaxRetries {
+		// Dead-letter: non-retryable error or retries exhausted.
+		_, _ = q.db.Exec(
+			"UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+			StatusDeadLetter, errMsg, now, id,
+		)
+		q.logger.Warn("job dead-lettered",
+			"job_id", id,
+			"type", typ,
+			"key", key,
+			"status", StatusDeadLetter,
+			"retry_count", retryCount,
+			"error", errMsg,
+		)
+		return
+	}
+
+	// Retryable failure: increment retry_count, compute backoff, set status=failed.
+	newRetryCount := retryCount + 1
+	delay := computeBackoff(policy, newRetryCount)
+	availableAt := time.Now().UTC().Add(delay).Format(time.RFC3339)
+
+	_, _ = q.db.Exec(
+		"UPDATE jobs SET status = ?, error = ?, retry_count = ?, available_at = ?, updated_at = ? WHERE id = ?",
+		StatusFailed, errMsg, newRetryCount, availableAt, now, id,
+	)
+	q.logger.Debug("job failed with retry",
+		"job_id", id,
+		"type", typ,
+		"key", key,
+		"status", StatusFailed,
+		"retry_count", newRetryCount,
+		"error", errMsg,
+	)
+}
+
+// computeBackoff computes the retry delay as
+// min(base * multiplier^retryCount, cap).
+// The retryCount parameter should already be incremented before calling.
+// If the computed value overflows, it is clamped to cap.
+func computeBackoff(policy RetryPolicy, retryCount int) time.Duration {
+	delay := policy.Base
+	for i := 0; i < retryCount; i++ {
+		delay = time.Duration(float64(delay) * policy.Multiplier)
+		if delay > policy.Cap || delay <= 0 {
+			return policy.Cap
+		}
+	}
+	if delay > policy.Cap {
+		return policy.Cap
+	}
+	return delay
 }
 
 // Shutdown initiates graceful shutdown by closing the stop channel to
 // broadcast a stop signal to all worker goroutines. Workers stop claiming
 // new jobs and complete their current handler calls.
 // Multiple calls are safe (protected by sync.Once).
-func (q *Queue) Shutdown() {}
+func (q *Queue) Shutdown() {
+	q.shutdownFn.Do(func() {
+		close(q.stopCh)
+	})
+}
 
 // Wait blocks until all workers have exited or the grace period expires.
 // If the grace period expires before all workers finish, in-flight handler
 // contexts are cancelled, a WARN is logged per interrupted job, and Wait
 // returns. Returns nil on clean shutdown.
 func (q *Queue) Wait() error {
-	return nil
+	done := make(chan struct{})
+	go func() {
+		q.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		q.logger.Info("queue stopped")
+		return nil
+	case <-time.After(q.gracePeriod):
+		// Cancel all in-flight handler contexts and log each one.
+		q.inflightMu.Lock()
+		for _, inf := range q.inflights {
+			inf.cancel()
+			q.logger.Warn("grace period expired, interrupting handler",
+				"job_id", inf.jobID,
+			)
+		}
+		q.inflightMu.Unlock()
+
+		// Give handlers a brief moment to react to context cancellation.
+		briefDone := make(chan struct{})
+		go func() {
+			q.wg.Wait()
+			close(briefDone)
+		}()
+		select {
+		case <-briefDone:
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		q.logger.Info("queue stopped")
+		return nil
+	}
 }
 
 // Stop initiates graceful shutdown and waits for completion.
 // Equivalent to calling Shutdown() followed by Wait().
 func (q *Queue) Stop() error {
-	return nil
+	q.Shutdown()
+	return q.Wait()
 }
 
 // CancelJob transitions a queued job to cancelled status.
 // Returns nil on success or if the job is already cancelled (idempotent).
 // Returns ErrNotCancellable for jobs in running, completed, or dead_letter status.
 // Returns a not-found error if the job ID does not exist.
-func (q *Queue) CancelJob(_ string) error {
+func (q *Queue) CancelJob(jobID string) error {
+	var status string
+	err := q.db.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("jobqueue: job %q not found", jobID)
+	}
+	if err != nil {
+		return fmt.Errorf("jobqueue: query job: %w", err)
+	}
+
+	switch status {
+	case StatusCancelled:
+		return nil // Idempotent.
+	case StatusQueued, StatusFailed:
+		// Can be cancelled.
+	default:
+		return ErrNotCancellable
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = q.db.Exec(
+		"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
+		StatusCancelled, now, jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("jobqueue: cancel job: %w", err)
+	}
+
+	q.logger.Debug("job cancelled",
+		"job_id", jobID,
+		"type", "",
+		"key", "",
+		"status", StatusCancelled,
+	)
+
 	return nil
 }
 
 // GetByID returns a single job record by its UUID.
-func (q *Queue) GetByID(_ string) (*Job, error) {
-	return nil, nil
+func (q *Queue) GetByID(jobID string) (*Job, error) {
+	var j Job
+	var result, errStr sql.NullString
+	var availableAt, createdAt, updatedAt string
+
+	err := q.db.QueryRow(
+		`SELECT id, type, key, nonce, status, payload, result, error,
+		  retry_count, available_at, submitted_by, created_at, updated_at
+		 FROM jobs WHERE id = ?`, jobID,
+	).Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status, &j.Payload,
+		&result, &errStr, &j.RetryCount, &availableAt, &j.SubmittedBy,
+		&createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("jobqueue: job %q not found", jobID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("jobqueue: query job: %w", err)
+	}
+
+	if result.Valid {
+		j.Result = json.RawMessage(result.String)
+	}
+	if errStr.Valid {
+		j.Error = errStr.String
+	}
+
+	j.AvailableAt, _ = time.Parse(time.RFC3339, availableAt)
+	j.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	j.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+
+	return &j, nil
 }
 
 // ListByType returns jobs of the given type filtered by optional status and
 // key fields in opts, ordered by created_at descending, with pagination
 // applied via offset and limit. Returns an empty slice (not nil) when no
 // jobs match.
-func (q *Queue) ListByType(_ string, _ ListOpts) ([]*Job, error) {
-	return nil, nil
+func (q *Queue) ListByType(typeName string, opts ListOpts) ([]*Job, error) {
+	query := "SELECT id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at FROM jobs WHERE type = ?"
+	args := []any{typeName}
+
+	if opts.Status != "" {
+		query += " AND status = ?"
+		args = append(args, opts.Status)
+	}
+	if opts.Key != "" {
+		query += " AND key = ?"
+		args = append(args, opts.Key)
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	if opts.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, opts.Limit)
+	}
+	if opts.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, opts.Offset)
+	}
+
+	return q.queryJobs(query, args...)
 }
 
 // ListByKey returns all job records for the given (type, key) combination
 // ordered by created_at descending. Returns an empty slice (not nil) when
 // no jobs match.
-func (q *Queue) ListByKey(_ string, _ string) ([]*Job, error) {
-	return nil, nil
+func (q *Queue) ListByKey(typeName string, key string) ([]*Job, error) {
+	return q.queryJobs(
+		`SELECT id, type, key, nonce, status, payload, result, error,
+		  retry_count, available_at, submitted_by, created_at, updated_at
+		 FROM jobs WHERE type = ? AND key = ? ORDER BY created_at DESC`,
+		typeName, key,
+	)
 }
 
 // CountByStatus returns a map of status string to integer count for all
 // jobs of the given type. Statuses with zero jobs are omitted from the map.
-func (q *Queue) CountByStatus(_ string) (map[string]int, error) {
-	return nil, nil
+func (q *Queue) CountByStatus(typeName string) (map[string]int, error) {
+	rows, err := q.db.Query(
+		"SELECT status, COUNT(*) FROM jobs WHERE type = ? GROUP BY status",
+		typeName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("jobqueue: count by status: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("jobqueue: scan count: %w", err)
+		}
+		result[status] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jobqueue: count rows: %w", err)
+	}
+	return result, nil
 }
 
 // RequeueDeadLetter requeues a dead-lettered job for re-execution.
@@ -187,20 +890,86 @@ func (q *Queue) CountByStatus(_ string) (map[string]int, error) {
 // the same (type, key).
 // Returns ("", error) if the job is not in dead_letter status or
 // does not exist.
-func (q *Queue) RequeueDeadLetter(_ string) (string, error) {
-	return "", nil
+func (q *Queue) RequeueDeadLetter(jobID string) (string, error) {
+	var typ, key, status string
+	err := q.db.QueryRow(
+		"SELECT type, key, status FROM jobs WHERE id = ?", jobID,
+	).Scan(&typ, &key, &status)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("jobqueue: job %q not found", jobID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("jobqueue: query job: %w", err)
+	}
+
+	if status != StatusDeadLetter {
+		return "", fmt.Errorf("jobqueue: job %q is in status %q, not dead_letter", jobID, status)
+	}
+
+	// Check for active (type, key) duplicate.
+	var activeID string
+	activeErr := q.db.QueryRow(
+		"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?)",
+		typ, key, StatusQueued, StatusRunning,
+	).Scan(&activeID)
+	if activeErr == nil {
+		return activeID, fmt.Errorf("jobqueue: active job %q exists for (%s, %s)", activeID, typ, key)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = q.db.Exec(
+		"UPDATE jobs SET status = ?, retry_count = 0, available_at = ?, updated_at = ? WHERE id = ?",
+		StatusQueued, now, now, jobID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("jobqueue: requeue: %w", err)
+	}
+
+	// Wake a worker.
+	select {
+	case q.wakeupCh <- struct{}{}:
+	default:
+	}
+
+	return jobID, nil
 }
 
-// computeBackoff computes the retry delay as
-// min(base * multiplier^retryCount, cap).
-// The retryCount parameter should already be incremented before calling.
-// If the computed value overflows, it is clamped to cap.
-func computeBackoff(_ RetryPolicy, _ int) time.Duration {
-	return 0
-}
+// queryJobs is a helper that runs a query and scans results into Job slices.
+func (q *Queue) queryJobs(query string, args ...any) ([]*Job, error) {
+	rows, err := q.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("jobqueue: query: %w", err)
+	}
+	defer rows.Close()
 
-// getPolicy returns the retry policy registered for the given type name,
-// with defaults applied for any zero-value fields.
-func (q *Queue) getPolicy(_ string) RetryPolicy {
-	return RetryPolicy{}
+	jobs := make([]*Job, 0)
+	for rows.Next() {
+		var j Job
+		var result, errStr sql.NullString
+		var availableAt, createdAt, updatedAt string
+
+		if err := rows.Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status,
+			&j.Payload, &result, &errStr, &j.RetryCount, &availableAt,
+			&j.SubmittedBy, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("jobqueue: scan: %w", err)
+		}
+
+		if result.Valid {
+			j.Result = json.RawMessage(result.String)
+		}
+		if errStr.Valid {
+			j.Error = errStr.String
+		}
+
+		j.AvailableAt, _ = time.Parse(time.RFC3339, availableAt)
+		j.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		j.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+
+		jobs = append(jobs, &j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jobqueue: rows: %w", err)
+	}
+
+	return jobs, nil
 }
