@@ -4,6 +4,7 @@ package gitcmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -40,5 +41,63 @@ func New(_ string, _ []string) (*GitRunner, error) {
 // Run executes an arbitrary git subcommand with the given args. It returns the
 // trimmed stdout on success, or a *GitError on non-zero exit.
 func (r *GitRunner) Run(_ context.Context, _ ...string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+// ErrRefNotFound is a sentinel error returned by LsRemote when git exits with
+// code 2, indicating the queried ref does not exist on the remote.
+var ErrRefNotFound = errors.New("ref not found on remote")
+
+// MergeConflictError is returned by MergeTree when the dry-run merge detects
+// conflicts. ConflictingFiles lists the file paths that have merge conflicts.
+type MergeConflictError struct {
+	ConflictingFiles []string
+}
+
+// Error implements the error interface.
+func (e *MergeConflictError) Error() string {
+	// TODO: implement — format conflicting files into a human-readable message.
+	return ""
+}
+
+// RebaseConflictError is returned by Rebase when the rebase encounters
+// conflicts. ConflictingFiles lists the file paths that have merge conflicts.
+type RebaseConflictError struct {
+	ConflictingFiles []string
+}
+
+// Error implements the error interface.
+func (e *RebaseConflictError) Error() string {
+	// TODO: implement — format conflicting files into a human-readable message.
+	return ""
+}
+
+// LsRemote executes git ls-remote --exit-code with three-way exit code
+// discrimination: exit 0 returns (stdout, nil), exit 2 returns
+// ("", ErrRefNotFound), exit 1 returns ("", *GitError).
+func (r *GitRunner) LsRemote(_ context.Context, _, _ string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+// MergeTree executes git merge-tree --write-tree for read-only conflict
+// detection. Returns the tree SHA on a clean merge, or *MergeConflictError
+// when conflicts are detected.
+func (r *GitRunner) MergeTree(_ context.Context, _, _ string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+// Rebase executes git rebase <onto> with automatic abort on conflict.
+// Returns the new HEAD SHA on success or *RebaseConflictError on conflict.
+func (r *GitRunner) Rebase(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+// RebaseAbort executes git rebase --abort to clean up a failed rebase state.
+func (r *GitRunner) RebaseAbort(_ context.Context) error {
+	return fmt.Errorf("not implemented")
+}
+
+// RevParse executes git rev-parse to resolve a ref to its full SHA.
+func (r *GitRunner) RevParse(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }

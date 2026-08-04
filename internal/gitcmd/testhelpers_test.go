@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -112,4 +113,218 @@ func lastEnvValue(env []string, key string) (string, bool) {
 		}
 	}
 	return val, found
+}
+
+// ========================================================================
+// Group 2 test helpers: repo setup for LsRemote, MergeTree, Rebase tests
+// ========================================================================
+
+// runGit executes a git command in the specified directory and returns
+// trimmed stdout. It fails the test on non-zero exit.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v (dir=%s) failed: %v\n%s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// runGitMayFail executes a git command in the specified directory. Unlike
+// runGit, it does not fail the test on error. Returns stdout and error.
+func runGitMayFail(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// writeTestFile creates or overwrites a file with the given content.
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// configGitUser sets user.name and user.email in the given repo directory.
+func configGitUser(t *testing.T, dir string) {
+	t.Helper()
+	runGit(t, dir, "config", "user.name", "Test User")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+}
+
+// initBareTestRepo creates a bare git repository with a single commit on
+// the "main" branch. Returns the absolute path to the bare repo directory.
+// Used as a remote for LsRemote tests.
+func initBareTestRepo(t *testing.T) string {
+	t.Helper()
+
+	// Create a regular repo with one commit on "main".
+	sourceDir := t.TempDir()
+	runGit(t, "", "init", "-b", "main", sourceDir)
+	configGitUser(t, sourceDir)
+	writeTestFile(t, filepath.Join(sourceDir, "README.md"), "hello")
+	runGit(t, sourceDir, "add", ".")
+	runGit(t, sourceDir, "commit", "-m", "initial")
+
+	// Create a bare clone.
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	runGit(t, "", "clone", "--bare", sourceDir, bareDir)
+
+	return bareDir
+}
+
+// setupMergeableRepo creates a repository with diverged "main" and "feature"
+// branches that can be merged cleanly (they modify different files).
+// Returns (repoDir, mainSHA, featureSHA).
+func setupMergeableRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	runGit(t, "", "init", "-b", "main", dir)
+	configGitUser(t, dir)
+
+	// Base commit on main.
+	writeTestFile(t, filepath.Join(dir, "base.txt"), "base content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "base")
+
+	// Feature branch: add a non-conflicting file.
+	runGit(t, dir, "checkout", "-b", "feature")
+	writeTestFile(t, filepath.Join(dir, "feature.txt"), "feature content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "feature change")
+	featureSHA := runGit(t, dir, "rev-parse", "HEAD")
+
+	// Back to main: add a different non-conflicting file.
+	runGit(t, dir, "checkout", "main")
+	writeTestFile(t, filepath.Join(dir, "main-only.txt"), "main content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "main change")
+	mainSHA := runGit(t, dir, "rev-parse", "HEAD")
+
+	return dir, mainSHA, featureSHA
+}
+
+// setupConflictingRepo creates a repository with diverged "main" and
+// "feature" branches that conflict on "conflict.txt".
+// Returns (repoDir, mainSHA, featureSHA).
+func setupConflictingRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	runGit(t, "", "init", "-b", "main", dir)
+	configGitUser(t, dir)
+
+	// Base commit with conflict.txt.
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "base content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "base")
+
+	// Feature branch: modify conflict.txt differently.
+	runGit(t, dir, "checkout", "-b", "feature")
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "feature modification")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "feature change to conflict.txt")
+	featureSHA := runGit(t, dir, "rev-parse", "HEAD")
+
+	// Back to main: modify conflict.txt differently.
+	runGit(t, dir, "checkout", "main")
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "main modification")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "main change to conflict.txt")
+	mainSHA := runGit(t, dir, "rev-parse", "HEAD")
+
+	return dir, mainSHA, featureSHA
+}
+
+// setupCleanRebaseRepo creates a repository where "feature" can be cleanly
+// rebased onto "main" (they modify different files). Leaves the working
+// directory on the "feature" branch. Returns the repo directory.
+func setupCleanRebaseRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	runGit(t, "", "init", "-b", "main", dir)
+	configGitUser(t, dir)
+
+	// Base commit.
+	writeTestFile(t, filepath.Join(dir, "base.txt"), "base content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "base")
+
+	// Feature branch: add a non-conflicting file.
+	runGit(t, dir, "checkout", "-b", "feature")
+	writeTestFile(t, filepath.Join(dir, "feature.txt"), "feature content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "feature change")
+
+	// Back to main: add a different non-conflicting file.
+	runGit(t, dir, "checkout", "main")
+	writeTestFile(t, filepath.Join(dir, "main-only.txt"), "main content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "main change")
+
+	// Switch back to feature for the rebase.
+	runGit(t, dir, "checkout", "feature")
+
+	return dir
+}
+
+// setupConflictingRebaseRepo creates a repository where "feature" conflicts
+// when rebased onto "main" (both modify "conflict.txt"). Leaves the working
+// directory on the "feature" branch. Returns the repo directory.
+func setupConflictingRebaseRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	runGit(t, "", "init", "-b", "main", dir)
+	configGitUser(t, dir)
+
+	// Base commit with conflict.txt.
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "base content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "base")
+
+	// Feature branch: modify conflict.txt.
+	runGit(t, dir, "checkout", "-b", "feature")
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "feature modification")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "feature change")
+
+	// Back to main: modify conflict.txt differently.
+	runGit(t, dir, "checkout", "main")
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "main modification")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "main change")
+
+	// Switch back to feature for the rebase.
+	runGit(t, dir, "checkout", "feature")
+
+	return dir
+}
+
+// dirExists returns true if the given path exists and is a directory.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
