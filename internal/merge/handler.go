@@ -84,6 +84,10 @@ type Handler struct {
 
 	// GetVariable retrieves a workspace variable by scope, slug, and key.
 	GetVariable func(scope, slug, key string) (string, error)
+
+	// Rollback reverts the source branch to a previous SHA after a failed
+	// check command or other post-rebase failure.
+	Rollback RollbackFunc
 }
 
 // TrunkDir returns the workspace trunk directory path for the given slug.
@@ -129,4 +133,57 @@ func (h *Handler) RebaseSource(_ context.Context, _, _, _ string) (preRebaseSHA 
 // environment variables injected, enforcing CheckCommandTimeout.
 func (h *Handler) RunCheckCommand(_ context.Context, _, _, _, _ string) error {
 	return fmt.Errorf("merge: RunCheckCommand not implemented")
+}
+
+// MergeResult contains the successful outcome of a merge operation.
+// BaseSHA is the target branch HEAD before the merge; MergedSHA is the
+// target branch HEAD after the merge (the rebased source HEAD).
+type MergeResult struct {
+	BaseSHA   string `json:"base_sha"`
+	MergedSHA string `json:"merged_sha"`
+}
+
+// CheckCommandError is returned when the workspace CHECK_COMMAND exits
+// with a non-zero exit code.
+type CheckCommandError struct {
+	Output   string
+	ExitCode int
+}
+
+func (e *CheckCommandError) Error() string {
+	return fmt.Sprintf("check command failed (exit %d): %s", e.ExitCode, e.Output)
+}
+
+// RollbackFunc reverts the source branch to a previous SHA after a failed
+// check command or other post-rebase failure. It executes
+// 'git checkout <branch> && git reset --hard <sha>' in the workspace trunk.
+type RollbackFunc func(ctx context.Context, trunkDir, branch, sha string) error
+
+// RunCheckStep looks up CHECK_COMMAND for the workspace and, if set,
+// executes it via RunCheckCommand. If CHECK_COMMAND is not set, the check
+// step is skipped (returns executed=false, nil). If the check command
+// fails or times out, it rolls back the rebase using the Rollback function
+// and returns a permanent error with the check output.
+func (h *Handler) RunCheckStep(_ context.Context, _, _, _, _ string) (executed bool, err error) {
+	return false, fmt.Errorf("merge: RunCheckStep not implemented")
+}
+
+// UpdateTargetRef updates the target branch ref to point to newSHA using
+// go-git reference update. This is a local ref update only — no remote
+// push is performed.
+func (h *Handler) UpdateTargetRef(_ context.Context, _, _, _ string) error {
+	return fmt.Errorf("merge: UpdateTargetRef not implemented")
+}
+
+// DeleteSourceBranch deletes the source branch ref from the local
+// repository via go-git reference deletion.
+func (h *Handler) DeleteSourceBranch(_ context.Context, _, _ string) error {
+	return fmt.Errorf("merge: DeleteSourceBranch not implemented")
+}
+
+// Finalize constructs a MergeResult from the pre-merge target HEAD
+// (baseSHA) and the post-merge target HEAD (mergedSHA). Both must be
+// 40-character hex SHAs.
+func (h *Handler) Finalize(_, _ string) (*MergeResult, error) {
+	return nil, fmt.Errorf("merge: Finalize not implemented")
 }

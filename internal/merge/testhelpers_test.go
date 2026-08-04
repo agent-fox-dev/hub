@@ -60,3 +60,10 @@ func (tw testWriter) Write(p []byte) (int, error) {
 	tw.t.Log(string(p))
 	return len(p), nil
 }
+
+// rollbackCall records a call to the RollbackFunc.
+type rollbackCall struct {
+	trunkDir string
+	branch   string
+	sha      string
+}

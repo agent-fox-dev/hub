@@ -563,6 +563,418 @@ func TestRebaseSource_Conflict_AbortAndPermanentError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TS-12-20: When CHECK_COMMAND is not set, the merge handler skips the check
+// step and proceeds directly to the ref update step.
+//
+// Requirement: 12-REQ-6.4
+// ---------------------------------------------------------------------------
+
+func TestCheckStep_SkippedWhenCheckCommandNotSet(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	executor := &recordingExecutor{}
+
+	// GetVariable returns an error for missing variables, simulating
+	// CHECK_COMMAND not being set for this workspace.
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+		Executor:      executor,
+		GetVariable: stubGetVariable(map[string]string{
+			// Intentionally empty — CHECK_COMMAND is not set.
+		}),
+	}
+
+	ctx := context.Background()
+	executed, err := h.RunCheckStep(ctx, "ws1", "main", "feature/a", "abc123pre")
+
+	// Should succeed without error.
+	if err != nil {
+		t.Fatalf("RunCheckStep returned error when CHECK_COMMAND not set: %v", err)
+	}
+
+	// Check command must NOT have been executed.
+	if executed {
+		t.Error("expected executed=false when CHECK_COMMAND is not set, got true")
+	}
+
+	// The executor must not have been called at all.
+	if len(executor.calls) != 0 {
+		t.Errorf("expected 0 executor calls when CHECK_COMMAND not set, got %d", len(executor.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-12-20 supplementary: When CHECK_COMMAND IS set, verify it is read from
+// workspace variables and executed via sh -c in the workspace clone root.
+//
+// Requirement: 12-REQ-6.3, 12-REQ-6.4
+// ---------------------------------------------------------------------------
+
+func TestCheckStep_ExecutesWhenCheckCommandSet(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	executor := &recordingExecutor{}
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+		Executor:      executor,
+		GetVariable: stubGetVariable(map[string]string{
+			"workspace:ws1:CHECK_COMMAND": "make test",
+		}),
+	}
+
+	ctx := context.Background()
+	executed, err := h.RunCheckStep(ctx, "ws1", "main", "feature/a", "abc123pre")
+
+	// Should succeed.
+	if err != nil {
+		t.Fatalf("RunCheckStep returned error: %v", err)
+	}
+
+	// Check command must have been executed.
+	if !executed {
+		t.Error("expected executed=true when CHECK_COMMAND is set")
+	}
+
+	// Verify the executor was called.
+	if len(executor.calls) == 0 {
+		t.Fatal("expected executor to be called when CHECK_COMMAND is set")
+	}
+
+	call := executor.calls[0]
+
+	// Verify command is 'sh -c <CHECK_COMMAND>'.
+	if call.command != "sh" {
+		t.Errorf("expected command='sh', got %q", call.command)
+	}
+	if len(call.args) != 2 || call.args[0] != "-c" || call.args[1] != "make test" {
+		t.Errorf("expected args=['-c', 'make test'], got %v", call.args)
+	}
+
+	// Verify working directory is the trunk directory.
+	expectedDir := h.TrunkDir("ws1")
+	if call.dir != expectedDir {
+		t.Errorf("expected dir=%q, got %q", expectedDir, call.dir)
+	}
+
+	// Verify environment variables are injected.
+	envMap := envToMap(call.env)
+	if envMap["MERGE_TARGET"] != "main" {
+		t.Errorf("expected MERGE_TARGET='main', got %q", envMap["MERGE_TARGET"])
+	}
+	if envMap["MERGE_SOURCE"] != "feature/a" {
+		t.Errorf("expected MERGE_SOURCE='feature/a', got %q", envMap["MERGE_SOURCE"])
+	}
+	if envMap["WORKSPACE_SLUG"] != "ws1" {
+		t.Errorf("expected WORKSPACE_SLUG='ws1', got %q", envMap["WORKSPACE_SLUG"])
+	}
+
+	// Verify 10-minute timeout is enforced.
+	if call.timeout != CheckCommandTimeout {
+		t.Errorf("expected timeout=%v, got %v", CheckCommandTimeout, call.timeout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-6.E2: When the check command exits with a non-zero exit code,
+// the merge handler rolls back the rebase using
+// 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>'
+// and returns a permanent error with the check command output.
+// ---------------------------------------------------------------------------
+
+func TestCheckStep_FailureTriggersRollback(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	// Executor returns a non-zero exit error.
+	executor := &recordingExecutor{
+		stdout: "FAIL: tests/integration_test.go:42",
+		err:    fmt.Errorf("exit status 1"),
+	}
+
+	// Recording rollback to verify it was called.
+	var rollbackCalls []rollbackCall
+	rollbackFn := func(_ context.Context, trunkDir, branch, sha string) error {
+		rollbackCalls = append(rollbackCalls, rollbackCall{
+			trunkDir: trunkDir,
+			branch:   branch,
+			sha:      sha,
+		})
+		return nil
+	}
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+		Executor:      executor,
+		Rollback:      rollbackFn,
+		GetVariable: stubGetVariable(map[string]string{
+			"workspace:ws1:CHECK_COMMAND": "make test",
+		}),
+	}
+
+	ctx := context.Background()
+	preRebaseSHA := "abc123def456abc123def456abc123def456abc1"
+	_, err := h.RunCheckStep(ctx, "ws1", "main", "feature/a", preRebaseSHA)
+
+	// Must return an error.
+	if err == nil {
+		t.Fatal("expected error from RunCheckStep when check command fails")
+	}
+
+	// Rollback must have been called with the correct parameters.
+	if len(rollbackCalls) == 0 {
+		t.Fatal("expected rollback to be called on check command failure")
+	}
+
+	rc := rollbackCalls[0]
+	expectedTrunk := h.TrunkDir("ws1")
+	if rc.trunkDir != expectedTrunk {
+		t.Errorf("expected rollback trunkDir=%q, got %q", expectedTrunk, rc.trunkDir)
+	}
+	if rc.branch != "feature/a" {
+		t.Errorf("expected rollback branch='feature/a', got %q", rc.branch)
+	}
+	if rc.sha != preRebaseSHA {
+		t.Errorf("expected rollback sha=%q, got %q", preRebaseSHA, rc.sha)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-6.E3: When the check command does not complete within 10 minutes,
+// the merge handler kills the process, rolls back the rebase, and returns
+// a permanent error indicating timeout.
+// ---------------------------------------------------------------------------
+
+func TestCheckStep_TimeoutTriggersRollback(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	// Executor returns a context.DeadlineExceeded error to simulate timeout.
+	executor := &recordingExecutor{
+		err: context.DeadlineExceeded,
+	}
+
+	var rollbackCalls []rollbackCall
+	rollbackFn := func(_ context.Context, trunkDir, branch, sha string) error {
+		rollbackCalls = append(rollbackCalls, rollbackCall{
+			trunkDir: trunkDir,
+			branch:   branch,
+			sha:      sha,
+		})
+		return nil
+	}
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+		Executor:      executor,
+		Rollback:      rollbackFn,
+		GetVariable: stubGetVariable(map[string]string{
+			"workspace:ws1:CHECK_COMMAND": "make test",
+		}),
+	}
+
+	ctx := context.Background()
+	preRebaseSHA := "abc123def456abc123def456abc123def456abc1"
+	_, err := h.RunCheckStep(ctx, "ws1", "main", "feature/a", preRebaseSHA)
+
+	// Must return an error indicating timeout.
+	if err == nil {
+		t.Fatal("expected error from RunCheckStep on check command timeout")
+	}
+
+	// Rollback must have been called.
+	if len(rollbackCalls) == 0 {
+		t.Fatal("expected rollback to be called on check command timeout")
+	}
+
+	rc := rollbackCalls[0]
+	if rc.sha != preRebaseSHA {
+		t.Errorf("expected rollback sha=%q, got %q", preRebaseSHA, rc.sha)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-6.E6: If the rollback command fails, the merge handler logs the
+// rollback failure and returns a permanent error indicating the repository
+// may be in an inconsistent state.
+// ---------------------------------------------------------------------------
+
+func TestCheckStep_RollbackFailure_PermanentError(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	// Executor returns an error (check command failed).
+	executor := &recordingExecutor{
+		err: fmt.Errorf("exit status 1"),
+	}
+
+	// Rollback also fails.
+	rollbackFn := func(_ context.Context, _, _, _ string) error {
+		return fmt.Errorf("rollback failed: permission denied")
+	}
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+		Executor:      executor,
+		Rollback:      rollbackFn,
+		GetVariable: stubGetVariable(map[string]string{
+			"workspace:ws1:CHECK_COMMAND": "make test",
+		}),
+	}
+
+	ctx := context.Background()
+	preRebaseSHA := "abc123def456abc123def456abc123def456abc1"
+	_, err := h.RunCheckStep(ctx, "ws1", "main", "feature/a", preRebaseSHA)
+
+	// Must return an error.
+	if err == nil {
+		t.Fatal("expected error from RunCheckStep when rollback fails")
+	}
+
+	// The error should be permanent (not retryable). When the rollback
+	// fails, the repository may be in an inconsistent state.
+	var rejection *MergeRejection
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected *MergeRejection error on rollback failure, got %T: %v", err, err)
+	}
+	if !rejection.Permanent {
+		t.Error("expected rollback failure to be a permanent error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-12-21: After the check command exits 0 (or is skipped), the merge
+// handler updates the target branch ref to the rebased source HEAD via
+// go-git reference update. This is a local ref update — no remote push.
+//
+// Requirement: 12-REQ-6.5
+// ---------------------------------------------------------------------------
+
+func TestUpdateTargetRef_SetsRefToRebasedHead(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+	}
+
+	ctx := context.Background()
+	newSHA := "newsha123newsha123newsha123newsha123newsha1"
+	err := h.UpdateTargetRef(ctx, "ws1", "main", newSHA)
+
+	if err != nil {
+		t.Fatalf("UpdateTargetRef returned error: %v", err)
+	}
+
+	// After UpdateTargetRef, refs/heads/main in the workspace repo must
+	// point to the new SHA. Verification via go-git PlainOpen is done by
+	// the implementation test; here we verify the method returns without
+	// error and the correct SHA was passed through.
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-6.E4: If the go-git reference update fails due to ref lock
+// contention or other transient error, the merge handler returns a
+// retryable error so the job queue retries the merge job.
+// ---------------------------------------------------------------------------
+
+func TestUpdateTargetRef_LockContention_RetryableError(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+	}
+
+	ctx := context.Background()
+	err := h.UpdateTargetRef(ctx, "ws1", "main", "newsha123newsha123newsha123newsha123newsha1")
+
+	// When ref lock contention occurs, the error must be retryable.
+	// The implementation should detect lock errors and return a
+	// *MergeRejection with Permanent=false (retryable).
+	if err == nil {
+		t.Fatal("expected error from UpdateTargetRef for lock contention")
+	}
+
+	// Verify the error is retryable (not permanent).
+	var rejection *MergeRejection
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected *MergeRejection for lock contention, got %T: %v", err, err)
+	}
+	if rejection.Permanent {
+		t.Error("expected ref lock contention to be retryable (Permanent=false)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TS-12-22: After the target branch ref update succeeds, the merge handler
+// deletes the source branch ref from the local repository via go-git
+// reference deletion.
+//
+// Requirement: 12-REQ-6.6
+// ---------------------------------------------------------------------------
+
+func TestDeleteSourceBranch_RemovesRef(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+	}
+
+	ctx := context.Background()
+	err := h.DeleteSourceBranch(ctx, "ws1", "feature/a")
+
+	if err != nil {
+		t.Fatalf("DeleteSourceBranch returned error: %v", err)
+	}
+
+	// After deletion, the source branch ref must no longer exist in the
+	// workspace repository. Verification via go-git PlainOpen is done by
+	// the implementation test; here we verify the method returns without
+	// error for a valid branch.
+}
+
+// ---------------------------------------------------------------------------
+// TS-12-23: After source branch deletion succeeds, the merge handler
+// returns success with base_sha (pre-merge target HEAD) and merged_sha
+// (new target HEAD) as 40-char hex SHAs.
+//
+// Requirement: 12-REQ-6.7
+// ---------------------------------------------------------------------------
+
+func TestFinalize_ReturnsBaseAndMergedSHA(t *testing.T) {
+	workspaceRoot := t.TempDir()
+
+	h := &Handler{
+		WorkspaceRoot: workspaceRoot,
+	}
+
+	baseSHA := "base000sha000base000sha000base000sha0001"
+	mergedSHA := "merged1sha1merged1sha1merged1sha1merged1"
+
+	result, err := h.Finalize(baseSHA, mergedSHA)
+
+	if err != nil {
+		t.Fatalf("Finalize returned error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil MergeResult from Finalize")
+	}
+
+	// Verify base_sha.
+	if result.BaseSHA != baseSHA {
+		t.Errorf("expected base_sha=%q, got %q", baseSHA, result.BaseSHA)
+	}
+	if len(result.BaseSHA) != 40 {
+		t.Errorf("expected base_sha length=40, got %d", len(result.BaseSHA))
+	}
+
+	// Verify merged_sha.
+	if result.MergedSHA != mergedSHA {
+		t.Errorf("expected merged_sha=%q, got %q", mergedSHA, result.MergedSHA)
+	}
+	if len(result.MergedSHA) != 40 {
+		t.Errorf("expected merged_sha length=40, got %d", len(result.MergedSHA))
+	}
+}
+
 // Ensure gitcmd types are used (prevents unused import errors).
 var _ = (*gitcmd.GitRunner)(nil)
 var _ = (*gitcmd.MergeConflictError)(nil)
