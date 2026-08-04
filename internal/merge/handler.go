@@ -346,20 +346,44 @@ func (h *Handler) RunCheckStep(ctx context.Context, workspaceSlug, targetBranch,
 // git update-ref. This is a local ref update only — no remote push is
 // performed. On failure (e.g. lock contention, nonexistent object),
 // returns a retryable *MergeRejection so the job queue can retry.
+// Logs the old and new target branch SHAs for auditability.
 func (h *Handler) UpdateTargetRef(ctx context.Context, workspaceSlug, targetBranch, newSHA string) error {
 	runner, err := h.runnerForWorkspace(workspaceSlug)
 	if err != nil {
 		return &MergeRejection{Permanent: false}
 	}
+
+	// Capture the old target branch SHA before the update for auditability.
+	oldSHA, err := runner.RevParse(ctx, "refs/heads/"+targetBranch)
+	if err != nil {
+		slog.Warn("merge: could not resolve old target SHA before ref update",
+			"workspace", workspaceSlug,
+			"target_branch", targetBranch,
+			"error", err.Error(),
+		)
+		// Non-fatal — proceed with the update anyway.
+		oldSHA = "<unknown>"
+	}
+
 	ref := "refs/heads/" + targetBranch
 	if err := runner.UpdateRef(ctx, ref, newSHA); err != nil {
 		return &MergeRejection{Permanent: false}
 	}
+
+	slog.Info("merge: target branch ref updated",
+		"workspace", workspaceSlug,
+		"target_branch", targetBranch,
+		"old_sha", oldSHA,
+		"new_sha", newSHA,
+	)
+
 	return nil
 }
 
 // DeleteSourceBranch deletes the source branch ref from the local
-// repository via git update-ref -d.
+// repository via git update-ref -d. Only called after a successful
+// target branch ref update — the source branch is preserved if any
+// earlier step fails.
 func (h *Handler) DeleteSourceBranch(ctx context.Context, workspaceSlug, sourceRef string) error {
 	runner, err := h.runnerForWorkspace(workspaceSlug)
 	if err != nil {
@@ -368,6 +392,12 @@ func (h *Handler) DeleteSourceBranch(ctx context.Context, workspaceSlug, sourceR
 	if _, err := runner.Run(ctx, "update-ref", "-d", "refs/heads/"+sourceRef); err != nil {
 		return fmt.Errorf("merge: delete branch %q: %w", sourceRef, err)
 	}
+
+	slog.Info("merge: source branch deleted",
+		"workspace", workspaceSlug,
+		"source_ref", sourceRef,
+	)
+
 	return nil
 }
 
