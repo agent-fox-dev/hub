@@ -88,6 +88,7 @@ type EnqueueParams struct {
 	Nonce       string
 	Payload     json.RawMessage
 	SubmittedBy string
+	Group       string // Optional: when non-empty, used as group_key for group serialization.
 }
 
 // ListOpts carries optional filter and pagination parameters for ListByType.
@@ -103,6 +104,7 @@ type Job struct {
 	ID          string
 	Type        string
 	Key         string
+	GroupKey    string // Group serialization key; empty for legacy per-key serialization.
 	Nonce       string
 	Status      string
 	Payload     json.RawMessage

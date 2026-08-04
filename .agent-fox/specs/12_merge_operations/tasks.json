@@ -46,7 +46,7 @@
             "12-REQ-1.1",
             "12-REQ-1.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -67,7 +67,7 @@
             "12-REQ-1.4",
             "12-REQ-1.5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -87,7 +87,7 @@
             "12-REQ-2.1",
             "12-REQ-2.2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -109,7 +109,7 @@
             "12-REQ-3.2",
             "12-REQ-3.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -514,7 +514,7 @@
           "details": [
             "Add optional Group string field to the EnqueueParams struct in the jobqueue package",
             "Update the Enqueue function to write Group value into the group_key column",
-            "Ensure dedup logic continues to use (type, key) \u2014 Group field does not affect dedup",
+            "Ensure dedup logic continues to use (type, key) — Group field does not affect dedup",
             "Add group_key to all relevant SELECT/INSERT queries in the jobqueue implementation"
           ],
           "test_spec_refs": [
@@ -787,7 +787,7 @@
           "title": "Implement target branch ref update via go-git",
           "details": [
             "Use go-git reference update to advance target branch ref to rebased source HEAD",
-            "This is a local ref update only \u2014 no remote push involved",
+            "This is a local ref update only — no remote push involved",
             "On ref lock contention or update failure: return retryable error so the job queue retries the job",
             "Log the old and new target branch SHAs for auditability"
           ],
@@ -1119,7 +1119,7 @@
           "title": "Run all spec tests and verify full merge pipeline end-to-end",
           "details": [
             "Run the complete spec test suite: go test ./internal/merge/... ./internal/jobqueue/... ./internal/cli/... -count=1 -v",
-            "Verify a merge job submitted via POST /merges is enqueued, dispatched, executes the full algorithm (fetch\u2192rebase\u2192check\u2192ref update\u2192delete), and returns success result",
+            "Verify a merge job submitted via POST /merges is enqueued, dispatched, executes the full algorithm (fetch→rebase→check→ref update→delete), and returns success result",
             "Verify per-target serialization: two merge jobs for the same target branch queue correctly and execute sequentially"
           ],
           "test_spec_refs": [
@@ -1199,7 +1199,7 @@
           "details": [
             "Verify POST /merges handler calls jobqueue.Enqueue with correct type, Key, and Group fields",
             "Verify merge job handler is registered and invoked by the worker dispatch loop (not a stub)",
-            "Verify merge handler calls runPreCheck \u2192 fetch \u2192 RebaseBranch \u2192 check command \u2192 ref update \u2192 branch delete in order",
+            "Verify merge handler calls runPreCheck → fetch → RebaseBranch → check command → ref update → branch delete in order",
             "Verify DELETE /merges/:id calls jobqueue.CancelJob and propagates the result to the HTTP response"
           ],
           "test_spec_refs": [
