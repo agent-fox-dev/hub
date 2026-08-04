@@ -1,0 +1,279 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "needs_refinement",
+      "summary": "The \"durable_job_queue\" PRD is well-structured and unusually thorough for an internal building block. Intent, Goals, Non-Goals, Functional Requirements, Technical Boundaries, and Design Decisions are all present and well-articulated. The spec covers the job model, state machine, registration, polling, backoff, crash recovery, graceful shutdown, and the query API in sufficient detail. Two issues prevent an immediate \"ready\" verdict: (1) a meaningful overlap exists with the active `workspace_checkout` spec, which owns the current in-memory clone `JobQueue` that this spec is designed to replace/complement, requiring explicit relationship clarification; and (2) a handful of smaller gaps remain around schema migration strategy, worker-goroutine count, test tooling, and the \"reject duplicate (type, key)\" contract's interaction with manual requeue.",
+      "gaps": [
+        "Overlap with active spec `workspace_checkout`: that spec defines the existing in-memory clone JobQueue and owns job dispatch for clone/reclone operations. The new durable queue explicitly calls out migration as optional and incremental, but the relationship (dependency, extension, or eventual supersession) is not declared, and there is no `## Dependencies` reference to `workspace_checkout`.",
+        "Schema migration strategy is absent: the PRD says the queue uses the hub's existing `*sql.DB` but does not specify how the new `jobs` table (and any indexes) will be introduced \u2014 whether via the hub's existing migration framework, an embedded SQL file, or programmatic `CREATE TABLE IF NOT EXISTS` at startup.",
+        "Worker-goroutine count is unspecified: the polling and dispatch section describes a 'single processing loop' and mentions 'worker goroutines' but never states how many workers run concurrently or whether that number is configurable at registration/startup time.",
+        "Test tooling is not named: the Technical Boundaries section names Go 1.26+ and SQLite but omits the test framework/tooling (e.g., `testing` stdlib only, `testify`, an in-memory SQLite fixture helper, etc.).",
+        "Ambiguity in the duplicate-(type,key) + manual-requeue interaction: Design Decision 2 says a live (queued/running) job causes new submissions to be rejected and the existing job ID is returned. It is unclear whether a `dead_letter` job that is manually requeued (resetting to `queued`) is subject to the same duplicate check \u2014 i.e., can a dead-lettered job be requeued if a newer job for the same key is already queued?",
+        "Grace-period configurability is mentioned but not specified: the Graceful Shutdown section references 'a configurable grace period' for in-flight handler cancellation but provides no default value, no configuration mechanism, and no behaviour when the grace period expires (force-kill vs. log-and-exit)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How should the durable job queue relate to the existing `workspace_checkout` spec's in-memory clone JobQueue? Should `durable_job_queue` be declared as a dependency of `workspace_checkout` (i.e., workspace_checkout will be updated to use it), does it supersede the clone queue entirely, or does it remain fully independent with migration left to a future spec?",
+          "context": "The active `workspace_checkout` spec owns the current in-memory clone JobQueue. Without a declared relationship, artifact generation may produce conflicting or duplicated queue infrastructure. This is the primary blocker for 'ready' status.",
+          "options": [
+            "Declare `workspace_checkout` as a downstream consumer; add a note that a follow-up spec will migrate the clone queue to the durable queue.",
+            "Mark `workspace_checkout` as superseded by `durable_job_queue` for the queue portion and update it in the same changeset.",
+            "Keep the specs fully independent; the durable queue is introduced alongside the clone queue with no migration planned yet."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "How should the `jobs` table and its indexes be introduced into the SQLite database? Which migration mechanism does the hub use?",
+          "context": "Without a specified migration strategy, the generated code may use an ad-hoc approach (e.g., CREATE TABLE IF NOT EXISTS at startup) that conflicts with the hub's established migration framework, causing schema drift or broken CI.",
+          "options": [
+            "Embed a numbered SQL migration file in the hub's existing migration directory (specify the framework, e.g., golang-migrate, goose, or custom).",
+            "Use programmatic `CREATE TABLE IF NOT EXISTS` executed when the queue is initialised \u2014 no separate migration file.",
+            "Add the table definition to an existing bootstrap SQL file that runs at first startup."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "How many worker goroutines should the queue run, and should that number be configurable?",
+          "context": "The polling/dispatch section alternates between 'single processing loop' and 'all workers', creating ambiguity. The worker count determines actual parallelism for jobs with different keys and affects resource sizing.",
+          "options": [
+            "Single worker goroutine (simplest; serializes all cross-key concurrency to one goroutine).",
+            "Fixed small default (e.g., 4 workers) with a configurable option at queue construction time.",
+            "One goroutine per registered job type."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What is the default grace period for graceful shutdown, and what happens when it expires \u2014 does the hub log and exit anyway, or does it wait indefinitely?",
+          "context": "The Graceful Shutdown section mentions a 'configurable grace period' but gives no default or expiry behaviour. Without this, generated code will either hard-code an arbitrary timeout or block indefinitely.",
+          "options": [
+            "Default 30 s; after expiry, cancel contexts and exit even if handlers are still running.",
+            "Default 30 s; log a warning and wait indefinitely (never force-exit).",
+            "No grace period; Wait() blocks until all in-flight handlers finish regardless of time."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Which test tooling should be used for the job queue package \u2014 stdlib `testing` only, `testify/assert`, or another framework? Should tests use an in-memory SQLite database or the same on-disk setup as production?",
+          "context": "The Technical Boundaries section omits test tooling. Naming it ensures generated test files use the correct imports and patterns consistent with the rest of the hub codebase.",
+          "options": [
+            "stdlib `testing` + in-memory SQLite (`:memory:`).",
+            "`testify/assert` + in-memory SQLite (`:memory:`).",
+            "Match whatever the existing hub test suite uses (please specify)."
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "When a dead-lettered job is manually requeued (retry_count reset, status set back to queued), and a *different* job for the same (type, key) is already queued or running, should the requeue be rejected, should the existing active job take precedence, or should the requeue be allowed to queue behind the active job?",
+          "context": "Design Decision 2 defines duplicate rejection for new enqueue calls, but the manual-requeue path bypasses normal enqueue logic. Clarifying this prevents undefined behaviour when operators try to recover stuck dead-letter jobs.",
+          "options": [
+            "Reject the requeue if an active (queued/running) job for the same (type, key) already exists; return an error to the caller.",
+            "Allow the requeue unconditionally \u2014 operators are trusted to know what they are doing.",
+            "Treat the requeue as a normal enqueue and apply the same duplicate-prevention check."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "This is a well-structured and thorough PRD. The intent, non-goals, functional requirements, and design decisions are all clearly articulated. The job model, state machine, retry logic, and graceful shutdown are specified at a level of detail that would support implementation. A few areas would benefit from clarification before implementation begins: the exact behaviour of the wakeup channel during worker claiming races, the SQLite schema (indexes, uniqueness constraints), the observable metrics/logging contract, and whether the `CancelJob` operation has any additional constraints beyond status checks.",
+      "gaps": [
+        "Schema is described narratively but no DDL or index list is provided \u2014 implementers may make inconsistent choices about index coverage for the polling query (type, key, status, available_at).",
+        "The wakeup channel is described as buffered(1), but it is unclear which goroutine is responsible for draining it and whether all workers share a single channel or each has its own.",
+        "No logging or observability contract is defined \u2014 it is unspecified what the queue logs at each state transition, which could lead to inconsistent operator experience.",
+        "CancelJob is mentioned in the state machine table but not described as a programmatic API method \u2014 it is unclear who can call it, what it returns if the job is already running, and whether it is exposed alongside GetByID and ListByType.",
+        "The polling query's atomicity guarantee is described with a WHERE clause approach, but there is no mention of SQLite transaction isolation level or whether WAL mode is assumed \u2014 this matters for correctness under concurrent workers sharing one *sql.DB.",
+        "Retry count initialisation is ambiguous: the formula uses retry_count in the exponent but it is not stated whether retry_count is 0 or 1 on the first failure, which affects the first backoff delay.",
+        "There is no specified behaviour when InitSchema is called on a database that already has a jobs table with an incompatible schema (e.g., after a future column addition)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should all worker goroutines share a single wakeup channel, or does each worker have its own? And is the producer (Enqueue) responsible for sending on it, or is there a dedicated dispatcher goroutine?",
+          "context": "The buffered(1) wakeup channel is a key low-latency mechanism, but the current description leaves the ownership and fan-out behaviour ambiguous. If four workers share one channel, only one worker is woken per enqueue \u2014 which may leave jobs waiting if the woken worker is busy claiming another job.",
+          "options": [
+            "Single shared channel \u2014 only one worker is woken per enqueue (acceptable because the woken worker will loop and find the job, or the next poll timer will fire)",
+            "Single shared channel with a broadcast mechanism (e.g., close-and-reopen pattern)",
+            "Each worker has its own channel; Enqueue signals all of them",
+            "Other \u2014 please describe"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What SQLite pragmas or connection settings does the queue assume? Specifically, is WAL mode required, and should the queue set `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout` itself, or rely on the caller's *sql.DB configuration?",
+          "context": "Multiple goroutines writing to SQLite simultaneously can cause SQLITE_BUSY errors without WAL mode and a busy timeout. If the queue does not set these itself, concurrent workers may fail intermittently, which would be a subtle correctness issue.",
+          "options": [
+            "The queue sets WAL mode and busy_timeout on the provided *sql.DB at startup",
+            "The queue documents the requirement and expects the caller to configure it",
+            "The queue uses a single serialised write connection (separate from the read connection) to avoid contention entirely",
+            "Other \u2014 please describe"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is retry_count on the first failure \u2014 0 or 1 \u2014 and does the backoff formula use retry_count before or after incrementing?",
+          "context": "The formula `delay = min(base * multiplier^retry_count, cap)` gives different first-retry delays depending on whether retry_count is incremented before or after the formula is applied. Clarifying this pins down the exact backoff schedule (e.g., with base=2s and multiplier=2: first retry at 2s vs 4s).",
+          "options": [
+            "retry_count starts at 0; it is incremented first, then the formula is applied (first delay = base * multiplier^1 = 4s with defaults)",
+            "retry_count starts at 0; the formula is applied before incrementing (first delay = base * multiplier^0 = 2s with defaults)",
+            "retry_count starts at 1 on the first failure; formula is applied as-is"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Is CancelJob a first-class programmatic API method on the queue, and what should it return if the job is already in running, completed, dead_letter, or cancelled status?",
+          "context": "The state machine shows a cancelled terminal state reachable only from queued, but CancelJob is not listed alongside GetByID, ListByType, etc. Consumers (e.g., a merge endpoint that wants to cancel a pending merge) need a clear API contract.",
+          "options": [
+            "Yes \u2014 CancelJob(id string) is a public method; it returns an error if the job is not in queued status (e.g., ErrNotCancellable)",
+            "Yes \u2014 CancelJob is idempotent: cancelling an already-cancelled job succeeds silently; cancelling a running/completed/dead_letter job returns an error",
+            "No \u2014 cancellation is the consumer's responsibility; the queue only provides status transitions via the handler result",
+            "Other \u2014 please describe"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What should the queue log, and at what level, for each state transition and for shutdown events?",
+          "context": "Without a defined logging contract, different implementers may log too little (hard to debug production issues) or too much (noisy logs). Specifying the minimum set of log lines (e.g., job claimed, job completed, job dead-lettered, shutdown grace period exceeded) ensures consistent operator experience.",
+          "options": [
+            "Minimal: only log dead-letter transitions and grace-period-exceeded interruptions (warn level)",
+            "Standard: log every state transition at debug level, plus dead-letter and interruptions at warn/error",
+            "Structured logging with a fixed set of fields (job_id, type, key, status, retry_count) on every transition",
+            "No requirement \u2014 leave it to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "How should InitSchema behave if the jobs table already exists but is missing a column that a future version of the queue expects?",
+          "context": "CREATE TABLE IF NOT EXISTS silently succeeds even on schema mismatch. If the hub is upgraded and the schema evolves, the queue could silently operate against a stale table. Defining the expected behaviour now prevents a future silent data corruption issue.",
+          "options": [
+            "Out of scope \u2014 schema evolution is deferred to a future spec; InitSchema only needs to handle the initial creation case",
+            "InitSchema should run ALTER TABLE ADD COLUMN IF NOT EXISTS for any new columns it needs",
+            "InitSchema should compare the actual schema against the expected schema and return an error on mismatch",
+            "Other \u2014 please describe"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, highly detailed PRD for a durable job queue backed by SQLite. The document is thorough and well-structured, covering intent, goals, non-goals, functional requirements, a job model, state machine, enqueueing logic, polling/dispatch, backoff, dead-lettering, crash recovery, graceful shutdown, query API, schema initialisation, logging contract, technical boundaries, and design decisions. The vast majority of dimensions are fully satisfied. A small number of gaps remain around test strategy specifics, the exact Go public API surface (constructor signature, option types), and operational observability tooling, but none of these are blockers for implementation.",
+      "gaps": [
+        "No explicit test strategy or test coverage expectations are defined (e.g., which scenarios must have automated tests: crash recovery, backoff scheduling, duplicate prevention, graceful shutdown timeout).",
+        "The public Go API surface (constructor signature, Queue struct/interface, option types like WithWorkers) is described in prose but never shown as a Go signature block, which could lead to ambiguity during implementation.",
+        "The ListByType/ListByKey/CountByStatus APIs do not define their exact filtering parameters, ListOpts struct fields (e.g., status filter, key filter, limit, offset defaults/caps), or error return shapes.",
+        "No mention of how the queue is wired into the hub's startup sequence (e.g., where InitSchema is called, how the Queue is constructed and passed to consumers, lifecycle ownership).",
+        "No observability or alerting guidance beyond log levels \u2014 e.g., no mention of whether dead-letter counts should be exposed as metrics, and no guidance on how operators discover and act on dead-lettered jobs in practice.",
+        "The idempotency contract for handlers (required for crash-recovery safety) is documented but not enforced or tested \u2014 there is no guidance on how handler authors verify idempotency.",
+        "CancelJob is defined as idempotent for already-cancelled jobs, but the behaviour when called concurrently with a running job transitioning to completed/dead_letter is not explicitly addressed (potential TOCTOU on status check)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Which specific scenarios are required to have automated tests? For example: crash recovery (running \u2192 queued on startup), exponential backoff scheduling, duplicate-prevention (nonce and type+key), graceful shutdown grace-period timeout, per-key serialization, and dead-letter transitions?",
+          "context": "The PRD specifies the test tooling (stdlib testing + in-memory SQLite) but gives no guidance on required test coverage. Without this, implementers may under-test critical paths like crash recovery or the promote loop.",
+          "options": [
+            "All functional requirements must have at least one test (comprehensive)",
+            "Core paths only: enqueue, claim, complete, retry/backoff, dead-letter, crash recovery, graceful shutdown",
+            "Happy-path tests only; edge cases deferred to a future QA pass",
+            "No specific test coverage requirement \u2014 left to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Can you provide or approve the top-level Go constructor signature and Queue interface for the durable job queue? For example: `func NewQueue(db *sql.DB, opts ...Option) (*Queue, error)` and the exported methods on `*Queue`?",
+          "context": "The PRD describes behaviour thoroughly but never shows a Go signature block. Ambiguities like whether Queue is a struct or interface, whether construction can fail (returning error), and the exact Option types could lead to API churn during implementation.",
+          "options": [
+            "func NewQueue(db *sql.DB, opts ...Option) (*Queue, error) \u2014 concrete struct, options variadic",
+            "func NewQueue(db *sql.DB, opts ...Option) *Queue \u2014 panics on misconfiguration",
+            "Expose a Queue interface with a concrete DefaultQueue implementation",
+            "Leave API shape to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "What are the exact fields and defaults for the ListOpts struct used by ListByType? Specifically: what are the default and maximum values for limit/offset, which status values can be filtered on, and should ListByKey share the same opts type?",
+          "context": "ListByType and ListByKey are part of the public API consumed by merge and sync endpoints. Without precise field definitions, implementers may make incompatible choices (e.g., no limit cap, different filter semantics) that require breaking changes later.",
+          "options": [
+            "ListOpts{Status []string, Key string, Limit int (default 50, max 500), Offset int}",
+            "ListOpts{Status string (single value), Limit int (default 100, no max), Offset int}",
+            "ListByKey does not use ListOpts \u2014 it returns all results with no pagination",
+            "Leave ListOpts definition to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Where in the hub startup sequence is the durable job queue initialised? Specifically: who calls InitSchema, who constructs the Queue, and how is it passed to consumers (dependency injection, global singleton, or other)?",
+          "context": "The PRD says the queue is an internal building block and InitSchema must be called at startup, but does not describe the wiring. Without this, each consumer subsystem may make different assumptions about lifecycle ownership, leading to multiple initialisations or missed schema setup.",
+          "options": [
+            "Hub main() calls InitSchema and constructs Queue, then passes it to each consumer via dependency injection",
+            "Each consumer calls InitSchema independently (idempotent via IF NOT EXISTS) and constructs its own Queue",
+            "A hub-level registry owns the Queue singleton; consumers look it up by name",
+            "Leave wiring to implementer discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should dead-letter job counts (and optionally queued/running counts) be exposed as runtime metrics (e.g., expvar, Prometheus) in addition to structured logs, so operators can alert on accumulation without scraping logs?",
+          "context": "The PRD provides a CountByStatus API and WARN-level logs for dead-lettered jobs, but gives no guidance on metrics exposure. For a production background processing system, operators typically need metric-based alerts (e.g., dead_letter_count > 0) rather than log-scraping.",
+          "options": [
+            "Yes \u2014 expose CountByStatus results as expvar counters updated after each job transition",
+            "Yes \u2014 expose a /metrics endpoint (Prometheus) with job state counts by type",
+            "No \u2014 logs and the CountByStatus API are sufficient; metrics are out of scope for this spec",
+            "Defer metrics to a future observability spec"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Keep the specs fully independent. The durable queue is introduced alongside the clone queue with no migration planned yet. The PRD already says migration is optional and incremental \u2014 a future spec can address it if needed.",
+        "q2": "Use programmatic CREATE TABLE IF NOT EXISTS executed when the queue is initialised \u2014 matching the existing InitSchema pattern used by internal/secrets/schema.go and other hub packages. No separate migration file.",
+        "q3": "Fixed small default (4 workers) with a configurable option at queue construction time. This matches the existing clone JobQueue's pattern of accepting a configurable worker count in NewJobQueue. Multiple workers allow concurrent execution of jobs with different keys.",
+        "q4": "Default 30s. After expiry, cancel contexts and exit even if handlers are still running. Log a warning listing any jobs that were interrupted.",
+        "q5": "stdlib testing only, in-memory SQLite via modernc.org/sqlite with :memory:. This matches the existing hub test suite \u2014 no testify, no external test frameworks.",
+        "q6": "Treat the requeue as a normal enqueue and apply the same duplicate-prevention check. If an active (queued/running) job for the same (type, key) already exists, reject the requeue. This keeps the invariant simple and consistent."
+      },
+      "timestamp": "2026-08-04T05:13:43.850642+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Single shared channel \u2014 only one worker is woken per enqueue. This is acceptable because workers loop continuously after processing a job, checking for the next available job before sleeping. If the woken worker is busy, the next poll timer fires (5s default) and all workers check again. The simplicity of a single shared buffered(1) channel outweighs the marginal latency of a missed wakeup.",
+        "q2": "The queue documents the requirement and expects the caller to configure *sql.DB with WAL mode and busy_timeout. The hub already configures its SQLite connection at startup \u2014 the queue should not override caller settings. Document that WAL mode is required for concurrent workers.",
+        "q3": "retry_count starts at 0. It is incremented first, then the formula is applied. First failure: retry_count becomes 1, delay = min(2 * 2^1, 7200) = 4s. Second failure: retry_count becomes 2, delay = min(2 * 2^2, 7200) = 8s. This matches the intuition that the first retry waits longer than the base delay.",
+        "q4": "CancelJob(id string) is a public method. It is idempotent: cancelling an already-cancelled job succeeds silently. Cancelling a running, completed, or dead_letter job returns ErrNotCancellable. This gives consumers a clear API for their cancel endpoints.",
+        "q5": "Standard: log every state transition at debug level, plus dead-letter and grace-period-exceeded interruptions at warn level. Use structured fields (job_id, type, key, status, retry_count) on every log line. Use the standard library log/slog package.",
+        "q6": "Out of scope \u2014 schema evolution is deferred to a future spec. InitSchema only needs to handle the initial creation case with CREATE TABLE IF NOT EXISTS. The hub is pre-production; schema changes are applied as DDL updates."
+      },
+      "timestamp": "2026-08-04T05:16:16.232407+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

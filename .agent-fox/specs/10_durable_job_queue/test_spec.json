@@ -1,0 +1,1524 @@
+{
+  "$schema": null,
+  "spec_id": "10",
+  "spec_name": "durable_job_queue",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-10-1",
+      "requirement_id": "10-REQ-1.1",
+      "kind": "unit",
+      "description": "InitSchema creates the jobs table and all four required indexes when called with a valid in-memory SQLite database.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open via modernc.org/sqlite with DSN ':memory:'",
+        "PRAGMA journal_mode=WAL and PRAGMA busy_timeout=5000 are set on the connection",
+        "The jobs table does not yet exist"
+      ],
+      "input": "InitSchema(db) where db is a freshly opened in-memory SQLite connection",
+      "expected": "Returns nil; querying sqlite_master confirms the jobs table exists with columns id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at; indexes idx_jobs_nonce, idx_jobs_type_key_status, idx_jobs_status_available_at, idx_jobs_type_created_at all exist",
+      "assertion_pseudocode": "err = InitSchema(db); assert err == nil; rows = db.Query(\"SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'\"); assert rows has one row; for each index in [idx_jobs_nonce, idx_jobs_type_key_status, idx_jobs_status_available_at, idx_jobs_type_created_at]: rows = db.Query(\"SELECT name FROM sqlite_master WHERE type='index' AND name=?\", index); assert rows has one row"
+    },
+    {
+      "id": "TS-10-2",
+      "requirement_id": "10-REQ-1.2",
+      "kind": "unit",
+      "description": "InitSchema called a second time on a database where the jobs table already exists returns nil without error and leaves existing data intact.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open",
+        "InitSchema has already been called once successfully",
+        "A job row has been inserted into the jobs table"
+      ],
+      "input": "InitSchema(db) called a second time on the same db",
+      "expected": "Returns nil; the jobs table still exists; the previously inserted row is still present; no duplicate tables or indexes are created",
+      "assertion_pseudocode": "err1 = InitSchema(db); assert err1 == nil; db.Exec(\"INSERT INTO jobs (id, type, key, nonce, status, ...) VALUES ('j1', 'merge', 'main', 'n1', 'queued', ...)\"); err2 = InitSchema(db); assert err2 == nil; count = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE id='j1'\").Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-3",
+      "requirement_id": "10-REQ-1.3",
+      "kind": "unit",
+      "description": "InitSchema creates idx_jobs_nonce as a UNIQUE index, causing a second insert with the same nonce to fail with a unique constraint violation.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open",
+        "InitSchema has been called successfully"
+      ],
+      "input": "Two INSERT statements into jobs with identical nonce values",
+      "expected": "First insert succeeds; second insert returns a SQLite unique constraint error referencing the nonce column",
+      "assertion_pseudocode": "InitSchema(db); err1 = db.Exec(\"INSERT INTO jobs (id, type, key, nonce, status, ...) VALUES ('j1', 'merge', 'k', 'same-nonce', 'queued', ...)\"); assert err1 == nil; err2 = db.Exec(\"INSERT INTO jobs (id, type, key, nonce, status, ...) VALUES ('j2', 'merge', 'k', 'same-nonce', 'queued', ...)\"); assert err2 != nil; assert err2 message contains 'UNIQUE' or 'unique'"
+    },
+    {
+      "id": "TS-10-4",
+      "requirement_id": "10-REQ-2.1",
+      "kind": "unit",
+      "description": "Register with a unique type name, valid handler, and optional retry policy stores the handler and returns nil.",
+      "preconditions": [
+        "A Queue instance has been constructed via New(db) but not yet started",
+        "No job type 'merge' is registered"
+      ],
+      "input": "queue.Register('merge', handler, RetryPolicy{Base: 2s, Multiplier: 2, Cap: 7200s, MaxRetries: 20})",
+      "expected": "Returns nil; subsequent Enqueue calls with type='merge' succeed without 'unregistered type' errors",
+      "assertion_pseudocode": "err = queue.Register('merge', handler, policy); assert err == nil; jobID, dup, enqErr = queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'k', Nonce: 'n1', Payload: '{}', SubmittedBy: 'sys'}); assert enqErr == nil"
+    },
+    {
+      "id": "TS-10-5",
+      "requirement_id": "10-REQ-2.2",
+      "kind": "unit",
+      "description": "Registering a type name that is already registered returns a non-nil error and does not overwrite the existing handler.",
+      "preconditions": [
+        "A Queue instance has been constructed via New(db) but not yet started",
+        "Job type 'merge' is already registered with handler1"
+      ],
+      "input": "queue.Register('merge', handler2, nil)",
+      "expected": "Returns a non-nil error whose message indicates the type name is already registered; the original handler1 remains active (not overwritten)",
+      "assertion_pseudocode": "queue.Register('merge', handler1, nil); err = queue.Register('merge', handler2, nil); assert err != nil; assert err.Error() contains 'already registered' or 'duplicate'"
+    },
+    {
+      "id": "TS-10-6",
+      "requirement_id": "10-REQ-2.3",
+      "kind": "unit",
+      "description": "Register accepts a handler with the exact signature func(ctx context.Context, payload json.RawMessage) (result any, retryable bool, err error).",
+      "preconditions": [
+        "A Queue instance has been constructed via New(db) but not yet started"
+      ],
+      "input": "A handler function with signature func(ctx context.Context, payload json.RawMessage) (any, bool, error)",
+      "expected": "Register compiles and returns nil; the handler is callable by the worker",
+      "assertion_pseudocode": "handler = func(ctx, payload) (any, bool, error) { return nil, false, nil }; err = queue.Register('test', handler, nil); assert err == nil"
+    },
+    {
+      "id": "TS-10-7",
+      "requirement_id": "10-REQ-3.1",
+      "kind": "unit",
+      "description": "Enqueue with a registered type, unique nonce, and no active job for the same (type, key) inserts a queued job and returns a non-empty job ID with duplicate=false and err=nil.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "No job with type='merge', key='main' exists in the jobs table",
+        "No job with nonce='abc123' exists"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'main', Nonce: 'abc123', Payload: '{\"branch\":\"main\"}', SubmittedBy: 'user-1'})",
+      "expected": "Returns (non-empty UUID string, false, nil); a row exists in the jobs table with status='queued', available_at <= now(), type='merge', key='main', nonce='abc123'",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err == nil; assert dup == false; assert jobID != ''; row = db.QueryRow('SELECT status, available_at FROM jobs WHERE id=?', jobID); assert row.status == 'queued'; assert row.available_at <= now()"
+    },
+    {
+      "id": "TS-10-8",
+      "requirement_id": "10-REQ-3.2",
+      "kind": "unit",
+      "description": "Enqueue called with a nonce that matches an existing job returns the existing job's ID with duplicate=false and err=nil without inserting a new record.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "A job with nonce='abc123' already exists in the jobs table with id='existing-job-id'"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'main', Nonce: 'abc123', Payload: '{}', SubmittedBy: 'user-1'})",
+      "expected": "Returns ('existing-job-id', false, nil); the jobs table still contains exactly one row with nonce='abc123'",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err == nil; assert dup == false; assert jobID == 'existing-job-id'; count = db.QueryRow('SELECT COUNT(*) FROM jobs WHERE nonce=?', 'abc123').Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-9",
+      "requirement_id": "10-REQ-3.3",
+      "kind": "unit",
+      "description": "Enqueue with a unique nonce but a (type, key) pair that already has an active queued job returns the existing job's ID with duplicate=true and err=nil.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "A job with type='merge', key='main', status='queued', id='j1' exists in the jobs table",
+        "No job with nonce='new-nonce' exists"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'main', Nonce: 'new-nonce', Payload: '{}', SubmittedBy: 'user-2'})",
+      "expected": "Returns ('j1', true, nil); no new row is inserted; the jobs table still has exactly one row with type='merge', key='main', status in ('queued','running')",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err == nil; assert dup == true; assert jobID == 'j1'; count = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type='merge' AND key='main' AND status IN ('queued','running')\").Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-10",
+      "requirement_id": "10-REQ-3.4",
+      "kind": "unit",
+      "description": "Enqueue with an unregistered job type returns an empty string, false, and a non-nil error without inserting any record.",
+      "preconditions": [
+        "A Queue instance is constructed; no type 'unknown-type' is registered"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'unknown-type', Key: 'k', Nonce: 'n1', Payload: '{}', SubmittedBy: 'sys'})",
+      "expected": "Returns ('', false, non-nil error); error message indicates the type is not registered; no row with type='unknown-type' exists in the jobs table",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err != nil; assert err.Error() contains 'not registered' or 'unknown type'; assert jobID == ''; assert dup == false; count = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type='unknown-type'\").Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-10-11",
+      "requirement_id": "10-REQ-4.1",
+      "kind": "unit",
+      "description": "Worker's processing loop first runs the promote step to transition failed jobs with elapsed available_at back to queued before polling for new work.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker",
+        "A job with status='failed', available_at=now()-10s exists in the jobs table",
+        "No other jobs exist"
+      ],
+      "input": "Worker loop iteration triggered by poll timer or wakeup signal",
+      "expected": "The failed job is transitioned to status='queued' by the promote step; the worker then polls and claims it; the job eventually transitions to 'completed' or 'failed' depending on handler result",
+      "assertion_pseudocode": "// Insert failed job with past available_at; start queue; wait for poll cycle; db.QueryRow('SELECT status FROM jobs WHERE id=?', jobID).Scan(&status); assert status == 'running' OR status == 'completed' (promote happened and job was claimed)"
+    },
+    {
+      "id": "TS-10-12",
+      "requirement_id": "10-REQ-4.2",
+      "kind": "unit",
+      "description": "Worker atomically claims a queued job by updating status to running with a WHERE clause that includes status='queued', preventing double-claim.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "A job with status='queued', available_at=now()-1s exists"
+      ],
+      "input": "Worker poll cycle finds the queued job",
+      "expected": "The job's status is updated to 'running' in the database; the registered handler is called with the job's payload and a non-nil context; at most one worker claims the job",
+      "assertion_pseudocode": "handlerCalled = false; handler = func(ctx, payload) { handlerCalled = true; return nil, false, nil }; queue.Register('test', handler, nil); queue.Enqueue(params); wait for handler to be called; assert handlerCalled == true; row = db.QueryRow('SELECT status FROM jobs WHERE id=?', jobID); assert row.status in ('running', 'completed')"
+    },
+    {
+      "id": "TS-10-13",
+      "requirement_id": "10-REQ-4.3",
+      "kind": "unit",
+      "description": "When no claimable job is found, the worker blocks on a three-way select and wakes up when the poll timer fires.",
+      "preconditions": [
+        "A Queue instance is constructed and started with poll interval=100ms",
+        "No jobs exist in the jobs table"
+      ],
+      "input": "Worker completes a poll cycle finding no jobs; waits on select",
+      "expected": "Worker does not busy-loop; after poll interval elapses, worker re-polls; CPU usage remains low during idle period",
+      "assertion_pseudocode": "pollCount = 0; // instrument poll function to count calls; start queue with no jobs; sleep(250ms); assert pollCount >= 2 AND pollCount <= 4 // at most a few polls in 250ms with 100ms interval, not thousands"
+    },
+    {
+      "id": "TS-10-14",
+      "requirement_id": "10-REQ-4.4",
+      "kind": "unit",
+      "description": "Queue starts exactly the configured number of worker goroutines and all workers share a single buffered(1) wakeup channel.",
+      "preconditions": [
+        "A Queue instance is constructed with WithWorkers(3)"
+      ],
+      "input": "queue.Start()",
+      "expected": "Exactly 3 worker goroutines are running; the wakeup channel has buffer size 1; all workers receive from the same channel",
+      "assertion_pseudocode": "q, _ = New(db, WithWorkers(3)); q.Start(); // verify via runtime.NumGoroutine() delta or internal inspection; assert goroutineDelta == 3; // wakeup channel buffer verified via internal field or test hook: assert cap(q.wakeupCh) == 1"
+    },
+    {
+      "id": "TS-10-15",
+      "requirement_id": "10-REQ-5.1",
+      "kind": "unit",
+      "description": "When a handler returns (result, false, nil), the worker updates the job to completed status, stores the serialized result, and logs at DEBUG level.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "A job with type='merge', key='k', status='queued' exists"
+      ],
+      "input": "Handler returns (map[string]string{\"merged\": \"true\"}, false, nil)",
+      "expected": "Job record has status='completed'; result column contains JSON-serialized '{\"merged\":\"true\"}'; updated_at is updated; a DEBUG log line is emitted with job_id, type, key, status='completed', retry_count fields",
+      "assertion_pseudocode": "handler = func(ctx, payload) (any, bool, error) { return map[string]string{'merged':'true'}, false, nil }; queue.Register('merge', handler, nil); jobID, _, _ = queue.Enqueue(params); waitForStatus(db, jobID, 'completed'); row = db.QueryRow('SELECT status, result FROM jobs WHERE id=?', jobID); assert row.status == 'completed'; assert row.result == '{\"merged\":\"true\"}'"
+    },
+    {
+      "id": "TS-10-16",
+      "requirement_id": "10-REQ-5.2",
+      "kind": "unit",
+      "description": "When a handler returns a retryable error and retry_count < max_retries, the worker increments retry_count, computes backoff delay, sets status=failed, and stores the error message.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "Type 'sync' is registered with RetryPolicy{Base: 2s, Multiplier: 2, Cap: 7200s, MaxRetries: 20}",
+        "A job with type='sync', key='r42', status='queued', retry_count=0 exists"
+      ],
+      "input": "Handler returns (nil, true, errors.New('network timeout'))",
+      "expected": "Job record has status='failed'; retry_count=1; error='network timeout'; available_at approximately now()+4s (min(2*2^1, 7200)); updated_at is updated; a DEBUG log line is emitted",
+      "assertion_pseudocode": "handler = func(ctx, payload) (any, bool, error) { return nil, true, errors.New('network timeout') }; queue.Register('sync', handler, nil); jobID, _, _ = queue.Enqueue(params); waitForStatus(db, jobID, 'failed'); row = db.QueryRow('SELECT status, retry_count, error, available_at FROM jobs WHERE id=?', jobID); assert row.status == 'failed'; assert row.retry_count == 1; assert row.error == 'network timeout'; assert row.available_at is approximately now()+4s (within 1s tolerance)"
+    },
+    {
+      "id": "TS-10-17",
+      "requirement_id": "10-REQ-5.3",
+      "kind": "unit",
+      "description": "When a handler returns a retryable error and retry_count >= max_retries after increment, the worker transitions the job to dead_letter and logs at WARN level.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "Type 'sync' is registered with RetryPolicy{MaxRetries: 2}",
+        "A job with type='sync', key='r42', status='queued', retry_count=2 exists (already at max)"
+      ],
+      "input": "Handler returns (nil, true, errors.New('still failing'))",
+      "expected": "Job record has status='dead_letter'; error='still failing'; updated_at is updated; a WARN log line is emitted with job_id, type, key, status='dead_letter', retry_count fields",
+      "assertion_pseudocode": "// Insert job with retry_count=2; handler always returns retryable error; waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, error FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.error == 'still failing'"
+    },
+    {
+      "id": "TS-10-18",
+      "requirement_id": "10-REQ-5.4",
+      "kind": "unit",
+      "description": "When a handler returns a permanent (non-retryable) error, the worker transitions the job directly to dead_letter without incrementing retry_count.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "Type 'merge' is registered",
+        "A job with type='merge', key='k', status='queued', retry_count=0 exists"
+      ],
+      "input": "Handler returns (nil, false, errors.New('permanent failure'))",
+      "expected": "Job record has status='dead_letter'; retry_count remains 0; error='permanent failure'; updated_at is updated; a WARN log line is emitted",
+      "assertion_pseudocode": "handler = func(ctx, payload) (any, bool, error) { return nil, false, errors.New('permanent failure') }; queue.Register('merge', handler, nil); jobID, _, _ = queue.Enqueue(params); waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, retry_count, error FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.retry_count == 0; assert row.error == 'permanent failure'"
+    },
+    {
+      "id": "TS-10-19",
+      "requirement_id": "10-REQ-6.1",
+      "kind": "unit",
+      "description": "Backoff delay is computed as min(base * multiplier^retry_count, cap) with retry_count already incremented; first failure produces 4s, second 8s, third 16s with default policy.",
+      "preconditions": [
+        "Default retry policy: base=2s, multiplier=2, cap=7200s, max_retries=20"
+      ],
+      "input": "computeBackoff(policy, retryCount=1), computeBackoff(policy, retryCount=2), computeBackoff(policy, retryCount=3)",
+      "expected": "Returns 4s, 8s, 16s respectively",
+      "assertion_pseudocode": "assert computeBackoff(defaultPolicy, 1) == 4*time.Second; assert computeBackoff(defaultPolicy, 2) == 8*time.Second; assert computeBackoff(defaultPolicy, 3) == 16*time.Second; assert computeBackoff(defaultPolicy, 11) == 7200*time.Second // capped"
+    },
+    {
+      "id": "TS-10-20",
+      "requirement_id": "10-REQ-6.2",
+      "kind": "unit",
+      "description": "Per-type retry policy overrides are applied when registered; unspecified fields fall back to defaults.",
+      "preconditions": [
+        "A Queue instance is constructed but not started"
+      ],
+      "input": "queue.Register('custom', handler, RetryPolicy{Base: 10s}) // only Base specified",
+      "expected": "The registered policy has Base=10s, Multiplier=2 (default), Cap=7200s (default), MaxRetries=20 (default)",
+      "assertion_pseudocode": "queue.Register('custom', handler, RetryPolicy{Base: 10*time.Second}); policy = queue.getPolicy('custom'); assert policy.Base == 10*time.Second; assert policy.Multiplier == 2.0; assert policy.Cap == 7200*time.Second; assert policy.MaxRetries == 20"
+    },
+    {
+      "id": "TS-10-21",
+      "requirement_id": "10-REQ-6.3",
+      "kind": "unit",
+      "description": "The promote step transitions a job from failed to queued when its available_at has passed.",
+      "preconditions": [
+        "A Queue instance is constructed and started with poll interval=50ms",
+        "A job with status='failed', available_at=now()-5s exists in the jobs table"
+      ],
+      "input": "Worker poll cycle runs the promote step",
+      "expected": "Job status transitions from 'failed' to 'queued'; the job is subsequently claimed and executed by a worker",
+      "assertion_pseudocode": "// Insert failed job with past available_at; start queue; sleep(200ms); row = db.QueryRow('SELECT status FROM jobs WHERE id=?', jobID); assert row.status in ('queued', 'running', 'completed', 'failed') // promoted and re-processed"
+    },
+    {
+      "id": "TS-10-22",
+      "requirement_id": "10-REQ-7.1",
+      "kind": "unit",
+      "description": "RequeueDeadLetter on a dead_letter job with no active (type, key) job resets retry_count to 0, sets status=queued, available_at=now(), and sends a wakeup signal.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "A job with id='j1', type='merge', key='main', status='dead_letter', retry_count=5 exists",
+        "No active (queued or running) job with type='merge', key='main' exists"
+      ],
+      "input": "queue.RequeueDeadLetter('j1')",
+      "expected": "Returns ('j1', nil); job record has status='queued', retry_count=0, available_at <= now(), updated_at updated; wakeup channel receives a signal",
+      "assertion_pseudocode": "jobID, err = queue.RequeueDeadLetter('j1'); assert err == nil; assert jobID == 'j1'; row = db.QueryRow('SELECT status, retry_count, available_at FROM jobs WHERE id=?', 'j1'); assert row.status == 'queued'; assert row.retry_count == 0; assert row.available_at <= now()"
+    },
+    {
+      "id": "TS-10-23",
+      "requirement_id": "10-REQ-7.2",
+      "kind": "unit",
+      "description": "RequeueDeadLetter is rejected when an active (queued or running) job already exists for the same (type, key), returning the existing active job's ID and a non-nil error.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with id='j1', type='merge', key='main', status='dead_letter' exists",
+        "A job with id='j2', type='merge', key='main', status='queued' exists"
+      ],
+      "input": "queue.RequeueDeadLetter('j1')",
+      "expected": "Returns ('j2', non-nil error); error message indicates a duplicate active job exists; j1 remains in dead_letter status",
+      "assertion_pseudocode": "existingID, err = queue.RequeueDeadLetter('j1'); assert err != nil; assert err.Error() contains 'active' or 'duplicate'; assert existingID == 'j2'; row = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j1'); assert row.status == 'dead_letter'"
+    },
+    {
+      "id": "TS-10-24",
+      "requirement_id": "10-REQ-7.3",
+      "kind": "unit",
+      "description": "RequeueDeadLetter called for a job not in dead_letter status returns an empty string and a non-nil error.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with id='j1', status='completed' exists"
+      ],
+      "input": "queue.RequeueDeadLetter('j1')",
+      "expected": "Returns ('', non-nil error); error message indicates the job is not in dead_letter status; job record is unchanged",
+      "assertion_pseudocode": "jobID, err = queue.RequeueDeadLetter('j1'); assert err != nil; assert err.Error() contains 'not in dead_letter' or 'invalid status'; assert jobID == ''; row = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j1'); assert row.status == 'completed'"
+    },
+    {
+      "id": "TS-10-25",
+      "requirement_id": "10-REQ-8.1",
+      "kind": "unit",
+      "description": "On startup, the queue resets all jobs in running status to queued with available_at=now() and logs each reset at WARN level.",
+      "preconditions": [
+        "An in-memory SQLite database has the jobs table initialized",
+        "Two jobs with status='running' exist: id='j1' and id='j2'",
+        "A Queue instance is constructed but not yet started"
+      ],
+      "input": "queue.Start()",
+      "expected": "Returns nil; both j1 and j2 have status='queued' and available_at <= now() after Start returns; two WARN log lines are emitted, each containing the respective job_id",
+      "assertion_pseudocode": "q.Start(); row1 = db.QueryRow('SELECT status, available_at FROM jobs WHERE id=?', 'j1'); assert row1.status == 'queued'; assert row1.available_at <= now(); row2 = db.QueryRow('SELECT status, available_at FROM jobs WHERE id=?', 'j2'); assert row2.status == 'queued'; // verify WARN logs contain 'j1' and 'j2'"
+    },
+    {
+      "id": "TS-10-26",
+      "requirement_id": "10-REQ-8.2",
+      "kind": "unit",
+      "description": "On startup with no running jobs, the queue proceeds to start worker goroutines without any recovery actions.",
+      "preconditions": [
+        "An in-memory SQLite database has the jobs table initialized",
+        "No jobs with status='running' exist",
+        "A Queue instance is constructed but not yet started"
+      ],
+      "input": "queue.Start()",
+      "expected": "Returns nil; no WARN log lines about crash recovery are emitted; worker goroutines start normally",
+      "assertion_pseudocode": "err = q.Start(); assert err == nil; // no crash recovery WARN logs emitted; goroutineDelta = runtime.NumGoroutine() - baseline; assert goroutineDelta == workerCount"
+    },
+    {
+      "id": "TS-10-27",
+      "requirement_id": "10-REQ-9.1",
+      "kind": "unit",
+      "description": "Calling Shutdown closes stopCh, causing worker goroutines to stop claiming new jobs and complete their current work.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 2 workers",
+        "No jobs are currently running"
+      ],
+      "input": "queue.Shutdown()",
+      "expected": "stopCh is closed; workers exit their loops; no new jobs are claimed after Shutdown is called; Wait() returns within the grace period",
+      "assertion_pseudocode": "q.Start(); q.Shutdown(); done = make(chan struct{}); go func() { q.Wait(); close(done) }(); select { case <-done: // ok case <-time.After(35*time.Second): assert false, 'Wait() did not return within grace period' }"
+    },
+    {
+      "id": "TS-10-28",
+      "requirement_id": "10-REQ-9.2",
+      "kind": "unit",
+      "description": "Wait() returns immediately after all workers exit before the grace period expires.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker and grace period=30s",
+        "No long-running jobs are in flight"
+      ],
+      "input": "queue.Shutdown() followed by queue.Wait()",
+      "expected": "Wait() returns within a few seconds (well before the 30s grace period); returns nil",
+      "assertion_pseudocode": "q.Start(); q.Shutdown(); start = time.Now(); q.Wait(); elapsed = time.Since(start); assert elapsed < 5*time.Second // well before 30s grace period"
+    },
+    {
+      "id": "TS-10-29",
+      "requirement_id": "10-REQ-9.3",
+      "kind": "unit",
+      "description": "When the grace period expires before all workers finish, the queue cancels in-flight handler contexts, logs a WARN per interrupted job, and Wait() returns.",
+      "preconditions": [
+        "A Queue instance is constructed with grace period=100ms and 1 worker",
+        "A handler that blocks until its context is cancelled is registered",
+        "A job is enqueued and the handler is executing"
+      ],
+      "input": "queue.Shutdown() called while handler is blocking",
+      "expected": "Wait() returns within ~200ms; a WARN log line is emitted containing the job_id of the interrupted job; the handler's context is cancelled",
+      "assertion_pseudocode": "ctxCancelled = false; handler = func(ctx, payload) { <-ctx.Done(); ctxCancelled = true; return nil, false, ctx.Err() }; q = New(db, WithGracePeriod(100ms)); q.Register('test', handler, nil); q.Start(); q.Enqueue(params); time.Sleep(50ms); q.Shutdown(); start = time.Now(); q.Wait(); elapsed = time.Since(start); assert elapsed < 500ms; assert ctxCancelled == true"
+    },
+    {
+      "id": "TS-10-30",
+      "requirement_id": "10-REQ-10.1",
+      "kind": "unit",
+      "description": "CancelJob on a queued job transitions it to cancelled status, sets updated_at, logs at DEBUG level, and returns nil.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with id='j1', status='queued' exists in the jobs table"
+      ],
+      "input": "queue.CancelJob('j1')",
+      "expected": "Returns nil; job record has status='cancelled'; updated_at is updated; a DEBUG log line is emitted",
+      "assertion_pseudocode": "err = queue.CancelJob('j1'); assert err == nil; row = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j1'); assert row.status == 'cancelled'"
+    },
+    {
+      "id": "TS-10-31",
+      "requirement_id": "10-REQ-10.2",
+      "kind": "unit",
+      "description": "CancelJob on an already-cancelled job succeeds silently and returns nil without modifying the record.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with id='j1', status='cancelled' exists in the jobs table"
+      ],
+      "input": "queue.CancelJob('j1')",
+      "expected": "Returns nil; job record still has status='cancelled'; no error is returned",
+      "assertion_pseudocode": "err = queue.CancelJob('j1'); assert err == nil; row = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j1'); assert row.status == 'cancelled'"
+    },
+    {
+      "id": "TS-10-32",
+      "requirement_id": "10-REQ-10.3",
+      "kind": "unit",
+      "description": "CancelJob on a job in running, completed, or dead_letter status returns ErrNotCancellable without modifying the record.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "Jobs with id='j-running' (status='running'), id='j-completed' (status='completed'), id='j-dead' (status='dead_letter') exist"
+      ],
+      "input": "queue.CancelJob('j-running'), queue.CancelJob('j-completed'), queue.CancelJob('j-dead')",
+      "expected": "Each call returns ErrNotCancellable (the sentinel error value); no job record is modified",
+      "assertion_pseudocode": "err1 = queue.CancelJob('j-running'); assert errors.Is(err1, ErrNotCancellable); err2 = queue.CancelJob('j-completed'); assert errors.Is(err2, ErrNotCancellable); err3 = queue.CancelJob('j-dead'); assert errors.Is(err3, ErrNotCancellable)"
+    },
+    {
+      "id": "TS-10-33",
+      "requirement_id": "10-REQ-11.1",
+      "kind": "unit",
+      "description": "GetByID with a valid job UUID returns the full job record including payload and result fields.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with id='j1', type='merge', key='main', payload='{\"branch\":\"main\"}', result='{\"sha\":\"abc\"}', status='completed' exists"
+      ],
+      "input": "queue.GetByID('j1')",
+      "expected": "Returns (*Job, nil) where Job.ID='j1', Job.Type='merge', Job.Key='main', Job.Payload='{\"branch\":\"main\"}', Job.Result='{\"sha\":\"abc\"}', Job.Status='completed'",
+      "assertion_pseudocode": "job, err = queue.GetByID('j1'); assert err == nil; assert job != nil; assert job.ID == 'j1'; assert job.Type == 'merge'; assert job.Key == 'main'; assert job.Payload == '{\"branch\":\"main\"}'; assert job.Result == '{\"sha\":\"abc\"}'; assert job.Status == 'completed'"
+    },
+    {
+      "id": "TS-10-34",
+      "requirement_id": "10-REQ-11.2",
+      "kind": "unit",
+      "description": "ListByType returns jobs of the given type filtered by optional status and key, ordered by created_at descending, with pagination applied.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "Three jobs of type='merge' exist: j1 (key='main', status='queued', created_at=T1), j2 (key='dev', status='completed', created_at=T2>T1), j3 (key='main', status='completed', created_at=T3>T2)"
+      ],
+      "input": "queue.ListByType('merge', ListOpts{Status: 'completed', Limit: 10, Offset: 0})",
+      "expected": "Returns ([]*Job, nil) with exactly 2 jobs [j3, j2] ordered by created_at descending; j1 (queued) is excluded",
+      "assertion_pseudocode": "jobs, err = queue.ListByType('merge', ListOpts{Status: 'completed', Limit: 10, Offset: 0}); assert err == nil; assert len(jobs) == 2; assert jobs[0].ID == 'j3'; assert jobs[1].ID == 'j2'"
+    },
+    {
+      "id": "TS-10-35",
+      "requirement_id": "10-REQ-11.3",
+      "kind": "unit",
+      "description": "ListByKey returns all job records for a specific (type, key) combination ordered by created_at descending.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "Jobs j1 (type='merge', key='main', created_at=T1) and j2 (type='merge', key='main', created_at=T2>T1) and j3 (type='merge', key='dev') exist"
+      ],
+      "input": "queue.ListByKey('merge', 'main')",
+      "expected": "Returns ([]*Job, nil) with exactly 2 jobs [j2, j1] ordered by created_at descending; j3 (different key) is excluded",
+      "assertion_pseudocode": "jobs, err = queue.ListByKey('merge', 'main'); assert err == nil; assert len(jobs) == 2; assert jobs[0].ID == 'j2'; assert jobs[1].ID == 'j1'"
+    },
+    {
+      "id": "TS-10-36",
+      "requirement_id": "10-REQ-11.4",
+      "kind": "unit",
+      "description": "CountByStatus returns a map of status to count for all jobs of the given type, omitting statuses with zero jobs.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "Jobs of type='merge': 2 with status='queued', 1 with status='completed', 0 with status='failed'"
+      ],
+      "input": "queue.CountByStatus('merge')",
+      "expected": "Returns (map[string]int{'queued': 2, 'completed': 1}, nil); 'failed' key is absent from the map",
+      "assertion_pseudocode": "counts, err = queue.CountByStatus('merge'); assert err == nil; assert counts['queued'] == 2; assert counts['completed'] == 1; assert 'failed' not in counts"
+    },
+    {
+      "id": "TS-10-37",
+      "requirement_id": "10-REQ-12.1",
+      "kind": "unit",
+      "description": "The polling query ensures at most one job with a given (type, key) is in running status at any time by excluding keys with a running job.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 2 workers",
+        "A job j1 with type='merge', key='main', status='running' exists",
+        "A job j2 with type='merge', key='main', status='queued' exists"
+      ],
+      "input": "Workers poll for available jobs",
+      "expected": "j2 is not claimed while j1 is running; j2 remains in queued status until j1 completes",
+      "assertion_pseudocode": "// Insert j1 as running, j2 as queued; start queue; sleep(200ms); row = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j2'); assert row.status == 'queued' // j2 not claimed while j1 is running"
+    },
+    {
+      "id": "TS-10-38",
+      "requirement_id": "10-REQ-12.2",
+      "kind": "unit",
+      "description": "While a job with (type=T, key=K) is running, all other queued jobs with the same (type, key) are skipped during polling.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 2 workers",
+        "Job j1 (type='merge', key='main') is running",
+        "Jobs j2, j3 (type='merge', key='main') are queued",
+        "Job j4 (type='merge', key='dev') is queued"
+      ],
+      "input": "Workers poll for available jobs",
+      "expected": "j4 (different key) is claimed and executed; j2 and j3 remain queued while j1 is running",
+      "assertion_pseudocode": "// Setup state; start queue; sleep(300ms); row4 = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j4'); assert row4.status in ('running', 'completed'); row2 = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j2'); assert row2.status == 'queued'; row3 = db.QueryRow('SELECT status FROM jobs WHERE id=?', 'j3'); assert row3.status == 'queued'"
+    },
+    {
+      "id": "TS-10-39",
+      "requirement_id": "10-REQ-12.3",
+      "kind": "unit",
+      "description": "After a running job with (type=T, key=K) completes, the next poll cycle picks up the next queued job with the same (type, key).",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker",
+        "Type 'merge' is registered with a handler that completes immediately",
+        "Job j1 (type='merge', key='main') is queued; job j2 (type='merge', key='main') is queued with later created_at"
+      ],
+      "input": "Worker processes j1 to completion, then polls again",
+      "expected": "After j1 completes, j2 is claimed and executed in the next poll cycle",
+      "assertion_pseudocode": "// Enqueue j1 then j2 with same key; start queue; waitForStatus(db, 'j1', 'completed'); waitForStatus(db, 'j2', 'completed', timeout=5s); assert true // j2 was picked up after j1 completed"
+    },
+    {
+      "id": "TS-10-40",
+      "requirement_id": "10-REQ-13.1",
+      "kind": "unit",
+      "description": "A second Enqueue call with the same nonce returns the existing job's ID without inserting a new record, enforced by the unique index on nonce.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "A job with nonce='n1', id='j1' already exists"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'other-key', Nonce: 'n1', Payload: '{}', SubmittedBy: 'sys'})",
+      "expected": "Returns ('j1', false, nil); total job count in the table is unchanged; no new row with nonce='n1' is inserted",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err == nil; assert jobID == 'j1'; assert dup == false; count = db.QueryRow('SELECT COUNT(*) FROM jobs WHERE nonce=?', 'n1').Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-41",
+      "requirement_id": "10-REQ-13.2",
+      "kind": "unit",
+      "description": "Nonce deduplication and (type, key) duplicate prevention are independent checks: a nonce match returns the existing job regardless of status, while (type, key) check only applies to active jobs.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "A completed job with nonce='n1', id='j1', type='merge', key='main' exists"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'main', Nonce: 'n1', Payload: '{}', SubmittedBy: 'sys'})",
+      "expected": "Returns ('j1', false, nil) due to nonce match; no new job is inserted even though j1 is completed (not active)",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err == nil; assert jobID == 'j1'; assert dup == false; count = db.QueryRow('SELECT COUNT(*) FROM jobs').Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-42",
+      "requirement_id": "10-REQ-14.1",
+      "kind": "unit",
+      "description": "All queue log output uses log/slog and every log line includes structured fields job_id, type, key, status, and retry_count where applicable.",
+      "preconditions": [
+        "A Queue instance is constructed with a test slog.Logger that captures log records",
+        "A job is enqueued and processed to completion"
+      ],
+      "input": "Full job lifecycle: enqueue, claim, execute, complete",
+      "expected": "All emitted log records are slog.Record instances; records for job events include Attr keys 'job_id', 'type', 'key', 'status', 'retry_count'",
+      "assertion_pseudocode": "logRecords = captureLogRecords(queue); runJobLifecycle(); for each record in logRecords where record relates to a job event: assert record has attr 'job_id'; assert record has attr 'type'; assert record has attr 'key'; assert record has attr 'status'"
+    },
+    {
+      "id": "TS-10-43",
+      "requirement_id": "10-REQ-14.2",
+      "kind": "unit",
+      "description": "Job claimed, completed, failed-with-retry, and promoted events are logged at DEBUG level; dead-letter, crash recovery, and grace period interruption events are logged at WARN level; queue started/stopped at INFO level.",
+      "preconditions": [
+        "A Queue instance is constructed with a test slog.Logger that captures log records with levels"
+      ],
+      "input": "Various job lifecycle events are triggered",
+      "expected": "DEBUG records for: job claimed, job completed, job failed with retry, job promoted; WARN records for: dead_letter transition, crash recovery reset, grace period interruption; INFO records for: queue started, queue stopped",
+      "assertion_pseudocode": "// Trigger each event type; debugEvents = filter(logRecords, level=DEBUG); warnEvents = filter(logRecords, level=WARN); infoEvents = filter(logRecords, level=INFO); assert any(e.msg contains 'claimed' for e in debugEvents); assert any(e.msg contains 'completed' for e in debugEvents); assert any(e.msg contains 'dead_letter' for e in warnEvents); assert any(e.msg contains 'started' for e in infoEvents)"
+    },
+    {
+      "id": "TS-10-44",
+      "requirement_id": "10-REQ-14.3",
+      "kind": "unit",
+      "description": "The queue never emits ERROR-level log lines; handler errors surface only through the job's error field and state transition log entries.",
+      "preconditions": [
+        "A Queue instance is constructed with a test slog.Logger that captures log records with levels",
+        "A handler that returns a permanent error is registered and a job is processed"
+      ],
+      "input": "Handler returns (nil, false, errors.New('fatal error'))",
+      "expected": "No log records with level=ERROR are emitted; the error appears in the job's error column and in a WARN-level dead_letter log entry",
+      "assertion_pseudocode": "logRecords = captureLogRecords(queue); runJobWithPermanentError(); errorRecords = filter(logRecords, level=ERROR); assert len(errorRecords) == 0"
+    },
+    {
+      "id": "TS-10-45",
+      "requirement_id": "10-REQ-15.1",
+      "kind": "unit",
+      "description": "New constructs a queue with default configuration (4 workers, 5s poll interval, 30s grace period) without starting worker goroutines.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open and InitSchema has been called"
+      ],
+      "input": "New(db) with no options",
+      "expected": "Returns (*Queue, nil); no worker goroutines are started; queue has workerCount=4, pollInterval=5s, gracePeriod=30s",
+      "assertion_pseudocode": "baseline = runtime.NumGoroutine(); q, err = New(db); assert err == nil; assert q != nil; assert runtime.NumGoroutine() == baseline // no goroutines started; assert q.workerCount == 4; assert q.pollInterval == 5*time.Second; assert q.gracePeriod == 30*time.Second"
+    },
+    {
+      "id": "TS-10-46",
+      "requirement_id": "10-REQ-15.2",
+      "kind": "unit",
+      "description": "Start runs crash recovery, then starts the configured number of worker goroutines, then logs 'queue started' at INFO level.",
+      "preconditions": [
+        "A Queue instance is constructed with WithWorkers(2)",
+        "No running jobs exist in the database"
+      ],
+      "input": "queue.Start()",
+      "expected": "Returns nil; 2 worker goroutines are running; an INFO log line with message containing 'started' is emitted",
+      "assertion_pseudocode": "baseline = runtime.NumGoroutine(); q, _ = New(db, WithWorkers(2)); err = q.Start(); assert err == nil; assert runtime.NumGoroutine() == baseline + 2; // verify INFO log 'started' was emitted"
+    },
+    {
+      "id": "TS-10-47",
+      "requirement_id": "10-REQ-15.3",
+      "kind": "unit",
+      "description": "WithWorkers(n) overrides the default worker count of 4 with the provided value n.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open and InitSchema has been called"
+      ],
+      "input": "New(db, WithWorkers(7))",
+      "expected": "Returns (*Queue, nil) with workerCount=7; after Start(), exactly 7 worker goroutines are running",
+      "assertion_pseudocode": "q, err = New(db, WithWorkers(7)); assert err == nil; baseline = runtime.NumGoroutine(); q.Start(); assert runtime.NumGoroutine() == baseline + 7"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-10-P1",
+      "property_id": "10-PROP-1",
+      "validates": [
+        "10-REQ-3.3",
+        "10-REQ-7.2",
+        "10-REQ-12.1"
+      ],
+      "description": "For any job type T and key K, at most one job with (type=T, key=K) is in queued or running status at any time, regardless of concurrent Enqueue and RequeueDeadLetter calls.",
+      "for_any_strategy": "Sample 50 random (type, key) pairs; for each pair, concurrently call Enqueue 5 times with different nonces and RequeueDeadLetter on any dead-lettered jobs; after each operation, query the database",
+      "invariant_check": "For every (type, key) pair sampled: count = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type=? AND key=? AND status IN ('queued','running')\", T, K).Scan(); assert count <= 1"
+    },
+    {
+      "id": "TS-10-P2",
+      "property_id": "10-PROP-2",
+      "validates": [
+        "10-REQ-13.1",
+        "10-REQ-3.2"
+      ],
+      "description": "For any nonce value N, at most one job record with nonce=N exists in the jobs table at any time, even under concurrent Enqueue calls.",
+      "for_any_strategy": "Generate 100 random nonce strings; for each nonce, concurrently call Enqueue from 3 goroutines with the same nonce; after all calls complete, query the database",
+      "invariant_check": "For every nonce N used: count = db.QueryRow('SELECT COUNT(*) FROM jobs WHERE nonce=?', N).Scan(); assert count <= 1"
+    },
+    {
+      "id": "TS-10-P3",
+      "property_id": "10-PROP-3",
+      "validates": [
+        "10-REQ-12.1",
+        "10-REQ-12.2",
+        "10-REQ-4.E1"
+      ],
+      "description": "For any job type T and key K, at most one job with (type=T, key=K) is in running status at any time, even with multiple concurrent workers.",
+      "for_any_strategy": "For each of 20 random (type, key) pairs, enqueue 3 jobs; start a queue with 4 workers; poll the database every 10ms for 5 seconds",
+      "invariant_check": "At every polling interval: runningCount = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type=? AND key=? AND status='running'\", T, K).Scan(); assert runningCount <= 1"
+    },
+    {
+      "id": "TS-10-P4",
+      "property_id": "10-PROP-4",
+      "validates": [
+        "10-REQ-5.2",
+        "10-REQ-5.3",
+        "10-REQ-6.1"
+      ],
+      "description": "For any job receiving retryable errors, retry_count is incremented exactly once per retryable failure and never exceeds max_retries+1 (at which point the job transitions to dead_letter).",
+      "for_any_strategy": "For each of 10 random max_retries values in [0, 20], register a type with that policy and a handler that always returns retryable errors; enqueue a job and run to dead_letter",
+      "invariant_check": "After job reaches dead_letter: row = db.QueryRow('SELECT retry_count FROM jobs WHERE id=?', jobID); assert row.retry_count == max_retries + 1; assert row.status == 'dead_letter'; // verify retry_count was never decremented by checking intermediate states"
+    },
+    {
+      "id": "TS-10-P5",
+      "property_id": "10-PROP-5",
+      "validates": [
+        "10-REQ-6.1",
+        "10-REQ-6.E2"
+      ],
+      "description": "For any retry policy and any two retry counts r1 < r2, the computed backoff delay at r1 is less than or equal to the delay at r2, and no delay exceeds the configured cap.",
+      "for_any_strategy": "Sample 50 random retry policies (base in [1s,60s], multiplier in [1.5,4.0], cap in [60s,86400s], max_retries in [1,50]); for each policy, compute delays for retry_count in [1, max_retries+1]",
+      "invariant_check": "For each policy and each pair (r1, r2) where r1 < r2: assert computeBackoff(policy, r1) <= computeBackoff(policy, r2); assert computeBackoff(policy, r2) <= policy.Cap; assert computeBackoff(policy, r1) >= 0"
+    },
+    {
+      "id": "TS-10-P6",
+      "property_id": "10-PROP-6",
+      "validates": [
+        "10-REQ-8.1",
+        "10-REQ-8.2"
+      ],
+      "description": "After Start completes, no job remains in running status; all jobs that were running before the restart are in queued status with available_at <= now().",
+      "for_any_strategy": "For each of 10 random counts N in [1, 20], insert N jobs with status='running' into the database; call Start() on a new queue instance",
+      "invariant_check": "After Start() returns: runningCount = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE status='running'\").Scan(); assert runningCount == 0; recoveredCount = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE status='queued' AND available_at <= datetime('now')\").Scan(); assert recoveredCount == N"
+    },
+    {
+      "id": "TS-10-P7",
+      "property_id": "10-PROP-7",
+      "validates": [
+        "10-REQ-5.1",
+        "10-REQ-5.3",
+        "10-REQ-5.4",
+        "10-REQ-7.1"
+      ],
+      "description": "No worker automatically transitions a job out of completed or dead_letter status; only an explicit RequeueDeadLetter call can move a dead_letter job back to queued.",
+      "for_any_strategy": "Insert 10 jobs in completed status and 10 in dead_letter status; run the queue with 4 workers for 2 seconds with no RequeueDeadLetter calls",
+      "invariant_check": "After 2 seconds: completedJobs = db.Query(\"SELECT id FROM jobs WHERE status='completed'\"); assert all original completed job IDs are still in completed status; deadLetterJobs = db.Query(\"SELECT id FROM jobs WHERE status='dead_letter'\"); assert all original dead_letter job IDs are still in dead_letter status"
+    },
+    {
+      "id": "TS-10-P8",
+      "property_id": "10-PROP-8",
+      "validates": [
+        "10-REQ-4.4",
+        "10-REQ-15.3"
+      ],
+      "description": "For any queue instance constructed with WithWorkers(n), exactly n worker goroutines are running after Start is called and before Shutdown.",
+      "for_any_strategy": "For each of 10 random worker counts N in [1, 16], construct a queue with WithWorkers(N) and call Start()",
+      "invariant_check": "baseline = runtime.NumGoroutine() before New(); after Start(): goroutineDelta = runtime.NumGoroutine() - baseline; assert goroutineDelta == N; after Shutdown() and Wait(): assert runtime.NumGoroutine() == baseline // all goroutines exited"
+    },
+    {
+      "id": "TS-10-P9",
+      "property_id": "10-PROP-9",
+      "validates": [
+        "10-REQ-9.1",
+        "10-REQ-9.2",
+        "10-REQ-9.3"
+      ],
+      "description": "Wait() returns within the configured grace period G seconds of Shutdown being called, regardless of handler behavior.",
+      "for_any_strategy": "For each of 5 random grace periods G in [50ms, 500ms], construct a queue with that grace period; enqueue a job with a handler that blocks for 10*G; call Shutdown() and measure time until Wait() returns",
+      "invariant_check": "elapsed = time.Since(shutdownTime); assert elapsed <= G + 100ms // Wait returns within grace period plus small tolerance"
+    },
+    {
+      "id": "TS-10-P10",
+      "property_id": "10-PROP-10",
+      "validates": [
+        "10-REQ-1.2"
+      ],
+      "description": "Calling InitSchema multiple times on the same database produces the same schema as calling it once; no error is returned on subsequent calls.",
+      "for_any_strategy": "For each of 10 random call counts N in [2, 10], call InitSchema N times on the same in-memory SQLite database",
+      "invariant_check": "After N calls: err = InitSchema(db); assert err == nil; tableCount = db.QueryRow(\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='jobs'\").Scan(); assert tableCount == 1; indexCount = db.QueryRow(\"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_jobs_nonce','idx_jobs_type_key_status','idx_jobs_status_available_at','idx_jobs_type_created_at')\").Scan(); assert indexCount == 4"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-10-E1",
+      "requirement_id": "10-REQ-1.E1",
+      "kind": "unit",
+      "description": "InitSchema with a nil *sql.DB returns a non-nil error without panicking.",
+      "preconditions": [],
+      "input": "InitSchema(nil)",
+      "expected": "Returns a non-nil error; no panic occurs",
+      "assertion_pseudocode": "err = InitSchema(nil); assert err != nil // should not panic; assert err.Error() is non-empty"
+    },
+    {
+      "id": "TS-10-E2",
+      "requirement_id": "10-REQ-1.E2",
+      "kind": "unit",
+      "description": "InitSchema does not set WAL mode itself; it returns nil even when WAL mode is not enabled, and SQLITE_BUSY errors surface at runtime under concurrent load.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open WITHOUT PRAGMA journal_mode=WAL set"
+      ],
+      "input": "InitSchema(db) where db lacks WAL mode",
+      "expected": "Returns nil; no error from InitSchema itself; concurrent worker operations may encounter SQLITE_BUSY errors at runtime (not from InitSchema)",
+      "assertion_pseudocode": "db = openSQLiteWithoutWAL(); err = InitSchema(db); assert err == nil // InitSchema itself does not fail; // WAL mode absence is documented, not enforced by InitSchema"
+    },
+    {
+      "id": "TS-10-E3",
+      "requirement_id": "10-REQ-2.E1",
+      "kind": "unit",
+      "description": "Register with an empty type name string returns a non-nil error indicating the type name must not be empty.",
+      "preconditions": [
+        "A Queue instance is constructed but not started"
+      ],
+      "input": "queue.Register('', handler, nil)",
+      "expected": "Returns a non-nil error; error message indicates type name must not be empty; no handler is stored",
+      "assertion_pseudocode": "err = queue.Register('', handler, nil); assert err != nil; assert err.Error() contains 'empty' or 'must not be empty'"
+    },
+    {
+      "id": "TS-10-E4",
+      "requirement_id": "10-REQ-2.E2",
+      "kind": "unit",
+      "description": "Register with a nil handler function returns a non-nil error indicating the handler must not be nil.",
+      "preconditions": [
+        "A Queue instance is constructed but not started"
+      ],
+      "input": "queue.Register('merge', nil, nil)",
+      "expected": "Returns a non-nil error; error message indicates handler must not be nil; no registration is stored",
+      "assertion_pseudocode": "err = queue.Register('merge', nil, nil); assert err != nil; assert err.Error() contains 'nil' or 'handler'"
+    },
+    {
+      "id": "TS-10-E5",
+      "requirement_id": "10-REQ-2.E3",
+      "kind": "unit",
+      "description": "Register called after the queue has been started returns a non-nil error indicating registration must occur before start.",
+      "preconditions": [
+        "A Queue instance is constructed and Start() has been called"
+      ],
+      "input": "queue.Register('late-type', handler, nil) after queue.Start()",
+      "expected": "Returns a non-nil error; error message indicates registration must occur before the queue is started; no handler is stored",
+      "assertion_pseudocode": "q.Start(); err = q.Register('late-type', handler, nil); assert err != nil; assert err.Error() contains 'started' or 'already running'"
+    },
+    {
+      "id": "TS-10-E6",
+      "requirement_id": "10-REQ-3.E1",
+      "kind": "unit",
+      "description": "Enqueue with an empty nonce returns ('', false, non-nil error) indicating nonce must not be empty.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: 'main', Nonce: '', Payload: '{}', SubmittedBy: 'sys'})",
+      "expected": "Returns ('', false, non-nil error); error message indicates nonce must not be empty; no row is inserted",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err != nil; assert err.Error() contains 'nonce' and ('empty' or 'required'); assert jobID == ''; assert dup == false; count = db.QueryRow('SELECT COUNT(*) FROM jobs').Scan(); assert count == 0"
+    },
+    {
+      "id": "TS-10-E7",
+      "requirement_id": "10-REQ-3.E2",
+      "kind": "unit",
+      "description": "Enqueue with an empty key returns ('', false, non-nil error) indicating key must not be empty.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered"
+      ],
+      "input": "queue.Enqueue(EnqueueParams{Type: 'merge', Key: '', Nonce: 'n1', Payload: '{}', SubmittedBy: 'sys'})",
+      "expected": "Returns ('', false, non-nil error); error message indicates key must not be empty; no row is inserted",
+      "assertion_pseudocode": "jobID, dup, err = queue.Enqueue(params); assert err != nil; assert err.Error() contains 'key' and ('empty' or 'required'); assert jobID == ''; assert dup == false"
+    },
+    {
+      "id": "TS-10-E8",
+      "requirement_id": "10-REQ-3.E3",
+      "kind": "unit",
+      "description": "When the database insert fails (e.g., closed database), Enqueue returns ('', false, non-nil error) without leaving a partial record.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "The database connection is closed after construction"
+      ],
+      "input": "queue.Enqueue(params) with a closed database",
+      "expected": "Returns ('', false, non-nil error) describing the database failure; no partial row exists in the jobs table",
+      "assertion_pseudocode": "db.Close(); jobID, dup, err = queue.Enqueue(params); assert err != nil; assert jobID == ''; assert dup == false"
+    },
+    {
+      "id": "TS-10-E9",
+      "requirement_id": "10-REQ-3.E4",
+      "kind": "unit",
+      "description": "Enqueue while all workers are busy performs a non-blocking send on the wakeup channel and returns normally; the job is picked up on the next poll interval tick.",
+      "preconditions": [
+        "A Queue instance is constructed with 1 worker and poll interval=100ms",
+        "The single worker is occupied with a long-running handler",
+        "The wakeup channel is already full (buffered with 1 item)"
+      ],
+      "input": "queue.Enqueue(params) while worker is busy",
+      "expected": "Returns (jobID, false, nil) without blocking; the job is eventually picked up after the worker finishes and polls again",
+      "assertion_pseudocode": "// Block worker with slow handler; enqueue second job; start = time.Now(); jobID, dup, err = queue.Enqueue(params2); elapsed = time.Since(start); assert elapsed < 10ms // non-blocking; assert err == nil; assert jobID != ''"
+    },
+    {
+      "id": "TS-10-E10",
+      "requirement_id": "10-REQ-3.E5",
+      "kind": "unit",
+      "description": "Two concurrent Enqueue calls with the same (type, key) and different nonces result in exactly one insert; the other observes the newly inserted active job and returns it as a duplicate.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "No active job with type='merge', key='main' exists"
+      ],
+      "input": "Two goroutines simultaneously call queue.Enqueue with type='merge', key='main', nonce='n1' and nonce='n2' respectively",
+      "expected": "One call returns (newJobID, false, nil); the other returns (existingJobID, true, nil); exactly one job with type='merge', key='main', status in ('queued','running') exists in the table",
+      "assertion_pseudocode": "results = runConcurrently([ () => queue.Enqueue({Type:'merge',Key:'main',Nonce:'n1',...}), () => queue.Enqueue({Type:'merge',Key:'main',Nonce:'n2',...}) ]); nonDups = filter(results, r => r.dup == false); dups = filter(results, r => r.dup == true); assert len(nonDups) == 1; assert len(dups) == 1; count = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type='merge' AND key='main' AND status IN ('queued','running')\").Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-E11",
+      "requirement_id": "10-REQ-4.E1",
+      "kind": "unit",
+      "description": "When two workers simultaneously attempt to claim the same queued job, exactly one succeeds via the atomic WHERE status='queued' clause; the other finds zero rows affected and moves on.",
+      "preconditions": [
+        "A Queue instance is constructed with 2 workers",
+        "Exactly one job with status='queued' exists"
+      ],
+      "input": "Both workers poll simultaneously and attempt to claim the same job",
+      "expected": "Exactly one worker transitions the job to 'running'; the other worker finds no rows affected and re-polls; the job is executed exactly once",
+      "assertion_pseudocode": "handlerCallCount = 0; handler = func(ctx, payload) { handlerCallCount++; sleep(100ms); return nil, false, nil }; queue.Register('test', handler, nil); queue.Enqueue(params); queue.Start(); waitForStatus(db, jobID, 'completed'); assert handlerCallCount == 1"
+    },
+    {
+      "id": "TS-10-E12",
+      "requirement_id": "10-REQ-4.E2",
+      "kind": "unit",
+      "description": "When the database query for the next job fails, the worker logs the error at DEBUG level and waits for the next poll interval before retrying without crashing.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker and poll interval=100ms",
+        "The database is temporarily unavailable (simulated by closing and reopening)"
+      ],
+      "input": "Worker poll cycle encounters a database error",
+      "expected": "Worker goroutine does not crash; after poll interval, worker retries; no panic occurs",
+      "assertion_pseudocode": "// Simulate DB error on poll query; sleep(300ms); assert workerGoroutineStillRunning == true // goroutine did not crash"
+    },
+    {
+      "id": "TS-10-E13",
+      "requirement_id": "10-REQ-4.E3",
+      "kind": "unit",
+      "description": "When the promote step database update fails, the worker logs the error and continues to the poll step without crashing.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker",
+        "The promote step is instrumented to fail on the first call"
+      ],
+      "input": "Worker loop iteration where promote step fails",
+      "expected": "Worker does not crash; it proceeds to the poll step; on the next iteration, promote is retried",
+      "assertion_pseudocode": "// Inject promote failure; sleep(200ms); assert workerGoroutineStillRunning == true; assert pollStepWasCalled == true // worker continued past failed promote"
+    },
+    {
+      "id": "TS-10-E14",
+      "requirement_id": "10-REQ-4.E4",
+      "kind": "unit",
+      "description": "When a job's type has no registered handler (e.g., handler was removed after job was enqueued), the worker transitions the job to dead_letter and logs at WARN level.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with type='orphaned-type', status='queued' exists in the database",
+        "No handler is registered for 'orphaned-type'"
+      ],
+      "input": "Worker polls and finds the orphaned job",
+      "expected": "Job transitions to dead_letter status; error message indicates no handler is registered; a WARN log line is emitted",
+      "assertion_pseudocode": "// Insert job with unregistered type; start queue; waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, error FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.error contains 'no handler' or 'not registered'"
+    },
+    {
+      "id": "TS-10-E15",
+      "requirement_id": "10-REQ-5.E1",
+      "kind": "unit",
+      "description": "When a handler panics, the worker recovers, transitions the job to dead_letter with the panic message as the error, and continues processing other jobs.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker",
+        "Type 'panic-type' is registered with a handler that panics with message 'unexpected nil pointer'"
+      ],
+      "input": "Worker claims and executes the panicking handler",
+      "expected": "Worker goroutine does not crash; job transitions to dead_letter with error containing 'unexpected nil pointer'; worker continues and can process subsequent jobs",
+      "assertion_pseudocode": "handler = func(ctx, payload) { panic('unexpected nil pointer') }; queue.Register('panic-type', handler, nil); jobID, _, _ = queue.Enqueue(params); waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, error FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.error contains 'unexpected nil pointer'; // enqueue another job and verify it is processed: jobID2, _, _ = queue.Enqueue(params2); waitForStatus(db, jobID2, 'completed')"
+    },
+    {
+      "id": "TS-10-E16",
+      "requirement_id": "10-REQ-5.E2",
+      "kind": "unit",
+      "description": "When the handler result cannot be serialized to JSON, the worker transitions the job to dead_letter with an error describing the serialization failure.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "Type 'bad-result' is registered with a handler that returns a non-serializable value (e.g., a channel)"
+      ],
+      "input": "Handler returns (make(chan int), false, nil)",
+      "expected": "Job transitions to dead_letter; error message describes the JSON serialization failure; no panic occurs",
+      "assertion_pseudocode": "handler = func(ctx, payload) (any, bool, error) { return make(chan int), false, nil }; queue.Register('bad-result', handler, nil); jobID, _, _ = queue.Enqueue(params); waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, error FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.error contains 'marshal' or 'serialize' or 'json'"
+    },
+    {
+      "id": "TS-10-E17",
+      "requirement_id": "10-REQ-5.E3",
+      "kind": "unit",
+      "description": "When the database update for job finalization fails after the handler has completed, the worker retries and if retries are exhausted logs at WARN level; the job remains in running status for crash recovery.",
+      "preconditions": [
+        "A Queue instance is constructed and started",
+        "The finalization database update is instrumented to fail"
+      ],
+      "input": "Handler completes successfully but finalization update fails",
+      "expected": "Worker retries the finalization update; if all retries fail, a WARN log is emitted; job remains in running status (to be recovered by crash recovery on next startup)",
+      "assertion_pseudocode": "// Inject finalization failure; run job; assert WARN log emitted; row = db.QueryRow('SELECT status FROM jobs WHERE id=?', jobID); assert row.status == 'running' // not finalized, will be recovered"
+    },
+    {
+      "id": "TS-10-E18",
+      "requirement_id": "10-REQ-5.E4",
+      "kind": "unit",
+      "description": "When a handler runs longer than the grace period during shutdown, the queue cancels the handler's context, logs a WARN message including the job_id, and exits.",
+      "preconditions": [
+        "A Queue instance is constructed with grace period=100ms and 1 worker",
+        "A handler that blocks indefinitely unless context is cancelled is registered",
+        "A job is enqueued and the handler is executing"
+      ],
+      "input": "queue.Shutdown() called while handler is blocking; grace period expires",
+      "expected": "Handler's context is cancelled; a WARN log line is emitted containing the job_id; Wait() returns within ~200ms; job remains in running status for crash recovery",
+      "assertion_pseudocode": "ctxCancelled = false; handler = func(ctx, payload) { <-ctx.Done(); ctxCancelled = true; return nil, false, ctx.Err() }; q = New(db, WithGracePeriod(100ms)); q.Register('test', handler, nil); q.Start(); jobID, _, _ = q.Enqueue(params); time.Sleep(50ms); q.Shutdown(); q.Wait(); assert ctxCancelled == true; // verify WARN log contains jobID"
+    },
+    {
+      "id": "TS-10-E19",
+      "requirement_id": "10-REQ-6.E1",
+      "kind": "unit",
+      "description": "When retry_count after increment equals max_retries+1, the job transitions to dead_letter instead of computing a backoff delay.",
+      "preconditions": [
+        "Type 'sync' is registered with RetryPolicy{MaxRetries: 2}",
+        "A job with retry_count=2 (at max) is queued"
+      ],
+      "input": "Handler returns (nil, true, errors.New('still failing')) when retry_count=2",
+      "expected": "retry_count is incremented to 3; job transitions to dead_letter; available_at is not updated; no backoff delay is computed",
+      "assertion_pseudocode": "// Insert job with retry_count=2; handler returns retryable error; waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, retry_count FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.retry_count == 3"
+    },
+    {
+      "id": "TS-10-E20",
+      "requirement_id": "10-REQ-6.E2",
+      "kind": "unit",
+      "description": "When the computed backoff delay overflows a 64-bit integer before the cap is applied, the delay is clamped to the cap value without panicking or producing a negative delay.",
+      "preconditions": [
+        "A retry policy with very large multiplier (e.g., multiplier=1e18) and cap=7200s is configured"
+      ],
+      "input": "computeBackoff(policy, retryCount=100) where base*multiplier^100 overflows int64",
+      "expected": "Returns cap (7200s) without panicking; delay is non-negative",
+      "assertion_pseudocode": "policy = RetryPolicy{Base: 2*time.Second, Multiplier: 1e18, Cap: 7200*time.Second, MaxRetries: 200}; delay = computeBackoff(policy, 100); assert delay == 7200*time.Second; assert delay >= 0 // no negative or panic"
+    },
+    {
+      "id": "TS-10-E21",
+      "requirement_id": "10-REQ-6.E3",
+      "kind": "unit",
+      "description": "When max_retries is configured as 0, the first failure immediately transitions the job to dead_letter without any retry attempt.",
+      "preconditions": [
+        "Type 'no-retry' is registered with RetryPolicy{MaxRetries: 0}",
+        "A job with type='no-retry', status='queued', retry_count=0 exists"
+      ],
+      "input": "Handler returns (nil, true, errors.New('fail'))",
+      "expected": "retry_count is incremented to 1 which exceeds max_retries=0; job immediately transitions to dead_letter; no failed status is set; no backoff delay is computed",
+      "assertion_pseudocode": "handler = func(ctx, payload) (any, bool, error) { return nil, true, errors.New('fail') }; queue.Register('no-retry', handler, RetryPolicy{MaxRetries: 0}); jobID, _, _ = queue.Enqueue(params); waitForStatus(db, jobID, 'dead_letter'); row = db.QueryRow('SELECT status, retry_count FROM jobs WHERE id=?', jobID); assert row.status == 'dead_letter'; assert row.retry_count == 1"
+    },
+    {
+      "id": "TS-10-E22",
+      "requirement_id": "10-REQ-7.E1",
+      "kind": "unit",
+      "description": "RequeueDeadLetter called with a non-existent job ID returns ('', non-nil error) with a not-found message.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "No job with id='nonexistent-id' exists"
+      ],
+      "input": "queue.RequeueDeadLetter('nonexistent-id')",
+      "expected": "Returns ('', non-nil error); error message contains 'not found' or equivalent",
+      "assertion_pseudocode": "jobID, err = queue.RequeueDeadLetter('nonexistent-id'); assert err != nil; assert err.Error() contains 'not found'; assert jobID == ''"
+    },
+    {
+      "id": "TS-10-E23",
+      "requirement_id": "10-REQ-7.E2",
+      "kind": "unit",
+      "description": "Two concurrent RequeueDeadLetter calls for the same dead-lettered job result in exactly one success; the other observes the newly queued job as a duplicate active job.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "A job with id='j1', type='merge', key='main', status='dead_letter' exists",
+        "No active job with type='merge', key='main' exists"
+      ],
+      "input": "Two goroutines simultaneously call queue.RequeueDeadLetter('j1')",
+      "expected": "One call returns ('j1', nil); the other returns (existingJobID, non-nil error) indicating a duplicate active job; exactly one job with type='merge', key='main', status='queued' exists",
+      "assertion_pseudocode": "results = runConcurrently([ () => queue.RequeueDeadLetter('j1'), () => queue.RequeueDeadLetter('j1') ]); successes = filter(results, r => r.err == nil); failures = filter(results, r => r.err != nil); assert len(successes) == 1; assert len(failures) == 1; count = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type='merge' AND key='main' AND status='queued'\").Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-E24",
+      "requirement_id": "10-REQ-8.E1",
+      "kind": "unit",
+      "description": "When the crash recovery database query fails on startup, Start returns a non-nil error and no worker goroutines are started.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "The database is closed before Start is called"
+      ],
+      "input": "queue.Start() with a closed database",
+      "expected": "Returns non-nil error; no worker goroutines are started; goroutine count is unchanged",
+      "assertion_pseudocode": "db.Close(); baseline = runtime.NumGoroutine(); err = q.Start(); assert err != nil; assert runtime.NumGoroutine() == baseline // no goroutines started"
+    },
+    {
+      "id": "TS-10-E25",
+      "requirement_id": "10-REQ-8.E2",
+      "kind": "unit",
+      "description": "Handler idempotency requirement is documented in code comments; crash recovery may re-dispatch a job whose handler had already partially executed.",
+      "preconditions": [
+        "The internal/jobqueue package source code is available"
+      ],
+      "input": "Inspect source code comments in the crash recovery function",
+      "expected": "Code comments in the crash recovery function explicitly state that handlers must be idempotent or tolerate re-execution after a partial run",
+      "assertion_pseudocode": "// This is a documentation/code review test; source = readFile('internal/jobqueue/queue.go'); assert source contains 'idempotent' // comment about handler idempotency requirement"
+    },
+    {
+      "id": "TS-10-E26",
+      "requirement_id": "10-REQ-9.E1",
+      "kind": "unit",
+      "description": "Shutdown called before the queue has been started returns without error and without blocking.",
+      "preconditions": [
+        "A Queue instance is constructed but Start has not been called"
+      ],
+      "input": "queue.Shutdown() followed by queue.Wait()",
+      "expected": "Shutdown returns immediately; Wait() returns immediately without blocking; no panic occurs",
+      "assertion_pseudocode": "q, _ = New(db); start = time.Now(); q.Shutdown(); q.Wait(); elapsed = time.Since(start); assert elapsed < 100ms // immediate return"
+    },
+    {
+      "id": "TS-10-E27",
+      "requirement_id": "10-REQ-9.E2",
+      "kind": "unit",
+      "description": "Calling Shutdown multiple times concurrently does not panic; subsequent calls are no-ops protected by sync.Once.",
+      "preconditions": [
+        "A Queue instance is constructed and started"
+      ],
+      "input": "Three goroutines simultaneously call queue.Shutdown()",
+      "expected": "No panic occurs; Wait() returns normally; stopCh is closed exactly once",
+      "assertion_pseudocode": "q.Start(); wg = sync.WaitGroup{}; for i in range(3): wg.Add(1); go func() { defer wg.Done(); q.Shutdown() }(); wg.Wait(); q.Wait() // no panic"
+    },
+    {
+      "id": "TS-10-E28",
+      "requirement_id": "10-REQ-9.E3",
+      "kind": "unit",
+      "description": "When a handler ignores context cancellation and runs indefinitely after the grace period, the queue logs the interruption at WARN level and Wait() returns after the grace period.",
+      "preconditions": [
+        "A Queue instance is constructed with grace period=100ms and 1 worker",
+        "A handler that ignores context cancellation and blocks indefinitely is registered",
+        "A job is enqueued and the handler is executing"
+      ],
+      "input": "queue.Shutdown() called; grace period expires; handler still running",
+      "expected": "Wait() returns within ~200ms; a WARN log line is emitted; the hub process can exit (goroutine leak is bounded by process lifetime)",
+      "assertion_pseudocode": "handler = func(ctx, payload) { time.Sleep(10*time.Second); return nil, false, nil }; // ignores ctx; q = New(db, WithGracePeriod(100ms)); q.Register('test', handler, nil); q.Start(); q.Enqueue(params); time.Sleep(50ms); q.Shutdown(); start = time.Now(); q.Wait(); elapsed = time.Since(start); assert elapsed < 500ms // returned despite stuck handler"
+    },
+    {
+      "id": "TS-10-E29",
+      "requirement_id": "10-REQ-10.E1",
+      "kind": "unit",
+      "description": "CancelJob called with a non-existent job ID returns a non-nil error with a not-found message.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "No job with id='nonexistent-id' exists"
+      ],
+      "input": "queue.CancelJob('nonexistent-id')",
+      "expected": "Returns non-nil error; error message contains 'not found' or equivalent",
+      "assertion_pseudocode": "err = queue.CancelJob('nonexistent-id'); assert err != nil; assert err.Error() contains 'not found'"
+    },
+    {
+      "id": "TS-10-E30",
+      "requirement_id": "10-REQ-10.E2",
+      "kind": "unit",
+      "description": "CancelJob on a queued job that is simultaneously claimed by a worker returns ErrNotCancellable because the job is now running.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 1 worker",
+        "A job with id='j1', status='queued' exists",
+        "The worker claims j1 between CancelJob's status check and its UPDATE"
+      ],
+      "input": "CancelJob('j1') races with a worker claiming j1",
+      "expected": "CancelJob returns ErrNotCancellable; the job is in running status; no double-transition occurs",
+      "assertion_pseudocode": "// This tests the WHERE status='queued' guard in the cancel UPDATE; // Simulate by inserting job as 'running' before cancel executes; db.Exec(\"UPDATE jobs SET status='running' WHERE id='j1'\"); err = queue.CancelJob('j1'); assert errors.Is(err, ErrNotCancellable)"
+    },
+    {
+      "id": "TS-10-E31",
+      "requirement_id": "10-REQ-11.E1",
+      "kind": "unit",
+      "description": "GetByID called with a UUID that does not exist returns (nil, non-nil error) with a not-found message.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "No job with id='00000000-0000-0000-0000-000000000000' exists"
+      ],
+      "input": "queue.GetByID('00000000-0000-0000-0000-000000000000')",
+      "expected": "Returns (nil, non-nil error); error message contains 'not found' or equivalent",
+      "assertion_pseudocode": "job, err = queue.GetByID('00000000-0000-0000-0000-000000000000'); assert err != nil; assert err.Error() contains 'not found'; assert job == nil"
+    },
+    {
+      "id": "TS-10-E32",
+      "requirement_id": "10-REQ-11.E2",
+      "kind": "unit",
+      "description": "ListByType called with limit=0 applies a default limit or returns an error; it does not return an unbounded result set.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "100 jobs of type='merge' exist in the database"
+      ],
+      "input": "queue.ListByType('merge', ListOpts{Limit: 0})",
+      "expected": "Returns either ([]*Job with at most default limit (e.g. 50), nil) or (nil, non-nil error); never returns all 100 jobs",
+      "assertion_pseudocode": "jobs, err = queue.ListByType('merge', ListOpts{Limit: 0}); if err != nil: assert true // error is acceptable; else: assert len(jobs) <= 50 // default limit applied, not all 100"
+    },
+    {
+      "id": "TS-10-E33",
+      "requirement_id": "10-REQ-11.E3",
+      "kind": "unit",
+      "description": "When a database query in any management API method fails, the method propagates the error to the caller without panicking.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "The database connection is closed"
+      ],
+      "input": "queue.GetByID('j1'), queue.ListByType('merge', ListOpts{}), queue.ListByKey('merge', 'main'), queue.CountByStatus('merge') with closed database",
+      "expected": "Each method returns (nil, non-nil error) describing the database failure; no panic occurs",
+      "assertion_pseudocode": "db.Close(); job, err1 = queue.GetByID('j1'); assert err1 != nil; assert job == nil; jobs, err2 = queue.ListByType('merge', ListOpts{}); assert err2 != nil; jobs2, err3 = queue.ListByKey('merge', 'main'); assert err3 != nil; counts, err4 = queue.CountByStatus('merge'); assert err4 != nil"
+    },
+    {
+      "id": "TS-10-E34",
+      "requirement_id": "10-REQ-11.E4",
+      "kind": "unit",
+      "description": "CountByStatus called for a type with no jobs returns an empty map and nil error.",
+      "preconditions": [
+        "A Queue instance is constructed",
+        "No jobs of type='empty-type' exist in the database"
+      ],
+      "input": "queue.CountByStatus('empty-type')",
+      "expected": "Returns (map[string]int{}, nil); the map is non-nil but empty",
+      "assertion_pseudocode": "counts, err = queue.CountByStatus('empty-type'); assert err == nil; assert counts != nil; assert len(counts) == 0"
+    },
+    {
+      "id": "TS-10-E35",
+      "requirement_id": "10-REQ-12.E1",
+      "kind": "unit",
+      "description": "When multiple workers simultaneously poll for jobs and two queued jobs share the same (type, key), at most one worker claims a job for that key.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 3 workers",
+        "Two jobs j1 and j2 with type='merge', key='main', status='queued' exist"
+      ],
+      "input": "All 3 workers poll simultaneously",
+      "expected": "At most one job with type='merge', key='main' is in running status at any time; the other remains queued until the first completes",
+      "assertion_pseudocode": "// Insert j1 and j2 with same key; start queue; sleep(100ms); runningCount = db.QueryRow(\"SELECT COUNT(*) FROM jobs WHERE type='merge' AND key='main' AND status='running'\").Scan(); assert runningCount <= 1"
+    },
+    {
+      "id": "TS-10-E36",
+      "requirement_id": "10-REQ-12.E2",
+      "kind": "unit",
+      "description": "Jobs with different keys of the same type are processed concurrently without artificial serialization.",
+      "preconditions": [
+        "A Queue instance is constructed and started with 2 workers",
+        "Jobs j1 (type='merge', key='main') and j2 (type='merge', key='dev') are queued",
+        "Both handlers block for 200ms"
+      ],
+      "input": "Both jobs are enqueued; workers poll",
+      "expected": "Both j1 and j2 are in running status simultaneously (concurrent execution); total elapsed time is ~200ms, not ~400ms",
+      "assertion_pseudocode": "start = time.Now(); // enqueue j1 and j2; waitForBothRunning(db, 'j1', 'j2', timeout=500ms); elapsed = time.Since(start); assert elapsed < 300ms // concurrent, not sequential"
+    },
+    {
+      "id": "TS-10-E37",
+      "requirement_id": "10-REQ-13.E1",
+      "kind": "unit",
+      "description": "Two concurrent Enqueue calls with the same nonce result in exactly one insert; the unique index causes one to fail, and both calls return the same job ID with err=nil.",
+      "preconditions": [
+        "A Queue instance is constructed and 'merge' type is registered",
+        "No job with nonce='shared-nonce' exists"
+      ],
+      "input": "Two goroutines simultaneously call queue.Enqueue with nonce='shared-nonce'",
+      "expected": "Both calls return the same job ID with err=nil; exactly one row with nonce='shared-nonce' exists in the jobs table",
+      "assertion_pseudocode": "results = runConcurrently([ () => queue.Enqueue({Type:'merge',Key:'main',Nonce:'shared-nonce',...}), () => queue.Enqueue({Type:'merge',Key:'main',Nonce:'shared-nonce',...}) ]); assert results[0].err == nil; assert results[1].err == nil; assert results[0].jobID == results[1].jobID; count = db.QueryRow('SELECT COUNT(*) FROM jobs WHERE nonce=?', 'shared-nonce').Scan(); assert count == 1"
+    },
+    {
+      "id": "TS-10-E38",
+      "requirement_id": "10-REQ-14.E1",
+      "kind": "unit",
+      "description": "When the grace period expires and multiple jobs are interrupted, exactly one WARN log line per interrupted job is emitted, each containing the job_id field.",
+      "preconditions": [
+        "A Queue instance is constructed with grace period=100ms and 2 workers",
+        "Two jobs are in flight with handlers that block indefinitely"
+      ],
+      "input": "queue.Shutdown() called while both handlers are blocking",
+      "expected": "Exactly 2 WARN log lines are emitted for interrupted jobs; each contains the respective job_id as a structured field",
+      "assertion_pseudocode": "logRecords = captureLogRecords(queue); q.Shutdown(); q.Wait(); warnInterruptRecords = filter(logRecords, level=WARN, msg contains 'interrupt' or 'grace'); assert len(warnInterruptRecords) == 2; assert warnInterruptRecords[0] has attr 'job_id'; assert warnInterruptRecords[1] has attr 'job_id'; assert warnInterruptRecords[0].job_id != warnInterruptRecords[1].job_id"
+    },
+    {
+      "id": "TS-10-E39",
+      "requirement_id": "10-REQ-15.E1",
+      "kind": "unit",
+      "description": "New called with WithWorkers(0) or WithWorkers(-1) returns (nil, non-nil error) indicating worker count must be positive.",
+      "preconditions": [
+        "An in-memory SQLite *sql.DB is open"
+      ],
+      "input": "New(db, WithWorkers(0)) and New(db, WithWorkers(-1))",
+      "expected": "Both return (nil, non-nil error); error message indicates worker count must be positive",
+      "assertion_pseudocode": "q1, err1 = New(db, WithWorkers(0)); assert err1 != nil; assert err1.Error() contains 'positive' or 'must be greater'; assert q1 == nil; q2, err2 = New(db, WithWorkers(-1)); assert err2 != nil; assert q2 == nil"
+    },
+    {
+      "id": "TS-10-E40",
+      "requirement_id": "10-REQ-15.E2",
+      "kind": "unit",
+      "description": "Calling Start on a queue that is already running returns a non-nil error without starting additional worker goroutines.",
+      "preconditions": [
+        "A Queue instance is constructed and Start() has already been called successfully"
+      ],
+      "input": "queue.Start() called a second time",
+      "expected": "Returns non-nil error indicating the queue is already started; goroutine count does not increase",
+      "assertion_pseudocode": "q.Start(); baseline = runtime.NumGoroutine(); err = q.Start(); assert err != nil; assert err.Error() contains 'already' or 'running'; assert runtime.NumGoroutine() == baseline"
+    },
+    {
+      "id": "TS-10-E41",
+      "requirement_id": "10-REQ-15.E3",
+      "kind": "unit",
+      "description": "New called with a nil *sql.DB returns (nil, non-nil error) indicating db must not be nil.",
+      "preconditions": [],
+      "input": "New(nil)",
+      "expected": "Returns (nil, non-nil error); error message indicates db must not be nil",
+      "assertion_pseudocode": "q, err = New(nil); assert err != nil; assert err.Error() contains 'nil' or 'db'; assert q == nil"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-10-SMOKE-1",
+      "execution_path_id": "10-PATH-1",
+      "description": "End-to-end smoke test: a consumer enqueues a merge job, a worker claims and executes it successfully, and the consumer reads the completed result via GetByID.",
+      "trigger": "Consumer calls Enqueue with type='merge', key='main', nonce='abc123', payload='{\"branch\":\"main\"}', submitted_by='user-1'; queue is started with 1 worker",
+      "real_components": [
+        "Queue",
+        "InitSchema",
+        "Register",
+        "Enqueue",
+        "worker goroutine",
+        "merge handler",
+        "GetByID",
+        "in-memory SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Enqueue returns a non-empty job ID with duplicate=false and err=nil",
+        "A row exists in the jobs table with status='queued' immediately after Enqueue",
+        "The worker transitions the job to status='running' and calls the merge handler",
+        "The merge handler returns (result, false, nil) and the job transitions to status='completed'",
+        "GetByID returns the full job record with status='completed' and result column containing the serialized handler output",
+        "A DEBUG log line is emitted for job claimed and job completed events, each with job_id, type, key, status, retry_count fields"
+      ]
+    },
+    {
+      "id": "TS-10-SMOKE-2",
+      "execution_path_id": "10-PATH-2",
+      "description": "End-to-end smoke test: a sync job fails with a retryable error, is backed off, promoted back to queued, and succeeds on the second attempt.",
+      "trigger": "Consumer calls Enqueue with type='sync', key='repo-42', nonce='xyz789'; handler fails on first call with retryable error, succeeds on second call; queue started with poll interval=50ms",
+      "real_components": [
+        "Queue",
+        "InitSchema",
+        "Register",
+        "Enqueue",
+        "worker goroutine",
+        "sync handler",
+        "promote step",
+        "in-memory SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "After first handler execution: job has status='failed', retry_count=1, available_at approximately now()+4s, error='network timeout'",
+        "After promote step runs (with short available_at for testing): job transitions from failed to queued",
+        "Worker claims the promoted job and calls the handler again",
+        "Handler returns success on second attempt; job transitions to status='completed'",
+        "DEBUG log lines emitted for: job claimed (twice), job failed with retry, job promoted, job completed"
+      ]
+    },
+    {
+      "id": "TS-10-SMOKE-3",
+      "execution_path_id": "10-PATH-3",
+      "description": "End-to-end smoke test: a job exhausts its retry limit, is dead-lettered, inspected via ListByType, and manually requeued via RequeueDeadLetter.",
+      "trigger": "Consumer enqueues a job with type configured with max_retries=2; handler always returns retryable error; after dead-lettering, operator calls ListByType with status filter and then RequeueDeadLetter",
+      "real_components": [
+        "Queue",
+        "InitSchema",
+        "Register",
+        "Enqueue",
+        "worker goroutine",
+        "promote step",
+        "ListByType",
+        "RequeueDeadLetter",
+        "in-memory SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Job transitions through queued -> running -> failed (retry_count=1) -> queued -> running -> failed (retry_count=2) -> queued -> running -> dead_letter (retry_count=3)",
+        "WARN log line emitted when job transitions to dead_letter",
+        "ListByType with status='dead_letter' returns the job record",
+        "RequeueDeadLetter resets retry_count=0, sets status='queued', available_at<=now()",
+        "Worker picks up the requeued job on the next poll cycle"
+      ]
+    },
+    {
+      "id": "TS-10-SMOKE-4",
+      "execution_path_id": "10-PATH-4",
+      "description": "End-to-end smoke test: a job left in running status (simulating a crash) is recovered to queued on the next Start() call and re-executed.",
+      "trigger": "A job with status='running' is inserted directly into the database; a new Queue instance is constructed and Start() is called",
+      "real_components": [
+        "Queue",
+        "InitSchema",
+        "Register",
+        "Start (crash recovery)",
+        "worker goroutine",
+        "in-memory SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Start() returns nil",
+        "The running job is reset to status='queued' with available_at<=now() during crash recovery",
+        "A WARN log line is emitted containing the job_id of the recovered job",
+        "A worker claims the recovered job and executes the handler",
+        "Job transitions to completed (assuming idempotent handler succeeds)"
+      ]
+    },
+    {
+      "id": "TS-10-SMOKE-5",
+      "execution_path_id": "10-PATH-5",
+      "description": "End-to-end smoke test: a long-running handler completes within the grace period during graceful shutdown, and Wait() returns cleanly.",
+      "trigger": "A job is enqueued with a handler that takes 200ms; Shutdown() is called while the handler is executing; grace period is 5s",
+      "real_components": [
+        "Queue",
+        "InitSchema",
+        "Register",
+        "Enqueue",
+        "worker goroutine",
+        "Shutdown",
+        "Wait",
+        "in-memory SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Worker claims the job and begins executing the 200ms handler",
+        "Shutdown() closes stopCh; worker stops claiming new jobs",
+        "Handler completes within the grace period; job transitions to completed",
+        "Wait() returns within ~300ms (well before 5s grace period)",
+        "An INFO log line is emitted for 'queue stopped'"
+      ]
+    },
+    {
+      "id": "TS-10-SMOKE-6",
+      "execution_path_id": "10-PATH-6",
+      "description": "End-to-end smoke test: a second Enqueue call with the same (type, key) but different nonce returns the existing active job's ID with duplicate=true.",
+      "trigger": "Consumer calls Enqueue with type='merge', key='feature-branch', nonce='n1'; then calls Enqueue again with type='merge', key='feature-branch', nonce='n2'",
+      "real_components": [
+        "Queue",
+        "InitSchema",
+        "Register",
+        "Enqueue",
+        "in-memory SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "First Enqueue returns (j3_id, false, nil); a job with status='queued' is inserted",
+        "Second Enqueue returns (j3_id, true, nil); no new row is inserted",
+        "Exactly one job with type='merge', key='feature-branch', status in ('queued','running') exists in the database",
+        "The consumer receives the duplicate=true signal and can wait for j3 to complete"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [
+      "10-REQ-1.1",
+      "10-REQ-1.2",
+      "10-REQ-1.3",
+      "10-REQ-2.1",
+      "10-REQ-2.2",
+      "10-REQ-2.3",
+      "10-REQ-3.1",
+      "10-REQ-3.2",
+      "10-REQ-3.3",
+      "10-REQ-3.4",
+      "10-REQ-4.1",
+      "10-REQ-4.2",
+      "10-REQ-4.3",
+      "10-REQ-4.4",
+      "10-REQ-5.1",
+      "10-REQ-5.2",
+      "10-REQ-5.3",
+      "10-REQ-5.4",
+      "10-REQ-6.1",
+      "10-REQ-6.2",
+      "10-REQ-6.3",
+      "10-REQ-7.1",
+      "10-REQ-7.2",
+      "10-REQ-7.3",
+      "10-REQ-8.1",
+      "10-REQ-8.2",
+      "10-REQ-9.1",
+      "10-REQ-9.2",
+      "10-REQ-9.3",
+      "10-REQ-10.1",
+      "10-REQ-10.2",
+      "10-REQ-10.3",
+      "10-REQ-11.1",
+      "10-REQ-11.2",
+      "10-REQ-11.3",
+      "10-REQ-11.4",
+      "10-REQ-12.1",
+      "10-REQ-12.2",
+      "10-REQ-12.3",
+      "10-REQ-13.1",
+      "10-REQ-13.2",
+      "10-REQ-14.1",
+      "10-REQ-14.2",
+      "10-REQ-14.3",
+      "10-REQ-15.1",
+      "10-REQ-15.2",
+      "10-REQ-15.3",
+      "10-REQ-1.E1",
+      "10-REQ-1.E2",
+      "10-REQ-2.E1",
+      "10-REQ-2.E2",
+      "10-REQ-2.E3",
+      "10-REQ-3.E1",
+      "10-REQ-3.E2",
+      "10-REQ-3.E3",
+      "10-REQ-3.E4",
+      "10-REQ-3.E5",
+      "10-REQ-4.E1",
+      "10-REQ-4.E2",
+      "10-REQ-4.E3",
+      "10-REQ-4.E4",
+      "10-REQ-5.E1",
+      "10-REQ-5.E2",
+      "10-REQ-5.E3",
+      "10-REQ-5.E4",
+      "10-REQ-6.E1",
+      "10-REQ-6.E2",
+      "10-REQ-6.E3",
+      "10-REQ-7.E1",
+      "10-REQ-7.E2",
+      "10-REQ-8.E1",
+      "10-REQ-8.E2",
+      "10-REQ-9.E1",
+      "10-REQ-9.E2",
+      "10-REQ-9.E3",
+      "10-REQ-10.E1",
+      "10-REQ-10.E2",
+      "10-REQ-11.E1",
+      "10-REQ-11.E2",
+      "10-REQ-11.E3",
+      "10-REQ-11.E4",
+      "10-REQ-12.E1",
+      "10-REQ-12.E2",
+      "10-REQ-13.E1",
+      "10-REQ-14.E1",
+      "10-REQ-15.E1",
+      "10-REQ-15.E2",
+      "10-REQ-15.E3"
+    ],
+    "properties_covered": [
+      "10-PROP-1",
+      "10-PROP-2",
+      "10-PROP-3",
+      "10-PROP-4",
+      "10-PROP-5",
+      "10-PROP-6",
+      "10-PROP-7",
+      "10-PROP-8",
+      "10-PROP-9",
+      "10-PROP-10"
+    ],
+    "paths_covered": [
+      "10-PATH-1",
+      "10-PATH-2",
+      "10-PATH-3",
+      "10-PATH-4",
+      "10-PATH-5",
+      "10-PATH-6"
+    ],
+    "gaps": []
+  }
+}

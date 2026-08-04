@@ -1,0 +1,1422 @@
+{
+  "$schema": null,
+  "spec_id": "10",
+  "spec_name": "durable_job_queue",
+  "schema_version": 1,
+  "introduction": "The durable job queue is an internal Go package (`internal/jobqueue/`) that provides SQLite-backed persistent background job execution for the af-hub, supporting retry with exponential backoff, per-key serialization, crash recovery, and graceful shutdown. It is a foundational building block with no REST API of its own \u2014 consumers register job type handlers and expose their own domain endpoints.",
+  "glossary": {
+    "CancelJob": "A queue method that transitions a queued job to cancelled status; returns ErrNotCancellable for jobs in other statuses.",
+    "CountByStatus": "A queue method that returns a map of status string to integer count for all jobs of a given type.",
+    "ErrNotCancellable": "A sentinel error returned by CancelJob when the target job is in a status that cannot be cancelled (running, completed, or dead_letter).",
+    "GetByID": "A queue method that returns a single job record by its UUID identifier.",
+    "InitSchema": "A Go function that creates the `jobs` table and its required indexes using CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS statements.",
+    "ListByKey": "A queue method that returns all job records for a specific type and key combination.",
+    "ListByType": "A queue method that returns paginated job records filtered by type, with optional status and key filters.",
+    "ListOpts": "A struct passed to ListByType that carries optional filter parameters (status, key) and pagination parameters (offset, limit).",
+    "WAL mode": "SQLite Write-Ahead Logging journal mode (PRAGMA journal_mode=WAL) required for concurrent readers and writers without serializing on the database lock.",
+    "WithWorkers": "A functional option for the queue constructor that sets the number of worker goroutines.",
+    "available_at": "An RFC 3339 timestamp column on a job record indicating the earliest time the job may be claimed by a worker; used to implement exponential backoff delays.",
+    "busy_timeout": "A SQLite pragma (PRAGMA busy_timeout) that sets the maximum milliseconds to wait when the database is locked before returning SQLITE_BUSY.",
+    "crash recovery": "The startup procedure that resets any jobs found in `running` status back to `queued` so they are re-dispatched after a hub restart or crash.",
+    "dead_letter": "A terminal job status indicating the job has exhausted its retry limit or encountered a permanent error and will not be retried automatically.",
+    "grace period": "The configurable maximum duration (default 30 seconds) the queue waits for in-flight handlers to complete during graceful shutdown before forcibly cancelling them.",
+    "idx_jobs_nonce": "A unique SQLite index on the `nonce` column of the `jobs` table, used for fast nonce deduplication.",
+    "idx_jobs_status_available_at": "A composite SQLite index on `status` and `available_at` columns, used by the polling query to find claimable queued jobs.",
+    "idx_jobs_type_created_at": "A composite SQLite index on `type` and `created_at` columns, used for ListByType pagination ordered by creation time.",
+    "idx_jobs_type_key_status": "A composite SQLite index on `type`, `key`, and `status` columns, used for duplicate-prevention and per-key serialization checks.",
+    "jobs": "The SQLite table that persists all job records for the durable job queue.",
+    "nonce": "A caller-supplied cryptographic string that uniquely identifies a specific job submission request, used to deduplicate retransmissions.",
+    "payload": "A JSON blob stored on a job record containing job-type-specific input data; opaque to the queue itself.",
+    "poll interval": "The configurable duration (default 5 seconds) a worker waits before re-polling for available jobs when no work is found and no wakeup signal arrives.",
+    "promote": "The polling loop step that transitions `failed` jobs whose `available_at` has passed back to `queued` status.",
+    "result": "A nullable JSON blob stored on a job record containing the handler's output on successful completion; opaque to the queue itself.",
+    "retry_count": "An integer column on a job record tracking how many retry attempts have been made; incremented before each backoff delay is computed.",
+    "serialization key": "The combination of `type` and `key` fields that determines which jobs must execute sequentially; at most one job with a given (type, key) pair may be in `running` status at any time.",
+    "stopCh": "An internal Go channel closed by the queue during shutdown to broadcast a stop signal to all worker goroutines.",
+    "submitted_by": "A string identifier on a job record indicating which user, agent, or system submitted the job.",
+    "wakeup channel": "A buffered(1) Go channel shared by all worker goroutines; a non-blocking send on this channel wakes an idle worker when a new job is enqueued.",
+    "failed": "A job status indicating the handler returned a retryable error. The job remains in this status with an updated available_at timestamp until the polling loop promotes it back to queued."
+  },
+  "requirements": [
+    {
+      "id": "10-REQ-1",
+      "title": "Schema Initialisation",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have the job queue create its own database schema at startup",
+        "benefit": "no manual DDL or migration framework is needed to deploy the queue"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "InitSchema",
+          "action": "executes CREATE TABLE IF NOT EXISTS for the `jobs` table with all required columns (id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at) and creates `idx_jobs_nonce`, `idx_jobs_type_key_status`, `idx_jobs_status_available_at`, and `idx_jobs_type_created_at` indexes using CREATE INDEX IF NOT EXISTS",
+          "return_contract": "returns nil on success",
+          "trigger": "called with a valid *sql.DB connection"
+        },
+        {
+          "id": "10-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "InitSchema",
+          "action": "executes CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS statements which succeed silently without modifying existing data",
+          "return_contract": "returns nil; no error is raised for pre-existing schema",
+          "trigger": "called when the `jobs` table already exists (e.g., on hub restart)"
+        },
+        {
+          "id": "10-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "InitSchema",
+          "action": "creates `idx_jobs_nonce` as a UNIQUE index on the `nonce` column to enforce nonce uniqueness at the database level",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "InitSchema",
+          "action": "propagates the database error without panicking",
+          "return_contract": "returns a non-nil error describing the failure",
+          "error_condition": "the *sql.DB connection is nil or the database is unreachable"
+        },
+        {
+          "id": "10-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "InitSchema",
+          "action": "does not set WAL mode itself; documents the requirement in code comments and proceeds; concurrent workers may encounter SQLITE_BUSY errors under load",
+          "return_contract": "returns nil from InitSchema; SQLITE_BUSY errors surface at runtime during concurrent worker operations",
+          "error_condition": "WAL mode is not enabled on the provided *sql.DB"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-2",
+      "title": "Job Type Registration",
+      "user_story": {
+        "role": "hub subsystem developer",
+        "goal": "register a job type with a handler function and optional retry policy at startup",
+        "benefit": "the queue knows how to execute and retry jobs of that type without domain-specific logic in the queue itself"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "stores the handler and retry policy (applying defaults: base 2s, multiplier 2x, cap 2h, max retries 20 for any unspecified fields) associated with the type name",
+          "return_contract": "returns nil on success",
+          "trigger": "a consumer calls Register with a unique type name, a handler function, and an optional retry policy"
+        },
+        {
+          "id": "10-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns an error immediately (fail fast) without overwriting the existing registration",
+          "return_contract": "returns a non-nil error indicating the type name is already registered",
+          "error_condition": "a consumer attempts to register a type name that is already registered"
+        },
+        {
+          "id": "10-REQ-2.3",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "accepts handler functions with the signature func(ctx context.Context, payload json.RawMessage) (result any, retryable bool, err error)",
+          "return_contract": "handler return type is (result any, retryable bool, err error); the queue stores result as JSON on success and err.Error() on failure"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the registration",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "Register is called with an empty type name string"
+        },
+        {
+          "id": "10-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the registration",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "Register is called with a nil handler function"
+        },
+        {
+          "id": "10-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the late registration to prevent race conditions with running workers",
+          "return_contract": "returns a non-nil error indicating registration must occur before the queue is started",
+          "error_condition": "Register is called after the queue has been started"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-3",
+      "title": "Job Enqueueing",
+      "user_story": {
+        "role": "hub subsystem",
+        "goal": "enqueue a background job by providing type, key, nonce, payload, and submitted_by",
+        "benefit": "the work is durably persisted and will be executed even if the hub restarts"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "inserts a new job record with status queued, available_at set to now(), a generated UUID as id, and all provided fields; performs a non-blocking send on the `wakeup channel`; returns the new job ID",
+          "return_contract": "returns (jobID string, duplicate bool, err error) where duplicate=false and err=nil",
+          "trigger": "Enqueue is called with a registered type, unique nonce, and no active job for the same (type, key)"
+        },
+        {
+          "id": "10-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns the existing job's ID without inserting a new record (idempotent retransmission handling)",
+          "return_contract": "returns (existingJobID string, duplicate=false, err=nil)",
+          "trigger": "Enqueue is called with a nonce that matches an existing job record"
+        },
+        {
+          "id": "10-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns the existing active job's ID and a duplicate flag without inserting a new record",
+          "return_contract": "returns (existingJobID string, duplicate=true, err=nil)",
+          "trigger": "Enqueue is called with a unique nonce but the same (type, key) already has a job in queued or running status"
+        },
+        {
+          "id": "10-REQ-3.4",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the enqueue without inserting any record",
+          "return_contract": "returns (\"\", false, non-nil error) indicating the type is not registered",
+          "error_condition": "Enqueue is called with an unregistered job type"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the enqueue",
+          "return_contract": "returns (\"\", false, non-nil error) indicating nonce must not be empty",
+          "error_condition": "Enqueue is called with an empty nonce"
+        },
+        {
+          "id": "10-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the enqueue",
+          "return_contract": "returns (\"\", false, non-nil error) indicating key must not be empty",
+          "error_condition": "Enqueue is called with an empty key"
+        },
+        {
+          "id": "10-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "propagates the database error without leaving a partial record",
+          "return_contract": "returns (\"\", false, non-nil error) describing the database failure",
+          "error_condition": "the database insert fails (e.g., disk full or connection error)"
+        },
+        {
+          "id": "10-REQ-3.E4",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "performs a non-blocking send on the `wakeup channel` (which may be a no-op if the channel is full) and returns normally; the job will be picked up on the next `poll interval` tick",
+          "return_contract": "returns (jobID string, false, nil); no error is returned due to a missed wakeup",
+          "trigger": "Enqueue is called while all workers are busy processing other jobs"
+        },
+        {
+          "id": "10-REQ-3.E5",
+          "ears_pattern": "complex_event",
+          "system": "queue",
+          "action": "exactly one insert succeeds; the other observes the newly inserted active job and returns it as a duplicate",
+          "return_contract": "one call returns (newJobID, false, nil); the other returns (existingJobID, true, nil)",
+          "trigger": "two goroutines call Enqueue simultaneously with the same (type, key) and different nonces",
+          "condition": "no active job exists for that (type, key) at the start of both calls"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-4",
+      "title": "Worker Polling and Job Dispatch",
+      "user_story": {
+        "role": "queue worker goroutine",
+        "goal": "continuously poll for available jobs and dispatch them to registered handlers",
+        "benefit": "background work is executed promptly without busy-waiting"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "first runs the `promote` step to transition any `failed` jobs whose `available_at` <= now() back to queued status, then queries for the oldest queued job where `available_at` <= now() and no other job with the same `serialization key` is currently running",
+          "return_contract": null,
+          "trigger": "a worker goroutine starts its processing loop"
+        },
+        {
+          "id": "10-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "atomically sets status to running using a WHERE clause that includes status = 'queued' to prevent double-claim, then calls the registered handler for the job's type with the job's `payload` and a context derived from the queue's root context",
+          "return_contract": null,
+          "trigger": "a worker finds a claimable queued job"
+        },
+        {
+          "id": "10-REQ-4.3",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "blocks on a three-way select: `stopCh` closure (exit loop), `poll interval` timer (default 5s, then re-poll), or `wakeup channel` receive (immediate re-poll)",
+          "return_contract": null,
+          "trigger": "no claimable job is found after polling"
+        },
+        {
+          "id": "10-REQ-4.4",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "runs exactly the configured number of worker goroutines (default 4, overridden by `WithWorkers`); all workers share a single buffered(1) `wakeup channel`",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-4.E1",
+          "ears_pattern": "complex_event",
+          "system": "worker",
+          "action": "the atomic claim UPDATE with WHERE status = 'queued' ensures exactly one worker succeeds; the other finds zero rows affected and moves on to poll again",
+          "return_contract": null,
+          "trigger": "two workers simultaneously attempt to claim the same queued job",
+          "condition": "both read the job as claimable before either updates it"
+        },
+        {
+          "id": "10-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "logs the error at DEBUG level and waits for the next `poll interval` before retrying; does not crash the worker goroutine",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the database query for the next job fails"
+        },
+        {
+          "id": "10-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "logs the error and continues to the poll step; failed jobs with elapsed `available_at` will be promoted on the next loop iteration",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the `promote` step database update fails"
+        },
+        {
+          "id": "10-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "transitions the job to dead_letter status with an error message indicating no handler is registered for the type; logs at WARN level",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the job type found in the database has no registered handler (e.g., handler was removed after job was enqueued)"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-5",
+      "title": "Handler Execution and Job Finalization",
+      "user_story": {
+        "role": "queue worker",
+        "goal": "finalize a job's status based on the handler's return values",
+        "benefit": "job outcomes are durably recorded and retryable failures are automatically rescheduled"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "serializes result to JSON, updates the job record with status = completed, stores the serialized result in the `result` column, and sets updated_at to now(); logs at DEBUG level with job_id, type, key, status, and retry_count fields",
+          "return_contract": null,
+          "trigger": "a handler returns (result, false, nil)"
+        },
+        {
+          "id": "10-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "increments `retry_count`, computes delay = min(base * multiplier^retry_count, cap), sets available_at = now() + delay, sets status = failed, stores the error message in the error column, and sets updated_at to now(); logs at DEBUG level",
+          "return_contract": "job record updated in-place: status=\"failed\", retry_count incremented, available_at set to computed backoff time, error set to err.Error(), updated_at set to now()",
+          "trigger": "a handler returns (_, true, non-nil error) and retry_count < max_retries"
+        },
+        {
+          "id": "10-REQ-5.3",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "transitions the job to dead_letter status, stores the error message, and sets updated_at to now(); logs at WARN level with job_id, type, key, status, and retry_count fields",
+          "return_contract": "job record updated in-place: status=\"dead_letter\", error set to err.Error(), updated_at set to now()",
+          "trigger": "a handler returns (_, true, non-nil error) and retry_count >= max_retries after increment"
+        },
+        {
+          "id": "10-REQ-5.4",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "transitions the job directly to dead_letter status without incrementing retry_count, stores the error message, and sets updated_at to now(); logs at WARN level",
+          "return_contract": "job record updated in-place: status=\"dead_letter\", error set to err.Error(), updated_at set to now()",
+          "trigger": "a handler returns (_, false, non-nil error) indicating a permanent (non-retryable) error"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "the worker goroutine recovers from the panic, transitions the job to dead_letter status with the panic message as the error, and continues processing other jobs",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the handler panics instead of returning an error"
+        },
+        {
+          "id": "10-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "transitions the job to dead_letter status with an error message describing the serialization failure",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the result returned by the handler cannot be serialized to JSON"
+        },
+        {
+          "id": "10-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "retries the finalization update; if retries are exhausted, logs the failure at WARN level; the job remains in running status and will be reset to queued by `crash recovery` on next startup",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the database update for job finalization fails after the handler has already completed"
+        },
+        {
+          "id": "10-REQ-5.E4",
+          "ears_pattern": "unwanted",
+          "system": "worker",
+          "action": "the queue cancels the handler's context after the grace period expires, logs a WARN message including the job_id, and exits; the job is reset to queued by `crash recovery` on next startup",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the handler runs longer than the `grace period` during shutdown"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-6",
+      "title": "Exponential Backoff",
+      "user_story": {
+        "role": "queue operator",
+        "goal": "have failed jobs retried with increasing delays up to a configured maximum",
+        "benefit": "transient failures (network blips, temporary resource unavailability) are handled automatically without overwhelming the failing dependency"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-6.1",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "computes retry delay as min(base * multiplier^retry_count, cap) where retry_count has already been incremented; with defaults (base=2s, multiplier=2, cap=7200s) the first failure produces a 4s delay, the second 8s, the third 16s, and delays cap at 7200s",
+          "return_contract": null
+        },
+        {
+          "id": "10-REQ-6.2",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "applies per-type retry policy overrides (base, multiplier, cap, max_retries) when registered; falls back to defaults (base=2s, multiplier=2x, cap=2h, max_retries=20) for any unspecified fields",
+          "return_contract": null
+        },
+        {
+          "id": "10-REQ-6.3",
+          "ears_pattern": "state_driven",
+          "system": "worker",
+          "action": "the `promote` step transitions the job back to queued status so it can be claimed by the next available worker",
+          "return_contract": null,
+          "state": "a job is in failed status with available_at <= now()"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "transitions the job to dead_letter instead of computing a backoff delay; does not set available_at",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "retry_count after increment equals max_retries + 1 (one over the limit)"
+        },
+        {
+          "id": "10-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "clamps the delay to the cap value without panicking or producing a negative delay",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "the computed delay (base * multiplier^retry_count) overflows a 64-bit integer before the cap is applied"
+        },
+        {
+          "id": "10-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "the first failure immediately transitions the job to dead_letter without any retry attempt",
+          "return_contract": "returns (nil, false, error) where error describes the failure",
+          "error_condition": "max_retries is configured as 0"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-7",
+      "title": "Dead-Letter Inspection and Manual Requeue",
+      "user_story": {
+        "role": "hub operator or consumer subsystem",
+        "goal": "inspect dead-lettered jobs and manually requeue them after fixing the underlying issue",
+        "benefit": "persistent failures are visible and recoverable without requiring a hub restart or database manipulation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "resets retry_count to 0, sets status to queued, sets available_at to now(), sets updated_at to now(), and sends a non-blocking signal on the `wakeup channel`",
+          "return_contract": "returns (jobID string, nil) on success",
+          "trigger": "a consumer calls RequeueDeadLetter with a job ID that is in dead_letter status and no active (queued or running) job exists for the same (type, key)"
+        },
+        {
+          "id": "10-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the requeue and returns the existing active job's ID",
+          "return_contract": "returns (existingActiveJobID string, non-nil error) indicating a duplicate active job exists",
+          "error_condition": "RequeueDeadLetter is called for a job whose (type, key) already has an active (queued or running) job"
+        },
+        {
+          "id": "10-REQ-7.3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the requeue",
+          "return_contract": "returns (\"\", non-nil error) indicating the job is not in dead_letter status",
+          "error_condition": "RequeueDeadLetter is called for a job that is not in dead_letter status"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns an error indicating the job was not found",
+          "return_contract": "returns (\"\", non-nil error) with a not-found message",
+          "error_condition": "RequeueDeadLetter is called with a job ID that does not exist"
+        },
+        {
+          "id": "10-REQ-7.E2",
+          "ears_pattern": "complex_event",
+          "system": "queue",
+          "action": "exactly one requeue succeeds; the other observes the newly queued job and returns it as a duplicate active job",
+          "return_contract": "one call returns (jobID, nil); the other returns (existingJobID, non-nil error)",
+          "trigger": "two callers simultaneously call RequeueDeadLetter for the same dead-lettered job",
+          "condition": "no active job exists for that (type, key) at the start of both calls"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-8",
+      "title": "Crash Recovery on Startup",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have in-flight jobs automatically recovered after a hub crash or restart",
+        "benefit": "no background work is silently lost due to an unexpected process termination"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "resets each such job to queued status with available_at = now() and updated_at = now(); logs each reset at WARN level including the job_id",
+          "return_contract": null,
+          "trigger": "the queue starts up and finds jobs in running status in the `jobs` table"
+        },
+        {
+          "id": "10-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "proceeds to start worker goroutines without any recovery actions",
+          "return_contract": null,
+          "trigger": "the queue starts up and finds no jobs in running status"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns the error from the Start method without starting any worker goroutines",
+          "return_contract": "returns non-nil error from Start; the queue does not enter a running state",
+          "error_condition": "the crash recovery database query fails on startup"
+        },
+        {
+          "id": "10-REQ-8.E2",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "documents in code comments that handlers must be idempotent or tolerate re-execution after a partial run, since `crash recovery` may re-dispatch a job whose handler had already partially executed",
+          "return_contract": null
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-9",
+      "title": "Graceful Shutdown",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "shut down the hub without losing in-flight job results",
+        "benefit": "background work completes cleanly and no jobs are left in a dirty state under normal shutdown"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "closes `stopCh` to broadcast a stop signal to all worker goroutines; workers stop claiming new jobs and complete their current handler calls; the queue waits up to the configured `grace period` (default 30s) for all workers to exit",
+          "return_contract": null,
+          "trigger": "Shutdown is called on the queue"
+        },
+        {
+          "id": "10-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "Wait() returns immediately after the last worker exits; logs queue stopped at INFO level",
+          "return_contract": "Wait() returns nil",
+          "trigger": "all workers exit before the `grace period` expires"
+        },
+        {
+          "id": "10-REQ-9.3",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "cancels the in-flight handler contexts, logs a WARN message for each interrupted job including its job_id, and exits; does not wait indefinitely",
+          "return_contract": "Wait() returns after forced exit; interrupted jobs are recoverable via `crash recovery` on next startup",
+          "trigger": "the `grace period` expires before all workers have finished"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns without error and without blocking",
+          "return_contract": "Wait() returns immediately",
+          "error_condition": "Shutdown is called before the queue has been started"
+        },
+        {
+          "id": "10-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "subsequent calls are no-ops; closing an already-closed `stopCh` is protected against panic (e.g., via sync.Once)",
+          "return_contract": "no panic; Wait() returns normally",
+          "error_condition": "Shutdown is called multiple times concurrently"
+        },
+        {
+          "id": "10-REQ-9.E3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "the queue logs the interruption at WARN level and exits anyway; the goroutine leak is bounded by the process lifetime",
+          "return_contract": "Wait() returns after the grace period; the hub process can exit",
+          "error_condition": "a handler ignores context cancellation and runs indefinitely after the `grace period` expires"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-10",
+      "title": "Job Cancellation",
+      "user_story": {
+        "role": "consumer subsystem",
+        "goal": "cancel a queued job before it starts executing",
+        "benefit": "callers can abort pending work without waiting for it to run and fail"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "transitions the job to cancelled status, sets updated_at to now(), and logs at DEBUG level",
+          "return_contract": "returns nil",
+          "trigger": "CancelJob is called with the ID of a job in queued status"
+        },
+        {
+          "id": "10-REQ-10.2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "succeeds silently without modifying the record (idempotent)",
+          "return_contract": "returns nil",
+          "trigger": "CancelJob is called with the ID of a job already in cancelled status"
+        },
+        {
+          "id": "10-REQ-10.3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "rejects the cancellation without modifying the record",
+          "return_contract": "returns ErrNotCancellable",
+          "error_condition": "CancelJob is called with the ID of a job in running, completed, or dead_letter status"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns an error indicating the job was not found",
+          "return_contract": "returns non-nil error with a not-found message",
+          "error_condition": "CancelJob is called with a job ID that does not exist"
+        },
+        {
+          "id": "10-REQ-10.E2",
+          "ears_pattern": "complex_event",
+          "system": "queue",
+          "action": "the cancel UPDATE with WHERE status = 'queued' finds zero rows affected; CancelJob returns ErrNotCancellable since the job is now running",
+          "return_contract": "returns ErrNotCancellable",
+          "trigger": "CancelJob is called on a queued job",
+          "condition": "a worker simultaneously claims the same job and transitions it to running"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-11",
+      "title": "Query and Management API",
+      "user_story": {
+        "role": "consumer subsystem or operator",
+        "goal": "query job records by ID, type, key, or status",
+        "benefit": "consumers can build domain-specific list and detail endpoints without direct database access"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns the full job record including `payload` and `result` fields",
+          "return_contract": "returns (*Job, nil) on success",
+          "trigger": "GetByID is called with a valid job UUID"
+        },
+        {
+          "id": "10-REQ-11.2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns jobs of the given type filtered by optional status and key fields in `ListOpts`, ordered by created_at descending, with pagination applied via offset and limit",
+          "return_contract": "returns ([]*Job, nil) on success; empty slice (not nil) when no jobs match",
+          "trigger": "ListByType is called with a type name and `ListOpts`"
+        },
+        {
+          "id": "10-REQ-11.3",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns all job records for that (type, key) combination ordered by created_at descending",
+          "return_contract": "returns ([]*Job, nil) on success; empty slice when no jobs match",
+          "trigger": "ListByKey is called with a type name and key string"
+        },
+        {
+          "id": "10-REQ-11.4",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns a map of status string to integer count for all jobs of that type; statuses with zero jobs are omitted from the map",
+          "return_contract": "returns (map[string]int, nil) on success",
+          "trigger": "CountByStatus is called with a type name"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns an error indicating the job was not found",
+          "return_contract": "returns (nil, non-nil error) with a not-found message",
+          "error_condition": "GetByID is called with a UUID that does not exist in the `jobs` table"
+        },
+        {
+          "id": "10-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "applies a default limit (e.g., 50) or returns an error; does not return an unbounded result set",
+          "return_contract": "returns ([]*Job, nil) with at most the default limit, or (nil, non-nil error) if 0 is rejected",
+          "error_condition": "ListByType is called with a limit of 0"
+        },
+        {
+          "id": "10-REQ-11.E3",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "propagates the database error to the caller without panicking",
+          "return_contract": "returns (nil, non-nil error) describing the database failure",
+          "error_condition": "a database query in any management API method fails"
+        },
+        {
+          "id": "10-REQ-11.E4",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "returns an empty map",
+          "return_contract": "returns (map[string]int{}, nil)",
+          "trigger": "CountByStatus is called for a type with no jobs"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-12",
+      "title": "Per-Key Serialization",
+      "user_story": {
+        "role": "consumer subsystem",
+        "goal": "ensure jobs sharing the same (type, key) execute sequentially while jobs with different keys run concurrently",
+        "benefit": "domain-specific serialization constraints (e.g., one merge per target branch at a time) are enforced without the queue understanding the domain"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-12.1",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "ensures at most one job with a given (type, key) pair is in running status at any time; the polling query excludes jobs whose `serialization key` has another job currently running",
+          "return_contract": null
+        },
+        {
+          "id": "10-REQ-12.2",
+          "ears_pattern": "state_driven",
+          "system": "worker",
+          "action": "skips all other queued jobs with (type=T, key=K) during polling; those jobs remain queued until the running job completes or dead-letters",
+          "return_contract": null,
+          "state": "a job with (type=T, key=K) is in running status"
+        },
+        {
+          "id": "10-REQ-12.3",
+          "ears_pattern": "event_driven",
+          "system": "worker",
+          "action": "the next poll cycle picks up the next queued job with (type=T, key=K) if one exists",
+          "return_contract": null,
+          "trigger": "a running job with (type=T, key=K) completes or transitions to failed or dead_letter"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-12.E1",
+          "ears_pattern": "complex_event",
+          "system": "worker",
+          "action": "at most one worker claims a job for that key; the other workers skip it due to the running-job exclusion in the poll query",
+          "return_contract": null,
+          "trigger": "multiple workers simultaneously poll for jobs",
+          "condition": "two queued jobs share the same (type, key)"
+        },
+        {
+          "id": "10-REQ-12.E2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "workers process them concurrently up to the configured worker count; no artificial serialization is imposed across different keys",
+          "return_contract": null,
+          "trigger": "jobs with different keys of the same type are enqueued"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-13",
+      "title": "Nonce-Based Idempotency",
+      "user_story": {
+        "role": "consumer subsystem",
+        "goal": "safely retry an enqueue call without creating duplicate jobs",
+        "benefit": "network retransmissions and at-least-once delivery patterns do not cause duplicate job execution"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-13.1",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "enforces `nonce` uniqueness across all job records via the `idx_jobs_nonce` unique index; a second Enqueue call with the same nonce returns the existing job without inserting a new record",
+          "return_contract": null
+        },
+        {
+          "id": "10-REQ-13.2",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "treats nonce deduplication and (type, key) duplicate prevention as independent checks; a nonce match returns the existing job regardless of its current status, while a (type, key) duplicate check only applies to active (queued or running) jobs",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-13.E1",
+          "ears_pattern": "complex_event",
+          "system": "queue",
+          "action": "the unique index on `nonce` causes one insert to fail with a unique constraint violation; the queue treats this as an idempotent duplicate and returns the existing job",
+          "return_contract": "both calls return the same job ID with err=nil",
+          "trigger": "two concurrent Enqueue calls are made with the same nonce",
+          "condition": "neither call has yet inserted a record"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-14",
+      "title": "Structured Logging Contract",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have all queue events logged with consistent structured fields",
+        "benefit": "log-based alerting and debugging work without additional instrumentation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-14.1",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "uses log/slog for all log output; every log line includes structured fields job_id, type, key, status, and retry_count where applicable",
+          "return_contract": null
+        },
+        {
+          "id": "10-REQ-14.2",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "logs job claimed (running), job completed, job failed with retry, and job promoted from failed to queued events at DEBUG level; logs job dead-lettered, crash recovery resets, and grace period interruptions at WARN level; logs queue started and stopped at INFO level",
+          "return_contract": null
+        },
+        {
+          "id": "10-REQ-14.3",
+          "ears_pattern": "ubiquitous",
+          "system": "queue",
+          "action": "does not use ERROR log level; handler errors surface through the job's error field and the state transition log entries",
+          "return_contract": "no caller-observable return; this is a logging-level constraint on internal behaviour"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-14.E1",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "logs one WARN line per interrupted job, each including the job_id field",
+          "return_contract": null,
+          "trigger": "the grace period expires and one or more jobs are interrupted"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-15",
+      "title": "Queue Construction and Configuration",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "construct a queue instance with a *sql.DB connection and optional configuration options",
+        "benefit": "the queue is self-contained and integrates with the hub's existing database connection without additional dependencies"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "10-REQ-15.1",
+          "ears_pattern": "event_driven",
+          "system": "queue constructor",
+          "action": "creates a queue instance with default configuration (4 workers, 5s `poll interval`, 30s `grace period`) overridden by any provided options; does not start worker goroutines",
+          "return_contract": "returns (*Queue, error); error is non-nil only if configuration is invalid",
+          "trigger": "New is called with a *sql.DB and zero or more functional options"
+        },
+        {
+          "id": "10-REQ-15.2",
+          "ears_pattern": "event_driven",
+          "system": "queue",
+          "action": "runs `crash recovery`, then starts the configured number of worker goroutines, then logs queue started at INFO level",
+          "return_contract": "returns error if crash recovery fails; nil on success",
+          "trigger": "Start is called on a constructed queue"
+        },
+        {
+          "id": "10-REQ-15.3",
+          "ears_pattern": "optional",
+          "system": "queue",
+          "action": "overrides the default worker count of 4 with the provided value n",
+          "return_contract": null,
+          "feature": "WithWorkers option"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "10-REQ-15.E1",
+          "ears_pattern": "unwanted",
+          "system": "queue constructor",
+          "action": "rejects the invalid configuration",
+          "return_contract": "New returns (nil, non-nil error) indicating worker count must be positive",
+          "error_condition": "WithWorkers is called with n <= 0"
+        },
+        {
+          "id": "10-REQ-15.E2",
+          "ears_pattern": "unwanted",
+          "system": "queue",
+          "action": "returns an error without starting additional worker goroutines",
+          "return_contract": "returns non-nil error indicating the queue is already started",
+          "error_condition": "Start is called on a queue that is already running"
+        },
+        {
+          "id": "10-REQ-15.E3",
+          "ears_pattern": "unwanted",
+          "system": "queue constructor",
+          "action": "rejects the nil database connection",
+          "return_contract": "returns (nil, non-nil error) indicating db must not be nil",
+          "error_condition": "New is called with a nil *sql.DB"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "10-PROP-1",
+      "title": "At-most-one-active-per-key invariant",
+      "for_any": "job type T and key K",
+      "invariant": "at most one job with (type=T, key=K) is in queued or running status at any time; Enqueue and RequeueDeadLetter both enforce this check before inserting or requeuing",
+      "validates": [
+        "10-REQ-3.3",
+        "10-REQ-7.2",
+        "10-REQ-12.1"
+      ]
+    },
+    {
+      "id": "10-PROP-2",
+      "title": "Nonce uniqueness across all jobs",
+      "for_any": "nonce value N",
+      "invariant": "at most one job record with nonce=N exists in the `jobs` table at any time; a second Enqueue with the same nonce returns the existing job without inserting a new record",
+      "validates": [
+        "10-REQ-13.1",
+        "10-REQ-3.2"
+      ]
+    },
+    {
+      "id": "10-PROP-3",
+      "title": "Per-key serial execution",
+      "for_any": "job type T and key K",
+      "invariant": "at most one job with (type=T, key=K) is in running status at any time; the polling query's exclusion of keys with a running job enforces this even under concurrent workers",
+      "validates": [
+        "10-REQ-12.1",
+        "10-REQ-12.2",
+        "10-REQ-4.E1"
+      ]
+    },
+    {
+      "id": "10-PROP-4",
+      "title": "Retry count monotonically increases until dead-letter",
+      "for_any": "job J that receives retryable errors",
+      "invariant": "retry_count is incremented exactly once per retryable failure; when retry_count exceeds max_retries the job transitions to dead_letter and retry_count is never incremented again",
+      "validates": [
+        "10-REQ-5.2",
+        "10-REQ-5.3",
+        "10-REQ-6.1"
+      ]
+    },
+    {
+      "id": "10-PROP-5",
+      "title": "Backoff delay is non-decreasing and capped",
+      "for_any": "retry_count values r1 < r2 for the same retry policy",
+      "invariant": "computed delay at r1 <= computed delay at r2 <= cap; no computed delay exceeds the configured cap value",
+      "validates": [
+        "10-REQ-6.1",
+        "10-REQ-6.E2"
+      ]
+    },
+    {
+      "id": "10-PROP-6",
+      "title": "Crash recovery resets all running jobs",
+      "for_any": "hub restart event",
+      "invariant": "after Start completes, no job remains in running status; all jobs that were running before the restart are in queued status with available_at <= now()",
+      "validates": [
+        "10-REQ-8.1",
+        "10-REQ-8.2"
+      ]
+    },
+    {
+      "id": "10-PROP-7",
+      "title": "Completed and dead-lettered jobs are terminal",
+      "for_any": "job J in completed or dead_letter status",
+      "invariant": "no worker transitions J out of completed or dead_letter status automatically; only an explicit RequeueDeadLetter call can move a dead_letter job back to queued",
+      "validates": [
+        "10-REQ-5.1",
+        "10-REQ-5.3",
+        "10-REQ-5.4",
+        "10-REQ-7.1"
+      ]
+    },
+    {
+      "id": "10-PROP-8",
+      "title": "Worker count matches configuration",
+      "for_any": "queue instance Q constructed with WithWorkers(n)",
+      "invariant": "after Start is called, exactly n worker goroutines are running; no more and no fewer goroutines are spawned",
+      "validates": [
+        "10-REQ-4.4",
+        "10-REQ-15.3"
+      ]
+    },
+    {
+      "id": "10-PROP-9",
+      "title": "Graceful shutdown completes within grace period",
+      "for_any": "shutdown event with grace period G",
+      "invariant": "Wait() returns within G seconds of Shutdown being called; if handlers are still running at G, their contexts are cancelled and Wait() returns regardless",
+      "validates": [
+        "10-REQ-9.1",
+        "10-REQ-9.2",
+        "10-REQ-9.3"
+      ]
+    },
+    {
+      "id": "10-PROP-10",
+      "title": "InitSchema is idempotent",
+      "for_any": "number of times InitSchema is called on the same database",
+      "invariant": "calling InitSchema multiple times produces the same schema as calling it once; no error is returned on subsequent calls",
+      "validates": [
+        "10-REQ-1.2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "10-PATH-1",
+      "title": "Happy-path job enqueue and successful execution",
+      "steps": [
+        {
+          "actor": "consumer subsystem",
+          "action": "calls Enqueue with type='merge', key='main', nonce='abc123', payload=JSON blob, submitted_by='user-1'"
+        },
+        {
+          "actor": "queue",
+          "action": "validates type is registered, checks nonce uniqueness, checks no active (type, key) job exists, inserts job record with status=queued and available_at=now()"
+        },
+        {
+          "actor": "queue",
+          "action": "performs non-blocking send on the `wakeup channel`"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "receives wakeup signal, runs promote step (no failed jobs to promote), polls for oldest claimable queued job"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "atomically claims the job by updating status to running with WHERE status='queued'"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "calls the registered merge handler with the job's `payload` and a context"
+        },
+        {
+          "actor": "merge handler",
+          "action": "executes the merge operation and returns (result, false, nil)"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "serializes result to JSON, updates job record with status=completed and result column, logs at DEBUG level"
+        },
+        {
+          "actor": "consumer subsystem",
+          "action": "calls GetByID with the job ID and reads the completed job record including the `result` field"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-2",
+      "title": "Retryable failure with exponential backoff and eventual success",
+      "steps": [
+        {
+          "actor": "consumer subsystem",
+          "action": "calls Enqueue with type='sync', key='repo-42', nonce='xyz789'"
+        },
+        {
+          "actor": "queue",
+          "action": "inserts job record with status=queued"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "claims the job, calls the sync handler"
+        },
+        {
+          "actor": "sync handler",
+          "action": "returns (nil, true, error('network timeout'))"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "increments retry_count to 1, computes delay=4s, sets status=failed, available_at=now()+4s"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "on next poll cycle, promote step finds the failed job with elapsed available_at and transitions it back to queued"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "claims the promoted queued job and calls the sync handler again"
+        },
+        {
+          "actor": "sync handler",
+          "action": "returns (result, false, nil) on the second attempt"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "updates job record with status=completed and stores result"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-3",
+      "title": "Job exhausts retries and is dead-lettered",
+      "steps": [
+        {
+          "actor": "consumer subsystem",
+          "action": "calls Enqueue with a job type configured with max_retries=2"
+        },
+        {
+          "actor": "queue",
+          "action": "inserts job record with status=queued, retry_count=0"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "claims and executes the job; handler returns retryable error; retry_count incremented to 1, status=failed"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "promote step transitions job back to queued after backoff; worker claims and executes again; handler returns retryable error; retry_count incremented to 2, status=failed"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "promote step transitions job back to queued; worker claims and executes again; handler returns retryable error; retry_count incremented to 3 which exceeds max_retries=2"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "transitions job to dead_letter status, stores error message, logs at WARN level"
+        },
+        {
+          "actor": "operator",
+          "action": "calls ListByType with status filter=dead_letter to inspect the failed job"
+        },
+        {
+          "actor": "operator",
+          "action": "calls RequeueDeadLetter with the job ID after fixing the underlying issue"
+        },
+        {
+          "actor": "queue",
+          "action": "resets retry_count to 0, sets status=queued, available_at=now(), sends wakeup signal"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-4",
+      "title": "Hub restart with crash recovery",
+      "steps": [
+        {
+          "actor": "worker goroutine",
+          "action": "claims job J1 and begins executing the handler"
+        },
+        {
+          "actor": "hub process",
+          "action": "crashes or is killed before the handler completes; job J1 remains in running status in the `jobs` table"
+        },
+        {
+          "actor": "hub process",
+          "action": "restarts and calls InitSchema (no-op since table exists), then calls Start on the queue"
+        },
+        {
+          "actor": "queue",
+          "action": "runs crash recovery: queries for jobs in running status, finds J1, resets it to queued with available_at=now(), logs at WARN level with job_id=J1"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "starts, polls, claims J1, and re-executes the handler (handler must be idempotent)"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "handler completes successfully; job transitions to completed"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-5",
+      "title": "Graceful shutdown with in-flight job",
+      "steps": [
+        {
+          "actor": "worker goroutine",
+          "action": "claims job J2 and begins executing a long-running handler"
+        },
+        {
+          "actor": "hub process",
+          "action": "receives shutdown signal and calls Shutdown on the queue"
+        },
+        {
+          "actor": "queue",
+          "action": "closes `stopCh` to broadcast stop signal; worker loops stop claiming new jobs"
+        },
+        {
+          "actor": "queue",
+          "action": "waits up to the `grace period` (30s) for all workers to exit"
+        },
+        {
+          "actor": "worker goroutine",
+          "action": "handler completes within the grace period; worker finalizes the job and exits"
+        },
+        {
+          "actor": "queue",
+          "action": "Wait() returns; logs queue stopped at INFO level; hub process exits cleanly"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-6",
+      "title": "Duplicate enqueue prevention for same (type, key)",
+      "steps": [
+        {
+          "actor": "consumer subsystem",
+          "action": "calls Enqueue with type='merge', key='feature-branch', nonce='n1'; job J3 is created with status=queued"
+        },
+        {
+          "actor": "consumer subsystem",
+          "action": "calls Enqueue again with type='merge', key='feature-branch', nonce='n2' (different nonce, same type+key)"
+        },
+        {
+          "actor": "queue",
+          "action": "nonce 'n2' is unique so nonce check passes; duplicate-prevention check finds J3 is active (queued)"
+        },
+        {
+          "actor": "queue",
+          "action": "returns J3's ID with duplicate=true without inserting a new record"
+        },
+        {
+          "actor": "consumer subsystem",
+          "action": "receives (J3_id, true, nil) and waits for J3 to complete before retrying"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "10-ERR-1",
+      "condition": "Enqueue called with an unregistered job type",
+      "behavior": "returns (\"\", false, non-nil error) without inserting any record",
+      "requirement_id": "10-REQ-3.4"
+    },
+    {
+      "id": "10-ERR-2",
+      "condition": "Enqueue called with an empty nonce",
+      "behavior": "returns (\"\", false, non-nil error) indicating nonce must not be empty",
+      "requirement_id": "10-REQ-3.E1"
+    },
+    {
+      "id": "10-ERR-3",
+      "condition": "Register called with a duplicate type name",
+      "behavior": "returns non-nil error immediately (fail fast) without overwriting the existing handler",
+      "requirement_id": "10-REQ-2.2"
+    },
+    {
+      "id": "10-ERR-4",
+      "condition": "CancelJob called on a job in running, completed, or dead_letter status",
+      "behavior": "returns ErrNotCancellable without modifying the job record",
+      "requirement_id": "10-REQ-10.3"
+    },
+    {
+      "id": "10-ERR-5",
+      "condition": "CancelJob called with a non-existent job ID",
+      "behavior": "returns non-nil error with a not-found message",
+      "requirement_id": "10-REQ-10.E1"
+    },
+    {
+      "id": "10-ERR-6",
+      "condition": "RequeueDeadLetter called when an active (queued or running) job exists for the same (type, key)",
+      "behavior": "returns (existingActiveJobID, non-nil error) indicating a duplicate active job exists",
+      "requirement_id": "10-REQ-7.2"
+    },
+    {
+      "id": "10-ERR-7",
+      "condition": "RequeueDeadLetter called for a job not in dead_letter status",
+      "behavior": "returns (\"\", non-nil error) indicating the job is not in dead_letter status",
+      "requirement_id": "10-REQ-7.3"
+    },
+    {
+      "id": "10-ERR-8",
+      "condition": "GetByID called with a non-existent job UUID",
+      "behavior": "returns (nil, non-nil error) with a not-found message",
+      "requirement_id": "10-REQ-11.E1"
+    },
+    {
+      "id": "10-ERR-9",
+      "condition": "handler panics during execution",
+      "behavior": "worker recovers from the panic, transitions the job to dead_letter with the panic message as the error, and continues processing other jobs",
+      "requirement_id": "10-REQ-5.E1"
+    },
+    {
+      "id": "10-ERR-10",
+      "condition": "grace period expires before all in-flight handlers complete",
+      "behavior": "queue cancels in-flight handler contexts, logs one WARN line per interrupted job including job_id, and exits; interrupted jobs are reset to queued by crash recovery on next startup",
+      "requirement_id": "10-REQ-9.3"
+    },
+    {
+      "id": "10-ERR-11",
+      "condition": "crash recovery database query fails on startup",
+      "behavior": "Start returns non-nil error; no worker goroutines are started",
+      "requirement_id": "10-REQ-8.E1"
+    },
+    {
+      "id": "10-ERR-12",
+      "condition": "WithWorkers called with n <= 0",
+      "behavior": "New returns (nil, non-nil error) indicating worker count must be positive",
+      "requirement_id": "10-REQ-15.E1"
+    },
+    {
+      "id": "10-ERR-13",
+      "condition": "job type found in database during polling has no registered handler",
+      "behavior": "worker transitions the job to dead_letter with an error message indicating no handler is registered; logs at WARN level",
+      "requirement_id": "10-REQ-4.E4"
+    },
+    {
+      "id": "10-ERR-14",
+      "condition": "retry_count overflows or computed backoff delay overflows before cap is applied",
+      "behavior": "delay is clamped to the cap value without panicking or producing a negative delay",
+      "requirement_id": "10-REQ-6.E2"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "database/sql",
+      "version": "go1.26",
+      "symbols": [
+        {
+          "name": "DB",
+          "import_path": "database/sql",
+          "signature": "type DB struct",
+          "notes": "The hub's existing *sql.DB connection passed to the queue; must be pre-configured with PRAGMA journal_mode=WAL and PRAGMA busy_timeout by the caller"
+        },
+        {
+          "name": "DB.QueryRowContext",
+          "import_path": "database/sql",
+          "signature": "func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *Row",
+          "notes": "Used for single-row queries such as GetByID and nonce deduplication checks"
+        },
+        {
+          "name": "DB.ExecContext",
+          "import_path": "database/sql",
+          "signature": "func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (Result, error)",
+          "notes": "Used for INSERT, UPDATE statements including atomic claim and finalization"
+        },
+        {
+          "name": "DB.QueryContext",
+          "import_path": "database/sql",
+          "signature": "func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*Rows, error)",
+          "notes": "Used for multi-row queries such as ListByType, ListByKey, CountByStatus, and crash recovery scan"
+        }
+      ]
+    },
+    {
+      "package": "log/slog",
+      "version": "go1.26",
+      "symbols": [
+        {
+          "name": "Logger",
+          "import_path": "log/slog",
+          "signature": "type Logger struct",
+          "notes": "Structured logger used for all queue log output"
+        },
+        {
+          "name": "Logger.Debug",
+          "import_path": "log/slog",
+          "signature": "func (l *Logger) Debug(msg string, args ...any)",
+          "notes": "Used for job claimed, completed, failed-with-retry, promoted, and cancelled events"
+        },
+        {
+          "name": "Logger.Warn",
+          "import_path": "log/slog",
+          "signature": "func (l *Logger) Warn(msg string, args ...any)",
+          "notes": "Used for dead-letter transitions, crash recovery resets, and grace period interruptions"
+        },
+        {
+          "name": "Logger.Info",
+          "import_path": "log/slog",
+          "signature": "func (l *Logger) Info(msg string, args ...any)",
+          "notes": "Used for queue started and queue stopped events"
+        }
+      ]
+    },
+    {
+      "package": "encoding/json",
+      "version": "go1.26",
+      "symbols": [
+        {
+          "name": "RawMessage",
+          "import_path": "encoding/json",
+          "signature": "type RawMessage []byte",
+          "notes": "Type used for the payload parameter in handler function signatures and for storing opaque JSON blobs"
+        },
+        {
+          "name": "Marshal",
+          "import_path": "encoding/json",
+          "signature": "func Marshal(v any) ([]byte, error)",
+          "notes": "Used to serialize handler result values to JSON before storing in the result column"
+        }
+      ]
+    }
+  ]
+}

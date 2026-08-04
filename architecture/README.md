@@ -32,11 +32,3 @@ services, and the af MCP bridge.
 **Services layer** — the deployable components: the af hub (single stateful
 process), CLI, storage layout, communication protocols, security and isolation,
 retrieval engine, CI/CD bridge, notification service, and web dashboard.
-
-## Documents
-
-| Document | Description |
-| --- | --- |
-| [Coordination Layer](coordination-layer.md) | Domain model, workspaces, campaigns, spec package integration, agents, orchestration, data model, and API surface. |
-| [Runtime Layer](runtime-layer.md) | Container runtime interface, git worktree management, harness adapters, agent lifecycle, templates, sidecar services, and the af SDK. |
-| [Services Architecture](services-architecture.md) | Deployable components (hub, CLI, runtime engine, memory service), the spec creation tool, storage layout, communication protocols, security, and deployment modes. |

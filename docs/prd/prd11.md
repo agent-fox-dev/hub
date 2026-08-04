@@ -11,8 +11,7 @@ before any coordination layer can be built on top:
    prevent hangs, security issues, and environment-dependent behavior.
 2. **Serialized branch merging.** When multiple agents complete work on
    separate branches, their results must be merged into the integration branch
-   without races, lost work, or dirty repository state. A sequential merge
-   queue with rebase-then-fast-forward provides this guarantee.
+   without races, lost work, or dirty repository state.
 3. **Upstream synchronization.** Workspace clones diverge from upstream over
    time. A sync mechanism must fetch upstream changes, advance the integration
    branch, detect force-pushes, and provide recovery operations.
@@ -26,16 +25,18 @@ orchestration model.
 
 - Provide a hardened git subprocess runner that enforces safety defaults on
   every git CLI invocation within the hub.
-- Provide a sequential merge queue that serializes branch merges per target
-  branch using rebase-then-fast-forward, with conflict detection, retry
-  logic, and idempotency guarantees.
+- Provide merge operations that integrate a source branch into a target
+  branch using rebase-then-fast-forward, with conflict detection and
+  structured error reporting.
 - Provide branch rebase operations with conflict detection and structured
   conflict reporting.
+- Serialize merge operations per target branch using the durable job queue
+  (prd11job), ensuring no concurrent merges to the same branch.
 - Provide upstream sync that fetches from the remote origin and fast-forwards
   the integration branch, with force-push detection and recovery.
 - Provide a reclone operation for nuclear recovery from corrupted or severely
   diverged repository state.
-- Expose merge queue and sync operations via REST API and CLI.
+- Expose merge and sync operations via REST API and CLI.
 - Reuse the existing credential infrastructure (secrets store with `GIT_PAT`,
   `GIT_USERNAME`/`GIT_PASSWORD`) for fetch authentication.
 
@@ -43,7 +44,7 @@ orchestration model.
 
 - **Orchestration or scheduling.** This PRD provides git primitives. Higher-level
   concepts (campaigns, DAGs, spec scheduling, agent dispatch) are out of scope.
-- **Parallel merge execution.** Merges are strictly sequential (FIFO) per target
+- **Parallel merge execution.** Merges are strictly sequential per target
   branch. This is a deliberate simplicity choice — sufficient for the throughput
   profile of parallel AI agents (~15–20 merges/hour with a 3–4 minute test
   suite).
@@ -93,150 +94,106 @@ runner — no direct `exec.Command("git", ...)` calls.
 - The runner is built as `internal/gitcmd` and requires git >= 2.38 on the
   host (for `merge-tree --write-tree` support).
 
-### Merge Queue
+### Merge Operations
 
-The merge queue serializes merge operations per target branch using a FIFO
-queue with rebase-then-fast-forward semantics. It is a standalone facility
-that any caller (operator, external controller, future orchestration layer)
-can submit merge jobs to via the REST API.
+Merge operations integrate a source branch into a target branch within a
+workspace using rebase-then-fast-forward semantics.
 
-#### Merge Jobs
+#### Job Integration
 
-A merge job represents a request to integrate a source branch into a target
-branch within a workspace.
+Merge operations are registered as a `"merge"` job type with the durable job
+queue (prd11job). The serialization key is `<workspace_slug>:<target_branch>`,
+ensuring that merges to the same target branch execute sequentially while
+merges to different branches or workspaces run concurrently.
 
-- A merge job has: `id` (UUID), `workspace_slug`, `target_branch`,
-  `source_ref` (source branch name), `status`, `nonce` (cryptographic, for
-  idempotency), `base_sha` (target HEAD when merge started), `merged_sha`
-  (resulting HEAD on success), `conflict_details` (JSON file list on conflict),
-  `check_output` (stderr/stdout on check failure), `submitted_by` (agent or
-  user ID), `retry_count`, `available_at` (backoff timestamp), `created_at`,
-  `updated_at`.
-- A merge job may optionally carry `callback_url` — a URL the merge queue
-  POSTs a status notification to on terminal state transitions (merged,
-  conflict, check_failed, push_failed, dead_letter). This enables
-  higher-level systems to react to merge outcomes without polling.
-- Status values: `prepared`, `queued`, `running`, `merged`, `conflict`,
-  `check_failed`, `cancelled`, `push_failed`, `dead_letter`.
-- A given `source_ref` may have at most one `queued` or `running` merge job
-  at a time per target branch. Submitting a duplicate is rejected with
-  HTTP 409.
-- Only `queued` jobs can be cancelled. `running` jobs complete or fail.
+The merge handler receives a JSON payload containing the merge parameters and
+returns a JSON result with the outcome. The REST API and CLI are thin wrappers
+that enqueue merge jobs and query their status.
+
+#### Merge Payload
+
+The merge job payload contains:
+
+```json
+{
+  "workspace_slug": "string",
+  "target_branch": "string",
+  "source_ref": "string",
+  "submitted_by": "string"
+}
+```
+
+#### Merge Result
+
+On success, the merge job result contains:
+
+```json
+{
+  "base_sha": "string (40-char hex SHA)",
+  "merged_sha": "string (40-char hex SHA)"
+}
+```
+
+On failure, the job's error field contains a structured description. For
+conflicts, the error includes the list of conflicting file paths.
 
 #### Typed Merge Rejection Reasons
 
-Instead of returning errors for expected rejection scenarios, the merge queue
-uses a typed enum (`CantMergeReason`) that separates "expected rejection" from
-"unexpected failure." The `CanMerge` pre-check returns
-`(bool, CantMergeReason, error)` where the reason is programmatically
-matchable without string parsing.
+Before attempting the actual merge, the handler runs a pre-check that returns
+a typed reason if the merge should not proceed. This separates "expected
+rejection" from "unexpected failure" without string parsing.
 
-| Reason | Meaning | Queue action |
-|--------|---------|--------------|
-| `WouldConflict` | Dry-run detected merge conflicts | Set conflict status, notify |
-| `AlreadyMerged` | Source branch already integrated into target | Skip idempotently |
-| `BranchNotReady` | Source branch has no commits ahead of target | Re-enqueue with backoff |
+| Reason | Meaning | Handler action |
+|--------|---------|----------------|
+| `WouldConflict` | Dry-run detected merge conflicts | Return permanent error with conflict file list |
+| `AlreadyMerged` | Source branch already integrated into target | Return success (idempotent) |
+| `BranchNotReady` | Source branch has no commits ahead of target | Return retryable error |
 
-Higher-level systems may extend the `CantMergeReason` enum with additional
-reasons (e.g., dependency ordering) without modifying the core merge queue
-logic.
+Higher-level systems may define additional pre-check logic by wrapping the
+merge handler.
 
 #### Dry-Run Conflict Check
 
-Before performing a real rebase, the merge queue runs a read-only conflict
+Before performing a real rebase, the merge handler runs a read-only conflict
 probe using `git merge-tree --write-tree` (Git 2.38+):
 
 ```
 git merge-tree --write-tree <target-head> <source-branch-head>
 ```
 
-If the exit code indicates conflicts, the merge is rejected early with a
-structured conflict report (file paths). The target branch is never left in a
-dirty state by a failed merge attempt.
+If the exit code indicates conflicts, the merge is rejected with a structured
+conflict report (file paths). The target branch is never left in a dirty state
+by a failed merge attempt.
 
 #### Merge Algorithm
 
-For each job, in order:
+The merge handler executes these steps:
 
-1. **Pre-check** (`CanMerge`): validate prerequisites and return a typed
-   `CantMergeReason` if the job should not proceed.
-   - `WouldConflict` → set status to `conflict`, record file list, skip.
-   - `AlreadyMerged` → skip idempotently.
-   - `BranchNotReady` → re-enqueue with backoff.
-2. Acquire per-target-branch mutex.
-3. Validate nonce (idempotency check).
-4. Set status to `running`, record `base_sha` from current target HEAD.
-5. Fetch latest target branch state.
-6. Rebase source onto target.
-   - On conflict: `git rebase --abort`, set status to `conflict`, record
-     conflicting file paths in `conflict_details`, release mutex.
-7. Run configured check command (if any). The check command is stored as
+1. **Pre-check:** validate prerequisites and return a typed rejection reason
+   if the merge should not proceed.
+   - `WouldConflict` → return permanent error with file list.
+   - `AlreadyMerged` → return success (idempotent skip).
+   - `BranchNotReady` → return retryable error.
+2. Fetch latest target branch state.
+3. Rebase source onto target.
+   - On conflict: `git rebase --abort`, return permanent error with
+     conflicting file paths.
+4. Run configured check command (if any). The check command is stored as
    the `CHECK_COMMAND` workspace variable (using the existing
    secrets/variables system from spec 07). If not set, the check step is
    skipped.
-   - On failure: set status to `check_failed`, record output, release mutex.
-8. Fast-forward push target branch to rebased HEAD.
-   - On failure: set status to `push_failed`, release mutex.
-9. Set status to `merged`, record `merged_sha`, release mutex.
-10. If `callback_url` is set, POST a status notification to it.
+   - On failure: return permanent error with check output.
+5. Fast-forward push target branch to rebased HEAD.
+   - On failure: return retryable error.
+6. Return success with `base_sha` and `merged_sha`.
 
-#### Prepare-Then-Enqueue with Nonce Idempotency
-
-Merge job dispatch uses a two-phase pattern to prevent double-merges:
-
-1. **Prepare:** INSERT a merge job record with a cryptographic nonce and
-   `status=prepared` inside the caller's database transaction.
-2. **Enqueue:** Send a message to the merge queue referencing the job ID.
-3. **Execute:** The queue handler validates the nonce and checks the status.
-   If `prepared`, execute and transition to `running`. If `running` or
-   `merged`, skip (idempotent). If no record exists (caller's transaction
-   rolled back), discard the message.
-
-This guarantees exactly-once execution even after crashes, network retries,
-or transaction rollbacks.
-
-#### Wakeup-on-Enqueue
-
-The merge queue uses a `buffered(1)` wakeup channel for low-latency dispatch
-without busy-waiting:
-
-- When a job is enqueued, a non-blocking send on the wakeup channel
-  interrupts the queue's poll sleep.
-- Multiple rapid enqueues coalesce into a single wakeup.
-- The queue's main loop uses a three-way select: shutdown signal, normal
-  timer expiry, or wakeup.
-
-#### Exponential Backoff with Dead-Letter Queue
-
-Failed merge jobs that are retryable (e.g., `BranchNotReady`) are retried
-with exponentially increasing delays:
-
-- Base delay: 2 seconds. Multiplier: 2x per retry. Cap: 2 hours.
-  Max retries: 20.
-- Retry is implemented via an `available_at` timestamp on the merge job — the
-  queue's polling query filters `WHERE available_at <= now()`, making retried
-  jobs invisible until their backoff window expires.
-- Jobs exceeding max retries transition to `dead_letter` with the failure
-  reason preserved. Dead-lettered jobs can be inspected via the API and
-  manually requeued.
-
-#### Graceful Shutdown
-
-The merge queue uses `WaitGroup` + closed-channel broadcast for shutdown:
-
-- `Stop()` closes a `stopCh` (broadcast signal to all workers).
-- Workers check `stopCh` in their semaphore-acquisition select, preventing
-  new dispatches after stop is requested.
-- `stopWaitGroup.Wait()` blocks until all in-flight merge operations
-  complete.
-
-An interrupted rebase or merge never leaves the repository in a broken state.
-In-flight operations finish cleanly before the process exits.
+The per-key serialization from the job queue guarantees that only one merge
+runs per target branch at a time — no additional mutex is needed.
 
 ### Branch Rebase
 
 The hub provides a rebase operation that rebases a source branch onto a target
-ref. This is a building block used by the merge queue and available to
+ref. This is a building block used by the merge handler and available to
 higher-level systems.
 
 - **Rebase operation:** `git rebase <target-ref>` on the source branch.
@@ -368,15 +325,14 @@ API: `POST /api/v1/workspaces/:slug/reclone`
 ```json
 {
   "target_branch": "main",
-  "source_ref": "feature/my-branch",
-  "callback_url": "https://example.com/hooks/merge-status"
+  "source_ref": "feature/my-branch"
 }
 ```
 
-`callback_url` is optional. When provided, the merge queue POSTs a JSON
-notification to this URL when the merge job reaches a terminal state.
-
 **GET merge job response:**
+
+The response is a projection of the underlying job queue record with
+merge-specific fields extracted from the payload and result:
 
 ```json
 {
@@ -384,18 +340,23 @@ notification to this URL when the merge job reaches a terminal state.
   "workspace_slug": "string",
   "target_branch": "string",
   "source_ref": "string",
-  "status": "prepared | queued | running | merged | conflict | check_failed | cancelled | push_failed | dead_letter",
-  "rejection_reason": "string (CantMergeReason) | null",
+  "status": "queued | running | completed | failed | dead_letter | cancelled",
   "base_sha": "string (40-char hex SHA) | null",
   "merged_sha": "string (40-char hex SHA) | null",
-  "conflict_details": ["path/to/file1", "path/to/file2"],
+  "conflict_files": ["path/to/file1", "path/to/file2"],
   "check_output": "string | null",
+  "error": "string | null",
   "retry_count": 0,
   "submitted_by": "string",
   "created_at": "string (RFC 3339)",
   "updated_at": "string (RFC 3339)"
 }
 ```
+
+The merge endpoint handlers translate between the domain-specific merge
+vocabulary and the generic job queue. `POST /merges` enqueues a job with
+`type = "merge"`. `GET /merges` queries jobs of type `"merge"` scoped to
+the workspace. `DELETE /merges/:id` cancels a queued job.
 
 #### Sync Endpoints
 
@@ -427,7 +388,7 @@ Request body: none.
 | Upstream fetch failed (network, auth) | 502 |
 | Upstream history diverged (force-push detected) | 409 |
 | Reclone without `--confirm` flag (CLI only) | 400 |
-| Duplicate merge job for same source_ref | 409 |
+| Duplicate merge job for same source_ref and target_branch | 409 |
 
 ### CLI Commands
 
@@ -516,9 +477,10 @@ The workspace response object gains five new fields:
 
 ## Dependencies
 
-| Spec | Relationship |
-|------|--------------|
+| Dependency | Relationship |
+|------------|--------------|
+| prd11job (Durable Job Queue) | Merge operations are registered as a job type. The job queue provides persistence, retry, backoff, per-key serialization, and crash recovery. |
 | 05_workspace_checkout | Requires clone infrastructure (JobQueue, clone lifecycle, workspace directory structure) |
-| 06_git_server | Merge queue integrates with git server for local push operations |
+| 06_git_server | Merge operations integrate with git server for local push operations |
 | 07_secrets_variables | CHECK_COMMAND workspace variable uses the existing secrets/variables system |
 | 09_git_credentials | Requires credential storage and `resolveCloneAuth` for fetch authentication |

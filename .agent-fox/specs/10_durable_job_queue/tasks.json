@@ -1,0 +1,1392 @@
+{
+  "$schema": null,
+  "spec_id": "10",
+  "spec_name": "durable_job_queue",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/jobqueue/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Schema, Registration, and Enqueueing",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write schema initialisation tests (TS-10-1 through TS-10-3)",
+          "details": [
+            "Create internal/jobqueue/schema_test.go using stdlib testing package and modernc.org/sqlite with ':memory:' DSN",
+            "TS-10-1: Verify InitSchema creates the jobs table with all required columns (id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at)",
+            "TS-10-2: Verify InitSchema creates all four required indexes (idx_jobs_nonce UNIQUE, idx_jobs_type_key_status, idx_jobs_status_available_at, idx_jobs_type_created_at)",
+            "TS-10-3: Verify InitSchema is idempotent \u2014 calling it twice on the same DB does not return an error"
+          ],
+          "test_spec_refs": [
+            "TS-10-1",
+            "TS-10-2",
+            "TS-10-3"
+          ],
+          "requirement_refs": [
+            "10-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write job type registration tests (TS-10-4 through TS-10-6)",
+          "details": [
+            "Create internal/jobqueue/registration_test.go",
+            "TS-10-4: Verify that registering a new type name with a valid handler succeeds without error",
+            "TS-10-5: Verify that registering the same type name twice returns a startup error (fail fast)",
+            "TS-10-6: Verify that a registered handler with the correct signature func(ctx context.Context, payload json.RawMessage) (any, bool, error) is stored and callable"
+          ],
+          "test_spec_refs": [
+            "TS-10-4",
+            "TS-10-5",
+            "TS-10-6"
+          ],
+          "requirement_refs": [
+            "10-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write job enqueueing tests (TS-10-7 through TS-10-10)",
+          "details": [
+            "Create internal/jobqueue/enqueue_test.go",
+            "TS-10-7: Verify that enqueueing a valid job (registered type, unique nonce, unique type+key) inserts a record with status='queued' and available_at=now() and returns a non-empty UUID",
+            "TS-10-8: Verify that enqueueing with an unregistered type returns an error",
+            "TS-10-9: Verify nonce idempotency \u2014 enqueueing with a duplicate nonce returns the existing job ID without inserting a new record",
+            "TS-10-10: Verify duplicate (type, key) prevention \u2014 enqueueing when a queued or running job with the same (type, key) exists returns the existing job ID and duplicate=true flag without inserting a new record"
+          ],
+          "test_spec_refs": [
+            "TS-10-7",
+            "TS-10-8",
+            "TS-10-9",
+            "TS-10-10"
+          ],
+          "requirement_refs": [
+            "10-REQ-3",
+            "10-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write nonce idempotency and duplicate prevention edge case tests (TS-10-40, TS-10-41)",
+          "details": [
+            "TS-10-40: Verify that a nonce collision (same nonce, different type or key) still returns the existing job without error",
+            "TS-10-41: Verify that after a job completes or is dead-lettered, a new job with the same (type, key) but a fresh nonce can be enqueued successfully"
+          ],
+          "test_spec_refs": [
+            "TS-10-40",
+            "TS-10-41"
+          ],
+          "requirement_refs": [
+            "10-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Verify schema, registration, and enqueueing test group",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files in internal/jobqueue/ compile without errors: go build ./internal/jobqueue/...",
+          "Tests TS-10-1 through TS-10-10, TS-10-40, TS-10-41 are present and fail (red) before implementation: go test ./internal/jobqueue/... -count=1 -v -run 'TestSchema|TestRegistration|TestEnqueue|TestNonce'",
+          "go vet ./internal/jobqueue/... reports no issues on test files",
+          "Requirements 10-REQ-1, 10-REQ-2, 10-REQ-3, 10-REQ-13 acceptance criteria are covered by test stubs"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Worker Polling, Dispatch, and Handler Execution",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write worker polling and dispatch tests (TS-10-11 through TS-10-14)",
+          "details": [
+            "Create internal/jobqueue/worker_test.go",
+            "TS-10-11: Verify the promote step transitions failed jobs with available_at <= now() back to queued status",
+            "TS-10-12: Verify the poll step selects the oldest queued job where available_at <= now() and no running job with the same (type, key) exists",
+            "TS-10-13: Verify the claim step atomically sets status='running' using a WHERE status='queued' guard to prevent double-claim",
+            "TS-10-14: Verify that a queued job with the same (type, key) as a running job is not claimed until the running job completes"
+          ],
+          "test_spec_refs": [
+            "TS-10-11",
+            "TS-10-12",
+            "TS-10-13",
+            "TS-10-14"
+          ],
+          "requirement_refs": [
+            "10-REQ-4",
+            "10-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write handler execution and finalization tests (TS-10-15 through TS-10-18)",
+          "details": [
+            "TS-10-15: Verify that when a handler returns (result, false, nil), the job transitions to completed and result JSON is stored",
+            "TS-10-16: Verify that when a handler returns (nil, true, err), the job transitions to failed with the error message stored and available_at set to a future time",
+            "TS-10-17: Verify that when a handler returns (nil, false, err), the job transitions to dead_letter immediately without incrementing retry_count beyond max",
+            "TS-10-18: Verify that the handler receives the correct payload bytes and a non-nil context"
+          ],
+          "test_spec_refs": [
+            "TS-10-15",
+            "TS-10-16",
+            "TS-10-17",
+            "TS-10-18"
+          ],
+          "requirement_refs": [
+            "10-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write per-key serialization tests (TS-10-37 through TS-10-39)",
+          "details": [
+            "TS-10-37: Verify that two jobs with the same (type, key) execute sequentially \u2014 the second is not claimed until the first completes",
+            "TS-10-38: Verify that two jobs with the same type but different keys execute concurrently (both reach running status simultaneously with 2+ workers)",
+            "TS-10-39: Verify that after a running job completes, the next queued job with the same (type, key) is claimed by a worker"
+          ],
+          "test_spec_refs": [
+            "TS-10-37",
+            "TS-10-38",
+            "TS-10-39"
+          ],
+          "requirement_refs": [
+            "10-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Verify worker polling, dispatch, and handler execution test group",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "Tests TS-10-11 through TS-10-18, TS-10-37 through TS-10-39 are present and fail (red) before implementation: go test ./internal/jobqueue/... -count=1 -v -run 'TestWorker|TestHandler|TestSerialization'",
+          "go vet ./internal/jobqueue/... reports no issues on new test files",
+          "Requirements 10-REQ-4, 10-REQ-5, 10-REQ-12 acceptance criteria are covered by test stubs"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Exponential Backoff, Dead-Letter, and Crash Recovery",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write exponential backoff tests (TS-10-19 through TS-10-21)",
+          "details": [
+            "Create internal/jobqueue/backoff_test.go",
+            "TS-10-19: Verify that retry_count is incremented before computing the backoff delay, so the first failure sets retry_count=1 and delay=min(base*multiplier^1, cap)",
+            "TS-10-20: Verify the full backoff schedule: base=2s, multiplier=2, cap=7200s produces delays 4s, 8s, 16s, ..., 2048s, 7200s (capped) at retry counts 1-11+",
+            "TS-10-21: Verify that when retry_count exceeds max_retries after increment, the job transitions to dead_letter instead of failed"
+          ],
+          "test_spec_refs": [
+            "TS-10-19",
+            "TS-10-20",
+            "TS-10-21"
+          ],
+          "requirement_refs": [
+            "10-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write dead-letter inspection and manual requeue tests (TS-10-22 through TS-10-24)",
+          "details": [
+            "Create internal/jobqueue/deadletter_test.go",
+            "TS-10-22: Verify that a dead-lettered job can be queried by type and its status is dead_letter",
+            "TS-10-23: Verify that manually requeueing a dead-lettered job resets retry_count=0, sets status='queued', sets available_at=now()",
+            "TS-10-24: Verify that manually requeueing a dead-lettered job when an active (queued or running) job with the same (type, key) exists is rejected and returns the existing active job's ID"
+          ],
+          "test_spec_refs": [
+            "TS-10-22",
+            "TS-10-23",
+            "TS-10-24"
+          ],
+          "requirement_refs": [
+            "10-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write crash recovery tests (TS-10-25, TS-10-26)",
+          "details": [
+            "Create internal/jobqueue/recovery_test.go",
+            "TS-10-25: Verify that on queue startup, any jobs in running status are reset to queued with available_at=now()",
+            "TS-10-26: Verify that crash recovery logs a WARN-level slog message for each job reset, including job_id, type, key, and status fields"
+          ],
+          "test_spec_refs": [
+            "TS-10-25",
+            "TS-10-26"
+          ],
+          "requirement_refs": [
+            "10-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Verify backoff, dead-letter, and crash recovery test group",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "Tests TS-10-19 through TS-10-26 are present and fail (red) before implementation: go test ./internal/jobqueue/... -count=1 -v -run 'TestBackoff|TestDeadLetter|TestRecovery'",
+          "go vet ./internal/jobqueue/... reports no issues",
+          "Requirements 10-REQ-6, 10-REQ-7, 10-REQ-8 acceptance criteria are covered by test stubs"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write Tests: Graceful Shutdown, Cancellation, Query API, Logging, and Configuration",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write graceful shutdown tests (TS-10-27 through TS-10-29)",
+          "details": [
+            "Create internal/jobqueue/shutdown_test.go",
+            "TS-10-27: Verify that calling Stop() causes workers to stop claiming new jobs after current in-flight handlers complete",
+            "TS-10-28: Verify that Wait() blocks until all workers have exited and returns within the configured grace period",
+            "TS-10-29: Verify that if the grace period expires before all workers finish, in-flight handler contexts are cancelled and a WARN log is emitted per interrupted job including job_id"
+          ],
+          "test_spec_refs": [
+            "TS-10-27",
+            "TS-10-28",
+            "TS-10-29"
+          ],
+          "requirement_refs": [
+            "10-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write job cancellation tests (TS-10-30 through TS-10-32)",
+          "details": [
+            "Create internal/jobqueue/cancel_test.go",
+            "TS-10-30: Verify that CancelJob on a queued job transitions it to cancelled status and returns nil",
+            "TS-10-31: Verify that CancelJob on an already-cancelled job returns nil (idempotent)",
+            "TS-10-32: Verify that CancelJob on a running, completed, or dead_letter job returns ErrNotCancellable"
+          ],
+          "test_spec_refs": [
+            "TS-10-30",
+            "TS-10-31",
+            "TS-10-32"
+          ],
+          "requirement_refs": [
+            "10-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write query and management API tests (TS-10-33 through TS-10-36)",
+          "details": [
+            "Create internal/jobqueue/query_test.go",
+            "TS-10-33: Verify GetByID returns the full job record including payload and result for a known job ID, and returns an error for an unknown ID",
+            "TS-10-34: Verify ListByType returns jobs filtered by type, optionally by status and key, paginated via offset/limit, ordered by created_at descending",
+            "TS-10-35: Verify ListByKey returns all jobs for a specific (type, key) combination ordered by created_at descending",
+            "TS-10-36: Verify CountByStatus returns a map of status->count for all jobs of a given type"
+          ],
+          "test_spec_refs": [
+            "TS-10-33",
+            "TS-10-34",
+            "TS-10-35",
+            "TS-10-36"
+          ],
+          "requirement_refs": [
+            "10-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write structured logging and configuration tests (TS-10-42 through TS-10-47)",
+          "details": [
+            "Create internal/jobqueue/logging_test.go and internal/jobqueue/config_test.go",
+            "TS-10-42: Verify that job claimed (running), completed, failed, promoted, dead-lettered, and cancelled events each emit a slog log line at the correct level (DEBUG or WARN) with job_id, type, key, status, retry_count fields",
+            "TS-10-43: Verify that queue started and stopped events emit INFO-level slog lines",
+            "TS-10-44: Verify that no ERROR-level log lines are emitted by the queue itself under any normal or retryable-error condition",
+            "TS-10-45: Verify that the queue constructor with no options uses 4 workers and a 5s poll interval",
+            "TS-10-46: Verify that WithWorkers(n) sets the worker goroutine count to n",
+            "TS-10-47: Verify that the grace period defaults to 30 seconds and is configurable"
+          ],
+          "test_spec_refs": [
+            "TS-10-42",
+            "TS-10-43",
+            "TS-10-44",
+            "TS-10-45",
+            "TS-10-47"
+          ],
+          "requirement_refs": [
+            "10-REQ-14",
+            "10-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.5",
+          "title": "Verify shutdown, cancellation, query API, logging, and configuration test group",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Tests TS-10-27 through TS-10-36, TS-10-42 through TS-10-47 are present and fail (red) before implementation: go test ./internal/jobqueue/... -count=1 -v -run 'TestShutdown|TestCancel|TestQuery|TestLogging|TestConfig'",
+          "go vet ./internal/jobqueue/... reports no issues on all test files",
+          "Requirements 10-REQ-9, 10-REQ-10, 10-REQ-11, 10-REQ-14, 10-REQ-15 acceptance criteria are covered by test stubs"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement Package Skeleton, Job Model, and Schema Initialisation",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Create package skeleton and Job model struct",
+          "details": [
+            "Create internal/jobqueue/ directory and package jobqueue",
+            "Define the Job struct with all fields: ID, Type, Key, Nonce, Status, Payload (json.RawMessage), Result (json.RawMessage), Error (sql.NullString), RetryCount, AvailableAt, SubmittedBy, CreatedAt, UpdatedAt",
+            "Define status constants: StatusQueued, StatusRunning, StatusCompleted, StatusFailed, StatusDeadLetter, StatusCancelled",
+            "Define ErrNotCancellable sentinel error",
+            "Define ListOpts struct with Status (optional), Key (optional), Offset int, Limit int fields"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement InitSchema function",
+          "details": [
+            "Create internal/jobqueue/schema.go",
+            "Implement InitSchema(db *sql.DB) error that executes CREATE TABLE IF NOT EXISTS jobs with all required columns and correct SQLite types",
+            "Create idx_jobs_nonce as UNIQUE index on nonce column",
+            "Create idx_jobs_type_key_status as composite index on (type, key, status)",
+            "Create idx_jobs_status_available_at as composite index on (status, available_at)",
+            "Create idx_jobs_type_created_at as composite index on (type, created_at)",
+            "Document in a comment that the caller's *sql.DB must have WAL mode and busy_timeout configured"
+          ],
+          "test_spec_refs": [
+            "TS-10-1",
+            "TS-10-2",
+            "TS-10-3"
+          ],
+          "requirement_refs": [
+            "10-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement Queue struct and constructor with functional options",
+          "details": [
+            "Create internal/jobqueue/queue.go",
+            "Define Queue struct holding *sql.DB, handler registry map, worker count, poll interval, grace period, wakeup channel (buffered 1), stopCh channel, and sync.WaitGroup",
+            "Implement New(db *sql.DB, opts ...Option) (*Queue, error) constructor that calls InitSchema and initialises defaults (4 workers, 5s poll interval, 30s grace period)",
+            "Implement WithWorkers(n int) Option functional option",
+            "Implement WithPollInterval(d time.Duration) Option and WithGracePeriod(d time.Duration) Option for configurability",
+            "Return error from New if InitSchema fails"
+          ],
+          "test_spec_refs": [
+            "TS-10-45",
+            "TS-10-46",
+            "TS-10-47"
+          ],
+          "requirement_refs": [
+            "10-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement job type registration",
+          "details": [
+            "Create internal/jobqueue/register.go",
+            "Define HandlerFunc type: func(ctx context.Context, payload json.RawMessage) (result any, retryable bool, err error)",
+            "Define RetryPolicy struct with BaseDelay, Multiplier, Cap, MaxRetries fields and a DefaultRetryPolicy() constructor (base=2s, multiplier=2.0, cap=2h, maxRetries=20)",
+            "Implement Register(typeName string, handler HandlerFunc, policy ...RetryPolicy) error on Queue \u2014 returns error if typeName already registered",
+            "Store handler and effective retry policy in the registry map"
+          ],
+          "test_spec_refs": [
+            "TS-10-4",
+            "TS-10-5",
+            "TS-10-6"
+          ],
+          "requirement_refs": [
+            "10-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.5",
+          "title": "Verify package skeleton, model, schema, and registration implementation",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "go build ./internal/jobqueue/... succeeds with no errors",
+          "go vet ./internal/jobqueue/... reports no issues",
+          "Tests TS-10-1, TS-10-2, TS-10-3, TS-10-4, TS-10-5, TS-10-6, TS-10-45, TS-10-46, TS-10-47 pass: go test ./internal/jobqueue/... -count=1 -v -run 'TestSchema|TestRegistration|TestConfig'",
+          "Requirements 10-REQ-1, 10-REQ-2, 10-REQ-15 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement Enqueueing and Nonce/Duplicate Prevention",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement Enqueue method with nonce idempotency check",
+          "details": [
+            "Create internal/jobqueue/enqueue.go",
+            "Implement Enqueue(ctx context.Context, req EnqueueRequest) (EnqueueResult, error) where EnqueueRequest carries Type, Key, Nonce, Payload json.RawMessage, SubmittedBy string",
+            "Step 1: validate that req.Type is registered; return error if not",
+            "Step 2: query jobs table for existing row with nonce=req.Nonce; if found, return existing job ID with Duplicate=false (idempotent retransmission)",
+            "Step 3: query for active job (status IN ('queued','running')) with type=req.Type AND key=req.Key; if found, return existing job ID with Duplicate=true",
+            "Step 4: INSERT new job row with status='queued', available_at=now(), generated UUID id, created_at=now(), updated_at=now()"
+          ],
+          "test_spec_refs": [
+            "TS-10-7",
+            "TS-10-8",
+            "TS-10-9",
+            "TS-10-10"
+          ],
+          "requirement_refs": [
+            "10-REQ-3",
+            "10-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement wakeup channel signal on enqueue",
+          "details": [
+            "After successful INSERT in Enqueue, perform a non-blocking send on the wakeup channel: select { case q.wakeupCh <- struct{}{}: default: }",
+            "Ensure the wakeup channel is buffered(1) so the send never blocks",
+            "Add a test helper that verifies the wakeup channel receives a signal after a successful enqueue"
+          ],
+          "test_spec_refs": [
+            "TS-10-7"
+          ],
+          "requirement_refs": [
+            "10-REQ-3",
+            "10-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement EnqueueResult and EnqueueRequest types",
+          "details": [
+            "Define EnqueueRequest struct: Type string, Key string, Nonce string, Payload json.RawMessage, SubmittedBy string",
+            "Define EnqueueResult struct: JobID string, Duplicate bool (true when an active job with same type+key already exists)",
+            "Ensure all Enqueue code paths return a valid EnqueueResult or a non-nil error, never both"
+          ],
+          "test_spec_refs": [
+            "TS-10-9",
+            "TS-10-10",
+            "TS-10-40",
+            "TS-10-41"
+          ],
+          "requirement_refs": [
+            "10-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Verify enqueueing and duplicate prevention implementation",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Tests TS-10-7 through TS-10-10, TS-10-40, TS-10-41 pass: go test ./internal/jobqueue/... -count=1 -v -run 'TestEnqueue|TestNonce'",
+          "go vet ./internal/jobqueue/... reports no issues",
+          "Requirements 10-REQ-3, 10-REQ-13 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Worker Loop: Promote, Poll, Claim, Execute, Finalize",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement promote step and poll query",
+          "details": [
+            "Create internal/jobqueue/worker.go",
+            "Implement promoteFailedJobs(ctx context.Context) error: UPDATE jobs SET status='queued', updated_at=now() WHERE status='failed' AND available_at <= now()",
+            "Log each promoted job at DEBUG level with slog fields: job_id, type, key, status='queued', retry_count",
+            "Implement pollNextJob(ctx context.Context) (*Job, error): SELECT oldest queued job WHERE status='queued' AND available_at <= now() AND NOT EXISTS (SELECT 1 FROM jobs j2 WHERE j2.type=jobs.type AND j2.key=jobs.key AND j2.status='running') ORDER BY created_at ASC LIMIT 1"
+          ],
+          "test_spec_refs": [
+            "TS-10-11",
+            "TS-10-12",
+            "TS-10-14"
+          ],
+          "requirement_refs": [
+            "10-REQ-4",
+            "10-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement claim step with atomic WHERE guard",
+          "details": [
+            "Implement claimJob(ctx context.Context, jobID string) (bool, error): UPDATE jobs SET status='running', updated_at=now() WHERE id=jobID AND status='queued'",
+            "Return claimed=true only if RowsAffected==1; return claimed=false if another worker claimed it first (RowsAffected==0)",
+            "Log claimed job at DEBUG level with slog fields: job_id, type, key, status='running', retry_count"
+          ],
+          "test_spec_refs": [
+            "TS-10-13"
+          ],
+          "requirement_refs": [
+            "10-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement handler execution and finalization",
+          "details": [
+            "Implement executeAndFinalize(ctx context.Context, job *Job): call registered handler with job's context and payload",
+            "On success (err==nil): UPDATE jobs SET status='completed', result=marshaledResult, updated_at=now(); log DEBUG with job_id, type, key, status='completed', retry_count",
+            "On retryable error: increment retry_count; if retry_count > maxRetries, transition to dead_letter (log WARN); else compute backoff delay, set status='failed', available_at=now()+delay, error=err.Error(), updated_at=now(); log DEBUG with retry details",
+            "On permanent error (retryable=false): UPDATE jobs SET status='dead_letter', error=err.Error(), updated_at=now(); log WARN with job_id, type, key, status='dead_letter', retry_count"
+          ],
+          "test_spec_refs": [
+            "TS-10-15",
+            "TS-10-16",
+            "TS-10-17",
+            "TS-10-18",
+            "TS-10-19",
+            "TS-10-21"
+          ],
+          "requirement_refs": [
+            "10-REQ-5",
+            "10-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.4",
+          "title": "Implement worker goroutine loop and Start/Stop/Wait methods",
+          "details": [
+            "Implement runWorker(ctx context.Context): loop calling promoteFailedJobs, pollNextJob, claimJob, executeAndFinalize; after each job or when no job found, select on stopCh, poll timer, or wakeupCh",
+            "Implement Start() that launches n worker goroutines (from WithWorkers), logs INFO 'queue started', and initialises stopCh",
+            "Implement Stop() that closes stopCh to broadcast shutdown to all workers",
+            "Implement Wait() that waits for all workers to exit via sync.WaitGroup with the configured grace period; if grace period expires, cancel in-flight contexts and log WARN per interrupted job including job_id; log INFO 'queue stopped'"
+          ],
+          "test_spec_refs": [
+            "TS-10-27",
+            "TS-10-28",
+            "TS-10-29",
+            "TS-10-42",
+            "TS-10-43"
+          ],
+          "requirement_refs": [
+            "10-REQ-4",
+            "10-REQ-9",
+            "10-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.5",
+          "title": "Verify worker loop, execution, and finalization implementation",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Tests TS-10-11 through TS-10-21, TS-10-27 through TS-10-29, TS-10-37 through TS-10-39, TS-10-42, TS-10-43 pass: go test ./internal/jobqueue/... -count=1 -v -run 'TestWorker|TestHandler|TestBackoff|TestShutdown|TestSerialization|TestLogging'",
+          "go vet ./internal/jobqueue/... reports no issues",
+          "Requirements 10-REQ-4, 10-REQ-5, 10-REQ-6, 10-REQ-9, 10-REQ-12, 10-REQ-14 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Crash Recovery, Dead-Letter Management, and Job Cancellation",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement crash recovery on startup",
+          "details": [
+            "Create internal/jobqueue/recovery.go",
+            "Implement recoverRunningJobs(ctx context.Context) error: SELECT all jobs WHERE status='running'; for each, UPDATE SET status='queued', available_at=now(), updated_at=now()",
+            "Log each recovered job at WARN level with slog fields: job_id, type, key, status='queued', retry_count",
+            "Call recoverRunningJobs from Start() before launching worker goroutines"
+          ],
+          "test_spec_refs": [
+            "TS-10-25",
+            "TS-10-26"
+          ],
+          "requirement_refs": [
+            "10-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement dead-letter query and manual requeue",
+          "details": [
+            "Create internal/jobqueue/deadletter.go",
+            "Implement ListDeadLettered(ctx context.Context, jobType string) ([]Job, error): SELECT jobs WHERE type=jobType AND status='dead_letter' ORDER BY created_at DESC",
+            "Implement RequeueDeadLettered(ctx context.Context, jobID string) (RequeueResult, error): fetch job by ID, verify status='dead_letter'; apply same active-job duplicate check as Enqueue (type+key); if active job exists, return its ID and rejected=true; else UPDATE SET status='queued', retry_count=0, available_at=now(), updated_at=now()"
+          ],
+          "test_spec_refs": [
+            "TS-10-22",
+            "TS-10-23",
+            "TS-10-24"
+          ],
+          "requirement_refs": [
+            "10-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement CancelJob method",
+          "details": [
+            "Create internal/jobqueue/cancel.go",
+            "Implement CancelJob(ctx context.Context, id string) error: fetch job by ID; if status='cancelled', return nil (idempotent); if status not in ('queued','cancelled'), return ErrNotCancellable; UPDATE SET status='cancelled', updated_at=now() WHERE id=id AND status='queued'",
+            "Log cancelled job at DEBUG level with slog fields: job_id, type, key, status='cancelled', retry_count"
+          ],
+          "test_spec_refs": [
+            "TS-10-30",
+            "TS-10-31",
+            "TS-10-32",
+            "TS-10-44"
+          ],
+          "requirement_refs": [
+            "10-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.4",
+          "title": "Verify crash recovery, dead-letter management, and cancellation implementation",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Tests TS-10-22 through TS-10-26, TS-10-30 through TS-10-32, TS-10-44 pass: go test ./internal/jobqueue/... -count=1 -v -run 'TestRecovery|TestDeadLetter|TestCancel|TestLogging'",
+          "go vet ./internal/jobqueue/... reports no issues",
+          "Requirements 10-REQ-7, 10-REQ-8, 10-REQ-10 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement Query and Management API",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement GetByID method",
+          "details": [
+            "Create internal/jobqueue/query.go",
+            "Implement GetByID(ctx context.Context, id string) (*Job, error): SELECT * FROM jobs WHERE id=id; return sql.ErrNoRows-wrapped error if not found",
+            "Scan all Job fields including nullable Result and Error columns using sql.NullString"
+          ],
+          "test_spec_refs": [
+            "TS-10-33"
+          ],
+          "requirement_refs": [
+            "10-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement ListByType and ListByKey methods",
+          "details": [
+            "Implement ListByType(ctx context.Context, jobType string, opts ListOpts) ([]Job, error): build SELECT query with WHERE type=jobType, optionally AND status=opts.Status, optionally AND key=opts.Key, ORDER BY created_at DESC, LIMIT opts.Limit OFFSET opts.Offset",
+            "Implement ListByKey(ctx context.Context, jobType string, key string) ([]Job, error): SELECT * FROM jobs WHERE type=jobType AND key=key ORDER BY created_at DESC",
+            "Return empty slice (not nil) when no rows match"
+          ],
+          "test_spec_refs": [
+            "TS-10-34",
+            "TS-10-35"
+          ],
+          "requirement_refs": [
+            "10-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Implement CountByStatus method",
+          "details": [
+            "Implement CountByStatus(ctx context.Context, jobType string) (map[string]int, error): SELECT status, COUNT(*) FROM jobs WHERE type=jobType GROUP BY status",
+            "Return a map with an entry for each status that has at least one job; return empty map (not nil) when no jobs exist for the type"
+          ],
+          "test_spec_refs": [
+            "TS-10-36"
+          ],
+          "requirement_refs": [
+            "10-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.4",
+          "title": "Verify query and management API implementation",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Tests TS-10-33 through TS-10-36 pass: go test ./internal/jobqueue/... -count=1 -v -run 'TestQuery'",
+          "go vet ./internal/jobqueue/... reports no issues",
+          "Requirements 10-REQ-11 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "checkpoint",
+      "title": "Full Test Suite Green Checkpoint",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Run full jobqueue test suite and confirm all tests pass",
+          "details": [
+            "Execute go test ./internal/jobqueue/... -count=1 -v and verify all 47 test cases (TS-10-1 through TS-10-47) pass",
+            "Confirm no test is skipped or marked as TODO",
+            "Confirm test coverage includes all status transitions: queued\u2192running\u2192completed, queued\u2192running\u2192failed\u2192queued, queued\u2192running\u2192dead_letter, queued\u2192cancelled"
+          ],
+          "test_spec_refs": [
+            "TS-10-1",
+            "TS-10-4",
+            "TS-10-7",
+            "TS-10-11",
+            "TS-10-15"
+          ],
+          "requirement_refs": [
+            "10-REQ-1",
+            "10-REQ-2",
+            "10-REQ-3",
+            "10-REQ-4",
+            "10-REQ-5",
+            "10-REQ-6",
+            "10-REQ-7",
+            "10-REQ-8",
+            "10-REQ-9",
+            "10-REQ-10",
+            "10-REQ-11",
+            "10-REQ-12",
+            "10-REQ-13",
+            "10-REQ-14",
+            "10-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Run full jobqueue test suite \u2014 remaining tests and linter",
+          "details": [
+            "Confirm TS-10-16 through TS-10-47 all pass: go test ./internal/jobqueue/... -count=1 -v",
+            "Run go vet ./... and confirm no new warnings introduced by the jobqueue package",
+            "Run go build ./... to confirm no compilation errors in dependent packages"
+          ],
+          "test_spec_refs": [
+            "TS-10-16",
+            "TS-10-19",
+            "TS-10-22",
+            "TS-10-25",
+            "TS-10-27"
+          ],
+          "requirement_refs": [
+            "10-REQ-5",
+            "10-REQ-6",
+            "10-REQ-7",
+            "10-REQ-8",
+            "10-REQ-9",
+            "10-REQ-10",
+            "10-REQ-11",
+            "10-REQ-12",
+            "10-REQ-13",
+            "10-REQ-14",
+            "10-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Confirm existing hub tests still pass after jobqueue introduction",
+          "details": [
+            "Run go test ./... -count=1 to verify no regressions in workspace_checkout, secrets_variables, git_server, or other existing packages",
+            "Confirm the jobqueue package has no imports from domain-specific hub packages (workspace, secrets, vars, git)"
+          ],
+          "test_spec_refs": [
+            "TS-10-33",
+            "TS-10-37",
+            "TS-10-40",
+            "TS-10-42",
+            "TS-10-45"
+          ],
+          "requirement_refs": [
+            "10-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Verify full test suite green checkpoint",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "go test ./internal/jobqueue/... -count=1 exits with code 0 and all 47 tests pass",
+          "go test ./... -count=1 exits with code 0 (no regressions in other packages)",
+          "go vet ./... reports zero issues",
+          "Requirements 10-REQ-1 through 10-REQ-15 all have at least one passing test"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration and Dead-Code Audit",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Trace execution paths from Enqueue through worker dispatch to handler completion",
+          "details": [
+            "Verify that Enqueue \u2192 INSERT \u2192 wakeup channel send \u2192 worker promoteFailedJobs \u2192 pollNextJob \u2192 claimJob \u2192 executeAndFinalize is a complete, unbroken call chain with no panic('not implemented') stubs",
+            "Verify that executeAndFinalize calls the registered HandlerFunc and correctly branches on (nil error), (retryable error), and (permanent error) outcomes",
+            "Verify that Start() calls recoverRunningJobs before launching worker goroutines",
+            "Search for stub markers: grep -r 'panic(\"not implemented\")\\|// TODO\\|panic(\"TODO\")' internal/jobqueue/ \u2014 must return no results"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-3",
+            "10-REQ-4",
+            "10-REQ-5",
+            "10-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Verify return value propagation across all Queue methods",
+          "details": [
+            "Confirm Enqueue returns EnqueueResult.JobID and EnqueueResult.Duplicate correctly to callers in all three code paths (new insert, nonce duplicate, type+key duplicate)",
+            "Confirm CancelJob propagates ErrNotCancellable to callers for non-cancellable statuses",
+            "Confirm GetByID propagates a wrapped sql.ErrNoRows error when the job does not exist",
+            "Confirm CountByStatus returns a non-nil map even when no jobs exist for the type"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-3",
+            "10-REQ-10",
+            "10-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Stub and dead-code audit across the jobqueue package",
+          "details": [
+            "Run: grep -rn 'panic(\"not implemented\")\\|panic(\"TODO\")\\|// TODO\\|// FIXME' internal/jobqueue/ \u2014 must return zero matches",
+            "Verify no exported function has a bare 'return nil' in a non-trivial code path (e.g., GetByID must not silently return nil for missing jobs)",
+            "Verify all status constants (StatusQueued, StatusRunning, StatusCompleted, StatusFailed, StatusDeadLetter, StatusCancelled) are used in at least one production code path",
+            "Verify ErrNotCancellable is returned from CancelJob production code, not just defined"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-10",
+            "10-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.4",
+          "title": "Verify InitSchema and Queue.Start are called from production wiring code",
+          "details": [
+            "Confirm that InitSchema is called (directly or via New) from the hub's main startup path or an integration test that exercises the full stack",
+            "Confirm that Queue.Start() is called from production code (not just tests) so workers are actually launched",
+            "Confirm that Queue.Stop() and Queue.Wait() are called from the hub's shutdown handler or graceful-stop path",
+            "If the hub does not yet wire the queue into main, create a minimal integration test in internal/jobqueue/integration_test.go that calls New, Register, Start, Enqueue, and Wait to verify the full lifecycle"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "10-REQ-1",
+            "10-REQ-4",
+            "10-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.5",
+          "title": "Run smoke tests, full test suite, and linter",
+          "details": [
+            "Write and run TS-10-SMOKE-1: create a Queue with an in-memory SQLite DB, register a handler, Start the queue, Enqueue a job, wait for it to reach completed status, verify result is stored, Stop and Wait",
+            "Write and run TS-10-SMOKE-2: enqueue a job whose handler returns a retryable error, verify it transitions to failed, then back to queued after available_at passes (using a very short backoff in test), then to completed on retry",
+            "Write and run TS-10-SMOKE-3: enqueue two jobs with the same (type, key), verify the second is not claimed until the first completes, then verify both eventually reach completed status",
+            "Run go test ./... -count=1 and confirm all tests pass including smoke tests",
+            "Run go vet ./... and confirm zero issues",
+            "Run go build ./... and confirm the entire project compiles cleanly",
+            "Confirm the jobqueue package imports only standard library and modernc.org/sqlite (no domain-specific hub imports)"
+          ],
+          "test_spec_refs": [
+            "TS-10-SMOKE-1",
+            "TS-10-SMOKE-2",
+            "TS-10-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "10-REQ-3",
+            "10-REQ-4",
+            "10-REQ-5",
+            "10-REQ-6",
+            "10-REQ-12",
+            "10-REQ-1",
+            "10-REQ-2",
+            "10-REQ-7",
+            "10-REQ-8",
+            "10-REQ-9",
+            "10-REQ-10",
+            "10-REQ-11",
+            "10-REQ-13",
+            "10-REQ-14",
+            "10-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.6",
+          "title": "Verify wiring verification group completion",
+          "details": [],
+          "test_spec_refs": [],
+          "requirement_refs": [],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "go test ./internal/jobqueue/... -count=1 -v -run 'SMOKE' passes all three smoke tests (TS-10-SMOKE-1, TS-10-SMOKE-2, TS-10-SMOKE-3)",
+          "go test ./... -count=1 exits with code 0 \u2014 no regressions in any package",
+          "go vet ./... reports zero issues",
+          "grep -rn 'panic(\"not implemented\")' internal/jobqueue/ returns zero matches (stub audit clean)",
+          "Queue.Start(), Queue.Stop(), and Queue.Wait() are confirmed called from production or integration wiring code",
+          "All 15 requirements (10-REQ-1 through 10-REQ-15) have at least one passing test and one verified call-site in production or integration code"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "10-REQ-1.1",
+      "test_spec_id": "TS-10-1",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-1.1",
+      "test_spec_id": "TS-10-2",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-1.1",
+      "test_spec_id": "TS-10-3",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.1",
+      "test_spec_id": "TS-10-4",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.1",
+      "test_spec_id": "TS-10-5",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-2.1",
+      "test_spec_id": "TS-10-6",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.1",
+      "test_spec_id": "TS-10-7",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.1",
+      "test_spec_id": "TS-10-8",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.1",
+      "test_spec_id": "TS-10-9",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-3.1",
+      "test_spec_id": "TS-10-10",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.1",
+      "test_spec_id": "TS-10-11",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.1",
+      "test_spec_id": "TS-10-12",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.1",
+      "test_spec_id": "TS-10-13",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-4.1",
+      "test_spec_id": "TS-10-14",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.1",
+      "test_spec_id": "TS-10-15",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.1",
+      "test_spec_id": "TS-10-16",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.1",
+      "test_spec_id": "TS-10-17",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-5.1",
+      "test_spec_id": "TS-10-18",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.1",
+      "test_spec_id": "TS-10-19",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.1",
+      "test_spec_id": "TS-10-20",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-6.1",
+      "test_spec_id": "TS-10-21",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-7.1",
+      "test_spec_id": "TS-10-22",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-7.1",
+      "test_spec_id": "TS-10-23",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-7.1",
+      "test_spec_id": "TS-10-24",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-8.1",
+      "test_spec_id": "TS-10-25",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-8.1",
+      "test_spec_id": "TS-10-26",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-9.1",
+      "test_spec_id": "TS-10-27",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-9.1",
+      "test_spec_id": "TS-10-28",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-9.1",
+      "test_spec_id": "TS-10-29",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-10.1",
+      "test_spec_id": "TS-10-30",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-10.1",
+      "test_spec_id": "TS-10-31",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-10.1",
+      "test_spec_id": "TS-10-32",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-11.1",
+      "test_spec_id": "TS-10-33",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-11.1",
+      "test_spec_id": "TS-10-34",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-11.1",
+      "test_spec_id": "TS-10-35",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-11.1",
+      "test_spec_id": "TS-10-36",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-12.1",
+      "test_spec_id": "TS-10-37",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-12.1",
+      "test_spec_id": "TS-10-38",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-12.1",
+      "test_spec_id": "TS-10-39",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-13.1",
+      "test_spec_id": "TS-10-40",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-13.1",
+      "test_spec_id": "TS-10-41",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-14.1",
+      "test_spec_id": "TS-10-42",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-14.1",
+      "test_spec_id": "TS-10-43",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-14.1",
+      "test_spec_id": "TS-10-44",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-15.1",
+      "test_spec_id": "TS-10-45",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-15.1",
+      "test_spec_id": "TS-10-46",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "10-REQ-15.1",
+      "test_spec_id": "TS-10-47",
+      "task_id": "5.3",
+      "test_path": null
+    }
+  ]
+}
