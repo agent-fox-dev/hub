@@ -102,10 +102,11 @@ func TestSerialization_DifferentKeysRunConcurrently(t *testing.T) {
 		t.Fatalf("Register() failed: %v", err)
 	}
 
-	// j1 is already running (pre-seeded). j2, j3 share j1's key.
+	// j1 has the earliest available_at so it will be claimed first (its
+	// handler blocks, keeping key='main' locked). j2, j3 share j1's key.
 	// j4 has a different key and should run concurrently.
 	now := time.Now()
-	seedJobFull(t, db, "j1", "merge", "main", "n1", "running",
+	seedJobFull(t, db, "j1", "merge", "main", "n1", "queued",
 		0, now.Add(-4*time.Second), now.Add(-4*time.Second))
 	seedJobFull(t, db, "j2", "merge", "main", "n2", "queued",
 		0, now.Add(-3*time.Second), now.Add(-3*time.Second))

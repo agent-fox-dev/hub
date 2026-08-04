@@ -58,9 +58,14 @@ func DefaultRetryPolicy() RetryPolicy {
 }
 
 // withDefaults returns a copy of the policy with zero-value fields replaced
-// by defaults.
+// by defaults. MaxRetries is only defaulted when at least one other field has
+// been explicitly set — a bare RetryPolicy{MaxRetries: 0} is honoured as
+// "no retries" (10-REQ-6.E3), while RetryPolicy{Base: 10s} defaults
+// MaxRetries to 20. When the caller passes nil to Register, DefaultRetryPolicy
+// supplies all defaults including MaxRetries=20.
 func (p RetryPolicy) withDefaults() RetryPolicy {
 	d := DefaultRetryPolicy()
+	hasOtherFields := p.Base != 0 || p.Multiplier != 0 || p.Cap != 0
 	if p.Base == 0 {
 		p.Base = d.Base
 	}
@@ -70,7 +75,7 @@ func (p RetryPolicy) withDefaults() RetryPolicy {
 	if p.Cap == 0 {
 		p.Cap = d.Cap
 	}
-	if p.MaxRetries == 0 {
+	if p.MaxRetries == 0 && hasOtherFields {
 		p.MaxRetries = d.MaxRetries
 	}
 	return p
@@ -485,38 +490,59 @@ func (q *Queue) workerLoop(workerID int) {
 }
 
 // promoteFailedJobs transitions failed jobs whose available_at has passed
-// back to queued status so they can be re-polled.
+// back to queued status so they can be re-polled (10-REQ-4.1, 10-REQ-6.3).
+// If the query or update fails, the error is logged and the worker continues
+// to the poll step (10-REQ-4.E3).
 func (q *Queue) promoteFailedJobs() {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Collect IDs first, then close rows before running updates.
+	// Collect job metadata first, then close rows before running updates.
 	// This avoids holding the connection open during Exec calls,
 	// which would deadlock with MaxOpenConns(1).
+	type promotable struct {
+		id         string
+		typ        string
+		key        string
+		retryCount int
+	}
+
 	rows, err := q.db.Query(
-		"SELECT id FROM jobs WHERE status = ? AND available_at <= ?",
+		"SELECT id, type, key, retry_count FROM jobs WHERE status = ? AND available_at <= ?",
 		StatusFailed, now,
 	)
 	if err != nil {
+		q.logger.Debug("promote step query failed", "error", err.Error())
 		return
 	}
 
-	var ids []string
+	var jobs []promotable
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var p promotable
+		if err := rows.Scan(&p.id, &p.typ, &p.key, &p.retryCount); err != nil {
 			continue
 		}
-		ids = append(ids, id)
+		jobs = append(jobs, p)
 	}
 	rows.Close()
 
-	for _, id := range ids {
-		_, _ = q.db.Exec(
+	for _, j := range jobs {
+		_, updateErr := q.db.Exec(
 			"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
-			StatusQueued, now, id, StatusFailed,
+			StatusQueued, now, j.id, StatusFailed,
 		)
+		if updateErr != nil {
+			q.logger.Debug("promote step update failed",
+				"job_id", j.id,
+				"error", updateErr.Error(),
+			)
+			continue
+		}
 		q.logger.Debug("promoted failed job to queued",
-			"job_id", id,
+			"job_id", j.id,
+			"type", j.typ,
+			"key", j.key,
+			"status", StatusQueued,
+			"retry_count", j.retryCount,
 		)
 	}
 }
@@ -544,15 +570,24 @@ func (q *Queue) claimAndExecute(workerID int) bool {
 		StatusQueued, now, StatusRunning,
 	).Scan(&id, &typ, &key, &nonce, &payloadStr, &retryCount, &submittedBy, &createdAt)
 	if err != nil {
+		if err != sql.ErrNoRows {
+			q.logger.Debug("poll query failed", "error", err.Error())
+		}
 		return false
 	}
 
-	// Atomically claim: update status to running WHERE status=queued.
+	// Atomically claim: update status to running WHERE status=queued
+	// (10-REQ-4.2). The WHERE guard ensures exactly one worker claims the
+	// job even under concurrent polling (10-REQ-4.E1).
 	res, claimErr := q.db.Exec(
 		"UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
 		StatusRunning, now, id, StatusQueued,
 	)
 	if claimErr != nil {
+		q.logger.Debug("claim update failed",
+			"job_id", id,
+			"error", claimErr.Error(),
+		)
 		return false
 	}
 	affected, _ := res.RowsAffected()
@@ -571,8 +606,18 @@ func (q *Queue) claimAndExecute(workerID int) bool {
 	// Execute the handler.
 	handler, ok := q.getHandler(typ)
 	if !ok {
-		// Should not happen if registration is enforced on enqueue.
-		q.finalizeJob(id, typ, key, retryCount, nil, false, fmt.Errorf("handler not found for type %q", typ))
+		// No registered handler for this type — dead-letter the job
+		// (10-REQ-4.E4). This can happen if a handler was removed after
+		// the job was enqueued.
+		noHandlerErr := fmt.Errorf("no handler registered for type %q", typ)
+		q.logger.Warn("no handler registered for job type",
+			"job_id", id,
+			"type", typ,
+			"key", key,
+			"status", StatusDeadLetter,
+			"retry_count", retryCount,
+		)
+		q.finalizeJob(id, typ, key, retryCount, nil, false, noHandlerErr)
 		return true
 	}
 
@@ -620,14 +665,20 @@ func (q *Queue) finalizeJob(id, typ, key string, retryCount int, result any, ret
 			var marshalErr error
 			resultJSON, marshalErr = json.Marshal(result)
 			if marshalErr != nil {
-				q.logger.Warn("failed to marshal handler result",
+				// Serialization failure: dead-letter the job (10-REQ-5.E2).
+				_, _ = q.db.Exec(
+					"UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+					StatusDeadLetter, fmt.Sprintf("result serialization failed: %v", marshalErr), now, id,
+				)
+				q.logger.Warn("job dead-lettered",
 					"job_id", id,
 					"type", typ,
 					"key", key,
-					"status", StatusCompleted,
+					"status", StatusDeadLetter,
+					"retry_count", retryCount,
 					"error", marshalErr.Error(),
 				)
-				resultJSON = []byte("null")
+				return
 			}
 		}
 
@@ -654,8 +705,9 @@ func (q *Queue) finalizeJob(id, typ, key string, retryCount int, result any, ret
 	// Error path.
 	errMsg := handlerErr.Error()
 
-	if !retryable || retryCount >= policy.MaxRetries {
-		// Dead-letter: non-retryable error or retries exhausted.
+	if !retryable {
+		// Non-retryable (permanent) error: dead-letter without incrementing
+		// retry_count (10-REQ-5.4).
 		_, _ = q.db.Exec(
 			"UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
 			StatusDeadLetter, errMsg, now, id,
@@ -671,8 +723,29 @@ func (q *Queue) finalizeJob(id, typ, key string, retryCount int, result any, ret
 		return
 	}
 
-	// Retryable failure: increment retry_count, compute backoff, set status=failed.
+	// Retryable error: always increment retry_count first (10-REQ-5.2).
 	newRetryCount := retryCount + 1
+
+	if newRetryCount > policy.MaxRetries {
+		// Retries exhausted after increment: dead-letter with the
+		// incremented retry_count stored (10-REQ-5.3, 10-REQ-6.E1).
+		_, _ = q.db.Exec(
+			"UPDATE jobs SET status = ?, error = ?, retry_count = ?, updated_at = ? WHERE id = ?",
+			StatusDeadLetter, errMsg, newRetryCount, now, id,
+		)
+		q.logger.Warn("job dead-lettered",
+			"job_id", id,
+			"type", typ,
+			"key", key,
+			"status", StatusDeadLetter,
+			"retry_count", newRetryCount,
+			"error", errMsg,
+		)
+		return
+	}
+
+	// Retryable with retries remaining: compute backoff delay, set
+	// status=failed, and schedule re-poll (10-REQ-5.2, 10-REQ-6.1).
 	delay := computeBackoff(policy, newRetryCount)
 	availableAt := time.Now().UTC().Add(delay).Format(time.RFC3339)
 
