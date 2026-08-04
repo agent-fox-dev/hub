@@ -484,22 +484,53 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 }
 
 // ---------------------------------------------------------------------------
-// Handler: POST /api/v1/workspaces/:slug/rebase (stub — task group 14)
+// Handler: POST /api/v1/workspaces/:slug/rebase
 // ---------------------------------------------------------------------------
 
 // handleBatchRebase handles POST /api/v1/workspaces/:slug/rebase.
 // It validates the request, checks workspace state, and executes a batch
 // rebase operation returning per-branch results synchronously.
-func handleBatchRebase(_ MergeAPIConfig) echo.HandlerFunc {
+func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		// Stub: returns 500 "not implemented" for all requests.
-		// Implementation will be added in task group 14.
-		return apikit.WriteAPIError(c, http.StatusInternalServerError, "not implemented")
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
+			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if err := requireMergeWriteScope(c, auth); err != nil {
+			return nil // Response already written.
+		}
+
+		slug := c.Param("slug")
+
+		// Parse request body.
+		var req batchRebaseRequest
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
+		}
+
+		// Validate required fields.
+		if req.TargetRef == "" {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "target_ref is required")
+		}
+		if len(req.Branches) == 0 {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "branches list must not be empty")
+		}
+
+		// Validate workspace exists and is active.
+		if err := validateWorkspaceForMerge(c, cfg.DB, slug); err != nil {
+			return nil // Response already written.
+		}
+
+		// Execute batch rebase.
+		if cfg.BatchRebase == nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "batch rebase not configured")
+		}
+
+		results, err := cfg.BatchRebase(c.Request().Context(), slug, req.TargetRef, req.Branches)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "batch rebase failed: "+err.Error())
+		}
+
+		return c.JSON(http.StatusOK, batchRebaseResponse{Results: results})
 	}
 }
-
-// Ensure types are used to prevent lint errors during incremental development.
-var (
-	_ = batchRebaseRequest{}
-	_ = batchRebaseResponse{}
-)

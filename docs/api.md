@@ -679,6 +679,73 @@ Cancel a queued merge job.
 
 ---
 
+### POST /api/v1/workspaces/:slug/rebase
+
+Trigger a batch rebase of multiple branches onto a target ref. The operation
+runs synchronously and returns per-branch results.
+
+**Authentication:** API Key, or PAT with `merges:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Request Body:**
+
+```json
+{
+  "target_ref": "main",
+  "branches": ["feature/a", "feature/b", "feature/c"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `target_ref` | yes | string | The ref to rebase onto |
+| `branches` | yes | string[] | Non-empty list of branch names to rebase |
+
+**Response:** HTTP 200 OK with per-branch results:
+
+```json
+{
+  "results": [
+    {
+      "branch": "feature/a",
+      "status": "ok",
+      "new_head": "aaaa000000000000000000000000000000000001"
+    },
+    {
+      "branch": "feature/b",
+      "status": "conflict",
+      "conflict_files": ["src/main.go", "src/util.go"]
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `results[].branch` | string | Branch name that was rebased |
+| `results[].status` | string | `"ok"` on success, `"conflict"` on merge conflict, `"error"` on other failures |
+| `results[].new_head` | string | 40-char hex SHA of the new HEAD after a successful rebase; omitted on conflict/error |
+| `results[].conflict_files` | string[] | List of conflicting file paths; omitted on success |
+
+A conflict on one branch does not prevent rebasing of subsequent branches.
+All branches in the list are processed sequentially.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `target_ref`; empty `branches` list; workspace is not active; clone is not ready |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Workspace not found |
+
+---
+
 ## Git Server Endpoints
 
 The hub includes a built-in git smart HTTP server that exposes workspace
