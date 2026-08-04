@@ -63,6 +63,13 @@ func resolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, 
 	}, nil
 }
 
+// ResolveCloneAuth is the exported version of resolveCloneAuth, provided for
+// use by other packages (e.g., the merge handler) that need to resolve git
+// credentials for a workspace.
+func ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, error) {
+	return resolveCloneAuth(store, slug)
+}
+
 // isNotFoundError checks whether err is a *secrets.NotFoundError.
 func isNotFoundError(err error) bool {
 	_, ok := err.(*secrets.NotFoundError)

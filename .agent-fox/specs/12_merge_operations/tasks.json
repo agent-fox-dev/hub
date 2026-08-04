@@ -1300,7 +1300,7 @@
             "12-REQ-6.4",
             "12-REQ-9.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1326,7 +1326,7 @@
             "12-REQ-9.1",
             "12-REQ-13.1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
