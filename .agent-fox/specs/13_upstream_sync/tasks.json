@@ -636,7 +636,7 @@
           "requirement_refs": [
             "13-REQ-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -656,7 +656,7 @@
             "13-REQ-2",
             "13-REQ-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -677,7 +677,7 @@
             "13-REQ-7",
             "13-REQ-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

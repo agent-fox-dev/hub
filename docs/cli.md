@@ -284,6 +284,93 @@ afc workspace delete <slug> --confirm
 
 ---
 
+### afc workspace sync
+
+Trigger an upstream sync operation for a workspace. Fetches from the remote
+repository and fast-forwards the local integration branch.
+
+**Usage:**
+
+```
+afc workspace sync <slug> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<slug>` | The workspace slug to sync |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--reset-to-upstream` | no | boolean | Force-reset the local integration branch to match upstream HEAD (recovery after force-push) |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/sync`.
+- When `--reset-to-upstream` is provided, appends `?reset_to_upstream=true`
+  to the request, which force-resets the local branch to upstream HEAD
+  regardless of ancestry (useful for recovering from force-pushes).
+- Prints the updated workspace JSON to stdout, including sync status fields
+  (`sync_status`, `sync_mode`, `upstream_head_sha`, `last_sync_at`,
+  `sync_error`).
+- Requires `workspaces:sync` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Sync completed successfully |
+| 1 | Workspace not found, sync disabled, clone not ready, sync already in progress, API error, network error, or timeout |
+
+---
+
+### afc workspace reclone
+
+Archive and re-clone a workspace from upstream. This is a nuclear recovery
+operation that deletes the local clone and re-clones from scratch.
+
+**Usage:**
+
+```
+afc workspace reclone <slug> --confirm
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<slug>` | The workspace slug to reclone |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--confirm` | yes | boolean | Confirm reclone operation (safety flag to prevent accidental reclone) |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/reclone`.
+- The `--confirm` flag is a CLI-only safety check; it is required before the
+  command will make any API call.
+- The reclone operation attempts to push local commits to upstream (logging a
+  warning if push fails), deletes the local clone directory, resets workspace
+  clone state to `pending`, and enqueues a new clone job.
+- The workspace status remains `active` throughout the reclone lifecycle.
+- Prints the workspace JSON to stdout with `clone_status='pending'`.
+- Requires `workspaces:sync` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Reclone initiated successfully |
+| 1 | `--confirm` flag not provided, workspace not found, clone already in progress, API error, network error, or timeout |
+
+---
+
 ## Git Credential Helper
 
 The `afc` CLI includes a built-in git credential helper that automatically

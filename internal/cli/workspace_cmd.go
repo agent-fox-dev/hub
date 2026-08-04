@@ -33,6 +33,8 @@ func WorkspaceCmd() *cobra.Command {
 		newArchiveCmd(),
 		newReactivateCmd(),
 		newDeleteCmd(),
+		newSyncCmd(),
+		newRecloneCmd(),
 	)
 
 	return cmd
@@ -424,6 +426,88 @@ func newDeleteCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "Confirm permanent deletion")
+
+	return cmd
+}
+
+// newSyncCmd returns the 'workspace sync' subcommand.
+// It triggers an upstream sync operation for a workspace.
+// Requirements: 13-REQ-2.3, 13-REQ-8
+func newSyncCmd() *cobra.Command {
+	var resetToUpstream bool
+
+	cmd := &cobra.Command{
+		Use:           "sync <slug>",
+		Short:         "Trigger upstream sync for a workspace",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			path := "/workspaces/" + slug + "/sync"
+			if resetToUpstream {
+				path += "?reset_to_upstream=true"
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, path, nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+
+	cmd.Flags().BoolVar(&resetToUpstream, "reset-to-upstream", false,
+		"Force-reset the local integration branch to match upstream HEAD (recovery after force-push)")
+
+	return cmd
+}
+
+// newRecloneCmd returns the 'workspace reclone' subcommand.
+// It triggers a nuclear reclone: archives the workspace, deletes the
+// local clone, and re-clones from upstream.
+// Requirements: 13-REQ-7.3, 13-REQ-7.E4
+func newRecloneCmd() *cobra.Command {
+	var confirm bool
+
+	cmd := &cobra.Command{
+		Use:           "reclone <slug>",
+		Short:         "Archive and re-clone a workspace from upstream",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+
+			// 13-REQ-7.E4: --confirm flag is required as a CLI-only safety check.
+			if !confirm {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--confirm flag is required to reclone a workspace"))
+			}
+
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
+				"/workspaces/"+slug+"/reclone", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+
+	cmd.Flags().BoolVar(&confirm, "confirm", false, "Confirm reclone operation (required)")
 
 	return cmd
 }
