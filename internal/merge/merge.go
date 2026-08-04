@@ -4,7 +4,11 @@
 package merge
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+
+	"github.com/google/uuid"
 
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/txsvc/apikit"
@@ -18,14 +22,23 @@ type MergePayload struct {
 	SubmittedBy   string `json:"submitted_by"`
 }
 
+// MergeJobType is the job type name registered with the durable job queue.
+const MergeJobType = "merge"
+
+// mergeHandler is a placeholder handler for the 'merge' job type.
+// The actual merge algorithm (pre-check, fetch, rebase, check, ref-update,
+// branch-delete) will be wired in by later task groups (9–11).
+func mergeHandler(_ context.Context, _ json.RawMessage) (any, bool, error) {
+	return nil, false, fmt.Errorf("merge: handler not implemented")
+}
+
 // RegisterHandler registers the 'merge' job type handler with the durable
 // job queue. Must be called before the queue is started.
 //
 // The merge handler executes the rebase-then-fast-forward merge algorithm
 // for a given source and target branch within a workspace.
 func RegisterHandler(q *jobqueue.Queue) error {
-	_ = q // TODO: implement in task group 8
-	return fmt.Errorf("merge: RegisterHandler not implemented")
+	return q.Register(MergeJobType, mergeHandler, nil)
 }
 
 // ResolveSubmittedBy determines the submitted_by attribution string from
@@ -36,8 +49,19 @@ func RegisterHandler(q *jobqueue.Queue) error {
 //
 // Returns an error if auth is nil or the username cannot be resolved.
 func ResolveSubmittedBy(auth *apikit.AuthInfo) (string, error) {
-	_ = auth // TODO: implement in task group 8
-	return "", fmt.Errorf("merge: ResolveSubmittedBy not implemented")
+	if auth == nil {
+		return "", fmt.Errorf("merge: cannot resolve submitted_by: auth info is nil")
+	}
+
+	if auth.CredentialType == "admin_token" {
+		return "admin", nil
+	}
+
+	// For api_key and pat, use the UserID field.
+	if auth.UserID == "" {
+		return "", fmt.Errorf("merge: cannot resolve submitted_by: empty user ID for credential type %q", auth.CredentialType)
+	}
+	return auth.UserID, nil
 }
 
 // EnqueueMergeJob creates and enqueues a merge job with:
@@ -47,10 +71,27 @@ func ResolveSubmittedBy(auth *apikit.AuthInfo) (string, error) {
 // Returns (jobID, duplicate, error). duplicate=true indicates an active job
 // for the same (type, key) already exists.
 func EnqueueMergeJob(q *jobqueue.Queue, workspaceSlug, targetBranch, sourceRef, submittedBy string) (string, bool, error) {
-	_ = q             // TODO: implement in task group 8
-	_ = workspaceSlug // TODO: implement in task group 8
-	_ = targetBranch  // TODO: implement in task group 8
-	_ = sourceRef     // TODO: implement in task group 8
-	_ = submittedBy   // TODO: implement in task group 8
-	return "", false, fmt.Errorf("merge: EnqueueMergeJob not implemented")
+	payload := MergePayload{
+		WorkspaceSlug: workspaceSlug,
+		TargetBranch:  targetBranch,
+		SourceRef:     sourceRef,
+		SubmittedBy:   submittedBy,
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, fmt.Errorf("merge: marshal payload: %w", err)
+	}
+
+	key := fmt.Sprintf("%s:%s:%s", workspaceSlug, targetBranch, sourceRef)
+	group := fmt.Sprintf("%s:%s", workspaceSlug, targetBranch)
+
+	return q.Enqueue(jobqueue.EnqueueParams{
+		Type:        MergeJobType,
+		Key:         key,
+		Nonce:       uuid.New().String(),
+		Payload:     payloadJSON,
+		SubmittedBy: submittedBy,
+		Group:       group,
+	})
 }
