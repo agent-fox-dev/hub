@@ -22,6 +22,39 @@ import "strings"
 // Returns a deduplicated slice of file paths. Returns an empty (non-nil)
 // slice if no CONFLICT lines are found.
 func parseConflictFiles(output string) []string {
+	return extractConflictPaths(output)
+}
+
+// parseRebaseConflictFiles extracts conflicting file paths from git rebase
+// stdout/stderr output. Git rebase (2.38+) emits CONFLICT lines in the same
+// format as merge-tree when it encounters conflicting changes during replay.
+//
+// Representative sample output from git 2.38+ rebase conflict:
+//
+//	Rebasing (1/1)
+//	CONFLICT (content): Merge conflict in conflict.txt
+//	error: could not apply abc1234... feature change
+//	hint: Resolve all conflicts manually, mark them as resolved with
+//	hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+//	hint: You can instead skip this commit: "git rebase --skip".
+//	hint: To abort and get back to the state before "git rebase", run
+//	hint: "git rebase --abort".
+//
+// The parser extracts the file path from "Merge conflict in <path>" on
+// CONFLICT-prefixed lines. If a CONFLICT line uses a different format (e.g.
+// rename/delete), the last space-delimited token is used as a best-effort
+// fallback.
+//
+// Returns a deduplicated slice of file paths. Returns an empty (non-nil)
+// slice if no conflict paths are found.
+func parseRebaseConflictFiles(output string) []string {
+	return extractConflictPaths(output)
+}
+
+// extractConflictPaths is the shared implementation for parsing CONFLICT
+// lines from both merge-tree and rebase output. Both git commands use the
+// same "CONFLICT (content): Merge conflict in <path>" line format.
+func extractConflictPaths(output string) []string {
 	files := make([]string, 0)
 	seen := make(map[string]bool)
 

@@ -278,13 +278,25 @@ func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, e
 
 // Rebase executes git rebase <onto> with automatic abort on conflict.
 // Returns the new HEAD SHA on success or *RebaseConflictError on conflict.
+// Callers must use errors.As to extract *RebaseConflictError from the
+// returned error.
+//
 // If the rebase encounters a conflict, git rebase --abort is called
 // automatically before returning, so the repository is never left in
-// rebase state when a *RebaseConflictError is returned.
+// rebase state when a *RebaseConflictError is returned (11-PROP-3).
 //
-// Note: This method captures stdout and stderr separately from Run because
-// git rebase emits CONFLICT lines to stdout (not stderr), and Run discards
-// stdout on error.
+// Important distinction:
+//   - Conflict: returns *RebaseConflictError — repository is cleaned up
+//     automatically via internal abort.
+//   - Context cancellation/timeout: returns the context error — the
+//     repository may still be in rebase state. The caller must invoke
+//     RebaseAbort to clean up (11-REQ-6.E1).
+//   - Abort failure after conflict: returns an error wrapping both the
+//     conflict information and the abort failure (11-REQ-6.E2).
+//   - Invalid onto ref: returns *GitError with exit code and stderr
+//     (11-REQ-6.E3).
+//   - rev-parse failure after successful rebase: returns *GitError
+//     (11-REQ-6.E4).
 func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
 	args := []string{"rebase", onto}
 
@@ -345,31 +357,6 @@ func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
 	return sha, nil
 }
 
-// parseRebaseConflictFiles extracts conflicting file paths from git rebase
-// stdout/stderr output. Lines containing "CONFLICT" with "Merge conflict in"
-// are parsed similarly to merge-tree output.
-func parseRebaseConflictFiles(output string) []string {
-	var files []string
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "CONFLICT") {
-			continue
-		}
-		const marker = "Merge conflict in "
-		if idx := strings.Index(line, marker); idx >= 0 {
-			path := strings.TrimSpace(line[idx+len(marker):])
-			files = append(files, path)
-			continue
-		}
-		// Best-effort fallback.
-		parts := strings.Fields(line)
-		if len(parts) > 0 {
-			files = append(files, parts[len(parts)-1])
-		}
-	}
-	return files
-}
-
 // hasRebaseState checks whether the repository is currently in a rebase state
 // by looking for .git/rebase-merge or .git/rebase-apply directories.
 func (r *GitRunner) hasRebaseState() bool {
@@ -383,6 +370,20 @@ func (r *GitRunner) hasRebaseState() bool {
 }
 
 // RebaseAbort executes git rebase --abort to clean up a failed rebase state.
+//
+// This method is intended for edge-case manual recovery when a context
+// cancellation interrupts a Rebase call mid-flight, leaving the repository
+// in an intermediate rebase state. In the normal conflict case, Rebase calls
+// git rebase --abort internally before returning *RebaseConflictError, so
+// callers do not need to invoke RebaseAbort themselves.
+//
+// Usage pattern after context cancellation:
+//
+//	sha, err := runner.Rebase(ctx, "main")
+//	if errors.Is(err, context.DeadlineExceeded) {
+//	    // Repository may be in rebase state — clean up.
+//	    _ = runner.RebaseAbort(context.Background())
+//	}
 func (r *GitRunner) RebaseAbort(ctx context.Context) error {
 	_, err := r.Run(ctx, "rebase", "--abort")
 	return err
