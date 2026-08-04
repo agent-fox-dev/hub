@@ -344,6 +344,30 @@ at startup.
 
 ---
 
+## Hub Merge Permissions
+
+These 2 permissions are registered by `MergePermissions()` in
+`hub/internal/merge/api.go` and passed to `apikit.Server.MountHandlers()`
+at startup.
+
+### merges:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List and view merge job status for workspaces |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/merges`, `GET /api/v1/workspaces/:slug/merges/:id` |
+
+### merges:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Submit merge requests, cancel queued merge jobs, and trigger batch rebase operations |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/rebase` |
+
+---
+
 ## Hub Git Permissions
 
 These 2 permissions are registered by `GitPermissions()` in
@@ -476,7 +500,7 @@ for startup registration.
 
 ## Complete Permission List
 
-All 21 registered permission scopes, sorted alphabetically:
+All 23 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -484,23 +508,25 @@ All 21 registered permission scopes, sorted alphabetically:
 | 2 | `git:write` | hub | git | write |
 | 3 | `keys:manage` | apikit | keys | manage |
 | 4 | `keys:read` | apikit | keys | read |
-| 5 | `orgs:read` | apikit | orgs | read |
-| 6 | `secrets:delete` | hub | secrets | delete |
-| 7 | `secrets:list` | hub | secrets | list |
-| 8 | `secrets:manage` | hub | secrets | manage |
-| 9 | `secrets:write` | hub | secrets | write |
-| 10 | `tokens:manage` | apikit | tokens | manage |
-| 11 | `tokens:read` | apikit | tokens | read |
-| 12 | `users:read` | apikit | users | read |
-| 13 | `vars:delete` | hub | vars | delete |
-| 14 | `vars:manage` | hub | vars | manage |
-| 15 | `vars:read` | hub | vars | read |
-| 16 | `vars:write` | hub | vars | write |
-| 17 | `workspaces:create` | hub | workspaces | create |
-| 18 | `workspaces:delete` | hub | workspaces | delete |
-| 19 | `workspaces:read` | hub | workspaces | read |
-| 20 | `workspaces:sync` | hub | workspaces | sync |
-| 21 | `workspaces:write` | hub | workspaces | write |
+| 5 | `merges:read` | hub | merges | read |
+| 6 | `merges:write` | hub | merges | write |
+| 7 | `orgs:read` | apikit | orgs | read |
+| 8 | `secrets:delete` | hub | secrets | delete |
+| 9 | `secrets:list` | hub | secrets | list |
+| 10 | `secrets:manage` | hub | secrets | manage |
+| 11 | `secrets:write` | hub | secrets | write |
+| 12 | `tokens:manage` | apikit | tokens | manage |
+| 13 | `tokens:read` | apikit | tokens | read |
+| 14 | `users:read` | apikit | users | read |
+| 15 | `vars:delete` | hub | vars | delete |
+| 16 | `vars:manage` | hub | vars | manage |
+| 17 | `vars:read` | hub | vars | read |
+| 18 | `vars:write` | hub | vars | write |
+| 19 | `workspaces:create` | hub | workspaces | create |
+| 20 | `workspaces:delete` | hub | workspaces | delete |
+| 21 | `workspaces:read` | hub | workspaces | read |
+| 22 | `workspaces:sync` | hub | workspaces | sync |
+| 23 | `workspaces:write` | hub | workspaces | write |
 
 ---
 

@@ -34,6 +34,8 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
+| `merges:read` | List and view merge job status | GET /api/v1/workspaces/:slug/merges, GET /api/v1/workspaces/:slug/merges/:id |
+| `merges:write` | Submit and cancel merge jobs; trigger batch rebase | POST /api/v1/workspaces/:slug/merges, DELETE /api/v1/workspaces/:slug/merges/:id, POST /api/v1/workspaces/:slug/rebase |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
 | `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
 | `secrets:manage` | Full CRUD access to secrets; implies `secrets:list`, `secrets:write`, and `secrets:delete` | POST, GET, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets |
@@ -511,6 +513,169 @@ tokens can delete any workspace.
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:delete` scope; workspace not owned by the authenticated user (anti-enumeration) |
 | 409 | Workspace is not archived (must archive before deleting) |
+
+---
+
+## Merge Endpoints
+
+Merge endpoints manage the integration of agent branches into target branches
+using rebase-then-fast-forward semantics. Merge operations are executed as
+background jobs via the durable job queue.
+
+### Merge Job Response Schema
+
+All merge job endpoints return the following JSON schema:
+
+```json
+{
+  "id": "uuid-string",
+  "workspace_slug": "my-workspace",
+  "target_branch": "main",
+  "source_ref": "feature/agent-1",
+  "status": "queued",
+  "base_sha": null,
+  "merged_sha": null,
+  "conflict_files": [],
+  "check_output": null,
+  "error": null,
+  "retry_count": 0,
+  "submitted_by": "alice",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string (UUID) | Unique job identifier |
+| `workspace_slug` | string | Workspace the merge belongs to |
+| `target_branch` | string | Branch being merged into |
+| `source_ref` | string | Branch being merged from |
+| `status` | string | Job status: `"queued"`, `"running"`, `"completed"`, `"failed"`, `"dead_letter"`, or `"cancelled"` |
+| `base_sha` | string or null | 40-char hex SHA of target branch HEAD before merge; null until completed |
+| `merged_sha` | string or null | 40-char hex SHA of target branch HEAD after merge; null until completed |
+| `conflict_files` | string[] | List of conflicting file paths; empty array if no conflicts |
+| `check_output` | string or null | Output from the CHECK_COMMAND if it ran; null otherwise |
+| `error` | string or null | Error details for failed jobs; null on success |
+| `retry_count` | int | Number of times the job has been retried |
+| `submitted_by` | string | Username of the authenticated user who submitted the job |
+| `created_at` | string (RFC 3339) | Timestamp of job creation |
+| `updated_at` | string (RFC 3339) | Timestamp of last modification |
+
+---
+
+### POST /api/v1/workspaces/:slug/merges
+
+Submit a merge request to integrate a source branch into a target branch.
+
+**Authentication:** API Key, or PAT with `merges:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Request Body:**
+
+```json
+{
+  "target_branch": "main",
+  "source_ref": "feature/agent-1"
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `target_branch` | yes | string | The branch to merge into |
+| `source_ref` | yes | string | The branch to merge from |
+
+**Response:** HTTP 202 Accepted with the merge job record in queued status.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `target_branch` or `source_ref`; malformed JSON; workspace is not active; clone is not ready; source or target branch does not exist |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Workspace not found |
+| 409 | A merge job for this source and target branch is already queued or running |
+
+---
+
+### GET /api/v1/workspaces/:slug/merges
+
+List merge jobs for a workspace.
+
+**Authentication:** API Key, or PAT with `merges:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Response:** HTTP 200 OK with a JSON array of merge job records scoped to the
+workspace. Returns an empty array `[]` when no merge jobs exist.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:read` scope |
+
+---
+
+### GET /api/v1/workspaces/:slug/merges/:id
+
+Get a single merge job by ID.
+
+**Authentication:** API Key, or PAT with `merges:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The merge job UUID |
+
+**Response:** HTTP 200 OK with the merge job record.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:read` scope |
+| 404 | Job not found, or job belongs to a different workspace |
+
+---
+
+### DELETE /api/v1/workspaces/:slug/merges/:id
+
+Cancel a queued merge job.
+
+**Authentication:** API Key, or PAT with `merges:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The merge job UUID |
+
+**Response:** HTTP 200 OK with `{"status": "cancelled"}`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Job not found, or job belongs to a different workspace |
+| 409 | Job cannot be cancelled (already running, completed, failed, or cancelled) |
 
 ---
 
