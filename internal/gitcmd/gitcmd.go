@@ -169,6 +169,11 @@ func (r *GitRunner) Run(ctx context.Context, args ...string) (string, error) {
 
 // ErrRefNotFound is a sentinel error returned by LsRemote when git exits with
 // code 2, indicating the queried ref does not exist on the remote.
+//
+// The exit code 2 is produced by git ls-remote's --exit-code flag, which
+// distinguishes a genuinely missing ref (exit 2) from connection or
+// authentication failures (exit 1 or other non-zero). Callers should use
+// errors.Is(err, ErrRefNotFound) to test for this condition.
 var ErrRefNotFound = errors.New("ref not found on remote")
 
 // MergeConflictError is returned by MergeTree when the dry-run merge detects
