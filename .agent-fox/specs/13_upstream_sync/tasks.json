@@ -1,0 +1,1156 @@
+{
+  "$schema": null,
+  "spec_id": "13",
+  "spec_name": "upstream_sync",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/workspace/... ./internal/integration/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "05",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Requires clone infrastructure, workspace directory structure, in-memory job queue, and archive flow for reclone.",
+      "sentinel": true
+    },
+    {
+      "depends_on_spec": "09",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Requires credential storage and resolveCloneAuth for fetch authentication.",
+      "sentinel": true
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Schema Fields, Sync Mode, and Preconditions",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for new workspace schema fields (13-REQ-1)",
+          "details": [
+            "Create test file internal/workspace/sync_schema_test.go",
+            "Test that ALTER TABLE DDL adds sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error columns to workspaces table",
+            "Test default values: sync_mode='pull_only', sync_status='idle', upstream_head_sha=NULL, last_sync_at=NULL, sync_error=NULL",
+            "Test that workspace response JSON includes all five new fields with correct types"
+          ],
+          "test_spec_refs": [
+            "TS-13-1",
+            "TS-13-2",
+            "TS-13-3"
+          ],
+          "requirement_refs": [
+            "13-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for sync mode configuration (13-REQ-2)",
+          "details": [
+            "Create test file internal/workspace/sync_mode_test.go",
+            "Test that workspace create API accepts optional sync_mode field ('pull_only' or 'disabled')",
+            "Test that workspace create defaults sync_mode to 'pull_only' when not specified",
+            "Test that PATCH /workspaces/:slug accepts sync_mode as a mutable field and persists the change",
+            "Test that invalid sync_mode values are rejected with HTTP 400"
+          ],
+          "test_spec_refs": [
+            "TS-13-4",
+            "TS-13-5",
+            "TS-13-6"
+          ],
+          "requirement_refs": [
+            "13-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for sync precondition validation (13-REQ-3)",
+          "details": [
+            "Create test file internal/workspace/sync_precondition_test.go",
+            "Test that sync on workspace with status != 'active' returns HTTP 400",
+            "Test that sync on workspace with clone_status != 'ready' returns HTTP 400",
+            "Test that sync on workspace with sync_mode = 'disabled' returns HTTP 400 with descriptive error",
+            "Test that sync on workspace with sync_status = 'syncing' returns HTTP 409",
+            "Test that all preconditions pass for a valid active/ready/pull_only/idle workspace"
+          ],
+          "test_spec_refs": [
+            "TS-13-7",
+            "TS-13-8",
+            "TS-13-9",
+            "TS-13-10",
+            "TS-13-11"
+          ],
+          "requirement_refs": [
+            "13-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/...",
+          "Spec tests for schema, sync mode, and preconditions pass: go test ./internal/workspace/... -run 'TestSyncSchema|TestSyncMode|TestSyncPrecondition' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 13-REQ-1, 13-REQ-2, 13-REQ-3 test coverage established"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Sync Algorithm — Fetch and Fast-Forward",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for sync algorithm — fetch and fast-forward (13-REQ-4, part 1)",
+          "details": [
+            "Create test file internal/workspace/sync_algorithm_test.go",
+            "Test that sync sets sync_status='syncing' before fetch begins",
+            "Test that a successful fetch updates upstream_head_sha regardless of fast-forward eligibility",
+            "Test that fetch failure (network/auth) sets sync_status='error' and records sync_error"
+          ],
+          "test_spec_refs": [
+            "TS-13-12",
+            "TS-13-13",
+            "TS-13-14"
+          ],
+          "requirement_refs": [
+            "13-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for sync algorithm — fast-forward outcomes (13-REQ-4, part 2)",
+          "details": [
+            "Test 'already up to date' path: upstream HEAD equals local HEAD → sync_status='idle', last_sync_at updated",
+            "Test fast-forward path: upstream HEAD is a descendant of local HEAD → integration branch advanced, head_sha updated, sync_status='idle', last_sync_at updated",
+            "Test diverged/force-push path: upstream HEAD is not a descendant and not equal → sync_status='error', descriptive sync_error set, integration branch NOT advanced"
+          ],
+          "test_spec_refs": [
+            "TS-13-15",
+            "TS-13-16"
+          ],
+          "requirement_refs": [
+            "13-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/...",
+          "Spec tests for sync algorithm pass: go test ./internal/workspace/... -run 'TestSyncAlgorithm' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirement 13-REQ-4 test coverage established"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Startup Reconciliation, Recovery, Permissions, and State Machine",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for stuck-sync startup reconciliation (13-REQ-5)",
+          "details": [
+            "Create test file internal/workspace/sync_reconcile_test.go",
+            "Test that on startup, all workspaces with sync_status='syncing' are reset to sync_status='error' with sync_error='sync interrupted by server restart'",
+            "Test that workspaces with sync_status='idle' or 'error' are not modified by reconciliation",
+            "Test that reconciliation runs before HTTP server begins accepting requests (verify ordering in startup sequence)"
+          ],
+          "test_spec_refs": [
+            "TS-13-17",
+            "TS-13-18"
+          ],
+          "requirement_refs": [
+            "13-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for reset-to-upstream recovery (13-REQ-6)",
+          "details": [
+            "Create test file internal/workspace/sync_reset_test.go",
+            "Test POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true fetches upstream and resets integration branch to upstream HEAD",
+            "Test that head_sha, upstream_head_sha are updated, sync_status='idle', last_sync_at updated, sync_error cleared after reset",
+            "Test that reset-to-upstream works even when history is diverged (force-push scenario)"
+          ],
+          "test_spec_refs": [
+            "TS-13-19",
+            "TS-13-20"
+          ],
+          "requirement_refs": [
+            "13-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for reclone operation (13-REQ-7)",
+          "details": [
+            "Create test file internal/workspace/reclone_test.go",
+            "Test that POST /api/v1/workspaces/:slug/reclone executes archive flow before deletion",
+            "Test that reclone proceeds (logs warning) when archive push fails, rather than aborting",
+            "Test that clone_status transitions atomically to 'pending' before clone job is enqueued",
+            "Test that workspace status remains 'active' throughout reclone",
+            "Test that response returns workspace with clone_status='pending'"
+          ],
+          "test_spec_refs": [
+            "TS-13-21",
+            "TS-13-22",
+            "TS-13-23",
+            "TS-13-24"
+          ],
+          "requirement_refs": [
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write tests for permission enforcement (13-REQ-8)",
+          "details": [
+            "Create test file internal/workspace/sync_permissions_test.go",
+            "Test that sync and reclone endpoints require 'workspaces:sync' scope for PAT tokens",
+            "Test that admin tokens and API keys have implicit access to sync and reclone",
+            "Test that sync status fields appear in workspace responses under 'workspaces:read' permission"
+          ],
+          "test_spec_refs": [
+            "TS-13-25",
+            "TS-13-26"
+          ],
+          "requirement_refs": [
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests for sync status state machine integrity (13-REQ-9)",
+          "details": [
+            "Create test file internal/workspace/sync_state_machine_test.go",
+            "Test that deferred cleanup sets sync_status='error' and records sync_error when request context is cancelled mid-sync",
+            "Test that concurrent sync requests are rejected with HTTP 409 when sync_status='syncing'",
+            "Test that after error state, a subsequent successful sync transitions back to 'idle'"
+          ],
+          "test_spec_refs": [
+            "TS-13-27",
+            "TS-13-28"
+          ],
+          "requirement_refs": [
+            "13-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/...",
+          "Spec tests for reconciliation, recovery, permissions, and state machine pass: go test ./internal/workspace/... -run 'TestSyncReconcile|TestSyncReset|TestReclone|TestSyncPermissions|TestSyncStateMachine' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/...",
+          "Requirements 13-REQ-5, 13-REQ-6, 13-REQ-7, 13-REQ-8, 13-REQ-9 test coverage established"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Database Schema: Add Sync Fields to Workspaces Table",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write DDL ALTER TABLE statements for five new sync fields",
+          "details": [
+            "Add to internal/db/schema.go (or equivalent DDL file): ALTER TABLE workspaces ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'pull_only'",
+            "ALTER TABLE workspaces ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'idle'",
+            "ALTER TABLE workspaces ADD COLUMN upstream_head_sha TEXT",
+            "ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT",
+            "ALTER TABLE workspaces ADD COLUMN sync_error TEXT",
+            "Apply DDL in the database initialization path (pre-production, no migration framework)"
+          ],
+          "test_spec_refs": [
+            "TS-13-1"
+          ],
+          "requirement_refs": [
+            "13-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Extend Workspace Go struct and DB scan/insert with new fields",
+          "details": [
+            "Add SyncMode, SyncStatus, UpstreamHeadSHA, LastSyncAt, SyncError fields to the Workspace struct in internal/workspace/workspace.go",
+            "Update all SQL SELECT queries that scan workspace rows to include the five new columns",
+            "Update INSERT/UPDATE queries for workspace creation to include sync_mode with default 'pull_only'",
+            "Ensure nullable fields (upstream_head_sha, last_sync_at, sync_error) use *string or sql.NullString"
+          ],
+          "test_spec_refs": [
+            "TS-13-2"
+          ],
+          "requirement_refs": [
+            "13-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Extend workspace JSON response schema with new sync fields",
+          "details": [
+            "Add JSON tags for sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error to the workspace response struct",
+            "Ensure sync_mode and sync_status are always present (non-nullable) in JSON output",
+            "Ensure upstream_head_sha, last_sync_at, sync_error are omitted or null when not set",
+            "Update any existing workspace response serialization tests to include new fields"
+          ],
+          "test_spec_refs": [
+            "TS-13-3"
+          ],
+          "requirement_refs": [
+            "13-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Schema tests pass: go test ./internal/db/... -count=1 -v",
+          "Workspace struct tests pass: go test ./internal/workspace/... -run 'TestSyncSchema' -count=1 -v",
+          "No linter warnings: go vet ./internal/db/... ./internal/workspace/...",
+          "13-REQ-1 acceptance criteria met: all five fields present with correct defaults and types"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Sync Mode Configuration: Create API, PATCH Handler Extension",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Extend workspace create API and CLI to accept sync_mode",
+          "details": [
+            "Add optional sync_mode field to POST /api/v1/workspaces request body struct",
+            "Validate sync_mode value: accept 'pull_only' or 'disabled'; reject others with HTTP 400",
+            "Default sync_mode to 'pull_only' when not provided in request",
+            "Persist sync_mode in the INSERT query for new workspaces",
+            "Add --sync-mode flag to 'afc workspace create' CLI command accepting 'pull_only' or 'disabled'"
+          ],
+          "test_spec_refs": [
+            "TS-13-4",
+            "TS-13-5"
+          ],
+          "requirement_refs": [
+            "13-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Extend PATCH /workspaces/:slug handler to include sync_mode as mutable field",
+          "details": [
+            "Add sync_mode to the list of mutable fields in the existing PATCH handler (internal/workspace/handlers.go or equivalent)",
+            "Validate the new sync_mode value on PATCH: accept 'pull_only' or 'disabled'; reject others with HTTP 400",
+            "Update the workspace record in SQLite when sync_mode is included in the PATCH body",
+            "Do not modify workspace_write_delete spec's permission model or handler structure — only add sync_mode to the field list"
+          ],
+          "test_spec_refs": [
+            "TS-13-6"
+          ],
+          "requirement_refs": [
+            "13-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Sync mode tests pass: go test ./internal/workspace/... -run 'TestSyncMode' -count=1 -v",
+          "All existing workspace create and PATCH tests still pass: go test ./internal/workspace/... -count=1",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "13-REQ-2 acceptance criteria met: sync_mode accepted on create and PATCH, defaults to pull_only"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Sync Handler: Preconditions, Fetch, and Fast-Forward Logic",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement sync precondition validation in POST /sync handler",
+          "details": [
+            "Create internal/workspace/sync_handler.go with handler for POST /api/v1/workspaces/:slug/sync",
+            "Check workspace status == 'active'; return HTTP 400 via WriteAPIError if not",
+            "Check clone_status == 'ready'; return HTTP 400 via WriteAPIError if not",
+            "Check sync_mode != 'disabled'; return HTTP 400 with descriptive error if disabled",
+            "Check sync_status != 'syncing'; return HTTP 409 via WriteAPIError if already syncing",
+            "Return HTTP 404 if workspace not found"
+          ],
+          "test_spec_refs": [
+            "TS-13-7",
+            "TS-13-8",
+            "TS-13-9",
+            "TS-13-10",
+            "TS-13-11"
+          ],
+          "requirement_refs": [
+            "13-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement deferred cleanup and sync_status='syncing' transition",
+          "details": [
+            "After precondition checks pass, set sync_status='syncing' in DB",
+            "Register a deferred function (defer) that checks if context was cancelled and sets sync_status='error' with descriptive sync_error if so",
+            "Deferred cleanup must run before handler returns to prevent stuck 'syncing' state",
+            "Use context.Err() to detect cancellation in the deferred function"
+          ],
+          "test_spec_refs": [
+            "TS-13-27"
+          ],
+          "requirement_refs": [
+            "13-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement go-git fetch with credential resolution and unshallow retry",
+          "details": [
+            "Open local repo at <WORKSPACE_ROOT>/<slug>/trunk/ using go-git PlainOpen",
+            "Call resolveCloneAuth(ctx, workspace) from internal/workspace/clone_auth.go to get fetch credentials",
+            "Call remote.Fetch() with resolved auth options",
+            "If fetch fails due to shallow clone missing history, retry with unshallow fetch (fetch all history); log warning on retry",
+            "If fetch fails for other reasons (network, auth), set sync_status='error', record sync_error, return HTTP 502"
+          ],
+          "test_spec_refs": [
+            "TS-13-12",
+            "TS-13-13",
+            "TS-13-14"
+          ],
+          "requirement_refs": [
+            "13-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Implement upstream HEAD SHA read and fast-forward eligibility check",
+          "details": [
+            "After successful fetch, read upstream HEAD SHA from go-git remote tracking ref",
+            "Update upstream_head_sha in DB immediately (always, regardless of fast-forward outcome)",
+            "Compare upstream HEAD with local integration branch HEAD using go-git commit graph ancestry check",
+            "If equal: set sync_status='idle', update last_sync_at, return workspace",
+            "If upstream is descendant of local: fast-forward integration branch via go-git ref update, update head_sha, set sync_status='idle', update last_sync_at",
+            "If diverged: set sync_status='error', sync_error='upstream history has diverged; use --reset-to-upstream to recover', return HTTP 409"
+          ],
+          "test_spec_refs": [
+            "TS-13-15",
+            "TS-13-16"
+          ],
+          "requirement_refs": [
+            "13-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Sync precondition and algorithm tests pass: go test ./internal/workspace/... -run 'TestSyncPrecondition|TestSyncAlgorithm' -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "13-REQ-3 and 13-REQ-4 acceptance criteria met: preconditions enforced, fetch and fast-forward logic correct"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Startup Reconciliation and Reset-to-Upstream Recovery",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement startup reconciliation to reset stuck 'syncing' workspaces",
+          "details": [
+            "Add reconcileSyncStatus(ctx context.Context, db *sql.DB) function in internal/workspace/sync_reconcile.go",
+            "Execute UPDATE workspaces SET sync_status='error', sync_error='sync interrupted by server restart' WHERE sync_status='syncing'",
+            "Call reconcileSyncStatus from the server startup sequence in cmd/hub/main.go (or equivalent) before http.ListenAndServe",
+            "Log the number of workspaces reconciled at INFO level"
+          ],
+          "test_spec_refs": [
+            "TS-13-17",
+            "TS-13-18"
+          ],
+          "requirement_refs": [
+            "13-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement reset-to-upstream recovery path in sync handler",
+          "details": [
+            "In POST /api/v1/workspaces/:slug/sync handler, check query parameter reset_to_upstream=true",
+            "If true: fetch upstream via go-git (same credential resolution as standard sync)",
+            "Reset local integration branch ref to fetched upstream HEAD via go-git reference update (force update)",
+            "Update head_sha, upstream_head_sha in DB",
+            "Set sync_status='idle', update last_sync_at, clear sync_error (set to NULL)",
+            "Return updated workspace object"
+          ],
+          "test_spec_refs": [
+            "TS-13-19",
+            "TS-13-20"
+          ],
+          "requirement_refs": [
+            "13-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Reconciliation tests pass: go test ./internal/workspace/... -run 'TestSyncReconcile' -count=1 -v",
+          "Reset-to-upstream tests pass: go test ./internal/workspace/... -run 'TestSyncReset' -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "13-REQ-5 and 13-REQ-6 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Reclone Operation: Handler, Archive Flow, and Job Enqueue",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement POST /api/v1/workspaces/:slug/reclone handler",
+          "details": [
+            "Create handler in internal/workspace/reclone_handler.go for POST /api/v1/workspaces/:slug/reclone",
+            "Require 'workspaces:sync' permission scope; return HTTP 403 for unauthorized callers",
+            "Return HTTP 404 if workspace not found",
+            "Execute existing archive flow (from workspace_checkout spec): attempt to push local commits; log warning and continue if push fails",
+            "Record current HEAD SHA before deletion for logging purposes"
+          ],
+          "test_spec_refs": [
+            "TS-13-21",
+            "TS-13-22"
+          ],
+          "requirement_refs": [
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement atomic clone_status transition and clone job enqueue for reclone",
+          "details": [
+            "Delete local clone directory at <WORKSPACE_ROOT>/<slug>/trunk/",
+            "In a single DB transaction: set clone_status='pending', sync_status='idle', clear sync_error=NULL, clear upstream_head_sha=NULL; workspace status remains 'active'",
+            "Enqueue a clone job using the existing in-memory job queue (same as workspace_checkout spec)",
+            "Return workspace object with clone_status='pending' and HTTP 200",
+            "Ensure no intermediate state is exposed between archive and 'pending' transition"
+          ],
+          "test_spec_refs": [
+            "TS-13-23",
+            "TS-13-24"
+          ],
+          "requirement_refs": [
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Reclone tests pass: go test ./internal/workspace/... -run 'TestReclone' -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/workspace/...",
+          "13-REQ-7 acceptance criteria met: archive flow runs, push failure is non-blocking, clone_status atomically set to pending, workspace stays active"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Permissions, Route Registration, and CLI Commands",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Register sync and reclone routes with workspaces:sync permission scope",
+          "details": [
+            "Register POST /api/v1/workspaces/:slug/sync route in MountHandlers (internal/workspace/mount.go or equivalent)",
+            "Register POST /api/v1/workspaces/:slug/reclone route in MountHandlers",
+            "Apply 'workspaces:sync' permission check middleware to both routes",
+            "Ensure admin tokens and API keys bypass scope check; PATs require explicit workspaces:sync grant",
+            "Add 'workspaces:sync' to the list of known permission scopes in the apikit configuration"
+          ],
+          "test_spec_refs": [
+            "TS-13-25",
+            "TS-13-26"
+          ],
+          "requirement_refs": [
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement CLI commands: afc workspace sync and afc workspace reclone",
+          "details": [
+            "Add 'afc workspace sync <slug>' command in internal/cli/workspace_sync.go",
+            "Add --reset-to-upstream flag that appends ?reset_to_upstream=true to the API request",
+            "Add 'afc workspace reclone <slug> --confirm' command; --confirm flag is required (CLI-only safety check)",
+            "Both commands call the respective REST endpoints and print the returned workspace JSON via CLIPrintResult",
+            "Handle error responses via CLIHandleError with appropriate exit codes"
+          ],
+          "test_spec_refs": [
+            "TS-13-25"
+          ],
+          "requirement_refs": [
+            "13-REQ-2",
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Write smoke tests for sync and reclone end-to-end flows",
+          "details": [
+            "Create internal/integration/sync_smoke_test.go",
+            "Smoke test TS-13-SMOKE-1: create workspace, trigger sync via POST /sync, verify response contains updated sync fields",
+            "Smoke test TS-13-SMOKE-2: create workspace, trigger reclone via POST /reclone, verify response has clone_status='pending' and workspace status='active'",
+            "Use real HTTP server and SQLite DB in smoke tests; mock go-git fetch with a local bare repo"
+          ],
+          "test_spec_refs": [
+            "TS-13-25",
+            "TS-13-26"
+          ],
+          "requirement_refs": [
+            "13-REQ-3",
+            "13-REQ-7",
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Permission tests pass: go test ./internal/workspace/... -run 'TestSyncPermissions' -count=1 -v",
+          "Smoke tests compile: go build ./internal/integration/...",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./internal/workspace/... ./internal/cli/...",
+          "13-REQ-8 acceptance criteria met: workspaces:sync scope enforced, CLI commands registered"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "checkpoint",
+      "title": "Integration Checkpoint: Schema, Mode, Preconditions, and Algorithm Tests",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Run spec tests for schema, sync mode, and preconditions (TS-13-1 through TS-13-7)",
+          "details": [
+            "Execute go test ./internal/workspace/... -run 'TestSyncSchema|TestSyncMode|TestSyncPrecondition' -count=1 -v",
+            "Verify TS-13-1 through TS-13-7 pass",
+            "Confirm no test is skipped or marked as TODO"
+          ],
+          "test_spec_refs": [
+            "TS-13-1",
+            "TS-13-2",
+            "TS-13-3",
+            "TS-13-4",
+            "TS-13-5",
+            "TS-13-6",
+            "TS-13-7"
+          ],
+          "requirement_refs": [
+            "13-REQ-1",
+            "13-REQ-2",
+            "13-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Run spec tests for sync algorithm and remaining preconditions (TS-13-8 through TS-13-14)",
+          "details": [
+            "Execute go test ./internal/workspace/... -run 'TestSyncPrecondition|TestSyncAlgorithm' -count=1 -v",
+            "Verify TS-13-8 through TS-13-14 pass",
+            "Review test output for any flaky or timing-dependent failures"
+          ],
+          "test_spec_refs": [
+            "TS-13-8",
+            "TS-13-9",
+            "TS-13-10",
+            "TS-13-11",
+            "TS-13-12",
+            "TS-13-13",
+            "TS-13-14"
+          ],
+          "requirement_refs": [
+            "13-REQ-3",
+            "13-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Confirm no regressions in dependent specs",
+          "details": [
+            "Run go test ./... -count=1 to verify workspace_checkout, git_credentials, and workspace_write_delete spec tests still pass",
+            "Verify PATCH handler extension did not break existing workspace update tests",
+            "Verify in-memory job queue behavior is unchanged for clone operations"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "13-REQ-2",
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Spec test cases TS-13-1 through TS-13-14 pass: go test ./internal/workspace/... -run 'TestSyncSchema|TestSyncMode|TestSyncPrecondition|TestSyncAlgorithm' -count=1 -v",
+          "Full test suite passes with no regressions: go test ./... -count=1",
+          "No linter warnings across all packages: go vet ./...",
+          "Requirements 13-REQ-1 through 13-REQ-4 have passing test coverage"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "checkpoint",
+      "title": "Integration Checkpoint: Recovery, Reclone, Permissions, and State Machine Tests",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Run spec tests for recovery, reclone, and reconciliation (TS-13-15 through TS-13-21)",
+          "details": [
+            "Execute go test ./internal/workspace/... -run 'TestSyncReset|TestReclone|TestSyncReconcile' -count=1 -v",
+            "Verify TS-13-15 through TS-13-21 pass",
+            "Confirm deferred cleanup and context cancellation tests are not flaky"
+          ],
+          "test_spec_refs": [
+            "TS-13-15",
+            "TS-13-16",
+            "TS-13-17",
+            "TS-13-18",
+            "TS-13-19",
+            "TS-13-20",
+            "TS-13-21"
+          ],
+          "requirement_refs": [
+            "13-REQ-4",
+            "13-REQ-5",
+            "13-REQ-6",
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Run spec tests for permissions, state machine, and remaining reclone (TS-13-22 through TS-13-28)",
+          "details": [
+            "Execute go test ./internal/workspace/... -run 'TestSyncPermissions|TestSyncStateMachine|TestReclone' -count=1 -v",
+            "Verify TS-13-22 through TS-13-28 pass",
+            "Confirm state machine transitions and permission enforcement tests pass"
+          ],
+          "test_spec_refs": [
+            "TS-13-22",
+            "TS-13-23",
+            "TS-13-24",
+            "TS-13-25",
+            "TS-13-26",
+            "TS-13-27",
+            "TS-13-28"
+          ],
+          "requirement_refs": [
+            "13-REQ-7",
+            "13-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "All 28 spec test cases pass: go test ./internal/workspace/... -count=1 -v",
+          "Full test suite passes with no regressions: go test ./... -count=1",
+          "No linter warnings across all packages: go vet ./...",
+          "All requirements 13-REQ-1 through 13-REQ-9 have passing test coverage"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration and Dead-Code Audit",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Trace execution paths from HTTP routes through handler chain to DB",
+          "details": [
+            "Verify POST /api/v1/workspaces/:slug/sync route in MountHandlers calls syncHandler → precondition checks → set syncing → resolveCloneAuth → remote.Fetch() → ancestry check → DB update",
+            "Verify POST /api/v1/workspaces/:slug/reclone route calls recloneHandler → archive flow → delete dir → atomic DB transition → enqueue clone job",
+            "Verify startup reconciliation is called from main() before http.ListenAndServe",
+            "Confirm no handler returns without updating sync_status from 'syncing' (deferred cleanup covers all exit paths)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "13-REQ-3",
+            "13-REQ-4",
+            "13-REQ-5",
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Verify return value propagation across sync and reclone paths",
+          "details": [
+            "Confirm syncHandler returns the final workspace object (not a stale snapshot) after all DB updates",
+            "Confirm recloneHandler returns workspace with clone_status='pending' after atomic transition",
+            "Confirm reset-to-upstream path returns workspace with cleared sync_error and updated head_sha",
+            "Confirm error responses use WriteAPIError with correct HTTP status codes per the error table"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "13-REQ-4",
+            "13-REQ-6",
+            "13-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Run smoke tests with real components — sync and reclone flows",
+          "details": [
+            "Execute smoke tests: go test ./internal/integration/... -run 'TestSyncSmoke|TestRecloneSmoke' -count=1 -v",
+            "Verify TS-13-SMOKE-1 passes: sync endpoint returns updated sync fields",
+            "Verify TS-13-SMOKE-2 passes: reclone endpoint returns clone_status='pending' with workspace status='active'",
+            "Confirm smoke tests use real HTTP server and SQLite, not mocked handlers"
+          ],
+          "test_spec_refs": [
+            "TS-13-25",
+            "TS-13-26",
+            "TS-13-SMOKE-1",
+            "TS-13-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "13-REQ-3",
+            "13-REQ-7",
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.4",
+          "title": "Run smoke tests with real components — extended scenarios",
+          "details": [
+            "Execute smoke tests: go test ./internal/integration/... -run 'TestSyncSmoke|TestRecloneSmoke' -count=1 -v",
+            "Verify TS-13-SMOKE-3 through TS-13-SMOKE-7 pass",
+            "Confirm smoke tests exercise end-to-end flows with real HTTP server and SQLite"
+          ],
+          "test_spec_refs": [
+            "TS-13-SMOKE-3",
+            "TS-13-SMOKE-4",
+            "TS-13-SMOKE-5",
+            "TS-13-SMOKE-6",
+            "TS-13-SMOKE-7"
+          ],
+          "requirement_refs": [
+            "13-REQ-3",
+            "13-REQ-7",
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.5",
+          "title": "Stub and dead-code audit across all new sync files",
+          "details": [
+            "Search for panic(\"not implemented\") in internal/workspace/sync_handler.go, sync_reconcile.go, reclone_handler.go, internal/cli/workspace_sync.go",
+            "Search for bare 'return nil' in non-trivial error paths that should return an error",
+            "Search for // TODO comments that indicate deferred implementation",
+            "Verify resolveCloneAuth is called from production sync code (not just tests)",
+            "Verify reconcileSyncStatus is called from main() startup sequence (not just defined)"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "13-REQ-4",
+            "13-REQ-5",
+            "13-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.6",
+          "title": "Cross-spec entry point verification",
+          "details": [
+            "Verify resolveCloneAuth (from git_credentials spec, internal/workspace/clone_auth.go) is called from sync handler in production code",
+            "Verify archive flow (from workspace_checkout spec) is called from reclone handler in production code",
+            "Verify in-memory job queue Enqueue function (from workspace_checkout spec) is called from reclone handler",
+            "Verify PATCH handler extension for sync_mode is wired into the existing workspace_write_delete handler (not a parallel codepath)",
+            "Confirm workspaces:sync permission scope is registered in apikit permission list"
+          ],
+          "test_spec_refs": [
+            "TS-13-25",
+            "TS-13-26"
+          ],
+          "requirement_refs": [
+            "13-REQ-2",
+            "13-REQ-7",
+            "13-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "All smoke tests pass: go test ./internal/integration/... -run 'TestSyncSmoke|TestRecloneSmoke' -count=1 -v",
+          "Full test suite passes: go test ./... -count=1",
+          "No stub markers found: grep -r 'panic(\"not implemented\")\\|// TODO' internal/workspace/sync_handler.go internal/workspace/sync_reconcile.go internal/workspace/reclone_handler.go returns no results",
+          "No linter warnings: go vet ./...",
+          "resolveCloneAuth call-site verified in production sync handler code",
+          "reconcileSyncStatus call-site verified in server startup (main.go or equivalent)",
+          "All 13-REQ-1 through 13-REQ-9 acceptance criteria confirmed met end-to-end"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "13-REQ-1.1",
+      "test_spec_id": "TS-13-1",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-1.2",
+      "test_spec_id": "TS-13-2",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-1.3",
+      "test_spec_id": "TS-13-3",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-2.1",
+      "test_spec_id": "TS-13-4",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-2.2",
+      "test_spec_id": "TS-13-5",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-2.3",
+      "test_spec_id": "TS-13-6",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-3.1",
+      "test_spec_id": "TS-13-7",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-3.2",
+      "test_spec_id": "TS-13-8",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-3.3",
+      "test_spec_id": "TS-13-9",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-3.4",
+      "test_spec_id": "TS-13-10",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-3.5",
+      "test_spec_id": "TS-13-11",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-4.1",
+      "test_spec_id": "TS-13-12",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-4.2",
+      "test_spec_id": "TS-13-13",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-4.3",
+      "test_spec_id": "TS-13-14",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-4.4",
+      "test_spec_id": "TS-13-15",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-4.5",
+      "test_spec_id": "TS-13-16",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-5.1",
+      "test_spec_id": "TS-13-17",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-5.2",
+      "test_spec_id": "TS-13-18",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-6.1",
+      "test_spec_id": "TS-13-19",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-6.2",
+      "test_spec_id": "TS-13-20",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-7.1",
+      "test_spec_id": "TS-13-21",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-7.2",
+      "test_spec_id": "TS-13-22",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-7.3",
+      "test_spec_id": "TS-13-23",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-7.4",
+      "test_spec_id": "TS-13-24",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-8.1",
+      "test_spec_id": "TS-13-25",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-8.2",
+      "test_spec_id": "TS-13-26",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-9.1",
+      "test_spec_id": "TS-13-27",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "13-REQ-9.2",
+      "test_spec_id": "TS-13-28",
+      "task_id": "6.1",
+      "test_path": null
+    }
+  ]
+}

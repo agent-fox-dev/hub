@@ -1,0 +1,1188 @@
+{
+  "$schema": null,
+  "spec_id": "11",
+  "spec_name": "git_runner",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/gitcmd/... -count=1 -v",
+    "all_tests": "go test -race ./... -count=1",
+    "linter": "go vet ./internal/gitcmd/..."
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: constructor, safety env vars, and version parser",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write version string parser unit tests",
+          "details": [
+            "Create `internal/gitcmd/version_test.go` with table-driven unit tests for the version string parser",
+            "Cover versions above 2.38 (e.g. 2.38.0, 2.39.1, 3.0.0) \u2014 expect success",
+            "Cover versions below 2.38 (e.g. 2.37.9, 2.0.0, 1.8.3) \u2014 expect error",
+            "Cover malformed strings (e.g. empty string, 'not a version', 'git version') \u2014 expect error",
+            "Test function signature: `parseGitVersion(raw string) (semver, error)` or equivalent pure function"
+          ],
+          "test_spec_refs": [
+            "TS-11-32",
+            "TS-11-33",
+            "TS-11-34"
+          ],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write constructor integration tests (version enforcement)",
+          "details": [
+            "Create `internal/gitcmd/runner_test.go` with integration test for `New(workDir, extraEnv)`",
+            "Test TS-11-1: constructor succeeds when host git >= 2.38; skip with `t.Skip` if host git < 2.38",
+            "Test TS-11-2: constructor returns error when git version is below 2.38 (simulate by parsing a low version string via the parser unit test path)",
+            "Test TS-11-3: constructor accepts any valid directory as `workDir`, not necessarily a git repo (use `os.TempDir()`)",
+            "Test TS-11-4: constructor returns error for invalid/nonexistent `workDir`",
+            "Use `testing` and `os` packages only \u2014 no mock frameworks"
+          ],
+          "test_spec_refs": [
+            "TS-11-1",
+            "TS-11-2",
+            "TS-11-3",
+            "TS-11-4"
+          ],
+          "requirement_refs": [
+            "11-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write safety environment variable injection tests",
+          "details": [
+            "Test TS-11-5: verify `GIT_ALLOW_PROTOCOL=file:https:ssh` is present in every command's environment",
+            "Test TS-11-6: verify `GIT_TERMINAL_PROMPT=0` is present in every command's environment",
+            "Test TS-11-7: verify `GIT_CONFIG_NOSYSTEM=1` is present in every command's environment",
+            "Test safety variable precedence: pass a conflicting `GIT_ALLOW_PROTOCOL` value in `extraEnv` and confirm the hardcoded value wins (last occurrence takes precedence)",
+            "Use a real git invocation (e.g. `git env` or inspect via a helper command) to confirm env vars are set correctly"
+          ],
+          "test_spec_refs": [
+            "TS-11-5",
+            "TS-11-6",
+            "TS-11-7"
+          ],
+          "requirement_refs": [
+            "11-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write Run method tests",
+          "details": [
+            "Test TS-11-8: `Run` with a valid git subcommand (e.g. `git --version`) returns trimmed stdout and nil error",
+            "Test TS-11-9: `Run` with a failing git command returns `*GitError` with correct Args, ExitCode, and Stderr fields",
+            "Test TS-11-10: `Run` respects context cancellation \u2014 cancel context mid-run and verify error is returned",
+            "Set up a temporary git repo using `git init` in a temp dir for tests that need a repo context"
+          ],
+          "test_spec_refs": [
+            "TS-11-8",
+            "TS-11-9",
+            "TS-11-10"
+          ],
+          "requirement_refs": [
+            "11-REQ-3",
+            "11-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write GitError uniform error type tests",
+          "details": [
+            "Test TS-11-28: `GitError.Error()` returns a string containing the command args, exit code, and stderr",
+            "Test TS-11-29: `*GitError` can be detected via `errors.As` from a wrapped error chain",
+            "Verify the `Args []string`, `ExitCode int`, and `Stderr string` fields are populated correctly on a real failed command"
+          ],
+          "test_spec_refs": [
+            "TS-11-28",
+            "TS-11-29"
+          ],
+          "requirement_refs": [
+            "11-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: `go build ./internal/gitcmd/...`",
+          "Version parser unit tests are table-driven and cover above-2.38, below-2.38, and malformed cases",
+          "Constructor integration test uses `t.Skip` when host git < 2.38 rather than failing",
+          "Safety env var tests assert all three variables with correct values",
+          "No mock frameworks used \u2014 only `testing` and `os` standard library packages",
+          "go vet ./internal/gitcmd/... reports no issues"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: LsRemote, MergeTree, and Rebase",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write LsRemote three-way exit code discrimination tests",
+          "details": [
+            "Test TS-11-11: `LsRemote` returns trimmed stdout and nil error when ref exists (exit 0) \u2014 use a local temp repo as remote",
+            "Test TS-11-12: `LsRemote` returns `ErrRefNotFound` sentinel when ref does not exist (exit 2) \u2014 query a nonexistent ref on a local repo",
+            "Test TS-11-13: `LsRemote` returns `*GitError` (not `ErrRefNotFound`) when network/auth fails (exit 1) \u2014 point at `https://localhost:1/nonexistent`",
+            "Test TS-11-14: verify `errors.Is(err, ErrRefNotFound)` works correctly for the exit-2 case",
+            "Document in test comments why `https://localhost:1/nonexistent` reliably produces exit code 1 (connection refused on privileged port)"
+          ],
+          "test_spec_refs": [
+            "TS-11-11",
+            "TS-11-12",
+            "TS-11-13",
+            "TS-11-14"
+          ],
+          "requirement_refs": [
+            "11-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write MergeTree clean merge and conflict tests",
+          "details": [
+            "Test TS-11-15: `MergeTree` returns a tree SHA string (non-empty) on a clean merge \u2014 set up two non-conflicting branches in a temp repo",
+            "Test TS-11-16: `MergeTree` returns `*MergeConflictError` (not nil) when merge produces conflicts \u2014 set up two branches with conflicting edits to the same file",
+            "Test TS-11-17: `MergeConflictError.ConflictingFiles` contains the correct file paths \u2014 use `errors.As` to extract and assert",
+            "Test TS-11-18: verify `errors.As(err, &ce)` pattern works for `*MergeConflictError` extraction",
+            "Helper: create a `setupConflictingRepo(t) string` function that initializes a temp repo with two conflicting branches"
+          ],
+          "test_spec_refs": [
+            "TS-11-15",
+            "TS-11-16",
+            "TS-11-17",
+            "TS-11-18"
+          ],
+          "requirement_refs": [
+            "11-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write Rebase success, conflict, and abort tests",
+          "details": [
+            "Test TS-11-19: `Rebase` returns new HEAD SHA (non-empty string) on a successful rebase \u2014 set up a diverged branch in a temp repo",
+            "Test TS-11-20: `Rebase` returns `*RebaseConflictError` with correct conflicting file paths when rebase conflicts \u2014 use `errors.As` to extract",
+            "Test TS-11-21: after `Rebase` returns `*RebaseConflictError`, verify repo is NOT in rebase state (no `.git/rebase-merge` or `.git/rebase-apply` directory exists), confirming `--abort` was called internally",
+            "Test TS-11-22: `RebaseAbort` succeeds when repo is in a rebase state (manually put repo into rebase state to test)",
+            "Test TS-11-23: `RebaseAbort` returns an error when repo is NOT in a rebase state",
+            "Helper: create `setupDivergedRepo(t) string` and `setupConflictingRebase(t) string` helpers"
+          ],
+          "test_spec_refs": [
+            "TS-11-19",
+            "TS-11-20",
+            "TS-11-21",
+            "TS-11-22",
+            "TS-11-23"
+          ],
+          "requirement_refs": [
+            "11-REQ-6",
+            "11-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile: `go build ./internal/gitcmd/...`",
+          "LsRemote tests cover all three exit code paths (0, 1, 2) with correct assertions",
+          "MergeTree conflict test uses `errors.As` pattern as specified in PRD",
+          "Rebase conflict test verifies absence of `.git/rebase-merge` and `.git/rebase-apply` after conflict return",
+          "No live network calls \u2014 localhost:1 used for exit-code-1 simulation",
+          "go vet ./internal/gitcmd/... reports no issues"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: RevParse, UpdateRef, goroutine safety, and integration coverage",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write RevParse and UpdateRef round-trip tests",
+          "details": [
+            "Test TS-11-24: `RevParse` returns the correct SHA for a known ref (e.g. HEAD) in a temp repo",
+            "Test TS-11-25: `RevParse` returns `*GitError` for an unknown ref",
+            "Test TS-11-26: `UpdateRef` successfully updates a ref to a new SHA \u2014 verify with a subsequent `RevParse` call",
+            "Test TS-11-27: `UpdateRef` returns `*GitError` when given an invalid SHA",
+            "Round-trip test: create a commit, capture SHA via `RevParse`, update a custom ref via `UpdateRef`, re-resolve via `RevParse` and assert equality"
+          ],
+          "test_spec_refs": [
+            "TS-11-24",
+            "TS-11-25",
+            "TS-11-26",
+            "TS-11-27"
+          ],
+          "requirement_refs": [
+            "11-REQ-8",
+            "11-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write goroutine safety and race detection tests",
+          "details": [
+            "Test TS-11-30: launch N goroutines (e.g. 20) concurrently calling `Run(ctx, \"--version\")` on a shared `*GitRunner` instance",
+            "Test TS-11-31: launch N goroutines concurrently calling `RevParse` and `LsRemote` on a shared instance against a local repo",
+            "Tests must be run with `-race` flag to detect data races: `go test -race ./internal/gitcmd/...`",
+            "Assert all goroutines complete without error and return consistent results",
+            "Use `sync.WaitGroup` to coordinate goroutine completion in tests"
+          ],
+          "test_spec_refs": [
+            "TS-11-30",
+            "TS-11-31"
+          ],
+          "requirement_refs": [
+            "11-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write integration coverage and cross-cutting tests",
+          "details": [
+            "Test TS-11-35: end-to-end integration test exercising constructor \u2192 Run \u2192 LsRemote \u2192 MergeTree \u2192 Rebase in sequence on a single temp repo",
+            "Test TS-11-36: verify safety variable precedence \u2014 pass `GIT_ALLOW_PROTOCOL=git:https:ssh:http` in `extraEnv`, confirm the hardcoded `file:https:ssh` value wins",
+            "Test TS-11-37: verify context cancellation propagates correctly through `Run`, `LsRemote`, and `RevParse`",
+            "Test TS-11-38: verify `*GitError` fields (Args, ExitCode, Stderr) are populated for each convenience method on failure",
+            "Test TS-11-39: verify `ErrRefNotFound` is a package-level sentinel that can be compared with `errors.Is`"
+          ],
+          "test_spec_refs": [
+            "TS-11-35",
+            "TS-11-36",
+            "TS-11-37",
+            "TS-11-38",
+            "TS-11-39"
+          ],
+          "requirement_refs": [
+            "11-REQ-2",
+            "11-REQ-3",
+            "11-REQ-4",
+            "11-REQ-10",
+            "11-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile: `go build ./internal/gitcmd/...`",
+          "RevParse/UpdateRef round-trip test passes with a real git repo",
+          "Goroutine safety test runs cleanly under `-race`: `go test -race ./internal/gitcmd/... -run TestConcurrent`",
+          "Safety variable precedence test confirms hardcoded values override extraEnv",
+          "go vet ./internal/gitcmd/... reports no issues"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement package skeleton, types, and version parser",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Create package skeleton and exported types",
+          "details": [
+            "Create `internal/gitcmd/` directory and `internal/gitcmd/gitcmd.go`",
+            "Define `GitRunner` struct with `workDir string` and `env []string` fields (immutable after construction)",
+            "Define `GitError` struct with `Args []string`, `ExitCode int`, `Stderr string` fields",
+            "Implement `(*GitError) Error() string` returning a formatted string with command, exit code, and stderr",
+            "Define `MergeConflictError` struct with `ConflictingFiles []string` and `(*MergeConflictError) Error() string`",
+            "Define `RebaseConflictError` struct with `ConflictingFiles []string` and `(*RebaseConflictError) Error() string`",
+            "Declare `ErrRefNotFound` as a package-level sentinel: `var ErrRefNotFound = errors.New(\"ref not found\")`"
+          ],
+          "test_spec_refs": [
+            "TS-11-28",
+            "TS-11-29"
+          ],
+          "requirement_refs": [
+            "11-REQ-10",
+            "11-REQ-4",
+            "11-REQ-5",
+            "11-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement version string parser",
+          "details": [
+            "Create `internal/gitcmd/version.go` with an unexported `parseGitVersion(raw string) error` (or returning a comparable version struct)",
+            "Parse output of `git --version` which has the form `git version 2.38.1`",
+            "Extract major and minor version numbers using `strings` and `strconv` \u2014 no external dependencies",
+            "Return error if major < 2, or major == 2 and minor < 38, or if the string is malformed",
+            "Document in code comments the exact `git --version` output format the parser was derived from",
+            "Ensure the function is exported or accessible for unit testing (e.g. exported as `ParseGitVersion` or tested via internal test package)"
+          ],
+          "test_spec_refs": [
+            "TS-11-32",
+            "TS-11-33",
+            "TS-11-34"
+          ],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement GitRunner constructor with version enforcement",
+          "details": [
+            "Implement `func New(workDir string, extraEnv []string) (*GitRunner, error)` in `internal/gitcmd/gitcmd.go`",
+            "Validate that `workDir` exists using `os.Stat` \u2014 return error if not found or not a directory",
+            "Execute `git --version` using `exec.Command` and capture stdout",
+            "Call `parseGitVersion` on the output; return a descriptive error if version < 2.38",
+            "Assemble the environment: start with `os.Environ()`, append `extraEnv`, then append the three hardcoded safety vars in order: `GIT_ALLOW_PROTOCOL=file:https:ssh`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`",
+            "Store assembled env slice and workDir in the returned `*GitRunner`"
+          ],
+          "test_spec_refs": [
+            "TS-11-1",
+            "TS-11-2",
+            "TS-11-3",
+            "TS-11-4",
+            "TS-11-5",
+            "TS-11-6",
+            "TS-11-7"
+          ],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Package compiles: `go build ./internal/gitcmd/...`",
+          "Version parser unit tests pass: `go test ./internal/gitcmd/... -run TestParseGitVersion -v`",
+          "Constructor integration tests pass (or skip on hosts with git < 2.38): `go test ./internal/gitcmd/... -run TestNew -v`",
+          "Safety env var tests pass: `go test ./internal/gitcmd/... -run TestSafetyEnv -v`",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "11-REQ-1.1, 11-REQ-1.2, 11-REQ-1.3, 11-REQ-1.4, 11-REQ-2.1, 11-REQ-2.2, 11-REQ-2.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement Run method and GitError handling",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement the Run core execution method",
+          "details": [
+            "Implement `func (r *GitRunner) Run(ctx context.Context, args ...string) (string, error)` in `internal/gitcmd/gitcmd.go`",
+            "Create `exec.CommandContext(ctx, \"git\", args...)` with `cmd.Dir = r.workDir` and `cmd.Env = r.env`",
+            "Capture stdout and stderr into separate `bytes.Buffer` instances",
+            "On success (exit code 0), return `strings.TrimSpace(stdout.String()), nil`",
+            "On failure, extract exit code via `*exec.ExitError` and return `nil, &GitError{Args: args, ExitCode: exitCode, Stderr: strings.TrimSpace(stderr.String())}`",
+            "Handle context cancellation: if `ctx.Err() != nil` after command failure, still return `*GitError` with the exit code (or -1 if unavailable)"
+          ],
+          "test_spec_refs": [
+            "TS-11-8",
+            "TS-11-9",
+            "TS-11-10"
+          ],
+          "requirement_refs": [
+            "11-REQ-3",
+            "11-REQ-10",
+            "11-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement runWithExitCode helper for exit-code-aware methods",
+          "details": [
+            "Implement an unexported `runWithExitCode(ctx context.Context, args ...string) (stdout string, exitCode int, stderr string, err error)` helper",
+            "This helper returns the raw exit code alongside stdout/stderr without wrapping in `*GitError`, enabling callers like `LsRemote` to perform exit-code discrimination",
+            "Use `errors.As(err, &exitErr)` with `*exec.ExitError` to extract the exit code",
+            "Return exit code -1 if the error is not an `*exec.ExitError` (e.g. binary not found)",
+            "Ensure all stdout/stderr strings are trimmed before return"
+          ],
+          "test_spec_refs": [
+            "TS-11-11",
+            "TS-11-12",
+            "TS-11-13"
+          ],
+          "requirement_refs": [
+            "11-REQ-3",
+            "11-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement RevParse and UpdateRef convenience methods",
+          "details": [
+            "Implement `func (r *GitRunner) RevParse(ctx context.Context, ref string) (string, error)` calling `r.Run(ctx, \"rev-parse\", ref)`",
+            "Implement `func (r *GitRunner) UpdateRef(ctx context.Context, ref, sha string) error` calling `r.Run(ctx, \"update-ref\", ref, sha)` and discarding stdout",
+            "Both methods propagate `*GitError` from `Run` unchanged",
+            "Add godoc comments describing the git subcommand each method invokes"
+          ],
+          "test_spec_refs": [
+            "TS-11-24",
+            "TS-11-25",
+            "TS-11-26",
+            "TS-11-27"
+          ],
+          "requirement_refs": [
+            "11-REQ-8",
+            "11-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Run method tests pass: `go test ./internal/gitcmd/... -run TestRun -v`",
+          "RevParse and UpdateRef round-trip tests pass: `go test ./internal/gitcmd/... -run TestRevParse -run TestUpdateRef -v`",
+          "GitError fields (Args, ExitCode, Stderr) are correctly populated \u2014 verified by TS-11-28, TS-11-29",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "11-REQ-3, 11-REQ-8, 11-REQ-9, 11-REQ-10 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement LsRemote with three-way exit code discrimination",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement LsRemote method",
+          "details": [
+            "Implement `func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, error)` in `internal/gitcmd/gitcmd.go`",
+            "Call `r.runWithExitCode(ctx, \"ls-remote\", \"--exit-code\", remote, ref)`",
+            "Exit code 0: return trimmed stdout, nil",
+            "Exit code 2: return `\"\", ErrRefNotFound`",
+            "Exit code 1 (or any other non-zero): return `\"\", &GitError{Args: [\"ls-remote\", \"--exit-code\", remote, ref], ExitCode: exitCode, Stderr: stderr}`",
+            "Add godoc comment explaining the three-way exit code semantics and the `--exit-code` flag behavior"
+          ],
+          "test_spec_refs": [
+            "TS-11-11",
+            "TS-11-12",
+            "TS-11-13",
+            "TS-11-14"
+          ],
+          "requirement_refs": [
+            "11-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Verify ErrRefNotFound sentinel and errors.Is compatibility",
+          "details": [
+            "Ensure `ErrRefNotFound` is declared as `var ErrRefNotFound = errors.New(\"ref not found\")` at package level",
+            "Verify `errors.Is(err, ErrRefNotFound)` returns true when `LsRemote` returns exit code 2",
+            "Verify `errors.Is(err, ErrRefNotFound)` returns false when `LsRemote` returns exit code 1 (`*GitError`)",
+            "Add a package-level doc comment explaining the sentinel and its relationship to `--exit-code` flag"
+          ],
+          "test_spec_refs": [
+            "TS-11-14",
+            "TS-11-39"
+          ],
+          "requirement_refs": [
+            "11-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "LsRemote three-way exit code tests pass: `go test ./internal/gitcmd/... -run TestLsRemote -v`",
+          "Exit-code-1 simulation via `https://localhost:1/nonexistent` produces `*GitError`, not `ErrRefNotFound`",
+          "Exit-code-2 simulation produces `ErrRefNotFound` detectable via `errors.Is`",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "11-REQ-4.1, 11-REQ-4.2, 11-REQ-4.3, 11-REQ-4.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement MergeTree with conflict path parsing",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement CONFLICT line parser for merge-tree output",
+          "details": [
+            "Create `internal/gitcmd/conflict.go` with an unexported `parseConflictFiles(stdout string) []string` function",
+            "Scan stdout line-by-line using `strings.Split(stdout, \"\\n\")`",
+            "Identify lines starting with `CONFLICT` prefix",
+            "Extract file path from each CONFLICT line \u2014 document the chosen parsing rule (regex, prefix strip, or delimiter split) in a code comment alongside a representative sample line from git 2.38+",
+            "Representative sample: `CONFLICT (content): Merge conflict in path/to/file.go` \u2014 extract `path/to/file.go` after the last `: ` delimiter",
+            "Return deduplicated slice of file paths; return empty slice (not nil) if no CONFLICT lines found"
+          ],
+          "test_spec_refs": [
+            "TS-11-17",
+            "TS-11-18"
+          ],
+          "requirement_refs": [
+            "11-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement MergeTree method",
+          "details": [
+            "Implement `func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, error)` in `internal/gitcmd/gitcmd.go`",
+            "Call `r.runWithExitCode(ctx, \"merge-tree\", \"--write-tree\", base, head)`",
+            "Exit code 0: parse first line of stdout as tree SHA, return `(treeSHA, nil)`",
+            "Non-zero exit code: call `parseConflictFiles(stdout)` to extract conflicting paths, return `(\"\", &MergeConflictError{ConflictingFiles: paths})`",
+            "Add godoc comment explaining that callers must use `errors.As` to extract `*MergeConflictError`",
+            "Note in comments that `merge-tree --write-tree` requires git >= 2.38 (enforced at construction)"
+          ],
+          "test_spec_refs": [
+            "TS-11-15",
+            "TS-11-16",
+            "TS-11-17",
+            "TS-11-18"
+          ],
+          "requirement_refs": [
+            "11-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "MergeTree clean merge test passes: `go test ./internal/gitcmd/... -run TestMergeTree -v`",
+          "MergeTree conflict test returns `*MergeConflictError` with correct file paths via `errors.As`",
+          "CONFLICT line parser documented with representative sample line from git 2.38+",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "11-REQ-5.1, 11-REQ-5.2, 11-REQ-5.3, 11-REQ-5.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Rebase and RebaseAbort methods",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement RebaseAbort standalone method",
+          "details": [
+            "Implement `func (r *GitRunner) RebaseAbort(ctx context.Context) error` in `internal/gitcmd/gitcmd.go`",
+            "Call `r.Run(ctx, \"rebase\", \"--abort\")` and return any error as-is",
+            "Add godoc comment explaining this is for edge-case manual recovery when context cancellation interrupts a rebase mid-flight",
+            "Note that `Rebase` calls this internally on conflict \u2014 `RebaseAbort` is only for the context-cancellation edge case"
+          ],
+          "test_spec_refs": [
+            "TS-11-22",
+            "TS-11-23"
+          ],
+          "requirement_refs": [
+            "11-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement Rebase method with internal abort on conflict",
+          "details": [
+            "Implement `func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error)` in `internal/gitcmd/gitcmd.go`",
+            "Call `r.runWithExitCode(ctx, \"rebase\", onto)`",
+            "On success (exit code 0): call `r.RevParse(ctx, \"HEAD\")` and return the new HEAD SHA",
+            "On non-zero exit (conflict): immediately call `r.Run(ctx, \"rebase\", \"--abort\")` to clean up rebase state, then parse conflicting files from stderr/stdout and return `(\"\", &RebaseConflictError{ConflictingFiles: paths})`",
+            "Add godoc comment explaining the internal abort behavior and that callers must use `errors.As` to extract `*RebaseConflictError`",
+            "Document the distinction: conflict \u2192 `RebaseConflictError`; context cancellation \u2192 context error (caller must call `RebaseAbort` manually)"
+          ],
+          "test_spec_refs": [
+            "TS-11-19",
+            "TS-11-20",
+            "TS-11-21"
+          ],
+          "requirement_refs": [
+            "11-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement rebase conflict file path parsing",
+          "details": [
+            "Add an unexported `parseRebaseConflictFiles(output string) []string` function in `internal/gitcmd/conflict.go`",
+            "Parse git rebase conflict output to extract conflicting file paths \u2014 git rebase outputs `CONFLICT (content): Merge conflict in <path>` lines to stdout/stderr",
+            "Document the exact output format observed from git 2.38+ rebase in code comments alongside a representative sample",
+            "Reuse or adapt `parseConflictFiles` logic if the format is identical to merge-tree output",
+            "Return empty slice (not nil) if no conflict paths found"
+          ],
+          "test_spec_refs": [
+            "TS-11-20",
+            "TS-11-21"
+          ],
+          "requirement_refs": [
+            "11-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Rebase success test passes and returns new HEAD SHA: `go test ./internal/gitcmd/... -run TestRebase -v`",
+          "Rebase conflict test returns `*RebaseConflictError` with correct paths via `errors.As`",
+          "After Rebase conflict, repo has no `.git/rebase-merge` or `.git/rebase-apply` directory (abort was called)",
+          "RebaseAbort tests pass: `go test ./internal/gitcmd/... -run TestRebaseAbort -v`",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "11-REQ-6.1, 11-REQ-6.2, 11-REQ-6.3, 11-REQ-7.1, 11-REQ-7.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Checkpoint: full test suite and race detection",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run full integration test suite against real git binary",
+          "details": [
+            "Execute `go test ./internal/gitcmd/... -count=1 -v` and confirm all tests pass",
+            "Confirm constructor test skips gracefully on hosts with git < 2.38 rather than failing",
+            "Confirm LsRemote exit-code-1 test uses `https://localhost:1/nonexistent` and does not require live network",
+            "Confirm MergeTree and Rebase tests use temporary git repos created in `t.TempDir()`",
+            "Review test output for any unexpected skips or flaky assertions"
+          ],
+          "test_spec_refs": [
+            "TS-11-35",
+            "TS-11-36",
+            "TS-11-37",
+            "TS-11-38",
+            "TS-11-39"
+          ],
+          "requirement_refs": [
+            "11-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Run race detector across all gitcmd tests",
+          "details": [
+            "Execute `go test -race ./internal/gitcmd/... -count=1 -v`",
+            "Confirm goroutine safety tests (TS-11-30, TS-11-31) pass without data race reports",
+            "Confirm no shared mutable state exists in `GitRunner` struct after construction",
+            "If race conditions are found, fix by ensuring each `Run` call creates an independent `exec.Cmd` with its own buffers"
+          ],
+          "test_spec_refs": [
+            "TS-11-30",
+            "TS-11-31"
+          ],
+          "requirement_refs": [
+            "11-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Verify safety variable precedence end-to-end",
+          "details": [
+            "Run TS-11-36 (safety variable precedence test) and confirm hardcoded values override extraEnv",
+            "Manually inspect the assembled `env` slice in a debug test to confirm ordering: `os.Environ()` + `extraEnv` + safety vars",
+            "Confirm that passing `GIT_ALLOW_PROTOCOL=git:https:ssh:http` in extraEnv does NOT override the hardcoded `file:https:ssh`",
+            "Document the append-order mechanism in `New()` with a code comment referencing the OS last-occurrence behavior"
+          ],
+          "test_spec_refs": [
+            "TS-11-5",
+            "TS-11-6",
+            "TS-11-7",
+            "TS-11-36"
+          ],
+          "requirement_refs": [
+            "11-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Full test suite passes: `go test ./internal/gitcmd/... -count=1 -v`",
+          "Race detector passes: `go test -race ./internal/gitcmd/... -count=1`",
+          "All 39 test cases (TS-11-1 through TS-11-39) have corresponding passing tests",
+          "No test uses mock frameworks \u2014 only `testing`, `os`, and real git binary",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "11-REQ-11, 11-REQ-13 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: execution paths, return values, and dead-code audit",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths \u2014 verify no stubs remain",
+          "details": [
+            "Search `internal/gitcmd/` for stub markers: `panic(\"not implemented\")`, bare `return nil` in non-trivial paths, `// TODO`, `// FIXME`",
+            "Verify `New` \u2192 `parseGitVersion` \u2192 version check chain is fully wired (no stub returns)",
+            "Verify `Run` \u2192 `exec.CommandContext` \u2192 stdout/stderr capture \u2192 `*GitError` chain is complete",
+            "Verify `LsRemote` \u2192 `runWithExitCode` \u2192 three-way exit code discrimination chain is complete",
+            "Verify `MergeTree` \u2192 `runWithExitCode` \u2192 `parseConflictFiles` \u2192 `*MergeConflictError` chain is complete",
+            "Verify `Rebase` \u2192 `runWithExitCode` \u2192 internal `--abort` \u2192 `parseRebaseConflictFiles` \u2192 `*RebaseConflictError` chain is complete"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-3",
+            "11-REQ-4",
+            "11-REQ-5",
+            "11-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Verify return value propagation across all methods",
+          "details": [
+            "Confirm `Run` returns trimmed stdout string to callers (not discarded)",
+            "Confirm `LsRemote` propagates `ErrRefNotFound` sentinel correctly (not wrapped in another error type)",
+            "Confirm `MergeTree` returns tree SHA on success and `*MergeConflictError` on conflict (not generic error)",
+            "Confirm `Rebase` returns new HEAD SHA from `RevParse` on success",
+            "Confirm `RebaseAbort` propagates `*GitError` from `Run` on failure",
+            "Confirm `RevParse` and `UpdateRef` propagate `*GitError` unchanged"
+          ],
+          "test_spec_refs": [
+            "TS-11-8",
+            "TS-11-11",
+            "TS-11-15",
+            "TS-11-19",
+            "TS-11-24",
+            "TS-11-26"
+          ],
+          "requirement_refs": [
+            "11-REQ-3",
+            "11-REQ-4",
+            "11-REQ-5",
+            "11-REQ-6",
+            "11-REQ-7",
+            "11-REQ-8",
+            "11-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Run `grep -rn 'panic(\"not implemented\")' internal/gitcmd/` \u2014 must return no results",
+            "Run `grep -rn 'TODO\\|FIXME\\|HACK' internal/gitcmd/` \u2014 review any hits and resolve or document",
+            "Verify no method has a bare `return nil` where a real implementation is expected",
+            "Confirm `parseGitVersion`, `parseConflictFiles`, and `parseRebaseConflictFiles` are not stubs \u2014 each must have real parsing logic with documented sample input",
+            "Confirm `ErrRefNotFound` is a real sentinel value, not a placeholder comment"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-5",
+            "11-REQ-6",
+            "11-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "No stub markers found: `grep -rn 'panic(\"not implemented\")' internal/gitcmd/` returns empty",
+          "All execution paths (New\u2192parseGitVersion, Run\u2192exec.Cmd, LsRemote\u2192three-way discrimination, MergeTree\u2192conflict parse, Rebase\u2192abort\u2192conflict parse) are fully implemented",
+          "ErrRefNotFound is a real package-level sentinel detectable via errors.Is",
+          "Return values propagate correctly: Run returns trimmed stdout, LsRemote returns ErrRefNotFound on exit 2, MergeTree returns tree SHA or *MergeConflictError, Rebase returns new HEAD SHA or *RebaseConflictError"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: call-site verification and smoke tests",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Call-site verification \u2014 confirm GitRunner is wired into production code",
+          "details": [
+            "Verify that `internal/gitcmd` is imported by at least one production package (not only test files)",
+            "If downstream specs (`merge_operations`, `upstream_sync`) are not yet implemented, document the expected import path and add a `// TODO: wire into merge_operations` comment",
+            "Confirm `New(workDir, extraEnv)` is called from production code (not just tests) \u2014 search for `gitcmd.New(` in non-test Go files",
+            "If no production caller exists yet, flag this as a known gap and create a tracking comment in the package doc",
+            "Verify no stub/dead-code patterns remain: `grep -rn 'panic(\"not implemented\")\\|// TODO\\|// FIXME' internal/gitcmd/` returns no results"
+          ],
+          "test_spec_refs": [],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Run smoke tests: constructor, safety vars, and core methods",
+          "details": [
+            "Run constructor smoke test: `go test ./internal/gitcmd/... -run TestNew -v`",
+            "Run safety env var smoke test: `go test ./internal/gitcmd/... -run TestSafetyEnv -v`",
+            "Run Run method smoke test: `go test ./internal/gitcmd/... -run TestRun -v`",
+            "Run LsRemote smoke test: `go test ./internal/gitcmd/... -run TestLsRemote -v`",
+            "Run MergeTree smoke test: `go test ./internal/gitcmd/... -run TestMergeTree -v`"
+          ],
+          "test_spec_refs": [
+            "TS-11-1",
+            "TS-11-5",
+            "TS-11-8",
+            "TS-11-11",
+            "TS-11-15",
+            "TS-11-SMOKE-1",
+            "TS-11-SMOKE-2",
+            "TS-11-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "11-REQ-1",
+            "11-REQ-2",
+            "11-REQ-3",
+            "11-REQ-4",
+            "11-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Run smoke tests: rebase, concurrency, and full suite",
+          "details": [
+            "Run Rebase smoke test: `go test ./internal/gitcmd/... -run TestRebase -v`",
+            "Run RevParse/UpdateRef smoke test: `go test ./internal/gitcmd/... -run TestRevParse -run TestUpdateRef -v`",
+            "Run goroutine safety smoke test: `go test -race ./internal/gitcmd/... -run TestConcurrent -v`",
+            "Run full integration test suite: `go test ./internal/gitcmd/... -count=1 -v`",
+            "Run linter: `go vet ./internal/gitcmd/...`"
+          ],
+          "test_spec_refs": [
+            "TS-11-19",
+            "TS-11-24",
+            "TS-11-30",
+            "TS-11-35",
+            "TS-11-SMOKE-4",
+            "TS-11-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "11-REQ-6",
+            "11-REQ-8",
+            "11-REQ-11",
+            "11-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "No stub markers found: `grep -rn 'panic(\"not implemented\")' internal/gitcmd/` returns empty; no TODO/FIXME comments remain",
+          "Full test suite passes: `go test ./internal/gitcmd/... -count=1 -v`",
+          "Race detector passes: `go test -race ./internal/gitcmd/... -count=1`",
+          "Linter passes: `go vet ./internal/gitcmd/...`",
+          "Safety variables (GIT_ALLOW_PROTOCOL, GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM) are appended after extraEnv in every invocation",
+          "All 39 test cases (TS-11-1 through TS-11-39) pass",
+          "11-REQ-1 through 11-REQ-13 acceptance criteria all met"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "11-REQ-1.1",
+      "test_spec_id": "TS-11-1",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-1.2",
+      "test_spec_id": "TS-11-2",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-1.3",
+      "test_spec_id": "TS-11-3",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-1.4",
+      "test_spec_id": "TS-11-4",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-2.1",
+      "test_spec_id": "TS-11-5",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-2.2",
+      "test_spec_id": "TS-11-6",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-2.3",
+      "test_spec_id": "TS-11-7",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-3.1",
+      "test_spec_id": "TS-11-8",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-3.2",
+      "test_spec_id": "TS-11-9",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-3.3",
+      "test_spec_id": "TS-11-10",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-4.1",
+      "test_spec_id": "TS-11-11",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-4.2",
+      "test_spec_id": "TS-11-12",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-4.3",
+      "test_spec_id": "TS-11-13",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-4.4",
+      "test_spec_id": "TS-11-14",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-5.1",
+      "test_spec_id": "TS-11-15",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-5.2",
+      "test_spec_id": "TS-11-16",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-5.3",
+      "test_spec_id": "TS-11-17",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-5.4",
+      "test_spec_id": "TS-11-18",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-6.1",
+      "test_spec_id": "TS-11-19",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-6.2",
+      "test_spec_id": "TS-11-20",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-6.3",
+      "test_spec_id": "TS-11-21",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-7.1",
+      "test_spec_id": "TS-11-22",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-7.2",
+      "test_spec_id": "TS-11-23",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-8.1",
+      "test_spec_id": "TS-11-24",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-8.2",
+      "test_spec_id": "TS-11-25",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-9.1",
+      "test_spec_id": "TS-11-26",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-9.2",
+      "test_spec_id": "TS-11-27",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-10.1",
+      "test_spec_id": "TS-11-28",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-10.2",
+      "test_spec_id": "TS-11-29",
+      "task_id": "4.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-11.1",
+      "test_spec_id": "TS-11-30",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-11.2",
+      "test_spec_id": "TS-11-31",
+      "task_id": "3.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-12.1",
+      "test_spec_id": "TS-11-32",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-12.2",
+      "test_spec_id": "TS-11-33",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-12.3",
+      "test_spec_id": "TS-11-34",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-13.1",
+      "test_spec_id": "TS-11-35",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-13.2",
+      "test_spec_id": "TS-11-36",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-13.3",
+      "test_spec_id": "TS-11-37",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-13.4",
+      "test_spec_id": "TS-11-38",
+      "task_id": "3.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "11-REQ-13.5",
+      "test_spec_id": "TS-11-39",
+      "task_id": "6.2",
+      "test_path": null
+    }
+  ]
+}

@@ -1,0 +1,2079 @@
+{
+  "$schema": null,
+  "spec_id": "12",
+  "spec_name": "merge_operations",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-12-1",
+      "requirement_id": "12-REQ-1.1",
+      "kind": "unit",
+      "description": "Schema migration adds group_key TEXT NOT NULL DEFAULT '' column to the jobs table, and existing rows have group_key set to empty string.",
+      "preconditions": [
+        "SQLite database is initialized with the jobs table from the durable_job_queue spec (spec 10) without the group_key column",
+        "At least one existing job row is present in the jobs table"
+      ],
+      "input": "Run the merge_operations schema migration against the existing jobs table",
+      "expected": {
+        "column_exists": true,
+        "column_type": "TEXT NOT NULL DEFAULT ''",
+        "existing_rows_group_key": "",
+        "migration_result": "no error"
+      },
+      "assertion_pseudocode": "run_migration(); col = db.column_info('jobs', 'group_key'); assert col.type == 'TEXT'; assert col.not_null == true; assert col.default_value == ''; rows = db.query('SELECT group_key FROM jobs'); for row in rows: assert row.group_key == ''"
+    },
+    {
+      "id": "TS-12-2",
+      "requirement_id": "12-REQ-1.2",
+      "kind": "unit",
+      "description": "Enqueuing a job with a non-empty Group value stores that value in the group_key column of the inserted job row.",
+      "preconditions": [
+        "SQLite database is initialized with the migrated jobs table including group_key column",
+        "Durable job queue is initialized"
+      ],
+      "input": {
+        "EnqueueParams": {
+          "group": "ws1:main",
+          "key": "ws1:main:feature/a",
+          "payload": "{}",
+          "type": "merge"
+        }
+      },
+      "expected": {
+        "job_row_group_key": "ws1:main"
+      },
+      "assertion_pseudocode": "job_id = queue.Enqueue(EnqueueParams{Type:'merge', Key:'ws1:main:feature/a', Group:'ws1:main', Payload:'{}'}); row = db.query('SELECT group_key FROM jobs WHERE id = ?', job_id); assert row.group_key == 'ws1:main'"
+    },
+    {
+      "id": "TS-12-3",
+      "requirement_id": "12-REQ-1.3",
+      "kind": "unit",
+      "description": "Enqueuing a job without a Group field stores an empty string in group_key, preserving existing dedup behavior.",
+      "preconditions": [
+        "SQLite database is initialized with the migrated jobs table including group_key column",
+        "Durable job queue is initialized"
+      ],
+      "input": {
+        "EnqueueParams": {
+          "key": "ws1:clone",
+          "payload": "{}",
+          "type": "clone"
+        }
+      },
+      "expected": {
+        "job_row_group_key": ""
+      },
+      "assertion_pseudocode": "job_id = queue.Enqueue(EnqueueParams{Type:'clone', Key:'ws1:clone', Payload:'{}'}); row = db.query('SELECT group_key FROM jobs WHERE id = ?', job_id); assert row.group_key == ''"
+    },
+    {
+      "id": "TS-12-4",
+      "requirement_id": "12-REQ-1.4",
+      "kind": "unit",
+      "description": "Worker dispatch query uses CASE WHEN group_key != '' THEN group_key ELSE key END as the serialization key, blocking a second job of the same type and group_key while one is running.",
+      "preconditions": [
+        "SQLite database has two merge jobs with type='merge', group_key='ws1:main', status='queued'",
+        "No other jobs are running"
+      ],
+      "input": "Worker attempts to dispatch both jobs simultaneously",
+      "expected": {
+        "running_jobs_count": 1,
+        "second_job_status": "queued"
+      },
+      "assertion_pseudocode": "insert_job(type='merge', key='ws1:main:feature/a', group_key='ws1:main', status='queued'); insert_job(type='merge', key='ws1:main:feature/b', group_key='ws1:main', status='queued'); worker.dispatch(); running = db.query('SELECT COUNT(*) FROM jobs WHERE type=? AND group_key=? AND status=?', 'merge', 'ws1:main', 'running'); assert running.count == 1; queued = db.query('SELECT COUNT(*) FROM jobs WHERE type=? AND group_key=? AND status=?', 'merge', 'ws1:main', 'queued'); assert queued.count == 1"
+    },
+    {
+      "id": "TS-12-5",
+      "requirement_id": "12-REQ-1.5",
+      "kind": "unit",
+      "description": "Existing job types without group_key continue to serialize by (type, key) with no behavioral change after the migration.",
+      "preconditions": [
+        "SQLite database has two jobs with type='clone', key='ws1:clone', group_key='', status='queued'",
+        "No other jobs are running"
+      ],
+      "input": "Worker attempts to dispatch both clone jobs",
+      "expected": {
+        "running_clone_jobs_count": 1,
+        "second_clone_job_status": "queued"
+      },
+      "assertion_pseudocode": "insert_job(type='clone', key='ws1:clone', group_key='', status='queued'); insert_job(type='clone', key='ws1:clone', group_key='', status='queued'); worker.dispatch(); running = db.query('SELECT COUNT(*) FROM jobs WHERE type=? AND key=? AND status=?', 'clone', 'ws1:clone', 'running'); assert running.count == 1"
+    },
+    {
+      "id": "TS-12-6",
+      "requirement_id": "12-REQ-2.1",
+      "kind": "integration",
+      "description": "The hub server registers a job handler for type 'merge' with the durable job queue before serving the first request.",
+      "preconditions": [
+        "Hub server is configured with a valid SQLite database",
+        "Durable job queue is initialized"
+      ],
+      "input": "Start the hub server",
+      "expected": {
+        "merge_handler_registered": true,
+        "registered_before_first_request": true
+      },
+      "assertion_pseudocode": "server = start_hub_server(); registered_types = queue.registered_job_types(); assert 'merge' in registered_types; assert server.is_ready_to_serve()"
+    },
+    {
+      "id": "TS-12-7",
+      "requirement_id": "12-REQ-2.2",
+      "kind": "unit",
+      "description": "Every merge job is enqueued with Key='<workspace_slug>:<target_branch>:<source_ref>' and Group='<workspace_slug>:<target_branch>'.",
+      "preconditions": [
+        "SQLite database is initialized with migrated jobs table",
+        "Durable job queue is initialized with merge handler registered"
+      ],
+      "input": {
+        "source_ref": "feature/x",
+        "target_branch": "main",
+        "workspace_slug": "my-ws"
+      },
+      "expected": {
+        "job_group_key": "my-ws:main",
+        "job_key": "my-ws:main:feature/x"
+      },
+      "assertion_pseudocode": "job_id = enqueue_merge_job(workspace_slug='my-ws', target_branch='main', source_ref='feature/x', submitted_by='alice'); row = db.query('SELECT key, group_key FROM jobs WHERE id = ?', job_id); assert row.key == 'my-ws:main:feature/x'; assert row.group_key == 'my-ws:main'"
+    },
+    {
+      "id": "TS-12-8",
+      "requirement_id": "12-REQ-3.1",
+      "kind": "unit",
+      "description": "When a merge job is enqueued via an API key, submitted_by in the job payload equals the API key owner's username from AuthInfo.",
+      "preconditions": [
+        "Hub server is running with merge handler registered",
+        "AuthInfo is populated with username='alice' from an API key"
+      ],
+      "input": {
+        "auth_info_username": "alice",
+        "auth_method": "api_key",
+        "source_ref": "feature/a",
+        "target_branch": "main"
+      },
+      "expected": {
+        "job_payload_submitted_by": "alice"
+      },
+      "assertion_pseudocode": "auth_info = AuthInfo{Username: 'alice', AuthMethod: 'api_key'}; job_id = enqueue_merge_job_with_auth(auth_info, workspace_slug='ws1', target_branch='main', source_ref='feature/a'); row = db.query('SELECT payload FROM jobs WHERE id = ?', job_id); payload = json_parse(row.payload); assert payload.submitted_by == 'alice'"
+    },
+    {
+      "id": "TS-12-9",
+      "requirement_id": "12-REQ-3.2",
+      "kind": "unit",
+      "description": "When a merge job is enqueued via an admin token, submitted_by in the job payload is the literal string 'admin'.",
+      "preconditions": [
+        "Hub server is running with merge handler registered",
+        "Request is authenticated with an admin token"
+      ],
+      "input": {
+        "auth_method": "admin_token",
+        "source_ref": "feature/a",
+        "target_branch": "main"
+      },
+      "expected": {
+        "job_payload_submitted_by": "admin"
+      },
+      "assertion_pseudocode": "auth_info = AuthInfo{AuthMethod: 'admin_token'}; job_id = enqueue_merge_job_with_auth(auth_info, workspace_slug='ws1', target_branch='main', source_ref='feature/a'); row = db.query('SELECT payload FROM jobs WHERE id = ?', job_id); payload = json_parse(row.payload); assert payload.submitted_by == 'admin'"
+    },
+    {
+      "id": "TS-12-10",
+      "requirement_id": "12-REQ-3.3",
+      "kind": "unit",
+      "description": "When a merge job is enqueued via a PAT, submitted_by in the job payload equals the PAT owner's username from AuthInfo.",
+      "preconditions": [
+        "Hub server is running with merge handler registered",
+        "AuthInfo is populated with PAT owner username='bob'"
+      ],
+      "input": {
+        "auth_info_pat_owner": "bob",
+        "auth_method": "pat",
+        "source_ref": "feature/a",
+        "target_branch": "main"
+      },
+      "expected": {
+        "job_payload_submitted_by": "bob"
+      },
+      "assertion_pseudocode": "auth_info = AuthInfo{Username: 'bob', AuthMethod: 'pat'}; job_id = enqueue_merge_job_with_auth(auth_info, workspace_slug='ws1', target_branch='main', source_ref='feature/a'); row = db.query('SELECT payload FROM jobs WHERE id = ?', job_id); payload = json_parse(row.payload); assert payload.submitted_by == 'bob'"
+    },
+    {
+      "id": "TS-12-11",
+      "requirement_id": "12-REQ-4.1",
+      "kind": "unit",
+      "description": "When the dry-run conflict check detects conflicts, the merge handler returns WouldConflict as a permanent error with conflict_files, and the job transitions to failed status.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is configured and available",
+        "git merge-tree --write-tree is mocked to return non-zero exit code with conflict file list ['src/main.go']"
+      ],
+      "input": {
+        "source_ref": "feature/conflict",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "conflict_files": [
+          "src/main.go"
+        ],
+        "error_type": "permanent",
+        "git_state_modified": false,
+        "job_status": "failed",
+        "rejection_reason": "WouldConflict"
+      },
+      "assertion_pseudocode": "result, err = merge_handler.pre_check(workspace='ws1', target='main', source='feature/conflict'); assert err != nil; assert err.type == WouldConflict; assert err.is_permanent == true; assert err.conflict_files == ['src/main.go']; assert working_tree_is_clean('ws1')"
+    },
+    {
+      "id": "TS-12-12",
+      "requirement_id": "12-REQ-4.2",
+      "kind": "unit",
+      "description": "When the source branch is already integrated into the target, the merge handler returns AlreadyMerged and marks the job as completed without performing any git operations.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Source branch commits are already reachable from target branch HEAD"
+      ],
+      "input": {
+        "source_ref": "feature/already-merged",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "git_state_modified": false,
+        "job_status": "completed",
+        "rejection_reason": "AlreadyMerged"
+      },
+      "assertion_pseudocode": "result, err = merge_handler.pre_check(workspace='ws1', target='main', source='feature/already-merged'); assert err == nil; assert result.reason == AlreadyMerged; assert result.is_success == true; assert no_git_operations_performed()"
+    },
+    {
+      "id": "TS-12-13",
+      "requirement_id": "12-REQ-4.3",
+      "kind": "unit",
+      "description": "When the source branch has no commits ahead of the target, the merge handler returns BranchNotReady as a retryable error.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Source branch HEAD is identical to or behind target branch HEAD"
+      ],
+      "input": {
+        "source_ref": "feature/not-ready",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_type": "retryable",
+        "git_state_modified": false,
+        "rejection_reason": "BranchNotReady"
+      },
+      "assertion_pseudocode": "result, err = merge_handler.pre_check(workspace='ws1', target='main', source='feature/not-ready'); assert err != nil; assert err.type == BranchNotReady; assert err.is_retryable == true; assert no_git_operations_performed()"
+    },
+    {
+      "id": "TS-12-14",
+      "requirement_id": "12-REQ-5.1",
+      "kind": "unit",
+      "description": "The merge handler invokes GitRunner with 'git merge-tree --write-tree <target-head> <source-branch-head>' in the workspace trunk directory during the pre-check phase.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is available and instrumented to record invocations",
+        "target branch HEAD SHA is 'aaa111'",
+        "source branch HEAD SHA is 'bbb222'"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "git_command": "git merge-tree --write-tree aaa111 bbb222",
+        "working_directory": "<WORKSPACE_ROOT>/ws1/trunk/"
+      },
+      "assertion_pseudocode": "runner = instrumented_git_runner(); merge_handler.run_dry_run_check(runner, workspace='ws1', target='main', source='feature/a'); invocations = runner.get_invocations(); assert len(invocations) == 1; assert invocations[0].args == ['merge-tree', '--write-tree', 'aaa111', 'bbb222']; assert invocations[0].cwd == '<WORKSPACE_ROOT>/ws1/trunk/'"
+    },
+    {
+      "id": "TS-12-15",
+      "requirement_id": "12-REQ-5.2",
+      "kind": "unit",
+      "description": "When git merge-tree --write-tree exits with a conflict exit code, the handler parses conflict_files and returns WouldConflict as a permanent error, leaving the working tree unmodified.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is mocked to return exit code 1 with output listing 'src/foo.go' as conflicting"
+      ],
+      "input": {
+        "source_ref": "feature/conflict",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "conflict_files": [
+          "src/foo.go"
+        ],
+        "error_type": "WouldConflict",
+        "is_permanent": true,
+        "working_tree_modified": false
+      },
+      "assertion_pseudocode": "err = merge_handler.run_dry_run_check(mocked_runner_with_conflict(['src/foo.go']), workspace='ws1', target='main', source='feature/conflict'); assert err != nil; assert err.reason == WouldConflict; assert err.is_permanent == true; assert err.conflict_files == ['src/foo.go']; assert working_tree_is_clean('<WORKSPACE_ROOT>/ws1/trunk/')"
+    },
+    {
+      "id": "TS-12-16",
+      "requirement_id": "12-REQ-5.3",
+      "kind": "unit",
+      "description": "When git merge-tree --write-tree exits with code 0, the merge handler proceeds to the fetch step without error.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is mocked to return exit code 0 (no conflicts)"
+      ],
+      "input": {
+        "source_ref": "feature/clean",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error": null,
+        "next_step": "fetch"
+      },
+      "assertion_pseudocode": "err = merge_handler.run_dry_run_check(mocked_runner_no_conflict(), workspace='ws1', target='main', source='feature/clean'); assert err == nil; assert merge_handler.next_step_is_fetch()"
+    },
+    {
+      "id": "TS-12-17",
+      "requirement_id": "12-REQ-6.1",
+      "kind": "unit",
+      "description": "After the pre-check passes, the merge handler fetches the latest target branch state from the upstream remote via go-git using resolveCloneAuth credentials.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "go-git Repository.Fetch is instrumented to record calls",
+        "resolveCloneAuth returns valid credentials for the workspace"
+      ],
+      "input": {
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "fetch_called": true,
+        "fetch_error": null,
+        "fetch_uses_resolve_clone_auth": true
+      },
+      "assertion_pseudocode": "repo = instrumented_go_git_repo('<WORKSPACE_ROOT>/ws1/trunk/'); merge_handler.run_fetch_step(repo, workspace='ws1', target='main'); assert repo.fetch_was_called(); assert repo.fetch_options.auth == resolve_clone_auth('ws1'); assert repo.fetch_error == nil"
+    },
+    {
+      "id": "TS-12-18",
+      "requirement_id": "12-REQ-6.2",
+      "kind": "unit",
+      "description": "The merge handler captures the pre-rebase SHA of the source branch before invoking GitRunner to run 'git rebase <target-ref>' in the workspace trunk directory.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Source branch 'feature/a' HEAD SHA is 'abc123def456abc123def456abc123def456abc1'",
+        "GitRunner is instrumented to record invocations"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "git_command": "git rebase main",
+        "pre_rebase_sha_captured": "abc123def456abc123def456abc123def456abc1",
+        "working_directory": "<WORKSPACE_ROOT>/ws1/trunk/"
+      },
+      "assertion_pseudocode": "runner = instrumented_git_runner(); pre_sha, err = merge_handler.run_rebase_step(runner, workspace='ws1', target='main', source='feature/a'); assert pre_sha == 'abc123def456abc123def456abc123def456abc1'; assert runner.invocations[0].args == ['rebase', 'main']; assert runner.invocations[0].cwd == '<WORKSPACE_ROOT>/ws1/trunk/'"
+    },
+    {
+      "id": "TS-12-19",
+      "requirement_id": "12-REQ-6.3",
+      "kind": "unit",
+      "description": "When CHECK_COMMAND is set, the merge handler executes it via 'sh -c <CHECK_COMMAND>' in the workspace trunk directory with MERGE_TARGET, MERGE_SOURCE, and WORKSPACE_SLUG injected, enforcing a 10-minute timeout.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "CHECK_COMMAND workspace variable is set to 'make test'",
+        "Rebase has completed successfully"
+      ],
+      "input": {
+        "check_command": "make test",
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "command_executed": "sh -c make test",
+        "env_vars": {
+          "MERGE_SOURCE": "feature/a",
+          "MERGE_TARGET": "main",
+          "WORKSPACE_SLUG": "ws1"
+        },
+        "timeout_seconds": 600,
+        "working_directory": "<WORKSPACE_ROOT>/ws1/trunk/"
+      },
+      "assertion_pseudocode": "executor = instrumented_command_executor(); merge_handler.run_check_step(executor, workspace='ws1', target='main', source='feature/a', check_cmd='make test'); call = executor.last_call(); assert call.command == ['sh', '-c', 'make test']; assert call.cwd == '<WORKSPACE_ROOT>/ws1/trunk/'; assert call.env['MERGE_TARGET'] == 'main'; assert call.env['MERGE_SOURCE'] == 'feature/a'; assert call.env['WORKSPACE_SLUG'] == 'ws1'; assert call.timeout_seconds == 600"
+    },
+    {
+      "id": "TS-12-20",
+      "requirement_id": "12-REQ-6.4",
+      "kind": "unit",
+      "description": "When CHECK_COMMAND is not set, the merge handler skips the check step and proceeds directly to the ref update step.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "CHECK_COMMAND workspace variable is not set for workspace 'ws1'",
+        "Rebase has completed successfully"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "check_command_executed": false,
+        "next_step": "ref_update"
+      },
+      "assertion_pseudocode": "executor = instrumented_command_executor(); merge_handler.run_check_step(executor, workspace='ws1', target='main', source='feature/a', check_cmd=nil); assert executor.call_count() == 0; assert merge_handler.next_step_is_ref_update()"
+    },
+    {
+      "id": "TS-12-21",
+      "requirement_id": "12-REQ-6.5",
+      "kind": "unit",
+      "description": "After the check command exits 0 (or is skipped), the merge handler updates the target branch ref to the rebased source HEAD via go-git reference update (local only, no remote push).",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Rebase has completed; rebased HEAD SHA is 'newsha123'",
+        "go-git Repository.Storer is instrumented"
+      ],
+      "input": {
+        "rebased_head_sha": "newsha123",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "new_target_sha": "newsha123",
+        "remote_push_called": false,
+        "target_ref_updated": true
+      },
+      "assertion_pseudocode": "repo = instrumented_go_git_repo('<WORKSPACE_ROOT>/ws1/trunk/'); merge_handler.run_ref_update_step(repo, target='main', new_sha='newsha123'); ref = repo.storer.reference('refs/heads/main'); assert ref.hash == 'newsha123'; assert repo.push_was_not_called()"
+    },
+    {
+      "id": "TS-12-22",
+      "requirement_id": "12-REQ-6.6",
+      "kind": "unit",
+      "description": "After the target branch ref update succeeds, the merge handler deletes the source branch ref from the local repository via go-git reference deletion.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Target branch ref has been updated successfully",
+        "Source branch 'feature/a' ref exists in the repository"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "ref_exists_after": false,
+        "source_branch_ref_deleted": true
+      },
+      "assertion_pseudocode": "repo = go_git_open('<WORKSPACE_ROOT>/ws1/trunk/'); merge_handler.run_delete_source_step(repo, source='feature/a'); ref, err = repo.storer.reference('refs/heads/feature/a'); assert err == ErrReferenceNotFound"
+    },
+    {
+      "id": "TS-12-23",
+      "requirement_id": "12-REQ-6.7",
+      "kind": "unit",
+      "description": "After source branch deletion succeeds, the merge handler returns success with base_sha (pre-merge target HEAD) and merged_sha (new target HEAD) as 40-char hex SHAs.",
+      "preconditions": [
+        "All merge steps have completed successfully",
+        "pre-merge target HEAD SHA is 'base000sha000base000sha000base000sha0001'",
+        "new target HEAD SHA is 'merged1sha1merged1sha1merged1sha1merged1'"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "job_status": "completed",
+        "result_base_sha": "base000sha000base000sha000base000sha0001",
+        "result_merged_sha": "merged1sha1merged1sha1merged1sha1merged1",
+        "sha_length": 40
+      },
+      "assertion_pseudocode": "result, err = merge_handler.finalize(base_sha='base000sha000base000sha000base000sha0001', merged_sha='merged1sha1merged1sha1merged1sha1merged1'); assert err == nil; assert len(result.base_sha) == 40; assert len(result.merged_sha) == 40; assert result.base_sha == 'base000sha000base000sha000base000sha0001'; assert result.merged_sha == 'merged1sha1merged1sha1merged1sha1merged1'"
+    },
+    {
+      "id": "TS-12-24",
+      "requirement_id": "12-REQ-7.1",
+      "kind": "unit",
+      "description": "The branch rebase operation invokes GitRunner with 'git rebase <target-ref>' on the source branch and returns the new branch HEAD SHA on success.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Source branch 'feature/a' exists",
+        "GitRunner is mocked to return exit code 0 and new HEAD SHA 'newhead123'"
+      ],
+      "input": {
+        "source_branch": "feature/a",
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error": null,
+        "git_command": "git rebase main",
+        "new_head_sha": "newhead123"
+      },
+      "assertion_pseudocode": "new_sha, err = rebase_operation(runner=mocked_runner_success('newhead123'), workspace='ws1', source='feature/a', target='main'); assert err == nil; assert new_sha == 'newhead123'; assert mocked_runner.last_args() == ['rebase', 'main']"
+    },
+    {
+      "id": "TS-12-25",
+      "requirement_id": "12-REQ-7.2",
+      "kind": "unit",
+      "description": "When the rebase encounters conflicts, the branch rebase operation runs 'git rebase --abort' and returns a RebaseConflictError with conflict_files; the branch is left in its pre-rebase state.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Source branch 'feature/a' exists",
+        "GitRunner is mocked to return a conflict exit code with conflict_files=['src/a.go']"
+      ],
+      "input": {
+        "source_branch": "feature/a",
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "abort_command_called": true,
+        "conflict_files": [
+          "src/a.go"
+        ],
+        "error_type": "RebaseConflictError",
+        "new_head_sha": ""
+      },
+      "assertion_pseudocode": "runner = mocked_runner_conflict(['src/a.go']); new_sha, err = rebase_operation(runner=runner, workspace='ws1', source='feature/a', target='main'); assert new_sha == ''; assert err.type == RebaseConflictError; assert err.conflict_files == ['src/a.go']; assert runner.abort_was_called()"
+    },
+    {
+      "id": "TS-12-26",
+      "requirement_id": "12-REQ-8.1",
+      "kind": "unit",
+      "description": "The batch rebase operation rebases each branch sequentially, aborts and records conflicts for failing branches, and continues with remaining branches, returning a per-branch result list.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branches 'feature/a', 'feature/b', 'feature/c' exist",
+        "GitRunner is mocked: feature/a succeeds, feature/b conflicts, feature/c succeeds"
+      ],
+      "input": {
+        "branches": [
+          "feature/a",
+          "feature/b",
+          "feature/c"
+        ],
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "feature_a_status": "ok",
+        "feature_b_status": "conflict",
+        "feature_c_status": "ok",
+        "results_count": 3
+      },
+      "assertion_pseudocode": "results = batch_rebase(workspace='ws1', target='main', branches=['feature/a','feature/b','feature/c']); assert len(results) == 3; assert results[0].branch == 'feature/a' and results[0].status == 'ok' and results[0].new_head != ''; assert results[1].branch == 'feature/b' and results[1].status == 'conflict' and len(results[1].conflict_files) > 0; assert results[2].branch == 'feature/c' and results[2].status == 'ok' and results[2].new_head != ''"
+    },
+    {
+      "id": "TS-12-27",
+      "requirement_id": "12-REQ-8.2",
+      "kind": "unit",
+      "description": "A conflict on one branch during batch rebase does not prevent rebasing of subsequent branches; all branches appear in the result list.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branches 'feature/a', 'feature/b', 'feature/c' exist",
+        "GitRunner is mocked: feature/a conflicts, feature/b succeeds, feature/c succeeds"
+      ],
+      "input": {
+        "branches": [
+          "feature/a",
+          "feature/b",
+          "feature/c"
+        ],
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "all_branches_in_results": true,
+        "feature_b_processed_despite_a_conflict": true,
+        "results_count": 3
+      },
+      "assertion_pseudocode": "results = batch_rebase(workspace='ws1', target='main', branches=['feature/a','feature/b','feature/c']); branch_names = [r.branch for r in results]; assert 'feature/a' in branch_names; assert 'feature/b' in branch_names; assert 'feature/c' in branch_names; assert len(results) == 3"
+    },
+    {
+      "id": "TS-12-28",
+      "requirement_id": "12-REQ-9.1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges with valid target_branch and source_ref enqueues a merge job and returns HTTP 202 with the queued job record.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Workspace clone is ready at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branches 'main' and 'feature/a' exist in the workspace repository",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_fields": {
+          "id": "non-empty UUID",
+          "source_ref": "feature/a",
+          "status": "queued",
+          "submitted_by": "non-empty string",
+          "target_branch": "main",
+          "workspace_slug": "ws1"
+        },
+        "http_status": 202
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=api_key); assert resp.status == 202; body = json_parse(resp.body); assert is_valid_uuid(body.id); assert body.status == 'queued'; assert body.workspace_slug == 'ws1'; assert body.target_branch == 'main'; assert body.source_ref == 'feature/a'; assert body.submitted_by != ''"
+    },
+    {
+      "id": "TS-12-29",
+      "requirement_id": "12-REQ-9.2",
+      "kind": "integration",
+      "description": "Submitting a duplicate merge job for the same source_ref and target_branch in the same workspace returns HTTP 409.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "A merge job for target_branch='main', source_ref='feature/a' in workspace 'ws1' is already queued or running"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 409
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=api_key); assert resp.status == 409; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-30",
+      "requirement_id": "12-REQ-9.3",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges with missing target_branch or source_ref returns HTTP 400 indicating which field is missing.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_error_mentions_field": "source_ref",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main'}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'source_ref' in body.error"
+    },
+    {
+      "id": "TS-12-31",
+      "requirement_id": "12-REQ-9.4",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges for a non-existent workspace returns HTTP 404.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'nonexistent' does not exist",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/nonexistent/merges"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/nonexistent/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=api_key); assert resp.status == 404; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-32",
+      "requirement_id": "12-REQ-9.5",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges for a workspace that is not active returns HTTP 400 indicating workspace is not active.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists but is in archived status",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_error_mentions": "not active",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'not active' in body.error.to_lower()"
+    },
+    {
+      "id": "TS-12-33",
+      "requirement_id": "12-REQ-9.6",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges when the workspace clone is not ready returns HTTP 400 indicating clone is not ready.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active but clone is not ready (clone_status != 'ready')",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_error_mentions": "clone",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'clone' in body.error.to_lower()"
+    },
+    {
+      "id": "TS-12-34",
+      "requirement_id": "12-REQ-9.7",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges when source or target branch does not exist in the workspace repository returns HTTP 400 identifying the missing branch.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists, is active, and clone is ready",
+        "Branch 'main' exists but 'feature/nonexistent' does not exist in the workspace repository",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/nonexistent",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_error_mentions_branch": "feature/nonexistent",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/nonexistent'}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'feature/nonexistent' in body.error"
+    },
+    {
+      "id": "TS-12-35",
+      "requirement_id": "12-REQ-9.8",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges called by a PAT without merges:write scope returns HTTP 403.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a PAT that has only merges:read scope"
+      ],
+      "input": {
+        "auth": "PAT with merges:read only",
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=pat_read_only); assert resp.status == 403; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-36",
+      "requirement_id": "12-REQ-10.1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/merges returns HTTP 200 with a JSON array of merge job records scoped to the workspace.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Two merge jobs exist for workspace 'ws1'",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "array_length": 2,
+        "body_is_array": true,
+        "each_item_has_fields": [
+          "id",
+          "workspace_slug",
+          "target_branch",
+          "source_ref",
+          "status",
+          "submitted_by",
+          "created_at",
+          "updated_at"
+        ],
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = http_get('/api/v1/workspaces/ws1/merges', auth=api_key); assert resp.status == 200; body = json_parse(resp.body); assert is_array(body); assert len(body) == 2; for item in body: assert item.workspace_slug == 'ws1'; assert item.id != ''; assert item.status in ['queued','running','completed','failed','dead_letter','cancelled']"
+    },
+    {
+      "id": "TS-12-37",
+      "requirement_id": "12-REQ-10.2",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/merges/:id returns HTTP 200 with the merge job record for a valid job ID, or HTTP 404 if the job does not exist.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Merge job with id='job-uuid-1' exists for workspace 'ws1'",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws1/merges/job-uuid-1"
+      },
+      "expected": {
+        "body_id": "job-uuid-1",
+        "body_workspace_slug": "ws1",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = http_get('/api/v1/workspaces/ws1/merges/job-uuid-1', auth=api_key); assert resp.status == 200; body = json_parse(resp.body); assert body.id == 'job-uuid-1'; assert body.workspace_slug == 'ws1'; resp404 = http_get('/api/v1/workspaces/ws1/merges/nonexistent-id', auth=api_key); assert resp404.status == 404"
+    },
+    {
+      "id": "TS-12-38",
+      "requirement_id": "12-REQ-10.3",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/merges called by a PAT without merges:read scope returns HTTP 403.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a PAT that has no merge scopes"
+      ],
+      "input": {
+        "auth": "PAT with no merge scopes",
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_get('/api/v1/workspaces/ws1/merges', auth=pat_no_scopes); assert resp.status == 403; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-39",
+      "requirement_id": "12-REQ-11.1",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug/merges/:id for a queued job returns HTTP 200 and transitions the job to cancelled status.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Merge job 'job-uuid-1' exists in queued status for workspace 'ws1'",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws1/merges/job-uuid-1"
+      },
+      "expected": {
+        "http_status": 200,
+        "job_status_after": "cancelled"
+      },
+      "assertion_pseudocode": "resp = http_delete('/api/v1/workspaces/ws1/merges/job-uuid-1', auth=api_key); assert resp.status == 200; row = db.query('SELECT status FROM jobs WHERE id = ?', 'job-uuid-1'); assert row.status == 'cancelled'"
+    },
+    {
+      "id": "TS-12-40",
+      "requirement_id": "12-REQ-11.2",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug/merges/:id for a job that is already running, completed, failed, or cancelled returns HTTP 409.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Merge job 'job-uuid-2' exists in running status for workspace 'ws1'",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws1/merges/job-uuid-2"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 409
+      },
+      "assertion_pseudocode": "resp = http_delete('/api/v1/workspaces/ws1/merges/job-uuid-2', auth=api_key); assert resp.status == 409; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-41",
+      "requirement_id": "12-REQ-11.3",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug/merges/:id called by a PAT without merges:write scope returns HTTP 403.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Merge job 'job-uuid-1' exists in queued status",
+        "Caller is authenticated with a PAT that has only merges:read scope"
+      ],
+      "input": {
+        "auth": "PAT with merges:read only",
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws1/merges/job-uuid-1"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_delete('/api/v1/workspaces/ws1/merges/job-uuid-1', auth=pat_read_only); assert resp.status == 403; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-42",
+      "requirement_id": "12-REQ-12.1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/rebase with valid target_ref and non-empty branches list returns HTTP 200 with per-branch results synchronously.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active, clone is ready",
+        "Branches 'feature/a', 'feature/b' exist in the workspace repository",
+        "Caller is authenticated with a valid API key with merges:write scope"
+      ],
+      "input": {
+        "body": {
+          "branches": [
+            "feature/a",
+            "feature/b"
+          ],
+          "target_ref": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/rebase"
+      },
+      "expected": {
+        "body_results_count": 2,
+        "each_result_has_fields": [
+          "branch",
+          "status"
+        ],
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/rebase', body={target_ref:'main', branches:['feature/a','feature/b']}, auth=api_key); assert resp.status == 200; body = json_parse(resp.body); assert len(body.results) == 2; for r in body.results: assert r.branch in ['feature/a','feature/b']; assert r.status in ['ok','conflict']"
+    },
+    {
+      "id": "TS-12-43",
+      "requirement_id": "12-REQ-12.2",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/rebase with an empty branches list returns HTTP 400 without performing any git operations.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "branches": [],
+          "target_ref": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/rebase"
+      },
+      "expected": {
+        "body_error_mentions": "branches",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/rebase', body={target_ref:'main', branches:[]}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'branches' in body.error.to_lower()"
+    },
+    {
+      "id": "TS-12-44",
+      "requirement_id": "12-REQ-12.3",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/rebase called by a PAT without merges:write scope returns HTTP 403.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a PAT that has only merges:read scope"
+      ],
+      "input": {
+        "auth": "PAT with merges:read only",
+        "body": {
+          "branches": [
+            "feature/a"
+          ],
+          "target_ref": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/rebase"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 403
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/rebase', body={target_ref:'main', branches:['feature/a']}, auth=pat_read_only); assert resp.status == 403; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-45",
+      "requirement_id": "12-REQ-12.4",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/rebase with missing target_ref returns HTTP 400.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body": {
+          "branches": [
+            "feature/a"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/rebase"
+      },
+      "expected": {
+        "body_error_mentions": "target_ref",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/rebase', body={branches:['feature/a']}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'target_ref' in body.error"
+    },
+    {
+      "id": "TS-12-46",
+      "requirement_id": "12-REQ-13.1",
+      "kind": "integration",
+      "description": "'afc merge submit <workspace-slug> --target <branch> --source <branch>' calls POST /api/v1/workspaces/:slug/merges and prints the merge job record to stdout, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active, clone is ready",
+        "Branches 'main' and 'feature/a' exist",
+        "afc CLI is configured with a valid API key"
+      ],
+      "input": {
+        "command": "afc merge submit ws1 --target main --source feature/a"
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout_contains": [
+          "id",
+          "status",
+          "queued"
+        ]
+      },
+      "assertion_pseudocode": "result = exec_cli('afc merge submit ws1 --target main --source feature/a'); assert result.exit_code == 0; assert 'queued' in result.stdout; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-12-47",
+      "requirement_id": "12-REQ-13.2",
+      "kind": "integration",
+      "description": "'afc merge list <workspace-slug>' calls GET /api/v1/workspaces/:slug/merges and prints the list of merge jobs to stdout, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "At least one merge job exists for workspace 'ws1'",
+        "afc CLI is configured with a valid API key"
+      ],
+      "input": {
+        "command": "afc merge list ws1"
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout_contains_job_list": true
+      },
+      "assertion_pseudocode": "result = exec_cli('afc merge list ws1'); assert result.exit_code == 0; assert len(result.stdout) > 0; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-12-48",
+      "requirement_id": "12-REQ-13.3",
+      "kind": "integration",
+      "description": "'afc merge status <workspace-slug> <merge-id>' calls GET /api/v1/workspaces/:slug/merges/:id and prints the merge job status to stdout, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Merge job 'job-uuid-1' exists for workspace 'ws1'",
+        "afc CLI is configured with a valid API key"
+      ],
+      "input": {
+        "command": "afc merge status ws1 job-uuid-1"
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout_contains": [
+          "job-uuid-1"
+        ]
+      },
+      "assertion_pseudocode": "result = exec_cli('afc merge status ws1 job-uuid-1'); assert result.exit_code == 0; assert 'job-uuid-1' in result.stdout; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-12-49",
+      "requirement_id": "12-REQ-13.4",
+      "kind": "integration",
+      "description": "'afc merge cancel <workspace-slug> <merge-id>' calls DELETE /api/v1/workspaces/:slug/merges/:id and prints confirmation to stdout, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Merge job 'job-uuid-1' exists in queued status for workspace 'ws1'",
+        "afc CLI is configured with a valid API key"
+      ],
+      "input": {
+        "command": "afc merge cancel ws1 job-uuid-1"
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout_contains_confirmation": true
+      },
+      "assertion_pseudocode": "result = exec_cli('afc merge cancel ws1 job-uuid-1'); assert result.exit_code == 0; assert len(result.stdout) > 0; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-12-50",
+      "requirement_id": "12-REQ-14.1",
+      "kind": "unit",
+      "description": "Merge REST API response serialization projects job queue records into merge response objects with all required fields, using null for missing optional fields.",
+      "preconditions": [
+        "A job queue record exists for a queued merge job with payload containing workspace_slug, target_branch, source_ref, submitted_by",
+        "Job result is null (job not yet completed)"
+      ],
+      "input": {
+        "job_record": {
+          "error": null,
+          "id": "uuid-1",
+          "payload": "{\"workspace_slug\":\"ws1\",\"target_branch\":\"main\",\"source_ref\":\"feature/a\",\"submitted_by\":\"alice\"}",
+          "result": null,
+          "retry_count": 0,
+          "status": "queued",
+          "type": "merge"
+        }
+      },
+      "expected": {
+        "base_sha": null,
+        "check_output": null,
+        "conflict_files": [],
+        "error": null,
+        "id": "uuid-1",
+        "merged_sha": null,
+        "retry_count": 0,
+        "source_ref": "feature/a",
+        "status": "queued",
+        "submitted_by": "alice",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "assertion_pseudocode": "response = project_merge_job_response(job_record); assert response.id == 'uuid-1'; assert response.workspace_slug == 'ws1'; assert response.target_branch == 'main'; assert response.source_ref == 'feature/a'; assert response.status == 'queued'; assert response.base_sha == nil; assert response.merged_sha == nil; assert response.conflict_files == []; assert response.check_output == nil; assert response.error == nil; assert response.retry_count == 0; assert response.submitted_by == 'alice'"
+    },
+    {
+      "id": "TS-12-51",
+      "requirement_id": "12-REQ-14.2",
+      "kind": "unit",
+      "description": "When a merge job is in completed status, the response includes non-null base_sha and merged_sha as 40-char hex strings.",
+      "preconditions": [
+        "A job queue record exists for a completed merge job with result containing base_sha and merged_sha"
+      ],
+      "input": {
+        "job_result": "{\"base_sha\":\"aaaa000000000000000000000000000000000001\",\"merged_sha\":\"bbbb000000000000000000000000000000000002\"}",
+        "job_status": "completed"
+      },
+      "expected": {
+        "base_sha": "aaaa000000000000000000000000000000000001",
+        "merged_sha": "bbbb000000000000000000000000000000000002",
+        "sha_length": 40
+      },
+      "assertion_pseudocode": "response = project_merge_job_response(job_record_completed); assert response.base_sha == 'aaaa000000000000000000000000000000000001'; assert response.merged_sha == 'bbbb000000000000000000000000000000000002'; assert len(response.base_sha) == 40; assert len(response.merged_sha) == 40"
+    },
+    {
+      "id": "TS-12-52",
+      "requirement_id": "12-REQ-14.3",
+      "kind": "unit",
+      "description": "When a merge job failed with WouldConflict, the response includes a non-empty conflict_files array.",
+      "preconditions": [
+        "A job queue record exists for a failed merge job with error containing conflict_files=['src/a.go','src/b.go']"
+      ],
+      "input": {
+        "job_error": "{\"reason\":\"WouldConflict\",\"conflict_files\":[\"src/a.go\",\"src/b.go\"]}",
+        "job_status": "failed"
+      },
+      "expected": {
+        "conflict_files": [
+          "src/a.go",
+          "src/b.go"
+        ],
+        "conflict_files_non_empty": true
+      },
+      "assertion_pseudocode": "response = project_merge_job_response(job_record_conflict); assert response.conflict_files == ['src/a.go','src/b.go']; assert len(response.conflict_files) > 0"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-12-P1",
+      "property_id": "12-PROP-1",
+      "validates": [
+        "12-REQ-1.4",
+        "12-REQ-2.2"
+      ],
+      "description": "For any workspace and target branch, at most one merge job with the matching group_key is in running status at any given time.",
+      "for_any_strategy": "Generate 2-10 merge jobs with the same workspace_slug and target_branch (same group_key) but different source_refs; insert them all as queued; run the worker dispatch loop repeatedly",
+      "invariant_check": "after each dispatch cycle, query SELECT COUNT(*) FROM jobs WHERE type='merge' AND group_key=? AND status='running'; assert count <= 1"
+    },
+    {
+      "id": "TS-12-P2",
+      "property_id": "12-PROP-2",
+      "validates": [
+        "12-REQ-9.2",
+        "12-REQ-2.2"
+      ],
+      "description": "For any workspace, target_branch, and source_ref triple, at most one non-terminal job with the matching key exists in the jobs table at any time.",
+      "for_any_strategy": "Generate 2-5 concurrent enqueue calls with the same workspace_slug, target_branch, and source_ref; use goroutines to simulate concurrent submission",
+      "invariant_check": "after all enqueue calls complete, query SELECT COUNT(*) FROM jobs WHERE type='merge' AND key=? AND status NOT IN ('completed','failed','dead_letter','cancelled'); assert count <= 1"
+    },
+    {
+      "id": "TS-12-P3",
+      "property_id": "12-PROP-3",
+      "validates": [
+        "12-REQ-6.E1",
+        "12-REQ-6.E2",
+        "12-REQ-5.2"
+      ],
+      "description": "After any merge handler execution (success or failure), the workspace trunk directory contains no uncommitted rebase state or partial merge artifacts.",
+      "for_any_strategy": "Sample merge scenarios: (a) clean merge, (b) dry-run conflict, (c) rebase conflict, (d) check command failure, (e) check command timeout; run each scenario against a real workspace clone",
+      "invariant_check": "after merge_handler.execute() returns (any return value), run git_runner('git status --porcelain') in <WORKSPACE_ROOT>/<slug>/trunk/; assert output is empty and git_runner('git rebase --show-current-patch') returns error (no rebase in progress)"
+    },
+    {
+      "id": "TS-12-P4",
+      "property_id": "12-PROP-4",
+      "validates": [
+        "12-REQ-6.2",
+        "12-REQ-6.E2"
+      ],
+      "description": "The pre-rebase SHA of the source branch is always captured before any GitRunner invocation that modifies the branch.",
+      "for_any_strategy": "Instrument GitRunner to record the order of invocations and the SHA captured; run merge handler with various inputs including conflict and success scenarios",
+      "invariant_check": "assert pre_rebase_sha is captured (non-empty) before the first GitRunner call with 'rebase' in its arguments; assert pre_rebase_sha equals the source branch HEAD SHA at the time of capture"
+    },
+    {
+      "id": "TS-12-P5",
+      "property_id": "12-PROP-5",
+      "validates": [
+        "12-REQ-6.6",
+        "12-REQ-6.7"
+      ],
+      "description": "The source branch ref is deleted if and only if the target branch ref update has already succeeded.",
+      "for_any_strategy": "Run merge handler scenarios: (a) ref update succeeds then delete, (b) ref update fails (mocked lock error), (c) delete step fails after successful ref update",
+      "invariant_check": "if source_branch_deleted then assert target_ref_was_updated_first; if target_ref_update_failed then assert source_branch_still_exists"
+    },
+    {
+      "id": "TS-12-P6",
+      "property_id": "12-PROP-6",
+      "validates": [
+        "12-REQ-8.1",
+        "12-REQ-8.2"
+      ],
+      "description": "The batch rebase result list always contains exactly N entries for N input branches, regardless of individual branch failures.",
+      "for_any_strategy": "Generate random lists of 1-20 branch names; randomly assign each branch to succeed, conflict, or not-exist; run batch_rebase with each list",
+      "invariant_check": "assert len(results) == len(input_branches); assert set(r.branch for r in results) == set(input_branches)"
+    },
+    {
+      "id": "TS-12-P7",
+      "property_id": "12-PROP-7",
+      "validates": [
+        "12-REQ-1.3",
+        "12-REQ-1.5"
+      ],
+      "description": "For any job type that does not set group_key, the effective serialization key equals the job's key column value, preserving pre-extension behavior.",
+      "for_any_strategy": "Generate job types other than 'merge' (e.g. 'clone', 'sync') with various key values and empty group_key; insert multiple jobs with the same type and key",
+      "invariant_check": "evaluate CASE WHEN group_key != '' THEN group_key ELSE key END for each row; assert result equals key when group_key is empty; run worker dispatch and assert at most one job per (type, key) runs simultaneously"
+    },
+    {
+      "id": "TS-12-P8",
+      "property_id": "12-PROP-8",
+      "validates": [
+        "12-REQ-4.2"
+      ],
+      "description": "When the source branch is already integrated into the target, the merge handler always returns success without modifying any git state.",
+      "for_any_strategy": "Generate workspace clones where source branch HEAD is reachable from target branch HEAD (already merged); run merge_handler.pre_check() for each",
+      "invariant_check": "assert err == nil and result.reason == AlreadyMerged; capture git log --oneline before and after; assert no new commits or ref changes occurred"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-12-E1",
+      "requirement_id": "12-REQ-1.E1",
+      "kind": "unit",
+      "description": "Running the schema migration when group_key column already exists completes without error using an idempotent migration strategy.",
+      "preconditions": [
+        "SQLite database already has the group_key column in the jobs table from a previous migration run"
+      ],
+      "input": "Run the merge_operations schema migration again",
+      "expected": {
+        "migration_result": "no error",
+        "no_duplicate_column_error": true
+      },
+      "assertion_pseudocode": "run_migration(); err = run_migration(); assert err == nil; cols = db.query('PRAGMA table_info(jobs)'); group_key_cols = [c for c in cols if c.name == 'group_key']; assert len(group_key_cols) == 1"
+    },
+    {
+      "id": "TS-12-E2",
+      "requirement_id": "12-REQ-1.E2",
+      "kind": "unit",
+      "description": "When two merge jobs with the same type and group_key are both queued, the worker dispatches only one and holds the other in queued state until the first completes.",
+      "preconditions": [
+        "SQLite database has two merge jobs: job-A and job-B, both with type='merge', group_key='ws1:main', status='queued'",
+        "No other jobs are running"
+      ],
+      "input": "Worker dispatch loop runs",
+      "expected": {
+        "queued_count": 1,
+        "running_count": 1
+      },
+      "assertion_pseudocode": "worker.dispatch(); running = db.query('SELECT id FROM jobs WHERE type=? AND group_key=? AND status=?', 'merge', 'ws1:main', 'running'); queued = db.query('SELECT id FROM jobs WHERE type=? AND group_key=? AND status=?', 'merge', 'ws1:main', 'queued'); assert len(running) == 1; assert len(queued) == 1; mark_job_completed(running[0].id); worker.dispatch(); running2 = db.query('SELECT id FROM jobs WHERE type=? AND group_key=? AND status=?', 'merge', 'ws1:main', 'running'); assert len(running2) == 1"
+    },
+    {
+      "id": "TS-12-E3",
+      "requirement_id": "12-REQ-2.E1",
+      "kind": "unit",
+      "description": "Registering the 'merge' job type more than once during server boot causes the server to fail to start with a clear error message.",
+      "preconditions": [
+        "Hub server boot sequence is being executed",
+        "Merge handler registration is called twice"
+      ],
+      "input": "Register 'merge' job type twice during boot",
+      "expected": {
+        "error_message_contains": "merge",
+        "server_starts": false
+      },
+      "assertion_pseudocode": "queue = new_job_queue(); queue.register('merge', handler1); err = queue.register('merge', handler2); assert err != nil; assert 'merge' in err.message.to_lower() or 'duplicate' in err.message.to_lower()"
+    },
+    {
+      "id": "TS-12-E4",
+      "requirement_id": "12-REQ-3.E1",
+      "kind": "unit",
+      "description": "When AuthInfo does not contain a resolvable username, the merge enqueue request is rejected with HTTP 500 and no job is enqueued.",
+      "preconditions": [
+        "Hub server is running",
+        "AuthInfo is populated but username field is empty or unresolvable"
+      ],
+      "input": {
+        "auth_info": {
+          "auth_method": "api_key",
+          "username": ""
+        },
+        "source_ref": "feature/a",
+        "target_branch": "main"
+      },
+      "expected": {
+        "http_status": 500,
+        "job_enqueued": false
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=empty_username_auth); assert resp.status == 500; count = db.query('SELECT COUNT(*) FROM jobs WHERE type=?', 'merge'); assert count == 0"
+    },
+    {
+      "id": "TS-12-E5",
+      "requirement_id": "12-REQ-4.E1",
+      "kind": "unit",
+      "description": "When the source or target branch ref does not exist in the workspace repository, the merge handler pre-check returns a permanent error identifying the missing branch.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branch 'main' exists but 'feature/ghost' does not"
+      ],
+      "input": {
+        "source_ref": "feature/ghost",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_message_contains": "feature/ghost",
+        "error_type": "permanent",
+        "job_status": "failed"
+      },
+      "assertion_pseudocode": "result, err = merge_handler.pre_check(workspace='ws1', target='main', source='feature/ghost'); assert err != nil; assert err.is_permanent == true; assert 'feature/ghost' in err.message"
+    },
+    {
+      "id": "TS-12-E6",
+      "requirement_id": "12-REQ-4.E2",
+      "kind": "unit",
+      "description": "When the workspace clone directory does not exist or is not a valid git repository, the merge handler pre-check returns a retryable error without modifying git state.",
+      "preconditions": [
+        "Workspace 'ws1' exists in the database but clone directory does not exist at <WORKSPACE_ROOT>/ws1/trunk/"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_type": "retryable",
+        "git_state_modified": false
+      },
+      "assertion_pseudocode": "result, err = merge_handler.pre_check(workspace='ws1', target='main', source='feature/a'); assert err != nil; assert err.is_retryable == true; assert no_git_operations_performed()"
+    },
+    {
+      "id": "TS-12-E7",
+      "requirement_id": "12-REQ-5.E1",
+      "kind": "unit",
+      "description": "When git merge-tree --write-tree hangs and exceeds the GitRunner timeout, the handler returns a retryable error and the working tree is unmodified.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is mocked to simulate a timeout (subprocess does not return)"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_type": "retryable",
+        "subprocess_killed": true,
+        "working_tree_modified": false
+      },
+      "assertion_pseudocode": "runner = mocked_runner_timeout(); err = merge_handler.run_dry_run_check(runner, workspace='ws1', target='main', source='feature/a'); assert err != nil; assert err.is_retryable == true; assert runner.subprocess_was_killed(); assert working_tree_is_clean('<WORKSPACE_ROOT>/ws1/trunk/')"
+    },
+    {
+      "id": "TS-12-E8",
+      "requirement_id": "12-REQ-5.E2",
+      "kind": "unit",
+      "description": "When the installed git version is older than 2.38 and does not support git merge-tree --write-tree, the handler returns a permanent error indicating git >= 2.38 is required.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is mocked to return a non-zero exit code indicating unsupported command (git < 2.38)"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_message_contains": "2.38",
+        "error_type": "permanent"
+      },
+      "assertion_pseudocode": "runner = mocked_runner_unsupported_git(); err = merge_handler.run_dry_run_check(runner, workspace='ws1', target='main', source='feature/a'); assert err != nil; assert err.is_permanent == true; assert '2.38' in err.message"
+    },
+    {
+      "id": "TS-12-E9",
+      "requirement_id": "12-REQ-6.E1",
+      "kind": "unit",
+      "description": "When git rebase encounters conflicts, the handler runs 'git rebase --abort' and returns a permanent error with conflicting file paths; the source branch is restored to pre-rebase state.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is mocked to return a conflict error with conflict_files=['src/a.go'] on rebase",
+        "Source branch 'feature/a' exists"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "abort_command_called": true,
+        "conflict_files": [
+          "src/a.go"
+        ],
+        "error_type": "permanent",
+        "working_tree_clean": true
+      },
+      "assertion_pseudocode": "runner = mocked_runner_rebase_conflict(['src/a.go']); err = merge_handler.run_rebase_step(runner, workspace='ws1', target='main', source='feature/a'); assert err != nil; assert err.is_permanent == true; assert err.conflict_files == ['src/a.go']; assert runner.abort_was_called(); assert working_tree_is_clean('<WORKSPACE_ROOT>/ws1/trunk/')"
+    },
+    {
+      "id": "TS-12-E10",
+      "requirement_id": "12-REQ-6.E2",
+      "kind": "unit",
+      "description": "When the check command exits with non-zero, the handler runs 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>' to restore the source branch, then returns a permanent error with check output.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Rebase has completed; pre-rebase SHA is 'presha123'",
+        "CHECK_COMMAND is set to 'make test'",
+        "Check command is mocked to exit with code 1 and output 'FAIL: test_foo'"
+      ],
+      "input": {
+        "pre_rebase_sha": "presha123",
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_contains_check_output": "FAIL: test_foo",
+        "error_type": "permanent",
+        "rollback_command_called": "git checkout feature/a && git reset --hard presha123",
+        "source_branch_restored": true
+      },
+      "assertion_pseudocode": "runner = instrumented_git_runner(); err = merge_handler.run_check_step_with_failure(runner, workspace='ws1', target='main', source='feature/a', pre_rebase_sha='presha123', check_output='FAIL: test_foo'); assert err != nil; assert err.is_permanent == true; assert 'FAIL: test_foo' in err.message; rollback_calls = runner.calls_matching('checkout'); assert len(rollback_calls) > 0; reset_calls = runner.calls_matching('reset'); assert len(reset_calls) > 0"
+    },
+    {
+      "id": "TS-12-E11",
+      "requirement_id": "12-REQ-6.E3",
+      "kind": "unit",
+      "description": "When the check command does not complete within 10 minutes, the handler kills the process, rolls back the rebase, and returns a permanent error indicating timeout.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Rebase has completed; pre-rebase SHA is 'presha123'",
+        "CHECK_COMMAND is set to a command that hangs indefinitely"
+      ],
+      "input": {
+        "pre_rebase_sha": "presha123",
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "timeout_seconds": 600,
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_message_contains": "timeout",
+        "error_type": "permanent",
+        "process_killed": true,
+        "source_branch_restored": true
+      },
+      "assertion_pseudocode": "executor = mocked_executor_timeout(); runner = instrumented_git_runner(); err = merge_handler.run_check_step_with_timeout(executor, runner, workspace='ws1', source='feature/a', pre_rebase_sha='presha123'); assert err != nil; assert err.is_permanent == true; assert 'timeout' in err.message.to_lower() or '10 minute' in err.message.to_lower(); assert executor.process_was_killed(); assert runner.rollback_was_called()"
+    },
+    {
+      "id": "TS-12-E12",
+      "requirement_id": "12-REQ-6.E4",
+      "kind": "unit",
+      "description": "When the go-git reference update fails due to lock contention, the merge handler returns a retryable error and the target branch ref is unchanged.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "go-git Repository.Storer is mocked to return a lock contention error on reference update"
+      ],
+      "input": {
+        "new_sha": "newsha123",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_type": "retryable",
+        "target_ref_unchanged": true
+      },
+      "assertion_pseudocode": "repo = mocked_go_git_repo_lock_error(); err = merge_handler.run_ref_update_step(repo, target='main', new_sha='newsha123'); assert err != nil; assert err.is_retryable == true; ref = original_repo.storer.reference('refs/heads/main'); assert ref.hash == original_sha"
+    },
+    {
+      "id": "TS-12-E13",
+      "requirement_id": "12-REQ-6.E5",
+      "kind": "unit",
+      "description": "When the go-git fetch from the upstream remote fails due to network error, the merge handler returns a retryable error and no git state is modified.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "go-git Repository.Fetch is mocked to return a network error"
+      ],
+      "input": {
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_type": "retryable",
+        "git_state_modified": false
+      },
+      "assertion_pseudocode": "repo = mocked_go_git_repo_fetch_error('network error'); err = merge_handler.run_fetch_step(repo, workspace='ws1', target='main'); assert err != nil; assert err.is_retryable == true; assert no_git_state_modified()"
+    },
+    {
+      "id": "TS-12-E14",
+      "requirement_id": "12-REQ-6.E6",
+      "kind": "unit",
+      "description": "When the rollback command fails after a check command failure, the handler logs both errors and returns a permanent error indicating the repository may be in an inconsistent state.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Check command has failed",
+        "GitRunner is mocked to return an error on the rollback command"
+      ],
+      "input": {
+        "original_error": "check failed",
+        "pre_rebase_sha": "presha123",
+        "rollback_error": "checkout failed",
+        "source_ref": "feature/a",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "both_errors_logged": true,
+        "error_message_contains": "inconsistent",
+        "error_type": "permanent"
+      },
+      "assertion_pseudocode": "logger = capturing_logger(); runner = mocked_runner_rollback_error(); err = merge_handler.run_rollback(runner, logger, source='feature/a', pre_sha='presha123', original_err='check failed'); assert err != nil; assert err.is_permanent == true; assert 'inconsistent' in err.message.to_lower() or 'rollback' in err.message.to_lower(); assert logger.contains('check failed'); assert logger.contains('checkout failed')"
+    },
+    {
+      "id": "TS-12-E15",
+      "requirement_id": "12-REQ-6.E7",
+      "kind": "unit",
+      "description": "When GitRunner subprocess hangs during rebase and is killed by timeout, the merge handler runs 'git rebase --abort' and returns a retryable error.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "GitRunner is mocked to simulate subprocess hang and timeout kill"
+      ],
+      "input": {
+        "source_ref": "feature/a",
+        "target_branch": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "abort_command_called": true,
+        "error_type": "retryable",
+        "working_tree_cleaned": true
+      },
+      "assertion_pseudocode": "runner = mocked_runner_rebase_timeout(); err = merge_handler.run_rebase_step(runner, workspace='ws1', target='main', source='feature/a'); assert err != nil; assert err.is_retryable == true; assert runner.abort_was_called()"
+    },
+    {
+      "id": "TS-12-E16",
+      "requirement_id": "12-REQ-7.E1",
+      "kind": "unit",
+      "description": "When the source branch ref does not exist, the branch rebase operation returns ErrRefNotFound without invoking GitRunner.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branch 'feature/ghost' does not exist in the repository",
+        "GitRunner is instrumented to record invocations"
+      ],
+      "input": {
+        "source_branch": "feature/ghost",
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "error_type": "ErrRefNotFound",
+        "git_runner_invoked": false,
+        "new_sha": ""
+      },
+      "assertion_pseudocode": "runner = instrumented_git_runner(); new_sha, err = rebase_operation(runner=runner, workspace='ws1', source='feature/ghost', target='main'); assert err == ErrRefNotFound; assert new_sha == ''; assert runner.invocation_count() == 0"
+    },
+    {
+      "id": "TS-12-E17",
+      "requirement_id": "12-REQ-7.E2",
+      "kind": "unit",
+      "description": "When GitRunner subprocess hangs during single branch rebase, the operation runs 'git rebase --abort' and returns a timeout error; the working tree is cleaned up.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Source branch 'feature/a' exists",
+        "GitRunner is mocked to simulate subprocess hang and timeout kill"
+      ],
+      "input": {
+        "source_branch": "feature/a",
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "abort_called": true,
+        "error_type": "timeout",
+        "new_sha": "",
+        "working_tree_clean": true
+      },
+      "assertion_pseudocode": "runner = mocked_runner_rebase_timeout(); new_sha, err = rebase_operation(runner=runner, workspace='ws1', source='feature/a', target='main'); assert new_sha == ''; assert err != nil; assert 'timeout' in err.message.to_lower() or err.type == TimeoutError; assert runner.abort_was_called()"
+    },
+    {
+      "id": "TS-12-E18",
+      "requirement_id": "12-REQ-8.E1",
+      "kind": "unit",
+      "description": "When the branches list is empty, the batch rebase operation returns HTTP 400 with an error message mentioning 'branches' without performing any git operations.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "GitRunner is instrumented to record invocations"
+      ],
+      "input": {
+        "body": {
+          "branches": [],
+          "target_ref": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/rebase"
+      },
+      "expected": {
+        "error_message_contains": "branches",
+        "git_runner_invoked": false,
+        "http_status": 400
+      },
+      "assertion_pseudocode": "runner = instrumented_git_runner(); resp = http_post('/api/v1/workspaces/ws1/rebase', body={target_ref:'main', branches:[]}, auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert 'branches' in body.error.to_lower(); assert runner.invocation_count() == 0"
+    },
+    {
+      "id": "TS-12-E19",
+      "requirement_id": "12-REQ-8.E2",
+      "kind": "unit",
+      "description": "When a branch in the batch rebase list does not exist, that branch is recorded as failed and remaining branches continue to be processed.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branch 'feature/a' exists but 'feature/ghost' does not",
+        "Branch 'feature/c' exists"
+      ],
+      "input": {
+        "branches": [
+          "feature/a",
+          "feature/ghost",
+          "feature/c"
+        ],
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "feature_a_status": "ok",
+        "feature_c_processed": true,
+        "feature_ghost_status": "error or conflict",
+        "results_count": 3
+      },
+      "assertion_pseudocode": "results = batch_rebase(workspace='ws1', target='main', branches=['feature/a','feature/ghost','feature/c']); assert len(results) == 3; ghost_result = [r for r in results if r.branch == 'feature/ghost'][0]; assert ghost_result.status in ['error','conflict']; assert ghost_result.status != 'ok'; c_result = [r for r in results if r.branch == 'feature/c'][0]; assert c_result.status in ['ok','conflict']"
+    },
+    {
+      "id": "TS-12-E20",
+      "requirement_id": "12-REQ-8.E3",
+      "kind": "unit",
+      "description": "When GitRunner subprocess hangs for one branch during batch rebase, that branch is recorded as failed and subsequent branches continue to be processed.",
+      "preconditions": [
+        "Workspace clone exists at <WORKSPACE_ROOT>/ws1/trunk/",
+        "Branches 'feature/a', 'feature/b', 'feature/c' exist",
+        "GitRunner is mocked to timeout for 'feature/b' only"
+      ],
+      "input": {
+        "branches": [
+          "feature/a",
+          "feature/b",
+          "feature/c"
+        ],
+        "target_ref": "main",
+        "workspace_slug": "ws1"
+      },
+      "expected": {
+        "feature_b_status": "error",
+        "feature_c_processed": true,
+        "results_count": 3
+      },
+      "assertion_pseudocode": "runner = mocked_runner_timeout_for('feature/b'); results = batch_rebase(runner=runner, workspace='ws1', target='main', branches=['feature/a','feature/b','feature/c']); assert len(results) == 3; b_result = [r for r in results if r.branch == 'feature/b'][0]; assert b_result.status in ['error','conflict']; c_result = [r for r in results if r.branch == 'feature/c'][0]; assert c_result.status in ['ok','conflict']"
+    },
+    {
+      "id": "TS-12-E21",
+      "requirement_id": "12-REQ-9.E1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/merges with malformed JSON body returns HTTP 400.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "body_raw": "{invalid json",
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp = http_post_raw('/api/v1/workspaces/ws1/merges', body='{invalid json', content_type='application/json', auth=api_key); assert resp.status == 400; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-E22",
+      "requirement_id": "12-REQ-9.E2",
+      "kind": "integration",
+      "description": "Two concurrent POST /api/v1/workspaces/:slug/merges requests with the same source_ref and target_branch result in exactly one HTTP 202 and one HTTP 409.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active, clone is ready",
+        "Branches 'main' and 'feature/a' exist",
+        "No existing merge job for this combination"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature/a",
+          "target_branch": "main"
+        },
+        "concurrent_requests": 2
+      },
+      "expected": {
+        "http_202_count": 1,
+        "http_409_count": 1,
+        "total_jobs_enqueued": 1
+      },
+      "assertion_pseudocode": "responses = concurrent_http_post(2, '/api/v1/workspaces/ws1/merges', body={target_branch:'main', source_ref:'feature/a'}, auth=api_key); statuses = [r.status for r in responses]; assert statuses.count(202) == 1; assert statuses.count(409) == 1; count = db.query('SELECT COUNT(*) FROM jobs WHERE type=? AND key=?', 'merge', 'ws1:main:feature/a'); assert count == 1"
+    },
+    {
+      "id": "TS-12-E23",
+      "requirement_id": "12-REQ-10.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/merges when no merge jobs exist for the workspace returns HTTP 200 with an empty array.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "No merge jobs exist for workspace 'ws1'",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws1/merges"
+      },
+      "expected": {
+        "body_is_empty_array": true,
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp = http_get('/api/v1/workspaces/ws1/merges', auth=api_key); assert resp.status == 200; body = json_parse(resp.body); assert is_array(body) and len(body) == 0"
+    },
+    {
+      "id": "TS-12-E24",
+      "requirement_id": "12-REQ-10.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/merges/:id for a job that belongs to a different workspace returns HTTP 404 to prevent cross-workspace information disclosure.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' and 'ws2' both exist and are active",
+        "Merge job 'job-uuid-ws2' belongs to workspace 'ws2'",
+        "Caller is authenticated with a valid API key for workspace 'ws1'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws1/merges/job-uuid-ws2"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = http_get('/api/v1/workspaces/ws1/merges/job-uuid-ws2', auth=api_key); assert resp.status == 404; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-E25",
+      "requirement_id": "12-REQ-11.E1",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug/merges/:id for a non-existent or cross-workspace job ID returns HTTP 404.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active",
+        "Job ID 'nonexistent-id' does not exist",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws1/merges/nonexistent-id"
+      },
+      "expected": {
+        "body_has_error": true,
+        "http_status": 404
+      },
+      "assertion_pseudocode": "resp = http_delete('/api/v1/workspaces/ws1/merges/nonexistent-id', auth=api_key); assert resp.status == 404; body = json_parse(resp.body); assert body.error != ''"
+    },
+    {
+      "id": "TS-12-E26",
+      "requirement_id": "12-REQ-12.E1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/rebase for a non-existent workspace returns HTTP 404, and for an inactive workspace returns HTTP 400.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'nonexistent' does not exist",
+        "Workspace 'archived-ws' exists but is archived",
+        "Caller is authenticated with a valid API key"
+      ],
+      "input": [
+        {
+          "body": {
+            "branches": [
+              "feature/a"
+            ],
+            "target_ref": "main"
+          },
+          "method": "POST",
+          "path": "/api/v1/workspaces/nonexistent/rebase"
+        },
+        {
+          "body": {
+            "branches": [
+              "feature/a"
+            ],
+            "target_ref": "main"
+          },
+          "method": "POST",
+          "path": "/api/v1/workspaces/archived-ws/rebase"
+        }
+      ],
+      "expected": {
+        "archived_status": 400,
+        "nonexistent_status": 404
+      },
+      "assertion_pseudocode": "resp1 = http_post('/api/v1/workspaces/nonexistent/rebase', body={target_ref:'main', branches:['feature/a']}, auth=api_key); assert resp1.status == 404; resp2 = http_post('/api/v1/workspaces/archived-ws/rebase', body={target_ref:'main', branches:['feature/a']}, auth=api_key); assert resp2.status == 400"
+    },
+    {
+      "id": "TS-12-E27",
+      "requirement_id": "12-REQ-12.E2",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/rebase with many branches that take a long time returns HTTP 200 with all branch results once all rebases complete.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'ws1' exists and is active, clone is ready",
+        "10 branches exist in the workspace repository",
+        "Server request timeout is set to a value longer than the expected rebase duration"
+      ],
+      "input": {
+        "body": {
+          "branches": [
+            "feature/1",
+            "feature/2",
+            "feature/3",
+            "feature/4",
+            "feature/5",
+            "feature/6",
+            "feature/7",
+            "feature/8",
+            "feature/9",
+            "feature/10"
+          ],
+          "target_ref": "main"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws1/rebase"
+      },
+      "expected": {
+        "all_branches_in_results": true,
+        "http_status": 200,
+        "results_count": 10
+      },
+      "assertion_pseudocode": "resp = http_post('/api/v1/workspaces/ws1/rebase', body={target_ref:'main', branches:['feature/1',...,'feature/10']}, auth=api_key); assert resp.status == 200; body = json_parse(resp.body); assert len(body.results) == 10"
+    },
+    {
+      "id": "TS-12-E28",
+      "requirement_id": "12-REQ-13.E1",
+      "kind": "unit",
+      "description": "Running 'afc merge submit' without --target or --source flag prints a usage error to stderr and exits with non-zero code without making any API call.",
+      "preconditions": [
+        "afc CLI is installed and configured"
+      ],
+      "input": {
+        "command": "afc merge submit ws1 --target main"
+      },
+      "expected": {
+        "api_call_made": false,
+        "exit_code_nonzero": true,
+        "stderr_contains": "source"
+      },
+      "assertion_pseudocode": "result = exec_cli('afc merge submit ws1 --target main'); assert result.exit_code != 0; assert 'source' in result.stderr.to_lower() or 'usage' in result.stderr.to_lower(); assert no_http_requests_made()"
+    },
+    {
+      "id": "TS-12-E29",
+      "requirement_id": "12-REQ-13.E2",
+      "kind": "unit",
+      "description": "When the API returns an error response, the afc CLI prints the error message to stderr and exits with non-zero code; library code does not call os.Exit directly.",
+      "preconditions": [
+        "afc CLI is installed and configured",
+        "Hub server returns HTTP 404 for the workspace"
+      ],
+      "input": {
+        "command": "afc merge list nonexistent-ws"
+      },
+      "expected": {
+        "exit_code_nonzero": true,
+        "stderr_contains_error": true,
+        "stdout": ""
+      },
+      "assertion_pseudocode": "result = exec_cli('afc merge list nonexistent-ws'); assert result.exit_code != 0; assert len(result.stderr) > 0; assert result.stdout == ''"
+    },
+    {
+      "id": "TS-12-E30",
+      "requirement_id": "12-REQ-14.E1",
+      "kind": "unit",
+      "description": "When the job result JSON is malformed or missing expected fields, the response projection returns null for those fields rather than returning an error response.",
+      "preconditions": [
+        "A job queue record exists with a malformed result JSON string"
+      ],
+      "input": {
+        "job_record": {
+          "id": "uuid-1",
+          "result": "{malformed json",
+          "status": "completed"
+        }
+      },
+      "expected": {
+        "base_sha": null,
+        "conflict_files": [],
+        "http_status": 200,
+        "merged_sha": null
+      },
+      "assertion_pseudocode": "response = project_merge_job_response(job_record_malformed_result); assert response != nil; assert response.base_sha == nil; assert response.merged_sha == nil; assert response.conflict_files == []"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-12-SMOKE-1",
+      "execution_path_id": "12-PATH-1",
+      "description": "End-to-end smoke test: CLI merge submit through job execution to completion, verifying all actors from CLI through job queue to merge handler and git operations.",
+      "trigger": "Run 'afc merge submit my-workspace --target main --source feature/agent-1' against a running hub server with a real workspace clone",
+      "real_components": [
+        "afc CLI",
+        "merge REST API handler",
+        "durable job queue (spec 10) with group_key extension",
+        "durable job queue worker",
+        "merge handler",
+        "GitRunner (spec 11)",
+        "go-git Repository.Fetch",
+        "go-git reference update and branch deletion",
+        "workspace variables system (spec 07)"
+      ],
+      "mockable": [
+        "upstream remote git server (for fetch step)",
+        "CHECK_COMMAND subprocess"
+      ],
+      "expected_effects": [
+        "CLI exits 0 and prints merge job record with status='queued' and a valid UUID",
+        "SQLite jobs table contains a row with type='merge', key='my-workspace:main:feature/agent-1', group_key='my-workspace:main', status transitions from 'queued' to 'running' to 'completed'",
+        "Target branch 'main' ref in workspace clone points to the rebased HEAD SHA (merged_sha)",
+        "Source branch 'feature/agent-1' ref no longer exists in the workspace repository",
+        "Completed job result JSON contains non-null base_sha and merged_sha as 40-char hex strings",
+        "'afc merge status my-workspace <job-id>' returns status='completed' with base_sha and merged_sha"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-2",
+      "execution_path_id": "12-PATH-2",
+      "description": "Smoke test for merge rejection due to conflict: dry-run detection path from API submission through job failure with conflict_files populated.",
+      "trigger": "Send POST /api/v1/workspaces/my-workspace/merges with a source branch that has known conflicts against the target branch",
+      "real_components": [
+        "merge REST API handler",
+        "durable job queue (spec 10)",
+        "durable job queue worker",
+        "merge handler",
+        "GitRunner (spec 11) for git merge-tree --write-tree"
+      ],
+      "mockable": [
+        "upstream remote git server (for fetch step)"
+      ],
+      "expected_effects": [
+        "POST /merges returns HTTP 202 with status='queued'",
+        "Job transitions from 'queued' to 'running' to 'failed'",
+        "Working tree at <WORKSPACE_ROOT>/my-workspace/trunk/ is unmodified (no rebase state)",
+        "GET /api/v1/workspaces/my-workspace/merges/:id returns status='failed' with non-empty conflict_files array",
+        "conflict_files contains the paths of files that conflict between the two branches"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-3",
+      "execution_path_id": "12-PATH-3",
+      "description": "Smoke test for batch rebase via REST API: three branches where one conflicts, verifying per-branch results and continuation past conflict.",
+      "trigger": "Send POST /api/v1/workspaces/my-workspace/rebase with target_ref='main' and branches=['feature/a', 'feature/b', 'feature/c'] where feature/b has conflicts",
+      "real_components": [
+        "batch rebase REST API handler",
+        "batch rebase operation",
+        "GitRunner (spec 11) for git rebase and git rebase --abort"
+      ],
+      "mockable": [
+        "upstream remote git server"
+      ],
+      "expected_effects": [
+        "Response is HTTP 200 with results array of length 3",
+        "feature/a result has status='ok' and non-empty new_head SHA",
+        "feature/b result has status='conflict' and non-empty conflict_files array",
+        "feature/c result has status='ok' and non-empty new_head SHA",
+        "feature/b branch ref is unchanged (pre-rebase state restored after abort)",
+        "feature/a and feature/c branch refs point to their new rebased HEADs"
+      ]
+    },
+    {
+      "id": "TS-12-SMOKE-4",
+      "execution_path_id": "12-PATH-4",
+      "description": "Smoke test for check command failure with rebase rollback: verifies the source branch is restored to pre-rebase state after check command exits non-zero.",
+      "trigger": "Dispatch a merge job for a workspace where CHECK_COMMAND is set to a command that exits with code 1",
+      "real_components": [
+        "durable job queue worker",
+        "merge handler",
+        "GitRunner (spec 11) for rebase, checkout, and reset --hard",
+        "workspace variables system (spec 07) for CHECK_COMMAND retrieval"
+      ],
+      "mockable": [
+        "upstream remote git server (for fetch step)",
+        "CHECK_COMMAND subprocess (mocked to exit 1 with known output)"
+      ],
+      "expected_effects": [
+        "Job transitions from 'running' to 'failed'",
+        "Source branch ref points to the pre-rebase SHA (rollback succeeded)",
+        "Working tree at <WORKSPACE_ROOT>/<slug>/trunk/ is clean (no uncommitted changes)",
+        "Target branch ref is unchanged (not advanced)",
+        "Source branch ref still exists (not deleted)",
+        "Job error field contains the check command output",
+        "GET /merges/:id returns status='failed' with check_output populated"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

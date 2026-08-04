@@ -1,0 +1,332 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `git_runner` PRD is well-structured and complete. It clearly defines intent, goals, non-goals, functional requirements, technical boundaries, and design decisions. The package is a pure internal Go library with no external API surface or REST endpoints, so the External API Surface dimension is not applicable. No critical gaps were found. Minor observations: the `merge_operations` and `upstream_sync` specs referenced in Design Decisions are not present in the active spec landscape \u2014 worth confirming their status \u2014 and the `workspace_checkout` and `git_server` active specs both execute git operations that this runner is meant to standardize, suggesting a dependency relationship worth declaring. Overall, this PRD is ready to proceed to artifact generation.",
+      "gaps": [
+        "The PRD references two sibling specs (`merge_operations` and `upstream_sync`) that were split from the same parent PRD, but neither appears in the active spec landscape. Their absence means this runner's downstream consumers are not yet formally specified, leaving the convenience method scope partially unverifiable.",
+        "Active specs `workspace_checkout` and `git_server` both invoke git CLI operations directly (PlainCloneContext, PlainOpen, PushOptions, etc.). If those specs are refactored to use GitRunner, a dependency should be declared; if they are intentionally excluded, a non-goal entry would clarify the boundary.",
+        "The `GIT_ALLOW_PROTOCOL` allowlist (`file:https:ssh`) permits the `file://` protocol. For a hub that clones remote repositories, allowing `file://` may introduce local path traversal risks. The PRD does not discuss whether this is intentional or whether `file:` should be dropped for production use.",
+        "Git version requirement (>= 2.38) is stated but there is no mention of how this constraint is enforced at runtime (e.g., a startup check, a CI gate, or documentation only).",
+        "No test tooling or testing strategy is mentioned. The PRD states 'standard library only' dependencies but does not specify how the runner is tested (unit tests with a real git binary, mock exec, etc.)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The PRD references `merge_operations` and `upstream_sync` specs that were split from the same parent PRD, but neither appears in the active spec landscape. Have these specs been created, and if so, should they be listed as dependents of `git_runner` in a `## Dependents` section?",
+          "context": "The convenience methods (MergeTree, Rebase, LsRemote, etc.) are scoped to the needs of downstream specs. Without those specs being active, it is harder to verify the method surface is complete and stable.",
+          "options": [
+            "Yes \u2014 they exist and I will add them to the landscape; declare git_runner as their dependency.",
+            "They are planned but not yet written; the current method surface is a best-effort estimate.",
+            "They have been merged into other specs \u2014 I will update the Design Decisions note accordingly."
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Active specs `workspace_checkout` and `git_server` currently use go-git directly for git operations. Should those specs be updated to use `GitRunner` for any CLI-level operations, and if so, should `git_runner` declare them as dependents (or they declare a dependency on `git_runner`)?",
+          "context": "The PRD mandates that no hub package uses `exec.Command(\"git\", ...)` directly \u2014 all CLI calls go through GitRunner. If `workspace_checkout` or `git_server` have any direct CLI invocations, they would violate this constraint.",
+          "options": [
+            "Yes \u2014 those specs will be updated; I will add a Dependencies section to git_runner referencing them.",
+            "No \u2014 those specs use go-git only (no direct CLI calls), so no change is needed.",
+            "Partially \u2014 only specific operations need migration; I will note the exceptions."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "The `GIT_ALLOW_PROTOCOL` value includes `file:`, which permits `file://` URIs. Is this intentional, and if so, what mitigations prevent path traversal attacks via local file:// remotes in the hub's threat model?",
+          "context": "Allowing file:// in a server-side git runner can let a crafted remote URL read arbitrary local paths. This is a common git security pitfall and worth an explicit decision record.",
+          "options": [
+            "Intentional \u2014 the hub operates in a trusted environment and file:// is needed for local bare repos.",
+            "Intentional \u2014 callers are responsible for validating remote URLs before passing them to GitRunner.",
+            "Not intentional \u2014 remove `file:` from the allowlist; only `https:ssh` are needed.",
+            "Needs further analysis \u2014 I will add a security note to the PRD."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "How is the git >= 2.38 version requirement enforced? Is there a runtime startup check, a CI enforcement gate, or is it documentation-only?",
+          "context": "If the hub starts successfully on a host with git < 2.38 but then fails at runtime when `merge-tree --write-tree` is invoked, the error will be cryptic. An explicit enforcement strategy prevents silent failures.",
+          "options": [
+            "Runtime startup check \u2014 GitRunner.New() (or hub startup) will exec `git --version` and fail fast.",
+            "CI gate only \u2014 the build/test pipeline enforces the minimum version.",
+            "Documentation only \u2014 operators are responsible for ensuring the correct version.",
+            "Not yet decided \u2014 I will add a requirement for a startup version check."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "What is the intended testing strategy for `internal/gitcmd`? Does the test suite use a real git binary (integration-style), a mock/stub of `exec.Command`, or both?",
+          "context": "The PRD specifies standard library only dependencies and no test tooling. Knowing the testing approach ensures the generated code includes appropriate test scaffolding and avoids introducing unwanted test dependencies.",
+          "options": [
+            "Real git binary \u2014 integration tests that create temp repos and exercise the runner end-to-end.",
+            "Mocked exec \u2014 unit tests that replace exec.Command with a test double.",
+            "Both \u2014 unit tests for error-path logic, integration tests for full command execution.",
+            "No tests in this spec \u2014 testing is handled by the consuming specs."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a well-structured, highly detailed PRD for an internal Go library. The intent is crisp and unambiguous, the non-goals are explicit and well-reasoned, and the design decisions section is unusually thorough \u2014 proactively answering questions a reviewer would naturally ask (file: protocol rationale, version-check strategy, testing philosophy, go-git boundary). The technical stack is fully specified. A few minor gaps remain: the exact signatures/return types of convenience methods are described in prose but not formally specified, the GIT_ALLOW_PROTOCOL value hardcodes `file:https:ssh` without documenting the rationale for `ssh` vs. other transports, and there is no explicit statement about whether the package is safe for concurrent use. These are refinements rather than blockers \u2014 the document is implementable as written.",
+      "gaps": [
+        "Convenience method signatures are described in prose but lack formal Go-style signatures (parameter names, return types). An implementer must infer the exact API contract.",
+        "No explicit concurrency/goroutine-safety statement. If multiple hub goroutines share a single GitRunner instance, the safety contract must be documented.",
+        "The GIT_ALLOW_PROTOCOL value includes 'ssh' but the rationale for including (or excluding) other transports (e.g., git://, http://) is not stated. Only https and ssh are mentioned in the surrounding prose.",
+        "MergeTree return contract on conflict is described as 'a list of conflicting file paths' but the parsing strategy (stdout format, delimiter) is not specified, which could lead to ambiguous implementation.",
+        "Rebase method: the document states it returns conflicting file paths 'after running git rebase --abort', but it is unclear whether RebaseAbort is called internally by Rebase on conflict, or whether the caller is responsible \u2014 making RebaseAbort's standalone purpose ambiguous.",
+        "No definition of what constitutes the 'working directory' for commands that are not repository-scoped (e.g., a top-level ls-remote call where no local repo exists)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should GitRunner be safe for concurrent use (multiple goroutines sharing one instance), or is it expected to be used single-threaded per caller?",
+          "context": "If the hub spawns parallel goroutines that each call GitRunner methods, the implementation may need synchronization or the docs must explicitly state it is not goroutine-safe. This affects both design and testing.",
+          "options": [
+            "Goroutine-safe \u2014 multiple goroutines may share a single instance",
+            "Not goroutine-safe \u2014 each goroutine should create its own instance",
+            "Not yet decided / no concurrent use planned"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "When Rebase encounters a conflict, does it call git rebase --abort internally before returning, or is the caller responsible for calling RebaseAbort?",
+          "context": "The current text says Rebase 'returns a list of conflicting file paths (after running git rebase --abort)' which implies internal cleanup, but RebaseAbort is also listed as a standalone method. Clarifying this prevents duplicate abort calls or leaked rebase state.",
+          "options": [
+            "Rebase calls abort internally on conflict; RebaseAbort exists for edge-case manual recovery",
+            "Rebase does NOT call abort; the caller must always call RebaseAbort after a conflict",
+            "RebaseAbort is only exposed for testing; Rebase always cleans up internally"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "How should MergeTree parse conflicting file paths from stdout? What is the expected output format of `git merge-tree --write-tree` on conflict that the runner should parse?",
+          "context": "git merge-tree --write-tree outputs structured conflict markers to stdout. Without specifying the parsing strategy, two implementers could produce incompatible return values. This is especially important since the downstream merge_operations spec will depend on this contract.",
+          "options": [
+            "Parse the NUL-delimited conflict path list from --name-only output",
+            "Parse human-readable conflict sections (lines starting with 'CONFLICT')",
+            "Return raw stdout and let the caller parse",
+            "Use a separate git diff --name-only pass after merge-tree to enumerate conflicts"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What is the intended working directory for GitRunner instances used for non-repo-scoped commands like ls-remote, where no local repository exists?",
+          "context": "ls-remote queries a remote without needing a local repo. If GitRunner is constructed with a working directory, callers doing pure remote queries may need to pass os.TempDir() or a scratch directory. The construction contract should state this explicitly.",
+          "options": [
+            "An empty/temp directory is acceptable; callers are responsible for passing a valid path",
+            "GitRunner should accept an empty string and default to os.TempDir() internally",
+            "ls-remote always requires a working repo directory from the caller"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Why is 'git://' (the unauthenticated Git protocol, port 9418) excluded from GIT_ALLOW_PROTOCOL, and should 'http://' (plain HTTP) also be explicitly excluded?",
+          "context": "The allowlist 'file:https:ssh' permits file-local, HTTPS, and SSH transports. Documenting the explicit exclusion of git:// and http:// (and the security reasoning) makes the security posture reviewable and prevents future accidental additions.",
+          "options": [
+            "git:// and http:// are excluded intentionally \u2014 add a note to the table explaining this",
+            "http:// should be added alongside https:// to support legacy remotes",
+            "The current list is correct as-is; no additional documentation needed"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for a hardened Git subprocess runner. It demonstrates strong engineering discipline: the intent is crisp and single-paragraph, goals are concrete and action-oriented, non-goals are explicit with clear rationale, and the technical design is thorough with well-reasoned design decisions. The spec covers the API surface, error types, safety environment variables, goroutine safety model, conflict parsing strategy, and testing philosophy \u2014 all in sufficient detail for an implementer to proceed without ambiguity. A few minor gaps remain around test-infrastructure specifics and the precise CONFLICT line parsing format, but none block implementation.",
+      "gaps": [
+        "The CONFLICT line parsing algorithm is described at a high level ('extracts the file path from each such line') but does not specify the exact extraction logic \u2014 e.g., whether it uses a regex, a fixed prefix strip, or splits on a delimiter. The format of a CONFLICT line (e.g., 'CONFLICT (content): Merge conflict in path/to/file.go') is not shown, leaving the implementer to reverse-engineer the parsing rule from git output.",
+        "The version-check test case says 'reject a mocked/stubbed binary reporting a version below 2.38' but the testing strategy also says 'mocking exec.Command is explicitly avoided.' This creates a contradiction: how is the below-2.38 case tested without a mock or stub binary?",
+        "The LsRemote 'network error simulation' test case is listed in coverage requirements but no mechanism for simulating a network/auth failure (exit code 1) in an integration test is described \u2014 e.g., pointing at a non-existent or auth-protected remote.",
+        "The extraEnv parameter in New() lacks documentation on precedence: if extraEnv contains one of the three safety variables (GIT_ALLOW_PROTOCOL, GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM), which value wins \u2014 the safety default or the caller-supplied override?",
+        "Go 1.26 is referenced in the Technical Boundaries section, but as of this writing Go 1.26 has not been released (latest stable is 1.22/1.23). This may be a typo for 1.21 or 1.22 and should be confirmed.",
+        "The MergeTree method signature returns (string, error) but the conflict case returns a MergeConflictError rather than a plain error \u2014 it would benefit from a note clarifying that callers should use errors.As to extract the conflict paths, consistent with how the Rebase method is expected to be used."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the exact format of a CONFLICT line emitted by 'git merge-tree --write-tree', and what parsing rule should the runner use to extract the file path? For example: does the runner split on the last space, use a regex like /^CONFLICT \\(.*\\): .* in (.+)$/, or strip a known prefix?",
+          "context": "The PRD says the runner 'extracts the file path from each CONFLICT line' but does not show the line format or the extraction algorithm. Without this, two implementers could produce different parsers that diverge on edge cases (spaces in paths, localized git output, etc.).",
+          "options": [
+            "Regex match: /^CONFLICT \\(.*\\): .* in (.+)$/ \u2014 capture group 1 is the path",
+            "Split on last space \u2014 the token after the final space is the path",
+            "Strip a fixed prefix up to ': Merge conflict in ' \u2014 remainder is the path",
+            "Defer to the implementer; document the chosen rule in code comments"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "How should the version-check-failure test case be implemented given that the testing strategy explicitly forbids mocking exec.Command? Options include: a small fake 'git' shell script placed on PATH, a build-tag-gated test that skips if the host git is already >= 2.38, or a separate unit test that only tests the version string parser.",
+          "context": "The coverage list requires 'reject a mocked/stubbed binary reporting a version below 2.38,' but the strategy says 'mocking exec.Command is explicitly avoided.' These two requirements conflict and the implementer needs a resolution.",
+          "options": [
+            "Write a small fake shell script (e.g., testdata/fake-git-old.sh) that prints a low version, place it on PATH in that specific test only",
+            "Test only the version-string parsing function as a pure unit test; the constructor integration test assumes host git is >= 2.38 and skips otherwise",
+            "Use a build tag (e.g., //go:build low_git_version) to compile a stub binary for CI only",
+            "Document it as a manual/CI-only test and exclude from the automated coverage requirement"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "If a caller passes one of the three safety variables (e.g., GIT_ALLOW_PROTOCOL) in extraEnv, which value takes precedence \u2014 the hardcoded safety default or the caller-supplied value?",
+          "context": "The constructor accepts extraEnv []string for additional environment variables, but the precedence rule when a safety variable appears in both the defaults and extraEnv is unspecified. This matters for testability (tests may need to override GIT_ALLOW_PROTOCOL to point at local repos) and for security (a caller should probably not be able to widen the protocol allowlist).",
+          "options": [
+            "Safety defaults always win \u2014 extraEnv cannot override GIT_ALLOW_PROTOCOL, GIT_TERMINAL_PROMPT, or GIT_CONFIG_NOSYSTEM",
+            "extraEnv wins \u2014 callers may override safety defaults (documented risk)",
+            "Safety defaults are appended after extraEnv, so defaults win (relies on git's last-wins env behavior)",
+            "Constructor returns an error if extraEnv contains a reserved safety variable"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What Go version should the Technical Boundaries section specify? Go 1.26 is listed, but that version has not been released yet.",
+          "context": "Specifying an unreleased Go version in a PRD creates confusion about whether this is aspirational, a typo, or a future-dated requirement. The implementer needs a concrete, currently-available minimum version.",
+          "options": [
+            "Go 1.21 (current LTS baseline with improved slog, slices, maps packages)",
+            "Go 1.22 (range-over-integer, updated loop variable semantics)",
+            "Go 1.23 (iterators, updated timer behavior)",
+            "Go 1.26 is intentional \u2014 this is a future-dated spec and 1.26 is the planned target"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "How should the LsRemote network/auth failure (exit code 1) be simulated in integration tests? What specific mechanism should tests use to produce a real exit-code-1 scenario without a live network dependency?",
+          "context": "The test coverage list requires exercising the exit-code-1 path of LsRemote, but no test mechanism is described. Without a concrete approach, CI environments without network access may not be able to reproduce this path reliably.",
+          "options": [
+            "Point at a syntactically valid but non-existent remote URL (e.g., https://localhost:1/nonexistent) \u2014 git returns exit 1 on connection refused",
+            "Use a local git-daemon or HTTP server started by the test, configured to return an auth error",
+            "Use a fake 'git' script in testdata that returns exit code 1 for ls-remote, as a narrow exception to the no-mock rule",
+            "Document exit-code-1 as a best-effort path only tested manually; integration tests cover exit 0 and exit 2 only"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for an internal Go package. The intent is clear and precise, goals are concrete and mostly measurable, non-goals are explicit and well-reasoned, and the background/design rationale is thorough. The technical boundaries, API surface, error types, and testing strategy are all documented in detail. The document is largely implementation-ready with only a few minor gaps worth surfacing for completeness.",
+      "gaps": [
+        "MergeTree conflict file path parsing rule is intentionally deferred to the implementer \u2014 while this is acknowledged in the spec, it leaves a potential ambiguity if the git output format differs across patch versions of 2.38+. A representative sample output line pinned to a specific git version would reduce implementer guesswork.",
+        "No explicit definition of what constitutes a 'valid directory path' for workDir validation in the constructor \u2014 e.g., whether symlinks are resolved, whether the path must be absolute, or whether relative paths are accepted.",
+        "The `extraEnv` parameter format is not explicitly documented \u2014 e.g., whether entries must be 'KEY=VALUE' strings and whether nil/empty slices are acceptable.",
+        "The `GitError.Error()` string format is not specified \u2014 downstream callers and log consumers would benefit from a canonical format example (e.g., 'git rebase onto: exit 1: <stderr>').",
+        "No mention of stdout/stderr size limits or timeouts \u2014 a runaway git process could produce unbounded output buffered in memory, which could be a concern in a hub serving many concurrent requests.",
+        "The `UpdateRef` method returns only `error` with no stdout \u2014 it is unclear whether any output from the command is silently discarded or whether failure modes beyond non-zero exit (e.g., ref lock contention) are surfaced distinctly.",
+        "Go 1.26 is described as 'future-dated' but no fallback or compatibility note is provided if the actual build environment uses an earlier Go version during development."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What should the canonical string format of `GitError.Error()` be?",
+          "context": "The PRD specifies the fields of GitError but not how they are rendered into the error string. Downstream callers, log aggregators, and tests that assert on error messages need a stable format.",
+          "options": [
+            "git <args joined by space>: exit <code>: <stderr>",
+            "exit <code>: <stderr> (command: git <args>)",
+            "Leave the format to the implementer and document it in code comments only"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Should `workDir` be required to be an absolute path, or are relative paths acceptable? Are symlinks resolved before use?",
+          "context": "The constructor validates that workDir is a valid directory, but the PRD does not specify whether relative paths (e.g., '.') are accepted or whether symlinks are followed. This affects portability across test environments and production deployments.",
+          "options": [
+            "Absolute paths only; constructor returns an error for relative paths",
+            "Both absolute and relative paths accepted; no symlink resolution",
+            "Both accepted; symlinks resolved via filepath.EvalSymlinks before use"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Are there any stdout/stderr size limits or per-command timeouts beyond what `context.Context` provides?",
+          "context": "A long-running or misbehaving git process could produce unbounded output buffered entirely in memory. For a hub serving concurrent requests, this could be a memory or latency concern. Clarifying whether the runner imposes any limits (or explicitly delegates this entirely to context cancellation) would close this gap.",
+          "options": [
+            "No internal limits; callers are responsible for setting context deadlines",
+            "Cap stderr/stdout buffers at a configurable size (e.g., 10 MB) and return an error if exceeded",
+            "No limits needed \u2014 the operations in scope (rebase, merge-tree, ls-remote) produce bounded output"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What is the expected `extraEnv` format, and how should nil or empty slices be handled?",
+          "context": "The PRD states that extraEnv entries are appended before the safety variables, but does not document the expected format (e.g., 'KEY=VALUE' strings) or whether a nil slice is equivalent to an empty slice. Implementers and callers need this to avoid subtle bugs.",
+          "options": [
+            "Entries must be 'KEY=VALUE' strings; nil and empty slice are both valid and treated identically",
+            "Entries must be 'KEY=VALUE' strings; nil is not accepted and causes a constructor error",
+            "Leave format validation to the implementer"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should a representative `git merge-tree --write-tree` output sample (pinned to git 2.38) be included in the PRD to anchor the conflict-line parsing requirement?",
+          "context": "The PRD intentionally defers the exact parsing rule to the implementer but acknowledges the format may vary across git versions. Including a pinned sample output would reduce implementer ambiguity and make the acceptance criteria for MergeConflictError.ConflictingFiles more testable.",
+          "options": [
+            "Yes \u2014 add a pinned sample output block for git 2.38 to the PRD",
+            "No \u2014 leave it to the implementer to document in code comments",
+            "Add a non-normative example to the Design Decisions section only"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "They are planned but not yet written. This spec is being created first as the foundation; merge_operations and upstream_sync will be created immediately after. The current method surface is based on the parent PRD analysis.",
+        "q2": "No \u2014 those specs use go-git only (no direct CLI calls), so no change is needed. The GitRunner mandate applies to future packages that need CLI operations.",
+        "q3": "Intentional \u2014 callers are responsible for validating remote URLs before passing them to GitRunner. The runner is a low-level internal tool; URL validation belongs at the application layer (workspace handlers).",
+        "q4": "Runtime startup check \u2014 the GitRunner constructor will exec git --version and return an error if the version is below 2.38.",
+        "q5": "Real git binary \u2014 integration tests that create temp repos and exercise the runner end-to-end. This is a CLI wrapper, so mocking exec would not test the actual behavior."
+      },
+      "timestamp": "2026-08-04T09:47:45.532507+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Goroutine-safe \u2014 multiple goroutines may share a single instance. The runner is stateless (holds only working directory path and env vars). Each command execution creates its own exec.Cmd and captures its own stdout/stderr buffers. No synchronization is needed.",
+        "q2": "Rebase calls abort internally on conflict; RebaseAbort exists for edge-case manual recovery (e.g., when a context cancellation interrupts a rebase mid-flight and the caller needs to clean up).",
+        "q3": "Parse human-readable conflict sections (lines starting with 'CONFLICT') from git merge-tree --write-tree stdout. Extract file paths from CONFLICT lines. This is the standard output format of merge-tree.",
+        "q4": "An empty/temp directory is acceptable; callers are responsible for passing a valid path. For non-repo-scoped commands like ls-remote, any valid directory works.",
+        "q5": "git:// and http:// are excluded intentionally \u2014 add a note to the table explaining that git:// (port 9418) is unauthenticated and http:// is unencrypted. Only https:// and ssh:// provide both authentication and encryption."
+      },
+      "timestamp": "2026-08-04T09:49:25.007394+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Defer to the implementer; document the chosen rule in code comments. The git merge-tree output format may vary across git versions and the implementer should verify against the installed git version.",
+        "q2": "Test only the version-string parsing function as a pure unit test; the constructor integration test assumes host git is >= 2.38 and skips otherwise.",
+        "q3": "Safety defaults always win \u2014 extraEnv cannot override GIT_ALLOW_PROTOCOL, GIT_TERMINAL_PROMPT, or GIT_CONFIG_NOSYSTEM. Safety variables are appended after extraEnv so they always take precedence.",
+        "q4": "Go 1.26 is intentional \u2014 this is a future-dated spec and 1.26 is the project's target as specified in go.mod.",
+        "q5": "Point at a syntactically valid but non-existent remote URL (e.g., https://localhost:1/nonexistent) \u2014 git returns exit 1 on connection refused."
+      },
+      "timestamp": "2026-08-04T09:51:38.309209+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

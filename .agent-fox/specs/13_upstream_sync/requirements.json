@@ -1,0 +1,1068 @@
+{
+  "$schema": null,
+  "spec_id": "13",
+  "spec_name": "upstream_sync",
+  "schema_version": 1,
+  "introduction": "The upstream_sync spec defines the synchronization mechanism by which workspace clones are kept current with their upstream git repositories, including fast-forward advancement of the integration branch, force-push detection and recovery, and nuclear reclone operations. Note: requirements referencing go-git APIs are based on PRD descriptions and should be cross-checked against the installed go-git version before implementation.",
+  "glossary": {
+    "PAT": "Personal Access Token; a user-scoped credential that requires explicit scope grants for operations.",
+    "PATCH /workspaces/:slug": "REST endpoint for updating mutable workspace fields, including sync_mode.",
+    "POST /api/v1/workspaces/:slug/reclone": "REST endpoint that triggers a reclone operation for the specified workspace.",
+    "POST /api/v1/workspaces/:slug/sync": "REST endpoint that triggers an upstream sync operation for the specified workspace.",
+    "WORKSPACE_ROOT": "Environment variable or configuration value specifying the root directory under which workspace clone directories are stored.",
+    "WriteAPIError": "The apikit function used to write error responses in the standard hub error envelope format.",
+    "afc": "The command-line interface for the agent-fox platform hub.",
+    "apikit": "The server framework (github.com/txsvc/apikit) providing authentication, CLI scaffolding, and HTTP server infrastructure.",
+    "archive flow": "The existing operation (owned by workspace_checkout spec) that attempts to push local commits to upstream before deleting a workspace clone.",
+    "clone_status": "Workspace field tracking the state of the local git clone; values are 'pending', 'cloning', 'ready', 'failed', or 'archived'.",
+    "deferred cleanup": "A Go deferred function registered by the sync handler that sets sync_status to 'error' if the request context is cancelled mid-sync.",
+    "disabled": "A sync_mode value indicating that sync is disabled; sync requests are rejected with a descriptive error.",
+    "diverged": "A state where the upstream HEAD is neither equal to nor a descendant of the local integration branch HEAD, indicating a force-push or history rewrite.",
+    "fast-forward": "A git branch advancement where the local branch HEAD is moved to a descendant commit without creating a merge commit.",
+    "force-push": "A git push that rewrites remote history, causing the local branch to no longer be a direct ancestor of the upstream branch.",
+    "go-git": "A pure Go git implementation library used for fetch, ref reading, ref updates, and ancestry checks in this spec.",
+    "head_sha": "Workspace field storing the current HEAD SHA of the local integration branch.",
+    "in-memory job queue": "The existing Go channel-based job queue used for clone operations, as defined in the workspace_checkout spec.",
+    "integration branch": "The primary local branch in a workspace clone that tracks the upstream default branch and is advanced by sync operations.",
+    "last_sync_at": "Workspace field storing the RFC 3339 timestamp of the last successful sync.",
+    "pull_only": "A sync_mode value indicating that downstream sync is enabled; the hub fetches upstream and fast-forwards the integration branch.",
+    "reclone": "A nuclear recovery operation that archives the workspace, deletes the local clone, and re-clones from upstream.",
+    "reset-to-upstream": "A recovery operation that resets the local integration branch to match the upstream HEAD, used after force-push or history divergence.",
+    "reset_to_upstream": "Query parameter on the sync endpoint that triggers a reset-to-upstream recovery operation instead of a standard sync.",
+    "resolveCloneAuth": "Existing function in internal/workspace/clone_auth.go that resolves fetch credentials from the secrets store for a given workspace.",
+    "slug": "A unique human-readable identifier for a workspace, used in URL paths and CLI commands.",
+    "startup reconciliation": "A step that runs on server startup to reset any workspaces stuck in 'syncing' state to 'error', handling crashes and unclean shutdowns.",
+    "sync_error": "Workspace field storing the error message from the most recent failed sync.",
+    "sync_mode": "Workspace field controlling whether upstream sync is enabled; values are 'pull_only' (default) or 'disabled'.",
+    "sync_status": "Workspace field tracking the current sync state; values are 'idle', 'syncing', or 'error'.",
+    "syncing guard": "The check that rejects concurrent sync requests when sync_status is 'syncing', returning HTTP 409.",
+    "trunk": "The subdirectory within a workspace's directory (at <WORKSPACE_ROOT>/<slug>/trunk/) where the git clone is stored.",
+    "unshallow": "A git fetch operation that converts a shallow clone (with truncated history) into a full clone by fetching all missing history.",
+    "upstream_head_sha": "Workspace field storing the HEAD SHA of the upstream tracking branch at the time of the last fetch.",
+    "workspaces:read": "Permission scope required to read workspace state, including sync status fields.",
+    "workspaces:sync": "Permission scope required to trigger sync and reclone operations."
+  },
+  "requirements": [
+    {
+      "id": "13-REQ-1",
+      "title": "New Workspace Schema Fields",
+      "user_story": {
+        "role": "developer",
+        "goal": "have five new sync-related fields on the workspace schema",
+        "benefit": "sync state can be tracked and exposed via the workspace response object"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-1.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub database schema",
+          "action": "includes five new columns on the workspaces table: sync_mode (TEXT NOT NULL DEFAULT 'pull_only'), sync_status (TEXT NOT NULL DEFAULT 'idle'), upstream_head_sha (TEXT nullable), last_sync_at (TEXT nullable), and sync_error (TEXT nullable), added via DDL ALTER TABLE statements",
+          "return_contract": null
+        },
+        {
+          "id": "13-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace API response",
+          "action": "includes all five new fields (sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error) in every workspace response object, with sync_mode and sync_status always non-null and the remaining three nullable",
+          "return_contract": "JSON workspace object with fields: sync_mode (string), sync_status (string), upstream_head_sha (string|null), last_sync_at (string|null), sync_error (string|null)"
+        },
+        {
+          "id": "13-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "hub",
+          "action": "sets sync_mode to 'pull_only', sync_status to 'idle', and upstream_head_sha, last_sync_at, sync_error to NULL",
+          "return_contract": "workspace object with sync_mode: 'pull_only', sync_status: 'idle', upstream_head_sha: null, last_sync_at: null, sync_error: null",
+          "trigger": "a new workspace is created without specifying sync_mode"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "logs the DDL error and continues startup if the column already exists, treating idempotent re-application as a no-op",
+          "return_contract": "server starts successfully; no panic or fatal error",
+          "error_condition": "the ALTER TABLE DDL statements fail because a column already exists (e.g., schema was partially applied)"
+        },
+        {
+          "id": "13-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace API response",
+          "action": "treats NULL sync_mode as 'pull_only' and NULL sync_status as 'idle' when serializing the response",
+          "return_contract": "workspace object with sync_mode: 'pull_only', sync_status: 'idle'",
+          "error_condition": "a workspace row in the database predates the schema migration and has NULL for sync_mode or sync_status"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-2",
+      "title": "Sync Mode Configuration",
+      "user_story": {
+        "role": "operator",
+        "goal": "set and update the sync_mode for a workspace",
+        "benefit": "I can enable or disable upstream sync per workspace"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "hub",
+          "action": "creates the workspace with the specified sync_mode value ('pull_only' or 'disabled'), defaulting to 'pull_only' if omitted",
+          "return_contract": "HTTP 201 with workspace JSON including the specified or default sync_mode",
+          "trigger": "a user calls POST /api/v1/workspaces with an optional sync_mode field"
+        },
+        {
+          "id": "13-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "hub",
+          "action": "updates the workspace sync_mode to the new value and persists the change",
+          "return_contract": "HTTP 200 with updated workspace JSON including the new sync_mode",
+          "trigger": "a user calls PATCH /workspaces/:slug with a sync_mode field"
+        },
+        {
+          "id": "13-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "passes the sync_mode value to the POST /api/v1/workspaces API request",
+          "return_contract": "workspace created with the specified sync_mode; CLI prints the workspace object",
+          "trigger": "a user runs 'afc workspace create' with the --sync-mode flag"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request with a descriptive validation error",
+          "return_contract": "HTTP 400 with JSON error body describing the invalid sync_mode value",
+          "error_condition": "a PATCH /workspaces/:slug request sets sync_mode to an unrecognized value"
+        },
+        {
+          "id": "13-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request using the existing workspace_write_delete permission model",
+          "return_contract": "HTTP 403 with JSON error body",
+          "error_condition": "a PATCH /workspaces/:slug request to update sync_mode is made by a caller without workspaces:sync or owner/admin permission"
+        },
+        {
+          "id": "13-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "rejects the command with a descriptive error before making any API call",
+          "return_contract": "CLI exits with non-zero exit code and prints an error message listing valid sync_mode values",
+          "error_condition": "a user runs 'afc workspace create --sync-mode <invalid>'"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-3",
+      "title": "Upstream Sync Precondition Validation",
+      "user_story": {
+        "role": "operator",
+        "goal": "have sync requests validated before any git operations begin",
+        "benefit": "invalid sync attempts fail fast with clear error messages"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-3.1",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "rejects the request without performing any git operations",
+          "return_contract": "HTTP 400 with JSON error body via WriteAPIError",
+          "trigger": "a user calls POST /api/v1/workspaces/:slug/sync",
+          "condition": "the workspace status is not 'active'"
+        },
+        {
+          "id": "13-REQ-3.2",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "rejects the request without performing any git operations",
+          "return_contract": "HTTP 400 with JSON error body via WriteAPIError",
+          "trigger": "a user calls POST /api/v1/workspaces/:slug/sync",
+          "condition": "the workspace clone_status is not 'ready'"
+        },
+        {
+          "id": "13-REQ-3.3",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "rejects the request with a descriptive error message indicating sync is disabled for this workspace",
+          "return_contract": "HTTP 400 with JSON error body via WriteAPIError",
+          "trigger": "a user calls POST /api/v1/workspaces/:slug/sync",
+          "condition": "the workspace sync_mode is 'disabled'"
+        },
+        {
+          "id": "13-REQ-3.4",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "rejects the request to prevent concurrent syncs",
+          "return_contract": "HTTP 409 with JSON error body via WriteAPIError",
+          "trigger": "a user calls POST /api/v1/workspaces/:slug/sync",
+          "condition": "the workspace sync_status is 'syncing'"
+        },
+        {
+          "id": "13-REQ-3.5",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "returns a not-found error",
+          "return_contract": "HTTP 404 with JSON error body via WriteAPIError",
+          "error_condition": "the slug in POST /api/v1/workspaces/:slug/sync does not match any workspace"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request before checking any workspace state",
+          "return_contract": "HTTP 403 with JSON error body via WriteAPIError",
+          "error_condition": "a caller without workspaces:sync scope attempts POST /api/v1/workspaces/:slug/sync"
+        },
+        {
+          "id": "13-REQ-3.E2",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "rejects the sync request because clone_status is not 'ready'",
+          "return_contract": "HTTP 400 with JSON error body via WriteAPIError",
+          "trigger": "a sync request arrives",
+          "condition": "the workspace clone_status is 'cloning' (reclone in progress)"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-4",
+      "title": "Upstream Sync Algorithm \u2014 Fetch and Fast-Forward",
+      "user_story": {
+        "role": "operator",
+        "goal": "trigger an upstream sync that fetches and fast-forwards the integration branch",
+        "benefit": "the workspace clone stays current with upstream without manual git operations"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "hub sync handler",
+          "action": "sets sync_status to 'syncing', opens the local repository at <WORKSPACE_ROOT>/<slug>/trunk/ via go-git, resolves fetch credentials using resolveCloneAuth, and calls remote.Fetch() to fetch from upstream",
+          "return_contract": null,
+          "trigger": "all preconditions pass for POST /api/v1/workspaces/:slug/sync"
+        },
+        {
+          "id": "13-REQ-4.2",
+          "ears_pattern": "complex_event",
+          "system": "hub sync handler",
+          "action": "sets sync_status to 'idle', updates last_sync_at to the current RFC 3339 timestamp, updates upstream_head_sha, and returns the workspace object",
+          "return_contract": "HTTP 200 with workspace JSON: sync_status='idle', last_sync_at set, upstream_head_sha set",
+          "trigger": "the fetch completes successfully",
+          "condition": "upstream HEAD equals local integration branch HEAD"
+        },
+        {
+          "id": "13-REQ-4.3",
+          "ears_pattern": "complex_event",
+          "system": "hub sync handler",
+          "action": "fast-forwards the integration branch to upstream HEAD via go-git ref update, updates head_sha and upstream_head_sha, sets sync_status to 'idle', and updates last_sync_at",
+          "return_contract": "HTTP 200 with workspace JSON: sync_status='idle', head_sha updated, upstream_head_sha updated, last_sync_at set",
+          "trigger": "the fetch completes successfully",
+          "condition": "upstream HEAD is a descendant of local integration branch HEAD (fast-forward possible)"
+        },
+        {
+          "id": "13-REQ-4.4",
+          "ears_pattern": "complex_event",
+          "system": "hub sync handler",
+          "action": "updates upstream_head_sha to the fetched value, sets sync_status to 'error', sets sync_error to 'upstream history has diverged; use --reset-to-upstream to recover', and does NOT advance the integration branch",
+          "return_contract": "HTTP 409 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set, upstream_head_sha updated",
+          "trigger": "the fetch completes successfully",
+          "condition": "upstream HEAD is not a descendant of local HEAD and not equal to local HEAD (diverged / force-push detected)"
+        },
+        {
+          "id": "13-REQ-4.5",
+          "ears_pattern": "event_driven",
+          "system": "hub sync handler",
+          "action": "registers a deferred cleanup function that sets sync_status to 'error' and records a descriptive sync_error if the request context is cancelled before sync completes",
+          "return_contract": "On context cancellation: workspace sync_status set to 'error' with descriptive sync_error; handler returns HTTP 504 with JSON error body via WriteAPIError",
+          "trigger": "the sync handler is entered"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub sync handler",
+          "action": "retries with a full history fetch (unshallow) as a best-effort recovery; logs a warning; if the unshallow retry also fails, treats it as a fetch failure",
+          "return_contract": "on unshallow retry success: sync proceeds normally; on unshallow retry failure: HTTP 502 with JSON error body, sync_status='error', sync_error set",
+          "error_condition": "remote.Fetch() fails due to missing history on a shallow clone"
+        },
+        {
+          "id": "13-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub sync handler",
+          "action": "sets sync_status to 'error', records the error in sync_error, and aborts without modifying head_sha or last_sync_at",
+          "return_contract": "HTTP 502 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "remote.Fetch() fails due to network error or authentication failure"
+        },
+        {
+          "id": "13-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub sync handler",
+          "action": "the deferred cleanup function fires, sets sync_status to 'error', and records a descriptive sync_error; the workspace is not left in 'syncing' state",
+          "return_contract": "HTTP 504 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "the request context is cancelled mid-sync (HTTP timeout or client disconnect)"
+        },
+        {
+          "id": "13-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "hub sync handler",
+          "action": "sets sync_status to 'error', records the error in sync_error, and returns an error response",
+          "return_contract": "HTTP 502 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "go-git fails to open the local repository at <WORKSPACE_ROOT>/<slug>/trunk/"
+        },
+        {
+          "id": "13-REQ-4.E5",
+          "ears_pattern": "unwanted",
+          "system": "hub sync handler",
+          "action": "sets sync_status to 'error', records the error in sync_error, and aborts the sync",
+          "return_contract": "HTTP 502 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "resolveCloneAuth returns an error (credentials not found or secrets store failure)"
+        },
+        {
+          "id": "13-REQ-4.E6",
+          "ears_pattern": "unwanted",
+          "system": "hub sync handler",
+          "action": "sets sync_status to 'error', records the error in sync_error, and does not update head_sha or last_sync_at",
+          "return_contract": "HTTP 502 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "the go-git ref update for fast-forward fails (e.g., concurrent modification)"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-5",
+      "title": "Stuck-Sync Startup Reconciliation",
+      "user_story": {
+        "role": "operator",
+        "goal": "have workspaces stuck in 'syncing' state automatically recovered on server restart",
+        "benefit": "a server crash or unclean shutdown does not permanently block future sync attempts"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "hub",
+          "action": "before accepting HTTP requests, queries the database for all workspaces with sync_status='syncing' and updates each to sync_status='error' with sync_error='sync interrupted by server restart'",
+          "return_contract": "All workspaces with sync_status='syncing' updated to sync_status='error' with sync_error='sync interrupted by server restart'; returns error and aborts server startup if the database operation fails",
+          "trigger": "the server starts up"
+        },
+        {
+          "id": "13-REQ-5.2",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "completes the reconciliation step as a no-op and proceeds to start the HTTP server",
+          "return_contract": null,
+          "trigger": "the startup reconciliation runs",
+          "condition": "no workspaces have sync_status='syncing'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "logs the error and aborts server startup rather than starting with potentially stuck workspaces",
+          "return_contract": "server process exits with non-zero exit code; error is logged",
+          "error_condition": "the database query or update during startup reconciliation fails"
+        },
+        {
+          "id": "13-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "resets all of them in a single bulk update or sequential updates before the HTTP server starts accepting requests",
+          "return_contract": "Set sync_status='error', record sync_error with descriptive message. Return error to caller.",
+          "error_condition": "multiple workspaces are stuck in 'syncing' at startup"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-6",
+      "title": "Reset-to-Upstream Recovery",
+      "user_story": {
+        "role": "operator",
+        "goal": "reset the integration branch to match upstream HEAD after a force-push",
+        "benefit": "I can recover from diverged history without performing a full reclone"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "hub",
+          "action": "fetches upstream via go-git, resets the local integration branch to the fetched upstream HEAD via go-git reference update, updates head_sha and upstream_head_sha, sets sync_status to 'idle', updates last_sync_at, and clears sync_error",
+          "return_contract": "HTTP 200 with workspace JSON: sync_status='idle', head_sha=upstream HEAD SHA, upstream_head_sha set, last_sync_at set, sync_error=null",
+          "trigger": "a user calls POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true"
+        },
+        {
+          "id": "13-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "calls POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true and prints the resulting workspace object",
+          "return_contract": "CLI prints the updated workspace object; exits with code 0 on success",
+          "trigger": "a user runs 'afc workspace sync <slug> --reset-to-upstream'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "sets sync_status to 'error', records sync_error, and does not modify head_sha or the integration branch",
+          "return_contract": "HTTP 502 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "the fetch step of reset-to-upstream fails (network or auth error)"
+        },
+        {
+          "id": "13-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "sets sync_status to 'error', records sync_error, and does not update head_sha or last_sync_at",
+          "return_contract": "HTTP 502 with JSON error body via WriteAPIError; workspace sync_status='error', sync_error set",
+          "error_condition": "the go-git reference update for reset-to-upstream fails"
+        },
+        {
+          "id": "13-REQ-6.E3",
+          "ears_pattern": "complex_event",
+          "system": "hub",
+          "action": "rejects the request via the syncing guard",
+          "return_contract": "HTTP 409 with JSON error body via WriteAPIError",
+          "trigger": "a reset-to-upstream request arrives",
+          "condition": "the workspace sync_status is 'syncing'"
+        },
+        {
+          "id": "13-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request before performing any git operations",
+          "return_contract": "HTTP 403 with JSON error body via WriteAPIError",
+          "error_condition": "a caller without workspaces:sync scope attempts POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-7",
+      "title": "Reclone Operation",
+      "user_story": {
+        "role": "operator",
+        "goal": "trigger a reclone that archives and re-clones a workspace from upstream",
+        "benefit": "I can recover from severely corrupted or diverged repository state without manual intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "hub",
+          "action": "executes the archive flow (attempting to push local commits; logs a warning and continues if push fails), deletes the local clone directory, atomically sets clone_status to 'pending', sync_status to 'idle', clears sync_error and upstream_head_sha, enqueues a clone job via the in-memory job queue, and returns the workspace with clone_status='pending'",
+          "return_contract": "HTTP 200 with workspace JSON: clone_status='pending', sync_status='idle', sync_error=null, upstream_head_sha=null, status='active'",
+          "trigger": "a user calls POST /api/v1/workspaces/:slug/reclone"
+        },
+        {
+          "id": "13-REQ-7.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub reclone handler",
+          "action": "keeps workspace status as 'active' throughout the entire reclone operation; never transitions workspace status away from 'active'",
+          "return_contract": null
+        },
+        {
+          "id": "13-REQ-7.3",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "calls POST /api/v1/workspaces/:slug/reclone and prints the resulting workspace object; the --confirm flag is required as a CLI-only safety check",
+          "return_contract": "CLI prints the workspace object with clone_status='pending'; exits with code 0 on success",
+          "trigger": "a user runs 'afc workspace reclone <slug> --confirm'"
+        },
+        {
+          "id": "13-REQ-7.4",
+          "ears_pattern": "state_driven",
+          "system": "hub",
+          "action": "transitions clone_status from 'pending' to 'cloning' to 'ready' as the clone job progresses, consistent with the workspace_checkout clone lifecycle",
+          "return_contract": null,
+          "state": "a reclone clone job is executing"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub reclone handler",
+          "action": "logs a warning and continues with the reclone; does not block or return an error to the caller",
+          "return_contract": "reclone proceeds; HTTP 200 with workspace JSON: clone_status='pending'",
+          "error_condition": "the archive flow push attempt fails (no credentials, remote rejection, or network error)"
+        },
+        {
+          "id": "13-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub reclone handler",
+          "action": "returns an error to the caller without enqueuing a clone job; workspace state is not transitioned to 'pending'",
+          "return_contract": "HTTP 500 with JSON error body via WriteAPIError; workspace clone_status unchanged",
+          "error_condition": "deletion of the local clone directory fails"
+        },
+        {
+          "id": "13-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "hub reclone handler",
+          "action": "returns an error to the caller; the atomic state transition to 'pending' is rolled back or the error is surfaced before the transition is committed",
+          "return_contract": "HTTP 500 with JSON error body via WriteAPIError",
+          "error_condition": "the in-memory job queue is full or unavailable when enqueuing the clone job"
+        },
+        {
+          "id": "13-REQ-7.E4",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "rejects the command with a descriptive error before making any API call",
+          "return_contract": "CLI exits with non-zero exit code and prints a message requiring --confirm",
+          "error_condition": "a user runs 'afc workspace reclone <slug>' without the --confirm flag"
+        },
+        {
+          "id": "13-REQ-7.E5",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request before performing any operations",
+          "return_contract": "HTTP 403 with JSON error body via WriteAPIError",
+          "error_condition": "a caller without workspaces:sync scope attempts POST /api/v1/workspaces/:slug/reclone"
+        },
+        {
+          "id": "13-REQ-7.E6",
+          "ears_pattern": "unwanted",
+          "system": "hub reclone handler",
+          "action": "returns a not-found error without performing any operations",
+          "return_contract": "HTTP 404 with JSON error body via WriteAPIError",
+          "error_condition": "the workspace slug does not exist"
+        },
+        {
+          "id": "13-REQ-7.E7",
+          "ears_pattern": "unwanted",
+          "system": "hub reclone handler",
+          "action": "rejects the request to prevent concurrent reclone operations",
+          "return_contract": "HTTP 409 with JSON error body via WriteAPIError",
+          "error_condition": "a reclone is requested while clone_status is already 'pending' or 'cloning'"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-8",
+      "title": "Sync Permission Enforcement",
+      "user_story": {
+        "role": "security engineer",
+        "goal": "have sync and reclone operations gated behind the workspaces:sync scope",
+        "benefit": "unauthorized callers cannot trigger disruptive sync or reclone operations"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-8.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub",
+          "action": "requires the workspaces:sync permission scope for POST /api/v1/workspaces/:slug/sync and POST /api/v1/workspaces/:slug/reclone; admin tokens and API keys have implicit access; PATs require explicit workspaces:sync scope grant",
+          "return_contract": null
+        },
+        {
+          "id": "13-REQ-8.2",
+          "ears_pattern": "ubiquitous",
+          "system": "hub",
+          "action": "includes sync status fields (sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error) in standard workspace responses accessible under the existing workspaces:read permission",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request",
+          "return_contract": "HTTP 403 with JSON error body via WriteAPIError",
+          "error_condition": "a PAT with only workspaces:read scope calls POST /api/v1/workspaces/:slug/sync"
+        },
+        {
+          "id": "13-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "rejects the request",
+          "return_contract": "HTTP 401 with JSON error body via WriteAPIError",
+          "error_condition": "an unauthenticated request is made to POST /api/v1/workspaces/:slug/sync or POST /api/v1/workspaces/:slug/reclone"
+        }
+      ]
+    },
+    {
+      "id": "13-REQ-9",
+      "title": "Sync Status State Machine Integrity",
+      "user_story": {
+        "role": "developer",
+        "goal": "have sync_status follow a well-defined state machine",
+        "benefit": "sync state transitions are predictable and no invalid states are reachable"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "13-REQ-9.1",
+          "ears_pattern": "ubiquitous",
+          "system": "hub",
+          "action": "only transitions sync_status through valid paths: idle\u2192syncing (on sync start), syncing\u2192idle (on success), syncing\u2192error (on failure or context cancellation), error\u2192syncing (on next sync attempt after operator resolution)",
+          "return_contract": "Invalid sync_status transitions are prevented; concurrent sync attempts while sync_status='syncing' return HTTP 409 with JSON error body via WriteAPIError"
+        },
+        {
+          "id": "13-REQ-9.2",
+          "ears_pattern": "state_driven",
+          "system": "hub",
+          "action": "allows a new sync attempt to proceed (transitions to 'syncing'), enabling operator recovery without requiring manual database intervention",
+          "return_contract": null,
+          "state": "sync_status is 'error'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "13-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "the first request proceeds and sets sync_status to 'syncing'; the second request is rejected by the syncing guard",
+          "return_contract": "second request: HTTP 409 with JSON error body via WriteAPIError",
+          "error_condition": "two concurrent sync requests arrive for the same workspace simultaneously"
+        },
+        {
+          "id": "13-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "hub",
+          "action": "aborts the sync without performing any git operations and returns an error",
+          "return_contract": "HTTP 500 with JSON error body via WriteAPIError; sync_status unchanged",
+          "error_condition": "the database update to set sync_status='syncing' fails at the start of a sync"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "13-PROP-1",
+      "title": "Sync status never permanently stuck in syncing",
+      "for_any": "workspace that enters sync_status='syncing'",
+      "invariant": "sync_status eventually transitions to either 'idle' or 'error'; it never remains 'syncing' indefinitely across server restarts or context cancellations",
+      "validates": [
+        "13-REQ-4.5",
+        "13-REQ-5.1",
+        "13-REQ-4.E3"
+      ]
+    },
+    {
+      "id": "13-PROP-2",
+      "title": "Fast-forward only advances to a descendant commit",
+      "for_any": "successful fast-forward sync operation",
+      "invariant": "the post-sync head_sha is a descendant of the pre-sync head_sha; the integration branch is never moved to a non-descendant commit during a standard sync",
+      "validates": [
+        "13-REQ-4.3",
+        "13-REQ-4.4"
+      ]
+    },
+    {
+      "id": "13-PROP-3",
+      "title": "upstream_head_sha always reflects the last fetched upstream state",
+      "for_any": "completed fetch operation (successful or diverged)",
+      "invariant": "upstream_head_sha is updated to the fetched upstream HEAD SHA regardless of whether the integration branch was advanced",
+      "validates": [
+        "13-REQ-4.2",
+        "13-REQ-4.3",
+        "13-REQ-4.4"
+      ]
+    },
+    {
+      "id": "13-PROP-4",
+      "title": "Concurrent sync requests are serialized via syncing guard",
+      "for_any": "pair of concurrent sync requests for the same workspace",
+      "invariant": "at most one sync operation executes at a time per workspace; the second concurrent request receives HTTP 409",
+      "validates": [
+        "13-REQ-3.4",
+        "13-REQ-9.E1"
+      ]
+    },
+    {
+      "id": "13-PROP-5",
+      "title": "Reclone workspace status remains active throughout",
+      "for_any": "reclone operation from initiation to clone job completion",
+      "invariant": "workspace status is 'active' at every observable point during the reclone lifecycle; it is never set to any other value by the reclone handler",
+      "validates": [
+        "13-REQ-7.2",
+        "13-REQ-7.1"
+      ]
+    },
+    {
+      "id": "13-PROP-6",
+      "title": "Disabled sync_mode always rejects sync requests",
+      "for_any": "workspace with sync_mode='disabled'",
+      "invariant": "every POST /api/v1/workspaces/:slug/sync request returns HTTP 400 without performing any git operations or state changes",
+      "validates": [
+        "13-REQ-3.3",
+        "13-REQ-2.1"
+      ]
+    },
+    {
+      "id": "13-PROP-7",
+      "title": "last_sync_at is only updated on successful sync",
+      "for_any": "sync operation that results in sync_status='error'",
+      "invariant": "last_sync_at is not updated when a sync fails; it retains its previous value",
+      "validates": [
+        "13-REQ-4.2",
+        "13-REQ-4.3",
+        "13-REQ-4.E2"
+      ]
+    },
+    {
+      "id": "13-PROP-8",
+      "title": "Reset-to-upstream clears sync_error on success",
+      "for_any": "successful reset-to-upstream operation",
+      "invariant": "sync_error is null and sync_status is 'idle' after a successful reset-to-upstream, regardless of the previous sync_error value",
+      "validates": [
+        "13-REQ-6.1"
+      ]
+    },
+    {
+      "id": "13-PROP-9",
+      "title": "Startup reconciliation runs before HTTP server accepts requests",
+      "for_any": "server startup sequence",
+      "invariant": "no HTTP request can be processed before the startup reconciliation step completes; all stuck-syncing workspaces are reset before the first request is handled",
+      "validates": [
+        "13-REQ-5.1",
+        "13-REQ-5.2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "13-PATH-1",
+      "title": "Happy-path upstream sync with fast-forward",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "calls POST /api/v1/workspaces/:slug/sync with a valid workspaces:sync token"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "validates preconditions: workspace status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "sets sync_status='syncing' in the database and registers the deferred cleanup function"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "opens the local repository at <WORKSPACE_ROOT>/<slug>/trunk/ via go-git"
+        },
+        {
+          "actor": "resolveCloneAuth",
+          "action": "resolves fetch credentials from the secrets store for the workspace"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "calls remote.Fetch() via go-git to fetch from upstream"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "reads the fetched upstream HEAD SHA via go-git and updates upstream_head_sha"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "performs ancestry check: upstream HEAD is a descendant of local HEAD (fast-forward eligible)"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "fast-forwards the integration branch to upstream HEAD via go-git ref update and updates head_sha"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "sets sync_status='idle', updates last_sync_at, persists all changes to the database"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "returns HTTP 200 with the updated workspace JSON to the caller"
+        }
+      ]
+    },
+    {
+      "id": "13-PATH-2",
+      "title": "Force-push detection and diverged history error",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "calls POST /api/v1/workspaces/:slug/sync after upstream has been force-pushed"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "validates preconditions and sets sync_status='syncing'"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "fetches from upstream via go-git successfully"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "reads upstream HEAD SHA and updates upstream_head_sha"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "performs ancestry check: upstream HEAD is not a descendant of local HEAD and not equal (diverged)"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "sets sync_status='error', sets sync_error='upstream history has diverged; use --reset-to-upstream to recover', does not advance integration branch"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "returns HTTP 409 with JSON error body to the caller"
+        }
+      ]
+    },
+    {
+      "id": "13-PATH-3",
+      "title": "Reset-to-upstream recovery after force-push",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "calls POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "validates preconditions and sets sync_status='syncing'"
+        },
+        {
+          "actor": "resolveCloneAuth",
+          "action": "resolves fetch credentials from the secrets store"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "fetches from upstream via go-git"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "resets the local integration branch to upstream HEAD via go-git reference update"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "updates head_sha, upstream_head_sha, sets sync_status='idle', updates last_sync_at, clears sync_error"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "returns HTTP 200 with updated workspace JSON to the caller"
+        }
+      ]
+    },
+    {
+      "id": "13-PATH-4",
+      "title": "Reclone nuclear recovery end-to-end",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "calls POST /api/v1/workspaces/:slug/reclone with a valid workspaces:sync token"
+        },
+        {
+          "actor": "hub reclone handler",
+          "action": "validates the workspace exists and the caller has workspaces:sync permission"
+        },
+        {
+          "actor": "archive flow (workspace_checkout)",
+          "action": "attempts to push local commits to upstream; logs a warning and continues if push fails"
+        },
+        {
+          "actor": "hub reclone handler",
+          "action": "deletes the local clone directory at <WORKSPACE_ROOT>/<slug>/trunk/"
+        },
+        {
+          "actor": "hub reclone handler",
+          "action": "atomically sets clone_status='pending', sync_status='idle', clears sync_error and upstream_head_sha in the database; workspace status remains 'active'"
+        },
+        {
+          "actor": "in-memory job queue (workspace_checkout)",
+          "action": "receives the enqueued clone job and begins cloning from upstream"
+        },
+        {
+          "actor": "hub reclone handler",
+          "action": "returns HTTP 200 with workspace JSON: clone_status='pending', status='active' to the caller"
+        },
+        {
+          "actor": "in-memory job queue (workspace_checkout)",
+          "action": "transitions clone_status from 'pending' to 'cloning' to 'ready' as the clone job executes"
+        }
+      ]
+    },
+    {
+      "id": "13-PATH-5",
+      "title": "Sync rejected due to disabled sync_mode",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "calls POST /api/v1/workspaces/:slug/sync on a workspace with sync_mode='disabled'"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "checks sync_mode and finds it is 'disabled'"
+        },
+        {
+          "actor": "hub sync handler",
+          "action": "returns HTTP 400 with a descriptive error message without performing any git operations or state changes"
+        }
+      ]
+    },
+    {
+      "id": "13-PATH-6",
+      "title": "Server startup reconciliation clears stuck syncing workspaces",
+      "steps": [
+        {
+          "actor": "hub",
+          "action": "begins startup sequence before accepting HTTP requests"
+        },
+        {
+          "actor": "hub startup reconciliation",
+          "action": "queries the database for all workspaces with sync_status='syncing'"
+        },
+        {
+          "actor": "hub startup reconciliation",
+          "action": "updates each found workspace to sync_status='error' with sync_error='sync interrupted by server restart'"
+        },
+        {
+          "actor": "hub",
+          "action": "completes startup and begins accepting HTTP requests"
+        }
+      ]
+    },
+    {
+      "id": "13-PATH-7",
+      "title": "CLI reclone with --confirm flag end-to-end",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs 'afc workspace reclone <slug> --confirm' in the terminal"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "validates the --confirm flag is present; calls POST /api/v1/workspaces/:slug/reclone"
+        },
+        {
+          "actor": "hub reclone handler",
+          "action": "executes the reclone operation (archive, delete, enqueue clone job)"
+        },
+        {
+          "actor": "hub reclone handler",
+          "action": "returns HTTP 200 with workspace JSON: clone_status='pending'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the workspace object and exits with code 0"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "13-ERR-1",
+      "condition": "Sync requested on workspace with sync_mode='disabled'",
+      "behavior": "Reject with HTTP 400 and descriptive error via WriteAPIError; no git operations performed",
+      "requirement_id": "13-REQ-3.3"
+    },
+    {
+      "id": "13-ERR-2",
+      "condition": "Sync requested on workspace with status != 'active'",
+      "behavior": "Reject with HTTP 400 via WriteAPIError; no git operations performed",
+      "requirement_id": "13-REQ-3.1"
+    },
+    {
+      "id": "13-ERR-3",
+      "condition": "Sync requested on workspace with clone_status != 'ready'",
+      "behavior": "Reject with HTTP 400 via WriteAPIError; no git operations performed",
+      "requirement_id": "13-REQ-3.2"
+    },
+    {
+      "id": "13-ERR-4",
+      "condition": "Sync already in progress (sync_status='syncing')",
+      "behavior": "Reject with HTTP 409 via WriteAPIError; no state changes made",
+      "requirement_id": "13-REQ-3.4"
+    },
+    {
+      "id": "13-ERR-5",
+      "condition": "Upstream fetch failed due to network or authentication error",
+      "behavior": "Set sync_status='error', record sync_error, return HTTP 502 via WriteAPIError",
+      "requirement_id": "13-REQ-4.E2"
+    },
+    {
+      "id": "13-ERR-6",
+      "condition": "Upstream history diverged (force-push detected) without reset_to_upstream flag",
+      "behavior": "Update upstream_head_sha, set sync_status='error', set sync_error='upstream history has diverged; use --reset-to-upstream to recover', return HTTP 409 via WriteAPIError",
+      "requirement_id": "13-REQ-4.4"
+    },
+    {
+      "id": "13-ERR-7",
+      "condition": "Workspace not found for sync or reclone request",
+      "behavior": "Return HTTP 404 via WriteAPIError; no operations performed",
+      "requirement_id": "13-REQ-3.5"
+    },
+    {
+      "id": "13-ERR-8",
+      "condition": "Request context cancelled or HTTP timeout mid-sync",
+      "behavior": "Deferred cleanup sets sync_status='error' and sync_error; return HTTP 504 via WriteAPIError",
+      "requirement_id": "13-REQ-4.E3"
+    },
+    {
+      "id": "13-ERR-9",
+      "condition": "Caller lacks workspaces:sync permission for sync or reclone",
+      "behavior": "Return HTTP 403 via WriteAPIError before any workspace state is read or modified",
+      "requirement_id": "13-REQ-8.E1"
+    },
+    {
+      "id": "13-ERR-10",
+      "condition": "Shallow clone fetch fails due to missing history",
+      "behavior": "Retry with unshallow fetch (best-effort); if retry also fails, set sync_status='error', record sync_error, return HTTP 502 via WriteAPIError",
+      "requirement_id": "13-REQ-4.E1"
+    },
+    {
+      "id": "13-ERR-11",
+      "condition": "Reclone archive flow push fails",
+      "behavior": "Log a warning and continue with reclone; do not return an error to the caller",
+      "requirement_id": "13-REQ-7.E1"
+    },
+    {
+      "id": "13-ERR-12",
+      "condition": "Reclone local clone directory deletion fails",
+      "behavior": "Return HTTP 500 via WriteAPIError; do not enqueue clone job; workspace clone_status unchanged",
+      "requirement_id": "13-REQ-7.E2"
+    },
+    {
+      "id": "13-ERR-13",
+      "condition": "CLI reclone invoked without --confirm flag",
+      "behavior": "CLI exits with non-zero exit code and prints a message requiring --confirm; no API call made",
+      "requirement_id": "13-REQ-7.E4"
+    },
+    {
+      "id": "13-ERR-14",
+      "condition": "Startup reconciliation database query or update fails",
+      "behavior": "Log the error and abort server startup with non-zero exit code",
+      "requirement_id": "13-REQ-5.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "unverified \u2014 cross-check installed version before implementation",
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)",
+          "notes": "Opens an existing git repository at the given path. Used to open <WORKSPACE_ROOT>/<slug>/trunk/."
+        },
+        {
+          "name": "Remote.Fetch",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Remote) Fetch(o *FetchOptions) error",
+          "notes": "Fetches from the remote. Returns NoErrAlreadyUpToDate if already current. Used for upstream fetch in sync and reset-to-upstream."
+        },
+        {
+          "name": "Repository.Reference",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) Reference(name plumbing.ReferenceName, resolved bool) (*plumbing.Reference, error)",
+          "notes": "Reads a reference by name. Used to read upstream HEAD SHA and local integration branch HEAD."
+        },
+        {
+          "name": "Repository.Storer.SetReference",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/storer",
+          "signature": "func (s storer.ReferenceStorer) SetReference(ref *plumbing.Reference) error",
+          "notes": "Updates a reference. Used for fast-forward and reset-to-upstream ref updates. Exact API surface should be verified against installed version."
+        }
+      ]
+    }
+  ]
+}

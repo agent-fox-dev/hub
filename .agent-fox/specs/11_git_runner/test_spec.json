@@ -1,0 +1,1569 @@
+{
+  "$schema": null,
+  "spec_id": "11",
+  "spec_name": "git_runner",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-11-1",
+      "requirement_id": "11-REQ-1.1",
+      "kind": "integration",
+      "description": "Constructor returns a non-nil *GitRunner and nil error when host git version is >= 2.38 and workDir exists.",
+      "preconditions": [
+        "Host has git >= 2.38 installed and on PATH",
+        "A valid temporary directory exists on the filesystem"
+      ],
+      "input": {
+        "extraEnv": [],
+        "workDir": "<os.MkdirTemp result>"
+      },
+      "expected": {
+        "err": "nil",
+        "runner": "non-nil *GitRunner"
+      },
+      "assertion_pseudocode": "runner, err := New(tmpDir, nil); assert err == nil; assert runner != nil"
+    },
+    {
+      "id": "TS-11-2",
+      "requirement_id": "11-REQ-1.2",
+      "kind": "integration",
+      "description": "Constructor returns (nil, error) with a message identifying the detected version and the 2.38 minimum when git version is below 2.38.",
+      "preconditions": [
+        "A fake git binary on PATH that outputs 'git version 2.37.0' is available, OR the test is skipped if host git is >= 2.38 and no fake binary can be injected",
+        "A valid temporary directory exists"
+      ],
+      "input": {
+        "extraEnv": [],
+        "gitVersionOutput": "git version 2.37.0",
+        "workDir": "<tmpDir>"
+      },
+      "expected": {
+        "err": "non-nil error containing '2.37' and '2.38'",
+        "runner": "nil"
+      },
+      "assertion_pseudocode": "runner, err := New(tmpDir, nil); assert runner == nil; assert err != nil; assert errorMessage(err) contains '2.37'; assert errorMessage(err) contains '2.38'"
+    },
+    {
+      "id": "TS-11-3",
+      "requirement_id": "11-REQ-1.3",
+      "kind": "integration",
+      "description": "Constructor returns (nil, error) wrapping the exec failure when git is not found on PATH.",
+      "preconditions": [
+        "PATH is set to a directory that does not contain a git binary",
+        "A valid temporary directory exists"
+      ],
+      "input": {
+        "PATH": "<empty or git-free dir>",
+        "extraEnv": [],
+        "workDir": "<tmpDir>"
+      },
+      "expected": {
+        "err": "non-nil error describing exec failure (e.g., 'executable file not found in $PATH')",
+        "runner": "nil"
+      },
+      "assertion_pseudocode": "runner, err := New(tmpDir, nil); assert runner == nil; assert err != nil; assert errorMessage(err) contains 'exec' or 'not found'"
+    },
+    {
+      "id": "TS-11-4",
+      "requirement_id": "11-REQ-1.4",
+      "kind": "integration",
+      "description": "Constructor accepts any valid directory path as workDir, including a non-git-repository directory such as os.TempDir().",
+      "preconditions": [
+        "Host has git >= 2.38 on PATH",
+        "os.TempDir() exists and is not a git repository"
+      ],
+      "input": {
+        "extraEnv": [],
+        "workDir": "<os.TempDir()>"
+      },
+      "expected": {
+        "err": "nil",
+        "runner": "non-nil *GitRunner"
+      },
+      "assertion_pseudocode": "runner, err := New(os.TempDir(), nil); assert err == nil; assert runner != nil"
+    },
+    {
+      "id": "TS-11-5",
+      "requirement_id": "11-REQ-2.1",
+      "kind": "integration",
+      "description": "Every git subprocess spawned by GitRunner has GIT_ALLOW_PROTOCOL=file:https:ssh, GIT_TERMINAL_PROMPT=0, and GIT_CONFIG_NOSYSTEM=1 in its environment.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir and nil extraEnv",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "env"
+        ]
+      },
+      "expected": {
+        "env": "subprocess environment contains GIT_ALLOW_PROTOCOL=file:https:ssh, GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.Run(ctx, 'env'); assert err == nil; assert out contains 'GIT_ALLOW_PROTOCOL=file:https:ssh'; assert out contains 'GIT_TERMINAL_PROMPT=0'; assert out contains 'GIT_CONFIG_NOSYSTEM=1'"
+    },
+    {
+      "id": "TS-11-6",
+      "requirement_id": "11-REQ-2.2",
+      "kind": "integration",
+      "description": "Safety variables are appended after extraEnv so they unconditionally take precedence over any conflicting caller-supplied values.",
+      "preconditions": [
+        "A *GitRunner is constructed with extraEnv containing GIT_ALLOW_PROTOCOL=git:http",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "extraEnv": [
+          "GIT_ALLOW_PROTOCOL=git:http"
+        ]
+      },
+      "expected": {
+        "env": "subprocess environment's last occurrence of GIT_ALLOW_PROTOCOL is file:https:ssh"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, []string{'GIT_ALLOW_PROTOCOL=git:http'}); out, _ := runner.Run(ctx, 'env'); lines := splitLines(out); lastGAP := lastOccurrence(lines, 'GIT_ALLOW_PROTOCOL='); assert lastGAP == 'GIT_ALLOW_PROTOCOL=file:https:ssh'"
+    },
+    {
+      "id": "TS-11-7",
+      "requirement_id": "11-REQ-2.3",
+      "kind": "integration",
+      "description": "When a caller passes a different GIT_ALLOW_PROTOCOL in extraEnv, the hardcoded file:https:ssh value wins because it is appended last.",
+      "preconditions": [
+        "A *GitRunner is constructed with extraEnv containing GIT_ALLOW_PROTOCOL=https",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "extraEnv": [
+          "GIT_ALLOW_PROTOCOL=https"
+        ]
+      },
+      "expected": {
+        "env": "effective GIT_ALLOW_PROTOCOL in subprocess is file:https:ssh, not https"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, []string{'GIT_ALLOW_PROTOCOL=https'}); out, _ := runner.Run(ctx, 'env'); assert lastOccurrence(out, 'GIT_ALLOW_PROTOCOL=') == 'GIT_ALLOW_PROTOCOL=file:https:ssh'"
+    },
+    {
+      "id": "TS-11-8",
+      "requirement_id": "11-REQ-3.1",
+      "kind": "integration",
+      "description": "Run returns trimmed stdout and nil error when the git subprocess exits with code 0.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "rev-parse",
+          "--git-dir"
+        ]
+      },
+      "expected": {
+        "err": "nil",
+        "stdout": "'.git' (trimmed)"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.Run(ctx, 'rev-parse', '--git-dir'); assert err == nil; assert strings.TrimSpace(out) == '.git'"
+    },
+    {
+      "id": "TS-11-9",
+      "requirement_id": "11-REQ-3.2",
+      "kind": "integration",
+      "description": "Run returns a *GitError containing Args, ExitCode, and trimmed Stderr when the git subprocess exits with a non-zero exit code.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "cat-file",
+          "-t",
+          "nonexistent-sha-abc123"
+        ]
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode != 0, GitError.Args contains 'cat-file', GitError.Stderr is non-empty trimmed string"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.Run(ctx, 'cat-file', '-t', 'nonexistent-sha-abc123'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0; assert len(ge.Args) > 0; assert ge.Args contains 'cat-file'"
+    },
+    {
+      "id": "TS-11-10",
+      "requirement_id": "11-REQ-3.3",
+      "kind": "integration",
+      "description": "Run respects context cancellation by killing the subprocess and returning the context error.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "credential-helper",
+          "get"
+        ],
+        "ctx": "context with 1ms deadline"
+      },
+      "expected": {
+        "result": "(\"\", error) where error wraps context.DeadlineExceeded or context.Canceled"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond); defer cancel(); runner, _ := New(tmpDir, nil); out, err := runner.Run(ctx, 'ls-remote', 'https://localhost:1/slow'); assert out == ''; assert errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)"
+    },
+    {
+      "id": "TS-11-11",
+      "requirement_id": "11-REQ-4.1",
+      "kind": "integration",
+      "description": "LsRemote returns trimmed stdout and nil error when git exits with code 0 (ref exists on remote).",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "A local bare git repository exists with a known branch (e.g., 'main')",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/main",
+        "remote": "<file:// path to local bare repo>"
+      },
+      "expected": {
+        "err": "nil",
+        "stdout": "non-empty string containing the SHA and ref name"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(ctx, 'file://'+bareRepoPath, 'refs/heads/main'); assert err == nil; assert out != ''; assert out contains 'refs/heads/main'"
+    },
+    {
+      "id": "TS-11-12",
+      "requirement_id": "11-REQ-4.2",
+      "kind": "integration",
+      "description": "LsRemote returns ErrRefNotFound sentinel when git exits with code 2 (ref does not exist on remote).",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "A local bare git repository exists without a branch named 'nonexistent-branch-xyz'",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/nonexistent-branch-xyz",
+        "remote": "<file:// path to local bare repo>"
+      },
+      "expected": {
+        "result": "(\"\", ErrRefNotFound)"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(ctx, 'file://'+bareRepoPath, 'refs/heads/nonexistent-branch-xyz'); assert out == ''; assert errors.Is(err, ErrRefNotFound)"
+    },
+    {
+      "id": "TS-11-13",
+      "requirement_id": "11-REQ-4.3",
+      "kind": "integration",
+      "description": "LsRemote returns *GitError with ExitCode=1 and non-empty Stderr when git exits with code 1 (network/auth failure).",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Port 1 on localhost is unreachable (connection refused)",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/main",
+        "remote": "https://localhost:1/nonexistent"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode == 1 and GitError.Stderr is non-empty"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(ctx, 'https://localhost:1/nonexistent', 'refs/heads/main'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode == 1; assert ge.Stderr != ''"
+    },
+    {
+      "id": "TS-11-14",
+      "requirement_id": "11-REQ-4.4",
+      "kind": "integration",
+      "description": "LsRemote invokes git as 'git ls-remote --exit-code <remote> <ref>' with all safety environment variables applied.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "A local bare git repository exists",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/main",
+        "remote": "<file:// path to local bare repo>"
+      },
+      "expected": {
+        "command": "git ls-remote --exit-code <remote> <ref> is executed with GIT_ALLOW_PROTOCOL, GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM set"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); _, _ = runner.LsRemote(ctx, 'file://'+bareRepoPath, 'refs/heads/main'); // verify via GitError.Args on failure path: var ge *GitError; if errors.As(err, &ge) { assert ge.Args[0] == 'ls-remote'; assert ge.Args[1] == '--exit-code' }; // for success path, verify safety vars are present in env by running a wrapper script"
+    },
+    {
+      "id": "TS-11-15",
+      "requirement_id": "11-REQ-5.1",
+      "kind": "integration",
+      "description": "MergeTree returns the tree SHA string and nil error when the merge is clean.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository has two commits (base and head) that merge cleanly",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "base": "<base commit SHA>",
+        "head": "<head commit SHA>"
+      },
+      "expected": {
+        "err": "nil",
+        "treeSHA": "non-empty 40-character hex string"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); sha, err := runner.MergeTree(ctx, baseSHA, headSHA); assert err == nil; assert len(sha) == 40; assert sha matches /^[0-9a-f]{40}$/"
+    },
+    {
+      "id": "TS-11-16",
+      "requirement_id": "11-REQ-5.2",
+      "kind": "integration",
+      "description": "MergeTree returns *MergeConflictError with ConflictingFiles populated when the merge produces conflicts.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository has two commits that conflict on a known file (e.g., 'conflict.txt')",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "base": "<base commit SHA>",
+        "head": "<conflicting head SHA>"
+      },
+      "expected": {
+        "result": "(\"\", *MergeConflictError) where ConflictingFiles contains 'conflict.txt'"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.MergeTree(ctx, baseSHA, conflictHeadSHA); assert out == ''; var ce *MergeConflictError; assert errors.As(err, &ce); assert len(ce.ConflictingFiles) >= 1; assert ce.ConflictingFiles contains 'conflict.txt'"
+    },
+    {
+      "id": "TS-11-17",
+      "requirement_id": "11-REQ-5.3",
+      "kind": "integration",
+      "description": "MergeTree invokes git as 'git merge-tree --write-tree <base> <head>' with all safety environment variables applied.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "base": "<base commit SHA>",
+        "head": "<head commit SHA>"
+      },
+      "expected": {
+        "command": "git merge-tree --write-tree <base> <head> is executed; on failure GitError.Args[0]=='merge-tree' and GitError.Args[1]=='--write-tree'"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); _, err := runner.MergeTree(ctx, 'invalid-base', 'invalid-head'); var ge *GitError; if errors.As(err, &ge) { assert ge.Args[0] == 'merge-tree'; assert ge.Args[1] == '--write-tree' }"
+    },
+    {
+      "id": "TS-11-18",
+      "requirement_id": "11-REQ-5.4",
+      "kind": "unit",
+      "description": "MergeTree source code documents the CONFLICT line parsing rule with a representative sample output line from git 2.38+.",
+      "preconditions": [
+        "Source file internal/gitcmd/runner.go (or equivalent) is accessible for review"
+      ],
+      "input": {},
+      "expected": {
+        "source": "A code comment in the MergeTree implementation describes the parsing rule (regex, prefix strip, or delimiter split) and includes a sample CONFLICT line such as 'CONFLICT (content): Merge conflict in path/to/file.go'"
+      },
+      "assertion_pseudocode": "// Static analysis / code review check: grep internal/gitcmd/*.go for 'CONFLICT' comment; assert comment exists describing parsing rule and sample line"
+    },
+    {
+      "id": "TS-11-19",
+      "requirement_id": "11-REQ-6.1",
+      "kind": "integration",
+      "description": "Rebase returns the new HEAD SHA and nil error when the rebase completes without conflicts.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository has a feature branch that rebases cleanly onto 'main'",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "onto": "main"
+      },
+      "expected": {
+        "err": "nil",
+        "headSHA": "non-empty 40-character hex string matching the new HEAD"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); sha, err := runner.Rebase(ctx, 'main'); assert err == nil; assert len(sha) == 40; assert sha matches /^[0-9a-f]{40}$/; revParseSHA, _ := runner.RevParse(ctx, 'HEAD'); assert sha == revParseSHA"
+    },
+    {
+      "id": "TS-11-20",
+      "requirement_id": "11-REQ-6.2",
+      "kind": "integration",
+      "description": "Rebase calls git rebase --abort internally and returns *RebaseConflictError when git rebase exits non-zero due to a conflict.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository has a feature branch that conflicts when rebased onto 'main'",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "onto": "main"
+      },
+      "expected": {
+        "result": "(\"\", *RebaseConflictError) where ConflictingFiles is non-empty; no .git/rebase-merge or .git/rebase-apply directory exists after the call"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.Rebase(ctx, 'main'); assert out == ''; var ce *RebaseConflictError; assert errors.As(err, &ce); assert len(ce.ConflictingFiles) >= 1; assert !dirExists(repoDir+'/.git/rebase-merge'); assert !dirExists(repoDir+'/.git/rebase-apply')"
+    },
+    {
+      "id": "TS-11-21",
+      "requirement_id": "11-REQ-6.3",
+      "kind": "integration",
+      "description": "Rebase applies all safety environment variables to every git subprocess invoked during the rebase sequence.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "onto": "main"
+      },
+      "expected": {
+        "env": "GIT_ALLOW_PROTOCOL=file:https:ssh, GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1 are present in every subprocess spawned during Rebase"
+      },
+      "assertion_pseudocode": "// Verified by construction: GitRunner.Run always appends safety vars; Rebase uses Run internally; assert runner.Rebase calls runner.Run which sets env; verify via integration that no subprocess hangs on prompt"
+    },
+    {
+      "id": "TS-11-22",
+      "requirement_id": "11-REQ-7.1",
+      "kind": "integration",
+      "description": "RebaseAbort runs 'git rebase --abort' and returns nil when the repository is in rebase state.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository is in rebase state (e.g., after a manually interrupted rebase)",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {},
+      "expected": {
+        "result": "nil error; .git/rebase-merge and .git/rebase-apply directories no longer exist"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); // put repo in rebase state manually; err := runner.RebaseAbort(ctx); assert err == nil; assert !dirExists(repoDir+'/.git/rebase-merge'); assert !dirExists(repoDir+'/.git/rebase-apply')"
+    },
+    {
+      "id": "TS-11-23",
+      "requirement_id": "11-REQ-7.2",
+      "kind": "integration",
+      "description": "RebaseAbort returns *GitError with ExitCode and Stderr when 'git rebase --abort' exits non-zero.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository is NOT in rebase state",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {},
+      "expected": {
+        "result": "*GitError with ExitCode != 0 and non-empty Stderr"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); err := runner.RebaseAbort(ctx); var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0; assert ge.Stderr != ''"
+    },
+    {
+      "id": "TS-11-24",
+      "requirement_id": "11-REQ-8.1",
+      "kind": "integration",
+      "description": "RevParse returns the trimmed SHA string and nil error when git resolves the ref successfully.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository has a 'HEAD' ref pointing to a valid commit",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "HEAD"
+      },
+      "expected": {
+        "err": "nil",
+        "sha": "40-character hex string"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); sha, err := runner.RevParse(ctx, 'HEAD'); assert err == nil; assert len(sha) == 40; assert sha matches /^[0-9a-f]{40}$/"
+    },
+    {
+      "id": "TS-11-25",
+      "requirement_id": "11-REQ-8.2",
+      "kind": "integration",
+      "description": "RevParse returns *GitError with ExitCode and Stderr when the ref cannot be resolved by git.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/nonexistent-branch-xyz"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode != 0 and GitError.Stderr is non-empty"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.RevParse(ctx, 'refs/heads/nonexistent-branch-xyz'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-26",
+      "requirement_id": "11-REQ-9.1",
+      "kind": "integration",
+      "description": "UpdateRef runs 'git update-ref <ref> <sha>' and returns nil when git updates the reference successfully.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "The repository has a valid commit SHA and a ref to update",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/test-branch",
+        "sha": "<valid commit SHA>"
+      },
+      "expected": {
+        "result": "nil error; git rev-parse refs/heads/test-branch returns the given SHA"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); err := runner.UpdateRef(ctx, 'refs/heads/test-branch', commitSHA); assert err == nil; resolved, _ := runner.RevParse(ctx, 'refs/heads/test-branch'); assert resolved == commitSHA"
+    },
+    {
+      "id": "TS-11-27",
+      "requirement_id": "11-REQ-9.2",
+      "kind": "integration",
+      "description": "UpdateRef returns *GitError with ExitCode and Stderr when 'git update-ref' exits non-zero.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/test-branch",
+        "sha": "not-a-valid-sha"
+      },
+      "expected": {
+        "result": "*GitError with ExitCode != 0 and non-empty Stderr"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); err := runner.UpdateRef(ctx, 'refs/heads/test-branch', 'not-a-valid-sha'); var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-28",
+      "requirement_id": "11-REQ-10.1",
+      "kind": "integration",
+      "description": "GitError exposes Args, ExitCode, and Stderr fields and implements error interface with Error() returning a non-empty string containing all three.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "cat-file",
+          "-t",
+          "deadbeef"
+        ]
+      },
+      "expected": {
+        "Error()": "non-empty string containing args, exit code, and stderr",
+        "GitError.Args": "non-empty slice containing 'cat-file'",
+        "GitError.ExitCode": "non-zero int",
+        "GitError.Stderr": "non-empty trimmed string"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); _, err := runner.Run(ctx, 'cat-file', '-t', 'deadbeef'); var ge *GitError; assert errors.As(err, &ge); assert len(ge.Args) > 0; assert ge.ExitCode != 0; msg := ge.Error(); assert msg != ''; assert msg contains 'cat-file'; assert msg contains string(ge.ExitCode)"
+    },
+    {
+      "id": "TS-11-29",
+      "requirement_id": "11-REQ-10.2",
+      "kind": "integration",
+      "description": "GitRunner returns *GitError (not a plain error string) for every failed git subprocess so callers can use errors.As.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "invalid-subcommand-xyz"
+        ]
+      },
+      "expected": {
+        "err": "*GitError type assertable via errors.As"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); _, err := runner.Run(ctx, 'invalid-subcommand-xyz'); assert err != nil; var ge *GitError; assert errors.As(err, &ge) == true"
+    },
+    {
+      "id": "TS-11-30",
+      "requirement_id": "11-REQ-11.1",
+      "kind": "unit",
+      "description": "GitRunner holds only immutable state after construction; each Run call allocates an independent exec.Cmd with its own buffers.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {},
+      "expected": {
+        "struct": "GitRunner fields are workDir string and env []string only; no mutex, channel, or shared buffer fields"
+      },
+      "assertion_pseudocode": "// Static analysis: inspect GitRunner struct definition; assert fields are only workDir string and env []string (or equivalent immutable fields); assert no sync.Mutex, sync.WaitGroup, or shared buffer fields exist"
+    },
+    {
+      "id": "TS-11-31",
+      "requirement_id": "11-REQ-11.2",
+      "kind": "integration",
+      "description": "Multiple goroutines calling Run concurrently on the same *GitRunner complete independently without data races.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid git repository as workDir",
+        "Host has git >= 2.38 on PATH",
+        "Test is run with 'go test -race ./internal/gitcmd/...'"
+      ],
+      "input": {
+        "args": [
+          "rev-parse",
+          "HEAD"
+        ],
+        "goroutines": 20
+      },
+      "expected": {
+        "results": "all goroutines return valid (string, nil) results; no data race detected by -race flag"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); var wg sync.WaitGroup; results := make([]string, 20); errs := make([]error, 20); for i := 0; i < 20; i++ { wg.Add(1); go func(i int) { defer wg.Done(); results[i], errs[i] = runner.Run(ctx, 'rev-parse', 'HEAD') }(i) }; wg.Wait(); for i := 0; i < 20; i++ { assert errs[i] == nil; assert len(results[i]) == 40 }"
+    },
+    {
+      "id": "TS-11-32",
+      "requirement_id": "11-REQ-12.1",
+      "kind": "unit",
+      "description": "The version string parser is a pure function accepting a raw string and returning (major, minor, error) with no side effects.",
+      "preconditions": [
+        "The parseGitVersion function (or equivalent) is exported or accessible for unit testing in internal/gitcmd"
+      ],
+      "input": {
+        "versionString": "git version 2.39.1"
+      },
+      "expected": {
+        "err": "nil",
+        "major": 2,
+        "minor": 39
+      },
+      "assertion_pseudocode": "major, minor, err := parseGitVersion('git version 2.39.1'); assert err == nil; assert major == 2; assert minor == 39"
+    },
+    {
+      "id": "TS-11-33",
+      "requirement_id": "11-REQ-12.2",
+      "kind": "unit",
+      "description": "Version string parser correctly parses 'git version 2.39.1' and returns major=2, minor=39 without error.",
+      "preconditions": [
+        "The parseGitVersion function is accessible for unit testing"
+      ],
+      "input": {
+        "versionString": "git version 2.39.1"
+      },
+      "expected": {
+        "err": "nil",
+        "major": 2,
+        "minor": 39
+      },
+      "assertion_pseudocode": "major, minor, err := parseGitVersion('git version 2.39.1'); assert err == nil; assert major == 2; assert minor == 39"
+    },
+    {
+      "id": "TS-11-34",
+      "requirement_id": "11-REQ-12.3",
+      "kind": "unit",
+      "description": "Version string parser returns an error with a message indicating the unrecognized format and the raw input when the string does not match 'git version X.Y[.Z]'.",
+      "preconditions": [
+        "The parseGitVersion function is accessible for unit testing"
+      ],
+      "input": {
+        "versionString": "not a git version string"
+      },
+      "expected": {
+        "err": "non-nil error containing 'not a git version string' or similar indication of the raw input"
+      },
+      "assertion_pseudocode": "_, _, err := parseGitVersion('not a git version string'); assert err != nil; assert errorMessage(err) contains 'not a git version string' or 'unrecognized'"
+    },
+    {
+      "id": "TS-11-35",
+      "requirement_id": "11-REQ-13.1",
+      "kind": "unit",
+      "description": "Integration test suite uses only standard library (testing, os) with no mock frameworks or additional test dependencies.",
+      "preconditions": [
+        "internal/gitcmd test files are accessible"
+      ],
+      "input": {},
+      "expected": {
+        "imports": "test files import only 'testing', 'os', 'context', 'strings', 'errors', and other stdlib packages; no testify, gomock, or third-party test libraries"
+      },
+      "assertion_pseudocode": "// Static analysis: grep internal/gitcmd/*_test.go for import statements; assert no non-stdlib imports (e.g., github.com/stretchr/testify, github.com/golang/mock)"
+    },
+    {
+      "id": "TS-11-36",
+      "requirement_id": "11-REQ-13.2",
+      "kind": "unit",
+      "description": "Integration tests create temporary git repositories using os.MkdirTemp and clean them up via t.Cleanup; tests do not share mutable repository state.",
+      "preconditions": [
+        "internal/gitcmd test files are accessible"
+      ],
+      "input": {},
+      "expected": {
+        "pattern": "each test function calls os.MkdirTemp and registers t.Cleanup(func(){ os.RemoveAll(tmpDir) }); no global or package-level mutable repo variable is shared across tests"
+      },
+      "assertion_pseudocode": "// Static analysis: grep internal/gitcmd/*_test.go for os.MkdirTemp and t.Cleanup; assert each test that uses a repo creates its own tmpDir and registers cleanup"
+    },
+    {
+      "id": "TS-11-37",
+      "requirement_id": "11-REQ-13.3",
+      "kind": "integration",
+      "description": "Constructor integration test calls t.Skip when the host git version is below 2.38 rather than failing.",
+      "preconditions": [
+        "Host git version is below 2.38 (or test is structured to detect this condition)"
+      ],
+      "input": {},
+      "expected": {
+        "behavior": "t.Skip is called with a descriptive message; test does not fail with t.Fatal or t.Error"
+      },
+      "assertion_pseudocode": "// Code review: inspect TestNew (or equivalent) in internal/gitcmd/*_test.go; assert it calls t.Skip when detected version < 2.38; assert no fake git binary or exec.Command mock is used"
+    },
+    {
+      "id": "TS-11-38",
+      "requirement_id": "11-REQ-13.4",
+      "kind": "integration",
+      "description": "Integration test suite includes a goroutine-safety test that launches concurrent goroutines and verifies no data races under go test -race.",
+      "preconditions": [
+        "Host has git >= 2.38 on PATH",
+        "Test is run with 'go test -race ./internal/gitcmd/...'"
+      ],
+      "input": {
+        "goroutines": 20
+      },
+      "expected": {
+        "result": "no data race reported by the Go race detector; all goroutines complete successfully"
+      },
+      "assertion_pseudocode": "// Run: go test -race ./internal/gitcmd/... and assert exit code 0; the test function launches N goroutines calling runner.Run concurrently and waits for all to complete"
+    },
+    {
+      "id": "TS-11-39",
+      "requirement_id": "11-REQ-13.5",
+      "kind": "integration",
+      "description": "Integration test suite includes a safety variable precedence test that passes a conflicting GIT_ALLOW_PROTOCOL in extraEnv and verifies the hardcoded value takes precedence.",
+      "preconditions": [
+        "Host has git >= 2.38 on PATH",
+        "A valid workDir exists"
+      ],
+      "input": {
+        "extraEnv": [
+          "GIT_ALLOW_PROTOCOL=git:http:https"
+        ]
+      },
+      "expected": {
+        "env": "subprocess environment's effective GIT_ALLOW_PROTOCOL is file:https:ssh, not git:http:https"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, []string{'GIT_ALLOW_PROTOCOL=git:http:https'}); out, _ := runner.Run(ctx, 'env'); assert lastOccurrence(out, 'GIT_ALLOW_PROTOCOL=') == 'GIT_ALLOW_PROTOCOL=file:https:ssh'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-11-P1",
+      "property_id": "11-PROP-1",
+      "validates": [
+        "11-REQ-2.1",
+        "11-REQ-2.2",
+        "11-REQ-2.3"
+      ],
+      "description": "For any *GitRunner constructed with arbitrary extraEnv values, the subprocess environment always has the three safety variables as the last occurrences.",
+      "for_any_strategy": "Sample extraEnv slices: nil, empty, single conflicting GIT_ALLOW_PROTOCOL, multiple conflicting entries for all three safety vars, and a large slice with many duplicates",
+      "invariant_check": "for each sampled extraEnv: runner, _ := New(tmpDir, extraEnv); out, _ := runner.Run(ctx, 'env'); assert lastOccurrence(out, 'GIT_ALLOW_PROTOCOL=') == 'GIT_ALLOW_PROTOCOL=file:https:ssh'; assert lastOccurrence(out, 'GIT_TERMINAL_PROMPT=') == 'GIT_TERMINAL_PROMPT=0'; assert lastOccurrence(out, 'GIT_CONFIG_NOSYSTEM=') == 'GIT_CONFIG_NOSYSTEM=1'"
+    },
+    {
+      "id": "TS-11-P2",
+      "property_id": "11-PROP-2",
+      "validates": [
+        "11-REQ-4.1",
+        "11-REQ-4.2",
+        "11-REQ-4.3"
+      ],
+      "description": "LsRemote exit code mapping is exhaustive and non-overlapping: exit 0 -> (stdout, nil), exit 2 -> (\"\", ErrRefNotFound), exit 1 -> (\"\", *GitError{ExitCode:1}).",
+      "for_any_strategy": "Three fixed scenarios: (1) local bare repo with known ref (exit 0), (2) local bare repo with absent ref (exit 2), (3) https://localhost:1/nonexistent (exit 1)",
+      "invariant_check": "scenario1: out != '' && err == nil; scenario2: out == '' && errors.Is(err, ErrRefNotFound); scenario3: out == '' && errors.As(err, &ge) && ge.ExitCode == 1; assert no scenario maps to more than one return shape"
+    },
+    {
+      "id": "TS-11-P3",
+      "property_id": "11-PROP-3",
+      "validates": [
+        "11-REQ-6.2"
+      ],
+      "description": "Whenever Rebase returns a *RebaseConflictError, the repository's .git directory contains neither rebase-merge nor rebase-apply subdirectory.",
+      "for_any_strategy": "Sample repositories with conflicts on different file sets (1 file, 3 files, binary file); induce conflict by creating divergent commits on feature branch and main",
+      "invariant_check": "for each conflicting repo: _, err := runner.Rebase(ctx, 'main'); var ce *RebaseConflictError; if errors.As(err, &ce) { assert !dirExists(repoDir+'/.git/rebase-merge'); assert !dirExists(repoDir+'/.git/rebase-apply') }"
+    },
+    {
+      "id": "TS-11-P4",
+      "property_id": "11-PROP-4",
+      "validates": [
+        "11-REQ-11.1",
+        "11-REQ-11.2"
+      ],
+      "description": "Any number of concurrent goroutines calling any method on the same *GitRunner produce no data race as detected by the Go race detector.",
+      "for_any_strategy": "Vary goroutine counts: 1, 5, 20, 50; vary methods: Run, RevParse, LsRemote (against local repo); run with 'go test -race ./internal/gitcmd/...'",
+      "invariant_check": "for each goroutine count N: launch N goroutines each calling runner.Run(ctx, 'rev-parse', 'HEAD'); wait for all; assert go test -race exits 0; assert all results have len == 40"
+    },
+    {
+      "id": "TS-11-P5",
+      "property_id": "11-PROP-5",
+      "validates": [
+        "11-REQ-1.1",
+        "11-REQ-1.2"
+      ],
+      "description": "If New returns a non-nil *GitRunner, the host git version is >= 2.38; if version < 2.38 or unparseable, New returns (nil, non-nil error).",
+      "for_any_strategy": "Table-driven: version strings '2.38.0', '2.39.1', '2.40.0' (expect success); '2.37.9', '2.0.0', '1.9.5' (expect error); 'malformed', '' (expect error)",
+      "invariant_check": "for each version string: major, minor, err := parseGitVersion(v); if err == nil && (major > 2 || (major == 2 && minor >= 38)) { assert constructor would succeed } else { assert constructor returns (nil, non-nil error) }"
+    },
+    {
+      "id": "TS-11-P6",
+      "property_id": "11-PROP-6",
+      "validates": [
+        "11-REQ-10.1",
+        "11-REQ-10.2",
+        "11-REQ-3.2"
+      ],
+      "description": "Every *GitError returned by Run or any convenience method has non-empty Args, non-zero ExitCode, and Stderr equal to the trimmed stderr string.",
+      "for_any_strategy": "Sample failing commands: invalid subcommand, invalid SHA for cat-file, invalid ref for rev-parse, invalid SHA for update-ref, unreachable remote for ls-remote",
+      "invariant_check": "for each failing command: _, err := runner.Run(ctx, args...); var ge *GitError; assert errors.As(err, &ge); assert len(ge.Args) > 0; assert ge.ExitCode != 0; assert ge.Stderr == strings.TrimSpace(ge.Stderr)"
+    },
+    {
+      "id": "TS-11-P7",
+      "property_id": "11-PROP-7",
+      "validates": [
+        "11-REQ-5.2"
+      ],
+      "description": "MergeConflictError.ConflictingFiles has length >= 1 whenever git stdout contains at least one CONFLICT-prefixed line.",
+      "for_any_strategy": "Sample conflict scenarios: single file conflict, multiple file conflicts (3 files), conflict in nested directory path; each induced in a fresh temporary repository",
+      "invariant_check": "for each conflict scenario: _, err := runner.MergeTree(ctx, base, head); var ce *MergeConflictError; assert errors.As(err, &ce); assert len(ce.ConflictingFiles) >= 1"
+    },
+    {
+      "id": "TS-11-P8",
+      "property_id": "11-PROP-8",
+      "validates": [
+        "11-REQ-3.3"
+      ],
+      "description": "For any method call where the context is cancelled before the subprocess returns, the method returns a non-nil error wrapping the context error and does not block indefinitely.",
+      "for_any_strategy": "For each method (Run, LsRemote, MergeTree, Rebase, RebaseAbort, RevParse, UpdateRef): cancel context immediately before or during call; measure elapsed time",
+      "invariant_check": "for each method: ctx, cancel := context.WithCancel(context.Background()); cancel(); start := time.Now(); _, err := runner.Method(ctx, ...); elapsed := time.Since(start); assert err != nil; assert errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded); assert elapsed < 5*time.Second"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-11-E1",
+      "requirement_id": "11-REQ-1.E1",
+      "kind": "integration",
+      "description": "Constructor returns (nil, error) describing an invalid path when workDir is an empty string.",
+      "preconditions": [
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "extraEnv": [],
+        "workDir": ""
+      },
+      "expected": {
+        "err": "non-nil error describing invalid or empty working directory path",
+        "runner": "nil"
+      },
+      "assertion_pseudocode": "runner, err := New('', nil); assert runner == nil; assert err != nil; assert errorMessage(err) contains 'workDir' or 'directory' or 'empty'"
+    },
+    {
+      "id": "TS-11-E2",
+      "requirement_id": "11-REQ-1.E2",
+      "kind": "unit",
+      "description": "Constructor returns (nil, error) indicating parse failure and including the raw version string when git --version output is malformed.",
+      "preconditions": [
+        "A fake git binary that outputs 'not-a-version' is on PATH, OR the version parser is tested in isolation with a malformed string"
+      ],
+      "input": {
+        "gitVersionOutput": "not-a-version",
+        "workDir": "<tmpDir>"
+      },
+      "expected": {
+        "err": "non-nil error containing 'not-a-version' or 'parse' and the raw string",
+        "runner": "nil"
+      },
+      "assertion_pseudocode": "// Unit test path: _, _, err := parseGitVersion('not-a-version'); assert err != nil; assert errorMessage(err) contains 'not-a-version'; // Integration path: runner, err := New(tmpDir, nil) with fake git; assert runner == nil; assert err != nil"
+    },
+    {
+      "id": "TS-11-E3",
+      "requirement_id": "11-REQ-1.E3",
+      "kind": "integration",
+      "description": "Constructor kills the git --version subprocess and returns a timeout error when the subprocess hangs indefinitely.",
+      "preconditions": [
+        "A fake git binary that sleeps indefinitely is on PATH",
+        "A valid workDir exists"
+      ],
+      "input": {
+        "gitBehavior": "hangs indefinitely",
+        "workDir": "<tmpDir>"
+      },
+      "expected": {
+        "err": "non-nil error indicating timeout or context deadline exceeded; constructor returns within a bounded time",
+        "runner": "nil"
+      },
+      "assertion_pseudocode": "// With a fake hanging git binary: start := time.Now(); runner, err := New(tmpDir, nil); elapsed := time.Since(start); assert runner == nil; assert err != nil; assert elapsed < 30*time.Second"
+    },
+    {
+      "id": "TS-11-E4",
+      "requirement_id": "11-REQ-2.E1",
+      "kind": "integration",
+      "description": "When extraEnv is nil or empty, GitRunner applies only the three safety variables to the subprocess environment without error.",
+      "preconditions": [
+        "A *GitRunner is constructed with nil extraEnv",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "extraEnv": null
+      },
+      "expected": {
+        "env": "subprocess environment contains GIT_ALLOW_PROTOCOL=file:https:ssh, GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1; no error"
+      },
+      "assertion_pseudocode": "runner, err := New(tmpDir, nil); assert err == nil; out, err := runner.Run(ctx, 'env'); assert err == nil; assert out contains 'GIT_ALLOW_PROTOCOL=file:https:ssh'; assert out contains 'GIT_TERMINAL_PROMPT=0'; assert out contains 'GIT_CONFIG_NOSYSTEM=1'"
+    },
+    {
+      "id": "TS-11-E5",
+      "requirement_id": "11-REQ-2.E2",
+      "kind": "integration",
+      "description": "GitRunner never allows a caller to override GIT_TERMINAL_PROMPT or GIT_CONFIG_NOSYSTEM via extraEnv, even with multiple duplicate entries.",
+      "preconditions": [
+        "A *GitRunner is constructed with extraEnv containing multiple conflicting entries for GIT_TERMINAL_PROMPT and GIT_CONFIG_NOSYSTEM",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "extraEnv": [
+          "GIT_TERMINAL_PROMPT=1",
+          "GIT_CONFIG_NOSYSTEM=0",
+          "GIT_TERMINAL_PROMPT=1",
+          "GIT_CONFIG_NOSYSTEM=0"
+        ]
+      },
+      "expected": {
+        "env": "effective GIT_TERMINAL_PROMPT is 0 and GIT_CONFIG_NOSYSTEM is 1 in subprocess"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, []string{'GIT_TERMINAL_PROMPT=1','GIT_CONFIG_NOSYSTEM=0','GIT_TERMINAL_PROMPT=1','GIT_CONFIG_NOSYSTEM=0'}); out, _ := runner.Run(ctx, 'env'); assert lastOccurrence(out, 'GIT_TERMINAL_PROMPT=') == 'GIT_TERMINAL_PROMPT=0'; assert lastOccurrence(out, 'GIT_CONFIG_NOSYSTEM=') == 'GIT_CONFIG_NOSYSTEM=1'"
+    },
+    {
+      "id": "TS-11-E6",
+      "requirement_id": "11-REQ-3.E1",
+      "kind": "integration",
+      "description": "When the subprocess hangs, context deadline kills it and Run returns the context error without blocking the caller.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "ls-remote",
+          "https://localhost:1/slow"
+        ],
+        "ctx": "context with 50ms deadline"
+      },
+      "expected": {
+        "result": "(\"\", error) wrapping context.DeadlineExceeded; method returns within ~50ms"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond); defer cancel(); runner, _ := New(tmpDir, nil); start := time.Now(); out, err := runner.Run(ctx, 'ls-remote', 'https://localhost:1/slow'); elapsed := time.Since(start); assert out == ''; assert errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled); assert elapsed < 5*time.Second"
+    },
+    {
+      "id": "TS-11-E7",
+      "requirement_id": "11-REQ-3.E2",
+      "kind": "integration",
+      "description": "Run with empty args passes them to git which returns a non-zero exit code returned as *GitError with git's usage error in Stderr.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": []
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.Stderr contains git's usage error"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.Run(ctx); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-E8",
+      "requirement_id": "11-REQ-3.E3",
+      "kind": "integration",
+      "description": "Multiple goroutines calling Run concurrently each get their own independent result without data races.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid git repository as workDir",
+        "Host has git >= 2.38 on PATH",
+        "Test run with -race flag"
+      ],
+      "input": {
+        "args": [
+          "rev-parse",
+          "HEAD"
+        ],
+        "goroutines": 50
+      },
+      "expected": {
+        "results": "all 50 goroutines return valid independent (string, nil) results; no data race detected"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); var wg sync.WaitGroup; results := make([]string, 50); for i := 0; i < 50; i++ { wg.Add(1); go func(i int) { defer wg.Done(); results[i], _ = runner.Run(ctx, 'rev-parse', 'HEAD') }(i) }; wg.Wait(); for i := 0; i < 50; i++ { assert len(results[i]) == 40 }"
+    },
+    {
+      "id": "TS-11-E9",
+      "requirement_id": "11-REQ-4.E1",
+      "kind": "integration",
+      "description": "LsRemote returns *GitError with ExitCode=1 and stderr describing connection failure when the remote URL is unreachable.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Port 1 on localhost is unreachable",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/main",
+        "remote": "https://localhost:1/nonexistent"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode == 1 and GitError.Stderr is non-empty"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(ctx, 'https://localhost:1/nonexistent', 'refs/heads/main'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode == 1; assert ge.Stderr != ''"
+    },
+    {
+      "id": "TS-11-E10",
+      "requirement_id": "11-REQ-4.E2",
+      "kind": "integration",
+      "description": "LsRemote kills the git subprocess and returns the context error when the context is cancelled before git returns.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ctx": "context cancelled immediately",
+        "ref": "refs/heads/main",
+        "remote": "https://localhost:1/nonexistent"
+      },
+      "expected": {
+        "result": "(\"\", error) wrapping context.DeadlineExceeded or context.Canceled"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(ctx, 'https://localhost:1/nonexistent', 'refs/heads/main'); assert out == ''; assert errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)"
+    },
+    {
+      "id": "TS-11-E11",
+      "requirement_id": "11-REQ-4.E3",
+      "kind": "integration",
+      "description": "LsRemote with empty remote string passes it to git which returns a non-zero exit code returned as *GitError.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/main",
+        "remote": ""
+      },
+      "expected": {
+        "result": "(\"\", *GitError) with git's error in Stderr"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(ctx, '', 'refs/heads/main'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-E12",
+      "requirement_id": "11-REQ-5.E1",
+      "kind": "integration",
+      "description": "MergeTree returns *GitError with ExitCode and Stderr when base is not a valid commit SHA or ref.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "base": "not-a-valid-sha",
+        "head": "<valid HEAD SHA>"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode != 0 and GitError.Stderr is non-empty"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.MergeTree(ctx, 'not-a-valid-sha', headSHA); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0; assert ge.Stderr != ''"
+    },
+    {
+      "id": "TS-11-E13",
+      "requirement_id": "11-REQ-5.E2",
+      "kind": "integration",
+      "description": "MergeTree kills the git subprocess and returns the context error when the context is cancelled before git returns.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "base": "<valid SHA>",
+        "ctx": "context cancelled immediately",
+        "head": "<valid SHA>"
+      },
+      "expected": {
+        "result": "(\"\", error) wrapping context.DeadlineExceeded or context.Canceled"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); runner, _ := New(repoDir, nil); out, err := runner.MergeTree(ctx, baseSHA, headSHA); assert out == ''; assert errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)"
+    },
+    {
+      "id": "TS-11-E14",
+      "requirement_id": "11-REQ-5.E3",
+      "kind": "unit",
+      "description": "MergeTree includes an empty string or raw token for unparseable CONFLICT lines and continues processing remaining lines without panicking.",
+      "preconditions": [
+        "The CONFLICT line parser is tested in isolation with a malformed CONFLICT line",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "stdout": "CONFLICT\nCONFLICT (content): Merge conflict in real/file.go\n"
+      },
+      "expected": {
+        "result": "*MergeConflictError with ConflictingFiles containing at least 'real/file.go'; no panic"
+      },
+      "assertion_pseudocode": "// Unit test the parser: files := parseConflictLines('CONFLICT\\nCONFLICT (content): Merge conflict in real/file.go\\n'); assert len(files) == 2; assert files[1] == 'real/file.go'; assert no panic"
+    },
+    {
+      "id": "TS-11-E15",
+      "requirement_id": "11-REQ-5.E4",
+      "kind": "integration",
+      "description": "MergeTree with empty base argument passes it to git which returns a non-zero exit code returned as *GitError.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "base": "",
+        "head": "<valid HEAD SHA>"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) with git's error in Stderr"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.MergeTree(ctx, '', headSHA); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-E16",
+      "requirement_id": "11-REQ-6.E1",
+      "kind": "integration",
+      "description": "Rebase returns the context error when the context is cancelled mid-rebase; the repository may be in rebase state and the caller must invoke RebaseAbort.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ctx": "context with very short deadline",
+        "onto": "main"
+      },
+      "expected": {
+        "result": "(\"\", error) wrapping context.DeadlineExceeded or context.Canceled; caller must call RebaseAbort to clean up"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond); defer cancel(); runner, _ := New(repoDir, nil); out, err := runner.Rebase(ctx, 'main'); assert out == ''; assert errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled); // caller cleans up: runner.RebaseAbort(context.Background())"
+    },
+    {
+      "id": "TS-11-E17",
+      "requirement_id": "11-REQ-6.E2",
+      "kind": "integration",
+      "description": "Rebase returns an error wrapping both conflict information and abort failure when git rebase --abort itself fails after a conflict.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "A scenario is engineered where git rebase --abort fails (e.g., rebase state is corrupted)",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "abortBehavior": "git rebase --abort exits non-zero",
+        "onto": "main"
+      },
+      "expected": {
+        "result": "(\"\", error) whose message describes both the conflict and the abort failure; caller knows repo may still be in rebase state"
+      },
+      "assertion_pseudocode": "// Simulate: runner, _ := New(repoDir, nil); out, err := runner.Rebase(ctx, 'main'); assert out == ''; assert err != nil; assert errorMessage(err) contains conflict info; assert errorMessage(err) contains abort failure info"
+    },
+    {
+      "id": "TS-11-E18",
+      "requirement_id": "11-REQ-6.E3",
+      "kind": "integration",
+      "description": "Rebase with empty onto string causes git to return a non-zero exit code returned as *GitError.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "onto": ""
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode != 0 and GitError.Stderr is non-empty"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.Rebase(ctx, ''); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-E19",
+      "requirement_id": "11-REQ-6.E4",
+      "kind": "integration",
+      "description": "Rebase returns *GitError describing the rev-parse failure when git rev-parse HEAD fails after a successful rebase.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "A scenario is engineered where rev-parse HEAD fails post-rebase (e.g., HEAD is detached and invalid)",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "onto": "main",
+        "revParseBehavior": "git rev-parse HEAD exits non-zero"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) with rev-parse error details"
+      },
+      "assertion_pseudocode": "// Simulate rev-parse failure post-rebase; runner, _ := New(repoDir, nil); out, err := runner.Rebase(ctx, 'main'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert errorMessage(err) contains 'rev-parse'"
+    },
+    {
+      "id": "TS-11-E20",
+      "requirement_id": "11-REQ-7.E1",
+      "kind": "integration",
+      "description": "RebaseAbort returns *GitError with git's error message when the repository is not in rebase state.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir that is NOT in rebase state",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {},
+      "expected": {
+        "result": "*GitError with ExitCode != 0 and Stderr containing git's error about no rebase in progress"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); err := runner.RebaseAbort(ctx); var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0; assert ge.Stderr != ''"
+    },
+    {
+      "id": "TS-11-E21",
+      "requirement_id": "11-REQ-7.E2",
+      "kind": "integration",
+      "description": "RebaseAbort kills the subprocess and returns the context error when the context is cancelled before git rebase --abort returns.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir in rebase state",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ctx": "context cancelled immediately"
+      },
+      "expected": {
+        "result": "error wrapping context.DeadlineExceeded or context.Canceled"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); runner, _ := New(repoDir, nil); err := runner.RebaseAbort(ctx); assert errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)"
+    },
+    {
+      "id": "TS-11-E22",
+      "requirement_id": "11-REQ-8.E1",
+      "kind": "integration",
+      "description": "RevParse with empty ref string passes it to git which returns a non-zero exit code returned as *GitError.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": ""
+      },
+      "expected": {
+        "result": "(\"\", *GitError) with git's error in Stderr"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.RevParse(ctx, ''); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-E23",
+      "requirement_id": "11-REQ-8.E2",
+      "kind": "integration",
+      "description": "RevParse kills the subprocess and returns the context error when the context is cancelled before git returns.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ctx": "context cancelled immediately",
+        "ref": "HEAD"
+      },
+      "expected": {
+        "result": "(\"\", error) wrapping context.DeadlineExceeded or context.Canceled"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); runner, _ := New(repoDir, nil); out, err := runner.RevParse(ctx, 'HEAD'); assert out == ''; assert errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)"
+    },
+    {
+      "id": "TS-11-E24",
+      "requirement_id": "11-REQ-9.E1",
+      "kind": "integration",
+      "description": "UpdateRef with empty ref string passes it to git which returns a non-zero exit code returned as *GitError.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "",
+        "sha": "<valid SHA>"
+      },
+      "expected": {
+        "result": "*GitError with git's error in Stderr"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); err := runner.UpdateRef(ctx, '', validSHA); var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode != 0"
+    },
+    {
+      "id": "TS-11-E25",
+      "requirement_id": "11-REQ-9.E2",
+      "kind": "integration",
+      "description": "UpdateRef kills the subprocess and returns the context error when the context is cancelled before git returns.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ctx": "context cancelled immediately",
+        "ref": "refs/heads/test",
+        "sha": "<valid SHA>"
+      },
+      "expected": {
+        "result": "error wrapping context.DeadlineExceeded or context.Canceled"
+      },
+      "assertion_pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); runner, _ := New(repoDir, nil); err := runner.UpdateRef(ctx, 'refs/heads/test', validSHA); assert errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)"
+    },
+    {
+      "id": "TS-11-E26",
+      "requirement_id": "11-REQ-10.E1",
+      "kind": "integration",
+      "description": "GitError.Stderr stores only trimmed stderr (leading/trailing whitespace removed) even when git produces very long stderr output.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "args": [
+          "clone",
+          "https://localhost:1/nonexistent"
+        ]
+      },
+      "expected": {
+        "GitError.Stderr": "non-empty string with no leading or trailing whitespace; internal content preserved"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); _, err := runner.Run(ctx, 'clone', 'https://localhost:1/nonexistent'); var ge *GitError; assert errors.As(err, &ge); assert ge.Stderr == strings.TrimSpace(ge.Stderr); assert ge.Stderr != ''"
+    },
+    {
+      "id": "TS-11-E27",
+      "requirement_id": "11-REQ-11.E1",
+      "kind": "integration",
+      "description": "50+ goroutines concurrently invoking Run on the same *GitRunner all complete without deadlock, data race, or shared-buffer corruption.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid git repository as workDir",
+        "Host has git >= 2.38 on PATH",
+        "Test run with -race flag"
+      ],
+      "input": {
+        "args": [
+          "rev-parse",
+          "HEAD"
+        ],
+        "goroutines": 50
+      },
+      "expected": {
+        "results": "all 50 goroutines return valid (string, nil) results; no panics, no data races, no deadlocks"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); var wg sync.WaitGroup; results := make([]string, 50); errs := make([]error, 50); for i := 0; i < 50; i++ { wg.Add(1); go func(i int) { defer wg.Done(); results[i], errs[i] = runner.Run(context.Background(), 'rev-parse', 'HEAD') }(i) }; wg.Wait(); for i := 0; i < 50; i++ { assert errs[i] == nil; assert len(results[i]) == 40 }"
+    },
+    {
+      "id": "TS-11-E28",
+      "requirement_id": "11-REQ-12.E1",
+      "kind": "unit",
+      "description": "Version string parser returns an error indicating empty input when given an empty string.",
+      "preconditions": [
+        "The parseGitVersion function is accessible for unit testing"
+      ],
+      "input": {
+        "versionString": ""
+      },
+      "expected": {
+        "err": "non-nil error indicating empty input"
+      },
+      "assertion_pseudocode": "_, _, err := parseGitVersion(''); assert err != nil; assert errorMessage(err) contains 'empty' or 'invalid'"
+    },
+    {
+      "id": "TS-11-E29",
+      "requirement_id": "11-REQ-12.E2",
+      "kind": "unit",
+      "description": "Version string parser successfully parses 'git version 2.37.5' and returns (2, 37, nil); version comparison against 2.38 minimum is the constructor's responsibility.",
+      "preconditions": [
+        "The parseGitVersion function is accessible for unit testing"
+      ],
+      "input": {
+        "versionString": "git version 2.37.5"
+      },
+      "expected": {
+        "err": "nil",
+        "major": 2,
+        "minor": 37
+      },
+      "assertion_pseudocode": "major, minor, err := parseGitVersion('git version 2.37.5'); assert err == nil; assert major == 2; assert minor == 37"
+    },
+    {
+      "id": "TS-11-E30",
+      "requirement_id": "11-REQ-12.E3",
+      "kind": "unit",
+      "description": "Version string parser parses numeric version components and ignores platform-specific suffixes like '(Apple Git-166)'.",
+      "preconditions": [
+        "The parseGitVersion function is accessible for unit testing"
+      ],
+      "input": {
+        "versionString": "git version 2.39.1 (Apple Git-166)"
+      },
+      "expected": {
+        "err": "nil",
+        "major": 2,
+        "minor": 39
+      },
+      "assertion_pseudocode": "major, minor, err := parseGitVersion('git version 2.39.1 (Apple Git-166)'); assert err == nil; assert major == 2; assert minor == 39"
+    },
+    {
+      "id": "TS-11-E31",
+      "requirement_id": "11-REQ-13.E1",
+      "kind": "integration",
+      "description": "LsRemote integration test pointing at https://localhost:1/nonexistent verifies git returns exit code 1 and the method returns *GitError with ExitCode=1.",
+      "preconditions": [
+        "A *GitRunner is constructed with a valid workDir",
+        "Port 1 on localhost is unreachable (connection refused)",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "ref": "refs/heads/main",
+        "remote": "https://localhost:1/nonexistent"
+      },
+      "expected": {
+        "result": "(\"\", *GitError) where GitError.ExitCode == 1"
+      },
+      "assertion_pseudocode": "runner, _ := New(tmpDir, nil); out, err := runner.LsRemote(context.Background(), 'https://localhost:1/nonexistent', 'refs/heads/main'); assert out == ''; var ge *GitError; assert errors.As(err, &ge); assert ge.ExitCode == 1"
+    },
+    {
+      "id": "TS-11-E32",
+      "requirement_id": "11-REQ-13.E2",
+      "kind": "integration",
+      "description": "Rebase integration test verifies *RebaseConflictError is returned via errors.As and the repository is no longer in rebase state after the call.",
+      "preconditions": [
+        "A *GitRunner is constructed with a git repository as workDir",
+        "A rebase conflict is induced in the temporary repository",
+        "Host has git >= 2.38 on PATH"
+      ],
+      "input": {
+        "onto": "main"
+      },
+      "expected": {
+        "result": "errors.As returns true for *RebaseConflictError; .git/rebase-merge and .git/rebase-apply directories do not exist"
+      },
+      "assertion_pseudocode": "runner, _ := New(repoDir, nil); out, err := runner.Rebase(ctx, 'main'); assert out == ''; var ce *RebaseConflictError; assert errors.As(err, &ce); assert len(ce.ConflictingFiles) >= 1; assert !dirExists(repoDir+'/.git/rebase-merge'); assert !dirExists(repoDir+'/.git/rebase-apply')"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-11-SMOKE-1",
+      "execution_path_id": "11-PATH-1",
+      "description": "End-to-end smoke test: caller constructs a *GitRunner with a valid workDir; constructor validates workDir, spawns git --version, parses version, compares against 2.38, and returns (*GitRunner, nil).",
+      "trigger": "Call New(tmpDir, nil) where tmpDir is a valid directory and host git is >= 2.38",
+      "real_components": [
+        "GitRunner constructor",
+        "version string parser",
+        "os/exec.CommandContext"
+      ],
+      "mockable": [
+        "filesystem (tmpDir creation via os.MkdirTemp)"
+      ],
+      "expected_effects": [
+        "New returns a non-nil *GitRunner and nil error",
+        "The returned runner has workDir set to tmpDir",
+        "No git repository is required in tmpDir"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-2",
+      "execution_path_id": "11-PATH-2",
+      "description": "End-to-end smoke test: LsRemote three-way exit code discrimination for ref absent \u2014 caller queries a non-existent ref on a local bare repo and receives ErrRefNotFound.",
+      "trigger": "Call LsRemote(ctx, 'file://'+bareRepoPath, 'refs/heads/nonexistent-branch-xyz') on an initialized *GitRunner",
+      "real_components": [
+        "GitRunner.LsRemote",
+        "os/exec.CommandContext",
+        "local bare git repository"
+      ],
+      "mockable": [
+        "filesystem (bare repo created via git init --bare in os.MkdirTemp)"
+      ],
+      "expected_effects": [
+        "LsRemote returns (\"\", ErrRefNotFound)",
+        "errors.Is(err, ErrRefNotFound) returns true",
+        "No *GitError is returned"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-3",
+      "execution_path_id": "11-PATH-3",
+      "description": "End-to-end smoke test: MergeTree conflict detection \u2014 caller invokes MergeTree on two conflicting commits; runner spawns git merge-tree, scans CONFLICT lines, and returns *MergeConflictError with correct paths.",
+      "trigger": "Call MergeTree(ctx, baseSHA, conflictHeadSHA) on an initialized *GitRunner with a repository containing a known conflict on 'conflict.txt'",
+      "real_components": [
+        "GitRunner.MergeTree",
+        "os/exec.CommandContext",
+        "local git repository with conflicting commits"
+      ],
+      "mockable": [
+        "filesystem (temporary git repo created via os.MkdirTemp and git commands)"
+      ],
+      "expected_effects": [
+        "MergeTree returns (\"\", *MergeConflictError)",
+        "errors.As(err, &ce) returns true",
+        "ce.ConflictingFiles contains 'conflict.txt'",
+        "len(ce.ConflictingFiles) >= 1"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-4",
+      "execution_path_id": "11-PATH-4",
+      "description": "End-to-end smoke test: Rebase with conflict \u2014 caller invokes Rebase; runner spawns git rebase, detects conflict, spawns git rebase --abort, and returns *RebaseConflictError with repo in clean state.",
+      "trigger": "Call Rebase(ctx, 'main') on an initialized *GitRunner with a repository where the feature branch conflicts with main",
+      "real_components": [
+        "GitRunner.Rebase",
+        "os/exec.CommandContext",
+        "local git repository with conflicting branches"
+      ],
+      "mockable": [
+        "filesystem (temporary git repo created via os.MkdirTemp and git commands)"
+      ],
+      "expected_effects": [
+        "Rebase returns (\"\", *RebaseConflictError)",
+        "errors.As(err, &ce) returns true",
+        "ce.ConflictingFiles is non-empty",
+        ".git/rebase-merge directory does not exist after the call",
+        ".git/rebase-apply directory does not exist after the call"
+      ]
+    },
+    {
+      "id": "TS-11-SMOKE-5",
+      "execution_path_id": "11-PATH-5",
+      "description": "End-to-end smoke test: Rebase context cancellation \u2014 caller's context expires mid-rebase; runner returns context error; caller invokes RebaseAbort to clean up dangling rebase state.",
+      "trigger": "Call Rebase(ctx, 'main') with a 1ms deadline context; then call RebaseAbort(context.Background()) to clean up",
+      "real_components": [
+        "GitRunner.Rebase",
+        "GitRunner.RebaseAbort",
+        "os/exec.CommandContext",
+        "local git repository"
+      ],
+      "mockable": [
+        "filesystem (temporary git repo created via os.MkdirTemp)"
+      ],
+      "expected_effects": [
+        "Rebase returns (\"\", error) where errors.Is(err, context.DeadlineExceeded) or errors.Is(err, context.Canceled)",
+        "RebaseAbort(context.Background()) returns nil (if repo was in rebase state) or *GitError (if rebase did not start)",
+        "After RebaseAbort, .git/rebase-merge and .git/rebase-apply directories do not exist"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [
+      "11-REQ-1.1",
+      "11-REQ-1.2",
+      "11-REQ-1.3",
+      "11-REQ-1.4",
+      "11-REQ-2.1",
+      "11-REQ-2.2",
+      "11-REQ-2.3",
+      "11-REQ-3.1",
+      "11-REQ-3.2",
+      "11-REQ-3.3",
+      "11-REQ-4.1",
+      "11-REQ-4.2",
+      "11-REQ-4.3",
+      "11-REQ-4.4",
+      "11-REQ-5.1",
+      "11-REQ-5.2",
+      "11-REQ-5.3",
+      "11-REQ-5.4",
+      "11-REQ-6.1",
+      "11-REQ-6.2",
+      "11-REQ-6.3",
+      "11-REQ-7.1",
+      "11-REQ-7.2",
+      "11-REQ-8.1",
+      "11-REQ-8.2",
+      "11-REQ-9.1",
+      "11-REQ-9.2",
+      "11-REQ-10.1",
+      "11-REQ-10.2",
+      "11-REQ-11.1",
+      "11-REQ-11.2",
+      "11-REQ-12.1",
+      "11-REQ-12.2",
+      "11-REQ-12.3",
+      "11-REQ-13.1",
+      "11-REQ-13.2",
+      "11-REQ-13.3",
+      "11-REQ-13.4",
+      "11-REQ-13.5"
+    ],
+    "properties_covered": [
+      "11-PROP-1",
+      "11-PROP-2",
+      "11-PROP-3",
+      "11-PROP-4",
+      "11-PROP-5",
+      "11-PROP-6",
+      "11-PROP-7",
+      "11-PROP-8"
+    ],
+    "paths_covered": [
+      "11-PATH-1",
+      "11-PATH-2",
+      "11-PATH-3",
+      "11-PATH-4",
+      "11-PATH-5"
+    ],
+    "gaps": [
+      "No property test covers the exact CONFLICT line parsing algorithm in isolation; only integration-level coverage via MergeTree is provided."
+    ]
+  }
+}

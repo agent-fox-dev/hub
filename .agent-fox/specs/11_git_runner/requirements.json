@@ -1,0 +1,1139 @@
+{
+  "$schema": null,
+  "spec_id": "11",
+  "spec_name": "git_runner",
+  "schema_version": 1,
+  "introduction": "The `git_runner` spec defines `internal/gitcmd`, a hardened Go library that wraps git CLI subprocess calls with safety defaults, uniform error handling, and typed convenience methods for rebase, merge-tree conflict detection, and ls-remote exit-code discrimination. Note: no external library Verified API section was provided; all standard-library references (`os/exec`, `context`, `bytes`, `strings`, `fmt`, `strconv`) are assumed correct and should be verified against the project's Go version before implementation.",
+  "glossary": {
+    "CONFLICT": "A line prefix emitted by `git merge-tree --write-tree` to stdout when a merge conflict is detected, used to parse conflicting file paths.",
+    "ErrRefNotFound": "A sentinel error value returned by `LsRemote` when git exits with code 2, indicating the queried ref genuinely does not exist on the remote.",
+    "GIT_ALLOW_PROTOCOL": "Environment variable that restricts which git transport protocols are permitted; set to `file:https:ssh` on every invocation.",
+    "GIT_CONFIG_NOSYSTEM": "Environment variable that causes git to ignore system-level git configuration files; set to `1` on every invocation.",
+    "GIT_TERMINAL_PROMPT": "Environment variable that prevents git from displaying interactive credential prompts; set to `0` on every invocation.",
+    "GitError": "A structured error type returned by `GitRunner` on command failure, containing the full argument list, exit code, and trimmed stderr.",
+    "GitRunner": "The primary struct in `internal/gitcmd` that wraps git CLI subprocess calls with safety defaults and uniform error handling.",
+    "MergeConflictError": "A structured error type returned by `MergeTree` when the merge produces conflicts, containing the list of conflicting file paths.",
+    "RebaseConflictError": "A structured error type returned by `Rebase` when the rebase produces conflicts, containing the list of conflicting file paths.",
+    "extraEnv": "An optional slice of additional environment variable strings passed to the `GitRunner` constructor and prepended before the hardcoded safety variables.",
+    "internal/gitcmd": "The Go package path where the `GitRunner` implementation resides.",
+    "ls-remote --exit-code": "A git subcommand flag that causes git to exit with code 2 when the queried ref is not found, enabling three-way exit-code discrimination.",
+    "merge-tree --write-tree": "A git subcommand (available since git 2.38) that performs a three-way merge in-memory and writes the result tree, used for read-only conflict detection.",
+    "rebase state": "The intermediate on-disk state git maintains during an in-progress rebase operation, which must be cleaned up via `git rebase --abort` before the repository can be used normally.",
+    "workDir": "The working directory path supplied to the `GitRunner` constructor, used as the working directory for all subprocess invocations.",
+    "*GitRunner": "Pointer to the GitRunner struct, the main exported type of internal/gitcmd that wraps git CLI subprocess calls with safety defaults.",
+    "*GitError": "Pointer to the GitError struct, a structured error type returned by GitRunner on command failure, containing Args, ExitCode, and Stderr.",
+    "*MergeConflictError": "Pointer to MergeConflictError, returned by MergeTree when the dry-run merge detects conflicts. Contains ConflictingFiles.",
+    "*RebaseConflictError": "Pointer to RebaseConflictError, returned by Rebase when the rebase encounters conflicts. Contains ConflictingFiles.",
+    "-race": "Go test flag that enables the race detector to find data races during concurrent execution.",
+    ".git": "The hidden directory in a git repository that stores all version control metadata.",
+    "Args []string": "Field on GitError containing the full command-line arguments (e.g. [\"rebase\", \"main\"]) of the failed git invocation.",
+    "ConflictingFiles": "A []string field on MergeConflictError and RebaseConflictError listing the file paths that have merge conflicts.",
+    "Error() string": "The Go error interface method. GitError implements this to produce a formatted string containing the command, exit code, and stderr.",
+    "ExitCode int": "Field on GitError containing the integer exit code returned by the failed git subprocess.",
+    "GitError.Args": "The Args field of a GitError value \u2014 the full command-line arguments of the failed git invocation.",
+    "GitError.ExitCode": "The ExitCode field of a GitError value \u2014 the integer exit code of the failed git subprocess.",
+    "GitError.Stderr": "The Stderr field of a GitError value \u2014 the trimmed standard error output of the failed git subprocess.",
+    "LsRemote": "Convenience method on GitRunner that executes git ls-remote --exit-code with three-way exit code discrimination.",
+    "LsRemote(ctx, remote, ref)": "Full signature of the LsRemote method: accepts a context, remote URL, and ref name; returns output and error with three-way exit code handling.",
+    "MergeConflictError.ConflictingFiles": "The ConflictingFiles field of a MergeConflictError value \u2014 a list of file paths that have merge conflicts.",
+    "MergeTree": "Convenience method on GitRunner that executes git merge-tree --write-tree for read-only conflict detection.",
+    "MergeTree(ctx, base, head)": "Full signature of the MergeTree method: accepts a context, base tree SHA, and head SHA; returns tree SHA on clean merge or MergeConflictError on conflict.",
+    "New": "Constructor function for GitRunner that validates the working directory, checks git version >= 2.38, and returns (*GitRunner, error).",
+    "New(workDir string, extraEnv []string)": "Full constructor signature: accepts a working directory path and optional extra environment variables; returns (*GitRunner, error).",
+    "Rebase": "Convenience method on GitRunner that executes git rebase with automatic abort on conflict.",
+    "Rebase(ctx, onto)": "Full signature of the Rebase method: accepts a context and target ref; returns new HEAD SHA on success or RebaseConflictError on conflict.",
+    "RebaseAbort": "Convenience method on GitRunner that executes git rebase --abort to clean up a failed rebase state.",
+    "RebaseAbort(ctx)": "Full signature of the RebaseAbort method: accepts a context; returns error.",
+    "RevParse(ctx, ref)": "Convenience method that executes git rev-parse to resolve a ref to a SHA; accepts context and ref name, returns SHA string and error.",
+    "Run": "Core method on GitRunner that executes an arbitrary git subcommand with args, returning stdout and *GitError on failure.",
+    "Run(ctx, args...)": "Full signature of the Run method: accepts a context and variadic string args; returns stdout string and error.",
+    "Stderr string": "Field on GitError containing the trimmed standard error output from the failed git subprocess.",
+    "UpdateRef(ctx, ref, sha)": "Convenience method that executes git update-ref to update a reference; accepts context, ref name, and SHA.",
+    "error": "Go built-in interface type representing an error condition; nil indicates no error.",
+    "errors.As": "Go standard library function that unwraps an error chain to extract a specific error type (e.g., *GitError).",
+    "file:https:ssh": "The allowed git transport protocols in GIT_ALLOW_PROTOCOL: local file, HTTPS, and SSH.",
+    "git --version": "Git CLI command that prints the installed git version string.",
+    "git ls-remote --exit-code <remote> <ref>": "Git CLI command that queries a remote for a specific ref, using --exit-code to distinguish missing refs (exit 2) from errors (exit 1).",
+    "git merge-tree --write-tree <base> <head>": "Git CLI command (2.38+) that performs a read-only merge of two trees, reporting conflicts without modifying the working directory.",
+    "git rebase --abort": "Git CLI command that aborts an in-progress rebase and restores the branch to its pre-rebase state.",
+    "git rebase <onto>": "Git CLI command that rebases the current branch onto the specified target ref.",
+    "git rev-parse HEAD": "Git CLI command that resolves HEAD to its full 40-character SHA hash.",
+    "git update-ref": "Git CLI command that updates a reference (branch pointer) to a specified SHA.",
+    "git update-ref <ref> <sha>": "Git CLI command that sets the named ref to point to the specified SHA.",
+    "git version 2.39.1": "Example output of git --version indicating a version that satisfies the >= 2.38 requirement.",
+    "git version 2.39.1 (Apple Git-166)": "Example output of git --version on macOS with vendor suffix, demonstrating a format the version parser must handle.",
+    "git version X.Y[.Z]": "The general format of git --version output, where X.Y is required and .Z (patch) is optional.",
+    "go test -race ./internal/gitcmd/...": "Go test command that runs all tests in the internal/gitcmd package with the race detector enabled.",
+    "https://localhost:1/nonexistent": "A URL pointing to a non-listening port, used in integration tests to simulate a network/auth failure (exit code 1) from git ls-remote.",
+    "os": "Go standard library package providing operating system functionality including file and directory operations.",
+    "os.MkdirTemp": "Go standard library function that creates a temporary directory, used in tests to create isolated working directories.",
+    "rebase-apply": "Git internal directory created during a rebase-apply operation; its presence indicates an in-progress rebase.",
+    "rebase-merge": "Git internal directory created during a rebase-merge operation; its presence indicates an in-progress rebase.",
+    "t.Cleanup": "Go testing method that registers a cleanup function to run after the test completes.",
+    "t.Skip": "Go testing method that skips the current test with a message, used when preconditions (e.g., git version) are not met.",
+    "testing": "Go standard library package providing support for automated testing of Go packages.",
+    "GIT_ALLOW_PROTOCOL=file:https:ssh": "Safety environment variable set by GitRunner restricting allowed transport protocols to file, HTTPS, and SSH.",
+    "GIT_CONFIG_NOSYSTEM=1": "Safety environment variable set by GitRunner to ignore system-level git configuration files.",
+    "GIT_TERMINAL_PROMPT=0": "Safety environment variable set by GitRunner to suppress interactive credential prompts."
+  },
+  "requirements": [
+    {
+      "id": "11-REQ-1",
+      "title": "GitRunner constructor with version enforcement",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "construct a GitRunner that immediately validates the host git version",
+        "benefit": "so that the hub fails fast with an actionable error rather than a cryptic failure deep in the call stack"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner constructor",
+          "action": "execute `git --version`, parse the version string, and return a fully initialized `*GitRunner` if the detected version is >= 2.38",
+          "return_contract": "returns (*GitRunner, nil)",
+          "trigger": "a caller invokes `New(workDir string, extraEnv []string)`"
+        },
+        {
+          "id": "11-REQ-1.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner constructor",
+          "action": "return a nil runner and a descriptive error identifying the detected version and the required minimum",
+          "return_contract": "returns (nil, error) where error message includes the detected version and states the 2.38 minimum requirement",
+          "error_condition": "the detected git version is below 2.38"
+        },
+        {
+          "id": "11-REQ-1.3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner constructor",
+          "action": "return a nil runner and an error wrapping the underlying exec failure",
+          "return_contract": "returns (nil, error) describing the exec failure",
+          "error_condition": "git is not found on PATH or `git --version` fails"
+        },
+        {
+          "id": "11-REQ-1.4",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner constructor",
+          "action": "accept any valid directory path as `workDir`; the directory is not required to be a git repository",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner constructor",
+          "action": "return a nil runner and an error indicating the invalid working directory",
+          "return_contract": "returns (nil, error) describing the invalid path",
+          "error_condition": "`workDir` is an empty string or a path that does not exist on the filesystem"
+        },
+        {
+          "id": "11-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner constructor",
+          "action": "return a nil runner and an error indicating the version string could not be parsed",
+          "return_contract": "returns (nil, error) with a message indicating parse failure and the raw version string",
+          "error_condition": "`git --version` output is a malformed or unrecognizable version string"
+        },
+        {
+          "id": "11-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner constructor",
+          "action": "kill the subprocess and return an error; the constructor must not block indefinitely; the context deadline or a 30-second internal timeout governs subprocess lifetime",
+          "return_contract": "returns (nil, error) indicating a timeout or context deadline exceeded",
+          "error_condition": "`git --version` subprocess hangs and does not return within 30 seconds"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-2",
+      "title": "Safety environment variable injection",
+      "user_story": {
+        "role": "hub security reviewer",
+        "goal": "ensure every git subprocess invocation enforces the protocol allowlist, suppresses interactive prompts, and ignores system config",
+        "benefit": "so that no invocation can hang, leak credentials, or behave differently across host environments"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-2.1",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner",
+          "action": "set `GIT_ALLOW_PROTOCOL` to `file:https:ssh`, `GIT_TERMINAL_PROMPT` to `0`, and `GIT_CONFIG_NOSYSTEM` to `1` in the environment of every git subprocess it spawns",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-2.2",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner",
+          "action": "append the three safety variables after `extraEnv` so that they unconditionally take precedence over any conflicting values supplied by the caller",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "ignore the caller-supplied value and apply the hardcoded `file:https:ssh` allowlist because the safety variable is appended after `extraEnv`",
+          "return_contract": null,
+          "trigger": "a caller passes a value for `GIT_ALLOW_PROTOCOL` in `extraEnv` that differs from `file:https:ssh`"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-2.E1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "apply only the three safety variables to the subprocess environment without error",
+          "return_contract": "subprocess environment contains all three safety variables without error; no additional variables are added",
+          "trigger": "`extraEnv` is nil or empty"
+        },
+        {
+          "id": "11-REQ-2.E2",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner",
+          "action": "never allow a caller to override `GIT_TERMINAL_PROMPT` or `GIT_CONFIG_NOSYSTEM` via `extraEnv`, regardless of the number of duplicate entries supplied",
+          "return_contract": null
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-3",
+      "title": "Run \u2014 generic git subcommand execution",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "execute arbitrary git subcommands through the runner",
+        "benefit": "so that all git CLI calls benefit from safety defaults and uniform error formatting without duplicating boilerplate"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.Run",
+          "action": "return the trimmed stdout of the subprocess",
+          "return_contract": "returns (trimmed stdout string, nil)",
+          "trigger": "a caller invokes `Run(ctx, args...)` and the git subprocess exits with code 0"
+        },
+        {
+          "id": "11-REQ-3.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Run",
+          "action": "return a `*GitError` containing the full argument list, the exit code, and the trimmed stderr",
+          "return_contract": "returns (\"\", *GitError{Args: []string, ExitCode: int, Stderr: string})",
+          "error_condition": "the git subprocess exits with a non-zero exit code"
+        },
+        {
+          "id": "11-REQ-3.3",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner.Run",
+          "action": "respect the supplied context.Context for cancellation and deadline; if the context is cancelled or times out, kill the subprocess and return the context error",
+          "return_contract": "returns (\"\", ctx.Err()) on context cancellation or deadline exceeded"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Run",
+          "action": "the context deadline or cancellation kills the subprocess; the method returns the context error and does not block the caller",
+          "return_contract": "returns (\"\", error) wrapping context.DeadlineExceeded or context.Canceled",
+          "error_condition": "the subprocess hangs indefinitely (e.g., waiting for user input despite `GIT_TERMINAL_PROMPT=0`)"
+        },
+        {
+          "id": "11-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Run",
+          "action": "pass the args as-is to the git subprocess; git itself will return a non-zero exit code with a usage error, which is returned as a `*GitError`",
+          "return_contract": "returns (\"\", *GitError) with git's usage error in Stderr",
+          "error_condition": "args is empty or contains only whitespace"
+        },
+        {
+          "id": "11-REQ-3.E3",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.Run",
+          "action": "each invocation creates an independent exec.Cmd with its own stdout and stderr buffers; no data races occur",
+          "return_contract": "each call returns its own independent (string, error) result without interference",
+          "trigger": "multiple goroutines call Run concurrently on the same `*GitRunner` instance"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-4",
+      "title": "LsRemote \u2014 three-way exit code discrimination",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "query whether a ref exists on a remote and distinguish network failures from genuine missing refs",
+        "benefit": "so that a network timeout or auth failure is never silently misinterpreted as a missing branch"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.LsRemote",
+          "action": "return the trimmed stdout (the ref listing)",
+          "return_contract": "returns (trimmed stdout string, nil)",
+          "trigger": "a caller invokes `LsRemote(ctx, remote, ref)` and git exits with code 0"
+        },
+        {
+          "id": "11-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.LsRemote",
+          "action": "return `ErrRefNotFound` sentinel error",
+          "return_contract": "returns (\"\", ErrRefNotFound)",
+          "trigger": "git exits with code 2 (ref not found on remote)"
+        },
+        {
+          "id": "11-REQ-4.3",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.LsRemote",
+          "action": "return a `*GitError` with exit code 1 and the trimmed stderr",
+          "return_contract": "returns (\"\", *GitError{ExitCode: 1, Stderr: string})",
+          "trigger": "git exits with code 1 (network or authentication failure)"
+        },
+        {
+          "id": "11-REQ-4.4",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner.LsRemote",
+          "action": "invoke git as `git ls-remote --exit-code <remote> <ref>` with all safety environment variables applied",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.LsRemote",
+          "action": "return a `*GitError` with exit code 1 and the stderr from git describing the connection failure",
+          "return_contract": "returns (\"\", *GitError{ExitCode: 1, Stderr: string})",
+          "error_condition": "the remote URL is unreachable (e.g., connection refused to `https://localhost:1/nonexistent`)"
+        },
+        {
+          "id": "11-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.LsRemote",
+          "action": "kill the git subprocess and return the context error",
+          "return_contract": "returns (\"\", error) wrapping context.DeadlineExceeded or context.Canceled",
+          "error_condition": "the context is cancelled or times out before git returns"
+        },
+        {
+          "id": "11-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.LsRemote",
+          "action": "pass the empty string to git; git returns a non-zero exit code which is returned as a `*GitError`",
+          "return_contract": "returns (\"\", *GitError) with git's error in Stderr",
+          "error_condition": "remote or ref argument is an empty string"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-5",
+      "title": "MergeTree \u2014 read-only conflict detection",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "detect merge conflicts between two commits without modifying the working tree",
+        "benefit": "so that downstream merge logic can determine whether a merge is clean before committing to any state change"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.MergeTree",
+          "action": "return the tree SHA string from the first line of stdout",
+          "return_contract": "returns (tree SHA string, nil)",
+          "trigger": "a caller invokes `MergeTree(ctx, base, head)` and the merge is clean"
+        },
+        {
+          "id": "11-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.MergeTree",
+          "action": "scan stdout line-by-line for lines starting with `CONFLICT`, extract the file path from each such line, and return a `*MergeConflictError` containing the slice of conflicting file paths",
+          "return_contract": "returns (\"\", *MergeConflictError{ConflictingFiles: []string}) where callers use errors.As to inspect",
+          "trigger": "the merge produces conflicts (git exits non-zero and stdout contains `CONFLICT` lines)"
+        },
+        {
+          "id": "11-REQ-5.3",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner.MergeTree",
+          "action": "invoke git as `git merge-tree --write-tree <base> <head>` with all safety environment variables applied",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-5.4",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner.MergeTree",
+          "action": "document the chosen `CONFLICT` line parsing rule (regex, prefix strip, or delimiter split) in source code comments alongside a representative sample output line from git 2.38+",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.MergeTree",
+          "action": "return a `*GitError` with the exit code and stderr from git",
+          "return_contract": "returns (\"\", *GitError{ExitCode: int, Stderr: string})",
+          "error_condition": "base or head is not a valid commit SHA or ref resolvable by git"
+        },
+        {
+          "id": "11-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.MergeTree",
+          "action": "kill the git subprocess and return the context error; no partial tree is written",
+          "return_contract": "returns (\"\", error) wrapping context.DeadlineExceeded or context.Canceled",
+          "error_condition": "the context is cancelled or times out before git returns"
+        },
+        {
+          "id": "11-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.MergeTree",
+          "action": "include an empty string or the raw unparsed token for that line in `ConflictingFiles` and continue processing remaining lines; do not panic or abort",
+          "return_contract": "returns (\"\", *MergeConflictError) with best-effort ConflictingFiles slice",
+          "error_condition": "stdout contains `CONFLICT` lines but the file path cannot be extracted from a line (unexpected format)"
+        },
+        {
+          "id": "11-REQ-5.E4",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.MergeTree",
+          "action": "pass the empty string to git; git returns a non-zero exit code which is returned as a `*GitError`",
+          "return_contract": "returns (\"\", *GitError) with git's error in Stderr",
+          "error_condition": "base or head argument is an empty string"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-6",
+      "title": "Rebase \u2014 conflict-safe rebase with automatic abort",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "rebase the current branch onto a target and receive either the new HEAD SHA or a structured conflict error with automatic cleanup",
+        "benefit": "so that callers never receive a conflict error while the repository is in an intermediate rebase state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.Rebase",
+          "action": "run `git rebase <onto>` then `git rev-parse HEAD` and return the new HEAD SHA",
+          "return_contract": "returns (new HEAD SHA string, nil)",
+          "trigger": "a caller invokes `Rebase(ctx, onto)` and the rebase completes without conflicts"
+        },
+        {
+          "id": "11-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.Rebase",
+          "action": "immediately call `git rebase --abort` internally, then return a `*RebaseConflictError` containing the list of conflicting file paths parsed from git output",
+          "return_contract": "returns (\"\", *RebaseConflictError{ConflictingFiles: []string}) where callers use errors.As to inspect; the repository is no longer in rebase state",
+          "trigger": "`git rebase <onto>` exits non-zero indicating a conflict"
+        },
+        {
+          "id": "11-REQ-6.3",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner.Rebase",
+          "action": "apply all safety environment variables to every git subprocess invoked during the rebase sequence",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Rebase",
+          "action": "kill the git subprocess and return the context error; the repository may be in rebase state \u2014 the caller is responsible for calling `RebaseAbort` to clean up",
+          "return_contract": "returns (\"\", error) wrapping context.DeadlineExceeded or context.Canceled; rebase state is not automatically cleaned up",
+          "error_condition": "the context is cancelled mid-rebase before git returns"
+        },
+        {
+          "id": "11-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Rebase",
+          "action": "return an error that wraps both the original conflict information and the abort failure, so the caller knows the repository may still be in rebase state",
+          "return_contract": "returns (\"\", error) describing both the conflict and the abort failure",
+          "error_condition": "`git rebase --abort` itself fails after a conflict is detected"
+        },
+        {
+          "id": "11-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Rebase",
+          "action": "git returns a non-zero exit code; return a `*GitError` with the exit code and stderr",
+          "return_contract": "returns (\"\", *GitError{ExitCode: int, Stderr: string})",
+          "error_condition": "onto is an empty string or an unresolvable ref"
+        },
+        {
+          "id": "11-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.Rebase",
+          "action": "return a `*GitError` describing the rev-parse failure",
+          "return_contract": "returns (\"\", *GitError) with the rev-parse error details",
+          "error_condition": "`git rev-parse HEAD` fails after a successful rebase"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-7",
+      "title": "RebaseAbort \u2014 manual rebase state cleanup",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "explicitly abort an in-progress rebase when a context cancellation has left the repository in rebase state",
+        "benefit": "so that the repository can be returned to a usable state after an interrupted rebase"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.RebaseAbort",
+          "action": "run `git rebase --abort` and return nil on success",
+          "return_contract": "returns nil",
+          "trigger": "a caller invokes `RebaseAbort(ctx)` while the repository is in rebase state"
+        },
+        {
+          "id": "11-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.RebaseAbort",
+          "action": "return a `*GitError` with the exit code and stderr",
+          "return_contract": "returns *GitError{ExitCode: int, Stderr: string}",
+          "error_condition": "`git rebase --abort` exits non-zero"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.RebaseAbort",
+          "action": "git returns a non-zero exit code; return a `*GitError` with the stderr from git",
+          "return_contract": "returns *GitError with git's error message in Stderr",
+          "error_condition": "the repository is not in rebase state when `RebaseAbort` is called"
+        },
+        {
+          "id": "11-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.RebaseAbort",
+          "action": "kill the subprocess and return the context error",
+          "return_contract": "returns error wrapping context.DeadlineExceeded or context.Canceled",
+          "error_condition": "the context is cancelled before `git rebase --abort` returns"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-8",
+      "title": "RevParse \u2014 ref to SHA resolution",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "resolve a git ref to its SHA",
+        "benefit": "so that downstream operations can work with stable commit identifiers"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.RevParse",
+          "action": "return the trimmed SHA string",
+          "return_contract": "returns (SHA string, nil)",
+          "trigger": "a caller invokes `RevParse(ctx, ref)` and git resolves the ref successfully"
+        },
+        {
+          "id": "11-REQ-8.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.RevParse",
+          "action": "return a `*GitError` with the exit code and stderr",
+          "return_contract": "returns (\"\", *GitError{ExitCode: int, Stderr: string})",
+          "error_condition": "the ref cannot be resolved by git"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.RevParse",
+          "action": "pass the empty string to git; git returns a non-zero exit code returned as a `*GitError`",
+          "return_contract": "returns (\"\", *GitError) with git's error in Stderr",
+          "error_condition": "ref is an empty string"
+        },
+        {
+          "id": "11-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.RevParse",
+          "action": "kill the subprocess and return the context error",
+          "return_contract": "returns (\"\", error) wrapping context.DeadlineExceeded or context.Canceled",
+          "error_condition": "the context is cancelled before git returns"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-9",
+      "title": "UpdateRef \u2014 reference update",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "update a git reference to point to a given SHA",
+        "benefit": "so that downstream operations can advance refs without requiring a full push"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner.UpdateRef",
+          "action": "run `git update-ref <ref> <sha>` and return nil",
+          "return_contract": "returns nil",
+          "trigger": "a caller invokes `UpdateRef(ctx, ref, sha)` and git updates the reference successfully"
+        },
+        {
+          "id": "11-REQ-9.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.UpdateRef",
+          "action": "return a `*GitError` with the exit code and stderr",
+          "return_contract": "returns *GitError{ExitCode: int, Stderr: string}",
+          "error_condition": "`git update-ref` exits non-zero"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.UpdateRef",
+          "action": "pass the empty strings to git; git returns a non-zero exit code returned as a `*GitError`",
+          "return_contract": "returns *GitError with git's error in Stderr",
+          "error_condition": "ref or sha is an empty string"
+        },
+        {
+          "id": "11-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner.UpdateRef",
+          "action": "kill the subprocess and return the context error",
+          "return_contract": "returns error wrapping context.DeadlineExceeded or context.Canceled",
+          "error_condition": "the context is cancelled before git returns"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-10",
+      "title": "GitError uniform error type",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "receive structured error information from any failed git command",
+        "benefit": "so that error messages include the full command, exit code, and stderr for actionable debugging"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-10.1",
+          "ears_pattern": "ubiquitous",
+          "system": "GitError",
+          "action": "expose `Args []string`, `ExitCode int`, and `Stderr string` (trimmed) fields, and implement the `error` interface via an `Error() string` method that formats all three fields into a human-readable message",
+          "return_contract": "Error() returns a non-empty string containing the args, exit code, and stderr"
+        },
+        {
+          "id": "11-REQ-10.2",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner",
+          "action": "return `*GitError` (not a plain error string) for every failed git subprocess so that callers can use type assertions or errors.As to inspect structured fields",
+          "return_contract": "returns *GitError (not a plain error string) for every failed git subprocess"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitError",
+          "action": "trim the stderr string before storing it in `GitError.Stderr`; the trimming removes only leading and trailing whitespace, not internal content",
+          "return_contract": "GitError.Stderr contains the full trimmed stderr regardless of length",
+          "error_condition": "stderr output from git is very long (e.g., thousands of lines)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-11",
+      "title": "Goroutine safety",
+      "user_story": {
+        "role": "hub package author",
+        "goal": "share a single `*GitRunner` instance across multiple goroutines",
+        "benefit": "so that the hub does not need to manage a pool of runners or serialize access"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-11.1",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner",
+          "action": "hold only immutable state after construction (`workDir` string and environment variable slice); each call to `Run` or any convenience method allocates an independent exec.Cmd with its own stdout and stderr buffers, requiring no synchronization primitives",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-11.2",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "each invocation completes independently without data races, as verified by running tests with the `-race` flag",
+          "return_contract": "each goroutine receives its own independent (string, error) result",
+          "trigger": "multiple goroutines call `Run` or convenience methods concurrently on the same `*GitRunner` instance"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-11.E1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "all invocations complete without deadlock, data race, or shared-buffer corruption; the OS process limit is the only practical constraint",
+          "return_contract": "all goroutines return valid (string, error) results; no panics or data races detected under -race",
+          "trigger": "a high number of goroutines (e.g., 50+) concurrently invoke `Run` on the same instance"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-12",
+      "title": "Version string parser unit testability",
+      "user_story": {
+        "role": "test author",
+        "goal": "unit-test the git version string parser in isolation from the git binary",
+        "benefit": "so that version parsing logic is verified against a wide range of inputs without requiring a real git subprocess"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-12.1",
+          "ears_pattern": "ubiquitous",
+          "system": "version string parser",
+          "action": "be implemented as a pure function that accepts a raw `git --version` output string and returns a parsed version (major, minor) or an error, with no side effects or subprocess calls",
+          "return_contract": "returns (major int, minor int, error) or equivalent structured result"
+        },
+        {
+          "id": "11-REQ-12.2",
+          "ears_pattern": "event_driven",
+          "system": "version string parser",
+          "action": "parse and return major=2, minor=39 (or equivalent) without error",
+          "return_contract": "returns parsed version with no error",
+          "trigger": "given a valid version string such as `git version 2.39.1`"
+        },
+        {
+          "id": "11-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "version string parser",
+          "action": "return an error describing the parse failure",
+          "return_contract": "returns error with a message indicating the unrecognized format and the raw input",
+          "error_condition": "the input string does not match the expected `git version X.Y[.Z]` format"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "version string parser",
+          "action": "return an error indicating the empty input",
+          "return_contract": "returns error",
+          "error_condition": "the version string is empty"
+        },
+        {
+          "id": "11-REQ-12.E2",
+          "ears_pattern": "event_driven",
+          "system": "version string parser",
+          "action": "parse successfully and return the version; the caller (constructor) is responsible for comparing against the minimum and returning an error stating the detected version and the 2.38 minimum",
+          "return_contract": "returns parsed version with no error; version comparison and error formatting is the constructor's responsibility",
+          "trigger": "given a version string for git 2.37.x (below the 2.38 minimum)"
+        },
+        {
+          "id": "11-REQ-12.E3",
+          "ears_pattern": "event_driven",
+          "system": "version string parser",
+          "action": "parse the numeric version components and ignore the suffix",
+          "return_contract": "returns parsed version (2, 39) with no error",
+          "trigger": "given a version string with platform-specific suffixes such as `git version 2.39.1 (Apple Git-166)`"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-13",
+      "title": "Integration test coverage",
+      "user_story": {
+        "role": "test author",
+        "goal": "verify all GitRunner behaviors against a real git binary in temporary repositories",
+        "benefit": "so that the runner's exit-code interpretation, output parsing, and error handling are validated against actual git semantics"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "11-REQ-13.1",
+          "ears_pattern": "ubiquitous",
+          "system": "integration test suite",
+          "action": "use only the standard library (`testing`, `os`) for test infrastructure; no mock frameworks or additional test dependencies are permitted",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-13.2",
+          "ears_pattern": "ubiquitous",
+          "system": "integration test suite",
+          "action": "create temporary git repositories using `os.MkdirTemp` for each test and clean them up via `t.Cleanup`; tests must not share mutable repository state",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-13.3",
+          "ears_pattern": "event_driven",
+          "system": "constructor integration test",
+          "action": "skip the constructor integration test via `t.Skip` rather than failing; the test must not require a fake git binary or mock exec.Command",
+          "return_contract": null,
+          "trigger": "the host git version is below 2.38"
+        },
+        {
+          "id": "11-REQ-13.4",
+          "ears_pattern": "ubiquitous",
+          "system": "integration test suite",
+          "action": "include a goroutine-safety test that launches concurrent goroutines calling `Run` on the same `*GitRunner` and verifies no data races under `go test -race ./internal/gitcmd/...`",
+          "return_contract": null
+        },
+        {
+          "id": "11-REQ-13.5",
+          "ears_pattern": "ubiquitous",
+          "system": "integration test suite",
+          "action": "include a safety variable precedence test that passes a conflicting `GIT_ALLOW_PROTOCOL` value in `extraEnv` and verifies the hardcoded value takes precedence by inspecting the subprocess environment",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "11-REQ-13.E1",
+          "ears_pattern": "event_driven",
+          "system": "LsRemote integration test",
+          "action": "verify that git returns exit code 1 and the method returns a `*GitError` with ExitCode=1, exercising the network/auth failure path without any live network dependency",
+          "return_contract": "test asserts *GitError with ExitCode == 1",
+          "trigger": "the test points `LsRemote` at `https://localhost:1/nonexistent`"
+        },
+        {
+          "id": "11-REQ-13.E2",
+          "ears_pattern": "event_driven",
+          "system": "Rebase integration test",
+          "action": "verify that `Rebase` returns a `*RebaseConflictError` via `errors.As` and that the repository is no longer in rebase state after the call",
+          "return_contract": "test asserts errors.As succeeds and no `.git/rebase-merge` or `.git/rebase-apply` directory exists",
+          "trigger": "a rebase conflict is induced in a temporary repository"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "11-PROP-1",
+      "title": "Safety variables always take precedence over extraEnv",
+      "for_any": "any `*GitRunner` instance constructed with arbitrary `extraEnv` values",
+      "invariant": "the environment of every spawned subprocess contains `GIT_ALLOW_PROTOCOL=file:https:ssh`, `GIT_TERMINAL_PROMPT=0`, and `GIT_CONFIG_NOSYSTEM=1` as the last occurrences of those variable names, regardless of what `extraEnv` supplies",
+      "validates": [
+        "11-REQ-2.1",
+        "11-REQ-2.2",
+        "11-REQ-2.3"
+      ]
+    },
+    {
+      "id": "11-PROP-2",
+      "title": "LsRemote exit code mapping is exhaustive and non-overlapping",
+      "for_any": "any call to `LsRemote` that completes without context cancellation",
+      "invariant": "exit code 0 maps to (stdout, nil), exit code 2 maps to (\"\", ErrRefNotFound), and exit code 1 maps to (\"\", *GitError{ExitCode:1}); no exit code maps to more than one return shape",
+      "validates": [
+        "11-REQ-4.1",
+        "11-REQ-4.2",
+        "11-REQ-4.3"
+      ]
+    },
+    {
+      "id": "11-PROP-3",
+      "title": "Rebase never returns RebaseConflictError while repository is in rebase state",
+      "for_any": "any call to `Rebase` that returns a `*RebaseConflictError`",
+      "invariant": "the repository's `.git` directory contains neither a `rebase-merge` nor a `rebase-apply` subdirectory after `Rebase` returns",
+      "validates": [
+        "11-REQ-6.2"
+      ]
+    },
+    {
+      "id": "11-PROP-4",
+      "title": "GitRunner is goroutine-safe \u2014 no shared mutable state",
+      "for_any": "any number of concurrent goroutines calling any method on the same `*GitRunner` instance",
+      "invariant": "no data race is detected by the Go race detector (`-race`); each call's stdout and stderr buffers are independent",
+      "validates": [
+        "11-REQ-11.1",
+        "11-REQ-11.2"
+      ]
+    },
+    {
+      "id": "11-PROP-5",
+      "title": "Constructor enforces git >= 2.38 before returning a usable runner",
+      "for_any": "any host environment where `git --version` is executable",
+      "invariant": "if `New` returns a non-nil `*GitRunner`, the host git version is >= 2.38; if the version is < 2.38 or unparseable, `New` returns (nil, non-nil error)",
+      "validates": [
+        "11-REQ-1.1",
+        "11-REQ-1.2",
+        "11-REQ-1.E2"
+      ]
+    },
+    {
+      "id": "11-PROP-6",
+      "title": "Every failed subprocess produces a *GitError with all three fields populated",
+      "for_any": "any call to `Run` or any convenience method that returns a non-nil error of type `*GitError`",
+      "invariant": "`GitError.Args` is non-empty, `GitError.ExitCode` is non-zero, and `GitError.Stderr` is the trimmed stderr string (may be empty if git produced no stderr)",
+      "validates": [
+        "11-REQ-10.1",
+        "11-REQ-10.2",
+        "11-REQ-3.2"
+      ]
+    },
+    {
+      "id": "11-PROP-7",
+      "title": "MergeConflictError contains at least one path when conflicts are detected",
+      "for_any": "any call to `MergeTree` that returns a `*MergeConflictError`",
+      "invariant": "`MergeConflictError.ConflictingFiles` has length >= 1 when git stdout contains at least one `CONFLICT`-prefixed line",
+      "validates": [
+        "11-REQ-5.2"
+      ]
+    },
+    {
+      "id": "11-PROP-8",
+      "title": "Context cancellation always terminates the subprocess",
+      "for_any": "any method call where the supplied context is cancelled or its deadline expires before the subprocess returns",
+      "invariant": "the git subprocess is killed and the method returns a non-nil error wrapping the context error; the method does not block indefinitely",
+      "validates": [
+        "11-REQ-3.3",
+        "11-REQ-4.E2",
+        "11-REQ-5.E2",
+        "11-REQ-6.E1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "11-PATH-1",
+      "title": "Successful GitRunner construction and git version validation",
+      "steps": [
+        {
+          "actor": "Caller",
+          "action": "invokes `New(workDir, extraEnv)` to create a `*GitRunner`"
+        },
+        {
+          "actor": "GitRunner constructor",
+          "action": "validates that `workDir` exists on the filesystem"
+        },
+        {
+          "actor": "GitRunner constructor",
+          "action": "spawns `git --version` subprocess with safety environment variables applied"
+        },
+        {
+          "actor": "version string parser",
+          "action": "parses the raw output string and returns the major and minor version numbers"
+        },
+        {
+          "actor": "GitRunner constructor",
+          "action": "compares the parsed version against the 2.38 minimum; returns `(*GitRunner, nil)` to the caller"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-2",
+      "title": "LsRemote three-way exit code discrimination \u2014 ref absent",
+      "steps": [
+        {
+          "actor": "Caller",
+          "action": "invokes `LsRemote(ctx, remote, ref)` on an initialized `*GitRunner`"
+        },
+        {
+          "actor": "GitRunner.LsRemote",
+          "action": "spawns `git ls-remote --exit-code <remote> <ref>` with safety environment variables applied"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "exits with code 2 because the ref does not exist on the remote"
+        },
+        {
+          "actor": "GitRunner.LsRemote",
+          "action": "detects exit code 2 and returns `ErrRefNotFound` to the caller"
+        },
+        {
+          "actor": "Caller",
+          "action": "receives `(\"\", ErrRefNotFound)` and handles the missing-ref case without misinterpreting it as a network failure"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-3",
+      "title": "MergeTree conflict detection with file path extraction",
+      "steps": [
+        {
+          "actor": "Caller",
+          "action": "invokes `MergeTree(ctx, base, head)` on an initialized `*GitRunner`"
+        },
+        {
+          "actor": "GitRunner.MergeTree",
+          "action": "spawns `git merge-tree --write-tree <base> <head>` with safety environment variables applied"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "exits non-zero and writes `CONFLICT` lines to stdout identifying conflicting file paths"
+        },
+        {
+          "actor": "GitRunner.MergeTree",
+          "action": "scans stdout line-by-line, extracts file paths from `CONFLICT`-prefixed lines, and constructs a `*MergeConflictError`"
+        },
+        {
+          "actor": "Caller",
+          "action": "receives `(\"\", *MergeConflictError)` and uses `errors.As` to inspect `ConflictingFiles`"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-4",
+      "title": "Rebase with conflict \u2014 automatic abort and structured error",
+      "steps": [
+        {
+          "actor": "Caller",
+          "action": "invokes `Rebase(ctx, onto)` on an initialized `*GitRunner`"
+        },
+        {
+          "actor": "GitRunner.Rebase",
+          "action": "spawns `git rebase <onto>` with safety environment variables applied"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "exits non-zero due to a merge conflict, leaving the repository in rebase state"
+        },
+        {
+          "actor": "GitRunner.Rebase",
+          "action": "detects the non-zero exit, immediately spawns `git rebase --abort` to clean up rebase state"
+        },
+        {
+          "actor": "GitRunner.Rebase",
+          "action": "parses conflicting file paths from git output and returns `*RebaseConflictError` to the caller"
+        },
+        {
+          "actor": "Caller",
+          "action": "receives `(\"\", *RebaseConflictError)` and uses `errors.As` to inspect `ConflictingFiles`; the repository is in a clean state"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-5",
+      "title": "Rebase context cancellation \u2014 manual cleanup required",
+      "steps": [
+        {
+          "actor": "Caller",
+          "action": "invokes `Rebase(ctx, onto)` where the context has a short deadline"
+        },
+        {
+          "actor": "GitRunner.Rebase",
+          "action": "spawns `git rebase <onto>` subprocess"
+        },
+        {
+          "actor": "context",
+          "action": "deadline expires before git returns; the subprocess is killed"
+        },
+        {
+          "actor": "GitRunner.Rebase",
+          "action": "returns the context error to the caller; the repository may still be in rebase state"
+        },
+        {
+          "actor": "Caller",
+          "action": "detects the context error and invokes `RebaseAbort(ctx)` to clean up the dangling rebase state"
+        },
+        {
+          "actor": "GitRunner.RebaseAbort",
+          "action": "spawns `git rebase --abort` and returns nil on success; the repository is now in a clean state"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "11-ERR-1",
+      "condition": "git version is below 2.38 at constructor time",
+      "behavior": "constructor returns (nil, error) with a message identifying the detected version and the 2.38 minimum requirement",
+      "requirement_id": "11-REQ-1.2"
+    },
+    {
+      "id": "11-ERR-2",
+      "condition": "git binary is not found on PATH",
+      "behavior": "constructor returns (nil, error) wrapping the exec.LookPath or exec.Command failure",
+      "requirement_id": "11-REQ-1.3"
+    },
+    {
+      "id": "11-ERR-3",
+      "condition": "any git subprocess exits with a non-zero exit code (generic case)",
+      "behavior": "Run returns (\"\", *GitError{Args, ExitCode, Stderr}) with trimmed stderr",
+      "requirement_id": "11-REQ-3.2"
+    },
+    {
+      "id": "11-ERR-4",
+      "condition": "context is cancelled or deadline exceeded during any subprocess call",
+      "behavior": "the subprocess is killed and the method returns (\"\", ctx.Err())",
+      "requirement_id": "11-REQ-3.3"
+    },
+    {
+      "id": "11-ERR-5",
+      "condition": "git ls-remote exits with code 2 (ref not found)",
+      "behavior": "LsRemote returns (\"\", ErrRefNotFound) sentinel",
+      "requirement_id": "11-REQ-4.2"
+    },
+    {
+      "id": "11-ERR-6",
+      "condition": "git ls-remote exits with code 1 (network or auth failure)",
+      "behavior": "LsRemote returns (\"\", *GitError{ExitCode: 1, Stderr: string})",
+      "requirement_id": "11-REQ-4.3"
+    },
+    {
+      "id": "11-ERR-7",
+      "condition": "git merge-tree detects conflicts (CONFLICT lines in stdout)",
+      "behavior": "MergeTree returns (\"\", *MergeConflictError{ConflictingFiles: []string})",
+      "requirement_id": "11-REQ-5.2"
+    },
+    {
+      "id": "11-ERR-8",
+      "condition": "git rebase exits non-zero due to conflict",
+      "behavior": "Rebase calls git rebase --abort internally, then returns (\"\", *RebaseConflictError{ConflictingFiles: []string})",
+      "requirement_id": "11-REQ-6.2"
+    },
+    {
+      "id": "11-ERR-9",
+      "condition": "context cancellation interrupts Rebase mid-flight",
+      "behavior": "Rebase returns the context error; repository may be in rebase state; caller must invoke RebaseAbort",
+      "requirement_id": "11-REQ-6.E1"
+    },
+    {
+      "id": "11-ERR-10",
+      "condition": "git rebase --abort fails after a conflict is detected",
+      "behavior": "Rebase returns an error wrapping both the conflict information and the abort failure",
+      "requirement_id": "11-REQ-6.E2"
+    },
+    {
+      "id": "11-ERR-11",
+      "condition": "workDir does not exist or is an empty string at constructor time",
+      "behavior": "constructor returns (nil, error) describing the invalid working directory path",
+      "requirement_id": "11-REQ-1.E1"
+    },
+    {
+      "id": "11-ERR-12",
+      "condition": "git --version output is malformed and cannot be parsed",
+      "behavior": "constructor returns (nil, error) indicating parse failure and including the raw version string",
+      "requirement_id": "11-REQ-1.E2"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "os/exec",
+      "version": "go1.26",
+      "symbols": [
+        {
+          "name": "Command",
+          "import_path": "os/exec",
+          "signature": "func Command(name string, arg ...string) *Cmd",
+          "notes": "Used to construct each git subprocess invocation. Cmd.Env is set to the assembled environment slice."
+        },
+        {
+          "name": "Cmd.Run",
+          "import_path": "os/exec",
+          "signature": "func (c *Cmd) Run() error",
+          "notes": "Executes the command and waits for it to complete."
+        },
+        {
+          "name": "Cmd.Output",
+          "import_path": "os/exec",
+          "signature": "func (c *Cmd) Output() ([]byte, error)",
+          "notes": "Runs the command and returns stdout; stderr is captured separately via Cmd.Stderr."
+        },
+        {
+          "name": "ExitError",
+          "import_path": "os/exec",
+          "signature": "type ExitError struct { *os.ProcessState; Stderr []byte }",
+          "notes": "Returned by Cmd.Run/Output on non-zero exit; ExitCode() extracts the integer exit code."
+        },
+        {
+          "name": "CommandContext",
+          "import_path": "os/exec",
+          "signature": "func CommandContext(ctx context.Context, name string, arg ...string) *Cmd",
+          "notes": "Used instead of Command when context cancellation and deadline support are required."
+        }
+      ]
+    }
+  ]
+}

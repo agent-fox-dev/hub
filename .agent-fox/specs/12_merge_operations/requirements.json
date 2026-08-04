@@ -1,0 +1,1246 @@
+{
+  "$schema": null,
+  "spec_id": "12",
+  "spec_name": "merge_operations",
+  "schema_version": 1,
+  "introduction": "The merge_operations spec defines how multiple agent branches are integrated into a target branch within a workspace using rebase-then-fast-forward semantics, serialized execution via a durable job queue, and structured conflict reporting. Note: requirements referencing go-git, GitRunner (spec 11), and durable job queue (spec 10) APIs are based on PRD descriptions and should be cross-checked against installed library versions before implementation.",
+  "glossary": {
+    "AlreadyMerged": "A typed merge rejection reason indicating the source branch is already integrated into the target branch; the merge handler returns success idempotently.",
+    "AuthInfo": "The authentication context object populated by apikit containing the authenticated user's identity information.",
+    "BranchNotReady": "A typed merge rejection reason indicating the source branch has no commits ahead of the target branch; the merge handler returns a retryable error.",
+    "CHECK_COMMAND": "A workspace variable (stored via the secrets/variables system) containing a shell command run between rebase and merge to validate the rebased state.",
+    "EnqueueParams": "The parameter struct passed to the durable job queue's enqueue function, extended by this spec with an optional Group field for serialization.",
+    "GitRunner": "The git subprocess runner from spec 11 used to execute git CLI commands (rebase, merge-tree, checkout, reset) that go-git cannot perform.",
+    "WORKSPACE_ROOT": "The root directory on the hub host under which workspace clones are stored, with each workspace at <WORKSPACE_ROOT>/<slug>/trunk/.",
+    "WouldConflict": "A typed merge rejection reason indicating that a dry-run conflict check detected merge conflicts before any real git operation was attempted.",
+    "afc": "The af-hub command-line interface tool used by operators and agents to interact with the hub.",
+    "base_sha": "The 40-character hex SHA of the target branch HEAD before the merge, returned in the merge job success result.",
+    "batch rebase": "An operation that rebases a list of source branches onto a target ref, reporting per-branch results and continuing past individual branch conflicts.",
+    "conflict_files": "The list of file paths reported as conflicting during a dry-run or real rebase conflict detection.",
+    "dead_letter": "A terminal job status indicating the job has exhausted all retries and will not be retried again.",
+    "go-git": "A pure-Go git implementation library used for fetch, ref updates, and branch deletion operations.",
+    "group serialization": "The job queue dispatch mechanism that prevents two jobs with the same type and group_key from running simultaneously.",
+    "group_key": "A column added to the jobs table that enables serialization of jobs sharing the same type and group, allowing multiple jobs to be queued while only one runs at a time per group.",
+    "merge job": "A background task of type 'merge' registered with the durable job queue that executes the rebase-then-fast-forward merge algorithm for a given source and target branch.",
+    "merge-tree": "The git subcommand (git merge-tree --write-tree) used for read-only conflict detection without modifying the working tree.",
+    "merged_sha": "The 40-character hex SHA of the target branch HEAD after the merge (the rebased source HEAD), returned in the merge job success result.",
+    "merges:read": "The PAT permission scope that grants read-only access to merge job status and listing.",
+    "merges:write": "The PAT permission scope that grants the ability to submit and cancel merge jobs and trigger batch rebase operations.",
+    "pre-rebase SHA": "The commit SHA of the source branch captured immediately before the rebase step, used to roll back the branch ref and working tree if the check command fails.",
+    "rebase": "The git operation that replays commits from a source branch on top of a target ref, used to linearize history before fast-forward merging.",
+    "resolveCloneAuth": "The credential resolution helper from the workspace checkout spec (spec 05) used to authenticate git fetch operations.",
+    "source_ref": "The name of the source branch to be merged into the target branch.",
+    "submitted_by": "The username of the authenticated user who submitted the merge job, stored in the job payload for attribution.",
+    "target_branch": "The name of the integration branch into which the source branch is merged.",
+    "trunk": "The non-bare working tree directory within a workspace clone, located at <WORKSPACE_ROOT>/<slug>/trunk/, where git operations are performed.",
+    "workspace_slug": "The URL-safe identifier for a workspace, used in API paths and job queue keys."
+  },
+  "requirements": [
+    {
+      "id": "12-REQ-1",
+      "title": "Jobqueue Group Extension: Schema and EnqueueParams",
+      "user_story": {
+        "role": "merge_operations implementer",
+        "goal": "add a group_key column to the jobs table and a Group field to EnqueueParams",
+        "benefit": "so that merge jobs can be serialized per target branch while allowing multiple merges to the same target to be queued simultaneously"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "merge_operations schema migration",
+          "action": "add a group_key TEXT NOT NULL DEFAULT '' column to the jobs table",
+          "return_contract": "migration completes without error; existing rows have group_key = ''",
+          "trigger": "the database schema is initialized or migrated"
+        },
+        {
+          "id": "12-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "durable job queue enqueue path",
+          "action": "store the Group value in the group_key column of the inserted job row",
+          "return_contract": "job row has group_key equal to the supplied Group value",
+          "trigger": "a caller passes a non-empty Group value in EnqueueParams"
+        },
+        {
+          "id": "12-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "durable job queue enqueue path",
+          "action": "store an empty string in the group_key column, preserving existing dedup behavior via (type, key)",
+          "return_contract": "job row has group_key = ''",
+          "trigger": "a caller omits the Group field in EnqueueParams"
+        },
+        {
+          "id": "12-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "durable job queue worker dispatch query",
+          "action": "use CASE WHEN jobs.group_key != '' THEN jobs.group_key ELSE jobs.key END as the serialization key, blocking dispatch when another job of the same type and effective serialization key is already running",
+          "return_contract": "at most one job per (type, effective serialization key) runs at a time",
+          "trigger": "the worker selects the next job to run"
+        },
+        {
+          "id": "12-REQ-1.5",
+          "ears_pattern": "ubiquitous",
+          "system": "durable job queue",
+          "action": "preserve existing per-key serialization for all job types that do not set group_key, with no behavioral change to previously registered job types",
+          "return_contract": "all existing job types continue to serialize by (type, key) as before"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "durable job queue schema migration",
+          "action": "skip the column addition without error using an idempotent migration strategy",
+          "return_contract": "migration succeeds; no duplicate column error is raised",
+          "error_condition": "the jobs table already has a group_key column from a previous partial migration"
+        },
+        {
+          "id": "12-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "durable job queue worker dispatch",
+          "action": "dispatch only one; hold the other in queued state until the running job completes or fails",
+          "return_contract": "only one job transitions to running status at a time per (type, group_key)",
+          "error_condition": "two merge jobs with the same type and group_key are both in queued status"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-2",
+      "title": "Merge Job Registration",
+      "user_story": {
+        "role": "hub server",
+        "goal": "register a 'merge' job type with the durable job queue at boot",
+        "benefit": "so that merge operations are executed durably and serially per target branch"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "hub server",
+          "action": "register a job handler for type 'merge' with the durable job queue, using the merge algorithm as the handler function",
+          "return_contract": "the 'merge' job type is registered before the first request is served",
+          "trigger": "the server boots"
+        },
+        {
+          "id": "12-REQ-2.2",
+          "ears_pattern": "ubiquitous",
+          "system": "merge job enqueue",
+          "action": "set Key to '<workspace_slug>:<target_branch>:<source_ref>' and Group to '<workspace_slug>:<target_branch>' for every merge job",
+          "return_contract": "job row has the correct key and group_key values"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "hub server",
+          "action": "return an error or panic at startup to prevent silent misconfiguration",
+          "return_contract": "server fails to start with a clear error message indicating duplicate registration",
+          "error_condition": "the 'merge' job type is registered more than once during boot"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-3",
+      "title": "Merge Job Payload and submitted_by Resolution",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "have the merge job payload include workspace_slug, target_branch, source_ref, and submitted_by",
+        "benefit": "so that the merge handler has all context needed and attribution is recorded"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "merge job enqueue",
+          "action": "set submitted_by to the username from AuthInfo",
+          "return_contract": "job payload JSON contains submitted_by equal to the API key owner's username",
+          "trigger": "a merge job is enqueued via an API key"
+        },
+        {
+          "id": "12-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "merge job enqueue",
+          "action": "set submitted_by to the literal string \"admin\"",
+          "return_contract": "job payload JSON contains submitted_by = \"admin\"",
+          "trigger": "a merge job is enqueued via an admin token"
+        },
+        {
+          "id": "12-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "merge job enqueue",
+          "action": "set submitted_by to the PAT owner's username from AuthInfo",
+          "return_contract": "job payload JSON contains submitted_by equal to the PAT owner's username",
+          "trigger": "a merge job is enqueued via a PAT"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge job enqueue",
+          "action": "reject the enqueue request with an internal server error",
+          "return_contract": "returns HTTP 500; no job is enqueued",
+          "error_condition": "AuthInfo does not contain a resolvable username"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-4",
+      "title": "Merge Pre-Check: Typed Rejection Reasons",
+      "user_story": {
+        "role": "merge handler",
+        "goal": "run a pre-check before attempting the real merge and return a typed rejection reason",
+        "benefit": "so that expected rejections are distinguished from unexpected failures without string parsing"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "merge handler pre-check",
+          "action": "return WouldConflict as a permanent error with the list of conflict_files",
+          "return_contract": "job transitions to failed status with structured error containing conflict file paths; no git state is modified",
+          "trigger": "the dry-run conflict check detects conflicts"
+        },
+        {
+          "id": "12-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "merge handler pre-check",
+          "action": "return AlreadyMerged and mark the job as completed successfully without performing any git operations",
+          "return_contract": "job transitions to completed status; no git state is modified",
+          "trigger": "the source branch is already integrated into the target branch"
+        },
+        {
+          "id": "12-REQ-4.3",
+          "ears_pattern": "event_driven",
+          "system": "merge handler pre-check",
+          "action": "return BranchNotReady as a retryable error",
+          "return_contract": "job is retried by the job queue; no git state is modified",
+          "trigger": "the source branch has no commits ahead of the target branch"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge handler pre-check",
+          "action": "return a permanent error indicating the branch was not found",
+          "return_contract": "job transitions to failed status with error message identifying the missing branch",
+          "error_condition": "the source or target branch ref does not exist in the workspace repository"
+        },
+        {
+          "id": "12-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge handler pre-check",
+          "action": "return a retryable error so the job is retried after the clone becomes ready",
+          "return_contract": "job remains in retryable state; no git state is modified",
+          "error_condition": "the workspace clone directory does not exist or is not a valid git repository"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-5",
+      "title": "Dry-Run Conflict Detection via merge-tree",
+      "user_story": {
+        "role": "merge handler",
+        "goal": "run git merge-tree --write-tree before any real rebase to detect conflicts",
+        "benefit": "so that the target branch is never left in a dirty state by a failed merge attempt"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "invoke GitRunner with 'git merge-tree --write-tree <target-head> <source-branch-head>' in the workspace trunk directory",
+          "return_contract": "GitRunner returns exit code 0 (no conflicts) or a non-zero exit code with conflict file paths",
+          "trigger": "the pre-check phase runs"
+        },
+        {
+          "id": "12-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "parse the output to extract conflict_files and return WouldConflict as a permanent error",
+          "return_contract": "job fails permanently with structured error containing conflict_files list; working tree is unmodified",
+          "trigger": "git merge-tree --write-tree exits with a conflict exit code"
+        },
+        {
+          "id": "12-REQ-5.3",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "proceed to the fetch step of the merge algorithm",
+          "return_contract": "no error; merge algorithm continues",
+          "trigger": "git merge-tree --write-tree exits with code 0"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge handler dry-run",
+          "action": "GitRunner kills the subprocess and returns a timeout error; the merge handler returns a retryable error",
+          "return_contract": "job is retried; working tree is unmodified",
+          "error_condition": "git merge-tree --write-tree hangs or does not return within the GitRunner timeout"
+        },
+        {
+          "id": "12-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge handler dry-run",
+          "action": "GitRunner returns a non-zero exit code; the merge handler returns a permanent error indicating unsupported git version",
+          "return_contract": "job fails permanently with error message indicating git >= 2.38 is required",
+          "error_condition": "the installed git version is older than 2.38 and does not support git merge-tree --write-tree"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-6",
+      "title": "Merge Algorithm: Fetch, Rebase, Check, Update, Delete",
+      "user_story": {
+        "role": "merge handler",
+        "goal": "execute the full merge algorithm: fetch, rebase, check command, ref update, source branch deletion",
+        "benefit": "so that agent branches are cleanly integrated into the target branch with no lost work or dirty state"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "fetch the latest target branch state from the upstream remote via go-git using resolveCloneAuth credentials",
+          "return_contract": "local target branch ref is updated to the latest remote state; no error returned",
+          "trigger": "the pre-check passes"
+        },
+        {
+          "id": "12-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "capture the pre-rebase SHA of the source branch, then invoke GitRunner to run 'git rebase <target-ref>' on the source branch in the workspace trunk directory",
+          "return_contract": "source branch is rebased onto target; pre-rebase SHA is stored for potential rollback",
+          "trigger": "the fetch step completes successfully"
+        },
+        {
+          "id": "12-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "execute CHECK_COMMAND via 'sh -c <CHECK_COMMAND>' in the workspace trunk directory with MERGE_TARGET, MERGE_SOURCE, and WORKSPACE_SLUG environment variables injected, enforcing a 10-minute timeout",
+          "return_contract": "check command exits 0; merge algorithm proceeds to ref update step",
+          "trigger": "the rebase completes without conflicts and CHECK_COMMAND is set in workspace variables"
+        },
+        {
+          "id": "12-REQ-6.4",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "skip the check step and proceed directly to the ref update step",
+          "return_contract": "no check command is executed; merge algorithm continues",
+          "trigger": "the rebase completes without conflicts and CHECK_COMMAND is not set"
+        },
+        {
+          "id": "12-REQ-6.5",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "update the target branch ref to the rebased source HEAD via go-git reference update",
+          "return_contract": "target branch ref points to the new merged SHA; this is a local ref update with no remote push",
+          "trigger": "the check command exits 0 (or is skipped)"
+        },
+        {
+          "id": "12-REQ-6.6",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "delete the source branch ref from the local repository via go-git reference deletion",
+          "return_contract": "source branch ref no longer exists in the workspace repository",
+          "trigger": "the target branch ref update succeeds"
+        },
+        {
+          "id": "12-REQ-6.7",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "return success with base_sha (pre-merge target HEAD) and merged_sha (new target HEAD)",
+          "return_contract": "job transitions to completed status with result JSON containing base_sha and merged_sha as 40-char hex SHAs",
+          "trigger": "the source branch deletion succeeds"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge handler rebase step",
+          "action": "invoke GitRunner to run 'git rebase --abort' in the workspace trunk directory, then return a permanent error with the conflicting file paths",
+          "return_contract": "job fails permanently; source branch is restored to pre-rebase state; working tree is clean",
+          "error_condition": "git rebase encounters conflicts"
+        },
+        {
+          "id": "12-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge handler check command step",
+          "action": "invoke GitRunner to run 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>' in the workspace trunk directory to restore the source branch ref and working tree, then return a permanent error with the check command output",
+          "return_contract": "job fails permanently; source branch ref and working tree are restored to pre-rebase state; check output is included in the error",
+          "error_condition": "the check command exits with a non-zero exit code"
+        },
+        {
+          "id": "12-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "merge handler check command step",
+          "action": "kill the check command process, roll back the rebase using 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>', and return a permanent error indicating timeout",
+          "return_contract": "job fails permanently; source branch is restored; error message indicates check command timed out after 10 minutes",
+          "error_condition": "the check command does not complete within 10 minutes"
+        },
+        {
+          "id": "12-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "merge handler ref update step",
+          "action": "return a retryable error so the job queue retries the merge job",
+          "return_contract": "job remains retryable; target branch ref is unchanged",
+          "error_condition": "the go-git reference update fails due to ref lock contention or other transient error"
+        },
+        {
+          "id": "12-REQ-6.E5",
+          "ears_pattern": "unwanted",
+          "system": "merge handler fetch step",
+          "action": "return a retryable error",
+          "return_contract": "job is retried; no git state is modified",
+          "error_condition": "the go-git fetch from the upstream remote fails due to network error or authentication failure"
+        },
+        {
+          "id": "12-REQ-6.E6",
+          "ears_pattern": "unwanted",
+          "system": "merge handler rollback step",
+          "action": "log the rollback failure with the original error and the rollback error, and return a permanent error indicating the repository may be in an inconsistent state",
+          "return_contract": "job fails permanently with error message indicating rollback failure and repository state uncertainty",
+          "error_condition": "the rollback command 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>' fails"
+        },
+        {
+          "id": "12-REQ-6.E7",
+          "ears_pattern": "unwanted",
+          "system": "merge handler rebase step",
+          "action": "GitRunner kills the subprocess after its configured timeout; the merge handler runs 'git rebase --abort' and returns a retryable error",
+          "return_contract": "job is retried; working tree is cleaned up",
+          "error_condition": "GitRunner subprocess hangs during rebase and does not return"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-7",
+      "title": "Branch Rebase Operation (Single)",
+      "user_story": {
+        "role": "higher-level system or merge handler",
+        "goal": "rebase a single source branch onto a target ref",
+        "benefit": "so that branch rebase is available as a reusable building block"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "branch rebase operation",
+          "action": "invoke GitRunner to run 'git rebase <target-ref>' on the source branch in the workspace trunk directory",
+          "return_contract": "returns the new branch HEAD SHA as a 40-char hex string on success",
+          "trigger": "a caller invokes the rebase operation with a source branch and target ref"
+        },
+        {
+          "id": "12-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "branch rebase operation",
+          "action": "invoke GitRunner to run 'git rebase --abort', then return a structured conflict report containing the list of conflicting file paths; the branch is left in its pre-rebase state",
+          "return_contract": "returns (empty SHA, RebaseConflictError) with conflict_files populated; branch ref is unchanged",
+          "error_condition": "the rebase encounters conflicts"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "branch rebase operation",
+          "action": "return an error without invoking GitRunner",
+          "return_contract": "returns (empty SHA, ErrRefNotFound)",
+          "error_condition": "the source branch ref does not exist"
+        },
+        {
+          "id": "12-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "branch rebase operation",
+          "action": "GitRunner kills the subprocess after its timeout; the rebase operation runs 'git rebase --abort' and returns an error",
+          "return_contract": "returns (empty SHA, timeout error); working tree is cleaned up",
+          "error_condition": "GitRunner subprocess hangs during rebase"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-8",
+      "title": "Batch Rebase Operation",
+      "user_story": {
+        "role": "higher-level system",
+        "goal": "rebase a list of branches onto a target ref in a single operation",
+        "benefit": "so that multiple agent branches can be rebased independently without one conflict blocking others"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "batch rebase operation",
+          "action": "rebase each branch onto the target ref sequentially; on conflict for any branch, abort that rebase, record the conflict, and continue with remaining branches",
+          "return_contract": "returns a per-branch result list where each entry has branch name, status ('ok' or 'conflict'), new_head (on success), and conflict_files (on conflict)",
+          "trigger": "a caller provides a list of branches and a target ref"
+        },
+        {
+          "id": "12-REQ-8.2",
+          "ears_pattern": "ubiquitous",
+          "system": "batch rebase operation",
+          "action": "process each branch independently so that a conflict on one branch does not prevent rebasing of subsequent branches",
+          "return_contract": "all branches in the input list appear in the result list regardless of individual success or failure"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase operation",
+          "action": "return an error without performing any git operations",
+          "return_contract": "returns HTTP 400 with error message 'branches list must not be empty' when called via REST API; returns an error value when called as a library function",
+          "error_condition": "the branches list is empty"
+        },
+        {
+          "id": "12-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase operation",
+          "action": "record that branch as failed with status 'error' and message 'branch not found in workspace repository', then continue with remaining branches",
+          "return_contract": "result entry for the missing branch has status 'conflict' or 'error' with a descriptive message; other branches are still processed",
+          "error_condition": "a branch in the list does not exist in the workspace repository"
+        },
+        {
+          "id": "12-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase operation",
+          "action": "GitRunner kills the subprocess after its timeout; that branch is recorded as failed; remaining branches continue to be processed",
+          "return_contract": "timed-out branch has an error result; subsequent branches are not blocked",
+          "error_condition": "GitRunner subprocess hangs for one branch during batch rebase"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-9",
+      "title": "REST API: Submit Merge Job",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "submit a merge request via POST /api/v1/workspaces/:slug/merges",
+        "benefit": "so that agent branches can be merged into the target branch programmatically"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "merge REST API",
+          "action": "enqueue a merge job with the correct Key, Group, and payload, then return the job ID and initial status",
+          "return_contract": "returns HTTP 202 with JSON body containing the merge job record including id, status='queued', workspace_slug, target_branch, source_ref, submitted_by, created_at, updated_at",
+          "trigger": "a caller sends POST /api/v1/workspaces/:slug/merges with valid target_branch and source_ref"
+        },
+        {
+          "id": "12-REQ-9.2",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "reject the request with HTTP 409",
+          "return_contract": "returns HTTP 409 with JSON error body",
+          "error_condition": "a merge job for the same source_ref and target_branch in the same workspace is already queued or running"
+        },
+        {
+          "id": "12-REQ-9.3",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "reject the request with HTTP 400",
+          "return_contract": "returns HTTP 400 with JSON error body indicating which field is missing",
+          "error_condition": "target_branch or source_ref is missing from the request body"
+        },
+        {
+          "id": "12-REQ-9.4",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 404",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the workspace identified by :slug does not exist"
+        },
+        {
+          "id": "12-REQ-9.5",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 400",
+          "return_contract": "returns HTTP 400 with JSON error body indicating workspace is not active",
+          "error_condition": "the workspace is not in active status"
+        },
+        {
+          "id": "12-REQ-9.6",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 400",
+          "return_contract": "returns HTTP 400 with JSON error body indicating clone is not ready",
+          "error_condition": "the workspace clone is not ready"
+        },
+        {
+          "id": "12-REQ-9.7",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 400",
+          "return_contract": "returns HTTP 400 with JSON error body identifying the missing branch",
+          "error_condition": "the source or target branch does not exist in the workspace repository"
+        },
+        {
+          "id": "12-REQ-9.8",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is a PAT without merges:write scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 400",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the request body is malformed JSON"
+        },
+        {
+          "id": "12-REQ-9.E2",
+          "ears_pattern": "event_driven",
+          "system": "merge REST API",
+          "action": "enqueue exactly one job; return HTTP 409 for the duplicate",
+          "return_contract": "one request returns HTTP 202; the other returns HTTP 409",
+          "trigger": "two concurrent POST /api/v1/workspaces/:slug/merges requests arrive with the same source_ref and target_branch"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-10",
+      "title": "REST API: List and Get Merge Jobs",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "list and retrieve merge job status via GET /api/v1/workspaces/:slug/merges and GET /api/v1/workspaces/:slug/merges/:id",
+        "benefit": "so that operators and agents can monitor merge progress"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "merge REST API",
+          "action": "query jobs of type 'merge' scoped to the workspace and return them as merge job response objects",
+          "return_contract": "returns HTTP 200 with JSON array of merge job records, each containing id, workspace_slug, target_branch, source_ref, status, base_sha, merged_sha, conflict_files, check_output, error, retry_count, submitted_by, created_at, updated_at",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/merges"
+        },
+        {
+          "id": "12-REQ-10.2",
+          "ears_pattern": "event_driven",
+          "system": "merge REST API",
+          "action": "retrieve the job record by ID scoped to the workspace and return it as a merge job response object",
+          "return_contract": "returns HTTP 200 with JSON merge job record; returns HTTP 404 if the job ID does not exist in the workspace",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/merges/:id"
+        },
+        {
+          "id": "12-REQ-10.3",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is a PAT without merges:read scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-10.E1",
+          "ears_pattern": "event_driven",
+          "system": "merge REST API list",
+          "action": "return an empty array",
+          "return_contract": "returns HTTP 200 with JSON body {results: []}",
+          "trigger": "GET /api/v1/workspaces/:slug/merges is called when no merge jobs exist for the workspace"
+        },
+        {
+          "id": "12-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API get",
+          "action": "return HTTP 404 to prevent cross-workspace information disclosure",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the merge job ID exists but belongs to a different workspace"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-11",
+      "title": "REST API: Cancel Merge Job",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "cancel a queued merge job via DELETE /api/v1/workspaces/:slug/merges/:id",
+        "benefit": "so that operators can abort pending merges before they execute"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "merge REST API",
+          "action": "cancel the job via the durable job queue's cancel operation and return success",
+          "return_contract": "returns HTTP 200; job transitions to cancelled status",
+          "trigger": "a caller sends DELETE /api/v1/workspaces/:slug/merges/:id for a queued job"
+        },
+        {
+          "id": "12-REQ-11.2",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 409 indicating the job cannot be cancelled in its current state",
+          "return_contract": "returns HTTP 409 with JSON error body",
+          "error_condition": "the job is already running, completed, failed, or cancelled"
+        },
+        {
+          "id": "12-REQ-11.3",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API",
+          "action": "return HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is a PAT without merges:write scope"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API cancel",
+          "action": "return HTTP 404",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the merge job ID does not exist or belongs to a different workspace"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-12",
+      "title": "REST API: Batch Rebase Endpoint",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "trigger a batch rebase via POST /api/v1/workspaces/:slug/rebase",
+        "benefit": "so that higher-level systems can rebase multiple branches programmatically in a single call"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "batch rebase REST API",
+          "action": "execute the batch rebase operation and return per-branch results synchronously",
+          "return_contract": "returns HTTP 200 with JSON body {results: [{branch, status, new_head?, conflict_files?}]}",
+          "trigger": "a caller sends POST /api/v1/workspaces/:slug/rebase with a valid target_ref and non-empty branches list"
+        },
+        {
+          "id": "12-REQ-12.2",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase REST API",
+          "action": "return HTTP 400 without performing any git operations",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the branches list is empty"
+        },
+        {
+          "id": "12-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase REST API",
+          "action": "return HTTP 403",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller is a PAT without merges:write scope"
+        },
+        {
+          "id": "12-REQ-12.4",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase REST API",
+          "action": "return HTTP 400",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "target_ref is missing from the request body"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase REST API",
+          "action": "return HTTP 404 or HTTP 400 respectively without performing any git operations",
+          "return_contract": "returns HTTP 404 (not found) or HTTP 400 (not active) with JSON error body",
+          "error_condition": "the workspace does not exist or is not active"
+        },
+        {
+          "id": "12-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "batch rebase REST API",
+          "action": "the operation runs to completion for all branches; no HTTP-level timeout shorter than the server's configured request timeout is applied",
+          "return_contract": "returns HTTP 200 with all branch results once all rebases complete or fail",
+          "error_condition": "the batch rebase takes longer than expected due to many branches or slow git operations"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-13",
+      "title": "CLI: Merge Commands",
+      "user_story": {
+        "role": "operator or agent",
+        "goal": "submit, list, check status, and cancel merge jobs via the afc CLI",
+        "benefit": "so that merge operations can be managed interactively from the command line"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "call POST /api/v1/workspaces/:slug/merges and print the resulting merge job record",
+          "return_contract": "exits 0 with merge job details printed to stdout; exits non-zero with error message on failure",
+          "trigger": "a user runs 'afc merge submit <workspace-slug> --target <branch> --source <branch>'"
+        },
+        {
+          "id": "12-REQ-13.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "call GET /api/v1/workspaces/:slug/merges and print the list of merge jobs",
+          "return_contract": "exits 0 with merge job list printed to stdout; exits non-zero with error message on failure",
+          "trigger": "a user runs 'afc merge list <workspace-slug>'"
+        },
+        {
+          "id": "12-REQ-13.3",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "call GET /api/v1/workspaces/:slug/merges/:id and print the merge job status",
+          "return_contract": "exits 0 with merge job status printed to stdout; exits non-zero with error message on failure",
+          "trigger": "a user runs 'afc merge status <workspace-slug> <merge-id>'"
+        },
+        {
+          "id": "12-REQ-13.4",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "call DELETE /api/v1/workspaces/:slug/merges/:id and print confirmation",
+          "return_contract": "exits 0 with confirmation message on success; exits non-zero with error message on failure",
+          "trigger": "a user runs 'afc merge cancel <workspace-slug> <merge-id>'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI merge submit",
+          "action": "print usage error and exit with non-zero code without making any API call",
+          "return_contract": "exits non-zero with usage message printed to stderr",
+          "error_condition": "--target or --source flag is missing"
+        },
+        {
+          "id": "12-REQ-13.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "print the error message to stderr and exit with non-zero code; library code must not call os.Exit directly",
+          "return_contract": "exits non-zero; error message printed to stderr",
+          "error_condition": "the API returns an error response"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-14",
+      "title": "Merge Job Response Projection",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "receive merge-specific fields extracted from the job queue record in GET merge responses",
+        "benefit": "so that consumers see domain-specific merge vocabulary rather than raw job queue fields"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "12-REQ-14.1",
+          "ears_pattern": "ubiquitous",
+          "system": "merge REST API response serialization",
+          "action": "project job queue records into merge response objects by extracting target_branch, source_ref, submitted_by from the job payload and base_sha, merged_sha, conflict_files, check_output from the job result",
+          "return_contract": "response JSON contains all fields: id, workspace_slug, target_branch, source_ref, status, base_sha (null if not completed), merged_sha (null if not completed), conflict_files (empty array if none), check_output (null if none), error (null if none), retry_count, submitted_by, created_at, updated_at"
+        },
+        {
+          "id": "12-REQ-14.2",
+          "ears_pattern": "state_driven",
+          "system": "merge REST API response",
+          "action": "include non-null base_sha and merged_sha in the response",
+          "return_contract": "base_sha and merged_sha are 40-char hex strings",
+          "state": "the merge job is in completed status"
+        },
+        {
+          "id": "12-REQ-14.3",
+          "ears_pattern": "state_driven",
+          "system": "merge REST API response",
+          "action": "include the conflict_files list in the response",
+          "return_contract": "conflict_files is a non-empty array of file path strings",
+          "state": "the merge job failed with WouldConflict"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "12-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge REST API response projection",
+          "action": "return null for missing fields rather than returning an error response",
+          "return_contract": "HTTP 200 with null values for unparseable result fields",
+          "error_condition": "the job result JSON is malformed or missing expected fields"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "12-PROP-1",
+      "title": "At most one merge per target branch runs simultaneously",
+      "for_any": "workspace and target_branch",
+      "invariant": "at most one merge job with group_key = '<workspace_slug>:<target_branch>' is in running status at any given time",
+      "validates": [
+        "12-REQ-1.4",
+        "12-REQ-2.2"
+      ]
+    },
+    {
+      "id": "12-PROP-2",
+      "title": "Dedup prevents duplicate merge jobs",
+      "for_any": "workspace, target_branch, and source_ref triple",
+      "invariant": "at most one non-terminal job with Key = '<workspace_slug>:<target_branch>:<source_ref>' exists in the jobs table at any time",
+      "validates": [
+        "12-REQ-9.2",
+        "12-REQ-2.2"
+      ]
+    },
+    {
+      "id": "12-PROP-3",
+      "title": "Working tree is clean after any merge outcome",
+      "for_any": "merge job execution",
+      "invariant": "after the merge handler returns (success or failure), the workspace trunk directory contains no uncommitted rebase state or partial merge artifacts",
+      "validates": [
+        "12-REQ-6.E1",
+        "12-REQ-6.E2",
+        "12-REQ-5.2"
+      ]
+    },
+    {
+      "id": "12-PROP-4",
+      "title": "Pre-rebase SHA is captured before any git mutation",
+      "for_any": "merge job execution",
+      "invariant": "the pre-rebase SHA of the source branch is read before any GitRunner invocation that modifies the branch, ensuring rollback always targets the correct commit",
+      "validates": [
+        "12-REQ-6.2",
+        "12-REQ-6.E2"
+      ]
+    },
+    {
+      "id": "12-PROP-5",
+      "title": "Source branch is deleted only after successful ref update",
+      "for_any": "merge job execution",
+      "invariant": "the source branch ref is deleted if and only if the target branch ref update has already succeeded",
+      "validates": [
+        "12-REQ-6.6",
+        "12-REQ-6.7"
+      ]
+    },
+    {
+      "id": "12-PROP-6",
+      "title": "Batch rebase processes all branches regardless of individual failures",
+      "for_any": "batch rebase input list of N branches",
+      "invariant": "the result list always contains exactly N entries, one per input branch, regardless of how many branches conflict or fail",
+      "validates": [
+        "12-REQ-8.1",
+        "12-REQ-8.2"
+      ]
+    },
+    {
+      "id": "12-PROP-7",
+      "title": "group_key extension is backward compatible",
+      "for_any": "job type that does not set group_key",
+      "invariant": "the effective serialization key equals the job's key column value (CASE WHEN group_key != '' THEN group_key ELSE key END evaluates to key), preserving pre-extension behavior",
+      "validates": [
+        "12-REQ-1.3",
+        "12-REQ-1.5"
+      ]
+    },
+    {
+      "id": "12-PROP-8",
+      "title": "AlreadyMerged is idempotent",
+      "for_any": "merge job where the source branch is already integrated into the target",
+      "invariant": "the merge handler returns success without modifying any git state",
+      "validates": [
+        "12-REQ-4.2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "12-PATH-1",
+      "title": "End-to-end: CLI merge submit through job execution to completion",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs 'afc merge submit my-workspace --target main --source feature/agent-1'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends POST /api/v1/workspaces/my-workspace/merges with body {target_branch: 'main', source_ref: 'feature/agent-1'}"
+        },
+        {
+          "actor": "merge REST API handler",
+          "action": "validates workspace exists and is active, verifies both branches exist, resolves submitted_by from AuthInfo, and calls the durable job queue enqueue with type='merge', Key='my-workspace:main:feature/agent-1', Group='my-workspace:main'"
+        },
+        {
+          "actor": "durable job queue (spec 10)",
+          "action": "inserts job row with group_key='my-workspace:main', returns job ID; returns HTTP 202 to CLI with queued job record"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "prints the merge job record including id and status='queued' to stdout"
+        },
+        {
+          "actor": "durable job queue worker (spec 10)",
+          "action": "dispatches the merge job when no other merge job with group_key='my-workspace:main' is running"
+        },
+        {
+          "actor": "merge handler",
+          "action": "runs pre-check: invokes GitRunner (spec 11) with 'git merge-tree --write-tree main feature/agent-1'; detects no conflicts"
+        },
+        {
+          "actor": "merge handler",
+          "action": "fetches latest target branch state from upstream remote via go-git using resolveCloneAuth credentials"
+        },
+        {
+          "actor": "merge handler",
+          "action": "captures pre-rebase SHA of feature/agent-1, then invokes GitRunner (spec 11) with 'git rebase main' in the workspace trunk directory"
+        },
+        {
+          "actor": "merge handler",
+          "action": "reads CHECK_COMMAND from workspace variables (spec 07); if set, executes it via 'sh -c <CHECK_COMMAND>' with MERGE_TARGET, MERGE_SOURCE, WORKSPACE_SLUG injected and 10-minute timeout"
+        },
+        {
+          "actor": "merge handler",
+          "action": "updates the main branch ref to the rebased HEAD via go-git reference update"
+        },
+        {
+          "actor": "merge handler",
+          "action": "deletes the feature/agent-1 branch ref via go-git reference deletion"
+        },
+        {
+          "actor": "durable job queue (spec 10)",
+          "action": "marks job as completed with result JSON containing base_sha and merged_sha"
+        },
+        {
+          "actor": "operator",
+          "action": "runs 'afc merge status my-workspace <job-id>' and sees status='completed' with base_sha and merged_sha"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-2",
+      "title": "Merge rejected due to conflict: dry-run detection path",
+      "steps": [
+        {
+          "actor": "API consumer",
+          "action": "sends POST /api/v1/workspaces/my-workspace/merges with {target_branch: 'main', source_ref: 'feature/conflicting'}"
+        },
+        {
+          "actor": "merge REST API handler",
+          "action": "validates request, enqueues merge job, returns HTTP 202 with queued job record"
+        },
+        {
+          "actor": "durable job queue worker (spec 10)",
+          "action": "dispatches the merge job"
+        },
+        {
+          "actor": "merge handler",
+          "action": "invokes GitRunner (spec 11) with 'git merge-tree --write-tree main feature/conflicting'; receives non-zero exit code with conflict file list"
+        },
+        {
+          "actor": "merge handler",
+          "action": "returns WouldConflict permanent error with conflict_files; working tree is unmodified"
+        },
+        {
+          "actor": "durable job queue (spec 10)",
+          "action": "marks job as failed with structured error containing conflict_files"
+        },
+        {
+          "actor": "API consumer",
+          "action": "sends GET /api/v1/workspaces/my-workspace/merges/:id and receives status='failed' with conflict_files populated"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-3",
+      "title": "Batch rebase via REST API",
+      "steps": [
+        {
+          "actor": "API consumer",
+          "action": "sends POST /api/v1/workspaces/my-workspace/rebase with {target_ref: 'main', branches: ['feature/a', 'feature/b', 'feature/c']}"
+        },
+        {
+          "actor": "batch rebase REST API handler",
+          "action": "validates workspace is active and clone is ready, then invokes the batch rebase operation"
+        },
+        {
+          "actor": "batch rebase operation",
+          "action": "invokes GitRunner (spec 11) to run 'git rebase main' for feature/a; succeeds and records new_head SHA"
+        },
+        {
+          "actor": "batch rebase operation",
+          "action": "invokes GitRunner (spec 11) to run 'git rebase main' for feature/b; detects conflict, runs 'git rebase --abort', records conflict_files"
+        },
+        {
+          "actor": "batch rebase operation",
+          "action": "invokes GitRunner (spec 11) to run 'git rebase main' for feature/c; succeeds and records new_head SHA"
+        },
+        {
+          "actor": "batch rebase REST API handler",
+          "action": "returns HTTP 200 with results array containing per-branch status, new_head, and conflict_files"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-4",
+      "title": "Check command failure with rebase rollback",
+      "steps": [
+        {
+          "actor": "durable job queue worker (spec 10)",
+          "action": "dispatches a merge job for feature/agent-2 into main"
+        },
+        {
+          "actor": "merge handler",
+          "action": "dry-run passes; fetches latest main; captures pre-rebase SHA of feature/agent-2"
+        },
+        {
+          "actor": "merge handler",
+          "action": "invokes GitRunner (spec 11) to run 'git rebase main' on feature/agent-2; rebase succeeds"
+        },
+        {
+          "actor": "merge handler",
+          "action": "reads CHECK_COMMAND from workspace variables (spec 07); executes 'sh -c <CHECK_COMMAND>' with injected environment variables"
+        },
+        {
+          "actor": "check command process",
+          "action": "exits with non-zero code; check output is captured"
+        },
+        {
+          "actor": "merge handler",
+          "action": "invokes GitRunner (spec 11) to run 'git checkout feature/agent-2 && git reset --hard <pre-rebase-sha>' in the workspace trunk directory"
+        },
+        {
+          "actor": "merge handler",
+          "action": "returns permanent error with check output; source branch is restored to pre-rebase state"
+        },
+        {
+          "actor": "durable job queue (spec 10)",
+          "action": "marks job as failed with error containing check output"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "12-ERR-1",
+      "condition": "git merge-tree --write-tree detects conflicts during dry-run",
+      "behavior": "merge handler returns WouldConflict as a permanent error with conflict_files; job transitions to failed; working tree is unmodified",
+      "requirement_id": "12-REQ-5.2"
+    },
+    {
+      "id": "12-ERR-2",
+      "condition": "git rebase encounters conflicts during the real rebase step",
+      "behavior": "merge handler invokes GitRunner to run 'git rebase --abort', then returns a permanent error with conflicting file paths; job transitions to failed; source branch is in pre-rebase state",
+      "requirement_id": "12-REQ-6.E1"
+    },
+    {
+      "id": "12-ERR-3",
+      "condition": "check command exits with non-zero exit code",
+      "behavior": "merge handler runs 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>' via GitRunner to restore source branch and working tree, then returns permanent error with check output; job transitions to failed",
+      "requirement_id": "12-REQ-6.E2"
+    },
+    {
+      "id": "12-ERR-4",
+      "condition": "check command does not complete within 10 minutes",
+      "behavior": "merge handler kills the check process, rolls back the rebase, and returns a permanent error indicating timeout; job transitions to failed",
+      "requirement_id": "12-REQ-6.E3"
+    },
+    {
+      "id": "12-ERR-5",
+      "condition": "go-git reference update fails due to lock contention or transient error",
+      "behavior": "merge handler returns a retryable error; job queue retries the job; target branch ref is unchanged",
+      "requirement_id": "12-REQ-6.E4"
+    },
+    {
+      "id": "12-ERR-6",
+      "condition": "go-git fetch from upstream remote fails",
+      "behavior": "merge handler returns a retryable error; job queue retries the job; no git state is modified",
+      "requirement_id": "12-REQ-6.E5"
+    },
+    {
+      "id": "12-ERR-7",
+      "condition": "rollback command fails after check command failure",
+      "behavior": "merge handler logs both the original error and the rollback error, returns a permanent error indicating the repository may be in an inconsistent state; job transitions to failed",
+      "requirement_id": "12-REQ-6.E6"
+    },
+    {
+      "id": "12-ERR-8",
+      "condition": "duplicate merge job submitted for same source_ref and target_branch in same workspace",
+      "behavior": "REST API returns HTTP 409; no new job is enqueued",
+      "requirement_id": "12-REQ-9.2"
+    },
+    {
+      "id": "12-ERR-9",
+      "condition": "workspace not found",
+      "behavior": "REST API returns HTTP 404 with JSON error body",
+      "requirement_id": "12-REQ-9.4"
+    },
+    {
+      "id": "12-ERR-10",
+      "condition": "workspace is not in active status",
+      "behavior": "REST API returns HTTP 400 with JSON error body indicating workspace is not active",
+      "requirement_id": "12-REQ-9.5"
+    },
+    {
+      "id": "12-ERR-11",
+      "condition": "workspace clone is not ready",
+      "behavior": "REST API returns HTTP 400 with JSON error body indicating clone is not ready",
+      "requirement_id": "12-REQ-9.6"
+    },
+    {
+      "id": "12-ERR-12",
+      "condition": "source or target branch not found in workspace repository",
+      "behavior": "REST API returns HTTP 400 with JSON error body identifying the missing branch",
+      "requirement_id": "12-REQ-9.7"
+    },
+    {
+      "id": "12-ERR-13",
+      "condition": "PAT caller lacks required permission scope",
+      "behavior": "REST API returns HTTP 403 with JSON error body",
+      "requirement_id": "12-REQ-9.8"
+    },
+    {
+      "id": "12-ERR-14",
+      "condition": "batch rebase request has empty branches list",
+      "behavior": "REST API returns HTTP 400 with JSON error body; no git operations are performed",
+      "requirement_id": "12-REQ-12.2"
+    },
+    {
+      "id": "12-ERR-15",
+      "condition": "GitRunner subprocess hangs during rebase and does not return",
+      "behavior": "GitRunner kills the subprocess after its configured timeout; merge handler runs 'git rebase --abort' and returns a retryable error; job is retried",
+      "requirement_id": "12-REQ-6.E7"
+    },
+    {
+      "id": "12-ERR-16",
+      "condition": "source branch has no commits ahead of target (BranchNotReady)",
+      "behavior": "merge handler returns BranchNotReady as a retryable error; job queue retries the job; no git state is modified",
+      "requirement_id": "12-REQ-4.3"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5.x",
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)",
+          "notes": "Used to open the workspace clone at <WORKSPACE_ROOT>/<slug>/trunk/"
+        },
+        {
+          "name": "Repository.Fetch",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) Fetch(o *FetchOptions) error",
+          "notes": "Used to fetch latest target branch state from upstream remote using resolveCloneAuth credentials"
+        },
+        {
+          "name": "Repository.Storer",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "Storer storage.Storer",
+          "notes": "Used to access reference storage for ref updates and branch deletion"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1768 @@
+{
+  "$schema": null,
+  "spec_id": "13",
+  "spec_name": "upstream_sync",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-13-1",
+      "requirement_id": "13-REQ-1.1",
+      "kind": "unit",
+      "description": "Verifies that the workspaces table has all five new sync-related columns with correct types and defaults after DDL is applied.",
+      "preconditions": [
+        "SQLite database is initialized via the hub's schema setup",
+        "ALTER TABLE DDL statements for sync fields have been applied"
+      ],
+      "input": "PRAGMA table_info(workspaces)",
+      "expected": {
+        "columns": [
+          {
+            "dflt_value": "'pull_only'",
+            "name": "sync_mode",
+            "notnull": 1,
+            "type": "TEXT"
+          },
+          {
+            "dflt_value": "'idle'",
+            "name": "sync_status",
+            "notnull": 1,
+            "type": "TEXT"
+          },
+          {
+            "dflt_value": null,
+            "name": "upstream_head_sha",
+            "notnull": 0,
+            "type": "TEXT"
+          },
+          {
+            "dflt_value": null,
+            "name": "last_sync_at",
+            "notnull": 0,
+            "type": "TEXT"
+          },
+          {
+            "dflt_value": null,
+            "name": "sync_error",
+            "notnull": 0,
+            "type": "TEXT"
+          }
+        ]
+      },
+      "assertion_pseudocode": "cols = db.query('PRAGMA table_info(workspaces)'); assert col_named('sync_mode', cols).type == 'TEXT' AND col_named('sync_mode', cols).notnull == 1 AND col_named('sync_mode', cols).dflt_value == \"'pull_only'\"; assert col_named('sync_status', cols).type == 'TEXT' AND col_named('sync_status', cols).notnull == 1 AND col_named('sync_status', cols).dflt_value == \"'idle'\"; assert col_named('upstream_head_sha', cols).notnull == 0; assert col_named('last_sync_at', cols).notnull == 0; assert col_named('sync_error', cols).notnull == 0"
+    },
+    {
+      "id": "TS-13-2",
+      "requirement_id": "13-REQ-1.2",
+      "kind": "unit",
+      "description": "Verifies that every workspace API response includes all five sync fields with correct nullability.",
+      "preconditions": [
+        "Hub is running with sync schema applied",
+        "A workspace exists in the database with sync_mode='pull_only', sync_status='idle', upstream_head_sha=NULL, last_sync_at=NULL, sync_error=NULL"
+      ],
+      "input": {
+        "auth": "admin token",
+        "method": "GET",
+        "path": "/api/v1/workspaces/test-ws"
+      },
+      "expected": {
+        "body_contains_fields": [
+          "sync_mode",
+          "sync_status",
+          "upstream_head_sha",
+          "last_sync_at",
+          "sync_error"
+        ],
+        "last_sync_at": null,
+        "status": 200,
+        "sync_error": null,
+        "sync_mode": "pull_only",
+        "sync_status": "idle",
+        "upstream_head_sha": null
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/test-ws', auth=admin_token); assert resp.status == 200; body = resp.json(); assert 'sync_mode' in body AND body['sync_mode'] == 'pull_only'; assert 'sync_status' in body AND body['sync_status'] == 'idle'; assert 'upstream_head_sha' in body AND body['upstream_head_sha'] == null; assert 'last_sync_at' in body AND body['last_sync_at'] == null; assert 'sync_error' in body AND body['sync_error'] == null"
+    },
+    {
+      "id": "TS-13-3",
+      "requirement_id": "13-REQ-1.3",
+      "kind": "unit",
+      "description": "Verifies that a newly created workspace without sync_mode specified defaults to sync_mode='pull_only', sync_status='idle', and null sync fields.",
+      "preconditions": [
+        "Hub is running with sync schema applied",
+        "Valid admin token available"
+      ],
+      "input": {
+        "auth": "admin token",
+        "body": {
+          "git_url": "https://github.com/example/repo.git",
+          "slug": "new-ws"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "last_sync_at": null,
+          "sync_error": null,
+          "sync_mode": "pull_only",
+          "sync_status": "idle",
+          "upstream_head_sha": null
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body={slug:'new-ws', git_url:'https://github.com/example/repo.git'}, auth=admin_token); assert resp.status == 201; body = resp.json(); assert body['sync_mode'] == 'pull_only'; assert body['sync_status'] == 'idle'; assert body['upstream_head_sha'] == null; assert body['last_sync_at'] == null; assert body['sync_error'] == null"
+    },
+    {
+      "id": "TS-13-4",
+      "requirement_id": "13-REQ-2.1",
+      "kind": "unit",
+      "description": "Verifies that workspace creation with an explicit sync_mode field stores and returns the specified value.",
+      "preconditions": [
+        "Hub is running with sync schema applied",
+        "Valid admin token available"
+      ],
+      "input": {
+        "auth": "admin token",
+        "body": {
+          "git_url": "https://github.com/example/repo.git",
+          "slug": "disabled-ws",
+          "sync_mode": "disabled"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "sync_mode": "disabled"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body={slug:'disabled-ws', git_url:'https://github.com/example/repo.git', sync_mode:'disabled'}, auth=admin_token); assert resp.status == 201; body = resp.json(); assert body['sync_mode'] == 'disabled'"
+    },
+    {
+      "id": "TS-13-5",
+      "requirement_id": "13-REQ-2.2",
+      "kind": "unit",
+      "description": "Verifies that PATCH /workspaces/:slug with sync_mode updates the field and returns the new value.",
+      "preconditions": [
+        "Hub is running with sync schema applied",
+        "Workspace 'test-ws' exists with sync_mode='pull_only'",
+        "Valid admin token available"
+      ],
+      "input": {
+        "auth": "admin token",
+        "body": {
+          "sync_mode": "disabled"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/test-ws"
+      },
+      "expected": {
+        "body": {
+          "sync_mode": "disabled"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/test-ws', body={sync_mode:'disabled'}, auth=admin_token); assert resp.status == 200; body = resp.json(); assert body['sync_mode'] == 'disabled'; db_row = db.query('SELECT sync_mode FROM workspaces WHERE slug=?', 'test-ws'); assert db_row['sync_mode'] == 'disabled'"
+    },
+    {
+      "id": "TS-13-6",
+      "requirement_id": "13-REQ-2.3",
+      "kind": "unit",
+      "description": "Verifies that 'afc workspace create --sync-mode disabled' passes sync_mode to the API and the workspace is created with the specified mode.",
+      "preconditions": [
+        "Hub is running with sync schema applied",
+        "afc CLI is configured with a valid admin token",
+        "No workspace with slug 'cli-ws' exists"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/example/repo.git --slug cli-ws --sync-mode disabled"
+      },
+      "expected": {
+        "api_request_body_contains": {
+          "sync_mode": "disabled"
+        },
+        "exit_code": 0,
+        "stdout_contains": "disabled"
+      },
+      "assertion_pseudocode": "result = exec('afc workspace create --git-url https://github.com/example/repo.git --slug cli-ws --sync-mode disabled'); assert result.exit_code == 0; assert 'disabled' in result.stdout; ws = db.query('SELECT sync_mode FROM workspaces WHERE slug=?', 'cli-ws'); assert ws['sync_mode'] == 'disabled'"
+    },
+    {
+      "id": "TS-13-7",
+      "requirement_id": "13-REQ-3.1",
+      "kind": "unit",
+      "description": "Verifies that POST /sync on a workspace with status='archived' returns HTTP 400 without performing git operations.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'archived-ws' exists with status='archived', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/archived-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message describing inactive workspace"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/archived-ws/sync', auth=sync_token); assert resp.status == 400; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT sync_status FROM workspaces WHERE slug=?', 'archived-ws'); assert ws['sync_status'] == 'idle'"
+    },
+    {
+      "id": "TS-13-8",
+      "requirement_id": "13-REQ-3.2",
+      "kind": "unit",
+      "description": "Verifies that POST /sync on a workspace with clone_status='cloning' returns HTTP 400 without performing git operations.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'cloning-ws' exists with status='active', clone_status='cloning', sync_mode='pull_only', sync_status='idle'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/cloning-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message describing clone not ready"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cloning-ws/sync', auth=sync_token); assert resp.status == 400; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-9",
+      "requirement_id": "13-REQ-3.3",
+      "kind": "unit",
+      "description": "Verifies that POST /sync on a workspace with sync_mode='disabled' returns HTTP 400 with a descriptive error and no git operations are performed.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'disabled-ws' exists with status='active', clone_status='ready', sync_mode='disabled', sync_status='idle'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/disabled-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "message indicating sync is disabled for this workspace"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/disabled-ws/sync', auth=sync_token); assert resp.status == 400; body = resp.json(); assert 'error' in body AND 'disabled' in body['error'].lower(); ws = db.query('SELECT sync_status FROM workspaces WHERE slug=?', 'disabled-ws'); assert ws['sync_status'] == 'idle'"
+    },
+    {
+      "id": "TS-13-10",
+      "requirement_id": "13-REQ-3.4",
+      "kind": "unit",
+      "description": "Verifies that POST /sync on a workspace already in sync_status='syncing' returns HTTP 409.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'syncing-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='syncing'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/syncing-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message indicating sync already in progress"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/syncing-ws/sync', auth=sync_token); assert resp.status == 409; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-11",
+      "requirement_id": "13-REQ-3.5",
+      "kind": "unit",
+      "description": "Verifies that POST /sync for a non-existent workspace slug returns HTTP 404.",
+      "preconditions": [
+        "Hub is running",
+        "No workspace with slug 'nonexistent-ws' exists",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/nonexistent-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message indicating workspace not found"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-ws/sync', auth=sync_token); assert resp.status == 404; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-12",
+      "requirement_id": "13-REQ-4.1",
+      "kind": "integration",
+      "description": "Verifies that the sync handler sets sync_status='syncing', opens the repo, resolves credentials, and calls remote.Fetch() when all preconditions pass.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'sync-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "Local git repository exists at <WORKSPACE_ROOT>/sync-ws/trunk/",
+        "resolveCloneAuth is stubbed to return valid credentials",
+        "remote.Fetch() is stubbed to return NoErrAlreadyUpToDate",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/sync-ws/sync"
+      },
+      "expected": {
+        "remote_fetch_called": true,
+        "resolveCloneAuth_called": true,
+        "status": 200,
+        "sync_status_during_fetch": "syncing"
+      },
+      "assertion_pseudocode": "spy_fetch = install_spy(remote, 'Fetch'); spy_auth = install_spy(resolveCloneAuth); resp = client.post('/api/v1/workspaces/sync-ws/sync', auth=sync_token); assert spy_auth.called == true; assert spy_fetch.called == true; assert resp.status == 200"
+    },
+    {
+      "id": "TS-13-13",
+      "requirement_id": "13-REQ-4.2",
+      "kind": "unit",
+      "description": "Verifies that when upstream HEAD equals local HEAD (already up to date), sync_status is set to 'idle' and last_sync_at is updated.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'uptodate-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "Local repo at <WORKSPACE_ROOT>/uptodate-ws/trunk/ has HEAD SHA matching upstream HEAD SHA",
+        "remote.Fetch() returns NoErrAlreadyUpToDate",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/uptodate-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "last_sync_at": "non-null RFC 3339 timestamp",
+          "sync_status": "idle",
+          "upstream_head_sha": "SHA matching upstream HEAD"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/uptodate-ws/sync', auth=sync_token); assert resp.status == 200; body = resp.json(); assert body['sync_status'] == 'idle'; assert body['last_sync_at'] != null AND is_rfc3339(body['last_sync_at']); assert body['upstream_head_sha'] != null"
+    },
+    {
+      "id": "TS-13-14",
+      "requirement_id": "13-REQ-4.3",
+      "kind": "integration",
+      "description": "Verifies that when upstream HEAD is a descendant of local HEAD, the integration branch is fast-forwarded and head_sha, upstream_head_sha, sync_status, and last_sync_at are all updated.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'ff-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "Local repo at <WORKSPACE_ROOT>/ff-ws/trunk/ has local HEAD at commit A; upstream has commit B (descendant of A)",
+        "remote.Fetch() succeeds and upstream HEAD resolves to commit B",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/ff-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "head_sha": "SHA of commit B",
+          "last_sync_at": "non-null RFC 3339 timestamp",
+          "sync_status": "idle",
+          "upstream_head_sha": "SHA of commit B"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "pre_sha = db.query('SELECT head_sha FROM workspaces WHERE slug=?', 'ff-ws')['head_sha']; resp = client.post('/api/v1/workspaces/ff-ws/sync', auth=sync_token); assert resp.status == 200; body = resp.json(); assert body['sync_status'] == 'idle'; assert body['head_sha'] == upstream_commit_b_sha; assert body['upstream_head_sha'] == upstream_commit_b_sha; assert body['last_sync_at'] != null; assert body['head_sha'] != pre_sha"
+    },
+    {
+      "id": "TS-13-15",
+      "requirement_id": "13-REQ-4.4",
+      "kind": "integration",
+      "description": "Verifies that when upstream HEAD has diverged (force-push detected), sync_status is set to 'error' with the prescribed message, upstream_head_sha is updated, and the integration branch is NOT advanced.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'diverged-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle', head_sha=SHA_A",
+        "Local repo at <WORKSPACE_ROOT>/diverged-ws/trunk/ has local HEAD at commit A; upstream has been force-pushed to commit C (not a descendant of A)",
+        "remote.Fetch() succeeds and upstream HEAD resolves to commit C",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/diverged-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "upstream history has diverged; use --reset-to-upstream to recover"
+        },
+        "db_state": {
+          "head_sha": "SHA_A (unchanged)",
+          "sync_error": "upstream history has diverged; use --reset-to-upstream to recover",
+          "sync_status": "error",
+          "upstream_head_sha": "SHA of commit C"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/diverged-ws/sync', auth=sync_token); assert resp.status == 409; body = resp.json(); assert 'error' in body AND 'diverged' in body['error']; ws = db.query('SELECT sync_status, sync_error, upstream_head_sha, head_sha FROM workspaces WHERE slug=?', 'diverged-ws'); assert ws['sync_status'] == 'error'; assert 'diverged' in ws['sync_error']; assert ws['upstream_head_sha'] == commit_c_sha; assert ws['head_sha'] == sha_a"
+    },
+    {
+      "id": "TS-13-16",
+      "requirement_id": "13-REQ-4.5",
+      "kind": "unit",
+      "description": "Verifies that the sync handler registers a deferred cleanup that sets sync_status='error' when the request context is cancelled mid-sync.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'ctx-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "remote.Fetch() is stubbed to block until context is cancelled",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "cancel_context_after_ms": 100,
+        "method": "POST",
+        "path": "/api/v1/workspaces/ctx-ws/sync"
+      },
+      "expected": {
+        "db_state": {
+          "sync_error": "non-empty message describing context cancellation",
+          "sync_status": "error"
+        },
+        "status": 504
+      },
+      "assertion_pseudocode": "ctx, cancel = new_context_with_timeout(100ms); resp = client.post_with_context(ctx, '/api/v1/workspaces/ctx-ws/sync', auth=sync_token); cancel(); wait_for_db_update(); ws = db.query('SELECT sync_status, sync_error FROM workspaces WHERE slug=?', 'ctx-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null AND len(ws['sync_error']) > 0"
+    },
+    {
+      "id": "TS-13-17",
+      "requirement_id": "13-REQ-5.1",
+      "kind": "integration",
+      "description": "Verifies that on server startup, all workspaces with sync_status='syncing' are reset to sync_status='error' with sync_error='sync interrupted by server restart' before HTTP requests are accepted.",
+      "preconditions": [
+        "SQLite database contains two workspaces with sync_status='syncing'",
+        "Hub process is about to start"
+      ],
+      "input": {
+        "action": "start hub server"
+      },
+      "expected": {
+        "db_state_after_startup": {
+          "all_previously_syncing_workspaces": {
+            "sync_error": "sync interrupted by server restart",
+            "sync_status": "error"
+          }
+        },
+        "http_server_starts_successfully": true
+      },
+      "assertion_pseudocode": "db.exec('UPDATE workspaces SET sync_status=? WHERE slug IN (?,?)', 'syncing', 'ws1', 'ws2'); start_hub_server(); wait_for_ready(); rows = db.query('SELECT sync_status, sync_error FROM workspaces WHERE slug IN (?,?)', 'ws1', 'ws2'); for row in rows: assert row['sync_status'] == 'error'; assert row['sync_error'] == 'sync interrupted by server restart'"
+    },
+    {
+      "id": "TS-13-18",
+      "requirement_id": "13-REQ-5.2",
+      "kind": "unit",
+      "description": "Verifies that startup reconciliation completes as a no-op when no workspaces have sync_status='syncing'.",
+      "preconditions": [
+        "SQLite database contains workspaces with sync_status='idle' and sync_status='error' only",
+        "Hub process is about to start"
+      ],
+      "input": {
+        "action": "start hub server"
+      },
+      "expected": {
+        "no_workspace_sync_status_changed": true,
+        "server_starts_successfully": true
+      },
+      "assertion_pseudocode": "pre_states = db.query('SELECT slug, sync_status FROM workspaces'); start_hub_server(); wait_for_ready(); post_states = db.query('SELECT slug, sync_status FROM workspaces'); assert pre_states == post_states; assert server_is_accepting_requests()"
+    },
+    {
+      "id": "TS-13-19",
+      "requirement_id": "13-REQ-6.1",
+      "kind": "integration",
+      "description": "Verifies that POST /sync?reset_to_upstream=true fetches upstream, resets the integration branch to upstream HEAD, and returns the workspace with sync_status='idle' and sync_error=null.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reset-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='error', sync_error='upstream history has diverged; use --reset-to-upstream to recover'",
+        "Local repo at <WORKSPACE_ROOT>/reset-ws/trunk/ has local HEAD at commit A; upstream HEAD is at commit C",
+        "resolveCloneAuth returns valid credentials",
+        "remote.Fetch() succeeds",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reset-ws/sync?reset_to_upstream=true"
+      },
+      "expected": {
+        "body": {
+          "head_sha": "SHA of upstream HEAD (commit C)",
+          "last_sync_at": "non-null RFC 3339 timestamp",
+          "sync_error": null,
+          "sync_status": "idle",
+          "upstream_head_sha": "SHA of upstream HEAD (commit C)"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/reset-ws/sync?reset_to_upstream=true', auth=sync_token); assert resp.status == 200; body = resp.json(); assert body['sync_status'] == 'idle'; assert body['head_sha'] == upstream_head_sha; assert body['upstream_head_sha'] == upstream_head_sha; assert body['last_sync_at'] != null; assert body['sync_error'] == null"
+    },
+    {
+      "id": "TS-13-20",
+      "requirement_id": "13-REQ-6.2",
+      "kind": "unit",
+      "description": "Verifies that 'afc workspace sync <slug> --reset-to-upstream' calls the API with reset_to_upstream=true and prints the updated workspace.",
+      "preconditions": [
+        "Hub is running and accessible",
+        "afc CLI is configured with a valid workspaces:sync token",
+        "Workspace 'reset-ws' exists and is in error state due to diverged history"
+      ],
+      "input": {
+        "command": "afc workspace sync reset-ws --reset-to-upstream"
+      },
+      "expected": {
+        "api_called": "POST /api/v1/workspaces/reset-ws/sync?reset_to_upstream=true",
+        "exit_code": 0,
+        "stdout_contains": "idle"
+      },
+      "assertion_pseudocode": "spy = install_http_spy(); result = exec('afc workspace sync reset-ws --reset-to-upstream'); assert result.exit_code == 0; assert spy.last_request.url contains 'reset_to_upstream=true'; assert 'idle' in result.stdout"
+    },
+    {
+      "id": "TS-13-21",
+      "requirement_id": "13-REQ-7.1",
+      "kind": "integration",
+      "description": "Verifies that POST /reclone executes the archive flow, deletes the clone, atomically sets clone_status='pending', and returns the workspace with clone_status='pending' and status='active'.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-ws' exists with status='active', clone_status='ready', sync_status='idle'",
+        "Local git clone exists at <WORKSPACE_ROOT>/reclone-ws/trunk/",
+        "Archive flow is stubbed to succeed",
+        "In-memory job queue is available",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "clone_status": "pending",
+          "status": "active",
+          "sync_error": null,
+          "sync_status": "idle",
+          "upstream_head_sha": null
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/reclone-ws/reclone', auth=sync_token); assert resp.status == 200; body = resp.json(); assert body['clone_status'] == 'pending'; assert body['sync_status'] == 'idle'; assert body['sync_error'] == null; assert body['upstream_head_sha'] == null; assert body['status'] == 'active'"
+    },
+    {
+      "id": "TS-13-22",
+      "requirement_id": "13-REQ-7.2",
+      "kind": "unit",
+      "description": "Verifies that workspace status remains 'active' throughout the entire reclone operation and is never set to any other value.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-active-ws' exists with status='active', clone_status='ready'",
+        "Archive flow, directory deletion, and job queue are all stubbed to succeed",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-active-ws/reclone"
+      },
+      "expected": {
+        "final_status": "active",
+        "workspace_status_never_changes_from_active": true
+      },
+      "assertion_pseudocode": "status_log = []; install_db_hook('UPDATE workspaces', lambda row: status_log.append(row['status'])); resp = client.post('/api/v1/workspaces/reclone-active-ws/reclone', auth=sync_token); for s in status_log: assert s == 'active'; body = resp.json(); assert body['status'] == 'active'"
+    },
+    {
+      "id": "TS-13-23",
+      "requirement_id": "13-REQ-7.3",
+      "kind": "unit",
+      "description": "Verifies that 'afc workspace reclone <slug> --confirm' calls POST /reclone and prints the workspace with clone_status='pending'.",
+      "preconditions": [
+        "Hub is running and accessible",
+        "afc CLI is configured with a valid workspaces:sync token",
+        "Workspace 'reclone-ws' exists with status='active', clone_status='ready'"
+      ],
+      "input": {
+        "command": "afc workspace reclone reclone-ws --confirm"
+      },
+      "expected": {
+        "api_called": "POST /api/v1/workspaces/reclone-ws/reclone",
+        "exit_code": 0,
+        "stdout_contains": "pending"
+      },
+      "assertion_pseudocode": "spy = install_http_spy(); result = exec('afc workspace reclone reclone-ws --confirm'); assert result.exit_code == 0; assert spy.last_request.method == 'POST' AND spy.last_request.path == '/api/v1/workspaces/reclone-ws/reclone'; assert 'pending' in result.stdout"
+    },
+    {
+      "id": "TS-13-24",
+      "requirement_id": "13-REQ-7.4",
+      "kind": "integration",
+      "description": "Verifies that after reclone enqueues a clone job, clone_status transitions from 'pending' to 'cloning' to 'ready' as the job executes.",
+      "preconditions": [
+        "Hub is running with in-memory job queue and worker goroutines active",
+        "Workspace 'reclone-lifecycle-ws' exists with status='active', clone_status='ready'",
+        "Clone job will succeed (upstream is reachable and credentials are valid)",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-lifecycle-ws/reclone"
+      },
+      "expected": {
+        "clone_status_sequence": [
+          "pending",
+          "cloning",
+          "ready"
+        ],
+        "final_clone_status": "ready"
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/reclone-lifecycle-ws/reclone', auth=sync_token); assert resp.json()['clone_status'] == 'pending'; wait_until(lambda: db.query('SELECT clone_status FROM workspaces WHERE slug=?', 'reclone-lifecycle-ws')['clone_status'] == 'ready', timeout=30s); final = db.query('SELECT clone_status FROM workspaces WHERE slug=?', 'reclone-lifecycle-ws'); assert final['clone_status'] == 'ready'"
+    },
+    {
+      "id": "TS-13-25",
+      "requirement_id": "13-REQ-8.1",
+      "kind": "unit",
+      "description": "Verifies that admin tokens and API keys can call sync and reclone without explicit workspaces:sync scope, while PATs require the explicit scope.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'perm-ws' exists with status='active', clone_status='ready', sync_mode='pull_only'",
+        "Admin token, API key, and PAT with workspaces:sync scope are all available",
+        "remote.Fetch() is stubbed to return NoErrAlreadyUpToDate"
+      ],
+      "input": [
+        {
+          "auth": "admin token",
+          "method": "POST",
+          "path": "/api/v1/workspaces/perm-ws/sync"
+        },
+        {
+          "auth": "API key",
+          "method": "POST",
+          "path": "/api/v1/workspaces/perm-ws/sync"
+        },
+        {
+          "auth": "PAT with workspaces:sync scope",
+          "method": "POST",
+          "path": "/api/v1/workspaces/perm-ws/sync"
+        }
+      ],
+      "expected": {
+        "all_responses_status": 200
+      },
+      "assertion_pseudocode": "for auth in [admin_token, api_key, pat_with_sync_scope]: resp = client.post('/api/v1/workspaces/perm-ws/sync', auth=auth); assert resp.status == 200"
+    },
+    {
+      "id": "TS-13-26",
+      "requirement_id": "13-REQ-8.2",
+      "kind": "unit",
+      "description": "Verifies that sync status fields are included in workspace responses accessible under the workspaces:read permission.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'read-ws' exists with all sync fields populated",
+        "PAT with only workspaces:read scope is available"
+      ],
+      "input": {
+        "auth": "PAT with workspaces:read scope",
+        "method": "GET",
+        "path": "/api/v1/workspaces/read-ws"
+      },
+      "expected": {
+        "body_contains_fields": [
+          "sync_mode",
+          "sync_status",
+          "upstream_head_sha",
+          "last_sync_at",
+          "sync_error"
+        ],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/read-ws', auth=pat_read_only); assert resp.status == 200; body = resp.json(); for field in ['sync_mode', 'sync_status', 'upstream_head_sha', 'last_sync_at', 'sync_error']: assert field in body"
+    },
+    {
+      "id": "TS-13-27",
+      "requirement_id": "13-REQ-9.1",
+      "kind": "unit",
+      "description": "Verifies that sync_status only transitions through valid state machine paths and never makes invalid transitions.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'sm-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "remote.Fetch() is stubbed to succeed with NoErrAlreadyUpToDate",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "sequence": [
+          "POST /sync (success)",
+          "POST /sync (fail with network error)",
+          "POST /sync (success)"
+        ]
+      },
+      "expected": {
+        "state_transitions": [
+          "idle->syncing->idle",
+          "idle->syncing->error",
+          "error->syncing->idle"
+        ]
+      },
+      "assertion_pseudocode": "assert db_sync_status('sm-ws') == 'idle'; resp1 = client.post('/api/v1/workspaces/sm-ws/sync', auth=sync_token); assert resp1.status == 200; assert db_sync_status('sm-ws') == 'idle'; stub_fetch_to_fail_network(); resp2 = client.post('/api/v1/workspaces/sm-ws/sync', auth=sync_token); assert resp2.status == 502; assert db_sync_status('sm-ws') == 'error'; stub_fetch_to_succeed(); resp3 = client.post('/api/v1/workspaces/sm-ws/sync', auth=sync_token); assert resp3.status == 200; assert db_sync_status('sm-ws') == 'idle'"
+    },
+    {
+      "id": "TS-13-28",
+      "requirement_id": "13-REQ-9.2",
+      "kind": "unit",
+      "description": "Verifies that a workspace in sync_status='error' allows a new sync attempt to proceed without requiring manual database intervention.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'error-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='error'",
+        "remote.Fetch() is stubbed to return NoErrAlreadyUpToDate",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/error-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "sync_status": "idle"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/error-ws/sync', auth=sync_token); assert resp.status == 200; body = resp.json(); assert body['sync_status'] == 'idle'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-13-P1",
+      "property_id": "13-PROP-1",
+      "validates": [
+        "13-REQ-4.5",
+        "13-REQ-5.1",
+        "13-REQ-4.E3"
+      ],
+      "description": "For any workspace that enters sync_status='syncing', sync_status eventually transitions to 'idle' or 'error' and never remains 'syncing' indefinitely across server restarts or context cancellations.",
+      "for_any_strategy": "Sample workspaces in 'syncing' state by: (a) injecting context cancellation at random points during fetch, (b) simulating server restart with workspaces stuck in 'syncing', (c) running 100 sync operations with random fetch outcomes (success, network error, diverged)",
+      "invariant_check": "after each sync operation completes or server restarts, assert db.query('SELECT COUNT(*) FROM workspaces WHERE sync_status=?', 'syncing') == 0 within 5 seconds; assert no workspace remains in 'syncing' state after server startup reconciliation completes"
+    },
+    {
+      "id": "TS-13-P2",
+      "property_id": "13-PROP-2",
+      "validates": [
+        "13-REQ-4.3",
+        "13-REQ-4.4"
+      ],
+      "description": "For any successful fast-forward sync, the post-sync head_sha is always a descendant of the pre-sync head_sha and never a non-descendant commit.",
+      "for_any_strategy": "Generate random linear commit chains of length 1-50; for each chain, set local HEAD to a random ancestor commit and upstream HEAD to a random descendant; run sync and verify ancestry",
+      "invariant_check": "pre_sha = db head_sha before sync; post_sha = db head_sha after sync; assert is_ancestor(pre_sha, post_sha, repo) == true; assert post_sha != pre_sha (branch was advanced); assert is_ancestor(post_sha, pre_sha, repo) == false (not a regression)"
+    },
+    {
+      "id": "TS-13-P3",
+      "property_id": "13-PROP-3",
+      "validates": [
+        "13-REQ-4.2",
+        "13-REQ-4.3",
+        "13-REQ-4.4"
+      ],
+      "description": "For any completed fetch operation (successful or diverged), upstream_head_sha is always updated to the fetched upstream HEAD SHA regardless of whether the integration branch was advanced.",
+      "for_any_strategy": "Sample 50 sync operations with random outcomes: (a) already up to date, (b) fast-forward, (c) diverged; record the upstream HEAD SHA returned by go-git before each sync",
+      "invariant_check": "expected_sha = sha_read_from_remote_before_sync; after sync completes (any outcome except fetch failure), assert db.query('SELECT upstream_head_sha FROM workspaces WHERE slug=?', slug)['upstream_head_sha'] == expected_sha"
+    },
+    {
+      "id": "TS-13-P4",
+      "property_id": "13-PROP-4",
+      "validates": [
+        "13-REQ-3.4",
+        "13-REQ-9.E1"
+      ],
+      "description": "For any pair of concurrent sync requests for the same workspace, at most one sync executes at a time and the second concurrent request receives HTTP 409.",
+      "for_any_strategy": "For each of 20 iterations: set workspace to idle, fire 2-10 concurrent POST /sync requests simultaneously using goroutines; collect all response statuses",
+      "invariant_check": "statuses = [r.status for r in concurrent_responses]; assert statuses.count(409) == len(statuses) - 1; assert statuses.count(200) + statuses.count(502) + statuses.count(409) == len(statuses); assert db.query('SELECT sync_status FROM workspaces WHERE slug=?', slug)['sync_status'] in ('idle', 'error')"
+    },
+    {
+      "id": "TS-13-P5",
+      "property_id": "13-PROP-5",
+      "validates": [
+        "13-REQ-7.2",
+        "13-REQ-7.1"
+      ],
+      "description": "For any reclone operation from initiation to clone job completion, workspace status is 'active' at every observable point and is never set to any other value.",
+      "for_any_strategy": "Run 20 reclone operations with varying archive push outcomes (success, failure) and clone job durations (10ms-2s); poll workspace status every 10ms throughout each operation",
+      "invariant_check": "status_observations = poll_workspace_status_every_10ms_during_reclone(slug); assert all(s == 'active' for s in status_observations); assert db.query('SELECT status FROM workspaces WHERE slug=?', slug)['status'] == 'active'"
+    },
+    {
+      "id": "TS-13-P6",
+      "property_id": "13-PROP-6",
+      "validates": [
+        "13-REQ-3.3",
+        "13-REQ-2.1"
+      ],
+      "description": "For any workspace with sync_mode='disabled', every POST /sync request returns HTTP 400 without performing any git operations or state changes.",
+      "for_any_strategy": "Generate 30 sync requests against workspaces with sync_mode='disabled' with varying workspace states (different sync_status, clone_status values); install spies on all git operations",
+      "invariant_check": "spy_fetch = install_spy(remote, 'Fetch'); spy_open = install_spy(PlainOpen); resp = client.post('/api/v1/workspaces/{slug}/sync', auth=sync_token); assert resp.status == 400; assert spy_fetch.call_count == 0; assert spy_open.call_count == 0; pre_state = db_state_before; post_state = db_state_after; assert pre_state == post_state"
+    },
+    {
+      "id": "TS-13-P7",
+      "property_id": "13-PROP-7",
+      "validates": [
+        "13-REQ-4.2",
+        "13-REQ-4.3",
+        "13-REQ-4.E2"
+      ],
+      "description": "For any sync operation that results in sync_status='error', last_sync_at is not updated and retains its previous value.",
+      "for_any_strategy": "Sample 40 failing sync scenarios: (a) network error, (b) auth error, (c) diverged history, (d) context cancellation, (e) ref update failure; record last_sync_at before each sync",
+      "invariant_check": "pre_last_sync_at = db.query('SELECT last_sync_at FROM workspaces WHERE slug=?', slug)['last_sync_at']; trigger_failing_sync(); post_state = db.query('SELECT sync_status, last_sync_at FROM workspaces WHERE slug=?', slug); assert post_state['sync_status'] == 'error'; assert post_state['last_sync_at'] == pre_last_sync_at"
+    },
+    {
+      "id": "TS-13-P8",
+      "property_id": "13-PROP-8",
+      "validates": [
+        "13-REQ-6.1"
+      ],
+      "description": "For any successful reset-to-upstream operation, sync_error is null and sync_status is 'idle' after completion, regardless of the previous sync_error value.",
+      "for_any_strategy": "Sample 20 reset-to-upstream operations with varying pre-existing sync_error values (null, short message, long message, special characters); vary the previous sync_status (error, idle)",
+      "invariant_check": "stub_fetch_and_ref_update_to_succeed(); resp = client.post('/api/v1/workspaces/{slug}/sync?reset_to_upstream=true', auth=sync_token); assert resp.status == 200; body = resp.json(); assert body['sync_error'] == null; assert body['sync_status'] == 'idle'; ws = db.query('SELECT sync_error, sync_status FROM workspaces WHERE slug=?', slug); assert ws['sync_error'] == null; assert ws['sync_status'] == 'idle'"
+    },
+    {
+      "id": "TS-13-P9",
+      "property_id": "13-PROP-9",
+      "validates": [
+        "13-REQ-5.1",
+        "13-REQ-5.2"
+      ],
+      "description": "For any server startup sequence, no HTTP request can be processed before the startup reconciliation step completes and all stuck-syncing workspaces are reset.",
+      "for_any_strategy": "For each of 10 startup scenarios with 0-20 workspaces in 'syncing' state: start the server, immediately send HTTP requests, verify reconciliation completed before any request was handled",
+      "invariant_check": "reconciliation_complete_time = record_time_of_reconciliation_completion(); first_request_handled_time = record_time_of_first_request_handled(); assert reconciliation_complete_time <= first_request_handled_time; stuck_count = db.query('SELECT COUNT(*) FROM workspaces WHERE sync_status=?', 'syncing')['count']; assert stuck_count == 0"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-13-E1",
+      "requirement_id": "13-REQ-1.E1",
+      "kind": "unit",
+      "description": "Verifies that applying the ALTER TABLE DDL when columns already exist logs the error and allows server startup to continue without panicking.",
+      "preconditions": [
+        "SQLite database already has the five sync columns applied",
+        "Hub is configured to re-apply the DDL on startup"
+      ],
+      "input": {
+        "action": "run hub startup with DDL already applied"
+      },
+      "expected": {
+        "error_logged": true,
+        "no_panic": true,
+        "server_starts_successfully": true
+      },
+      "assertion_pseudocode": "apply_sync_ddl(db); logs = capture_logs(lambda: start_hub_server()); assert server_is_running(); assert any('already exists' in log OR 'duplicate column' in log for log in logs)"
+    },
+    {
+      "id": "TS-13-E2",
+      "requirement_id": "13-REQ-1.E2",
+      "kind": "unit",
+      "description": "Verifies that a workspace row with NULL sync_mode or sync_status is serialized as 'pull_only' and 'idle' respectively in the API response.",
+      "preconditions": [
+        "Hub is running",
+        "A workspace row exists in the database with sync_mode=NULL and sync_status=NULL (pre-migration row)"
+      ],
+      "input": {
+        "auth": "admin token",
+        "method": "GET",
+        "path": "/api/v1/workspaces/legacy-ws"
+      },
+      "expected": {
+        "body": {
+          "sync_mode": "pull_only",
+          "sync_status": "idle"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "db.exec('UPDATE workspaces SET sync_mode=NULL, sync_status=NULL WHERE slug=?', 'legacy-ws'); resp = client.get('/api/v1/workspaces/legacy-ws', auth=admin_token); assert resp.status == 200; body = resp.json(); assert body['sync_mode'] == 'pull_only'; assert body['sync_status'] == 'idle'"
+    },
+    {
+      "id": "TS-13-E3",
+      "requirement_id": "13-REQ-2.E1",
+      "kind": "unit",
+      "description": "Verifies that PATCH /workspaces/:slug with an invalid sync_mode value returns HTTP 400 with a descriptive validation error.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'patch-ws' exists",
+        "Valid admin token available"
+      ],
+      "input": {
+        "auth": "admin token",
+        "body": {
+          "sync_mode": "bidirectional"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/patch-ws"
+      },
+      "expected": {
+        "body": {
+          "error": "message describing invalid sync_mode value 'bidirectional'"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/patch-ws', body={sync_mode:'bidirectional'}, auth=admin_token); assert resp.status == 400; body = resp.json(); assert 'error' in body AND ('sync_mode' in body['error'] OR 'bidirectional' in body['error'])"
+    },
+    {
+      "id": "TS-13-E4",
+      "requirement_id": "13-REQ-2.E2",
+      "kind": "unit",
+      "description": "Verifies that PATCH /workspaces/:slug to update sync_mode by a caller without owner/admin permission returns HTTP 403.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'patch-ws' exists owned by user A",
+        "PAT for user B (non-owner, non-admin) is available"
+      ],
+      "input": {
+        "auth": "PAT for user B",
+        "body": {
+          "sync_mode": "disabled"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/patch-ws"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/patch-ws', body={sync_mode:'disabled'}, auth=user_b_pat); assert resp.status == 403; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E5",
+      "requirement_id": "13-REQ-2.E3",
+      "kind": "unit",
+      "description": "Verifies that 'afc workspace create --sync-mode invalid' exits with non-zero code and prints an error listing valid values before making any API call.",
+      "preconditions": [
+        "afc CLI is configured with a valid admin token",
+        "No API call should be made"
+      ],
+      "input": {
+        "command": "afc workspace create --git-url https://github.com/example/repo.git --slug bad-ws --sync-mode invalid"
+      },
+      "expected": {
+        "api_called": false,
+        "exit_code": "non-zero",
+        "stderr_contains": "valid sync_mode values"
+      },
+      "assertion_pseudocode": "spy = install_http_spy(); result = exec('afc workspace create --git-url https://github.com/example/repo.git --slug bad-ws --sync-mode invalid'); assert result.exit_code != 0; assert 'pull_only' in result.stderr OR 'disabled' in result.stderr; assert spy.call_count == 0"
+    },
+    {
+      "id": "TS-13-E6",
+      "requirement_id": "13-REQ-3.E1",
+      "kind": "unit",
+      "description": "Verifies that a caller without workspaces:sync scope receives HTTP 403 before any workspace state is read.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'perm-ws' exists",
+        "PAT with only workspaces:read scope is available"
+      ],
+      "input": {
+        "auth": "PAT with workspaces:read scope only",
+        "method": "POST",
+        "path": "/api/v1/workspaces/perm-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/perm-ws/sync', auth=read_only_pat); assert resp.status == 403; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E7",
+      "requirement_id": "13-REQ-3.E2",
+      "kind": "unit",
+      "description": "Verifies that a sync request while clone_status='cloning' (reclone in progress) returns HTTP 400.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'recloning-ws' exists with status='active', clone_status='cloning', sync_mode='pull_only'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/recloning-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message indicating clone not ready"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/recloning-ws/sync', auth=sync_token); assert resp.status == 400; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E8",
+      "requirement_id": "13-REQ-4.E1",
+      "kind": "unit",
+      "description": "Verifies that when remote.Fetch() fails due to shallow clone missing history, the handler retries with an unshallow fetch; if retry succeeds, sync proceeds normally.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'shallow-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "Local repo is a shallow clone",
+        "First remote.Fetch() call fails with missing history error; second (unshallow) call succeeds with NoErrAlreadyUpToDate",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/shallow-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "sync_status": "idle"
+        },
+        "fetch_called_twice": true,
+        "status": 200,
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "call_count = 0; stub_fetch(lambda opts: (call_count := call_count+1) and (raise ErrShallowHistory if call_count==1 else NoErrAlreadyUpToDate)); logs = capture_logs(lambda: resp = client.post('/api/v1/workspaces/shallow-ws/sync', auth=sync_token)); assert resp.status == 200; assert resp.json()['sync_status'] == 'idle'; assert call_count == 2; assert any('warn' in log.lower() for log in logs)"
+    },
+    {
+      "id": "TS-13-E9",
+      "requirement_id": "13-REQ-4.E2",
+      "kind": "unit",
+      "description": "Verifies that when remote.Fetch() fails due to network error, sync_status is set to 'error', sync_error is recorded, and HTTP 502 is returned without modifying head_sha or last_sync_at.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'netfail-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle', head_sha='abc123', last_sync_at=null",
+        "remote.Fetch() is stubbed to return a network error",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/netfail-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "head_sha": "abc123 (unchanged)",
+          "last_sync_at": null,
+          "sync_error": "non-empty",
+          "sync_status": "error"
+        },
+        "status": 502
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/netfail-ws/sync', auth=sync_token); assert resp.status == 502; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT sync_status, sync_error, head_sha, last_sync_at FROM workspaces WHERE slug=?', 'netfail-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null; assert ws['head_sha'] == 'abc123'; assert ws['last_sync_at'] == null"
+    },
+    {
+      "id": "TS-13-E10",
+      "requirement_id": "13-REQ-4.E3",
+      "kind": "unit",
+      "description": "Verifies that when the request context is cancelled mid-sync, the deferred cleanup sets sync_status='error' and HTTP 504 is returned.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'timeout-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "remote.Fetch() is stubbed to block indefinitely",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "client_disconnects_after_ms": 50,
+        "method": "POST",
+        "path": "/api/v1/workspaces/timeout-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "sync_error": "non-empty message",
+          "sync_status": "error"
+        },
+        "status": 504
+      },
+      "assertion_pseudocode": "ctx, cancel = new_context(); go func() { sleep(50ms); cancel() }(); resp = client.post_with_context(ctx, '/api/v1/workspaces/timeout-ws/sync', auth=sync_token); assert resp.status == 504; wait_for_db_update(100ms); ws = db.query('SELECT sync_status, sync_error FROM workspaces WHERE slug=?', 'timeout-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null AND len(ws['sync_error']) > 0"
+    },
+    {
+      "id": "TS-13-E11",
+      "requirement_id": "13-REQ-4.E4",
+      "kind": "unit",
+      "description": "Verifies that when go-git fails to open the local repository, sync_status is set to 'error' and HTTP 502 is returned.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'badrepo-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "No git repository exists at <WORKSPACE_ROOT>/badrepo-ws/trunk/ (directory missing or corrupt)",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/badrepo-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "sync_error": "non-empty",
+          "sync_status": "error"
+        },
+        "status": 502
+      },
+      "assertion_pseudocode": "remove_dir('<WORKSPACE_ROOT>/badrepo-ws/trunk/'); resp = client.post('/api/v1/workspaces/badrepo-ws/sync', auth=sync_token); assert resp.status == 502; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT sync_status, sync_error FROM workspaces WHERE slug=?', 'badrepo-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null"
+    },
+    {
+      "id": "TS-13-E12",
+      "requirement_id": "13-REQ-4.E5",
+      "kind": "unit",
+      "description": "Verifies that when resolveCloneAuth returns an error, sync_status is set to 'error' and HTTP 502 is returned without performing any fetch.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'noauth-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "resolveCloneAuth is stubbed to return an error",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/noauth-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "sync_error": "non-empty",
+          "sync_status": "error"
+        },
+        "remote_fetch_called": false,
+        "status": 502
+      },
+      "assertion_pseudocode": "spy_fetch = install_spy(remote, 'Fetch'); stub_resolve_clone_auth_to_fail(); resp = client.post('/api/v1/workspaces/noauth-ws/sync', auth=sync_token); assert resp.status == 502; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT sync_status, sync_error FROM workspaces WHERE slug=?', 'noauth-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null; assert spy_fetch.call_count == 0"
+    },
+    {
+      "id": "TS-13-E13",
+      "requirement_id": "13-REQ-4.E6",
+      "kind": "unit",
+      "description": "Verifies that when the go-git ref update for fast-forward fails, sync_status is set to 'error' and head_sha and last_sync_at are not updated.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'refupdate-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle', head_sha='old-sha'",
+        "remote.Fetch() succeeds; upstream HEAD is a descendant of local HEAD",
+        "go-git SetReference is stubbed to return an error",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/refupdate-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "head_sha": "old-sha (unchanged)",
+          "last_sync_at": null,
+          "sync_error": "non-empty",
+          "sync_status": "error"
+        },
+        "status": 502
+      },
+      "assertion_pseudocode": "stub_set_reference_to_fail(); resp = client.post('/api/v1/workspaces/refupdate-ws/sync', auth=sync_token); assert resp.status == 502; body = resp.json(); assert 'error' in body; ws = db.query('SELECT sync_status, sync_error, head_sha, last_sync_at FROM workspaces WHERE slug=?', 'refupdate-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null; assert ws['head_sha'] == 'old-sha'; assert ws['last_sync_at'] == null"
+    },
+    {
+      "id": "TS-13-E14",
+      "requirement_id": "13-REQ-5.E1",
+      "kind": "unit",
+      "description": "Verifies that if the startup reconciliation database query or update fails, the server logs the error and aborts startup with a non-zero exit code.",
+      "preconditions": [
+        "SQLite database is configured to fail on UPDATE workspaces SET sync_status=? WHERE sync_status=?",
+        "Hub process is about to start"
+      ],
+      "input": {
+        "action": "start hub server with DB update stubbed to fail"
+      },
+      "expected": {
+        "error_logged": true,
+        "exit_code": "non-zero",
+        "server_does_not_start": true
+      },
+      "assertion_pseudocode": "stub_db_update_to_fail('workspaces', 'sync_status'); result = run_hub_server_and_wait_for_exit(); assert result.exit_code != 0; assert any('error' in log.lower() OR 'reconcil' in log.lower() for log in result.logs)"
+    },
+    {
+      "id": "TS-13-E15",
+      "requirement_id": "13-REQ-5.E2",
+      "kind": "unit",
+      "description": "Verifies that when multiple workspaces are stuck in 'syncing' at startup, all of them are reset to 'error' before the HTTP server starts.",
+      "preconditions": [
+        "SQLite database contains three workspaces with sync_status='syncing': 'ws-a', 'ws-b', 'ws-c'",
+        "Hub process is about to start"
+      ],
+      "input": {
+        "action": "start hub server"
+      },
+      "expected": {
+        "all_three_sync_error": "sync interrupted by server restart",
+        "all_three_workspaces_sync_status": "error",
+        "server_starts_successfully": true
+      },
+      "assertion_pseudocode": "db.exec('UPDATE workspaces SET sync_status=? WHERE slug IN (?,?,?)', 'syncing', 'ws-a', 'ws-b', 'ws-c'); start_hub_server(); wait_for_ready(); rows = db.query('SELECT slug, sync_status, sync_error FROM workspaces WHERE slug IN (?,?,?)', 'ws-a', 'ws-b', 'ws-c'); assert len(rows) == 3; for row in rows: assert row['sync_status'] == 'error'; assert row['sync_error'] == 'sync interrupted by server restart'"
+    },
+    {
+      "id": "TS-13-E16",
+      "requirement_id": "13-REQ-6.E1",
+      "kind": "unit",
+      "description": "Verifies that when the fetch step of reset-to-upstream fails, sync_status is set to 'error' and HTTP 502 is returned without modifying head_sha.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reset-fail-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='error', head_sha='old-sha'",
+        "remote.Fetch() is stubbed to return a network error",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reset-fail-ws/sync?reset_to_upstream=true"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "head_sha": "old-sha (unchanged)",
+          "sync_error": "non-empty",
+          "sync_status": "error"
+        },
+        "status": 502
+      },
+      "assertion_pseudocode": "stub_fetch_to_fail_network(); resp = client.post('/api/v1/workspaces/reset-fail-ws/sync?reset_to_upstream=true', auth=sync_token); assert resp.status == 502; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT sync_status, sync_error, head_sha FROM workspaces WHERE slug=?', 'reset-fail-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null; assert ws['head_sha'] == 'old-sha'"
+    },
+    {
+      "id": "TS-13-E17",
+      "requirement_id": "13-REQ-6.E2",
+      "kind": "unit",
+      "description": "Verifies that when the go-git reference update for reset-to-upstream fails, sync_status is set to 'error' and head_sha and last_sync_at are not updated.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reset-refupdate-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='error', head_sha='old-sha'",
+        "remote.Fetch() succeeds; SetReference is stubbed to fail",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reset-refupdate-ws/sync?reset_to_upstream=true"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "head_sha": "old-sha (unchanged)",
+          "last_sync_at": null,
+          "sync_error": "non-empty",
+          "sync_status": "error"
+        },
+        "status": 502
+      },
+      "assertion_pseudocode": "stub_set_reference_to_fail(); resp = client.post('/api/v1/workspaces/reset-refupdate-ws/sync?reset_to_upstream=true', auth=sync_token); assert resp.status == 502; body = resp.json(); assert 'error' in body; ws = db.query('SELECT sync_status, sync_error, head_sha, last_sync_at FROM workspaces WHERE slug=?', 'reset-refupdate-ws'); assert ws['sync_status'] == 'error'; assert ws['sync_error'] != null; assert ws['head_sha'] == 'old-sha'; assert ws['last_sync_at'] == null"
+    },
+    {
+      "id": "TS-13-E18",
+      "requirement_id": "13-REQ-6.E3",
+      "kind": "unit",
+      "description": "Verifies that a reset-to-upstream request while sync_status='syncing' is rejected with HTTP 409.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'syncing-reset-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='syncing'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/syncing-reset-ws/sync?reset_to_upstream=true"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message indicating sync in progress"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/syncing-reset-ws/sync?reset_to_upstream=true', auth=sync_token); assert resp.status == 409; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E19",
+      "requirement_id": "13-REQ-6.E4",
+      "kind": "unit",
+      "description": "Verifies that a caller without workspaces:sync scope attempting reset-to-upstream receives HTTP 403 before any git operations.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reset-perm-ws' exists",
+        "PAT with only workspaces:read scope is available"
+      ],
+      "input": {
+        "auth": "PAT with workspaces:read scope only",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reset-perm-ws/sync?reset_to_upstream=true"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "git_operations_performed": false,
+        "status": 403
+      },
+      "assertion_pseudocode": "spy_fetch = install_spy(remote, 'Fetch'); resp = client.post('/api/v1/workspaces/reset-perm-ws/sync?reset_to_upstream=true', auth=read_only_pat); assert resp.status == 403; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; assert spy_fetch.call_count == 0"
+    },
+    {
+      "id": "TS-13-E20",
+      "requirement_id": "13-REQ-7.E1",
+      "kind": "unit",
+      "description": "Verifies that when the archive flow push fails during reclone, a warning is logged and reclone proceeds to return HTTP 200 with clone_status='pending'.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-pushfail-ws' exists with status='active', clone_status='ready'",
+        "Archive flow push is stubbed to fail with a network error",
+        "Directory deletion and job queue are stubbed to succeed",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-pushfail-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "clone_status": "pending"
+        },
+        "status": 200,
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "stub_archive_push_to_fail(); logs = capture_logs(lambda: resp = client.post('/api/v1/workspaces/reclone-pushfail-ws/reclone', auth=sync_token)); assert resp.status == 200; body = resp.json(); assert body['clone_status'] == 'pending'; assert any('warn' in log.lower() for log in logs)"
+    },
+    {
+      "id": "TS-13-E21",
+      "requirement_id": "13-REQ-7.E2",
+      "kind": "unit",
+      "description": "Verifies that when deletion of the local clone directory fails, HTTP 500 is returned and clone_status is not changed to 'pending'.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-delfail-ws' exists with status='active', clone_status='ready'",
+        "Archive flow is stubbed to succeed",
+        "Directory deletion is stubbed to fail with a permission error",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-delfail-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "clone_status": "ready (unchanged)"
+        },
+        "status": 500
+      },
+      "assertion_pseudocode": "stub_dir_delete_to_fail(); resp = client.post('/api/v1/workspaces/reclone-delfail-ws/reclone', auth=sync_token); assert resp.status == 500; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT clone_status FROM workspaces WHERE slug=?', 'reclone-delfail-ws'); assert ws['clone_status'] == 'ready'"
+    },
+    {
+      "id": "TS-13-E22",
+      "requirement_id": "13-REQ-7.E3",
+      "kind": "unit",
+      "description": "Verifies that when the in-memory job queue is full during reclone, HTTP 500 is returned and the atomic state transition to 'pending' is not committed.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-queuefull-ws' exists with status='active', clone_status='ready'",
+        "Archive flow and directory deletion are stubbed to succeed",
+        "In-memory job queue is stubbed to be full/unavailable",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-queuefull-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "clone_status": "not 'pending'"
+        },
+        "status": 500
+      },
+      "assertion_pseudocode": "stub_job_queue_to_fail(); resp = client.post('/api/v1/workspaces/reclone-queuefull-ws/reclone', auth=sync_token); assert resp.status == 500; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT clone_status FROM workspaces WHERE slug=?', 'reclone-queuefull-ws'); assert ws['clone_status'] != 'pending'"
+    },
+    {
+      "id": "TS-13-E23",
+      "requirement_id": "13-REQ-7.E4",
+      "kind": "unit",
+      "description": "Verifies that 'afc workspace reclone <slug>' without --confirm exits with non-zero code and prints a message requiring --confirm without making any API call.",
+      "preconditions": [
+        "afc CLI is configured with a valid workspaces:sync token",
+        "Workspace 'reclone-ws' exists"
+      ],
+      "input": {
+        "command": "afc workspace reclone reclone-ws"
+      },
+      "expected": {
+        "api_called": false,
+        "exit_code": "non-zero",
+        "stderr_contains": "--confirm"
+      },
+      "assertion_pseudocode": "spy = install_http_spy(); result = exec('afc workspace reclone reclone-ws'); assert result.exit_code != 0; assert '--confirm' in result.stderr OR '--confirm' in result.stdout; assert spy.call_count == 0"
+    },
+    {
+      "id": "TS-13-E24",
+      "requirement_id": "13-REQ-7.E5",
+      "kind": "unit",
+      "description": "Verifies that a caller without workspaces:sync scope attempting POST /reclone receives HTTP 403 before any operations are performed.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-perm-ws' exists",
+        "PAT with only workspaces:read scope is available"
+      ],
+      "input": {
+        "auth": "PAT with workspaces:read scope only",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-perm-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "operations_performed": false,
+        "status": 403
+      },
+      "assertion_pseudocode": "spy_archive = install_spy(archive_flow); resp = client.post('/api/v1/workspaces/reclone-perm-ws/reclone', auth=read_only_pat); assert resp.status == 403; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; assert spy_archive.call_count == 0"
+    },
+    {
+      "id": "TS-13-E25",
+      "requirement_id": "13-REQ-7.E6",
+      "kind": "unit",
+      "description": "Verifies that POST /reclone for a non-existent workspace slug returns HTTP 404 without performing any operations.",
+      "preconditions": [
+        "Hub is running",
+        "No workspace with slug 'nonexistent-reclone-ws' exists",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/nonexistent-reclone-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message indicating workspace not found"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-reclone-ws/reclone', auth=sync_token); assert resp.status == 404; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E26",
+      "requirement_id": "13-REQ-7.E7",
+      "kind": "unit",
+      "description": "Verifies that a reclone request while clone_status is already 'pending' or 'cloning' returns HTTP 409.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'reclone-inprogress-ws' exists with status='active', clone_status='cloning'",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/reclone-inprogress-ws/reclone"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message indicating reclone already in progress"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/reclone-inprogress-ws/reclone', auth=sync_token); assert resp.status == 409; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E27",
+      "requirement_id": "13-REQ-8.E1",
+      "kind": "unit",
+      "description": "Verifies that a PAT with only workspaces:read scope calling POST /sync receives HTTP 403.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'perm-ws' exists with status='active', clone_status='ready', sync_mode='pull_only'",
+        "PAT with only workspaces:read scope is available"
+      ],
+      "input": {
+        "auth": "PAT with workspaces:read scope only",
+        "method": "POST",
+        "path": "/api/v1/workspaces/perm-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/perm-ws/sync', auth=read_only_pat); assert resp.status == 403; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E28",
+      "requirement_id": "13-REQ-8.E2",
+      "kind": "unit",
+      "description": "Verifies that unauthenticated requests to POST /sync and POST /reclone receive HTTP 401.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'auth-ws' exists"
+      ],
+      "input": [
+        {
+          "auth": "none",
+          "method": "POST",
+          "path": "/api/v1/workspaces/auth-ws/sync"
+        },
+        {
+          "auth": "none",
+          "method": "POST",
+          "path": "/api/v1/workspaces/auth-ws/reclone"
+        }
+      ],
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "status": 401
+      },
+      "assertion_pseudocode": "for path in ['/api/v1/workspaces/auth-ws/sync', '/api/v1/workspaces/auth-ws/reclone']: resp = client.post(path, auth=None); assert resp.status == 401; body = resp.json(); assert 'error' in body AND len(body['error']) > 0"
+    },
+    {
+      "id": "TS-13-E29",
+      "requirement_id": "13-REQ-9.E1",
+      "kind": "unit",
+      "description": "Verifies that when two concurrent sync requests arrive for the same workspace, the first proceeds and the second receives HTTP 409.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'concurrent-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "remote.Fetch() is stubbed to block for 500ms",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "action": "send two concurrent POST /sync requests for the same workspace"
+      },
+      "expected": {
+        "one_response_status": 200,
+        "other_response_status": 409,
+        "second_response_body": {
+          "error": "non-empty error message indicating sync in progress"
+        }
+      },
+      "assertion_pseudocode": "results = concurrent_post(['/api/v1/workspaces/concurrent-ws/sync', '/api/v1/workspaces/concurrent-ws/sync'], auth=sync_token); statuses = sorted([r.status for r in results]); assert statuses == [200, 409]; conflict_resp = [r for r in results if r.status == 409][0]; assert 'error' in conflict_resp.json() AND len(conflict_resp.json()['error']) > 0"
+    },
+    {
+      "id": "TS-13-E30",
+      "requirement_id": "13-REQ-9.E2",
+      "kind": "unit",
+      "description": "Verifies that when the database update to set sync_status='syncing' fails at the start of a sync, HTTP 500 is returned and sync_status is unchanged.",
+      "preconditions": [
+        "Hub is running",
+        "Workspace 'dbfail-ws' exists with status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'",
+        "Database update for sync_status='syncing' is stubbed to fail",
+        "Valid workspaces:sync token available"
+      ],
+      "input": {
+        "auth": "workspaces:sync token",
+        "method": "POST",
+        "path": "/api/v1/workspaces/dbfail-ws/sync"
+      },
+      "expected": {
+        "body": {
+          "error": "non-empty error message"
+        },
+        "db_state": {
+          "sync_status": "idle (unchanged)"
+        },
+        "status": 500
+      },
+      "assertion_pseudocode": "stub_db_update_syncing_to_fail(); resp = client.post('/api/v1/workspaces/dbfail-ws/sync', auth=sync_token); assert resp.status == 500; body = resp.json(); assert 'error' in body AND len(body['error']) > 0; ws = db.query('SELECT sync_status FROM workspaces WHERE slug=?', 'dbfail-ws'); assert ws['sync_status'] == 'idle'"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-13-SMOKE-1",
+      "execution_path_id": "13-PATH-1",
+      "description": "End-to-end smoke test for happy-path upstream sync with fast-forward: operator triggers sync, hub fetches upstream, fast-forwards integration branch, and returns updated workspace.",
+      "trigger": "POST /api/v1/workspaces/smoke-ff-ws/sync with valid workspaces:sync token; workspace has status='active', clone_status='ready', sync_mode='pull_only', sync_status='idle'; upstream has new commits ahead of local HEAD",
+      "real_components": [
+        "hub sync handler",
+        "resolveCloneAuth",
+        "go-git remote.Fetch()",
+        "go-git Repository.Reference()",
+        "go-git SetReference()",
+        "SQLite database"
+      ],
+      "mockable": [
+        "upstream git remote (use local bare repo as remote)",
+        "secrets store (return pre-configured credentials)"
+      ],
+      "expected_effects": [
+        "HTTP 200 response with workspace JSON",
+        "sync_status='idle' in response and database",
+        "head_sha updated to upstream HEAD SHA in response and database",
+        "upstream_head_sha updated to upstream HEAD SHA in response and database",
+        "last_sync_at set to a valid RFC 3339 timestamp in response and database",
+        "sync_error is null in response and database",
+        "local integration branch HEAD in the git repo matches upstream HEAD SHA"
+      ]
+    },
+    {
+      "id": "TS-13-SMOKE-2",
+      "execution_path_id": "13-PATH-2",
+      "description": "End-to-end smoke test for force-push detection: operator triggers sync after upstream force-push, hub detects diverged history and returns error without advancing the branch.",
+      "trigger": "POST /api/v1/workspaces/smoke-diverged-ws/sync with valid workspaces:sync token; upstream has been force-pushed to a commit that is not a descendant of local HEAD",
+      "real_components": [
+        "hub sync handler",
+        "resolveCloneAuth",
+        "go-git remote.Fetch()",
+        "go-git Repository.Reference()",
+        "SQLite database"
+      ],
+      "mockable": [
+        "upstream git remote (use local bare repo with force-pushed history)",
+        "secrets store (return pre-configured credentials)"
+      ],
+      "expected_effects": [
+        "HTTP 409 response with JSON error body containing 'diverged' in the error message",
+        "sync_status='error' in database",
+        "sync_error='upstream history has diverged; use --reset-to-upstream to recover' in database",
+        "upstream_head_sha updated to the force-pushed upstream HEAD SHA in database",
+        "head_sha unchanged (integration branch not advanced) in database",
+        "local integration branch HEAD in git repo unchanged"
+      ]
+    },
+    {
+      "id": "TS-13-SMOKE-3",
+      "execution_path_id": "13-PATH-3",
+      "description": "End-to-end smoke test for reset-to-upstream recovery: operator triggers reset after force-push, hub resets integration branch to upstream HEAD and clears error state.",
+      "trigger": "POST /api/v1/workspaces/smoke-reset-ws/sync?reset_to_upstream=true with valid workspaces:sync token; workspace is in sync_status='error' due to diverged history",
+      "real_components": [
+        "hub sync handler",
+        "resolveCloneAuth",
+        "go-git remote.Fetch()",
+        "go-git Repository.Reference()",
+        "go-git SetReference()",
+        "SQLite database"
+      ],
+      "mockable": [
+        "upstream git remote (use local bare repo with force-pushed history)",
+        "secrets store (return pre-configured credentials)"
+      ],
+      "expected_effects": [
+        "HTTP 200 response with workspace JSON",
+        "sync_status='idle' in response and database",
+        "head_sha updated to upstream HEAD SHA (the force-pushed commit) in response and database",
+        "upstream_head_sha updated to upstream HEAD SHA in response and database",
+        "last_sync_at set to a valid RFC 3339 timestamp in response and database",
+        "sync_error=null in response and database",
+        "local integration branch HEAD in git repo matches upstream HEAD SHA"
+      ]
+    },
+    {
+      "id": "TS-13-SMOKE-4",
+      "execution_path_id": "13-PATH-4",
+      "description": "End-to-end smoke test for reclone nuclear recovery: operator triggers reclone, hub archives, deletes clone, enqueues clone job, and returns workspace with clone_status='pending'; clone job completes to 'ready'.",
+      "trigger": "POST /api/v1/workspaces/smoke-reclone-ws/reclone with valid workspaces:sync token; workspace has status='active', clone_status='ready'",
+      "real_components": [
+        "hub reclone handler",
+        "archive flow (workspace_checkout)",
+        "in-memory job queue (workspace_checkout)",
+        "SQLite database",
+        "filesystem (clone directory deletion)",
+        "go-git PlainCloneContext"
+      ],
+      "mockable": [
+        "upstream git remote (use local bare repo)",
+        "secrets store (return pre-configured credentials)"
+      ],
+      "expected_effects": [
+        "HTTP 200 response with workspace JSON: clone_status='pending', status='active', sync_status='idle', sync_error=null, upstream_head_sha=null",
+        "Local clone directory at <WORKSPACE_ROOT>/smoke-reclone-ws/trunk/ is deleted and re-created",
+        "workspace status remains 'active' throughout the operation",
+        "clone_status transitions from 'pending' to 'cloning' to 'ready' as the clone job executes",
+        "Final database state: clone_status='ready', status='active'"
+      ]
+    },
+    {
+      "id": "TS-13-SMOKE-5",
+      "execution_path_id": "13-PATH-5",
+      "description": "End-to-end smoke test for sync rejection due to disabled sync_mode: operator triggers sync on a disabled workspace and receives HTTP 400 with no state changes.",
+      "trigger": "POST /api/v1/workspaces/smoke-disabled-ws/sync with valid workspaces:sync token; workspace has sync_mode='disabled', status='active', clone_status='ready'",
+      "real_components": [
+        "hub sync handler",
+        "SQLite database"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 400 response with JSON error body containing a message indicating sync is disabled",
+        "sync_status remains 'idle' in database (no state change)",
+        "No git operations performed (no fetch, no ref reads)"
+      ]
+    },
+    {
+      "id": "TS-13-SMOKE-6",
+      "execution_path_id": "13-PATH-6",
+      "description": "End-to-end smoke test for server startup reconciliation: hub starts with workspaces stuck in 'syncing' and resets them to 'error' before accepting HTTP requests.",
+      "trigger": "Start hub server with two workspaces having sync_status='syncing' in the SQLite database",
+      "real_components": [
+        "hub startup reconciliation",
+        "SQLite database",
+        "hub HTTP server"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Both workspaces have sync_status='error' and sync_error='sync interrupted by server restart' in the database after startup",
+        "Hub HTTP server starts and accepts requests after reconciliation completes",
+        "No workspace remains in sync_status='syncing' after startup"
+      ]
+    },
+    {
+      "id": "TS-13-SMOKE-7",
+      "execution_path_id": "13-PATH-7",
+      "description": "End-to-end smoke test for CLI reclone with --confirm flag: operator runs 'afc workspace reclone <slug> --confirm', CLI calls the API, and prints the workspace with clone_status='pending'.",
+      "trigger": "Run 'afc workspace reclone smoke-cli-reclone-ws --confirm' with a valid workspaces:sync token configured; workspace has status='active', clone_status='ready'",
+      "real_components": [
+        "afc CLI",
+        "hub reclone handler",
+        "archive flow (workspace_checkout)",
+        "in-memory job queue (workspace_checkout)",
+        "SQLite database",
+        "filesystem"
+      ],
+      "mockable": [
+        "upstream git remote (use local bare repo)",
+        "secrets store (return pre-configured credentials)"
+      ],
+      "expected_effects": [
+        "CLI exits with code 0",
+        "CLI stdout contains workspace JSON with clone_status='pending' and status='active'",
+        "POST /api/v1/workspaces/smoke-cli-reclone-ws/reclone was called exactly once",
+        "Database shows clone_status='pending' immediately after CLI returns",
+        "Clone job eventually transitions clone_status to 'ready'"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

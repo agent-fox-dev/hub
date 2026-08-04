@@ -1,0 +1,198 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "needs_refinement",
+      "summary": "The `upstream_sync` PRD is well-structured and detailed. Intent, Goals, Non-Goals, Background (via Design Decisions), Tech Stack, and most functional requirements are clearly articulated. The API surface is internally defined (no third-party external APIs), the sync algorithm is specified step-by-step, error responses are enumerated, and dependencies on existing specs are declared. Two issues prevent a \"ready\" verdict: (1) an overlap with the active `workspace_write_delete` spec regarding `PATCH /workspaces/:slug` usage for `sync_mode` updates, and (2) an overlap with `durable_job_queue` regarding job enqueuing for reclone that is underdefined relative to the durable queue spec. Additionally, a minor gap exists around the async behavior of the sync operation itself (request-response vs. queued), and the reclone archive step references behavior from `workspace_checkout` without fully clarifying the interaction with the durable job queue.",
+      "gaps": [
+        "Overlap with active spec `workspace_write_delete`: this PRD states that `sync_mode` can be changed via `PATCH /workspaces/:slug`, but that endpoint's permission model and PATCH field handling are owned by the `workspace_write_delete` spec. It is unclear whether this PRD extends that handler or introduces a separate codepath.",
+        "Overlap with active spec `durable_job_queue`: the reclone operation enqueues a clone job, which is the primary concern of the durable job queue spec. The PRD does not clarify whether it uses the durable `JobQueue` from that spec or the legacy in-memory queue, nor how job status is surfaced.",
+        "The sync operation is described as 'request-response' (not queued), but the algorithm includes potentially slow network I/O (fetch from upstream). There is no mention of HTTP timeout handling, or whether the sync runs synchronously in the request handler or is dispatched and polled. This ambiguity could affect API contract design.",
+        "The reclone step 1 references 'the existing archive flow' without specifying which spec owns that behavior or what happens if the push fails (e.g., no push credentials). The failure mode for the archive sub-step of reclone is unspecified.",
+        "No `owner` field is set in the spec metadata (empty string), which may affect governance tracking.",
+        "The Background section is implicit (folded into Design Decisions). A dedicated Background section explaining what divergence means in practice and why this is needed now would improve traceability."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The PRD states that `sync_mode` can be changed via `PATCH /workspaces/:slug`, which is the endpoint owned by the active `workspace_write_delete` spec. Should this PRD declare a dependency on `workspace_write_delete` and extend its PATCH handler, or does `upstream_sync` introduce its own PATCH handling for the new fields?",
+          "context": "Overlapping ownership of the same endpoint across two active specs can cause conflicting implementations. Clarifying the relationship prevents duplicate or conflicting handler registrations.",
+          "options": [
+            "Declare a dependency on `workspace_write_delete` and extend its PATCH handler to include the new sync fields.",
+            "This spec owns the PATCH extension for sync fields; `workspace_write_delete` is not modified.",
+            "Create a new sub-endpoint (e.g., `PATCH /workspaces/:slug/sync-config`) instead of extending the existing PATCH."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "The reclone operation enqueues a clone job. The active `durable_job_queue` spec owns the durable job queue infrastructure. Should reclone use the durable `JobQueue` from that spec, or the legacy in-memory queue from `workspace_checkout`?",
+          "context": "Using the wrong queue implementation could result in lost reclone jobs on process restart, and the answer affects which spec `upstream_sync` should declare as a dependency.",
+          "options": [
+            "Use the durable job queue (declare dependency on `durable_job_queue`).",
+            "Use the legacy in-memory queue (consistent with current clone/reactivation behavior).",
+            "Either is acceptable; leave the implementation choice to the engineer."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "The sync algorithm involves a network fetch from the upstream remote, which could be slow. Is the `POST /sync` endpoint synchronous (blocks until fetch completes and returns the final workspace state) or asynchronous (returns immediately with `sync_status: syncing` and the client polls)?",
+          "context": "This determines the API contract clients must implement. A synchronous handler risks HTTP timeouts on slow remotes; an async handler requires clients to poll for completion.",
+          "options": [
+            "Synchronous: the handler blocks until sync completes and returns the final workspace state.",
+            "Asynchronous: returns immediately with `sync_status: syncing`; client polls GET /workspaces/:slug for status.",
+            "Synchronous with a configurable timeout, falling back to async."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "During reclone, step 1 runs 'the existing archive flow' which attempts to push local commits. What should happen if the push fails (e.g., no push credentials, remote rejects the push)? Should the reclone abort, or should it proceed with deletion anyway?",
+          "context": "If reclone aborts on push failure, operators may be stuck unable to reclone corrupted repos. If it proceeds, local commits are silently lost. The failure mode needs to be explicit.",
+          "options": [
+            "Abort reclone if the push step fails; return an error with the push failure reason.",
+            "Log a warning and proceed with reclone even if push fails (local commits may be lost).",
+            "Expose a `--force` flag that skips the push step entirely."
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Are you aware that the active `durable_job_queue` spec already provides the background job infrastructure this PRD relies on for reclone? Should `durable_job_queue` be listed as an explicit dependency in the Dependencies table?",
+          "context": "The Dependencies table currently lists `workspace_checkout` and `git_credentials` but not `durable_job_queue`. If reclone uses the durable queue, omitting this dependency could cause the spec to be implemented before the queue infrastructure is in place.",
+          "options": [
+            "Yes, add `durable_job_queue` as a dependency.",
+            "No, reclone will use the legacy in-memory queue and does not depend on `durable_job_queue`."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is well-structured and substantially complete. It clearly defines the sync algorithm, state machine, REST API, CLI commands, permissions, schema changes, and design decisions. The intent, background, non-goals, and technical boundaries are all present. However, several gaps remain that could cause ambiguity during implementation: the ancestry-check mechanism is not specified (go-git API call), timeout behavior for stalled fetches is underspecified, the reclone archive flow interaction needs clarification, the sync endpoint response shape on error is missing, and there is no explicit test strategy or acceptance criteria.",
+      "gaps": [
+        "Ancestry check mechanism is not named: the spec says 'upstream HEAD is a descendant of local HEAD' but does not specify which go-git API (e.g., repo.IsAncestor / commit graph walk) is used to determine fast-forward eligibility.",
+        "HTTP server global request timeout is referenced but never defined \u2014 its value, configurability, and behavior (does it return 504? does it leave sync_status stuck in 'syncing'?) are unspecified.",
+        "Reclone archive flow interaction is underspecified: it says 'execute the existing archive flow' but does not state what happens to workspace status, whether the workspace is visible/accessible during reclone, or what clone_status transitions occur between archive and re-clone.",
+        "Error response body shape is not defined \u2014 the error table lists HTTP status codes but not the JSON structure of error payloads (e.g., {error: string, code: string}).",
+        "No test strategy or acceptance criteria are defined (unit tests with go-git mocks, integration tests against a real remote, CLI end-to-end tests).",
+        "The 'unshallow' retry path (shallow clone fetch failure) does not specify how go-git is instructed to unshallow (depth=0 is not a standard go-git FetchOptions field), leaving implementation ambiguous.",
+        "Behavior when sync_status is stuck in 'syncing' due to a timeout or server crash is not addressed \u2014 there is no mention of a stuck-sync recovery mechanism (e.g., on startup, reset syncing workspaces to error)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Which go-git API or approach should be used to determine fast-forward eligibility (i.e., that upstream HEAD is a descendant of local HEAD)?",
+          "context": "The sync algorithm branches on whether a fast-forward is possible vs. diverged, but does not name the ancestry-check mechanism. Implementors need a concrete go-git call or algorithm (e.g., walking the commit graph, using repo.Log with a range, or a dedicated IsAncestor helper) to avoid divergent implementations.",
+          "options": [
+            "Walk the commit graph from upstream HEAD and check if local HEAD appears as an ancestor (repo.Log / CommitObject traversal)",
+            "Use go-git's built-in merge-base computation and compare to local HEAD",
+            "Shell out to 'git merge-base --is-ancestor' via GitRunner as a one-off",
+            "Leave the implementation approach to the engineer's discretion"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the HTTP server's global request timeout value, and what happens to sync_status if the timeout fires mid-sync?",
+          "context": "The spec says 'the HTTP server's global request timeout applies if a fetch stalls' but does not define the timeout value, whether it is configurable, what HTTP status code the client receives (504?), or whether sync_status is left stuck in 'syncing'. A stuck 'syncing' status would block all future sync attempts.",
+          "options": [
+            "Define an explicit timeout (e.g., 60s) in the sync handler itself, set sync_status='error' on timeout, return HTTP 504",
+            "Use the existing server-wide timeout (document its value here) and add a deferred cleanup that sets sync_status='error' if the context is cancelled",
+            "Add a startup reconciliation step that resets any 'syncing' workspaces to 'error' on server boot",
+            "All of the above"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the workspace's visible state during a reclone operation \u2014 specifically, what status/clone_status values are set between the archive step and the re-clone completing?",
+          "context": "Reclone involves multiple phases (archive/push attempt \u2192 delete local clone \u2192 enqueue clone job). Agents or API consumers polling the workspace during reclone need predictable intermediate states. It is also unclear whether the workspace remains 'active' throughout or transitions to a different status.",
+          "options": [
+            "Workspace stays 'active'; clone_status transitions: ready \u2192 pending (immediately after archive, before enqueue) \u2192 cloning \u2192 ready",
+            "Workspace transitions to a temporary 'recloning' status (new value) during the operation",
+            "Workspace stays 'active'; only clone_status changes (pending \u2192 cloning \u2192 ready); no intermediate state is exposed between archive and enqueue",
+            "Leave intermediate state unspecified; only the initial (pending) and final (ready/failed) states are guaranteed"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What is the JSON shape of error response bodies for sync/reclone endpoints?",
+          "context": "The error table defines HTTP status codes but not the response body structure. Consistent error payloads are important for CLI parsing and programmatic consumers. Should the sync endpoints reuse an existing error envelope from apikit, or define a new one?",
+          "options": [
+            "Reuse the existing apikit error envelope (document its shape here)",
+            "Define a new envelope: {\"error\": \"<message>\", \"code\": \"<machine_readable_code>\"}",
+            "Plain text body, no JSON structure",
+            "Leave it to the apikit framework defaults"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "How should the go-git unshallow retry be implemented \u2014 what FetchOptions fields trigger an unshallow fetch?",
+          "context": "Step 5 of the sync algorithm says 'retry with unshallow (set depth to 0)' but go-git's FetchOptions uses a Depth int field where 0 means 'no limit' only in some versions, and unshallowing may require additional ref-spec changes. Leaving this vague risks incorrect implementation.",
+          "options": [
+            "Set FetchOptions.Depth = 0 and add the standard unshallow refspec (--unshallow equivalent)",
+            "Shell out to 'git fetch --unshallow' via GitRunner for the unshallow case only",
+            "Document that shallow clones are not supported and remove the retry path",
+            "Leave the exact API to the engineer, just require that the retry results in a full clone"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "Is there a startup reconciliation step to recover workspaces stuck in sync_status='syncing' after a server crash or restart?",
+          "context": "If the server crashes or is restarted while a sync is in progress, sync_status will be permanently stuck in 'syncing', blocking all future sync attempts on that workspace. The spec does not address this scenario.",
+          "options": [
+            "Add a server startup step that resets all sync_status='syncing' workspaces to sync_status='error' with a descriptive sync_error",
+            "Accept the stuck state; document that operators must manually PATCH sync_status via the update endpoint",
+            "Add a sync_status_updated_at field and implement a background watchdog that resets stale 'syncing' states",
+            "Not needed \u2014 the synchronous handler and HTTP timeout guarantee sync_status is always resolved before the response"
+          ],
+          "required": true
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The PRD is now complete and implementation-ready. All six gaps identified in the previous assessment have been resolved: the ancestry-check mechanism is now semantics-specified (correct behavior required, go-git API left to engineer); stuck-sync recovery is addressed via both a deferred handler cleanup on context cancellation and a startup reconciliation step; reclone intermediate states are precisely defined (workspace stays active, clone_status: ready\u2192pending\u2192cloning\u2192ready, atomic transition before enqueue); error response bodies are defined as the existing apikit WriteAPIError envelope; the unshallow retry is documented as best-effort with the exact API left to the engineer; and a 504 HTTP status code is added for context-cancelled mid-sync scenarios. All intent, goals, non-goals, functional requirements, API surface, CLI, permissions, schema, and technical boundaries are present and consistent.",
+      "gaps": [],
+      "questions": []
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "This spec owns the PATCH extension for sync fields. The workspace PATCH handler already supports adding new mutable fields \u2014 sync_mode is added to the existing handler's field list without modifying workspace_write_delete's spec artifacts.",
+        "q2": "Use the legacy in-memory queue, consistent with current clone/reactivation behavior. The durable job queue is for long-running operations that need persistence and retry (like merges). Clone jobs are fast and idempotent; the existing in-memory queue is sufficient.",
+        "q3": "Synchronous: the handler blocks until sync completes and returns the final workspace state. Fetch operations are typically fast (seconds), and the sync_status field prevents concurrent syncs. If a timeout is needed, the HTTP server's global request timeout applies.",
+        "q4": "Log a warning and proceed with reclone even if push fails (local commits may be lost). Reclone is a nuclear recovery option \u2014 if the operator is using it, the repository is already in a bad state. Blocking on push failure defeats the purpose of nuclear recovery.",
+        "q5": "No, reclone will use the legacy in-memory queue and does not depend on durable_job_queue."
+      },
+      "timestamp": "2026-08-04T10:15:35.990484+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Leave the implementation approach to the engineer's discretion. The spec should require that the check is correct (if upstream is a descendant of local, fast-forward; otherwise diverged) but not prescribe the exact go-git API.",
+        "q2": "Add a startup reconciliation step that resets any 'syncing' workspaces to 'error' on server boot. Additionally, the sync handler should use a deferred cleanup that sets sync_status='error' if the context is cancelled mid-sync. The HTTP timeout is the server's global timeout (configured via apikit); this spec does not define its own.",
+        "q3": "Workspace stays 'active'; clone_status transitions: ready \u2192 pending (immediately after archive) \u2192 cloning \u2192 ready. No intermediate state is exposed between archive and enqueue \u2014 the transition to 'pending' happens atomically before the clone is enqueued.",
+        "q4": "Reuse the existing apikit error envelope (WriteAPIError). This is consistent with all other hub endpoints per the steering directives.",
+        "q5": "Leave the exact API to the engineer, just require that the retry results in a full history fetch. Document that shallow clone unshallow is a best-effort recovery path.",
+        "q6": "Add a server startup step that resets all sync_status='syncing' workspaces to sync_status='error' with a descriptive sync_error message like 'sync interrupted by server restart'."
+      },
+      "timestamp": "2026-08-04T10:17:48.717909+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

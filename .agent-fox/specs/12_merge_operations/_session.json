@@ -1,0 +1,95 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "needs_refinement",
+      "summary": "The `merge_operations` PRD is well-structured and thorough. Intent, Goals, Non-Goals, Functional Requirements, Tech Stack, and Dependencies are all present and detailed. The algorithm, REST API, CLI, permissions, and error responses are clearly specified. The PRD explicitly references and depends on several active specs (`durable_job_queue`, `git_runner`, `upstream_sync`, `secrets_variables`, `workspace_checkout`) and correctly notes those relationships. However, a few gaps prevent a \"ready\" verdict: (1) the spec proposes a schema-level extension to `durable_job_queue` (adding a `group_key` column and changing the dispatch query), which directly overlaps with that active spec and needs an explicit coordination plan; (2) the `upstream_sync` spec is listed in the landscape and its sync flow (fetch + branch advancement) overlaps with the merge algorithm's fetch step \u2014 this relationship should be clarified; (3) minor gaps exist around the `CHECK_COMMAND` timeout/environment contract and the exact rebase rollback mechanism.",
+      "gaps": [
+        "Schema extension overlap with active spec `durable_job_queue`: The PRD prescribes adding a `group_key TEXT NOT NULL DEFAULT ''` column to the `jobs` table and changing the worker dispatch SQL query. This is a structural modification to an active spec's artifact, not just a dependency. There is no indication that the `durable_job_queue` spec has been updated to accommodate this, nor is there a clear ownership boundary for who drives this change.",
+        "Overlap with active spec `upstream_sync`: Both specs perform a 'fetch latest target branch state from upstream remote' step. The merge algorithm's Step 2 (Fetch) may duplicate or conflict with fetch logic owned by `upstream_sync`. The relationship (does merge call upstream_sync's fetch primitive, or does it fetch independently?) is not specified.",
+        "CHECK_COMMAND contract underspecified: The PRD states the check command is read from the `CHECK_COMMAND` workspace variable and run between rebase and merge, but does not specify: working directory for the command, environment variables injected (e.g., branch names, SHAs), timeout behavior, or how the command is executed (shell, exec, sandboxed). This is needed to generate correct implementation artifacts.",
+        "Rebase rollback mechanism ambiguity: Step 4 of the merge algorithm says 'reset source branch to its pre-rebase state via `git update-ref`', but GitRunner-based rebase operates on the working tree. It is unclear whether the pre-rebase SHA is captured before the rebase starts, and how the working tree / HEAD pointer is restored if the rebase partially succeeded before the check command ran.",
+        "Owner field is empty: The PRD metadata shows `owner: ''`. While not a functional gap, this may be a process concern for change ownership, especially given the cross-spec schema changes proposed."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The PRD proposes adding `group_key` to the `jobs` table and modifying the worker dispatch query \u2014 changes that belong to the `durable_job_queue` spec. How should this extension be managed? Should the `durable_job_queue` spec be updated first (and `merge_operations` declared as blocked on that update), or should the extension be co-owned by this spec with a migration artifact?",
+          "context": "This is a direct schema and query change to an active spec's artifact. Without clarifying ownership and sequencing, the generated code may conflict with or duplicate the `durable_job_queue` implementation.",
+          "options": [
+            "Update the `durable_job_queue` spec to include the Group extension before implementing `merge_operations` (merge_operations depends on the updated spec).",
+            "Define the Group extension as part of this `merge_operations` spec, with a database migration artifact owned here.",
+            "Create a new sub-spec (e.g., `jobqueue_groups`) that extends `durable_job_queue` and is a prerequisite for `merge_operations`."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "The merge algorithm's Step 2 fetches the latest target branch state from the upstream remote. The `upstream_sync` spec also owns fetch-from-upstream logic. Should the merge handler reuse a fetch primitive from `upstream_sync`, or should it perform its own independent fetch?",
+          "context": "Duplicating fetch logic across specs can cause divergent behavior (e.g., credential handling, error handling). Clarifying this prevents redundant implementation and potential conflicts.",
+          "options": [
+            "Merge handler calls a shared fetch primitive provided by `upstream_sync`.",
+            "Merge handler performs its own go-git fetch independently (no dependency on `upstream_sync` for fetch).",
+            "Merge handler skips the fetch step entirely and operates only on local refs (upstream_sync is responsible for keeping local refs current)."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the execution contract for the CHECK_COMMAND? Specifically: (a) What is the working directory when the command runs? (b) What environment variables are injected (e.g., branch names, SHAs, workspace slug)? (c) Is there a timeout, and if so what is the default? (d) Is the command run via a shell (`sh -c`) or exec'd directly?",
+          "context": "Without these details, the generated implementation may use incorrect defaults (e.g., wrong working directory, no timeout), leading to hangs or incorrect behavior in CI/agent scenarios.",
+          "options": [
+            "Working dir = workspace clone root; inject MERGE_TARGET, MERGE_SOURCE, BASE_SHA env vars; default timeout = 10 minutes; run via sh -c.",
+            "Working dir = workspace clone root; no injected env vars beyond what the shell inherits; no default timeout; run via sh -c.",
+            "Specify a different contract (please describe in a follow-up)."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "For the check-command rollback in Step 4: the source branch is reset to its pre-rebase state via `git update-ref`. Is the pre-rebase SHA of the source branch captured at the start of the merge job (before any git operations), and is the working tree also reset, or only the ref?",
+          "context": "If the workspace repo is a bare repository (served by the git server), there is no working tree to reset. If it is non-bare, the working tree state after a completed rebase must also be restored. Clarifying this prevents a subtle bug where the ref is reset but the working tree remains in the post-rebase state.",
+          "options": [
+            "Workspace repos are bare (no working tree); only the ref is reset via `git update-ref`.",
+            "Workspace repos are non-bare; reset both the ref and the working tree (e.g., `git checkout` + `git reset --hard`).",
+            "The pre-rebase SHA is captured before rebase starts and the rollback uses `git update-ref <source-branch> <pre-rebase-sha>`; working tree handling is not applicable (bare repo)."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Who owns the `merge_operations` spec (the `owner` field is empty)? Given that this spec proposes changes to the `durable_job_queue` schema, ownership clarity is important for change coordination.",
+          "context": "An empty owner field may block review and approval workflows, and is especially important when a spec touches multiple subsystems.",
+          "options": [],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The `merge_operations` PRD is now complete and ready for implementation. All previously identified gaps have been resolved: (1) the Group extension ownership is explicitly assigned to this spec with a clear rationale for backward compatibility; (2) the fetch/upstream_sync relationship is unambiguously separated \u2014 both use `resolveCloneAuth` but operate independently; (3) the CHECK_COMMAND execution contract is fully specified (working directory, env vars, timeout, shell invocation); (4) the rebase rollback mechanism is precise \u2014 pre-rebase SHA captured before any git operations, rollback via `git checkout && git reset --hard` restoring both ref and working tree in the non-bare repo; (5) the owner field is intentionally left empty per project convention. The PRD now covers intent, goals, non-goals, functional requirements, API surface, CLI, permissions, error responses, tech stack, dependencies, and design decisions with sufficient detail to generate correct implementation artifacts.",
+      "gaps": [],
+      "questions": []
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Define the Group extension as part of this merge_operations spec. The durable_job_queue spec is already implemented and the Group extension is a backward-compatible addition. The merge_operations spec owns both the schema migration and the new EnqueueParams field.",
+        "q2": "Merge handler performs its own go-git fetch independently (no dependency on upstream_sync for fetch). The merge and sync operations are independent \u2014 merge fetches the target branch to ensure it has the latest state before rebasing, while upstream_sync fetches to advance the integration branch. They use the same credential resolution (resolveCloneAuth) but operate independently.",
+        "q3": "Working dir = workspace clone root (<WORKSPACE_ROOT>/<slug>/trunk/); inject MERGE_TARGET, MERGE_SOURCE, WORKSPACE_SLUG env vars; default timeout = 10 minutes; run via sh -c. The check command is a shell string executed in the workspace clone root.",
+        "q4": "Workspace repos are non-bare. The workspace clone at <slug>/trunk/ is a regular working tree. The pre-rebase SHA is captured before rebase starts. Rollback uses git checkout <source-branch> && git reset --hard <pre-rebase-sha> to restore both the ref and the working tree.",
+        "q5": "The owner is not relevant for this project; leave empty."
+      },
+      "timestamp": "2026-08-04T10:13:01.335850+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

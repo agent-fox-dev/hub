@@ -1,0 +1,1684 @@
+{
+  "$schema": null,
+  "spec_id": "12",
+  "spec_name": "merge_operations",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/merge/... ./internal/jobqueue/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "10",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Merge operations are registered as a job type with the durable job queue. This spec owns the backward-compatible Group extension (schema migration + EnqueueParams field).",
+      "sentinel": true
+    },
+    {
+      "depends_on_spec": "11",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Uses GitRunner for rebase, merge-tree conflict detection, checkout, and git reset --hard rollback operations.",
+      "sentinel": true
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Jobqueue Group Extension and Merge Job Registration",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for group_key schema migration and EnqueueParams.Group field",
+          "details": [
+            "Write unit tests verifying the schema migration adds group_key TEXT NOT NULL DEFAULT '' to the jobs table",
+            "Write tests verifying EnqueueParams.Group field is persisted as group_key in the DB",
+            "Write tests verifying existing job types with empty group_key are unaffected by the migration"
+          ],
+          "test_spec_refs": [
+            "TS-12-1",
+            "TS-12-2"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.1",
+            "12-REQ-1.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for dispatch serialization using group_key CASE expression",
+          "details": [
+            "Write tests verifying that when group_key is non-empty, dispatch blocks a second job with same (type, group_key) while one is running",
+            "Write tests verifying that when group_key is empty, dispatch falls back to per-key serialization using CASE WHEN logic",
+            "Write tests verifying multiple merge jobs with different source_refs but same target_branch are queued but only one runs at a time"
+          ],
+          "test_spec_refs": [
+            "TS-12-3",
+            "TS-12-4",
+            "TS-12-5"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.3",
+            "12-REQ-1.4",
+            "12-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for merge job registration and handler wiring",
+          "details": [
+            "Write tests verifying the 'merge' job type is registered with the durable job queue during server boot",
+            "Write tests verifying the registered handler function is invoked when a merge job is dispatched",
+            "Write tests verifying job Key format is '<workspace_slug>:<target_branch>:<source_ref>'",
+            "Write tests verifying job Group format is '<workspace_slug>:<target_branch>'"
+          ],
+          "test_spec_refs": [
+            "TS-12-6",
+            "TS-12-7"
+          ],
+          "requirement_refs": [
+            "12-REQ-2.1",
+            "12-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write tests for merge job payload and submitted_by resolution",
+          "details": [
+            "Write tests verifying payload fields workspace_slug, target_branch, source_ref, submitted_by are serialized correctly",
+            "Write tests verifying submitted_by is set to the API key user's username from AuthInfo",
+            "Write tests verifying submitted_by is set to 'admin' for admin token authentication",
+            "Write tests verifying submitted_by is set to the PAT owner's username from AuthInfo"
+          ],
+          "test_spec_refs": [
+            "TS-12-8",
+            "TS-12-9",
+            "TS-12-10"
+          ],
+          "requirement_refs": [
+            "12-REQ-3.1",
+            "12-REQ-3.2",
+            "12-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Test stubs exist for TS-12-1 through TS-12-10 and are discoverable by go test ./internal/merge/... ./internal/jobqueue/... -count=1 -v",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 12-REQ-1.1 through 12-REQ-3.3 have corresponding test stubs"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Pre-Check, Dry-Run Conflict Detection, and Merge Fetch/Rebase",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for typed merge rejection reasons (pre-check)",
+          "details": [
+            "Write test verifying WouldConflict pre-check returns permanent error with conflict file list",
+            "Write test verifying AlreadyMerged pre-check returns success idempotently without executing merge steps",
+            "Write test verifying BranchNotReady pre-check returns retryable error"
+          ],
+          "test_spec_refs": [
+            "TS-12-11",
+            "TS-12-12",
+            "TS-12-13"
+          ],
+          "requirement_refs": [
+            "12-REQ-4.1",
+            "12-REQ-4.2",
+            "12-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for dry-run conflict detection via git merge-tree",
+          "details": [
+            "Write test verifying merge-tree is invoked with correct args: git merge-tree --write-tree <target-head> <source-branch-head>",
+            "Write test verifying non-zero exit code from merge-tree results in WouldConflict rejection with structured conflict file list",
+            "Write test verifying zero exit code from merge-tree allows merge to proceed without modifying working tree"
+          ],
+          "test_spec_refs": [
+            "TS-12-14",
+            "TS-12-15",
+            "TS-12-16"
+          ],
+          "requirement_refs": [
+            "12-REQ-5.1",
+            "12-REQ-5.2",
+            "12-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for merge algorithm fetch and rebase steps",
+          "details": [
+            "Write test verifying go-git fetch is called with resolveCloneAuth credentials before rebase",
+            "Write test verifying git rebase <target-ref> is invoked via GitRunner on the source branch",
+            "Write test verifying pre-rebase SHA is captured before any git operations alter the branch",
+            "Write test verifying rebase conflict triggers git rebase --abort and returns permanent error with conflicting file paths"
+          ],
+          "test_spec_refs": [
+            "TS-12-17",
+            "TS-12-18",
+            "TS-12-19"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.1",
+            "12-REQ-6.2",
+            "12-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Test stubs for TS-12-11 through TS-12-19 are discoverable: go test ./internal/merge/... -count=1 -v -run 'TestPreCheck|TestDryRun|TestMergeAlgorithm'",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 12-REQ-4.1 through 12-REQ-6.3 have corresponding test stubs"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Check Command Execution, Ref Update, and Branch Deletion",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for check command execution and rollback",
+          "details": [
+            "Write test verifying CHECK_COMMAND is read from workspace variables and executed via sh -c in the workspace clone root",
+            "Write test verifying MERGE_TARGET, MERGE_SOURCE, WORKSPACE_SLUG env vars are injected into the check command process",
+            "Write test verifying check command timeout is enforced at 10 minutes",
+            "Write test verifying check command failure triggers rollback: git checkout <source-branch> && git reset --hard <pre-rebase-sha>",
+            "Write test verifying check step is skipped when CHECK_COMMAND is not set"
+          ],
+          "test_spec_refs": [
+            "TS-12-20",
+            "TS-12-21",
+            "TS-12-22",
+            "TS-12-23"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for target ref update, source branch deletion, and success result",
+          "details": [
+            "Write test verifying go-git updates target branch ref to rebased HEAD after successful rebase and check",
+            "Write test verifying ref lock contention on target update returns retryable error",
+            "Write test verifying source branch is deleted from local repository via go-git after successful ref update",
+            "Write test verifying success result contains base_sha (pre-merge target HEAD) and merged_sha (new target HEAD)"
+          ],
+          "test_spec_refs": [
+            "TS-12-24",
+            "TS-12-25",
+            "TS-12-26",
+            "TS-12-27"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.5",
+            "12-REQ-6.6",
+            "12-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Test stubs for TS-12-20 through TS-12-27 are discoverable: go test ./internal/merge/... -count=1 -v -run 'TestCheckCommand|TestRefUpdate|TestBranchDelete'",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 12-REQ-6.4 through 12-REQ-6.7 have corresponding test stubs"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write Tests: Branch Rebase, Batch Rebase, and POST /merges Endpoint",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write tests for single branch rebase operation",
+          "details": [
+            "Write test verifying git rebase <target-ref> is invoked via GitRunner on the source branch and returns new HEAD SHA on success",
+            "Write test verifying rebase conflict triggers git rebase --abort and returns structured conflict report with file paths",
+            "Write test verifying branch is left in pre-rebase state after conflict abort"
+          ],
+          "test_spec_refs": [
+            "TS-12-28",
+            "TS-12-29"
+          ],
+          "requirement_refs": [
+            "12-REQ-7.1",
+            "12-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write tests for batch rebase operation",
+          "details": [
+            "Write test verifying batch rebase rebases each branch independently and returns per-branch result list",
+            "Write test verifying a conflict on one branch does not block remaining branches from being rebased",
+            "Write test verifying batch rebase returns 400 when branches list is empty"
+          ],
+          "test_spec_refs": [
+            "TS-12-30",
+            "TS-12-31"
+          ],
+          "requirement_refs": [
+            "12-REQ-8.1",
+            "12-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write tests for POST /merges endpoint",
+          "details": [
+            "Write test verifying POST /api/v1/workspaces/:slug/merges enqueues a merge job with correct payload and returns 202 with job ID",
+            "Write test verifying duplicate merge submission (same source_ref + target_branch) returns 409",
+            "Write test verifying missing target_branch or source_ref returns 400",
+            "Write test verifying workspace not found returns 404 and workspace not active returns 400"
+          ],
+          "test_spec_refs": [
+            "TS-12-32",
+            "TS-12-33",
+            "TS-12-34",
+            "TS-12-35"
+          ],
+          "requirement_refs": [
+            "12-REQ-9.1",
+            "12-REQ-9.2",
+            "12-REQ-9.3",
+            "12-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Test stubs for TS-12-28 through TS-12-35 are discoverable: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 12-REQ-7.1 through 12-REQ-9.4 have corresponding test stubs"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write Tests: GET/DELETE Merge Endpoints, Rebase Endpoint, and Response Projection",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write tests for GET /merges and GET /merges/:id endpoints",
+          "details": [
+            "Write test verifying GET /api/v1/workspaces/:slug/merges returns list of merge jobs scoped to workspace with correct projection fields",
+            "Write test verifying GET /api/v1/workspaces/:slug/merges/:id returns single merge job with all response fields including conflict_files and check_output",
+            "Write test verifying merges:read permission is required and enforced for list and get endpoints"
+          ],
+          "test_spec_refs": [
+            "TS-12-36",
+            "TS-12-37",
+            "TS-12-38"
+          ],
+          "requirement_refs": [
+            "12-REQ-10.1",
+            "12-REQ-10.2",
+            "12-REQ-10.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write tests for DELETE /merges/:id and POST /rebase endpoints",
+          "details": [
+            "Write test verifying DELETE /api/v1/workspaces/:slug/merges/:id cancels a queued job and returns 200",
+            "Write test verifying cancelling a running or completed job returns appropriate error",
+            "Write test verifying merges:write permission is required for cancel",
+            "Write test verifying POST /api/v1/workspaces/:slug/rebase returns per-branch results with status ok or conflict"
+          ],
+          "test_spec_refs": [
+            "TS-12-39",
+            "TS-12-40",
+            "TS-12-41",
+            "TS-12-42"
+          ],
+          "requirement_refs": [
+            "12-REQ-11.1",
+            "12-REQ-11.2",
+            "12-REQ-11.3",
+            "12-REQ-12.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write tests for batch rebase endpoint validation and merge job response projection",
+          "details": [
+            "Write test verifying POST /rebase with empty branches list returns 400",
+            "Write test verifying POST /rebase requires merges:write permission",
+            "Write test verifying merge job response projection maps job queue fields to merge-specific vocabulary (base_sha, merged_sha, conflict_files, check_output, submitted_by)",
+            "Write test verifying null fields (base_sha, merged_sha, check_output) are present and null when not yet set"
+          ],
+          "test_spec_refs": [
+            "TS-12-43",
+            "TS-12-44",
+            "TS-12-45",
+            "TS-12-50",
+            "TS-12-51",
+            "TS-12-52"
+          ],
+          "requirement_refs": [
+            "12-REQ-12.2",
+            "12-REQ-12.3",
+            "12-REQ-12.4",
+            "12-REQ-14.1",
+            "12-REQ-14.2",
+            "12-REQ-14.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Test stubs for TS-12-36 through TS-12-45 and TS-12-50 through TS-12-52 are discoverable: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 12-REQ-10.1 through 12-REQ-12.4 and 12-REQ-14.1 through 12-REQ-14.3 have corresponding test stubs"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "tests",
+      "title": "Write Tests: CLI Commands",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Write tests for afc merge submit CLI command",
+          "details": [
+            "Write test verifying 'afc merge submit <workspace-slug> --target <branch> --source <branch>' calls POST /api/v1/workspaces/:slug/merges with correct body",
+            "Write test verifying the command prints the returned merge job ID on success",
+            "Write test verifying missing --target or --source flags produce a usage error"
+          ],
+          "test_spec_refs": [
+            "TS-12-46"
+          ],
+          "requirement_refs": [
+            "12-REQ-13.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Write tests for afc merge list, status, and cancel CLI commands",
+          "details": [
+            "Write test verifying 'afc merge list <workspace-slug>' calls GET /api/v1/workspaces/:slug/merges and prints results",
+            "Write test verifying 'afc merge status <workspace-slug> <merge-id>' calls GET /api/v1/workspaces/:slug/merges/:id and prints status",
+            "Write test verifying 'afc merge cancel <workspace-slug> <merge-id>' calls DELETE /api/v1/workspaces/:slug/merges/:id and prints confirmation"
+          ],
+          "test_spec_refs": [
+            "TS-12-47",
+            "TS-12-48",
+            "TS-12-49"
+          ],
+          "requirement_refs": [
+            "12-REQ-13.2",
+            "12-REQ-13.3",
+            "12-REQ-13.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "All written CLI tests compile without errors: go build ./...",
+          "Test stubs for TS-12-46 through TS-12-49 are discoverable: go test ./internal/cli/... -count=1 -v -run 'TestMergeCLI'",
+          "No linter warnings introduced: go vet ./...",
+          "Requirements 12-REQ-13.1 through 12-REQ-13.4 have corresponding test stubs"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Jobqueue Group Extension: Schema Migration and EnqueueParams",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Add group_key column schema migration to jobs table",
+          "details": [
+            "Write SQL migration adding 'group_key TEXT NOT NULL DEFAULT ''' to the jobs table",
+            "Ensure migration is backward-compatible: all existing rows get empty string default",
+            "Register migration in the hub's schema versioning system (InitSchema or equivalent)",
+            "Verify migration runs idempotently on existing databases"
+          ],
+          "test_spec_refs": [
+            "TS-12-1"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Add Group field to EnqueueParams and persist group_key",
+          "details": [
+            "Add optional Group string field to the EnqueueParams struct in the jobqueue package",
+            "Update the Enqueue function to write Group value into the group_key column",
+            "Ensure dedup logic continues to use (type, key) \u2014 Group field does not affect dedup",
+            "Add group_key to all relevant SELECT/INSERT queries in the jobqueue implementation"
+          ],
+          "test_spec_refs": [
+            "TS-12-2"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Update worker dispatch query to use CASE WHEN group_key serialization",
+          "details": [
+            "Replace the existing NOT EXISTS dispatch subquery to use: CASE WHEN jobs.group_key != '' THEN jobs.group_key ELSE jobs.key END for serialization key",
+            "Verify that jobs with non-empty group_key are serialized per (type, group_key)",
+            "Verify that jobs with empty group_key fall back to per-key serialization (existing behavior preserved)",
+            "Write integration test confirming two merge jobs with same target but different sources queue correctly"
+          ],
+          "test_spec_refs": [
+            "TS-12-3",
+            "TS-12-4",
+            "TS-12-5"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.3",
+            "12-REQ-1.4",
+            "12-REQ-1.5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Schema migration tests pass: go test ./internal/jobqueue/... -count=1 -v -run 'TestGroupKey'",
+          "TS-12-1 through TS-12-5 pass: go test ./internal/jobqueue/... -count=1 -v",
+          "All existing jobqueue tests still pass (backward compatibility): go test ./internal/jobqueue/... -count=1",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-1.1 through 12-REQ-1.5 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Merge Job Registration and Payload Handling",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Define merge job payload and result types",
+          "details": [
+            "Define MergeJobPayload struct with fields: WorkspaceSlug, TargetBranch, SourceRef, SubmittedBy",
+            "Define MergeJobResult struct with fields: BaseSHA, MergedSHA (both 40-char hex strings)",
+            "Define typed rejection reason type with constants: WouldConflict, AlreadyMerged, BranchNotReady",
+            "Implement JSON serialization/deserialization for payload and result types"
+          ],
+          "test_spec_refs": [
+            "TS-12-8",
+            "TS-12-11",
+            "TS-12-12",
+            "TS-12-13"
+          ],
+          "requirement_refs": [
+            "12-REQ-3.1",
+            "12-REQ-4.1",
+            "12-REQ-4.2",
+            "12-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement submitted_by resolution from AuthInfo",
+          "details": [
+            "Extract submitted_by from AuthInfo: use username for API key auth, 'admin' for admin token, PAT owner username for PAT auth",
+            "Implement resolveSubmittedBy(authInfo AuthInfo) string helper function",
+            "Ensure submitted_by is populated in the job payload at enqueue time, not at execution time"
+          ],
+          "test_spec_refs": [
+            "TS-12-9",
+            "TS-12-10"
+          ],
+          "requirement_refs": [
+            "12-REQ-3.2",
+            "12-REQ-3.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Register merge job type with durable job queue at server boot",
+          "details": [
+            "Call jobqueue.Register('merge', mergeHandler) during server initialization",
+            "Set job Key to '<workspace_slug>:<target_branch>:<source_ref>' in EnqueueParams",
+            "Set job Group to '<workspace_slug>:<target_branch>' in EnqueueParams for per-target serialization",
+            "Ensure registration happens before the worker pool starts dispatching"
+          ],
+          "test_spec_refs": [
+            "TS-12-6",
+            "TS-12-7"
+          ],
+          "requirement_refs": [
+            "12-REQ-2.1",
+            "12-REQ-2.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Merge job registration and payload tests pass: go test ./internal/merge/... -count=1 -v -run 'TestRegistration|TestPayload|TestSubmittedBy'",
+          "TS-12-6 through TS-12-13 pass: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-2.1 through 12-REQ-4.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement Dry-Run Conflict Detection and Merge Pre-Check",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement dry-run conflict detection using git merge-tree via GitRunner",
+          "details": [
+            "Implement runDryRunConflictCheck(runner GitRunner, targetHead, sourceBranchHead string) ([]string, error)",
+            "Invoke GitRunner with args: ['merge-tree', '--write-tree', targetHead, sourceBranchHead]",
+            "Parse non-zero exit code as conflict; extract conflicting file paths from output",
+            "Return nil conflict list on zero exit code (no conflicts detected)",
+            "Ensure working tree is never modified by this operation"
+          ],
+          "test_spec_refs": [
+            "TS-12-14",
+            "TS-12-15",
+            "TS-12-16"
+          ],
+          "requirement_refs": [
+            "12-REQ-5.1",
+            "12-REQ-5.2",
+            "12-REQ-5.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement merge pre-check returning typed rejection reasons",
+          "details": [
+            "Implement runPreCheck(ctx context.Context, ws Workspace, payload MergeJobPayload) (RejectionReason, []string, error)",
+            "Check AlreadyMerged: source branch HEAD is reachable from target branch HEAD",
+            "Check BranchNotReady: source branch has no commits ahead of target",
+            "Check WouldConflict: call runDryRunConflictCheck and return conflict file list",
+            "Return (NoRejection, nil, nil) when all checks pass"
+          ],
+          "test_spec_refs": [
+            "TS-12-11",
+            "TS-12-12",
+            "TS-12-13"
+          ],
+          "requirement_refs": [
+            "12-REQ-4.1",
+            "12-REQ-4.2",
+            "12-REQ-4.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Dry-run and pre-check tests pass: go test ./internal/merge/... -count=1 -v -run 'TestDryRun|TestPreCheck'",
+          "TS-12-11 through TS-12-16 pass: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-4.1 through 12-REQ-5.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement Merge Algorithm: Fetch, Rebase, Check Command",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement fetch step using go-git with resolveCloneAuth credentials",
+          "details": [
+            "Call go-git FetchContext on the workspace repository using resolveCloneAuth(ws) for authentication",
+            "Fetch the target branch ref from the upstream remote before rebase",
+            "Handle NoErrAlreadyUpToDate as a non-error (already up to date is acceptable)",
+            "Capture the target branch HEAD SHA after fetch as base_sha"
+          ],
+          "test_spec_refs": [
+            "TS-12-17"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement rebase step via GitRunner with pre-rebase SHA capture and conflict abort",
+          "details": [
+            "Capture pre-rebase SHA of source branch immediately before invoking GitRunner rebase",
+            "Invoke GitRunner: git rebase <target-ref> in the workspace clone root (<WORKSPACE_ROOT>/<slug>/trunk/)",
+            "On RebaseConflictError: invoke GitRunner git rebase --abort, return permanent error with conflicting file paths",
+            "On success: capture new source branch HEAD SHA for use in subsequent steps"
+          ],
+          "test_spec_refs": [
+            "TS-12-18",
+            "TS-12-19"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.2",
+            "12-REQ-6.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement check command execution with env injection, timeout, and rollback",
+          "details": [
+            "Read CHECK_COMMAND from workspace variables using the secrets/variables system (spec 07)",
+            "Skip check step entirely if CHECK_COMMAND is not set",
+            "Execute via sh -c '<CHECK_COMMAND>' in <WORKSPACE_ROOT>/<slug>/trunk/ with 10-minute context timeout",
+            "Inject env vars: MERGE_TARGET=<target_branch>, MERGE_SOURCE=<source_branch>, WORKSPACE_SLUG=<slug>",
+            "On failure: invoke GitRunner 'git checkout <source-branch> && git reset --hard <pre-rebase-sha>' to restore ref and working tree; return permanent error with check output"
+          ],
+          "test_spec_refs": [
+            "TS-12-20",
+            "TS-12-21",
+            "TS-12-22",
+            "TS-12-23"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Fetch, rebase, and check command tests pass: go test ./internal/merge/... -count=1 -v -run 'TestFetch|TestRebase|TestCheckCommand'",
+          "TS-12-17 through TS-12-23 pass: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-6.1 through 12-REQ-6.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement Merge Algorithm: Ref Update, Branch Deletion, and Success Result",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Implement target branch ref update via go-git",
+          "details": [
+            "Use go-git reference update to advance target branch ref to rebased source HEAD",
+            "This is a local ref update only \u2014 no remote push involved",
+            "On ref lock contention or update failure: return retryable error so the job queue retries the job",
+            "Log the old and new target branch SHAs for auditability"
+          ],
+          "test_spec_refs": [
+            "TS-12-24",
+            "TS-12-25"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement source branch deletion via go-git and success result construction",
+          "details": [
+            "Delete source branch ref from local repository using go-git reference deletion after successful target ref update",
+            "Construct MergeJobResult with base_sha (pre-merge target HEAD) and merged_sha (new target HEAD after ref update)",
+            "Return success result to the job queue handler",
+            "Ensure source branch is preserved (not deleted) if any earlier step fails"
+          ],
+          "test_spec_refs": [
+            "TS-12-26",
+            "TS-12-27"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.6",
+            "12-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Ref update and branch deletion tests pass: go test ./internal/merge/... -count=1 -v -run 'TestRefUpdate|TestBranchDelete|TestSuccessResult'",
+          "TS-12-24 through TS-12-27 pass: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-6.5 through 12-REQ-6.7 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "standard",
+      "title": "Implement Branch Rebase and Batch Rebase Operations",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Implement single branch rebase operation",
+          "details": [
+            "Implement RebaseBranch(ctx context.Context, runner GitRunner, workDir, sourceBranch, targetRef string) (string, *RebaseConflictReport, error)",
+            "Invoke GitRunner: git rebase <targetRef> on sourceBranch in workDir",
+            "On success: return new branch HEAD SHA",
+            "On RebaseConflictError: invoke git rebase --abort, return RebaseConflictReport with conflicting file paths; branch left in pre-rebase state"
+          ],
+          "test_spec_refs": [
+            "TS-12-28",
+            "TS-12-29"
+          ],
+          "requirement_refs": [
+            "12-REQ-7.1",
+            "12-REQ-7.2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Implement batch rebase operation with per-branch independent error handling",
+          "details": [
+            "Implement BatchRebase(ctx context.Context, runner GitRunner, workDir, targetRef string, branches []string) ([]BranchRebaseResult, error)",
+            "Iterate branches sequentially; call RebaseBranch for each",
+            "On conflict for any branch: record conflict result and continue to next branch (do not abort batch)",
+            "Return []BranchRebaseResult with per-branch status ('ok' or 'conflict'), new_head or conflict_files"
+          ],
+          "test_spec_refs": [
+            "TS-12-30",
+            "TS-12-31"
+          ],
+          "requirement_refs": [
+            "12-REQ-8.1",
+            "12-REQ-8.2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "Rebase operation tests pass: go test ./internal/merge/... -count=1 -v -run 'TestRebaseBranch|TestBatchRebase'",
+          "TS-12-28 through TS-12-31 pass: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-7.1 through 12-REQ-8.2 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "standard",
+      "title": "Implement REST API: Merge Endpoints",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Implement POST /api/v1/workspaces/:slug/merges handler",
+          "details": [
+            "Parse and validate request body: require target_branch and source_ref fields",
+            "Validate workspace exists and is active; validate source and target branches exist in workspace",
+            "Resolve submitted_by from AuthInfo; construct MergeJobPayload",
+            "Call jobqueue.Enqueue with type='merge', Key='<slug>:<target>:<source>', Group='<slug>:<target>'",
+            "Return 202 with job ID on success; return 409 on duplicate, 404/400 on validation errors"
+          ],
+          "test_spec_refs": [
+            "TS-12-32",
+            "TS-12-33",
+            "TS-12-34",
+            "TS-12-35"
+          ],
+          "requirement_refs": [
+            "12-REQ-9.1",
+            "12-REQ-9.2",
+            "12-REQ-9.3",
+            "12-REQ-9.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Implement GET /api/v1/workspaces/:slug/merges and GET /merges/:id handlers",
+          "details": [
+            "Implement list handler: query jobs of type 'merge' scoped to workspace_slug; project to merge response format",
+            "Implement get handler: fetch single job by ID; validate it belongs to the workspace; project to merge response format",
+            "Enforce merges:read permission scope for PAT authentication on both endpoints",
+            "Include all response fields: id, workspace_slug, target_branch, source_ref, status, base_sha, merged_sha, conflict_files, check_output, error, retry_count, submitted_by, created_at, updated_at"
+          ],
+          "test_spec_refs": [
+            "TS-12-36",
+            "TS-12-37",
+            "TS-12-38"
+          ],
+          "requirement_refs": [
+            "12-REQ-10.1",
+            "12-REQ-10.2",
+            "12-REQ-10.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Implement DELETE /api/v1/workspaces/:slug/merges/:id handler",
+          "details": [
+            "Implement cancel handler: call jobqueue.CancelJob for the given job ID",
+            "Validate job belongs to the workspace and is of type 'merge'",
+            "Return 200 on successful cancellation; return appropriate error for non-cancellable states (ErrNotCancellable)",
+            "Enforce merges:write permission scope for PAT authentication"
+          ],
+          "test_spec_refs": [
+            "TS-12-39",
+            "TS-12-40",
+            "TS-12-41"
+          ],
+          "requirement_refs": [
+            "12-REQ-11.1",
+            "12-REQ-11.2",
+            "12-REQ-11.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.4",
+          "title": "Implement merge job response projection from job queue record",
+          "details": [
+            "Implement projectMergeJob(job Job) MergeJobResponse that extracts payload fields (target_branch, source_ref, submitted_by) and result fields (base_sha, merged_sha) from JSON",
+            "Extract conflict_files and check_output from job error/result JSON when present",
+            "Map job status values to merge API status vocabulary (queued, running, completed, failed, dead_letter, cancelled)",
+            "Return null for base_sha, merged_sha, check_output when not yet populated"
+          ],
+          "test_spec_refs": [
+            "TS-12-50",
+            "TS-12-51",
+            "TS-12-52"
+          ],
+          "requirement_refs": [
+            "12-REQ-14.1",
+            "12-REQ-14.2",
+            "12-REQ-14.3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "Merge REST API tests pass: go test ./internal/merge/... -count=1 -v -run 'TestMergeAPI'",
+          "TS-12-32 through TS-12-41 and TS-12-50 through TS-12-52 pass: go test ./internal/merge/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-9.1 through 12-REQ-11.3 and 12-REQ-14.1 through 12-REQ-14.3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "kind": "standard",
+      "title": "Implement REST API: Batch Rebase Endpoint and Route Mounting",
+      "subtasks": [
+        {
+          "id": "14.1",
+          "title": "Implement POST /api/v1/workspaces/:slug/rebase handler",
+          "details": [
+            "Parse and validate request body: require target_ref and non-empty branches list",
+            "Return 400 if branches list is empty",
+            "Validate workspace exists and is active",
+            "Call BatchRebase with the workspace clone root as workDir",
+            "Return 200 with per-branch results array: [{branch, status, new_head|conflict_files}]"
+          ],
+          "test_spec_refs": [
+            "TS-12-42",
+            "TS-12-43",
+            "TS-12-44"
+          ],
+          "requirement_refs": [
+            "12-REQ-12.1",
+            "12-REQ-12.2",
+            "12-REQ-12.3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "14.2",
+          "title": "Enforce merges:write permission on batch rebase and mount all merge routes",
+          "details": [
+            "Enforce merges:write permission scope for PAT authentication on POST /rebase",
+            "Mount all merge routes via MountHandlers: POST/GET /merges, GET/DELETE /merges/:id, POST /rebase",
+            "Ensure routes are registered under /api/v1/workspaces/:slug/ prefix",
+            "Verify route registration does not conflict with existing workspace routes"
+          ],
+          "test_spec_refs": [
+            "TS-12-45"
+          ],
+          "requirement_refs": [
+            "12-REQ-12.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "14.V",
+        "checks": [
+          "Batch rebase endpoint tests pass: go test ./internal/merge/... -count=1 -v -run 'TestBatchRebaseAPI'",
+          "TS-12-42 through TS-12-45 pass: go test ./internal/merge/... -count=1 -v",
+          "All merge routes are mounted and reachable: go test ./internal/merge/... -count=1 -v -run 'TestRoutes'",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-12.1 through 12-REQ-12.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "kind": "standard",
+      "title": "Implement CLI: Merge Commands",
+      "subtasks": [
+        {
+          "id": "15.1",
+          "title": "Implement afc merge submit CLI command",
+          "details": [
+            "Add 'merge submit <workspace-slug> --target <branch> --source <branch>' subcommand under the 'merge' command group",
+            "Validate --target and --source flags are required; print usage error if missing",
+            "Call POST /api/v1/workspaces/:slug/merges via CLIClient.DoRequest with JSON body",
+            "Print returned merge job ID on success using CLIPrintResult"
+          ],
+          "test_spec_refs": [
+            "TS-12-46"
+          ],
+          "requirement_refs": [
+            "12-REQ-13.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "15.2",
+          "title": "Implement afc merge list, status, and cancel CLI commands",
+          "details": [
+            "Implement 'merge list <workspace-slug>': call GET /api/v1/workspaces/:slug/merges and print tabular results",
+            "Implement 'merge status <workspace-slug> <merge-id>': call GET /api/v1/workspaces/:slug/merges/:id and print status fields",
+            "Implement 'merge cancel <workspace-slug> <merge-id>': call DELETE /api/v1/workspaces/:slug/merges/:id and print confirmation",
+            "Register all merge subcommands under BuildRootCommand using CLIClientFromCmd pattern"
+          ],
+          "test_spec_refs": [
+            "TS-12-47",
+            "TS-12-48",
+            "TS-12-49"
+          ],
+          "requirement_refs": [
+            "12-REQ-13.2",
+            "12-REQ-13.3",
+            "12-REQ-13.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "15.V",
+        "checks": [
+          "CLI command tests pass: go test ./internal/cli/... -count=1 -v -run 'TestMergeCLI'",
+          "TS-12-46 through TS-12-49 pass: go test ./internal/cli/... -count=1 -v",
+          "No linter warnings: go vet ./...",
+          "Requirements 12-REQ-13.1 through 12-REQ-13.4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "kind": "checkpoint",
+      "title": "Integration Checkpoint: Full Merge Pipeline",
+      "subtasks": [
+        {
+          "id": "16.1",
+          "title": "Run all spec tests and verify full merge pipeline end-to-end",
+          "details": [
+            "Run the complete spec test suite: go test ./internal/merge/... ./internal/jobqueue/... ./internal/cli/... -count=1 -v",
+            "Verify a merge job submitted via POST /merges is enqueued, dispatched, executes the full algorithm (fetch\u2192rebase\u2192check\u2192ref update\u2192delete), and returns success result",
+            "Verify per-target serialization: two merge jobs for the same target branch queue correctly and execute sequentially"
+          ],
+          "test_spec_refs": [
+            "TS-12-3",
+            "TS-12-17",
+            "TS-12-27"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.3",
+            "12-REQ-6.1",
+            "12-REQ-6.7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "16.2",
+          "title": "Verify conflict detection and rollback paths",
+          "details": [
+            "Confirm WouldConflict path: dry-run detects conflict, merge is rejected, working tree is clean",
+            "Confirm check command failure path: rebase succeeds, check fails, rollback restores pre-rebase SHA and working tree",
+            "Confirm AlreadyMerged path: handler returns success without executing merge steps"
+          ],
+          "test_spec_refs": [
+            "TS-12-11",
+            "TS-12-12",
+            "TS-12-22"
+          ],
+          "requirement_refs": [
+            "12-REQ-4.1",
+            "12-REQ-4.2",
+            "12-REQ-6.4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "16.3",
+          "title": "Verify batch rebase and CLI integration",
+          "details": [
+            "Confirm POST /rebase returns per-branch results with correct status for both ok and conflict branches",
+            "Confirm CLI commands (submit, list, status, cancel) correctly call their respective API endpoints",
+            "Run all tests: go test ./... -count=1"
+          ],
+          "test_spec_refs": [
+            "TS-12-30",
+            "TS-12-46",
+            "TS-12-49"
+          ],
+          "requirement_refs": [
+            "12-REQ-8.1",
+            "12-REQ-13.1",
+            "12-REQ-13.4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "16.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/merge/... ./internal/jobqueue/... ./internal/cli/... -count=1 -v",
+          "All existing tests still pass (no regressions): go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Full merge pipeline executes end-to-end without panics or stub markers"
+        ]
+      }
+    },
+    {
+      "id": 17,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: Execution Path Tracing and Dead-Code Audit",
+      "subtasks": [
+        {
+          "id": "17.1",
+          "title": "Trace execution paths from API entry points through job queue to merge handler",
+          "details": [
+            "Verify POST /merges handler calls jobqueue.Enqueue with correct type, Key, and Group fields",
+            "Verify merge job handler is registered and invoked by the worker dispatch loop (not a stub)",
+            "Verify merge handler calls runPreCheck \u2192 fetch \u2192 RebaseBranch \u2192 check command \u2192 ref update \u2192 branch delete in order",
+            "Verify DELETE /merges/:id calls jobqueue.CancelJob and propagates the result to the HTTP response"
+          ],
+          "test_spec_refs": [
+            "TS-12-6",
+            "TS-12-17",
+            "TS-12-27",
+            "TS-12-39"
+          ],
+          "requirement_refs": [
+            "12-REQ-2.1",
+            "12-REQ-6.1",
+            "12-REQ-6.7",
+            "12-REQ-11.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "17.2",
+          "title": "Verify return value propagation across the merge pipeline",
+          "details": [
+            "Confirm pre-rebase SHA captured before rebase is used in rollback (git reset --hard <pre-rebase-sha>)",
+            "Confirm base_sha (pre-merge target HEAD) and merged_sha (post-merge target HEAD) are correctly propagated to MergeJobResult and returned in GET /merges/:id response",
+            "Confirm conflict_files from dry-run or rebase conflict are propagated to the job error field and surfaced in the API response projection"
+          ],
+          "test_spec_refs": [
+            "TS-12-19",
+            "TS-12-27",
+            "TS-12-50"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.3",
+            "12-REQ-6.7",
+            "12-REQ-14.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "17.3",
+          "title": "Stub and dead-code audit across all merge operation files",
+          "details": [
+            "Search all Go files in internal/merge/ and internal/jobqueue/ for panic(\"not implemented\"), bare 'return nil' in non-trivial paths, and // TODO markers",
+            "Verify no merge handler step (fetch, rebase, check, ref update, delete) contains a stub implementation",
+            "Verify RebaseBranch and BatchRebase are called from production code paths, not only from tests",
+            "Verify group_key dispatch query change is present in the production jobqueue SQL, not commented out"
+          ],
+          "test_spec_refs": [
+            "TS-12-3",
+            "TS-12-17",
+            "TS-12-28",
+            "TS-12-30"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.3",
+            "12-REQ-6.1",
+            "12-REQ-7.1",
+            "12-REQ-8.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "17.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/merge/... ./internal/jobqueue/... ./internal/cli/... -count=1 -v",
+          "Full test suite passes with no regressions: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "No stub markers found: grep -r 'panic(\"not implemented\")' ./internal/merge/ ./internal/jobqueue/ returns no results",
+          "No TODO markers in critical paths: grep -r '// TODO' ./internal/merge/ returns no results in handler files",
+          "Cross-spec entry points (GitRunner, resolveCloneAuth, workspace variables, jobqueue.Enqueue with Group) are all called from production code paths"
+        ]
+      }
+    },
+    {
+      "id": 18,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: Cross-Spec Entry Points and Final Smoke Tests",
+      "subtasks": [
+        {
+          "id": "18.1",
+          "title": "Verify cross-spec entry points are called from production code",
+          "details": [
+            "Confirm GitRunner (spec 11) is instantiated and passed to merge handler in production server setup, not only in tests",
+            "Confirm resolveCloneAuth (spec 05) is called in the fetch step of the merge handler in production code",
+            "Confirm workspace variables lookup (spec 07) for CHECK_COMMAND is wired into the check command step in production code",
+            "Confirm jobqueue.Enqueue (spec 10) with Group field is called from the POST /merges handler in production code",
+            "Verify no stub/dead-code patterns remain: `grep -rn 'panic(\"not implemented\")\\|// TODO\\|// FIXME' internal/merge/ internal/jobqueue/` returns no results"
+          ],
+          "test_spec_refs": [
+            "TS-12-17",
+            "TS-12-20",
+            "TS-12-32"
+          ],
+          "requirement_refs": [
+            "12-REQ-6.1",
+            "12-REQ-6.4",
+            "12-REQ-9.1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "18.2",
+          "title": "Run all smoke tests and full test suite for final sign-off",
+          "details": [
+            "Run full test suite: go test ./... -count=1",
+            "Verify all spec tests pass: go test ./internal/merge/... ./internal/jobqueue/... ./internal/cli/... -count=1 -v",
+            "Confirm no regressions in existing specs (jobqueue, git_runner, secrets_variables, workspace_checkout)",
+            "Verify all merge routes are mounted and respond correctly to authenticated requests"
+          ],
+          "test_spec_refs": [
+            "TS-12-1",
+            "TS-12-32",
+            "TS-12-46",
+            "TS-12-SMOKE-1",
+            "TS-12-SMOKE-2",
+            "TS-12-SMOKE-3",
+            "TS-12-SMOKE-4"
+          ],
+          "requirement_refs": [
+            "12-REQ-1.1",
+            "12-REQ-9.1",
+            "12-REQ-13.1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "18.V",
+        "checks": [
+          "No stub markers found: `grep -rn 'panic(\"not implemented\")' internal/merge/ internal/jobqueue/` returns empty; no TODO/FIXME comments remain",
+          "All spec tests pass: go test ./internal/merge/... ./internal/jobqueue/... ./internal/cli/... -count=1 -v",
+          "Full test suite passes with no regressions: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "All merge routes (POST/GET /merges, GET/DELETE /merges/:id, POST /rebase) respond to authenticated requests in integration tests",
+          "Requirements 12-REQ-1.1 through 12-REQ-14.3 acceptance criteria all met"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "12-REQ-1.1",
+      "test_spec_id": "TS-12-1",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.2",
+      "test_spec_id": "TS-12-2",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.3",
+      "test_spec_id": "TS-12-3",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.4",
+      "test_spec_id": "TS-12-4",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-1.5",
+      "test_spec_id": "TS-12-5",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-2.1",
+      "test_spec_id": "TS-12-6",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-2.2",
+      "test_spec_id": "TS-12-7",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.1",
+      "test_spec_id": "TS-12-8",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.2",
+      "test_spec_id": "TS-12-9",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-3.3",
+      "test_spec_id": "TS-12-10",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-4.1",
+      "test_spec_id": "TS-12-11",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-4.2",
+      "test_spec_id": "TS-12-12",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-4.3",
+      "test_spec_id": "TS-12-13",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-5.1",
+      "test_spec_id": "TS-12-14",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-5.2",
+      "test_spec_id": "TS-12-15",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-5.3",
+      "test_spec_id": "TS-12-16",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.1",
+      "test_spec_id": "TS-12-17",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.2",
+      "test_spec_id": "TS-12-18",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.3",
+      "test_spec_id": "TS-12-19",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.4",
+      "test_spec_id": "TS-12-20",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.4",
+      "test_spec_id": "TS-12-21",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.4",
+      "test_spec_id": "TS-12-22",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.4",
+      "test_spec_id": "TS-12-23",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.5",
+      "test_spec_id": "TS-12-24",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.5",
+      "test_spec_id": "TS-12-25",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.6",
+      "test_spec_id": "TS-12-26",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-6.7",
+      "test_spec_id": "TS-12-27",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-7.1",
+      "test_spec_id": "TS-12-28",
+      "task_id": "12.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-7.2",
+      "test_spec_id": "TS-12-29",
+      "task_id": "12.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-8.1",
+      "test_spec_id": "TS-12-30",
+      "task_id": "12.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-8.2",
+      "test_spec_id": "TS-12-31",
+      "task_id": "12.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.1",
+      "test_spec_id": "TS-12-32",
+      "task_id": "13.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.2",
+      "test_spec_id": "TS-12-33",
+      "task_id": "13.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.3",
+      "test_spec_id": "TS-12-34",
+      "task_id": "13.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.4",
+      "test_spec_id": "TS-12-35",
+      "task_id": "13.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.5",
+      "test_spec_id": "TS-12-36",
+      "task_id": "13.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.6",
+      "test_spec_id": "TS-12-37",
+      "task_id": "13.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.7",
+      "test_spec_id": "TS-12-38",
+      "task_id": "13.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-9.8",
+      "test_spec_id": "TS-12-39",
+      "task_id": "13.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.1",
+      "test_spec_id": "TS-12-36",
+      "task_id": "13.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.2",
+      "test_spec_id": "TS-12-37",
+      "task_id": "13.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-10.3",
+      "test_spec_id": "TS-12-38",
+      "task_id": "13.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-11.1",
+      "test_spec_id": "TS-12-39",
+      "task_id": "13.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-11.2",
+      "test_spec_id": "TS-12-40",
+      "task_id": "13.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-11.3",
+      "test_spec_id": "TS-12-41",
+      "task_id": "13.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.1",
+      "test_spec_id": "TS-12-42",
+      "task_id": "14.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.2",
+      "test_spec_id": "TS-12-43",
+      "task_id": "14.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.3",
+      "test_spec_id": "TS-12-44",
+      "task_id": "14.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-12.4",
+      "test_spec_id": "TS-12-45",
+      "task_id": "14.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-13.1",
+      "test_spec_id": "TS-12-46",
+      "task_id": "15.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-13.2",
+      "test_spec_id": "TS-12-47",
+      "task_id": "15.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-13.3",
+      "test_spec_id": "TS-12-48",
+      "task_id": "15.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-13.4",
+      "test_spec_id": "TS-12-49",
+      "task_id": "15.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-14.1",
+      "test_spec_id": "TS-12-50",
+      "task_id": "13.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-14.2",
+      "test_spec_id": "TS-12-51",
+      "task_id": "13.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "12-REQ-14.3",
+      "test_spec_id": "TS-12-52",
+      "task_id": "13.4",
+      "test_path": null
+    }
+  ]
+}
