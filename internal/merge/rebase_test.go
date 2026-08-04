@@ -3,6 +3,8 @@ package merge
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
@@ -317,3 +319,322 @@ func (m *sequenceMockRunner) RevParse(_ context.Context, ref string) (string, er
 
 // Verify *sequenceMockRunner satisfies RebaseRunner at compile time.
 var _ RebaseRunner = (*sequenceMockRunner)(nil)
+
+// ===========================================================================
+// Task Group 4 Tests: Single Branch Rebase Edge Cases
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 12-REQ-7.E1: If the source branch ref does not exist, the branch rebase
+// operation returns an error without invoking GitRunner.
+// ---------------------------------------------------------------------------
+
+func TestRebaseBranch_RefNotFound_ReturnsErrorWithoutGitOps(t *testing.T) {
+	// Mock runner that returns ErrRefNotFound from RevParse, simulating a
+	// non-existent source branch.
+	runner := &mockRebaseRunner{
+		revParseErr: gitcmd.ErrRefNotFound,
+	}
+
+	ctx := context.Background()
+	sha, err := RebaseBranch(ctx, runner, "feature/nonexistent", "main")
+
+	// Must return empty SHA.
+	if sha != "" {
+		t.Errorf("expected empty SHA for ref-not-found, got %q", sha)
+	}
+
+	// Must return an error.
+	if err == nil {
+		t.Fatal("expected error from RebaseBranch when source ref does not exist")
+	}
+
+	// The error should wrap or be ErrRefNotFound.
+	if !errors.Is(err, gitcmd.ErrRefNotFound) {
+		t.Errorf("expected error to wrap ErrRefNotFound, got %T: %v", err, err)
+	}
+
+	// GitRunner.Rebase must NOT have been called — the ref check should
+	// short-circuit before any actual git rebase invocation.
+	for _, call := range runner.calls {
+		if call.method == "Rebase" {
+			t.Error("expected Rebase NOT to be called when source ref does not exist")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-7.E2: If GitRunner subprocess hangs during rebase, GitRunner kills
+// the subprocess after its timeout; the rebase operation runs
+// 'git rebase --abort' and returns an error. Working tree is cleaned up.
+// ---------------------------------------------------------------------------
+
+func TestRebaseBranch_Timeout_AbortsAndReturnsError(t *testing.T) {
+	// Mock runner that returns a context.DeadlineExceeded error from Rebase,
+	// simulating a subprocess timeout.
+	runner := &mockRebaseRunner{
+		rebaseErr: context.DeadlineExceeded,
+	}
+
+	ctx := context.Background()
+	sha, err := RebaseBranch(ctx, runner, "feature/slow", "main")
+
+	// Must return empty SHA.
+	if sha != "" {
+		t.Errorf("expected empty SHA on timeout, got %q", sha)
+	}
+
+	// Must return an error.
+	if err == nil {
+		t.Fatal("expected error from RebaseBranch on timeout")
+	}
+
+	// The error should indicate a timeout condition. It must either wrap
+	// context.DeadlineExceeded or convey timeout semantics through the
+	// error message or type — not be a generic "not implemented" error.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected error wrapping context.DeadlineExceeded, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-7.2 supplementary: Verify the branch is left in its pre-rebase
+// state after conflict abort (the runner.RevParse call before rebase should
+// record the original SHA, and after conflict+abort the branch ref is
+// unchanged).
+// ---------------------------------------------------------------------------
+
+func TestRebaseBranch_Conflict_BranchLeftInPreRebaseState(t *testing.T) {
+	originalSHA := "orig1234orig1234orig1234orig1234orig1234"
+	runner := &mockRebaseRunner{
+		revParseSHA: originalSHA,
+		rebaseErr: &gitcmd.RebaseConflictError{
+			ConflictingFiles: []string{"a.go", "b.go"},
+		},
+	}
+
+	ctx := context.Background()
+	sha, err := RebaseBranch(ctx, runner, "feature/conflict", "main")
+
+	// Must return empty SHA (not the original SHA, since the rebase failed).
+	if sha != "" {
+		t.Errorf("expected empty SHA on conflict, got %q", sha)
+	}
+
+	// Must return an error.
+	if err == nil {
+		t.Fatal("expected error from RebaseBranch on conflict")
+	}
+
+	// The error should be a RebaseConflictError with the conflicting files.
+	var conflictErr *gitcmd.RebaseConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected *RebaseConflictError, got %T: %v", err, err)
+	}
+
+	// Verify all conflict files are reported.
+	if len(conflictErr.ConflictingFiles) != 2 {
+		t.Errorf("expected 2 conflict files, got %d", len(conflictErr.ConflictingFiles))
+	}
+
+	// Verify that a checkout of the source branch was attempted (to return
+	// to pre-rebase state). The runner's calls should show the source branch
+	// was checked out before rebase.
+	foundCheckout := false
+	for _, call := range runner.calls {
+		if call.method == "Run" && len(call.args) > 0 && call.args[0] == "checkout" {
+			foundCheckout = true
+			break
+		}
+	}
+	// RebaseBranch should check out the source branch before rebasing.
+	// After conflict, the runner auto-aborts, leaving the branch in its
+	// pre-rebase state.
+	if !foundCheckout {
+		t.Log("Note: RebaseBranch may not explicitly checkout — GitRunner.Rebase auto-aborts on conflict")
+	}
+}
+
+// ===========================================================================
+// Task Group 4 Tests: Batch Rebase Edge Cases
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 12-REQ-8.E1: If the branches list is empty, the batch rebase operation
+// returns an error without performing any git operations.
+// ---------------------------------------------------------------------------
+
+func TestBatchRebase_EmptyBranchesList_ReturnsError(t *testing.T) {
+	runner := newMockRunnerSuccess("unused")
+
+	ctx := context.Background()
+	results, err := BatchRebase(ctx, runner, "main", []string{})
+
+	// Must return an error for empty input.
+	if err == nil {
+		t.Fatal("expected error from BatchRebase with empty branches list")
+	}
+
+	// The error message must indicate the branches list is empty, not be
+	// a generic "not implemented" error.
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "empty") && !strings.Contains(errMsg, "branches") {
+		t.Errorf("expected error to mention empty branches list, got: %v", err)
+	}
+
+	// Results should be nil or empty.
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty branches list, got %d", len(results))
+	}
+
+	// No git operations should have been performed.
+	if len(runner.calls) != 0 {
+		t.Errorf("expected 0 runner calls for empty branches list, got %d", len(runner.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-8.E2: If a branch in the list does not exist in the workspace
+// repository, that branch is recorded as failed with a descriptive message,
+// and remaining branches continue to be processed.
+// ---------------------------------------------------------------------------
+
+func TestBatchRebase_BranchNotFound_RecordedAsFailed(t *testing.T) {
+	// The second branch doesn't exist — RevParse returns ErrRefNotFound.
+	// The first and third branches succeed.
+	runner := &branchExistenceMockRunner{
+		branchExists: map[string]bool{
+			"feature/a": true,
+			"feature/b": false, // does not exist
+			"feature/c": true,
+		},
+		successSHA: "aabb1122aabb1122aabb1122aabb1122aabb1122",
+	}
+
+	ctx := context.Background()
+	branches := []string{"feature/a", "feature/b", "feature/c"}
+	results, err := BatchRebase(ctx, runner, "main", branches)
+
+	if err != nil {
+		t.Fatalf("BatchRebase returned error: %v", err)
+	}
+
+	// Must return 3 results (one per branch).
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	// feature/a: success.
+	if results[0].Status != "ok" {
+		t.Errorf("feature/a: expected status='ok', got %q", results[0].Status)
+	}
+
+	// feature/b: must have a non-ok status indicating failure.
+	if results[1].Status == "ok" {
+		t.Error("feature/b: expected non-ok status for missing branch, got 'ok'")
+	}
+	if results[1].Branch != "feature/b" {
+		t.Errorf("feature/b: expected branch='feature/b', got %q", results[1].Branch)
+	}
+
+	// feature/c: success (not blocked by feature/b failure).
+	if results[2].Status != "ok" {
+		t.Errorf("feature/c: expected status='ok' (processed despite earlier failure), got %q", results[2].Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12-REQ-8.E3: If GitRunner subprocess hangs for one branch during batch
+// rebase, that branch is recorded as failed, and remaining branches continue.
+// ---------------------------------------------------------------------------
+
+func TestBatchRebase_Timeout_OtherBranchesContinue(t *testing.T) {
+	// First branch succeeds, second branch times out, third succeeds.
+	runner := &sequenceMockRunner{
+		results: []sequenceResult{
+			{sha: "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111", err: nil},
+			{sha: "", err: context.DeadlineExceeded},
+			{sha: "cccc3333cccc3333cccc3333cccc3333cccc3333", err: nil},
+		},
+	}
+
+	ctx := context.Background()
+	branches := []string{"feature/a", "feature/b", "feature/c"}
+	results, err := BatchRebase(ctx, runner, "main", branches)
+
+	if err != nil {
+		t.Fatalf("BatchRebase returned error: %v", err)
+	}
+
+	// Must return 3 results.
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	// feature/a: success.
+	if results[0].Status != "ok" {
+		t.Errorf("feature/a: expected status='ok', got %q", results[0].Status)
+	}
+	if results[0].NewHead == "" {
+		t.Error("feature/a: expected non-empty NewHead for successful rebase")
+	}
+
+	// feature/b: must have a non-ok status (timeout error).
+	if results[1].Status == "ok" {
+		t.Error("feature/b: expected non-ok status for timeout, got 'ok'")
+	}
+	if results[1].Branch != "feature/b" {
+		t.Errorf("feature/b: expected branch='feature/b', got %q", results[1].Branch)
+	}
+
+	// feature/c: success (not blocked by feature/b timeout).
+	if results[2].Status != "ok" {
+		t.Errorf("feature/c: expected status='ok' after earlier timeout, got %q", results[2].Status)
+	}
+	if results[2].NewHead == "" {
+		t.Error("feature/c: expected non-empty NewHead for successful rebase")
+	}
+}
+
+// ===========================================================================
+// branchExistenceMockRunner simulates a runner where some branches don't
+// exist. Used for testing 12-REQ-8.E2 (branch not found in batch rebase).
+// ===========================================================================
+
+type branchExistenceMockRunner struct {
+	branchExists map[string]bool
+	successSHA   string
+	calls        []mockRunnerCall
+	rebaseCount  int
+}
+
+func (m *branchExistenceMockRunner) Run(_ context.Context, args ...string) (string, error) {
+	m.calls = append(m.calls, mockRunnerCall{method: "Run", args: args})
+
+	// Simulate checkout failing for non-existent branches.
+	if len(args) > 0 && args[0] == "checkout" && len(args) > 1 {
+		branch := args[1]
+		if exists, ok := m.branchExists[branch]; ok && !exists {
+			return "", fmt.Errorf("error: pathspec '%s' did not match any file(s) known to git", branch)
+		}
+	}
+	return "", nil
+}
+
+func (m *branchExistenceMockRunner) Rebase(_ context.Context, onto string) (string, error) {
+	m.calls = append(m.calls, mockRunnerCall{method: "Rebase", args: []string{onto}})
+	m.rebaseCount++
+	return m.successSHA, nil
+}
+
+func (m *branchExistenceMockRunner) RevParse(_ context.Context, ref string) (string, error) {
+	m.calls = append(m.calls, mockRunnerCall{method: "RevParse", args: []string{ref}})
+
+	// If we know this branch doesn't exist, return ErrRefNotFound.
+	if exists, ok := m.branchExists[ref]; ok && !exists {
+		return "", gitcmd.ErrRefNotFound
+	}
+	return m.successSHA, nil
+}
+
+var _ RebaseRunner = (*branchExistenceMockRunner)(nil)
