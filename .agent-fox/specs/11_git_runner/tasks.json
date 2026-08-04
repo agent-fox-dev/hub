@@ -20,9 +20,9 @@
           "title": "Write version string parser unit tests",
           "details": [
             "Create `internal/gitcmd/version_test.go` with table-driven unit tests for the version string parser",
-            "Cover versions above 2.38 (e.g. 2.38.0, 2.39.1, 3.0.0) \u2014 expect success",
-            "Cover versions below 2.38 (e.g. 2.37.9, 2.0.0, 1.8.3) \u2014 expect error",
-            "Cover malformed strings (e.g. empty string, 'not a version', 'git version') \u2014 expect error",
+            "Cover versions above 2.38 (e.g. 2.38.0, 2.39.1, 3.0.0) — expect success",
+            "Cover versions below 2.38 (e.g. 2.37.9, 2.0.0, 1.8.3) — expect error",
+            "Cover malformed strings (e.g. empty string, 'not a version', 'git version') — expect error",
             "Test function signature: `parseGitVersion(raw string) (semver, error)` or equivalent pure function"
           ],
           "test_spec_refs": [
@@ -34,7 +34,7 @@
             "11-REQ-1",
             "11-REQ-12"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -46,7 +46,7 @@
             "Test TS-11-2: constructor returns error when git version is below 2.38 (simulate by parsing a low version string via the parser unit test path)",
             "Test TS-11-3: constructor accepts any valid directory as `workDir`, not necessarily a git repo (use `os.TempDir()`)",
             "Test TS-11-4: constructor returns error for invalid/nonexistent `workDir`",
-            "Use `testing` and `os` packages only \u2014 no mock frameworks"
+            "Use `testing` and `os` packages only — no mock frameworks"
           ],
           "test_spec_refs": [
             "TS-11-1",
@@ -57,7 +57,7 @@
           "requirement_refs": [
             "11-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -78,7 +78,7 @@
           "requirement_refs": [
             "11-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -87,7 +87,7 @@
           "details": [
             "Test TS-11-8: `Run` with a valid git subcommand (e.g. `git --version`) returns trimmed stdout and nil error",
             "Test TS-11-9: `Run` with a failing git command returns `*GitError` with correct Args, ExitCode, and Stderr fields",
-            "Test TS-11-10: `Run` respects context cancellation \u2014 cancel context mid-run and verify error is returned",
+            "Test TS-11-10: `Run` respects context cancellation — cancel context mid-run and verify error is returned",
             "Set up a temporary git repo using `git init` in a temp dir for tests that need a repo context"
           ],
           "test_spec_refs": [
@@ -99,7 +99,7 @@
             "11-REQ-3",
             "11-REQ-10"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -117,7 +117,7 @@
           "requirement_refs": [
             "11-REQ-10"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -128,7 +128,7 @@
           "Version parser unit tests are table-driven and cover above-2.38, below-2.38, and malformed cases",
           "Constructor integration test uses `t.Skip` when host git < 2.38 rather than failing",
           "Safety env var tests assert all three variables with correct values",
-          "No mock frameworks used \u2014 only `testing` and `os` standard library packages",
+          "No mock frameworks used — only `testing` and `os` standard library packages",
           "go vet ./internal/gitcmd/... reports no issues"
         ]
       }
@@ -142,9 +142,9 @@
           "id": "2.1",
           "title": "Write LsRemote three-way exit code discrimination tests",
           "details": [
-            "Test TS-11-11: `LsRemote` returns trimmed stdout and nil error when ref exists (exit 0) \u2014 use a local temp repo as remote",
-            "Test TS-11-12: `LsRemote` returns `ErrRefNotFound` sentinel when ref does not exist (exit 2) \u2014 query a nonexistent ref on a local repo",
-            "Test TS-11-13: `LsRemote` returns `*GitError` (not `ErrRefNotFound`) when network/auth fails (exit 1) \u2014 point at `https://localhost:1/nonexistent`",
+            "Test TS-11-11: `LsRemote` returns trimmed stdout and nil error when ref exists (exit 0) — use a local temp repo as remote",
+            "Test TS-11-12: `LsRemote` returns `ErrRefNotFound` sentinel when ref does not exist (exit 2) — query a nonexistent ref on a local repo",
+            "Test TS-11-13: `LsRemote` returns `*GitError` (not `ErrRefNotFound`) when network/auth fails (exit 1) — point at `https://localhost:1/nonexistent`",
             "Test TS-11-14: verify `errors.Is(err, ErrRefNotFound)` works correctly for the exit-2 case",
             "Document in test comments why `https://localhost:1/nonexistent` reliably produces exit code 1 (connection refused on privileged port)"
           ],
@@ -164,9 +164,9 @@
           "id": "2.2",
           "title": "Write MergeTree clean merge and conflict tests",
           "details": [
-            "Test TS-11-15: `MergeTree` returns a tree SHA string (non-empty) on a clean merge \u2014 set up two non-conflicting branches in a temp repo",
-            "Test TS-11-16: `MergeTree` returns `*MergeConflictError` (not nil) when merge produces conflicts \u2014 set up two branches with conflicting edits to the same file",
-            "Test TS-11-17: `MergeConflictError.ConflictingFiles` contains the correct file paths \u2014 use `errors.As` to extract and assert",
+            "Test TS-11-15: `MergeTree` returns a tree SHA string (non-empty) on a clean merge — set up two non-conflicting branches in a temp repo",
+            "Test TS-11-16: `MergeTree` returns `*MergeConflictError` (not nil) when merge produces conflicts — set up two branches with conflicting edits to the same file",
+            "Test TS-11-17: `MergeConflictError.ConflictingFiles` contains the correct file paths — use `errors.As` to extract and assert",
             "Test TS-11-18: verify `errors.As(err, &ce)` pattern works for `*MergeConflictError` extraction",
             "Helper: create a `setupConflictingRepo(t) string` function that initializes a temp repo with two conflicting branches"
           ],
@@ -186,8 +186,8 @@
           "id": "2.3",
           "title": "Write Rebase success, conflict, and abort tests",
           "details": [
-            "Test TS-11-19: `Rebase` returns new HEAD SHA (non-empty string) on a successful rebase \u2014 set up a diverged branch in a temp repo",
-            "Test TS-11-20: `Rebase` returns `*RebaseConflictError` with correct conflicting file paths when rebase conflicts \u2014 use `errors.As` to extract",
+            "Test TS-11-19: `Rebase` returns new HEAD SHA (non-empty string) on a successful rebase — set up a diverged branch in a temp repo",
+            "Test TS-11-20: `Rebase` returns `*RebaseConflictError` with correct conflicting file paths when rebase conflicts — use `errors.As` to extract",
             "Test TS-11-21: after `Rebase` returns `*RebaseConflictError`, verify repo is NOT in rebase state (no `.git/rebase-merge` or `.git/rebase-apply` directory exists), confirming `--abort` was called internally",
             "Test TS-11-22: `RebaseAbort` succeeds when repo is in a rebase state (manually put repo into rebase state to test)",
             "Test TS-11-23: `RebaseAbort` returns an error when repo is NOT in a rebase state",
@@ -215,7 +215,7 @@
           "LsRemote tests cover all three exit code paths (0, 1, 2) with correct assertions",
           "MergeTree conflict test uses `errors.As` pattern as specified in PRD",
           "Rebase conflict test verifies absence of `.git/rebase-merge` and `.git/rebase-apply` after conflict return",
-          "No live network calls \u2014 localhost:1 used for exit-code-1 simulation",
+          "No live network calls — localhost:1 used for exit-code-1 simulation",
           "go vet ./internal/gitcmd/... reports no issues"
         ]
       }
@@ -231,7 +231,7 @@
           "details": [
             "Test TS-11-24: `RevParse` returns the correct SHA for a known ref (e.g. HEAD) in a temp repo",
             "Test TS-11-25: `RevParse` returns `*GitError` for an unknown ref",
-            "Test TS-11-26: `UpdateRef` successfully updates a ref to a new SHA \u2014 verify with a subsequent `RevParse` call",
+            "Test TS-11-26: `UpdateRef` successfully updates a ref to a new SHA — verify with a subsequent `RevParse` call",
             "Test TS-11-27: `UpdateRef` returns `*GitError` when given an invalid SHA",
             "Round-trip test: create a commit, capture SHA via `RevParse`, update a custom ref via `UpdateRef`, re-resolve via `RevParse` and assert equality"
           ],
@@ -272,8 +272,8 @@
           "id": "3.3",
           "title": "Write integration coverage and cross-cutting tests",
           "details": [
-            "Test TS-11-35: end-to-end integration test exercising constructor \u2192 Run \u2192 LsRemote \u2192 MergeTree \u2192 Rebase in sequence on a single temp repo",
-            "Test TS-11-36: verify safety variable precedence \u2014 pass `GIT_ALLOW_PROTOCOL=git:https:ssh:http` in `extraEnv`, confirm the hardcoded `file:https:ssh` value wins",
+            "Test TS-11-35: end-to-end integration test exercising constructor → Run → LsRemote → MergeTree → Rebase in sequence on a single temp repo",
+            "Test TS-11-36: verify safety variable precedence — pass `GIT_ALLOW_PROTOCOL=git:https:ssh:http` in `extraEnv`, confirm the hardcoded `file:https:ssh` value wins",
             "Test TS-11-37: verify context cancellation propagates correctly through `Run`, `LsRemote`, and `RevParse`",
             "Test TS-11-38: verify `*GitError` fields (Args, ExitCode, Stderr) are populated for each convenience method on failure",
             "Test TS-11-39: verify `ErrRefNotFound` is a package-level sentinel that can be compared with `errors.Is`"
@@ -343,7 +343,7 @@
           "details": [
             "Create `internal/gitcmd/version.go` with an unexported `parseGitVersion(raw string) error` (or returning a comparable version struct)",
             "Parse output of `git --version` which has the form `git version 2.38.1`",
-            "Extract major and minor version numbers using `strings` and `strconv` \u2014 no external dependencies",
+            "Extract major and minor version numbers using `strings` and `strconv` — no external dependencies",
             "Return error if major < 2, or major == 2 and minor < 38, or if the string is malformed",
             "Document in code comments the exact `git --version` output format the parser was derived from",
             "Ensure the function is exported or accessible for unit testing (e.g. exported as `ParseGitVersion` or tested via internal test package)"
@@ -365,7 +365,7 @@
           "title": "Implement GitRunner constructor with version enforcement",
           "details": [
             "Implement `func New(workDir string, extraEnv []string) (*GitRunner, error)` in `internal/gitcmd/gitcmd.go`",
-            "Validate that `workDir` exists using `os.Stat` \u2014 return error if not found or not a directory",
+            "Validate that `workDir` exists using `os.Stat` — return error if not found or not a directory",
             "Execute `git --version` using `exec.Command` and capture stdout",
             "Call `parseGitVersion` on the output; return a descriptive error if version < 2.38",
             "Assemble the environment: start with `os.Environ()`, append `extraEnv`, then append the three hardcoded safety vars in order: `GIT_ALLOW_PROTOCOL=file:https:ssh`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`",
@@ -479,7 +479,7 @@
         "checks": [
           "Run method tests pass: `go test ./internal/gitcmd/... -run TestRun -v`",
           "RevParse and UpdateRef round-trip tests pass: `go test ./internal/gitcmd/... -run TestRevParse -run TestUpdateRef -v`",
-          "GitError fields (Args, ExitCode, Stderr) are correctly populated \u2014 verified by TS-11-28, TS-11-29",
+          "GitError fields (Args, ExitCode, Stderr) are correctly populated — verified by TS-11-28, TS-11-29",
           "go vet ./internal/gitcmd/... reports no issues",
           "11-REQ-3, 11-REQ-8, 11-REQ-9, 11-REQ-10 acceptance criteria met"
         ]
@@ -556,8 +556,8 @@
             "Create `internal/gitcmd/conflict.go` with an unexported `parseConflictFiles(stdout string) []string` function",
             "Scan stdout line-by-line using `strings.Split(stdout, \"\\n\")`",
             "Identify lines starting with `CONFLICT` prefix",
-            "Extract file path from each CONFLICT line \u2014 document the chosen parsing rule (regex, prefix strip, or delimiter split) in a code comment alongside a representative sample line from git 2.38+",
-            "Representative sample: `CONFLICT (content): Merge conflict in path/to/file.go` \u2014 extract `path/to/file.go` after the last `: ` delimiter",
+            "Extract file path from each CONFLICT line — document the chosen parsing rule (regex, prefix strip, or delimiter split) in a code comment alongside a representative sample line from git 2.38+",
+            "Representative sample: `CONFLICT (content): Merge conflict in path/to/file.go` — extract `path/to/file.go` after the last `: ` delimiter",
             "Return deduplicated slice of file paths; return empty slice (not nil) if no CONFLICT lines found"
           ],
           "test_spec_refs": [
@@ -617,7 +617,7 @@
             "Implement `func (r *GitRunner) RebaseAbort(ctx context.Context) error` in `internal/gitcmd/gitcmd.go`",
             "Call `r.Run(ctx, \"rebase\", \"--abort\")` and return any error as-is",
             "Add godoc comment explaining this is for edge-case manual recovery when context cancellation interrupts a rebase mid-flight",
-            "Note that `Rebase` calls this internally on conflict \u2014 `RebaseAbort` is only for the context-cancellation edge case"
+            "Note that `Rebase` calls this internally on conflict — `RebaseAbort` is only for the context-cancellation edge case"
           ],
           "test_spec_refs": [
             "TS-11-22",
@@ -638,7 +638,7 @@
             "On success (exit code 0): call `r.RevParse(ctx, \"HEAD\")` and return the new HEAD SHA",
             "On non-zero exit (conflict): immediately call `r.Run(ctx, \"rebase\", \"--abort\")` to clean up rebase state, then parse conflicting files from stderr/stdout and return `(\"\", &RebaseConflictError{ConflictingFiles: paths})`",
             "Add godoc comment explaining the internal abort behavior and that callers must use `errors.As` to extract `*RebaseConflictError`",
-            "Document the distinction: conflict \u2192 `RebaseConflictError`; context cancellation \u2192 context error (caller must call `RebaseAbort` manually)"
+            "Document the distinction: conflict → `RebaseConflictError`; context cancellation → context error (caller must call `RebaseAbort` manually)"
           ],
           "test_spec_refs": [
             "TS-11-19",
@@ -656,7 +656,7 @@
           "title": "Implement rebase conflict file path parsing",
           "details": [
             "Add an unexported `parseRebaseConflictFiles(output string) []string` function in `internal/gitcmd/conflict.go`",
-            "Parse git rebase conflict output to extract conflicting file paths \u2014 git rebase outputs `CONFLICT (content): Merge conflict in <path>` lines to stdout/stderr",
+            "Parse git rebase conflict output to extract conflicting file paths — git rebase outputs `CONFLICT (content): Merge conflict in <path>` lines to stdout/stderr",
             "Document the exact output format observed from git 2.38+ rebase in code comments alongside a representative sample",
             "Reuse or adapt `parseConflictFiles` logic if the format is identical to merge-tree output",
             "Return empty slice (not nil) if no conflict paths found"
@@ -759,7 +759,7 @@
           "Full test suite passes: `go test ./internal/gitcmd/... -count=1 -v`",
           "Race detector passes: `go test -race ./internal/gitcmd/... -count=1`",
           "All 39 test cases (TS-11-1 through TS-11-39) have corresponding passing tests",
-          "No test uses mock frameworks \u2014 only `testing`, `os`, and real git binary",
+          "No test uses mock frameworks — only `testing`, `os`, and real git binary",
           "go vet ./internal/gitcmd/... reports no issues",
           "11-REQ-11, 11-REQ-13 acceptance criteria met"
         ]
@@ -772,14 +772,14 @@
       "subtasks": [
         {
           "id": "10.1",
-          "title": "Trace execution paths \u2014 verify no stubs remain",
+          "title": "Trace execution paths — verify no stubs remain",
           "details": [
             "Search `internal/gitcmd/` for stub markers: `panic(\"not implemented\")`, bare `return nil` in non-trivial paths, `// TODO`, `// FIXME`",
-            "Verify `New` \u2192 `parseGitVersion` \u2192 version check chain is fully wired (no stub returns)",
-            "Verify `Run` \u2192 `exec.CommandContext` \u2192 stdout/stderr capture \u2192 `*GitError` chain is complete",
-            "Verify `LsRemote` \u2192 `runWithExitCode` \u2192 three-way exit code discrimination chain is complete",
-            "Verify `MergeTree` \u2192 `runWithExitCode` \u2192 `parseConflictFiles` \u2192 `*MergeConflictError` chain is complete",
-            "Verify `Rebase` \u2192 `runWithExitCode` \u2192 internal `--abort` \u2192 `parseRebaseConflictFiles` \u2192 `*RebaseConflictError` chain is complete"
+            "Verify `New` → `parseGitVersion` → version check chain is fully wired (no stub returns)",
+            "Verify `Run` → `exec.CommandContext` → stdout/stderr capture → `*GitError` chain is complete",
+            "Verify `LsRemote` → `runWithExitCode` → three-way exit code discrimination chain is complete",
+            "Verify `MergeTree` → `runWithExitCode` → `parseConflictFiles` → `*MergeConflictError` chain is complete",
+            "Verify `Rebase` → `runWithExitCode` → internal `--abort` → `parseRebaseConflictFiles` → `*RebaseConflictError` chain is complete"
           ],
           "test_spec_refs": [],
           "requirement_refs": [
@@ -827,10 +827,10 @@
           "id": "10.3",
           "title": "Stub and dead-code audit",
           "details": [
-            "Run `grep -rn 'panic(\"not implemented\")' internal/gitcmd/` \u2014 must return no results",
-            "Run `grep -rn 'TODO\\|FIXME\\|HACK' internal/gitcmd/` \u2014 review any hits and resolve or document",
+            "Run `grep -rn 'panic(\"not implemented\")' internal/gitcmd/` — must return no results",
+            "Run `grep -rn 'TODO\\|FIXME\\|HACK' internal/gitcmd/` — review any hits and resolve or document",
             "Verify no method has a bare `return nil` where a real implementation is expected",
-            "Confirm `parseGitVersion`, `parseConflictFiles`, and `parseRebaseConflictFiles` are not stubs \u2014 each must have real parsing logic with documented sample input",
+            "Confirm `parseGitVersion`, `parseConflictFiles`, and `parseRebaseConflictFiles` are not stubs — each must have real parsing logic with documented sample input",
             "Confirm `ErrRefNotFound` is a real sentinel value, not a placeholder comment"
           ],
           "test_spec_refs": [],
@@ -848,7 +848,7 @@
         "id": "10.V",
         "checks": [
           "No stub markers found: `grep -rn 'panic(\"not implemented\")' internal/gitcmd/` returns empty",
-          "All execution paths (New\u2192parseGitVersion, Run\u2192exec.Cmd, LsRemote\u2192three-way discrimination, MergeTree\u2192conflict parse, Rebase\u2192abort\u2192conflict parse) are fully implemented",
+          "All execution paths (New→parseGitVersion, Run→exec.Cmd, LsRemote→three-way discrimination, MergeTree→conflict parse, Rebase→abort→conflict parse) are fully implemented",
           "ErrRefNotFound is a real package-level sentinel detectable via errors.Is",
           "Return values propagate correctly: Run returns trimmed stdout, LsRemote returns ErrRefNotFound on exit 2, MergeTree returns tree SHA or *MergeConflictError, Rebase returns new HEAD SHA or *RebaseConflictError"
         ]
@@ -861,11 +861,11 @@
       "subtasks": [
         {
           "id": "11.1",
-          "title": "Call-site verification \u2014 confirm GitRunner is wired into production code",
+          "title": "Call-site verification — confirm GitRunner is wired into production code",
           "details": [
             "Verify that `internal/gitcmd` is imported by at least one production package (not only test files)",
             "If downstream specs (`merge_operations`, `upstream_sync`) are not yet implemented, document the expected import path and add a `// TODO: wire into merge_operations` comment",
-            "Confirm `New(workDir, extraEnv)` is called from production code (not just tests) \u2014 search for `gitcmd.New(` in non-test Go files",
+            "Confirm `New(workDir, extraEnv)` is called from production code (not just tests) — search for `gitcmd.New(` in non-test Go files",
             "If no production caller exists yet, flag this as a known gap and create a tracking comment in the package doc",
             "Verify no stub/dead-code patterns remain: `grep -rn 'panic(\"not implemented\")\\|// TODO\\|// FIXME' internal/gitcmd/` returns no results"
           ],
