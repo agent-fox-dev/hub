@@ -19,6 +19,9 @@ import (
 func TestSyncStateMachine_ValidTransitions(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Install stub: sync returns up-to-date (successful sync path).
+	stubSyncUpToDate(t, "abc1234567890abcdef1234567890abcdef123456")
+
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "sm-ws",
 		GitURL:      "https://github.com/example/repo.git",
@@ -103,6 +106,9 @@ func TestSyncStateMachine_ValidTransitions(t *testing.T) {
 // Requirement: 13-REQ-9.2
 func TestSyncStateMachine_ErrorAllowsRetry(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: sync returns up-to-date on retry.
+	stubSyncUpToDate(t, "abc1234567890abcdef1234567890abcdef123456")
 
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "error-retry-ws",
@@ -209,6 +215,10 @@ func TestSyncStateMachine_SyncingTransitionDBFailure(t *testing.T) {
 // Requirement: 13-REQ-4.5, 13-PROP-1
 func TestSyncStateMachine_DeferredCleanupOnContextCancel(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: sync returns up-to-date (but the test validates that
+	// after completion, sync_status is not stuck at 'syncing').
+	stubSyncUpToDate(t, "abc1234567890abcdef1234567890abcdef123456")
 
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "cancel-ws",

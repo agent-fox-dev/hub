@@ -16,6 +16,7 @@ func WorkspacePermissions() []apikit.Permission {
 		{Resource: "workspaces", Action: "create"},
 		{Resource: "workspaces", Action: "write"},
 		{Resource: "workspaces", Action: "delete"},
+		{Resource: "workspaces", Action: "sync"},
 	}
 }
 
@@ -60,6 +61,7 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.PATCH("/workspaces/:slug", handleUpdateWorkspace(db))
 	api.POST("/workspaces/:slug/archive", handleArchiveWorkspace(db))
 	api.POST("/workspaces/:slug/reactivate", handleReactivateWorkspace(db))
+	api.POST("/workspaces/:slug/sync", handleSyncWorkspace(db))
 	api.DELETE("/workspaces/:slug", handleDeleteWorkspace(db))
 	return nil
 }

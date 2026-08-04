@@ -3,12 +3,85 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
+
+// stubSyncUpToDate installs a syncFetchAndCompareFn that returns "up_to_date"
+// with the provided SHA as the upstream HEAD. Restores the original function
+// on test cleanup.
+func stubSyncUpToDate(t *testing.T, sha string) {
+	t.Helper()
+	old := syncFetchAndCompareFn
+	oldRef := syncUpdateLocalRefFn
+	syncFetchAndCompareFn = func(ctx context.Context, repoPath string, auth transport.AuthMethod, branch *string, localHeadSHA string) (string, string, error) {
+		return sha, "up_to_date", nil
+	}
+	syncUpdateLocalRefFn = func(repoPath string, branch *string, newSHA string) error {
+		return nil
+	}
+	t.Cleanup(func() {
+		syncFetchAndCompareFn = old
+		syncUpdateLocalRefFn = oldRef
+	})
+}
+
+// stubSyncFastForward installs a syncFetchAndCompareFn that returns "fast_forward"
+// with newSHA as the upstream HEAD. syncUpdateLocalRefFn succeeds.
+func stubSyncFastForward(t *testing.T, newSHA string) {
+	t.Helper()
+	old := syncFetchAndCompareFn
+	oldRef := syncUpdateLocalRefFn
+	syncFetchAndCompareFn = func(ctx context.Context, repoPath string, auth transport.AuthMethod, branch *string, localHeadSHA string) (string, string, error) {
+		return newSHA, "fast_forward", nil
+	}
+	syncUpdateLocalRefFn = func(repoPath string, branch *string, sha string) error {
+		return nil
+	}
+	t.Cleanup(func() {
+		syncFetchAndCompareFn = old
+		syncUpdateLocalRefFn = oldRef
+	})
+}
+
+// stubSyncDiverged installs a syncFetchAndCompareFn that returns "diverged"
+// with upstreamSHA as the upstream HEAD.
+func stubSyncDiverged(t *testing.T, upstreamSHA string) {
+	t.Helper()
+	old := syncFetchAndCompareFn
+	syncFetchAndCompareFn = func(ctx context.Context, repoPath string, auth transport.AuthMethod, branch *string, localHeadSHA string) (string, string, error) {
+		return upstreamSHA, "diverged", nil
+	}
+	t.Cleanup(func() { syncFetchAndCompareFn = old })
+}
+
+// stubSyncFetchError installs a syncFetchAndCompareFn that returns an error.
+func stubSyncFetchError(t *testing.T, errMsg string) {
+	t.Helper()
+	old := syncFetchAndCompareFn
+	syncFetchAndCompareFn = func(ctx context.Context, repoPath string, auth transport.AuthMethod, branch *string, localHeadSHA string) (string, string, error) {
+		return "", "", fmt.Errorf("%s", errMsg)
+	}
+	t.Cleanup(func() { syncFetchAndCompareFn = old })
+}
+
+// stubSyncBlocking installs a syncFetchAndCompareFn that blocks until the
+// context is cancelled, then returns the context error.
+func stubSyncBlocking(t *testing.T) {
+	t.Helper()
+	old := syncFetchAndCompareFn
+	syncFetchAndCompareFn = func(ctx context.Context, repoPath string, auth transport.AuthMethod, branch *string, localHeadSHA string) (string, string, error) {
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	}
+	t.Cleanup(func() { syncFetchAndCompareFn = old })
+}
 
 // ========================================================================
 // Spec 13 Task 2.1: Sync algorithm — fetch and fast-forward
@@ -29,6 +102,9 @@ import (
 //   - called remote.Fetch() to fetch from upstream
 func TestSyncAlgorithm_SetsStatusSyncingAndFetches(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: sync returns up-to-date (successful sync path).
+	stubSyncUpToDate(t, "abc1234567890abcdef1234567890abcdef123456")
 
 	// Seed workspace with all preconditions passing:
 	// status='active', clone_status='ready'.
@@ -80,6 +156,10 @@ func TestSyncAlgorithm_AlreadyUpToDate(t *testing.T) {
 	env := newTestEnv(t)
 
 	headSHA := "abc1234567890abcdef1234567890abcdef123456"
+
+	// Install stub: upstream HEAD matches local HEAD → up_to_date.
+	stubSyncUpToDate(t, headSHA)
+
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "uptodate-ws",
 		GitURL:      "https://github.com/example/repo.git",
@@ -146,6 +226,11 @@ func TestSyncAlgorithm_FastForward(t *testing.T) {
 	env := newTestEnv(t)
 
 	originalSHA := "aaaa234567890abcdef1234567890abcdef123456"
+	newSHA := "bbbb234567890abcdef1234567890abcdef123456"
+
+	// Install stub: upstream HEAD is descendant of local → fast_forward.
+	stubSyncFastForward(t, newSHA)
+
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "ff-ws",
 		GitURL:      "https://github.com/example/repo.git",
@@ -215,6 +300,9 @@ func TestSyncAlgorithm_FastForward(t *testing.T) {
 // Property: 13-PROP-7 (last_sync_at not updated on failure)
 func TestSyncAlgorithm_FetchFailureSetsError(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: fetch returns a network error.
+	stubSyncFetchError(t, "dial tcp: connection refused")
 
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "fetch-fail-ws",
@@ -297,6 +385,11 @@ func TestSyncAlgorithm_DivergedForcePush(t *testing.T) {
 	env := newTestEnv(t)
 
 	originalSHA := "aaaa234567890abcdef1234567890abcdef123456"
+	upstreamSHA := "cccc234567890abcdef1234567890abcdef123456"
+
+	// Install stub: upstream HEAD has diverged (force-push detected).
+	stubSyncDiverged(t, upstreamSHA)
+
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "diverged-ws",
 		GitURL:      "https://github.com/example/repo.git",
@@ -385,6 +478,9 @@ func TestSyncAlgorithm_DivergedForcePush(t *testing.T) {
 // Property: 13-PROP-1 (sync_status never permanently stuck in 'syncing')
 func TestSyncAlgorithm_ContextCancellation(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: fetch blocks until context is cancelled.
+	stubSyncBlocking(t)
 
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "ctx-ws",

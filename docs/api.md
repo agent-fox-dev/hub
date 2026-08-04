@@ -33,6 +33,7 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
+| `workspaces:sync` | Trigger upstream sync operations on workspaces | POST /api/v1/workspaces/:slug/sync |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
 | `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
 | `secrets:manage` | Full CRUD access to secrets; implies `secrets:list`, `secrets:write`, and `secrets:delete` | POST, GET, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets |
@@ -362,6 +363,71 @@ enqueued.
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
 | 409 | Workspace is not archived |
+
+---
+
+### POST /api/v1/workspaces/:slug/sync
+
+Trigger an upstream sync operation that fetches from the remote repository and
+fast-forwards the local integration branch if possible. If a force-push is
+detected (upstream history has diverged), the sync sets an error state with
+instructions to use the `--reset-to-upstream` flag for recovery.
+
+**Authentication:** API Key, or PAT with `workspaces:sync` scope. Admin
+tokens can sync any workspace.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug to sync |
+
+**Preconditions:**
+
+The sync operation requires all of the following:
+
+- Workspace status is `"active"` (not archived)
+- Clone status is `"ready"` (clone complete)
+- Sync mode is not `"disabled"`
+- Sync status is not `"syncing"` (no concurrent syncs)
+
+**Sync Outcomes:**
+
+| Outcome | Description | HTTP Status |
+|---------|-------------|-------------|
+| Up to date | Upstream HEAD equals local HEAD; `last_sync_at` is updated | 200 |
+| Fast-forward | Upstream HEAD is a descendant of local HEAD; `head_sha` is advanced to upstream HEAD | 200 |
+| Diverged | Upstream HEAD is not a descendant of local HEAD (force-push detected); `sync_status` set to `"error"` | 409 |
+| Fetch failure | Network error, auth failure, or repo open failure; `sync_status` set to `"error"` | 502 |
+| Context cancelled | Request cancelled mid-sync (timeout or client disconnect); `sync_status` set to `"error"` | 504 |
+
+**Response (success):** HTTP 200 OK with updated workspace JSON. The response
+includes updated `sync_status`, `head_sha`, `upstream_head_sha`, and
+`last_sync_at` fields.
+
+**State Machine:**
+
+The `sync_status` field follows a strict state machine:
+
+- `idle` → `syncing` → `idle` (successful sync)
+- `idle` → `syncing` → `error` (failed sync)
+- `error` → `syncing` → `idle` (recovery after operator resolution)
+
+The handler guarantees that `sync_status` never remains stuck in `"syncing"`:
+a deferred cleanup function transitions to `"error"` on context cancellation
+or unexpected failures.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Workspace is not active; clone is not ready; sync is disabled |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `workspaces:sync` scope |
+| 404 | Workspace not found |
+| 409 | Sync already in progress (concurrent sync rejected); upstream history has diverged (force-push detected) |
+| 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
+| 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
 ---
 

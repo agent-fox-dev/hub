@@ -293,7 +293,7 @@ These 6 permissions are registered automatically by `apikit`'s
 
 ## Hub Workspace Permissions
 
-These 4 permissions are registered by `WorkspacePermissions()` in
+These 5 permissions are registered by `WorkspacePermissions()` in
 `hub/internal/workspace/routes.go` and passed to `apikit.Server.MountHandlers()`
 at startup.
 
@@ -332,6 +332,15 @@ at startup.
 | **Grants** | Permanently delete archived workspaces owned by the authenticated user |
 | **Endpoints** | `DELETE /api/v1/workspaces/:slug` |
 | **Does NOT imply** | `workspaces:read` — a PAT with only `workspaces:delete` cannot list or view workspaces |
+
+### workspaces:sync
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Trigger upstream sync operations on workspaces. Includes fetching from upstream, fast-forwarding the integration branch, and triggering reset-to-upstream recovery. |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/sync` |
+| **Does NOT imply** | `workspaces:read` — a PAT with only `workspaces:sync` cannot list or view workspaces |
 
 ---
 
@@ -467,7 +476,7 @@ for startup registration.
 
 ## Complete Permission List
 
-All 20 registered permission scopes, sorted alphabetically:
+All 21 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -490,7 +499,8 @@ All 20 registered permission scopes, sorted alphabetically:
 | 17 | `workspaces:create` | hub | workspaces | create |
 | 18 | `workspaces:delete` | hub | workspaces | delete |
 | 19 | `workspaces:read` | hub | workspaces | read |
-| 20 | `workspaces:write` | hub | workspaces | write |
+| 20 | `workspaces:sync` | hub | workspaces | sync |
+| 21 | `workspaces:write` | hub | workspaces | write |
 
 ---
 
