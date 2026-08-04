@@ -229,18 +229,17 @@ func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, e
 
 // MergeTree executes git merge-tree --write-tree for read-only conflict
 // detection. Returns the tree SHA on a clean merge, or *MergeConflictError
-// when conflicts are detected.
+// when conflicts are detected. Callers must use errors.As to extract
+// *MergeConflictError from the returned error.
 //
-// CONFLICT line parsing rule:
-// git merge-tree --write-tree (git 2.38+) emits conflict information to
-// stdout. Lines starting with "CONFLICT" indicate merge conflicts. The file
-// path is extracted from lines matching the format:
+// On non-zero exit without CONFLICT lines in stdout (e.g. invalid SHA
+// arguments), *GitError is returned instead.
 //
-//	CONFLICT (content): Merge conflict in path/to/file.go
+// Note: merge-tree --write-tree requires git >= 2.38, which is enforced
+// at construction time by New.
 //
-// The parser splits on "Merge conflict in " and takes the remainder as the
-// file path. If a CONFLICT line does not match this format, the raw token
-// after the last space is used as a best-effort file path.
+// See parseConflictFiles in conflict.go for the CONFLICT line parsing rule
+// and representative sample output.
 func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, error) {
 	args := []string{"merge-tree", "--write-tree", base, head}
 
@@ -275,39 +274,6 @@ func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, e
 	}
 
 	return strings.TrimSpace(lines[0]), nil
-}
-
-// parseConflictFiles scans git merge-tree output line-by-line for lines
-// starting with "CONFLICT" and extracts file paths.
-//
-// Representative sample output from git 2.38+:
-//
-//	CONFLICT (content): Merge conflict in path/to/file.go
-func parseConflictFiles(output string) []string {
-	var files []string
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "CONFLICT") {
-			continue
-		}
-
-		// Try to extract file path from "Merge conflict in <path>" format.
-		const marker = "Merge conflict in "
-		if idx := strings.Index(line, marker); idx >= 0 {
-			path := strings.TrimSpace(line[idx+len(marker):])
-			files = append(files, path)
-			continue
-		}
-
-		// Best-effort: use the last space-delimited token as the path.
-		parts := strings.Fields(line)
-		if len(parts) > 0 {
-			files = append(files, parts[len(parts)-1])
-		} else {
-			files = append(files, "")
-		}
-	}
-	return files
 }
 
 // Rebase executes git rebase <onto> with automatic abort on conflict.
