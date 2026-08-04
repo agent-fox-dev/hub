@@ -45,13 +45,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Reconcile any workspaces stuck in 'syncing' state from a previous
-	// unclean shutdown. Must run before the HTTP server starts accepting
-	// requests (13-REQ-5.1). Aborts startup on failure (13-REQ-5.E1).
-	if err := workspace.ReconcileStuckSyncs(database.SqlDB); err != nil {
-		log.Fatal(err)
-	}
-
 	// Initialize the async clone job queue with the configured number of
 	// workers. The server context controls worker lifecycle; cancelling it
 	// interrupts in-progress clones and discards pending jobs.
@@ -134,6 +127,14 @@ func main() {
 	// workspace handlers with workspace, git, secrets, variables, and
 	// merge permission scopes registered.
 	if err := workspace.MountWorkspaceHandlers(server, database, extraPerms...); err != nil {
+		log.Fatal(err)
+	}
+
+	// Reconcile any workspaces stuck in 'syncing' state from a previous
+	// unclean shutdown. Must run after schema init and before the HTTP server
+	// starts accepting requests (13-REQ-5.1). Aborts startup on failure
+	// (13-REQ-5.E1).
+	if err := workspace.ReconcileStuckSyncs(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
 

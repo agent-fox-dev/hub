@@ -3,7 +3,6 @@ package workspace
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -59,14 +58,20 @@ func initSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to create workspaces table: %w", err)
 	}
 
-	// Apply sync field migrations idempotently. Each ALTER TABLE ADD COLUMN
-	// is executed independently; "duplicate column" errors are expected and
-	// logged as informational messages rather than fatal errors.
+	// Apply sync field migrations idempotently. Query existing columns first
+	// so we only run ALTER TABLE for genuinely missing columns, avoiding
+	// noisy "duplicate column" errors on every startup (13-REQ-1.E1).
+	existing, err := existingColumns(db, "workspaces")
+	if err != nil {
+		return fmt.Errorf("sync schema migration: %w", err)
+	}
 	for _, ddl := range syncFieldDDL {
+		col := extractColumnName(ddl)
+		if col != "" && existing[col] {
+			continue
+		}
 		if _, err := db.Exec(ddl); err != nil {
-			// 13-REQ-1.E1: If the column already exists, log and continue.
 			if isDuplicateColumnError(err) {
-				log.Printf("INFO: sync schema migration skipped (column already exists): %v", err)
 				continue
 			}
 			return fmt.Errorf("sync schema migration failed: %w", err)
@@ -74,6 +79,43 @@ func initSchema(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// existingColumns returns the set of column names present in the given table.
+func existingColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
+}
+
+// extractColumnName parses "ALTER TABLE ... ADD COLUMN <name> ..." and
+// returns the column name, or "" if the DDL doesn't match.
+func extractColumnName(ddl string) string {
+	const marker = "ADD COLUMN "
+	idx := strings.Index(strings.ToUpper(ddl), marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(ddl[idx+len(marker):])
+	if sp := strings.IndexByte(rest, ' '); sp > 0 {
+		return rest[:sp]
+	}
+	return rest
 }
 
 // isDuplicateColumnError checks whether the error indicates a duplicate
