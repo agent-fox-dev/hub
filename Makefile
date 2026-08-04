@@ -58,12 +58,9 @@ hub-reset:
 	rm -rf bin/data bin/config
 	mkdir -p bin/data bin/config
 	cp bin/config.toml bin/config/config.toml
-	podman run --rm -it \
-		-p $(PORT):8080 \
-		-v $(CURDIR)/bin/config:/config \
-		-v $(CURDIR)/bin/data:/data \
-		$(IMAGE):$(IMAGE_TAG) \
-		/usr/bin/hub --admin-email=hello@micku.me
+	XDG_CONFIG_HOME=$(CURDIR)/bin/config \
+	XDG_DATA_HOME=$(CURDIR)/bin/data \
+	./bin/hub --admin-email=hello@micku.me
 
 # Run bin/hub directly using config/data created by hub-reset
 hub-run:
