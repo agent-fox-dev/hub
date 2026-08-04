@@ -23,7 +23,10 @@ func newTestQueueWithLogCapture(t *testing.T, opts ...Option) (*Queue, *sql.DB, 
 	}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	q := New(db, logger, opts...)
+	q, err := New(db, logger, opts...)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
 	return q, db, &buf
 }
 
@@ -183,7 +186,10 @@ func TestRecovery_DatabaseQueryFailure(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	q := New(db, logger)
+	q, newErr := New(db, logger)
+	if newErr != nil {
+		t.Fatalf("New() returned error: %v", newErr)
+	}
 
 	// Close the database to cause the recovery query to fail.
 	db.Close()

@@ -44,7 +44,10 @@ func newTestQueue(t *testing.T) (*Queue, *sql.DB) {
 		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(testWriter{t}, nil))
-	q := New(db, logger)
+	q, err := New(db, logger)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
 	return q, db
 }
 
@@ -117,7 +120,10 @@ func newTestQueueWithOpts(t *testing.T, opts ...Option) (*Queue, *sql.DB) {
 		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(testWriter{t}, nil))
-	q := New(db, logger, opts...)
+	q, err := New(db, logger, opts...)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
 	return q, db
 }
 
