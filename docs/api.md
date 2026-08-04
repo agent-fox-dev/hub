@@ -35,6 +35,14 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
 | `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
+| `secrets:manage` | Full CRUD access to secrets; implies `secrets:list`, `secrets:write`, and `secrets:delete` | POST, GET, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets |
+| `secrets:list` | List access to secret names (values never returned) | GET /api/v1/user/secrets, GET /api/v1/orgs/:slug/secrets, GET /api/v1/workspaces/:slug/secrets |
+| `secrets:write` | Update existing secret values | PATCH /api/v1/user/secrets/:key, PATCH /api/v1/orgs/:slug/secrets/:key, PATCH /api/v1/workspaces/:slug/secrets/:key |
+| `secrets:delete` | Delete secrets | DELETE /api/v1/user/secrets/:key, DELETE /api/v1/orgs/:slug/secrets/:key, DELETE /api/v1/workspaces/:slug/secrets/:key |
+| `vars:manage` | Full CRUD access to variables; implies `vars:read`, `vars:write`, and `vars:delete` | POST, GET, PATCH, DELETE on /api/v1/user/vars, /api/v1/orgs/:slug/vars, /api/v1/workspaces/:slug/vars |
+| `vars:read` | Read and list variable values | GET /api/v1/user/vars, GET /api/v1/orgs/:slug/vars, GET /api/v1/workspaces/:slug/vars, GET /api/v1/workspaces/:slug/vars/resolved |
+| `vars:write` | Update existing variable values; implies `vars:read` | PATCH + all `vars:read` endpoints |
+| `vars:delete` | Delete variables | DELETE /api/v1/user/vars/:key, DELETE /api/v1/orgs/:slug/vars/:key, DELETE /api/v1/workspaces/:slug/vars/:key |
 
 ### Implied Permissions
 
@@ -46,6 +54,12 @@ they can access. The following scopes are available for workspace operations:
   `workspaces:delete` cannot list or view workspaces.
 - `git:write` implies `git:read` — a PAT with git write scope can also clone
   and fetch.
+- `secrets:manage` implies `secrets:list`, `secrets:write`, and
+  `secrets:delete` — a PAT with manage scope has full CRUD access to secrets.
+- `vars:manage` implies `vars:read`, `vars:write`, and `vars:delete` — a PAT
+  with manage scope has full CRUD access to variables.
+- `vars:write` implies `vars:read` — a PAT with write scope can also list and
+  read variable values.
 
 ### Anti-Enumeration Policy
 
@@ -130,7 +144,10 @@ workspace requires a real user as owner.
   "branch": "main",
   "org_id": "uuid-string",
   "display_name": "My Project",
-  "description": "A description of the workspace"
+  "description": "A description of the workspace",
+  "git_pat": "ghp_xxxxxxxxxxxx",
+  "git_username": "user",
+  "git_password": "token-or-password"
 }
 ```
 
@@ -139,9 +156,16 @@ workspace requires a real user as owner.
 | `slug` | yes | string | Globally unique, URL-safe identifier |
 | `git_url` | yes | string | Valid HTTPS or SSH git URL |
 | `branch` | no | string | Git ref; defaults to null |
-| `org_id` | no | string (UUID) | Must reference an org the owner is a member of |
+| `org_id` | no | string (UUID) | Must reference an org the owner is a member of; when omitted or empty, the server auto-assigns the user's personal organization |
 | `display_name` | no | string | Max 128 characters; defaults to slug value if omitted or empty |
 | `description` | no | string | Max 1024 characters; defaults to empty string if omitted |
+| `git_pat` | no | string | Personal access token for private repo auth; mutually exclusive with `git_username`/`git_password`; requires HTTPS `git_url` |
+| `git_username` | no | string | Git username for HTTP basic auth; must be paired with `git_password`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
+| `git_password` | no | string | Git password for HTTP basic auth; must be paired with `git_username`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
+
+**Auto-Org Assignment:** When `org_id` is omitted or empty, the server
+automatically assigns the workspace to the user's personal organization. If
+the user has no personal organization, the server returns HTTP 400.
 
 **Response:** HTTP 201 Created with workspace JSON.
 
@@ -150,10 +174,16 @@ workspace requires a real user as owner.
 | Status | Condition |
 |--------|-----------|
 | 400 | Missing required fields (`slug`, `git_url`), or `display_name` exceeds 128 characters, or `description` exceeds 1024 characters |
+| 400 | `git_pat` and `git_username`/`git_password` provided together (mutually exclusive) |
+| 400 | `git_username` provided without `git_password` or vice versa |
+| 400 | Git credential values are empty strings |
+| 400 | Git credentials provided with non-HTTPS `git_url` |
+| 400 | Credential validation failed (ls-remote check fails) |
+| 400 | User has no personal organization (when `org_id` is omitted) |
 | 401 | Unauthenticated request |
 | 403 | Admin token attempted to create a workspace; PAT lacks `workspaces:create` scope |
 | 409 | A workspace with the given `slug` already exists |
-| 500 | Internal server error (e.g., database error, org membership check failure) |
+| 500 | Internal server error (e.g., database error, org membership check failure, credential storage failure) |
 
 ---
 
@@ -435,6 +465,757 @@ database and resets the working tree to match the new HEAD.
 | 401 | Missing or invalid credentials |
 | 403 | PAT lacks `git:write` scope |
 | 404 | Workspace not found, org mismatch, or clone not ready |
+
+---
+
+## Secrets Endpoints
+
+Secrets are scoped to a user, organization, or workspace. Secret values are
+stored as base64-encoded strings and are **never returned by the API** -- only
+key names and timestamps are included in responses.
+
+### Secret Validation Rules
+
+| Rule | Constraint |
+|------|-----------|
+| Key format | Alphanumeric characters and underscores only; cannot start with a digit |
+| Key length | Max 255 characters |
+| Value size | Max 256 KB (262,144 bytes) |
+| Per-scope limit | 100 entries per (owner_type, owner_id) |
+| Key lookup | Case-insensitive |
+
+### Secret Response Schema
+
+```json
+{
+  "key": "MY_SECRET",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+```
+
+No `value` field is ever returned for secrets.
+
+---
+
+### POST /api/v1/user/secrets
+
+Create one or more user-scoped secrets.
+
+**Authentication:** API Key, or PAT with `secrets:manage` scope.
+
+**Request Body:**
+
+```json
+{
+  "entries": [
+    {"key": "MY_SECRET", "value": "secret-value"},
+    {"key": "ANOTHER_SECRET", "value": "another-value"}
+  ]
+}
+```
+
+**Response:** HTTP 201 Created with a JSON array of secret entries.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Validation error (empty entries, invalid key format, value too large, per-scope limit exceeded) |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `secrets:manage` scope |
+| 409 | Duplicate key (case-insensitive) |
+
+---
+
+### GET /api/v1/user/secrets
+
+List all user-scoped secrets.
+
+**Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
+scope.
+
+**Response:** HTTP 200 OK with a JSON array of secret entries, sorted by key
+(case-insensitive).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+
+---
+
+### PATCH /api/v1/user/secrets/:key
+
+Update the value of a user-scoped secret.
+
+**Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
+scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:key` | The secret key to update (case-insensitive lookup) |
+
+**Request Body:**
+
+```json
+{
+  "value": "new-secret-value"
+}
+```
+
+**Response:** HTTP 200 OK with the updated secret entry.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `value` field |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Key not found |
+
+---
+
+### DELETE /api/v1/user/secrets/:key
+
+Delete a user-scoped secret.
+
+**Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
+scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:key` | The secret key to delete (case-insensitive lookup) |
+
+**Response:** HTTP 204 No Content.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Key not found |
+
+---
+
+### POST /api/v1/orgs/:slug/secrets
+
+Create one or more organization-scoped secrets.
+
+**Authentication:** API Key, or PAT with `secrets:manage` scope. Requires
+organization membership (admin bypasses membership check).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+
+**Request Body:** Same as `POST /api/v1/user/secrets`.
+
+**Response:** HTTP 201 Created with a JSON array of secret entries.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Validation error |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `secrets:manage` scope |
+| 404 | Organization not found or user is not a member |
+| 409 | Duplicate key (case-insensitive) |
+
+---
+
+### GET /api/v1/orgs/:slug/secrets
+
+List all organization-scoped secrets.
+
+**Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
+scope. Requires organization membership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+
+**Response:** HTTP 200 OK with a JSON array of secret entries, sorted by key
+(case-insensitive).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Organization not found or user is not a member |
+
+---
+
+### PATCH /api/v1/orgs/:slug/secrets/:key
+
+Update the value of an organization-scoped secret.
+
+**Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
+scope. Requires organization membership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+| `:key` | The secret key to update (case-insensitive lookup) |
+
+**Request Body:** Same as `PATCH /api/v1/user/secrets/:key`.
+
+**Response:** HTTP 200 OK with the updated secret entry.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `value` field |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Organization not found, user is not a member, or key not found |
+
+---
+
+### DELETE /api/v1/orgs/:slug/secrets/:key
+
+Delete an organization-scoped secret.
+
+**Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
+scope. Requires organization membership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+| `:key` | The secret key to delete (case-insensitive lookup) |
+
+**Response:** HTTP 204 No Content.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Organization not found, user is not a member, or key not found |
+
+---
+
+### POST /api/v1/workspaces/:slug/secrets
+
+Create one or more workspace-scoped secrets.
+
+**Authentication:** API Key, or PAT with `secrets:manage` scope. Requires
+workspace ownership (admin bypasses ownership check).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Request Body:** Same as `POST /api/v1/user/secrets`.
+
+**Response:** HTTP 201 Created with a JSON array of secret entries.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Validation error |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `secrets:manage` scope |
+| 404 | Workspace not found or not owned by the authenticated user |
+| 409 | Duplicate key (case-insensitive) |
+
+---
+
+### GET /api/v1/workspaces/:slug/secrets
+
+List all workspace-scoped secrets.
+
+**Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
+scope. Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Response:** HTTP 200 OK with a JSON array of secret entries, sorted by key
+(case-insensitive).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found or not owned by the authenticated user |
+
+---
+
+### PATCH /api/v1/workspaces/:slug/secrets/:key
+
+Update the value of a workspace-scoped secret.
+
+**Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
+scope. Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:key` | The secret key to update (case-insensitive lookup) |
+
+**Request Body:** Same as `PATCH /api/v1/user/secrets/:key`.
+
+**Response:** HTTP 200 OK with the updated secret entry.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `value` field |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found, not owned by user, or key not found |
+
+---
+
+### DELETE /api/v1/workspaces/:slug/secrets/:key
+
+Delete a workspace-scoped secret.
+
+**Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
+scope. Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:key` | The secret key to delete (case-insensitive lookup) |
+
+**Response:** HTTP 204 No Content.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found, not owned by user, or key not found |
+
+---
+
+## Variables Endpoints
+
+Variables are scoped to a user, organization, or workspace. Unlike secrets,
+variable values **are returned** by the API. Values are stored as
+base64-encoded strings internally but are returned decoded.
+
+### Variable Validation Rules
+
+Same validation rules as secrets apply (see Secret Validation Rules above).
+
+### Variable Response Schema
+
+```json
+{
+  "key": "MY_VAR",
+  "value": "my-value",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+```
+
+---
+
+### POST /api/v1/user/vars
+
+Create one or more user-scoped variables.
+
+**Authentication:** API Key, or PAT with `vars:manage` scope.
+
+**Request Body:**
+
+```json
+{
+  "entries": [
+    {"key": "MY_VAR", "value": "my-value"},
+    {"key": "ANOTHER_VAR", "value": "another-value"}
+  ]
+}
+```
+
+**Response:** HTTP 201 Created with a JSON array of variable entries.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Validation error (empty entries, invalid key format, value too large, per-scope limit exceeded) |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `vars:manage` scope |
+| 409 | Duplicate key (case-insensitive) |
+
+---
+
+### GET /api/v1/user/vars
+
+List all user-scoped variables.
+
+**Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
+`vars:manage` scope.
+
+**Response:** HTTP 200 OK with a JSON array of variable entries, sorted by key
+(case-insensitive).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+
+---
+
+### PATCH /api/v1/user/vars/:key
+
+Update the value of a user-scoped variable.
+
+**Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:key` | The variable key to update (case-insensitive lookup) |
+
+**Request Body:**
+
+```json
+{
+  "value": "new-value"
+}
+```
+
+**Response:** HTTP 200 OK with the updated variable entry.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `value` field |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Key not found |
+
+---
+
+### DELETE /api/v1/user/vars/:key
+
+Delete a user-scoped variable.
+
+**Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:key` | The variable key to delete (case-insensitive lookup) |
+
+**Response:** HTTP 204 No Content.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Key not found |
+
+---
+
+### POST /api/v1/orgs/:slug/vars
+
+Create one or more organization-scoped variables.
+
+**Authentication:** API Key, or PAT with `vars:manage` scope. Requires
+organization membership (admin bypasses membership check).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+
+**Request Body:** Same as `POST /api/v1/user/vars`.
+
+**Response:** HTTP 201 Created with a JSON array of variable entries.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Validation error |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `vars:manage` scope |
+| 404 | Organization not found or user is not a member |
+| 409 | Duplicate key (case-insensitive) |
+
+---
+
+### GET /api/v1/orgs/:slug/vars
+
+List all organization-scoped variables.
+
+**Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
+`vars:manage` scope. Requires organization membership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+
+**Response:** HTTP 200 OK with a JSON array of variable entries, sorted by key
+(case-insensitive).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Organization not found or user is not a member |
+
+---
+
+### PATCH /api/v1/orgs/:slug/vars/:key
+
+Update the value of an organization-scoped variable.
+
+**Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
+Requires organization membership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+| `:key` | The variable key to update (case-insensitive lookup) |
+
+**Request Body:** Same as `PATCH /api/v1/user/vars/:key`.
+
+**Response:** HTTP 200 OK with the updated variable entry.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `value` field |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Organization not found, user is not a member, or key not found |
+
+---
+
+### DELETE /api/v1/orgs/:slug/vars/:key
+
+Delete an organization-scoped variable.
+
+**Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
+Requires organization membership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The organization slug |
+| `:key` | The variable key to delete (case-insensitive lookup) |
+
+**Response:** HTTP 204 No Content.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Organization not found, user is not a member, or key not found |
+
+---
+
+### POST /api/v1/workspaces/:slug/vars
+
+Create one or more workspace-scoped variables.
+
+**Authentication:** API Key, or PAT with `vars:manage` scope. Requires
+workspace ownership (admin bypasses ownership check).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Request Body:** Same as `POST /api/v1/user/vars`.
+
+**Response:** HTTP 201 Created with a JSON array of variable entries.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Validation error |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `vars:manage` scope |
+| 404 | Workspace not found or not owned by the authenticated user |
+| 409 | Duplicate key (case-insensitive) |
+
+---
+
+### GET /api/v1/workspaces/:slug/vars
+
+List all workspace-scoped variables.
+
+**Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
+`vars:manage` scope. Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Response:** HTTP 200 OK with a JSON array of variable entries, sorted by key
+(case-insensitive).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found or not owned by the authenticated user |
+
+---
+
+### PATCH /api/v1/workspaces/:slug/vars/:key
+
+Update the value of a workspace-scoped variable.
+
+**Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
+Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:key` | The variable key to update (case-insensitive lookup) |
+
+**Request Body:** Same as `PATCH /api/v1/user/vars/:key`.
+
+**Response:** HTTP 200 OK with the updated variable entry.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `value` field |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found, not owned by user, or key not found |
+
+---
+
+### DELETE /api/v1/workspaces/:slug/vars/:key
+
+Delete a workspace-scoped variable.
+
+**Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
+Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:key` | The variable key to delete (case-insensitive lookup) |
+
+**Response:** HTTP 204 No Content.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found, not owned by user, or key not found |
+
+---
+
+### GET /api/v1/workspaces/:slug/vars/resolved
+
+Resolve variables for a workspace by merging values from user, organization,
+and workspace tiers. Resolution order: workspace > org > user (workspace
+values override org, org overrides user).
+
+**Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
+`vars:manage` scope. Requires workspace ownership (admin bypasses).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Response:** HTTP 200 OK with a JSON array of resolved variable entries,
+sorted by key (case-insensitive).
+
+```json
+[
+  {
+    "key": "MY_VAR",
+    "value": "workspace-override",
+    "origin": "workspace",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+  }
+]
+```
+
+The `origin` field indicates which tier the value came from: `"user"`,
+`"org"`, or `"workspace"`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks required scope |
+| 404 | Workspace not found or not owned by the authenticated user |
+| 500 | Internal server error |
 
 ---
 

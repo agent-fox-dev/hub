@@ -8,9 +8,9 @@ This document is the configuration reference for **af-hub** (API server) and
 The server loads its configuration from a file named `config.toml`. The search
 order is:
 
-1. The path passed via `--config <path>` (highest priority).
-2. `$XDG_CONFIG_HOME/af-hub/config.toml`
-3. `./config.toml` (current working directory)
+1. `$XDG_CONFIG_HOME/config.toml` (when `XDG_CONFIG_HOME` is set).
+2. `./config.toml` (current working directory, used when `XDG_CONFIG_HOME` is
+   unset).
 
 The configuration is loaded by `apikit.LoadConfig()`.
 
@@ -48,7 +48,7 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 |-----|------|---------|-------------|
 | `port` | integer | `8080` | Listen port. `0` selects an ephemeral port. Range: 0--65535. |
 | `bind` | string | `"0.0.0.0"` | Bind address. |
-| `external_url` | string | `"http://localhost:8080"` | External URL used for OAuth redirect validation and for constructing git clone URLs (`hub_url` in workspace responses). |
+| `external_url` | string | `""` (unset) | External URL used for OAuth redirect validation and for constructing git clone URLs (`hub_url` in workspace responses). When empty, `hub_url` in workspace responses is null. |
 | `mount_point` | string | `"/api/v1"` | API route prefix for all REST endpoints. |
 | `max_body_size` | string | `"1MB"` | Maximum request body size. Format: `<int><KB|MB|GB>`. |
 
@@ -56,7 +56,7 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | `"afhub.db"` | SQLite database file path. Resolved relative to `$XDG_DATA_HOME/af-hub/` when running in a container, or relative to the working directory otherwise. |
+| `path` | string | `"afhub.db"` | SQLite database file path. Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. |
 
 ### [logging]
 
@@ -68,8 +68,8 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | -- | Root directory for workspace local clones. Each workspace gets a subdirectory: `<path>/<slug>/trunk/`. |
-| `workers` | integer | -- | Number of concurrent clone worker goroutines. |
+| `path` | string | `./data/workspaces` | Root directory for workspace local clones. Each workspace gets a subdirectory: `<path>/<slug>/trunk/`. Bare names are resolved relative to `$XDG_DATA_HOME/` when set. |
+| `workers` | integer | `4` | Number of concurrent clone worker goroutines. |
 
 ### [[oauth.providers]]
 
@@ -86,8 +86,8 @@ provider.
 
 | Variable | Description |
 |----------|-------------|
-| `XDG_CONFIG_HOME` | Base directory for config files. Server config is read from `$XDG_CONFIG_HOME/af-hub/config.toml`. |
-| `XDG_DATA_HOME` | Base directory for data files. Database path is resolved relative to `$XDG_DATA_HOME/af-hub/`. |
+| `XDG_CONFIG_HOME` | Base directory for config files. Server config is read from `$XDG_CONFIG_HOME/config.toml`. |
+| `XDG_DATA_HOME` | Base directory for data files. Bare database and workspace paths are resolved relative to `$XDG_DATA_HOME/`. |
 | `ADMIN_TOKEN` | Pre-existing admin token. When set, the server uses this token instead of generating a new one at boot. |
 | `GITHUB_CLIENT_ID` | GitHub OAuth app client ID (referenced in `config.toml` via `${GITHUB_CLIENT_ID}`). |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (referenced in `config.toml` via `${GITHUB_CLIENT_SECRET}`). |
@@ -130,8 +130,8 @@ The container image sets:
 - `XDG_CONFIG_HOME=/config`
 - `XDG_DATA_HOME=/data`
 
-The default config path is `/config/af-hub/config.toml` (override by mounting
-your own). The database is created at `/data/af-hub/afhub.db`.
+The default config path is `/config/config.toml` (override by mounting your
+own). The database is created at `/data/afhub.db`.
 
 ### Volumes
 

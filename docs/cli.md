@@ -323,6 +323,398 @@ are managed by `afc login`.
 
 ---
 
+## Secrets Commands
+
+All secrets commands are subcommands of `afc secrets`. They use scope flags to
+target user, organization, or workspace scope:
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+For `list`, `update`, and `delete`: only one scope flag may be specified. If
+none is given, the command defaults to user scope. If multiple flags are
+provided, the command exits with code 2.
+
+For `create`: multiple scope flags can be specified to write to multiple scopes
+sequentially. If none is given, the command defaults to user scope.
+
+### afc secrets create
+
+Create one or more secrets.
+
+**Usage:**
+
+```
+afc secrets create <KEY=VALUE[,KEY2=VALUE2,...]> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<KEY=VALUE[,...]>` | Comma-separated KEY=VALUE pairs |
+
+Keys may contain alphanumeric characters and underscores. Values may contain
+additional `=` characters. An empty or whitespace-only key is rejected.
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `POST <scope>/secrets` with an `entries` array in the request body.
+- When multiple scope flags are specified, creates in each scope sequentially.
+  If one scope fails, the error is printed to stderr and the remaining scopes
+  are still attempted.
+- Prints the created entry JSON to stdout for each scope.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Secrets created successfully in all targeted scopes |
+| 1 | API error (4xx/5xx), network error, or timeout in any scope |
+| 2 | Missing argument or invalid KEY=VALUE format |
+
+---
+
+### afc secrets list
+
+List secrets for a scope.
+
+**Usage:**
+
+```
+afc secrets list [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `GET <scope>/secrets`.
+- Prints a JSON array of secret entries (keys and timestamps, no values) to
+  stdout.
+- Defaults to user scope when no flags are provided.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Secrets listed successfully |
+| 1 | API error, network error, or timeout |
+| 2 | Multiple scope flags specified |
+
+---
+
+### afc secrets update
+
+Update a secret value.
+
+**Usage:**
+
+```
+afc secrets update <KEY=VALUE> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<KEY=VALUE>` | The secret key and its new value |
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `PATCH <scope>/secrets/<key>` with the new value in the request body.
+- Prints the updated entry JSON to stdout.
+- Defaults to user scope when no flags are provided.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Secret updated successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing argument, invalid KEY=VALUE format, or multiple scope flags specified |
+
+---
+
+### afc secrets delete
+
+Delete a secret.
+
+**Usage:**
+
+```
+afc secrets delete <KEY> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<KEY>` | The secret key to delete |
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `DELETE <scope>/secrets/<key>`.
+- On success, prints a confirmation message to stderr.
+- Defaults to user scope when no flags are provided.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Secret deleted successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing argument or multiple scope flags specified |
+
+---
+
+## Variables Commands
+
+All variables commands are subcommands of `afc vars`. They use the same scope
+flags as the secrets commands:
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+For `list`, `update`, and `delete`: only one scope flag may be specified. If
+none is given, the command defaults to user scope. If multiple flags are
+provided, the command exits with code 2.
+
+For `create`: multiple scope flags can be specified to write to multiple scopes
+sequentially. If none is given, the command defaults to user scope.
+
+### afc vars create
+
+Create one or more variables.
+
+**Usage:**
+
+```
+afc vars create <KEY=VALUE[,KEY2=VALUE2,...]> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<KEY=VALUE[,...]>` | Comma-separated KEY=VALUE pairs |
+
+Keys may contain alphanumeric characters and underscores. Values may contain
+additional `=` characters. An empty or whitespace-only key is rejected.
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `POST <scope>/vars` with an `entries` array in the request body.
+- When multiple scope flags are specified, creates in each scope sequentially.
+  If one scope fails, the error is printed to stderr and the remaining scopes
+  are still attempted.
+- Prints the created entry JSON to stdout for each scope.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Variables created successfully in all targeted scopes |
+| 1 | API error (4xx/5xx), network error, or timeout in any scope |
+| 2 | Missing argument or invalid KEY=VALUE format |
+
+---
+
+### afc vars list
+
+List variables for a scope.
+
+**Usage:**
+
+```
+afc vars list [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `GET <scope>/vars`.
+- Prints a JSON array of variable entries (keys, values, and timestamps) to
+  stdout.
+- Defaults to user scope when no flags are provided.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Variables listed successfully |
+| 1 | API error, network error, or timeout |
+| 2 | Multiple scope flags specified |
+
+---
+
+### afc vars update
+
+Update a variable value.
+
+**Usage:**
+
+```
+afc vars update <KEY=VALUE> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<KEY=VALUE>` | The variable key and its new value |
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `PATCH <scope>/vars/<key>` with the new value in the request body.
+- Prints the updated entry JSON to stdout.
+- Defaults to user scope when no flags are provided.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Variable updated successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing argument, invalid KEY=VALUE format, or multiple scope flags specified |
+
+---
+
+### afc vars delete
+
+Delete a variable.
+
+**Usage:**
+
+```
+afc vars delete <KEY> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<KEY>` | The variable key to delete |
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--user` | boolean | Target user scope |
+| `--org` | string | Target organization scope (by slug) |
+| `--workspace` | string | Target workspace scope (by slug) |
+
+**Behavior:**
+
+- Sends `DELETE <scope>/vars/<key>`.
+- On success, prints a confirmation message to stderr.
+- Defaults to user scope when no flags are provided.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Variable deleted successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing argument or multiple scope flags specified |
+
+---
+
+### afc vars resolve
+
+Resolve variables for a workspace using the three-tier hierarchy
+(workspace > org > user).
+
+**Usage:**
+
+```
+afc vars resolve <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to resolve variables for |
+
+This command does not use scope flags. The workspace is specified as a
+positional argument.
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/vars/resolved`.
+- Prints the resolved variables JSON to stdout, with an origin field
+  indicating which tier each value came from.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Variables resolved successfully |
+| 1 | API error, network error, or timeout |
+| 2 | Missing workspace slug argument |
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage

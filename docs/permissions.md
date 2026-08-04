@@ -362,6 +362,95 @@ These 2 permissions are registered by `GitPermissions()` in
 
 ---
 
+## Hub Secrets Permissions
+
+These 4 permissions are registered by `Permissions()` in
+`hub/internal/secrets/permissions.go` and passed to `apikit.Server.MountHandlers()`
+at startup via the `extraPerms` parameter.
+
+### secrets:manage
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Full CRUD access to secrets: create, list, update, and delete |
+| **Endpoints** | `POST /api/v1/user/secrets`, `POST /api/v1/orgs/:slug/secrets`, `POST /api/v1/workspaces/:slug/secrets`, `GET /api/v1/user/secrets`, `GET /api/v1/orgs/:slug/secrets`, `GET /api/v1/workspaces/:slug/secrets`, `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, `PATCH /api/v1/workspaces/:slug/secrets/:key`, `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, `DELETE /api/v1/workspaces/:slug/secrets/:key` |
+| **Implies** | `secrets:list`, `secrets:write`, `secrets:delete` |
+
+### secrets:list
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List access to secret names (values are never returned) |
+| **Endpoints** | `GET /api/v1/user/secrets`, `GET /api/v1/orgs/:slug/secrets`, `GET /api/v1/workspaces/:slug/secrets` |
+| **Implied by** | `secrets:manage` |
+
+### secrets:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Update existing secret values |
+| **Endpoints** | `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, `PATCH /api/v1/workspaces/:slug/secrets/:key` |
+| **Implied by** | `secrets:manage` |
+
+### secrets:delete
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Delete secrets |
+| **Endpoints** | `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, `DELETE /api/v1/workspaces/:slug/secrets/:key` |
+| **Implied by** | `secrets:manage` |
+
+---
+
+## Hub Variables Permissions
+
+These 4 permissions are registered by `VarsPermissions()` in
+`hub/internal/vars/permissions.go` and included in `secrets.Permissions()`
+for startup registration.
+
+### vars:manage
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Full CRUD access to variables: create, list, read, update, and delete |
+| **Endpoints** | `POST /api/v1/user/vars`, `POST /api/v1/orgs/:slug/vars`, `POST /api/v1/workspaces/:slug/vars`, `GET /api/v1/user/vars`, `GET /api/v1/orgs/:slug/vars`, `GET /api/v1/workspaces/:slug/vars`, `GET /api/v1/workspaces/:slug/vars/resolved`, `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, `PATCH /api/v1/workspaces/:slug/vars/:key`, `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, `DELETE /api/v1/workspaces/:slug/vars/:key` |
+| **Implies** | `vars:read`, `vars:write`, `vars:delete` |
+
+### vars:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List and read variable values |
+| **Endpoints** | `GET /api/v1/user/vars`, `GET /api/v1/orgs/:slug/vars`, `GET /api/v1/workspaces/:slug/vars`, `GET /api/v1/workspaces/:slug/vars/resolved` |
+| **Implied by** | `vars:write`, `vars:manage` |
+
+### vars:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Update existing variable values |
+| **Endpoints** | `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, `PATCH /api/v1/workspaces/:slug/vars/:key` (plus all `vars:read` endpoints) |
+| **Implies** | `vars:read` |
+| **Implied by** | `vars:manage` |
+
+### vars:delete
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Delete variables |
+| **Endpoints** | `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, `DELETE /api/v1/workspaces/:slug/vars/:key` |
+| **Implied by** | `vars:manage` |
+
+---
+
 ## Implied Permissions Summary
 
 | Scope | Implies |
@@ -370,12 +459,15 @@ These 2 permissions are registered by `GitPermissions()` in
 | `workspaces:write` | `workspaces:read` |
 | `workspaces:delete` | *(nothing)* |
 | `git:write` | `git:read` |
+| `secrets:manage` | `secrets:list`, `secrets:write`, `secrets:delete` |
+| `vars:manage` | `vars:read`, `vars:write`, `vars:delete` |
+| `vars:write` | `vars:read` |
 
 ---
 
 ## Complete Permission List
 
-All 12 registered permission scopes, sorted alphabetically:
+All 20 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -384,13 +476,62 @@ All 12 registered permission scopes, sorted alphabetically:
 | 3 | `keys:manage` | apikit | keys | manage |
 | 4 | `keys:read` | apikit | keys | read |
 | 5 | `orgs:read` | apikit | orgs | read |
-| 6 | `tokens:manage` | apikit | tokens | manage |
-| 7 | `tokens:read` | apikit | tokens | read |
-| 8 | `users:read` | apikit | users | read |
-| 9 | `workspaces:create` | hub | workspaces | create |
-| 10 | `workspaces:delete` | hub | workspaces | delete |
-| 11 | `workspaces:read` | hub | workspaces | read |
-| 12 | `workspaces:write` | hub | workspaces | write |
+| 6 | `secrets:delete` | hub | secrets | delete |
+| 7 | `secrets:list` | hub | secrets | list |
+| 8 | `secrets:manage` | hub | secrets | manage |
+| 9 | `secrets:write` | hub | secrets | write |
+| 10 | `tokens:manage` | apikit | tokens | manage |
+| 11 | `tokens:read` | apikit | tokens | read |
+| 12 | `users:read` | apikit | users | read |
+| 13 | `vars:delete` | hub | vars | delete |
+| 14 | `vars:manage` | hub | vars | manage |
+| 15 | `vars:read` | hub | vars | read |
+| 16 | `vars:write` | hub | vars | write |
+| 17 | `workspaces:create` | hub | workspaces | create |
+| 18 | `workspaces:delete` | hub | workspaces | delete |
+| 19 | `workspaces:read` | hub | workspaces | read |
+| 20 | `workspaces:write` | hub | workspaces | write |
+
+---
+
+## Secrets and Variables Endpoint Access Matrix
+
+All secrets and variables endpoints follow the same credential-type
+authorization model. The scope checks (`isPAT`, `isAdmin`) are enforced at
+the handler level in `hub/internal/secrets/handlers.go`.
+
+### Credential Access by Scope
+
+| Scope | Admin Token | API Key | PAT |
+|-------|-------------|---------|-----|
+| User-scoped (`/api/v1/user/secrets`, `/api/v1/user/vars`) | Full access | Full access (own user) | Requires explicit scope |
+| Org-scoped (`/api/v1/orgs/:slug/secrets`, `/api/v1/orgs/:slug/vars`) | Full access (bypasses membership) | Full access (requires org membership) | Requires explicit scope + org membership |
+| Workspace-scoped (`/api/v1/workspaces/:slug/secrets`, `/api/v1/workspaces/:slug/vars`) | Full access (bypasses ownership) | Full access (requires workspace ownership) | Requires explicit scope + workspace ownership |
+
+### PAT Scope Requirements by Operation
+
+| Operation | Secrets Scope Required | Variables Scope Required |
+|-----------|----------------------|------------------------|
+| Create (POST) | `secrets:manage` | `vars:manage` |
+| List (GET) | `secrets:list` or `secrets:manage` | `vars:read`, `vars:write`, or `vars:manage` |
+| Update (PATCH) | `secrets:write` or `secrets:manage` | `vars:write` or `vars:manage` |
+| Delete (DELETE) | `secrets:delete` or `secrets:manage` | `vars:delete` or `vars:manage` |
+| Resolved (GET .../resolved) | — | `vars:read`, `vars:write`, or `vars:manage` |
+
+### Ownership and Membership Rules
+
+- **Admin tokens** bypass all ownership and membership checks. They can
+  access secrets and variables for any user, org, or workspace.
+- **API keys** have implicit full access but are constrained by ownership:
+  user-scoped operations use the authenticated user's ID; org-scoped
+  operations require org membership; workspace-scoped operations require
+  workspace ownership.
+- **PATs** require explicit scopes as listed above. Additionally, org-scoped
+  operations require org membership and workspace-scoped operations require
+  workspace ownership.
+
+Non-admin credentials that fail ownership or membership checks receive
+HTTP 404 (not 403) consistent with the anti-enumeration policy.
 
 ---
 
