@@ -22,7 +22,7 @@
             "Create internal/jobqueue/schema_test.go using stdlib testing package and modernc.org/sqlite with ':memory:' DSN",
             "TS-10-1: Verify InitSchema creates the jobs table with all required columns (id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at)",
             "TS-10-2: Verify InitSchema creates all four required indexes (idx_jobs_nonce UNIQUE, idx_jobs_type_key_status, idx_jobs_status_available_at, idx_jobs_type_created_at)",
-            "TS-10-3: Verify InitSchema is idempotent \u2014 calling it twice on the same DB does not return an error"
+            "TS-10-3: Verify InitSchema is idempotent — calling it twice on the same DB does not return an error"
           ],
           "test_spec_refs": [
             "TS-10-1",
@@ -32,7 +32,7 @@
           "requirement_refs": [
             "10-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -52,7 +52,7 @@
           "requirement_refs": [
             "10-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -62,8 +62,8 @@
             "Create internal/jobqueue/enqueue_test.go",
             "TS-10-7: Verify that enqueueing a valid job (registered type, unique nonce, unique type+key) inserts a record with status='queued' and available_at=now() and returns a non-empty UUID",
             "TS-10-8: Verify that enqueueing with an unregistered type returns an error",
-            "TS-10-9: Verify nonce idempotency \u2014 enqueueing with a duplicate nonce returns the existing job ID without inserting a new record",
-            "TS-10-10: Verify duplicate (type, key) prevention \u2014 enqueueing when a queued or running job with the same (type, key) exists returns the existing job ID and duplicate=true flag without inserting a new record"
+            "TS-10-9: Verify nonce idempotency — enqueueing with a duplicate nonce returns the existing job ID without inserting a new record",
+            "TS-10-10: Verify duplicate (type, key) prevention — enqueueing when a queued or running job with the same (type, key) exists returns the existing job ID and duplicate=true flag without inserting a new record"
           ],
           "test_spec_refs": [
             "TS-10-7",
@@ -75,7 +75,7 @@
             "10-REQ-3",
             "10-REQ-13"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -92,7 +92,7 @@
           "requirement_refs": [
             "10-REQ-13"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -101,7 +101,7 @@
           "details": [],
           "test_spec_refs": [],
           "requirement_refs": [],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -168,7 +168,7 @@
           "id": "2.3",
           "title": "Write per-key serialization tests (TS-10-37 through TS-10-39)",
           "details": [
-            "TS-10-37: Verify that two jobs with the same (type, key) execute sequentially \u2014 the second is not claimed until the first completes",
+            "TS-10-37: Verify that two jobs with the same (type, key) execute sequentially — the second is not claimed until the first completes",
             "TS-10-38: Verify that two jobs with the same type but different keys execute concurrently (both reach running status simultaneously with 2+ workers)",
             "TS-10-39: Verify that after a running job completes, the next queued job with the same (type, key) is claimed by a worker"
           ],
@@ -470,7 +470,7 @@
             "Create internal/jobqueue/register.go",
             "Define HandlerFunc type: func(ctx context.Context, payload json.RawMessage) (result any, retryable bool, err error)",
             "Define RetryPolicy struct with BaseDelay, Multiplier, Cap, MaxRetries fields and a DefaultRetryPolicy() constructor (base=2s, multiplier=2.0, cap=2h, maxRetries=20)",
-            "Implement Register(typeName string, handler HandlerFunc, policy ...RetryPolicy) error on Queue \u2014 returns error if typeName already registered",
+            "Implement Register(typeName string, handler HandlerFunc, policy ...RetryPolicy) error on Queue — returns error if typeName already registered",
             "Store handler and effective retry policy in the registry map"
           ],
           "test_spec_refs": [
@@ -868,7 +868,7 @@
           "details": [
             "Execute go test ./internal/jobqueue/... -count=1 -v and verify all 47 test cases (TS-10-1 through TS-10-47) pass",
             "Confirm no test is skipped or marked as TODO",
-            "Confirm test coverage includes all status transitions: queued\u2192running\u2192completed, queued\u2192running\u2192failed\u2192queued, queued\u2192running\u2192dead_letter, queued\u2192cancelled"
+            "Confirm test coverage includes all status transitions: queued→running→completed, queued→running→failed→queued, queued→running→dead_letter, queued→cancelled"
           ],
           "test_spec_refs": [
             "TS-10-1",
@@ -899,7 +899,7 @@
         },
         {
           "id": "10.2",
-          "title": "Run full jobqueue test suite \u2014 remaining tests and linter",
+          "title": "Run full jobqueue test suite — remaining tests and linter",
           "details": [
             "Confirm TS-10-16 through TS-10-47 all pass: go test ./internal/jobqueue/... -count=1 -v",
             "Run go vet ./... and confirm no new warnings introduced by the jobqueue package",
@@ -977,10 +977,10 @@
           "id": "11.1",
           "title": "Trace execution paths from Enqueue through worker dispatch to handler completion",
           "details": [
-            "Verify that Enqueue \u2192 INSERT \u2192 wakeup channel send \u2192 worker promoteFailedJobs \u2192 pollNextJob \u2192 claimJob \u2192 executeAndFinalize is a complete, unbroken call chain with no panic('not implemented') stubs",
+            "Verify that Enqueue → INSERT → wakeup channel send → worker promoteFailedJobs → pollNextJob → claimJob → executeAndFinalize is a complete, unbroken call chain with no panic('not implemented') stubs",
             "Verify that executeAndFinalize calls the registered HandlerFunc and correctly branches on (nil error), (retryable error), and (permanent error) outcomes",
             "Verify that Start() calls recoverRunningJobs before launching worker goroutines",
-            "Search for stub markers: grep -r 'panic(\"not implemented\")\\|// TODO\\|panic(\"TODO\")' internal/jobqueue/ \u2014 must return no results"
+            "Search for stub markers: grep -r 'panic(\"not implemented\")\\|// TODO\\|panic(\"TODO\")' internal/jobqueue/ — must return no results"
           ],
           "test_spec_refs": [],
           "requirement_refs": [
@@ -1014,7 +1014,7 @@
           "id": "11.3",
           "title": "Stub and dead-code audit across the jobqueue package",
           "details": [
-            "Run: grep -rn 'panic(\"not implemented\")\\|panic(\"TODO\")\\|// TODO\\|// FIXME' internal/jobqueue/ \u2014 must return zero matches",
+            "Run: grep -rn 'panic(\"not implemented\")\\|panic(\"TODO\")\\|// TODO\\|// FIXME' internal/jobqueue/ — must return zero matches",
             "Verify no exported function has a bare 'return nil' in a non-trivial code path (e.g., GetByID must not silently return nil for missing jobs)",
             "Verify all status constants (StatusQueued, StatusRunning, StatusCompleted, StatusFailed, StatusDeadLetter, StatusCancelled) are used in at least one production code path",
             "Verify ErrNotCancellable is returned from CancelJob production code, not just defined"
@@ -1096,7 +1096,7 @@
         "id": "11.V",
         "checks": [
           "go test ./internal/jobqueue/... -count=1 -v -run 'SMOKE' passes all three smoke tests (TS-10-SMOKE-1, TS-10-SMOKE-2, TS-10-SMOKE-3)",
-          "go test ./... -count=1 exits with code 0 \u2014 no regressions in any package",
+          "go test ./... -count=1 exits with code 0 — no regressions in any package",
           "go vet ./... reports zero issues",
           "grep -rn 'panic(\"not implemented\")' internal/jobqueue/ returns zero matches (stub audit clean)",
           "Queue.Start(), Queue.Stop(), and Queue.Wait() are confirmed called from production or integration wiring code",
