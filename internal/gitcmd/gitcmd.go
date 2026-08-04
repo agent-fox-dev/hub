@@ -114,39 +114,57 @@ func assembleEnv(extraEnv []string) []string {
 	return env
 }
 
-// Run executes an arbitrary git subcommand with the given args. It returns the
-// trimmed stdout on success, or a *GitError on non-zero exit. If the context
-// is cancelled or times out, Run returns the context error.
-func (r *GitRunner) Run(ctx context.Context, args ...string) (string, error) {
+// runWithExitCode executes a git command and returns the raw results without
+// wrapping in *GitError. It returns the trimmed stdout (even on non-zero exit),
+// the integer exit code, the trimmed stderr, and a non-nil error only for
+// non-exec failures (context cancellation/timeout or binary-not-found).
+//
+// This helper enables callers like LsRemote to perform exit-code discrimination
+// without re-implementing the subprocess boilerplate.
+func (r *GitRunner) runWithExitCode(ctx context.Context, args ...string) (stdout string, exitCode int, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = r.workDir
 	cmd.Env = r.env
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
-	err := cmd.Run()
-	if err != nil {
-		// Check for context cancellation/timeout first (11-REQ-3.3).
+	runErr := cmd.Run()
+	if runErr != nil {
+		// Context cancellation/timeout takes priority (11-REQ-3.3).
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return "", -1, strings.TrimSpace(stderrBuf.String()), ctx.Err()
 		}
 
-		exitCode := -1
+		code := -1
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
+		if errors.As(runErr, &exitErr) {
+			code = exitErr.ExitCode()
 		}
 
+		return strings.TrimSpace(stdoutBuf.String()), code, strings.TrimSpace(stderrBuf.String()), nil
+	}
+
+	return strings.TrimSpace(stdoutBuf.String()), 0, strings.TrimSpace(stderrBuf.String()), nil
+}
+
+// Run executes an arbitrary git subcommand with the given args. It returns the
+// trimmed stdout on success, or a *GitError on non-zero exit. If the context
+// is cancelled or times out, Run returns the context error.
+func (r *GitRunner) Run(ctx context.Context, args ...string) (string, error) {
+	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+	if exitCode != 0 {
 		return "", &GitError{
 			Args:     args,
 			ExitCode: exitCode,
-			Stderr:   strings.TrimSpace(stderr.String()),
+			Stderr:   stderr,
 		}
 	}
-
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout, nil
 }
 
 // ErrRefNotFound is a sentinel error returned by LsRemote when git exits with
@@ -183,41 +201,25 @@ func (e *RebaseConflictError) Error() string {
 func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, error) {
 	args := []string{"ls-remote", "--exit-code", remote, ref}
 
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = r.workDir
-	cmd.Env = r.env
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
-		// Context cancellation takes priority.
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
+		return "", err
+	}
 
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-
+	switch exitCode {
+	case 0:
+		return stdout, nil
+	case 2:
 		// Exit code 2: ref not found on remote.
-		if exitCode == 2 {
-			return "", ErrRefNotFound
-		}
-
+		return "", ErrRefNotFound
+	default:
 		// All other non-zero exit codes: return *GitError.
 		return "", &GitError{
 			Args:     args,
 			ExitCode: exitCode,
-			Stderr:   strings.TrimSpace(stderr.String()),
+			Stderr:   stderr,
 		}
 	}
-
-	return strings.TrimSpace(stdout.String()), nil
 }
 
 // MergeTree executes git merge-tree --write-tree for read-only conflict
@@ -237,43 +239,28 @@ func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, e
 func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, error) {
 	args := []string{"merge-tree", "--write-tree", base, head}
 
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = r.workDir
-	cmd.Env = r.env
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
-		// Context cancellation takes priority.
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
+		return "", err
+	}
 
+	if exitCode != 0 {
 		// Parse stdout for CONFLICT lines.
-		conflictFiles := parseConflictFiles(stdout.String())
+		conflictFiles := parseConflictFiles(stdout)
 		if len(conflictFiles) > 0 {
 			return "", &MergeConflictError{ConflictingFiles: conflictFiles}
 		}
 
 		// No CONFLICT lines: return *GitError (e.g., invalid SHA).
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-
 		return "", &GitError{
 			Args:     args,
 			ExitCode: exitCode,
-			Stderr:   strings.TrimSpace(stderr.String()),
+			Stderr:   stderr,
 		}
 	}
 
 	// Clean merge: first line of stdout is the tree SHA.
-	lines := strings.SplitN(strings.TrimSpace(stdout.String()), "\n", 2)
+	lines := strings.SplitN(stdout, "\n", 2)
 	if len(lines) == 0 || lines[0] == "" {
 		return "", &GitError{
 			Args:     args,
@@ -330,33 +317,19 @@ func parseConflictFiles(output string) []string {
 func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
 	args := []string{"rebase", onto}
 
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = r.workDir
-	cmd.Env = r.env
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
 		// Context cancellation: don't try to abort, just return.
 		// The caller is responsible for calling RebaseAbort (11-REQ-6.E1).
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
+		return "", err
+	}
 
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-
+	if exitCode != 0 {
 		// Parse conflict information from stdout (where git rebase writes
 		// CONFLICT lines) and stderr.
-		conflictFiles := parseRebaseConflictFiles(stdout.String())
+		conflictFiles := parseRebaseConflictFiles(stdout)
 		if len(conflictFiles) == 0 {
-			conflictFiles = parseRebaseConflictFiles(stderr.String())
+			conflictFiles = parseRebaseConflictFiles(stderr)
 		}
 
 		// Also detect conflicts by checking for rebase state directories.
@@ -388,7 +361,7 @@ func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
 		return "", &GitError{
 			Args:     args,
 			ExitCode: exitCode,
-			Stderr:   strings.TrimSpace(stderr.String()),
+			Stderr:   stderr,
 		}
 	}
 

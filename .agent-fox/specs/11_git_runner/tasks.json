@@ -426,7 +426,7 @@
             "11-REQ-10",
             "11-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -448,7 +448,7 @@
             "11-REQ-3",
             "11-REQ-4"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -470,7 +470,7 @@
             "11-REQ-8",
             "11-REQ-9"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
