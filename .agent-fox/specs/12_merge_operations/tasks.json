@@ -664,7 +664,7 @@
             "12-REQ-5.2",
             "12-REQ-5.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -687,7 +687,7 @@
             "12-REQ-4.2",
             "12-REQ-4.3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

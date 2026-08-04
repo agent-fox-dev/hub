@@ -2,7 +2,9 @@ package merge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -95,6 +97,19 @@ func (h *Handler) TrunkDir(slug string) string {
 	return fmt.Sprintf("%s/%s/trunk", h.WorkspaceRoot, slug)
 }
 
+// runnerForWorkspace creates a GitRunner for the workspace trunk directory.
+// If the Handler already has a Runner set, it returns that runner instead.
+func (h *Handler) runnerForWorkspace(workspaceSlug string) (*gitcmd.GitRunner, error) {
+	if h.Runner != nil {
+		return h.Runner, nil
+	}
+	trunkDir := h.TrunkDir(workspaceSlug)
+	if _, err := os.Stat(trunkDir); err != nil {
+		return nil, fmt.Errorf("workspace trunk dir not found: %w", err)
+	}
+	return gitcmd.New(trunkDir, nil)
+}
+
 // PreCheck runs the merge pre-check phase:
 //   - Resolves source and target branch refs
 //   - Checks if the source is already merged into the target
@@ -104,15 +119,97 @@ func (h *Handler) TrunkDir(slug string) string {
 // Returns (*PreCheckResult, nil) for AlreadyMerged (success path).
 // Returns (nil, *MergeRejection) for WouldConflict or BranchNotReady.
 // Returns (nil, error) for unexpected errors.
-func (h *Handler) PreCheck(_ context.Context, _, _, _ string) (*PreCheckResult, error) {
-	return nil, fmt.Errorf("merge: PreCheck not implemented")
+func (h *Handler) PreCheck(ctx context.Context, workspaceSlug, targetBranch, sourceRef string) (*PreCheckResult, error) {
+	runner, err := h.runnerForWorkspace(workspaceSlug)
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve source and target branch HEADs.
+	sourceHead, err := runner.RevParse(ctx, sourceRef)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve source ref %q: %w", sourceRef, err)
+	}
+
+	targetHead, err := runner.RevParse(ctx, targetBranch)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve target ref %q: %w", targetBranch, err)
+	}
+
+	// Check BranchNotReady: source HEAD is identical to target HEAD,
+	// meaning the source branch has no unique commits and no merge is needed.
+	if sourceHead == targetHead {
+		return nil, &MergeRejection{
+			Reason:    BranchNotReady,
+			Permanent: false,
+		}
+	}
+
+	// Check AlreadyMerged: source HEAD is an ancestor of target HEAD,
+	// meaning all source commits are already reachable from target.
+	_, err = runner.Run(ctx, "merge-base", "--is-ancestor", sourceHead, targetHead)
+	if err == nil {
+		// source is an ancestor of target → AlreadyMerged (success path).
+		return &PreCheckResult{Reason: AlreadyMerged}, nil
+	}
+	// If --is-ancestor returned exit code 1, source is NOT an ancestor.
+	// Any other error is unexpected.
+	var gitErr *gitcmd.GitError
+	if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
+		// Not an ancestor — proceed to dry-run conflict check.
+	} else {
+		return nil, fmt.Errorf("cannot check ancestry: %w", err)
+	}
+
+	// Run dry-run conflict detection via merge-tree.
+	if err := h.dryRunConflictCheck(ctx, runner, targetHead, sourceHead); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
 }
 
 // DryRunCheck invokes git merge-tree --write-tree to detect conflicts
 // without modifying the working tree. Returns nil on clean merge, or
 // *MergeRejection{Reason: WouldConflict} with ConflictFiles on conflicts.
-func (h *Handler) DryRunCheck(_ context.Context, _, _, _ string) error {
-	return fmt.Errorf("merge: DryRunCheck not implemented")
+func (h *Handler) DryRunCheck(ctx context.Context, workspaceSlug, targetBranch, sourceRef string) error {
+	runner, err := h.runnerForWorkspace(workspaceSlug)
+	if err != nil {
+		return err
+	}
+
+	// Resolve target and source branch HEADs.
+	targetHead, err := runner.RevParse(ctx, targetBranch)
+	if err != nil {
+		return fmt.Errorf("cannot resolve target ref %q: %w", targetBranch, err)
+	}
+
+	sourceHead, err := runner.RevParse(ctx, sourceRef)
+	if err != nil {
+		return fmt.Errorf("cannot resolve source ref %q: %w", sourceRef, err)
+	}
+
+	return h.dryRunConflictCheck(ctx, runner, targetHead, sourceHead)
+}
+
+// dryRunConflictCheck runs git merge-tree --write-tree with the resolved
+// target and source HEADs. Returns nil on clean merge, or *MergeRejection
+// with WouldConflict on conflict detection.
+func (h *Handler) dryRunConflictCheck(ctx context.Context, runner *gitcmd.GitRunner, targetHead, sourceHead string) error {
+	_, err := runner.MergeTree(ctx, targetHead, sourceHead)
+	if err != nil {
+		var conflictErr *gitcmd.MergeConflictError
+		if errors.As(err, &conflictErr) {
+			return &MergeRejection{
+				Reason:        WouldConflict,
+				Permanent:     true,
+				ConflictFiles: conflictErr.ConflictingFiles,
+			}
+		}
+		// Non-conflict git error (e.g., invalid SHA, timeout).
+		return err
+	}
+	return nil
 }
 
 // FetchTarget fetches the latest target branch state from the upstream

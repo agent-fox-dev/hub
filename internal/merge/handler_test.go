@@ -116,6 +116,7 @@ func newTestHandler(workspaceRoot string) *Handler {
 
 func TestPreCheck_WouldConflict_PermanentError(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	// The pre-check invokes DryRunCheck, which in turn calls Runner.MergeTree.
@@ -168,6 +169,7 @@ func TestPreCheck_WouldConflict_PermanentError(t *testing.T) {
 
 func TestPreCheck_AlreadyMerged_Success(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	ctx := context.Background()
@@ -196,6 +198,7 @@ func TestPreCheck_AlreadyMerged_Success(t *testing.T) {
 
 func TestPreCheck_BranchNotReady_RetryableError(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	ctx := context.Background()
@@ -233,6 +236,7 @@ func TestPreCheck_BranchNotReady_RetryableError(t *testing.T) {
 
 func TestDryRunCheck_InvokesMergeTree(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	// The DryRunCheck method should:
@@ -274,6 +278,7 @@ func TestDryRunCheck_InvokesMergeTree(t *testing.T) {
 
 func TestDryRunCheck_Conflict_ReturnsWouldConflict(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	// When GitRunner.MergeTree returns a *MergeConflictError, DryRunCheck
@@ -318,6 +323,7 @@ func TestDryRunCheck_Conflict_ReturnsWouldConflict(t *testing.T) {
 
 func TestDryRunCheck_Clean_NoError(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	// When GitRunner.MergeTree returns (treeSHA, nil), DryRunCheck should
