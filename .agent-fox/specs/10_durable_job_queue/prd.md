@@ -6,7 +6,7 @@ status: draft
 created_at: '2026-08-04T05:10:07.435660+00:00'
 updated_at: '2026-08-04T05:16:16.232089+00:00'
 owner: ''
-source: docs/prd/prd11job.md
+source: docs/prd/prd11.md
 schema_version: 1
 ---
 # Durable Job Queue

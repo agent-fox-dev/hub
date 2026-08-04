@@ -1,486 +1,291 @@
-# Git Operations Infrastructure
+# Durable Job Queue
 
 ## Intent
 
-The hub manages workspace repositories — clones of upstream repos where agents
-implement specs on branches. Three foundational git capabilities are needed
-before any coordination layer can be built on top:
+The hub needs to execute background work reliably: clone repositories, merge
+branches, sync with upstream, and (in the future) run checks, send
+notifications, and manage agent lifecycles. Today the only background
+processing is the clone `JobQueue` — an in-memory Go channel with worker
+goroutines. It works but has no persistence, no retry logic, no backoff, and
+no crash recovery. A job in flight when the hub restarts is silently lost.
 
-1. **Safe git subprocess execution.** Every git CLI call must enforce protocol
-   allowlists, suppress interactive prompts, and ignore system-level config to
-   prevent hangs, security issues, and environment-dependent behavior.
-2. **Serialized branch merging.** When multiple agents complete work on
-   separate branches, their results must be merged into the integration branch
-   without races, lost work, or dirty repository state.
-3. **Upstream synchronization.** Workspace clones diverge from upstream over
-   time. A sync mechanism must fetch upstream changes, advance the integration
-   branch, detect force-pushes, and provide recovery operations.
-
-These capabilities are general-purpose git infrastructure. They are usable by
-any higher-level coordination system (campaign schedulers, manual operator
-workflows, external controllers) without being coupled to any specific
-orchestration model.
+This PRD defines a generic, durable job queue backed by SQLite. Job types are
+registered with handler functions. Jobs are persisted before execution, retried
+on transient failure, and dead-lettered on persistent failure. The queue is an
+internal building block — it has no REST API of its own. Consumers (merge
+operations, sync, future subsystems) register handlers and expose their own
+endpoints.
 
 ## Goals
 
-- Provide a hardened git subprocess runner that enforces safety defaults on
-  every git CLI invocation within the hub.
-- Provide merge operations that integrate a source branch into a target
-  branch using rebase-then-fast-forward, with conflict detection and
-  structured error reporting.
-- Provide branch rebase operations with conflict detection and structured
-  conflict reporting.
-- Serialize merge operations per target branch using the durable job queue
-  (prd11job), ensuring no concurrent merges to the same branch.
-- Provide upstream sync that fetches from the remote origin and fast-forwards
-  the integration branch, with force-push detection and recovery.
-- Provide a reclone operation for nuclear recovery from corrupted or severely
-  diverged repository state.
-- Expose merge and sync operations via REST API and CLI.
-- Reuse the existing credential infrastructure (secrets store with `GIT_PAT`,
-  `GIT_USERNAME`/`GIT_PASSWORD`) for fetch authentication.
+- Provide a single durable job queue that any hub subsystem can use by
+  registering a job type and handler function.
+- Persist jobs in SQLite so that in-flight work survives hub restarts.
+- Retry failed jobs with exponential backoff, and dead-letter jobs that
+  exceed the retry limit for operator inspection.
+- Guarantee exactly-once execution via nonce-based idempotency.
+- Provide per-key serialization so that jobs sharing a logical resource
+  (e.g., the same target branch) execute sequentially while unrelated jobs
+  run concurrently.
+- Support low-latency dispatch via wakeup-on-enqueue without busy-waiting.
+- Shut down gracefully — in-flight jobs complete before the process exits.
 
 ## Non-Goals
 
-- **Orchestration or scheduling.** This PRD provides git primitives. Higher-level
-  concepts (campaigns, DAGs, spec scheduling, agent dispatch) are out of scope.
-- **Parallel merge execution.** Merges are strictly sequential per target
-  branch. This is a deliberate simplicity choice — sufficient for the throughput
-  profile of parallel AI agents (~15–20 merges/hour with a 3–4 minute test
-  suite).
-- **Automatic conflict resolution.** The hub detects and reports conflicts;
-  agents or operators resolve them.
-- **Webhook-driven sync.** Exposing webhook endpoints for upstream forges
-  requires the hub to be publicly reachable and per-forge payload parsing.
-  Manual triggers and future periodic polling work uniformly with any git
-  remote.
-- **Upstream contribution (PR creation, direct push).** This PRD covers
-  downstream sync only. Contribution modes are future work.
-- **Periodic background sync.** A background scheduler with configurable
-  intervals per workspace is deferred. This PRD provides the sync machinery;
-  scheduling can be layered on top.
+- **REST API for jobs.** The queue is an internal facility. Consumers expose
+  their own domain-specific endpoints (e.g., `/merges`, `/sync`) and map
+  those to job operations internally.
+- **Distributed queue.** The queue runs in-process backed by the hub's SQLite
+  database. Multi-node distribution is out of scope.
+- **Priority levels.** Jobs are processed FIFO within each serialization key.
+  Priority ordering adds complexity without a demonstrated need.
+- **Job chaining or workflows.** Composing jobs into multi-step pipelines is
+  the consumer's responsibility. The queue processes individual jobs.
+- **Replacing the clone queue immediately.** The existing in-memory clone
+  `JobQueue` continues to work. Migration to the durable queue is optional
+  and incremental.
 
 ## Functional Requirements
 
-### Hardened Git Subprocess Runner
+### Job Model
 
-A `GitRunner` wraps all git CLI subprocess calls with safety defaults and
-uniform error handling. All hub packages that execute git commands use this
-runner — no direct `exec.Command("git", ...)` calls.
+A job represents a unit of background work.
 
-- **Safety environment variables** applied to every invocation:
-  - `GIT_ALLOW_PROTOCOL=file:https:ssh` — prevents `ext::` and other dangerous
-    protocol handlers.
-  - `GIT_TERMINAL_PROMPT=0` — prevents interactive credential prompts from
-    hanging the hub process.
-  - `GIT_CONFIG_NOSYSTEM=1` — ignores system-level git config that could alter
-    behavior.
-- **Uniform error formatting:** every failed command captures the command line,
-  exit code, and stderr for structured error reporting.
-- **Three-way exit code discrimination** for remote queries using
-  `git ls-remote --exit-code`:
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | TEXT (UUID) | Unique job identifier, generated on creation. |
+| `type` | TEXT | Registered job type (e.g., `merge`, `sync`). |
+| `key` | TEXT | Serialization key. Jobs with the same `type` and `key` execute sequentially. Jobs with different keys execute concurrently. |
+| `nonce` | TEXT (unique) | Cryptographic nonce for idempotency. Callers generate the nonce; the queue rejects duplicates. |
+| `status` | TEXT | Current job state (see state machine below). |
+| `payload` | TEXT (JSON) | Job-type-specific input data. Opaque to the queue. |
+| `result` | TEXT (JSON, nullable) | Handler output on success. Opaque to the queue. |
+| `error` | TEXT (nullable) | Error message from the most recent failed attempt. |
+| `retry_count` | INTEGER | Number of retry attempts so far. |
+| `available_at` | TEXT (RFC 3339) | Job is invisible to the queue until this time. Used for backoff. |
+| `submitted_by` | TEXT | Identifier of the submitter (user ID, agent ID, or system). |
+| `created_at` | TEXT (RFC 3339) | When the job was created. |
+| `updated_at` | TEXT (RFC 3339) | When the job was last modified. |
 
-  | Exit code | Meaning | Action |
-  |-----------|---------|--------|
-  | 0 | Branch/ref exists | Proceed |
-  | 2 | Branch/ref genuinely missing | Create or return "not found" |
-  | 1 | Network/auth failure | Propagate error |
-
-  This prevents misinterpreting a network timeout or auth failure as "branch
-  does not exist."
-
-- The runner is initialized with a working directory and optional additional
-  environment variables.
-- The runner is built as `internal/gitcmd` and requires git >= 2.38 on the
-  host (for `merge-tree --write-tree` support).
-
-### Merge Operations
-
-Merge operations integrate a source branch into a target branch within a
-workspace using rebase-then-fast-forward semantics.
-
-#### Job Integration
-
-Merge operations are registered as a `"merge"` job type with the durable job
-queue (prd11job). The serialization key is `<workspace_slug>:<target_branch>`,
-ensuring that merges to the same target branch execute sequentially while
-merges to different branches or workspaces run concurrently.
-
-The merge handler receives a JSON payload containing the merge parameters and
-returns a JSON result with the outcome. The REST API and CLI are thin wrappers
-that enqueue merge jobs and query their status.
-
-#### Merge Payload
-
-The merge job payload contains:
-
-```json
-{
-  "workspace_slug": "string",
-  "target_branch": "string",
-  "source_ref": "string",
-  "submitted_by": "string"
-}
-```
-
-#### Merge Result
-
-On success, the merge job result contains:
-
-```json
-{
-  "base_sha": "string (40-char hex SHA)",
-  "merged_sha": "string (40-char hex SHA)"
-}
-```
-
-On failure, the job's error field contains a structured description. For
-conflicts, the error includes the list of conflicting file paths.
-
-#### Typed Merge Rejection Reasons
-
-Before attempting the actual merge, the handler runs a pre-check that returns
-a typed reason if the merge should not proceed. This separates "expected
-rejection" from "unexpected failure" without string parsing.
-
-| Reason | Meaning | Handler action |
-|--------|---------|----------------|
-| `WouldConflict` | Dry-run detected merge conflicts | Return permanent error with conflict file list |
-| `AlreadyMerged` | Source branch already integrated into target | Return success (idempotent) |
-| `BranchNotReady` | Source branch has no commits ahead of target | Return retryable error |
-
-Higher-level systems may define additional pre-check logic by wrapping the
-merge handler.
-
-#### Dry-Run Conflict Check
-
-Before performing a real rebase, the merge handler runs a read-only conflict
-probe using `git merge-tree --write-tree` (Git 2.38+):
+### Job Status State Machine
 
 ```
-git merge-tree --write-tree <target-head> <source-branch-head>
+enqueue ──► queued ──► running ──► completed
+                │          │
+                │          ├──► failed ──► queued (when available_at passes)
+                │          │
+                │          └──► dead_letter (retries exhausted or permanent error)
+                │
+                └──► cancelled
 ```
 
-If the exit code indicates conflicts, the merge is rejected with a structured
-conflict report (file paths). The target branch is never left in a dirty state
-by a failed merge attempt.
+| Status | Meaning |
+|--------|---------|
+| `queued` | Waiting for a worker. Visible to the polling query when `available_at <= now()`. |
+| `running` | A worker has claimed the job and is executing the handler. |
+| `completed` | Handler returned success. `result` contains the output. |
+| `failed` | Handler returned a retryable error. `error` contains the message. The job remains in `failed` status with an updated `available_at`. The polling loop transitions it back to `queued` when `available_at` passes. This gives consumers visibility into retry state. |
+| `dead_letter` | Retry limit exceeded or handler returned a permanent error. The job is preserved for inspection but will not be retried automatically. |
+| `cancelled` | Cancelled by the caller before execution started. Only `queued` jobs can be cancelled. |
 
-#### Merge Algorithm
+### Job Type Registration
 
-The merge handler executes these steps:
+Consumers register a job type with the queue at startup:
 
-1. **Pre-check:** validate prerequisites and return a typed rejection reason
-   if the merge should not proceed.
-   - `WouldConflict` → return permanent error with file list.
-   - `AlreadyMerged` → return success (idempotent skip).
-   - `BranchNotReady` → return retryable error.
-2. Fetch latest target branch state.
-3. Rebase source onto target.
-   - On conflict: `git rebase --abort`, return permanent error with
-     conflicting file paths.
-4. Run configured check command (if any). The check command is stored as
-   the `CHECK_COMMAND` workspace variable (using the existing
-   secrets/variables system from spec 07). If not set, the check step is
-   skipped.
-   - On failure: return permanent error with check output.
-5. Fast-forward push target branch to rebased HEAD.
-   - On failure: return retryable error.
-6. Return success with `base_sha` and `merged_sha`.
+- **Type name:** a short string identifier (e.g., `"merge"`, `"sync"`).
+- **Handler function:** called by the queue worker to process the job.
+  Receives the job's `payload` (as raw JSON bytes) and a context. Returns
+  a result (JSON-serializable), an error, and a boolean indicating whether
+  the error is retryable.
+- **Retry policy (optional):** base delay, multiplier, cap, and max retries.
+  Defaults: base 2s, multiplier 2x, cap 2h, max retries 20.
 
-The per-key serialization from the job queue guarantees that only one merge
-runs per target branch at a time — no additional mutex is needed.
+Registering a type name that already exists is a startup error (fail fast).
 
-### Branch Rebase
-
-The hub provides a rebase operation that rebases a source branch onto a target
-ref. This is a building block used by the merge handler and available to
-higher-level systems.
-
-- **Rebase operation:** `git rebase <target-ref>` on the source branch.
-- **On clean rebase:** returns the new branch HEAD SHA.
-- **On conflict:** `git rebase --abort`, returns a structured conflict report
-  containing the list of conflicting file paths. The branch is left in its
-  pre-rebase state.
-- **Batch rebase:** given a list of branches, rebase each onto a target ref.
-  On conflict for any branch, stop processing that branch and report it.
-  Continue with remaining branches (independent branches are not blocked by
-  a sibling's conflict).
-
-### Upstream Synchronization
-
-The sync operation fetches upstream changes and advances the workspace's
-integration branch. It is the atomic unit of synchronization.
-
-#### New Workspace Fields
-
-Five fields are added to the workspace schema:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `sync_mode` | TEXT NOT NULL | `'pull_only'` | Sync mode: `pull_only` or `disabled`. Extensible for future modes. |
-| `sync_status` | TEXT NOT NULL | `'idle'` | Current sync state: `idle`, `syncing`, `error`. |
-| `upstream_head_sha` | TEXT (nullable) | NULL | HEAD SHA of the upstream tracking branch at last fetch. |
-| `last_sync_at` | TEXT (nullable) | NULL | RFC 3339 timestamp of the last successful sync. |
-| `sync_error` | TEXT (nullable) | NULL | Error message from the most recent failed sync. |
-
-#### Sync Modes
-
-| Mode | Behavior |
-|------|----------|
-| `pull_only` (default) | Downstream sync is enabled. The hub fetches upstream and fast-forwards the integration branch. |
-| `disabled` | Sync is disabled. Sync requests are rejected with a descriptive error. |
-
-The mode is set at workspace creation (optional `--sync-mode` flag) and can
-be changed via the workspace update endpoint.
-
-#### Sync Algorithm
-
-1. Validate preconditions:
-   - Workspace `status` is `active`.
-   - Workspace `clone_status` is `ready`.
-   - Workspace `sync_mode` is not `disabled`.
-   - Workspace `sync_status` is not `syncing` (prevents concurrent syncs).
-2. Set `sync_status = 'syncing'`.
-3. Open the local repository at `<WORKSPACE_ROOT>/<slug>/trunk/`.
-4. Resolve fetch credentials from the secrets store using the existing
-   `resolveCloneAuth` function.
-5. Fetch from upstream: `git fetch origin <branch>`.
-   - If the fetch fails due to missing history on a shallow clone, retry
-     with `--unshallow` (lazy unshallow). Log a warning.
-   - If the fetch fails for other reasons (network, auth), set
-     `sync_status = 'error'`, record `sync_error`, abort.
-6. Read the fetched upstream HEAD SHA.
-7. Record `upstream_head_sha` (always updated — represents known upstream
-   state regardless of whether the integration branch can be advanced).
-8. Compare upstream HEAD with local integration branch HEAD:
-   - **Already up to date:** upstream HEAD equals local HEAD. Set
-     `sync_status = 'idle'`, update `last_sync_at`.
-   - **Fast-forward possible:** upstream HEAD is a descendant of local HEAD.
-     Fast-forward the integration branch. Update `head_sha`. Set
-     `sync_status = 'idle'`, update `last_sync_at`.
-   - **Diverged (force-push detected):** upstream HEAD is NOT a descendant of
-     local HEAD. Set `sync_status = 'error'`, record descriptive error. Do
-     NOT advance the integration branch. The operator must choose a recovery
-     path.
-
-#### Sync Status State Machine
+The handler function signature:
 
 ```
-         ┌──────────────────────────┐
-         │                          │
-         ▼                          │
-Sync ──► syncing ──► idle ──────────┘ (next sync)
-            │
-            ▼
-          error ──► idle  (after operator resolves)
+func(ctx context.Context, payload json.RawMessage) (result any, retryable bool, err error)
 ```
 
-#### Force-Push and Diverged History Recovery
+- On `err == nil`: job transitions to `completed`, `result` is stored.
+- On `err != nil && retryable`: job transitions to `failed`. The job remains
+  in `failed` status (with the error message visible) until `available_at`
+  passes, then the polling loop transitions it back to `queued`.
+- On `err != nil && !retryable`: job transitions to `dead_letter`.
 
-When upstream force-pushes, the fast-forward check fails. Two recovery
-operations are available:
+### Per-Key Serialization
 
-**Reset to upstream** (`afc workspace sync <slug> --reset-to-upstream`):
+Jobs are serialized by the combination of `type` + `key`. The queue ensures
+that at most one job with a given `(type, key)` pair is in `running` status at
+any time. Other jobs with the same key remain `queued` and are picked up after
+the running job completes.
 
-Resets the integration branch to match upstream HEAD. Safe in `pull_only`
-mode because the integration branch has no local-only commits — agent work
-lives on separate branches.
+This allows consumers to express domain-specific serialization constraints
+without the queue understanding the domain. For example, the merge consumer
+uses the target branch as the key — merges to the same branch are serialized,
+merges to different branches run concurrently.
 
-1. Fetch upstream.
-2. Reset the local integration branch to the fetched upstream HEAD.
-3. Update `head_sha` and `upstream_head_sha`.
-4. Set `sync_status = 'idle'`, update `last_sync_at`, clear `sync_error`.
+### Enqueueing
 
-API: `POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true`
+To enqueue a job, the caller provides: `type`, `key`, `nonce`, `payload`,
+and `submitted_by`. The queue:
 
-**Reclone** (`afc workspace reclone <slug>`):
+1. Validates that the `type` is registered.
+2. Checks the `nonce` for uniqueness. If a job with the same nonce already
+   exists, returns the existing job (idempotent — no error).
+3. Inserts a new job record with `status = 'queued'` and
+   `available_at = now()`.
+4. Sends a non-blocking signal on the wakeup channel.
+5. Returns the job ID.
 
-Nuclear recovery option. Archives the workspace (pushing any local commits
-if possible via the existing archive flow), deletes the local clone, and
-re-clones from upstream at current HEAD.
+### Polling and Dispatch
 
-1. Execute the existing archive flow: push local commits to upstream (if
-   credentials and push access allow), record HEAD SHA, delete local clone
-   directory.
-2. Set `clone_status = 'pending'`, `sync_status = 'idle'`, clear
-   `sync_error`, clear `upstream_head_sha`.
-3. Enqueue a clone job (same as workspace reactivation).
-4. Return the workspace with `clone_status: pending`.
+The queue runs a single processing loop that services all registered job
+types:
 
-API: `POST /api/v1/workspaces/:slug/reclone`
+1. **Promote:** transition any `failed` jobs whose `available_at <= now()`
+   back to `queued`.
+2. **Poll:** query for the oldest `queued` job (any type) where
+   `available_at <= now()` and no other job with the same `(type, key)` is
+   currently `running`.
+3. **Claim:** atomically set `status = 'running'` (using a WHERE clause
+   that includes `status = 'queued'` to prevent double-claim).
+4. **Execute:** call the registered handler function for the job's type.
+5. **Finalize:** update the job based on the handler result (completed,
+   failed with retry, or dead-letter).
+6. **Loop:** check for the next available job. If none, wait on a three-way
+   select: shutdown signal, poll timer (configurable, default 5s), or
+   wakeup channel.
 
-### REST API
+The wakeup channel is `buffered(1)`. Multiple rapid enqueues coalesce into a
+single wakeup. This ensures newly enqueued jobs are picked up within
+milliseconds rather than waiting for the next poll cycle.
 
-#### Merge Endpoints
+### Exponential Backoff
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/workspaces/:slug/merges` | Submit a merge request |
-| GET | `/api/v1/workspaces/:slug/merges` | List merge jobs |
-| GET | `/api/v1/workspaces/:slug/merges/:id` | Get merge job status |
-| DELETE | `/api/v1/workspaces/:slug/merges/:id` | Cancel a queued job |
+When a handler returns a retryable error:
 
-**POST request body:**
+1. Increment `retry_count`.
+2. If `retry_count > max_retries`: transition to `dead_letter`.
+3. Otherwise: compute `delay = min(base * multiplier^retry_count, cap)`,
+   set `available_at = now() + delay`, set `status = 'failed'`.
 
-```json
-{
-  "target_branch": "main",
-  "source_ref": "feature/my-branch"
-}
-```
+The job remains in `failed` status until the promote step in the polling
+loop transitions it back to `queued` when `available_at` passes.
 
-**GET merge job response:**
+### Dead-Letter Inspection
 
-The response is a projection of the underlying job queue record with
-merge-specific fields extracted from the payload and result:
+Dead-lettered jobs remain in the database for inspection. A consumer can:
 
-```json
-{
-  "id": "string (UUID)",
-  "workspace_slug": "string",
-  "target_branch": "string",
-  "source_ref": "string",
-  "status": "queued | running | completed | failed | dead_letter | cancelled",
-  "base_sha": "string (40-char hex SHA) | null",
-  "merged_sha": "string (40-char hex SHA) | null",
-  "conflict_files": ["path/to/file1", "path/to/file2"],
-  "check_output": "string | null",
-  "error": "string | null",
-  "retry_count": 0,
-  "submitted_by": "string",
-  "created_at": "string (RFC 3339)",
-  "updated_at": "string (RFC 3339)"
-}
-```
+- Query dead-lettered jobs by type.
+- Manually requeue a dead-lettered job (resets `retry_count` to 0, sets
+  `status = 'queued'`, sets `available_at = now()`).
 
-The merge endpoint handlers translate between the domain-specific merge
-vocabulary and the generic job queue. `POST /merges` enqueues a job with
-`type = "merge"`. `GET /merges` queries jobs of type `"merge"` scoped to
-the workspace. `DELETE /merges/:id` cancels a queued job.
+These operations are exposed through programmatic APIs on the queue, not
+REST endpoints. Consumers may choose to expose them through their own
+endpoints.
 
-#### Sync Endpoints
+### Crash Recovery
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/workspaces/:slug/sync` | Trigger upstream sync |
-| POST | `/api/v1/workspaces/:slug/reclone` | Archive and re-clone from upstream |
+On hub startup, the queue scans for jobs in `running` status. These represent
+jobs that were interrupted by a crash or restart. The queue resets them to
+`queued` with `available_at = now()` so they are re-dispatched.
 
-**POST `/api/v1/workspaces/:slug/sync`**
+This is safe because handlers must be idempotent or tolerate re-execution
+after a partial run. The queue documents this contract — handler authors are
+responsible for idempotency.
 
-Query parameters:
+### Graceful Shutdown
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `reset_to_upstream` | boolean | `false` | Reset the integration branch to match upstream HEAD. For recovering from force-push / diverged history. |
+When the hub receives a shutdown signal:
 
-**POST `/api/v1/workspaces/:slug/reclone`**
+1. The queue closes the `stopCh` channel (broadcast to all worker loops).
+2. Worker loops stop claiming new jobs.
+3. In-flight handler calls run to completion (or until the context is
+   cancelled with a configurable grace period).
+4. `Wait()` blocks until all workers have exited.
 
-Request body: none.
+No job is left in a partially-executed state with a dirty external resource.
 
-#### Error Responses
+### Query API
 
-| Condition | HTTP Status |
-|-----------|-------------|
-| Sync on workspace with `sync_mode = 'disabled'` | 400 |
-| Sync on workspace with `status != 'active'` | 400 |
-| Sync on workspace with `clone_status != 'ready'` | 400 |
-| Sync already in progress (`sync_status = 'syncing'`) | 409 |
-| Upstream fetch failed (network, auth) | 502 |
-| Upstream history diverged (force-push detected) | 409 |
-| Reclone without `--confirm` flag (CLI only) | 400 |
-| Duplicate merge job for same source_ref and target_branch | 409 |
+The queue exposes programmatic query methods for consumers to look up jobs:
 
-### CLI Commands
+- **GetByID(id string):** returns a single job by its UUID, or an error if
+  not found.
+- **ListByType(type string, opts ListOpts):** returns jobs of the given type,
+  optionally filtered by status and/or key. Supports pagination via
+  `offset`/`limit`. Results are ordered by `created_at` descending.
+- **ListByKey(type string, key string):** returns all jobs for a specific
+  type and key combination, ordered by `created_at` descending.
+- **CountByStatus(type string):** returns a map of status → count for all
+  jobs of the given type. Useful for monitoring and dashboards.
 
-**Merge commands:**
+These methods return the full job record including `payload` and `result`.
+Consumers project domain-specific fields from the JSON payload and result in
+their own endpoints.
 
-```
-afc merge submit <workspace-slug> --target <branch> --source <branch>
-afc merge list <workspace-slug>
-afc merge status <workspace-slug> <merge-id>
-afc merge cancel <workspace-slug> <merge-id>
-```
+### Duplicate Prevention
 
-**Sync commands:**
+A given `(type, key)` may have at most one job in `queued` or `running`
+status at any time. Attempting to enqueue a job with a `(type, key)` pair
+that already has an active job returns the existing job's ID and a flag
+indicating it was a duplicate. This prevents unbounded queue growth from
+repeated submissions.
 
-```
-afc workspace sync <slug> [--reset-to-upstream]
-afc workspace reclone <slug> --confirm
-```
-
-- `afc workspace sync <slug>` — Trigger upstream sync.
-- `--reset-to-upstream` — Reset the integration branch to match upstream HEAD.
-- `afc workspace reclone <slug> --confirm` — Archive and re-clone. `--confirm`
-  is required (same pattern as `afc workspace delete`).
-
-**Workspace create extension:**
-
-```
-afc workspace create --git-url <url> --slug <slug> [--sync-mode <mode>]
-```
-
-- `--sync-mode` accepts `pull_only` (default) or `disabled`.
-
-### Permissions
-
-| Scope | Description |
-|-------|-------------|
-| `merges:read` | Query merge job status |
-| `merges:write` | Submit and cancel merge jobs |
-| `workspaces:sync` | Trigger sync and reclone operations |
-
-Admin tokens and API keys have implicit full access. PATs require explicit
-scope grants. Sync status fields are included in standard workspace responses
-under existing `workspaces:read` permission.
-
-### Updated Workspace Response Schema
-
-The workspace response object gains five new fields:
-
-```json
-{
-  "slug": "string",
-  "git_url": "string",
-  "branch": "string | null",
-  "display_name": "string",
-  "description": "string",
-  "owner_id": "string (UUID)",
-  "org_id": "string (UUID) | null",
-  "status": "active | archived",
-  "clone_status": "pending | cloning | ready | failed | archived",
-  "head_sha": "string (40-char hex SHA) | null",
-  "clone_error": "string | null",
-  "sync_mode": "pull_only | disabled",
-  "sync_status": "idle | syncing | error",
-  "upstream_head_sha": "string (40-char hex SHA) | null",
-  "last_sync_at": "string (RFC 3339) | null",
-  "sync_error": "string | null",
-  "created_at": "string (RFC 3339)",
-  "updated_at": "string (RFC 3339)"
-}
-```
+The `nonce` check is separate from duplicate prevention — it catches
+retransmissions of the exact same request (same nonce), while duplicate
+prevention catches semantically equivalent but distinct requests (different
+nonce, same type+key).
 
 ## Technical Boundaries
 
 - **Language:** Go (1.26+)
-- **Foundation:** `github.com/txsvc/apikit` — server framework,
-  authentication, CLI.
-- **Git requirement:** git >= 2.38 on the hub host (for
-  `git merge-tree --write-tree`).
-- **Git operations:** git CLI via `GitRunner` for merge, rebase, sync, and
-  conflict detection. `github.com/go-git/go-git/v5` for fetch and branch
-  manipulation (consistent with clone operations).
-- **Credential reuse:** `resolveCloneAuth` from `internal/workspace/queue.go`
-  resolves fetch credentials from the secrets store.
-- **Database:** SQLite (pure Go, no CGo). Pre-production; schema changes are
-  applied as DDL updates.
+- **Storage:** SQLite via the hub's existing `*sql.DB` connection. No
+  additional dependencies.
+- **Package:** `internal/jobqueue/` — a single package with no domain-specific
+  imports.
+- **Concurrency:** Go channels and goroutines. No external message broker.
 
 ## Dependencies
 
-| Dependency | Relationship |
-|------------|--------------|
-| prd11job (Durable Job Queue) | Merge operations are registered as a job type. The job queue provides persistence, retry, backoff, per-key serialization, and crash recovery. |
-| 05_workspace_checkout | Requires clone infrastructure (JobQueue, clone lifecycle, workspace directory structure) |
-| 06_git_server | Merge operations integrate with git server for local push operations |
-| 07_secrets_variables | CHECK_COMMAND workspace variable uses the existing secrets/variables system |
-| 09_git_credentials | Requires credential storage and `resolveCloneAuth` for fetch authentication |
+None. The job queue is a foundational package with no dependencies on other
+hub subsystems. It depends only on the hub's `*sql.DB` connection and
+standard library.
+
+## Design Decisions
+
+1. **Drop per-type concurrency; keep only per-key serialization.** The PRD
+   originally defined both per-type concurrency (max N jobs of a type running
+   simultaneously) and per-key serialization. These are redundant in practice:
+   per-key serialization already prevents concurrent execution within a key,
+   and the queue runs as many distinct keys in parallel as worker goroutines
+   allow. Removing per-type concurrency simplifies the registration API and
+   eliminates a tuning knob that would rarely be adjusted.
+
+2. **Reject duplicate (type, key) submissions.** When a `(type, key)` pair
+   already has a `queued` or `running` job, new submissions with a different
+   nonce are rejected with the existing job's ID returned. This prevents
+   unbounded queue growth from repeated submissions and gives callers a clear
+   signal to wait. The alternative — accepting and queuing multiple jobs per
+   key — enables fire-and-forget but risks accumulation when callers don't
+   track what they've submitted.
+
+3. **`failed` is a stored, visible status.** When a handler returns a
+   retryable error, the job transitions to `failed` and remains there until
+   `available_at` passes. The polling loop's promote step then transitions it
+   back to `queued`. This gives consumers visibility into retry state ("this
+   job failed and is waiting to retry at time X") rather than hiding retries
+   behind a `queued` status with an opaque `available_at`.
+
+4. **Accept `*sql.DB`, not `*apikit.DB`.** All existing internal packages
+   (workspace, secrets, vars) accept `*sql.DB` directly. The job queue
+   follows this convention for consistency. If the codebase migrates to
+   `*apikit.DB` in the future, the job queue can be updated then.
+
+5. **Richer query API: GetByID, ListByType, ListByKey, CountByStatus.** The
+   merge REST endpoints need to list and get individual merge jobs, which
+   requires at minimum GetByID and ListByType. ListByKey and CountByStatus
+   add observability for monitoring and debugging without significant
+   implementation cost.
