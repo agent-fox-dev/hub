@@ -115,6 +115,17 @@ func lastEnvValue(env []string, key string) (string, bool) {
 	return val, found
 }
 
+// initTestRepoWithCommit creates a temporary git repository with a single
+// initial commit on the default branch. Returns the path to the repo directory.
+func initTestRepoWithCommit(t *testing.T) string {
+	t.Helper()
+	dir := initTestRepo(t)
+	writeTestFile(t, filepath.Join(dir, "file.txt"), "initial content")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "initial commit")
+	return dir
+}
+
 // ========================================================================
 // Group 2 test helpers: repo setup for LsRemote, MergeTree, Rebase tests
 // ========================================================================

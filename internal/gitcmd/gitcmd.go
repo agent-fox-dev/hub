@@ -101,3 +101,8 @@ func (r *GitRunner) RebaseAbort(_ context.Context) error {
 func (r *GitRunner) RevParse(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
+
+// UpdateRef executes git update-ref to update a reference to point to a SHA.
+func (r *GitRunner) UpdateRef(_ context.Context, _, _ string) error {
+	return fmt.Errorf("not implemented")
+}
