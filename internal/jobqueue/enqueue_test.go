@@ -271,3 +271,148 @@ func TestEnqueue_NonceMatchRegardlessOfStatus(t *testing.T) {
 		t.Errorf("expected exactly 1 total job, got %d", count)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Edge Case: Enqueue with an empty nonce is rejected.
+// Requirement: 10-REQ-3.E1
+// ---------------------------------------------------------------------------
+
+func TestEnqueue_EmptyNonce(t *testing.T) {
+	queue, db := newTestQueue(t)
+	registerTestHandler(t, queue, "merge")
+
+	jobID, dup, err := queue.Enqueue(EnqueueParams{
+		Type:        "merge",
+		Key:         "main",
+		Nonce:       "",
+		Payload:     json.RawMessage(`{}`),
+		SubmittedBy: "user-1",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty nonce, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonce") {
+		t.Errorf("error should mention 'nonce', got: %q", err.Error())
+	}
+	if jobID != "" {
+		t.Errorf("expected empty jobID, got %q", jobID)
+	}
+	if dup {
+		t.Error("expected duplicate=false")
+	}
+
+	// Verify no row was inserted.
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&count)
+	if err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 rows, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge Case: Enqueue with an empty key is rejected.
+// Requirement: 10-REQ-3.E2
+// ---------------------------------------------------------------------------
+
+func TestEnqueue_EmptyKey(t *testing.T) {
+	queue, db := newTestQueue(t)
+	registerTestHandler(t, queue, "merge")
+
+	jobID, dup, err := queue.Enqueue(EnqueueParams{
+		Type:        "merge",
+		Key:         "",
+		Nonce:       "n1",
+		Payload:     json.RawMessage(`{}`),
+		SubmittedBy: "user-1",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty key, got nil")
+	}
+	if !strings.Contains(err.Error(), "key") {
+		t.Errorf("error should mention 'key', got: %q", err.Error())
+	}
+	if jobID != "" {
+		t.Errorf("expected empty jobID, got %q", jobID)
+	}
+	if dup {
+		t.Error("expected duplicate=false")
+	}
+
+	// Verify no row was inserted.
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&count)
+	if err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 rows, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge Case: Enqueue wakeup channel receives a signal after successful insert.
+// Requirement: 10-REQ-3.1, 10-REQ-3.E4
+// ---------------------------------------------------------------------------
+
+func TestEnqueue_WakeupSignal(t *testing.T) {
+	queue, _ := newTestQueue(t)
+	registerTestHandler(t, queue, "merge")
+
+	// Drain any existing signal on the wakeup channel.
+	select {
+	case <-queue.wakeupCh:
+	default:
+	}
+
+	_, _, err := queue.Enqueue(EnqueueParams{
+		Type:        "merge",
+		Key:         "main",
+		Nonce:       "abc",
+		Payload:     json.RawMessage(`{}`),
+		SubmittedBy: "user-1",
+	})
+	if err != nil {
+		t.Fatalf("Enqueue() returned error: %v", err)
+	}
+
+	// The wakeup channel should have a signal.
+	select {
+	case <-queue.wakeupCh:
+		// Good: wakeup signal received.
+	default:
+		t.Error("expected wakeup signal on wakeupCh after successful enqueue")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge Case: Enqueue with a running (type, key) returns duplicate=true.
+// Requirement: 10-REQ-3.3
+// ---------------------------------------------------------------------------
+
+func TestEnqueue_DuplicateTypeKeyRunning(t *testing.T) {
+	queue, db := newTestQueue(t)
+	registerTestHandler(t, queue, "merge")
+
+	// Seed a RUNNING job for (type='merge', key='main').
+	seedJob(t, db, "j1", "merge", "main", "original-nonce", "running")
+
+	jobID, dup, err := queue.Enqueue(EnqueueParams{
+		Type:        "merge",
+		Key:         "main",
+		Nonce:       "new-nonce",
+		Payload:     json.RawMessage(`{}`),
+		SubmittedBy: "user-2",
+	})
+	if err != nil {
+		t.Fatalf("Enqueue() returned error: %v", err)
+	}
+	if !dup {
+		t.Error("expected duplicate=true for running (type, key) match")
+	}
+	if jobID != "j1" {
+		t.Errorf("expected jobID='j1', got %q", jobID)
+	}
+}

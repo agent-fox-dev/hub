@@ -282,6 +282,14 @@ func (q *Queue) getHandler(typeName string) (HandlerFunc, bool) {
 // Returns (jobID, duplicate, err) where duplicate=true indicates a (type, key)
 // dedup match and duplicate=false indicates either a new job or a nonce match.
 func (q *Queue) Enqueue(params EnqueueParams) (jobID string, duplicate bool, err error) {
+	// Validate required fields.
+	if params.Nonce == "" {
+		return "", false, fmt.Errorf("jobqueue: nonce must not be empty")
+	}
+	if params.Key == "" {
+		return "", false, fmt.Errorf("jobqueue: key must not be empty")
+	}
+
 	// Validate type is registered.
 	q.mu.RLock()
 	_, registered := q.handlers[params.Type]
@@ -329,6 +337,29 @@ func (q *Queue) Enqueue(params EnqueueParams) (jobID string, duplicate bool, err
 		string(params.Payload), now, params.SubmittedBy, now, now,
 	)
 	if insertErr != nil {
+		// Handle concurrent nonce collision: the unique index on nonce
+		// causes the INSERT to fail. Re-check for the existing record and
+		// return it as an idempotent duplicate (10-REQ-13.E1).
+		var raceID string
+		raceErr := q.db.QueryRow(
+			"SELECT id FROM jobs WHERE nonce = ?", params.Nonce,
+		).Scan(&raceID)
+		if raceErr == nil {
+			return raceID, false, nil
+		}
+
+		// Also handle concurrent (type, key) active job race (10-REQ-3.E5):
+		// another goroutine inserted a job with the same (type, key) between
+		// our check and our INSERT.
+		var raceActiveID string
+		raceActiveErr := q.db.QueryRow(
+			"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?)",
+			params.Type, params.Key, StatusQueued, StatusRunning,
+		).Scan(&raceActiveID)
+		if raceActiveErr == nil {
+			return raceActiveID, true, nil
+		}
+
 		return "", false, fmt.Errorf("jobqueue: insert job: %w", insertErr)
 	}
 
