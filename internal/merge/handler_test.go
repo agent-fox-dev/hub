@@ -432,6 +432,7 @@ func (m *mockAuthMethod) String() string {
 
 func TestRebaseSource_CapturesPreRebaseSHA(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	// RebaseSource must:
@@ -540,6 +541,7 @@ func envToMap(env []string) map[string]string {
 
 func TestRebaseSource_Conflict_AbortAndPermanentError(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 	h := newTestHandler(workspaceRoot)
 
 	// When rebase encounters conflicts, RebaseSource should:
@@ -856,13 +858,15 @@ func TestCheckStep_RollbackFailure_PermanentError(t *testing.T) {
 
 func TestUpdateTargetRef_SetsRefToRebasedHead(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	trunkDir := setupWorkspaceRepo(t, workspaceRoot, "ws1")
 
 	h := &Handler{
 		WorkspaceRoot: workspaceRoot,
 	}
 
 	ctx := context.Background()
-	newSHA := "newsha123newsha123newsha123newsha123newsha1"
+	// Use a real commit SHA from the test repo so git update-ref succeeds.
+	newSHA := runGitCmd(t, trunkDir, "rev-parse", "feature/a")
 	err := h.UpdateTargetRef(ctx, "ws1", "main", newSHA)
 
 	if err != nil {
@@ -870,9 +874,11 @@ func TestUpdateTargetRef_SetsRefToRebasedHead(t *testing.T) {
 	}
 
 	// After UpdateTargetRef, refs/heads/main in the workspace repo must
-	// point to the new SHA. Verification via go-git PlainOpen is done by
-	// the implementation test; here we verify the method returns without
-	// error and the correct SHA was passed through.
+	// point to the new SHA.
+	actualSHA := runGitCmd(t, trunkDir, "rev-parse", "refs/heads/main")
+	if actualSHA != newSHA {
+		t.Errorf("expected main to point to %q, got %q", newSHA, actualSHA)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -883,12 +889,15 @@ func TestUpdateTargetRef_SetsRefToRebasedHead(t *testing.T) {
 
 func TestUpdateTargetRef_LockContention_RetryableError(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	setupWorkspaceRepo(t, workspaceRoot, "ws1")
 
 	h := &Handler{
 		WorkspaceRoot: workspaceRoot,
 	}
 
 	ctx := context.Background()
+	// Use a SHA that doesn't correspond to any real object — git update-ref
+	// will fail, simulating a transient ref update failure.
 	err := h.UpdateTargetRef(ctx, "ws1", "main", "newsha123newsha123newsha123newsha123newsha1")
 
 	// When ref lock contention occurs, the error must be retryable.
@@ -918,6 +927,7 @@ func TestUpdateTargetRef_LockContention_RetryableError(t *testing.T) {
 
 func TestDeleteSourceBranch_RemovesRef(t *testing.T) {
 	workspaceRoot := t.TempDir()
+	trunkDir := setupWorkspaceRepo(t, workspaceRoot, "ws1")
 
 	h := &Handler{
 		WorkspaceRoot: workspaceRoot,
@@ -931,9 +941,16 @@ func TestDeleteSourceBranch_RemovesRef(t *testing.T) {
 	}
 
 	// After deletion, the source branch ref must no longer exist in the
-	// workspace repository. Verification via go-git PlainOpen is done by
-	// the implementation test; here we verify the method returns without
-	// error for a valid branch.
+	// workspace repository.
+	_, refErr := h.runnerForWorkspace("ws1")
+	if refErr != nil {
+		t.Fatalf("failed to create runner: %v", refErr)
+	}
+	// Verify the branch ref no longer exists via git.
+	out := runGitCmd(t, trunkDir, "branch", "--list", "feature/a")
+	if out != "" {
+		t.Errorf("expected feature/a branch to be deleted, but it still exists: %q", out)
+	}
 }
 
 // ---------------------------------------------------------------------------

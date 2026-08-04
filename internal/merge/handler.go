@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -214,22 +215,66 @@ func (h *Handler) dryRunConflictCheck(ctx context.Context, runner *gitcmd.GitRun
 
 // FetchTarget fetches the latest target branch state from the upstream
 // remote via go-git using resolved clone credentials.
-func (h *Handler) FetchTarget(_ context.Context, _, _ string) error {
-	return fmt.Errorf("merge: FetchTarget not implemented")
+func (h *Handler) FetchTarget(_ context.Context, workspaceSlug, targetBranch string) error {
+	auth, err := h.ResolveAuth(workspaceSlug)
+	if err != nil {
+		return fmt.Errorf("merge: resolve clone auth for %q: %w", workspaceSlug, err)
+	}
+	trunkDir := h.TrunkDir(workspaceSlug)
+	return h.Fetch(trunkDir, targetBranch, auth)
 }
 
 // RebaseSource captures the pre-rebase SHA of the source branch, then
 // invokes git rebase <target-ref> in the workspace trunk directory.
-// Returns the pre-rebase SHA on success.
-func (h *Handler) RebaseSource(_ context.Context, _, _, _ string) (preRebaseSHA string, err error) {
-	return "", fmt.Errorf("merge: RebaseSource not implemented")
+// Returns the pre-rebase SHA on success. On conflict, returns a permanent
+// *MergeRejection with WouldConflict and the conflicting file paths.
+func (h *Handler) RebaseSource(ctx context.Context, workspaceSlug, targetBranch, sourceRef string) (preRebaseSHA string, err error) {
+	runner, err := h.runnerForWorkspace(workspaceSlug)
+	if err != nil {
+		return "", fmt.Errorf("merge: rebase source: %w", err)
+	}
+
+	// Checkout the source branch before capturing its SHA and rebasing.
+	if _, err := runner.Run(ctx, "checkout", sourceRef); err != nil {
+		return "", fmt.Errorf("merge: checkout %q: %w", sourceRef, err)
+	}
+
+	// Capture pre-rebase SHA of the source branch BEFORE any mutation.
+	preRebaseSHA, err = runner.RevParse(ctx, sourceRef)
+	if err != nil {
+		return "", fmt.Errorf("merge: rev-parse %q: %w", sourceRef, err)
+	}
+
+	// Invoke git rebase <target-ref>. GitRunner.Rebase auto-aborts on
+	// conflict and returns *RebaseConflictError.
+	_, err = runner.Rebase(ctx, targetBranch)
+	if err != nil {
+		var conflictErr *gitcmd.RebaseConflictError
+		if errors.As(err, &conflictErr) {
+			return "", &MergeRejection{
+				Reason:        WouldConflict,
+				Permanent:     true,
+				ConflictFiles: conflictErr.ConflictingFiles,
+			}
+		}
+		return "", fmt.Errorf("merge: rebase %q onto %q: %w", sourceRef, targetBranch, err)
+	}
+
+	return preRebaseSHA, nil
 }
 
 // RunCheckCommand executes the workspace CHECK_COMMAND via 'sh -c' in the
 // trunk directory with MERGE_TARGET, MERGE_SOURCE, and WORKSPACE_SLUG
 // environment variables injected, enforcing CheckCommandTimeout.
-func (h *Handler) RunCheckCommand(_ context.Context, _, _, _, _ string) error {
-	return fmt.Errorf("merge: RunCheckCommand not implemented")
+func (h *Handler) RunCheckCommand(ctx context.Context, workspaceSlug, targetBranch, sourceRef, checkCmd string) error {
+	trunkDir := h.TrunkDir(workspaceSlug)
+	env := []string{
+		"MERGE_TARGET=" + targetBranch,
+		"MERGE_SOURCE=" + sourceRef,
+		"WORKSPACE_SLUG=" + workspaceSlug,
+	}
+	_, err := h.Executor.Run(ctx, trunkDir, env, CheckCommandTimeout, "sh", "-c", checkCmd)
+	return err
 }
 
 // MergeResult contains the successful outcome of a merge operation.
@@ -261,26 +306,83 @@ type RollbackFunc func(ctx context.Context, trunkDir, branch, sha string) error
 // step is skipped (returns executed=false, nil). If the check command
 // fails or times out, it rolls back the rebase using the Rollback function
 // and returns a permanent error with the check output.
-func (h *Handler) RunCheckStep(_ context.Context, _, _, _, _ string) (executed bool, err error) {
-	return false, fmt.Errorf("merge: RunCheckStep not implemented")
+func (h *Handler) RunCheckStep(ctx context.Context, workspaceSlug, targetBranch, sourceRef, preRebaseSHA string) (executed bool, err error) {
+	checkCmd, getErr := h.GetVariable("workspace", workspaceSlug, "CHECK_COMMAND")
+	if getErr != nil {
+		// Variable not found — skip the check step entirely.
+		return false, nil
+	}
+	if checkCmd == "" {
+		return false, nil
+	}
+
+	// Execute the check command.
+	err = h.RunCheckCommand(ctx, workspaceSlug, targetBranch, sourceRef, checkCmd)
+	if err != nil {
+		// Check command failed — roll back the rebase to the pre-rebase state.
+		trunkDir := h.TrunkDir(workspaceSlug)
+		rollbackErr := h.Rollback(ctx, trunkDir, sourceRef, preRebaseSHA)
+		if rollbackErr != nil {
+			// Both check command and rollback failed — the repository may be
+			// in an inconsistent state. Log both errors and return permanent.
+			slog.Error("rollback failed after check command failure",
+				"original_error", err.Error(),
+				"rollback_error", rollbackErr.Error(),
+				"workspace", workspaceSlug,
+				"source", sourceRef,
+			)
+			return true, &MergeRejection{
+				Permanent: true,
+			}
+		}
+		// Rollback succeeded — return the check command error.
+		return true, fmt.Errorf("check command failed: %w", err)
+	}
+
+	return true, nil
 }
 
 // UpdateTargetRef updates the target branch ref to point to newSHA using
-// go-git reference update. This is a local ref update only — no remote
-// push is performed.
-func (h *Handler) UpdateTargetRef(_ context.Context, _, _, _ string) error {
-	return fmt.Errorf("merge: UpdateTargetRef not implemented")
+// git update-ref. This is a local ref update only — no remote push is
+// performed. On failure (e.g. lock contention, nonexistent object),
+// returns a retryable *MergeRejection so the job queue can retry.
+func (h *Handler) UpdateTargetRef(ctx context.Context, workspaceSlug, targetBranch, newSHA string) error {
+	runner, err := h.runnerForWorkspace(workspaceSlug)
+	if err != nil {
+		return &MergeRejection{Permanent: false}
+	}
+	ref := "refs/heads/" + targetBranch
+	if err := runner.UpdateRef(ctx, ref, newSHA); err != nil {
+		return &MergeRejection{Permanent: false}
+	}
+	return nil
 }
 
 // DeleteSourceBranch deletes the source branch ref from the local
-// repository via go-git reference deletion.
-func (h *Handler) DeleteSourceBranch(_ context.Context, _, _ string) error {
-	return fmt.Errorf("merge: DeleteSourceBranch not implemented")
+// repository via git update-ref -d.
+func (h *Handler) DeleteSourceBranch(ctx context.Context, workspaceSlug, sourceRef string) error {
+	runner, err := h.runnerForWorkspace(workspaceSlug)
+	if err != nil {
+		return fmt.Errorf("merge: delete source branch: %w", err)
+	}
+	if _, err := runner.Run(ctx, "update-ref", "-d", "refs/heads/"+sourceRef); err != nil {
+		return fmt.Errorf("merge: delete branch %q: %w", sourceRef, err)
+	}
+	return nil
 }
 
 // Finalize constructs a MergeResult from the pre-merge target HEAD
 // (baseSHA) and the post-merge target HEAD (mergedSHA). Both must be
 // 40-character hex SHAs.
-func (h *Handler) Finalize(_, _ string) (*MergeResult, error) {
-	return nil, fmt.Errorf("merge: Finalize not implemented")
+func (h *Handler) Finalize(baseSHA, mergedSHA string) (*MergeResult, error) {
+	if len(baseSHA) != 40 {
+		return nil, fmt.Errorf("merge: invalid base_sha length %d (expected 40)", len(baseSHA))
+	}
+	if len(mergedSHA) != 40 {
+		return nil, fmt.Errorf("merge: invalid merged_sha length %d (expected 40)", len(mergedSHA))
+	}
+	return &MergeResult{
+		BaseSHA:   baseSHA,
+		MergedSHA: mergedSHA,
+	}, nil
 }
