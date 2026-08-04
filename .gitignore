@@ -19,6 +19,7 @@ bin/
 # own stuff
 hack/
 prompts.md
+docs/prd/proposals/*
 
 # local test files and secrets
 admin_token
