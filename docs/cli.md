@@ -803,6 +803,152 @@ positional argument.
 
 ---
 
+## Merge Commands
+
+All merge commands are subcommands of `afc merge`. They manage merge jobs that
+integrate agent branches into a target branch using rebase-then-fast-forward
+semantics.
+
+### afc merge submit
+
+Submit a merge job for a workspace.
+
+**Usage:**
+
+```
+afc merge submit <workspace-slug> --target <branch> --source <branch>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to submit the merge job for |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--target` | yes | string | Target branch to merge into |
+| `--source` | yes | string | Source branch to merge from |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/merges` with `target_branch` and
+  `source_ref` in the request body.
+- Prints the created merge job JSON to stdout, including `id` and
+  `status` (initially `queued`).
+- Requires `merges:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Merge job submitted successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing `--target` or `--source` flag |
+
+---
+
+### afc merge list
+
+List merge jobs for a workspace.
+
+**Usage:**
+
+```
+afc merge list <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to list merge jobs for |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/merges`.
+- Prints a JSON array of merge job records to stdout.
+- Requires `merges:read` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Merge jobs listed successfully |
+| 1 | API error, network error, or timeout |
+
+---
+
+### afc merge status
+
+Get the status of a specific merge job.
+
+**Usage:**
+
+```
+afc merge status <workspace-slug> <merge-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<merge-id>` | The merge job ID to query |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/merges/<merge-id>`.
+- Prints the merge job JSON to stdout, including status, result fields
+  (`base_sha`, `merged_sha` for completed jobs), and error fields
+  (`conflict_files` for failed jobs).
+- Requires `merges:read` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Merge job status retrieved successfully |
+| 1 | Merge job not found, API error, network error, or timeout |
+
+---
+
+### afc merge cancel
+
+Cancel a queued merge job.
+
+**Usage:**
+
+```
+afc merge cancel <workspace-slug> <merge-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<merge-id>` | The merge job ID to cancel |
+
+**Behavior:**
+
+- Sends `DELETE /api/v1/workspaces/<slug>/merges/<merge-id>`.
+- On success, prints a confirmation message to stderr.
+- Only queued jobs can be cancelled; attempting to cancel a running,
+  completed, or already-cancelled job returns an error.
+- Requires `merges:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Merge job cancelled successfully |
+| 1 | Merge job not cancellable (wrong status), not found, API error, network error, or timeout |
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage

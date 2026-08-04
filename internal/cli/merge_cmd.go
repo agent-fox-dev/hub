@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"net/http"
+
 	"github.com/spf13/cobra"
 	"github.com/txsvc/apikit"
 )
@@ -52,10 +55,22 @@ func newMergeSubmitCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "--source flag is required"))
 			}
 
-			// Stub: implementation will be added in task group 15.
-			// Will call POST /api/v1/workspaces/:slug/merges with
-			// {target_branch, source_ref} body and print the result.
-			return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, "not implemented"))
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			body := map[string]any{
+				"target_branch": target,
+				"source_ref":    source,
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/merges", body)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 
@@ -74,10 +89,18 @@ func newMergeListCmd() *cobra.Command {
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Stub: implementation will be added in task group 15.
-			// Will call GET /api/v1/workspaces/:slug/merges and print the result.
-			return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, "not implemented"))
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet, "/workspaces/"+args[0]+"/merges", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }
@@ -91,10 +114,18 @@ func newMergeStatusCmd() *cobra.Command {
 		Args:          cobra.ExactArgs(2),
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Stub: implementation will be added in task group 15.
-			// Will call GET /api/v1/workspaces/:slug/merges/:id and print the result.
-			return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, "not implemented"))
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet, "/workspaces/"+args[0]+"/merges/"+args[1], nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }
@@ -108,10 +139,19 @@ func newMergeCancelCmd() *cobra.Command {
 		Args:          cobra.ExactArgs(2),
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Stub: implementation will be added in task group 15.
-			// Will call DELETE /api/v1/workspaces/:slug/merges/:id and print confirmation.
-			return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, "not implemented"))
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, "/workspaces/"+args[0]+"/merges/"+args[1], nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			fmt.Fprintf(cmd.ErrOrStderr(), "Merge job '%s' has been cancelled.\n", args[1])
+			return nil
 		},
 	}
 }
