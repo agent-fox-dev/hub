@@ -143,7 +143,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}()
 
-		// ---- Git operations (13-REQ-4.1 through 13-REQ-4.4) ----
+		// ---- Common setup for git operations ----
 
 		// Open repo path.
 		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
@@ -159,6 +159,13 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadGateway,
 				"sync failed: credential resolution error")
 		}
+
+		// ---- Check for reset-to-upstream mode (13-REQ-6) ----
+		if c.QueryParam("reset_to_upstream") == "true" {
+			return handleResetToUpstream(c, db, slug, ws, repoPath, fetchAuth, &syncCompleted)
+		}
+
+		// ---- Standard sync: git operations (13-REQ-4.1 through 13-REQ-4.4) ----
 
 		// Check for context cancellation before fetch.
 		if c.Request().Context().Err() != nil {
@@ -263,6 +270,83 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "unexpected sync outcome")
 		}
 	}
+}
+
+// handleResetToUpstream implements the reset-to-upstream recovery path
+// (13-REQ-6). It fetches from upstream, force-updates the local integration
+// branch ref to upstream HEAD (ignoring ancestry), and updates workspace state.
+//
+// This function is called from handleSyncWorkspace when reset_to_upstream=true.
+// The syncCompleted pointer allows this function to coordinate with the
+// deferred cleanup in the parent handler.
+func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspace, repoPath string, fetchAuth transport.AuthMethod, syncCompleted *bool) error {
+	// Verify sync functions are initialized.
+	if syncFetchAndCompareFn == nil {
+		syncError := "sync system not initialized"
+		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		*syncCompleted = true
+		return respondError(c, http.StatusBadGateway, "sync system not initialized")
+	}
+
+	// Get current local HEAD SHA for comparison.
+	localHeadSHA := ""
+	if ws.HeadSHA != nil {
+		localHeadSHA = *ws.HeadSHA
+	}
+
+	// Step 1: Fetch from upstream (13-REQ-6.1).
+	// We reuse syncFetchAndCompareFn to perform the fetch. The outcome
+	// (up_to_date, fast_forward, diverged) is ignored — reset-to-upstream
+	// always force-updates the local ref regardless of ancestry.
+	upstreamHeadSHA, _, fetchErr := syncFetchAndCompareFn(
+		c.Request().Context(), repoPath, fetchAuth, ws.Branch, localHeadSHA,
+	)
+
+	if fetchErr != nil {
+		// 13-REQ-6.E1: Fetch failure — set error, do NOT modify head_sha.
+		syncError := fmt.Sprintf("reset-to-upstream fetch failed: %v", fetchErr)
+		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		*syncCompleted = true
+		return respondError(c, http.StatusBadGateway,
+			"reset-to-upstream failed: upstream fetch error")
+	}
+
+	// Step 2: Force-update the local integration branch ref (13-REQ-6.1).
+	if syncUpdateLocalRefFn == nil {
+		syncError := "sync system not initialized"
+		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		*syncCompleted = true
+		return respondError(c, http.StatusBadGateway, "sync system not initialized")
+	}
+
+	if refErr := syncUpdateLocalRefFn(repoPath, ws.Branch, upstreamHeadSHA); refErr != nil {
+		// 13-REQ-6.E2: Ref update failure — set error, do NOT update head_sha.
+		syncError := fmt.Sprintf("reset-to-upstream ref update failed: %v", refErr)
+		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		*syncCompleted = true
+		return respondError(c, http.StatusBadGateway,
+			"reset-to-upstream failed: could not update integration branch")
+	}
+
+	// Step 3: Update workspace state (13-REQ-6.1, 13-PROP-8).
+	// Set head_sha=upstream HEAD, upstream_head_sha=upstream HEAD,
+	// sync_status='idle', last_sync_at=now, sync_error=NULL.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := setSyncStatusWithHeadSHA(db, slug, "idle", &upstreamHeadSHA, &upstreamHeadSHA, nil, &now); err != nil {
+		syncError := fmt.Sprintf("failed to update workspace state: %v", err)
+		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		*syncCompleted = true
+		return respondError(c, http.StatusInternalServerError,
+			"reset-to-upstream failed: could not update workspace state")
+	}
+
+	*syncCompleted = true
+	updated, err := getWorkspaceBySlug(db, slug)
+	if err != nil || updated == nil {
+		return respondError(c, http.StatusInternalServerError,
+			"failed to read workspace after reset-to-upstream")
+	}
+	return respondWorkspace(c, http.StatusOK, updated, db)
 }
 
 // setSyncStatus updates the sync_status, upstream_head_sha, sync_error, and

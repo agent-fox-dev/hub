@@ -41,12 +41,20 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Reconcile any workspaces stuck in 'syncing' state from a previous
+	// unclean shutdown. Must run before the HTTP server starts accepting
+	// requests (13-REQ-5.1). Aborts startup on failure (13-REQ-5.E1).
+	if err := workspace.ReconcileStuckSyncs(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+
 	// Initialize the async clone job queue with the configured number of
 	// workers. The server context controls worker lifecycle; cancelling it
 	// interrupts in-progress clones and discards pending jobs.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	workspace.InitCloneQueue(ctx, database.SqlDB, cfg.Workspace.Path, cfg.Workspace.Workers)
+	workspace.InitSyncFunctions()
 
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 

@@ -23,6 +23,10 @@ import (
 func TestSyncReset_ResetToUpstreamSuccess(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Install stub: fetch returns the upstream SHA (outcome is ignored for reset).
+	upstreamSHA := "cccc234567890abcdef1234567890abcdef123456"
+	stubSyncFastForward(t, upstreamSHA)
+
 	// Seed workspace in error state (diverged history scenario).
 	localSHA := "aaaa234567890abcdef1234567890abcdef123456"
 	env.seedWorkspace(t, &Workspace{
@@ -78,12 +82,12 @@ func TestSyncReset_ResetToUpstreamSuccess(t *testing.T) {
 	}
 
 	// upstream_head_sha must be set and equal to head_sha.
-	upstreamSHA, ok := resp["upstream_head_sha"].(string)
-	if !ok || upstreamSHA == "" {
+	respUpstreamSHA, ok := resp["upstream_head_sha"].(string)
+	if !ok || respUpstreamSHA == "" {
 		t.Error("upstream_head_sha is null or empty; want non-null SHA")
 	}
-	if headSHA != upstreamSHA {
-		t.Errorf("head_sha = %q; upstream_head_sha = %q; want equal after reset", headSHA, upstreamSHA)
+	if headSHA != respUpstreamSHA {
+		t.Errorf("head_sha = %q; upstream_head_sha = %q; want equal after reset", headSHA, respUpstreamSHA)
 	}
 
 	// last_sync_at must be a non-null RFC 3339 timestamp.
@@ -108,6 +112,9 @@ func TestSyncReset_ResetToUpstreamSuccess(t *testing.T) {
 // Requirement: 13-REQ-6.2
 func TestSyncReset_CLIResetFlag(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: fetch returns an upstream SHA for the reset operation.
+	stubSyncFastForward(t, "dddd234567890abcdef1234567890abcdef123456")
 
 	// Seed workspace in error state.
 	env.seedWorkspace(t, &Workspace{
@@ -155,6 +162,9 @@ func TestSyncReset_CLIResetFlag(t *testing.T) {
 // sync_error, and does NOT modify head_sha or the integration branch.
 func TestSyncReset_FetchFailureSetsError(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: fetch returns a network error.
+	stubSyncFetchError(t, "dial tcp: connection refused")
 
 	originalSHA := "aaaa234567890abcdef1234567890abcdef123456"
 	env.seedWorkspace(t, &Workspace{
@@ -215,6 +225,9 @@ func TestSyncReset_FetchFailureSetsError(t *testing.T) {
 func TestSyncReset_RejectedWhileSyncing(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Install stub: should never be reached since the syncing guard rejects first.
+	stubSyncUpToDate(t, "eeee234567890abcdef1234567890abcdef123456")
+
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "reset-syncing-ws",
 		GitURL:      "https://github.com/example/repo.git",
@@ -251,6 +264,9 @@ func TestSyncReset_RejectedWhileSyncing(t *testing.T) {
 // trigger reset-to-upstream.
 func TestSyncReset_MissingSyncScopeRejected(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Install stub: should never be reached since permission check rejects first.
+	stubSyncUpToDate(t, "ffff234567890abcdef1234567890abcdef123456")
 
 	env.seedWorkspace(t, &Workspace{
 		Slug:        "reset-noscope-ws",

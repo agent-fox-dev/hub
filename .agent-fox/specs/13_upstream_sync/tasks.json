@@ -522,7 +522,7 @@
           "requirement_refs": [
             "13-REQ-5"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -543,7 +543,7 @@
           "requirement_refs": [
             "13-REQ-6"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
