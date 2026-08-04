@@ -107,6 +107,54 @@ func queryTableInfo(t *testing.T, db *sql.DB, tableName string) []columnInfo {
 	return cols
 }
 
+// newTestQueueWithOpts opens a test database, calls InitSchema, and returns a
+// new Queue instance constructed with the provided options, along with the
+// underlying *sql.DB for direct queries.
+func newTestQueueWithOpts(t *testing.T, opts ...Option) (*Queue, *sql.DB) {
+	t.Helper()
+	db := openTestDB(t)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(testWriter{t}, nil))
+	q := New(db, logger, opts...)
+	return q, db
+}
+
+// seedJobFull inserts a job row with full control over retry_count, available_at,
+// and created_at for test scenarios that need precise timing or retry state.
+func seedJobFull(t *testing.T, db *sql.DB, id, typ, key, nonce, status string, retryCount int, availableAt, createdAt time.Time) {
+	t.Helper()
+	avail := availableAt.UTC().Format(time.RFC3339)
+	created := createdAt.UTC().Format(time.RFC3339)
+	_, err := db.Exec(
+		`INSERT INTO jobs (id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, '{}', NULL, NULL, ?, ?, 'test', ?, ?)`,
+		id, typ, key, nonce, status, retryCount, avail, created, created,
+	)
+	if err != nil {
+		t.Fatalf("seedJobFull(%q, type=%q, key=%q, status=%q, retry=%d) failed: %v",
+			id, typ, key, status, retryCount, err)
+	}
+}
+
+// waitForStatus polls the database until the job reaches the target status
+// or the timeout expires. Fails the test on timeout.
+func waitForStatus(t *testing.T, db *sql.DB, jobID, targetStatus string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastStatus string
+	for time.Now().Before(deadline) {
+		err := db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&lastStatus)
+		if err == nil && lastStatus == targetStatus {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("waitForStatus(%q, %q): timed out after %v; last status=%q",
+		jobID, targetStatus, timeout, lastStatus)
+}
+
 // findColumn searches for a column by name in the column list.
 func findColumn(cols []columnInfo, name string) (columnInfo, bool) {
 	for _, c := range cols {

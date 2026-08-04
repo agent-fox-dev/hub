@@ -34,8 +34,27 @@ type EnqueueParams struct {
 	SubmittedBy string
 }
 
+// Job represents a persistent job record in the jobs table.
+type Job struct {
+	ID          string
+	Type        string
+	Key         string
+	Nonce       string
+	Status      string
+	Payload     json.RawMessage
+	Result      json.RawMessage
+	Error       string
+	RetryCount  int
+	AvailableAt time.Time
+	SubmittedBy string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 // Queue is the durable job queue backed by SQLite.
-type Queue struct{}
+type Queue struct {
+	wakeupCh chan struct{}
+}
 
 // Option configures the Queue constructor.
 type Option func(*Queue)
@@ -62,4 +81,31 @@ func (q *Queue) Register(_ string, _ HandlerFunc, _ *RetryPolicy) error {
 // Enqueue enqueues a new job for execution.
 func (q *Queue) Enqueue(_ EnqueueParams) (jobID string, duplicate bool, err error) {
 	return "", false, nil
+}
+
+// WithWorkers sets the number of worker goroutines (default 4).
+func WithWorkers(_ int) Option {
+	return func(q *Queue) {}
+}
+
+// WithPollInterval sets the duration between poll cycles (default 5s).
+func WithPollInterval(_ time.Duration) Option {
+	return func(q *Queue) {}
+}
+
+// Start performs crash recovery and launches worker goroutines.
+func (q *Queue) Start() error {
+	return nil
+}
+
+// Stop initiates graceful shutdown: signals workers to stop claiming
+// new jobs and waits up to the grace period for in-flight handlers to
+// finish.
+func (q *Queue) Stop() error {
+	return nil
+}
+
+// GetByID returns a single job record by its UUID.
+func (q *Queue) GetByID(_ string) (*Job, error) {
+	return nil, nil
 }
