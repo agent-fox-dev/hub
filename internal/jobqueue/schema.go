@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 	id           TEXT    NOT NULL PRIMARY KEY,
 	type         TEXT    NOT NULL,
 	key          TEXT    NOT NULL,
+	group_key    TEXT    NOT NULL DEFAULT '',
 	nonce        TEXT    NOT NULL,
 	status       TEXT    NOT NULL DEFAULT 'queued',
 	payload      TEXT    NOT NULL DEFAULT '{}',

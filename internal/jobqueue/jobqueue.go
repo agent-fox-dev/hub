@@ -338,10 +338,10 @@ func (q *Queue) Enqueue(params EnqueueParams) (jobID string, duplicate bool, err
 
 	_, insertErr := q.db.Exec(
 		`INSERT INTO jobs (id, type, key, nonce, status, payload, result, error,
-		  retry_count, available_at, submitted_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?)`,
+		  retry_count, available_at, submitted_by, group_key, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?)`,
 		id, params.Type, params.Key, params.Nonce, StatusQueued,
-		string(params.Payload), now, params.SubmittedBy, now, now,
+		string(params.Payload), now, params.SubmittedBy, params.Group, now, now,
 	)
 	if insertErr != nil {
 		// Handle concurrent nonce collision: the unique index on nonce
@@ -555,7 +555,10 @@ func (q *Queue) claimAndExecute(workerID int) bool {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Find the oldest queued job whose available_at has passed and that
-	// has no active (running) job for the same (type, key).
+	// has no active (running) job for the same (type, effective serialization key).
+	// The effective serialization key is: CASE WHEN group_key != '' THEN group_key ELSE key END
+	// This preserves per-key serialization for legacy jobs (group_key='') while
+	// enabling per-group serialization for merge jobs (12-REQ-1.4, 12-REQ-1.5).
 	var id, typ, key, nonce, payloadStr, submittedBy, createdAt string
 	var retryCount int
 	err := q.db.QueryRow(`
@@ -564,7 +567,9 @@ func (q *Queue) claimAndExecute(workerID int) bool {
 		WHERE status = ? AND available_at <= ?
 		  AND NOT EXISTS (
 		    SELECT 1 FROM jobs AS j2
-		    WHERE j2.type = jobs.type AND j2.key = jobs.key
+		    WHERE j2.type = jobs.type
+		      AND (CASE WHEN j2.group_key != '' THEN j2.group_key ELSE j2.key END) =
+		          (CASE WHEN jobs.group_key != '' THEN jobs.group_key ELSE jobs.key END)
 		      AND j2.status = ? AND j2.id != jobs.id
 		  )
 		ORDER BY available_at ASC, created_at ASC
@@ -904,10 +909,10 @@ func (q *Queue) GetByID(jobID string) (*Job, error) {
 	var availableAt, createdAt, updatedAt string
 
 	err := q.db.QueryRow(
-		`SELECT id, type, key, nonce, status, payload, result, error,
+		`SELECT id, type, key, group_key, nonce, status, payload, result, error,
 		  retry_count, available_at, submitted_by, created_at, updated_at
 		 FROM jobs WHERE id = ?`, jobID,
-	).Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status, &payload,
+	).Scan(&j.ID, &j.Type, &j.Key, &j.GroupKey, &j.Nonce, &j.Status, &payload,
 		&result, &errStr, &j.RetryCount, &availableAt, &j.SubmittedBy,
 		&createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
@@ -939,7 +944,7 @@ func (q *Queue) GetByID(jobID string) (*Job, error) {
 // applied via offset and limit. Returns an empty slice (not nil) when no
 // jobs match.
 func (q *Queue) ListByType(typeName string, opts ListOpts) ([]*Job, error) {
-	query := "SELECT id, type, key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at FROM jobs WHERE type = ?"
+	query := "SELECT id, type, key, group_key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at FROM jobs WHERE type = ?"
 	args := []any{typeName}
 
 	if opts.Status != "" {
@@ -974,7 +979,7 @@ func (q *Queue) ListByType(typeName string, opts ListOpts) ([]*Job, error) {
 // no jobs match.
 func (q *Queue) ListByKey(typeName string, key string) ([]*Job, error) {
 	return q.queryJobs(
-		`SELECT id, type, key, nonce, status, payload, result, error,
+		`SELECT id, type, key, group_key, nonce, status, payload, result, error,
 		  retry_count, available_at, submitted_by, created_at, updated_at
 		 FROM jobs WHERE type = ? AND key = ? ORDER BY created_at DESC`,
 		typeName, key,
@@ -1089,7 +1094,7 @@ func (q *Queue) queryJobs(query string, args ...any) ([]*Job, error) {
 		var payload, result, errStr sql.NullString
 		var availableAt, createdAt, updatedAt string
 
-		if err := rows.Scan(&j.ID, &j.Type, &j.Key, &j.Nonce, &j.Status,
+		if err := rows.Scan(&j.ID, &j.Type, &j.Key, &j.GroupKey, &j.Nonce, &j.Status,
 			&payload, &result, &errStr, &j.RetryCount, &availableAt,
 			&j.SubmittedBy, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("jobqueue: scan: %w", err)
