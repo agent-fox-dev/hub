@@ -338,8 +338,8 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Trigger upstream sync operations on workspaces. Includes fetching from upstream, fast-forwarding the integration branch, and triggering reset-to-upstream recovery. |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/sync` |
+| **Grants** | Trigger upstream sync and reclone operations on workspaces. Includes fetching from upstream, fast-forwarding the integration branch, triggering reset-to-upstream recovery, and nuclear reclone (archive + re-clone). |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/sync`, `POST /api/v1/workspaces/:slug/reclone` |
 | **Does NOT imply** | `workspaces:read` — a PAT with only `workspaces:sync` cannot list or view workspaces |
 
 ---

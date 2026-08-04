@@ -33,7 +33,7 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
-| `workspaces:sync` | Trigger upstream sync operations on workspaces | POST /api/v1/workspaces/:slug/sync |
+| `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
 | `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
 | `secrets:manage` | Full CRUD access to secrets; implies `secrets:list`, `secrets:write`, and `secrets:delete` | POST, GET, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets |
@@ -428,6 +428,64 @@ or unexpected failures.
 | 409 | Sync already in progress (concurrent sync rejected); upstream history has diverged (force-push detected) |
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
+
+---
+
+### POST /api/v1/workspaces/:slug/reclone
+
+Nuclear recovery operation that archives the workspace (pushing local commits
+to upstream first), deletes the local clone directory, and re-clones from
+upstream. The workspace status remains `"active"` throughout the entire reclone
+lifecycle.
+
+**Authentication:** API Key, or PAT with `workspaces:sync` scope. Admin
+tokens can reclone any workspace.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug to reclone |
+
+**Preconditions:**
+
+- Workspace must exist
+- Clone status must not be `"pending"` or `"cloning"` (no concurrent reclone)
+
+**Reclone Steps:**
+
+1. Execute the archive flow: attempt to push local commits to upstream. If push
+   fails (no credentials, remote rejection, or network error), a warning is
+   logged and the reclone continues.
+2. Delete the local clone directory at `<WORKSPACE_ROOT>/<slug>/`.
+3. Atomically update database: `clone_status='pending'`, `sync_status='idle'`,
+   clear `sync_error` and `upstream_head_sha`. Workspace `status` remains
+   `'active'`.
+4. Enqueue a clone job via the in-memory job queue. The clone lifecycle
+   transitions `clone_status` from `'pending'` → `'cloning'` → `'ready'`.
+
+**Response (success):** HTTP 200 OK with workspace JSON:
+
+```json
+{
+  "slug": "my-workspace",
+  "status": "active",
+  "clone_status": "pending",
+  "sync_status": "idle",
+  "sync_error": null,
+  "upstream_head_sha": null
+}
+```
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `workspaces:sync` scope |
+| 404 | Workspace not found |
+| 409 | Clone operation already in progress (`clone_status` is `"pending"` or `"cloning"`) |
+| 500 | Failed to delete workspace directory; database update failed |
 
 ---
 
