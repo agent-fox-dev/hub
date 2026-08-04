@@ -109,3 +109,29 @@ func (q *Queue) Stop() error {
 func (q *Queue) GetByID(_ string) (*Job, error) {
 	return nil, nil
 }
+
+// RequeueDeadLetter requeues a dead-lettered job for re-execution.
+// It resets retry_count to 0, sets status to queued, sets available_at
+// to now(), and sends a non-blocking signal on the wakeup channel.
+// Returns (jobID, nil) on success.
+// Returns (existingActiveJobID, error) if an active job exists for
+// the same (type, key).
+// Returns ("", error) if the job is not in dead_letter status or
+// does not exist.
+func (q *Queue) RequeueDeadLetter(_ string) (string, error) {
+	return "", nil
+}
+
+// computeBackoff computes the retry delay as
+// min(base * multiplier^retryCount, cap).
+// The retryCount parameter should already be incremented before calling.
+// If the computed value overflows, it is clamped to cap.
+func computeBackoff(_ RetryPolicy, _ int) time.Duration {
+	return 0
+}
+
+// getPolicy returns the retry policy registered for the given type name,
+// with defaults applied for any zero-value fields.
+func (q *Queue) getPolicy(_ string) RetryPolicy {
+	return RetryPolicy{}
+}
