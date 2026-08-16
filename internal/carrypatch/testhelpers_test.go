@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -555,6 +556,303 @@ func writeFileHelper(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+// ===========================================================================
+// Extended test environment for group 2 tests
+// ===========================================================================
+
+// fullTestEnv holds a test HTTP server with all carrypatch routes
+// (rebuild, rerere, sync, patch-status) mounted.
+type fullTestEnv struct {
+	echo          *echo.Echo
+	db            *sql.DB
+	queue         *jobqueue.Queue
+	workspaceRoot string
+	gitRunner     *mockGitRunner
+	patchStore    *mockPatchStore
+	getVariable   GetVariableFunc
+}
+
+// newFullTestEnv creates an echo server with all carry-patch routes mounted.
+func newFullTestEnv(t *testing.T) *fullTestEnv {
+	t.Helper()
+
+	db := openTestDB(t)
+	createWorkspacesTable(t, db)
+	createPatchesTable(t, db)
+	addWorkspaceColumns(t, db)
+
+	if err := jobqueue.InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
+	}
+	if err := jobqueue.MigrateGroupKey(db); err != nil {
+		t.Fatalf("MigrateGroupKey() returned error: %v", err)
+	}
+
+	logger := nopLogger()
+	q, err := jobqueue.New(db, logger)
+	if err != nil {
+		t.Fatalf("jobqueue.New() returned error: %v", err)
+	}
+	_ = RegisterRebuildJob(q, &RebuildHandler{})
+
+	workspaceRoot := t.TempDir()
+	mock := newMockGitRunner()
+	patches := newMockPatchStore(nil)
+
+	getVar := func(scope, slug, key string) (string, error) {
+		if key == "REBUILD_STRATEGY" {
+			return "rebase", nil
+		}
+		if key == "AUTO_REBUILD_AFTER_SYNC" {
+			return "true", nil
+		}
+		return "", nil
+	}
+
+	e := echo.New()
+	api := e.Group("/api/v1")
+	api.Use(rebuildTestAuthMiddleware())
+
+	rebuildCfg := RebuildAPIConfig{
+		DB:          db,
+		Queue:       q,
+		GetVariable: getVar,
+	}
+	RegisterRebuildRoutes(api, rebuildCfg)
+
+	rerereCfg := RerereAPIConfig{
+		DB:            db,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+	}
+	RegisterRerereRoutes(api, rerereCfg)
+
+	syncCfg := SyncAPIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+		Fetch:       func(_ context.Context, _ string) error { return nil },
+		ResolveAuth: func(_ string) error { return nil },
+		GetVariable: getVar,
+		PatchStore:  patches,
+	}
+	RegisterSyncRoutes(api, syncCfg)
+
+	patchStatusCfg := PatchStatusAPIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		PatchStore:    patches,
+	}
+	RegisterPatchStatusRoutes(api, patchStatusCfg)
+
+	return &fullTestEnv{
+		echo:          e,
+		db:            db,
+		queue:         q,
+		workspaceRoot: workspaceRoot,
+		gitRunner:     mock,
+		patchStore:    patches,
+		getVariable:   getVar,
+	}
+}
+
+// newFullTestEnvWithGetVariable creates a full test env with custom GetVariable.
+func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTestEnv {
+	t.Helper()
+
+	db := openTestDB(t)
+	createWorkspacesTable(t, db)
+	createPatchesTable(t, db)
+	addWorkspaceColumns(t, db)
+
+	if err := jobqueue.InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
+	}
+	if err := jobqueue.MigrateGroupKey(db); err != nil {
+		t.Fatalf("MigrateGroupKey() returned error: %v", err)
+	}
+
+	logger := nopLogger()
+	q, err := jobqueue.New(db, logger)
+	if err != nil {
+		t.Fatalf("jobqueue.New() returned error: %v", err)
+	}
+	_ = RegisterRebuildJob(q, &RebuildHandler{})
+
+	workspaceRoot := t.TempDir()
+	mock := newMockGitRunner()
+	patches := newMockPatchStore(nil)
+
+	e := echo.New()
+	api := e.Group("/api/v1")
+	api.Use(rebuildTestAuthMiddleware())
+
+	rebuildCfg := RebuildAPIConfig{
+		DB:          db,
+		Queue:       q,
+		GetVariable: getVar,
+	}
+	RegisterRebuildRoutes(api, rebuildCfg)
+
+	syncCfg := SyncAPIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+		Fetch:       func(_ context.Context, _ string) error { return nil },
+		ResolveAuth: func(_ string) error { return nil },
+		GetVariable: getVar,
+		PatchStore:  patches,
+	}
+	RegisterSyncRoutes(api, syncCfg)
+
+	patchStatusCfg := PatchStatusAPIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		PatchStore:    patches,
+	}
+	RegisterPatchStatusRoutes(api, patchStatusCfg)
+
+	return &fullTestEnv{
+		echo:          e,
+		db:            db,
+		queue:         q,
+		workspaceRoot: workspaceRoot,
+		gitRunner:     mock,
+		patchStore:    patches,
+		getVariable:   getVar,
+	}
+}
+
+// doRequest performs an HTTP request against the full test server.
+func (env *fullTestEnv) doRequest(t *testing.T, method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
+	t.Helper()
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, bodyReader)
+	if body != "" {
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	}
+	if auth != nil {
+		authJSON, err := json.Marshal(auth)
+		if err != nil {
+			t.Fatalf("failed to marshal auth info: %v", err)
+		}
+		req.Header.Set("X-Test-Auth", string(authJSON))
+	}
+	rec := httptest.NewRecorder()
+	env.echo.ServeHTTP(rec, req)
+	return rec
+}
+
+// addWorkspaceColumns adds carry-patch-related columns that may not be present
+// in the minimal workspaces table from createWorkspacesTable.
+func addWorkspaceColumns(t *testing.T, db *sql.DB) {
+	t.Helper()
+	// upstream_url, upstream_head_sha, last_sync_at might not be in the
+	// minimal workspaces table. Add them safely with IF NOT EXISTS semantics.
+	columns := []struct {
+		name     string
+		typeDef  string
+	}{
+		{"upstream_url", "TEXT NOT NULL DEFAULT ''"},
+		{"upstream_head_sha", "TEXT"},
+		{"last_sync_at", "TEXT"},
+	}
+	for _, col := range columns {
+		// Ignore errors — column may already exist.
+		_, _ = db.Exec(fmt.Sprintf("ALTER TABLE workspaces ADD COLUMN %s %s", col.name, col.typeDef))
+	}
+}
+
+// seedWorkspaceCarryPatch inserts a carry_patch workspace with all fields set.
+func seedWorkspaceCarryPatch(t *testing.T, db *sql.DB, slug, ownerID, upstreamURL, upstreamHeadSHA, integrationBranch, integrationHeadSHA string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, integration_head_sha, last_sync_at, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?, ?)`,
+		slug, "https://github.com/example/repo", ownerID, integrationBranch, upstreamURL, upstreamHeadSHA, integrationHeadSHA, now, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedWorkspaceCarryPatch(%q) returned error: %v", slug, err)
+	}
+}
+
+// seedRebuildJobWithResult inserts a rebuild job with status, result and created_at set.
+func seedRebuildJobWithResult(t *testing.T, db *sql.DB, id, status, workspaceSlug, strategy string, createdAt time.Time, result json.RawMessage) {
+	t.Helper()
+	payload := RebuildPayload{
+		WorkspaceSlug: workspaceSlug,
+		Strategy:      strategy,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("seedRebuildJobWithResult: marshal payload: %v", err)
+	}
+	now := apikit.FormatUTC(createdAt)
+	key := workspaceSlug
+	groupKey := workspaceSlug + ":integration"
+
+	var resultStr *string
+	if result != nil {
+		s := string(result)
+		resultStr = &s
+	}
+
+	_, err = db.Exec(
+		`INSERT INTO jobs (id, type, key, group_key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at)
+		 VALUES (?, 'rebuild', ?, ?, ?, ?, ?, ?, NULL, 0, ?, 'operator', ?, ?)`,
+		id, key, groupKey, id, status, string(payloadJSON), resultStr, now, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedRebuildJobWithResult(%q) failed: %v", id, err)
+	}
+}
+
+// setupRRCacheDir creates a mock rr-cache directory structure for rerere tests.
+func setupRRCacheDir(t *testing.T, workspaceRoot, slug string, entries []rrCacheEntry) string {
+	t.Helper()
+	gitDir := filepath.Join(workspaceRoot, slug, "trunk", ".git")
+	rrCacheDir := filepath.Join(gitDir, "rr-cache")
+	if err := os.MkdirAll(rrCacheDir, 0o755); err != nil {
+		t.Fatalf("failed to create rr-cache dir: %v", err)
+	}
+
+	for _, entry := range entries {
+		subdir := filepath.Join(rrCacheDir, entry.hash)
+		if err := os.MkdirAll(subdir, 0o755); err != nil {
+			t.Fatalf("failed to create rr-cache subdir: %v", err)
+		}
+		if entry.preimage != "" {
+			writeFileHelper(t, filepath.Join(subdir, "preimage"), entry.preimage)
+		}
+		if entry.postimage != "" {
+			writeFileHelper(t, filepath.Join(subdir, "postimage"), entry.postimage)
+		}
+	}
+	return rrCacheDir
+}
+
+// rrCacheEntry describes a mock rr-cache subdirectory.
+type rrCacheEntry struct {
+	hash      string // directory name (hash)
+	preimage  string // content for preimage file (empty = no file)
+	postimage string // content for postimage file (empty = no file)
 }
 
 // setupCarryPatchRepo creates a git repository at <workspaceRoot>/<slug>/trunk/
