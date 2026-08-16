@@ -302,8 +302,8 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List and view workspaces owned by the authenticated user; list and forget rerere resolutions |
-| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec` |
+| **Grants** | List and view workspaces owned by the authenticated user; list and forget rerere resolutions; view patch-status dashboard |
+| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces/:slug/patch-status` |
 | **Implied by** | `workspaces:create`, `workspaces:write` |
 
 ### workspaces:create

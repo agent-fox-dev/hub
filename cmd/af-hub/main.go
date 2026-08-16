@@ -6,9 +6,11 @@ import (
 	"log"
 	"log/slog"
 
+
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
@@ -122,6 +124,7 @@ func main() {
 	extraPerms = append(extraPerms, gitserver.GitPermissions()...)
 	extraPerms = append(extraPerms, secrets.Permissions()...)
 	extraPerms = append(extraPerms, merge.MergePermissions()...)
+	extraPerms = append(extraPerms, carrypatch.CarryPatchPermissions()...)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace, git, secrets, variables, and
@@ -158,6 +161,73 @@ func main() {
 		cfg.Workspace.Path,
 	)
 	merge.RegisterMergeRoutes(server.APIGroup(), mergeCfg)
+
+	// ---------------------------------------------------------------------------
+	// Carry-patch operations (spec 16)
+	// ---------------------------------------------------------------------------
+
+	// Create the carry-patch patch store backed by the patches table.
+	cpPatchStore := carrypatch.NewSQLPatchStore(database.SqlDB)
+	cpGitRunnerFactory := carrypatch.NewGitRunnerFactory()
+
+	// Create and register the rebuild job handler with all cross-spec
+	// dependencies wired (16-REQ-1.2, 16-REQ-1.8).
+	rebuildHandler := &carrypatch.RebuildHandler{
+		DB:            database.SqlDB,
+		Queue:         mergeQueue,
+		Logger:        slog.Default(),
+		WorkspaceRoot: cfg.Workspace.Path,
+		NewGitRunner:  cpGitRunnerFactory,
+		Fetch:         carrypatch.DefaultFetchFunc(),
+		ResolveAuth: func(slug string) error {
+			return workspace.ResolveUpstreamAuth(store, slug)
+		},
+		GetVariable: store.GetVariableValue,
+		PatchStore:  cpPatchStore,
+	}
+
+	if err := carrypatch.RegisterRebuildJob(mergeQueue, rebuildHandler); err != nil {
+		log.Fatal(err)
+	}
+
+	// Mount carry-patch REST API routes.
+	cpAPI := server.APIGroup()
+
+	carrypatch.RegisterRebuildRoutes(cpAPI, carrypatch.RebuildAPIConfig{
+		DB:          database.SqlDB,
+		Queue:       mergeQueue,
+		GetVariable: store.GetVariableValue,
+	})
+
+	carrypatch.RegisterRerereRoutes(cpAPI, carrypatch.RerereAPIConfig{
+		DB:            database.SqlDB,
+		WorkspaceRoot: cfg.Workspace.Path,
+		NewGitRunner:  cpGitRunnerFactory,
+	})
+
+	carrypatch.RegisterPatchStatusRoutes(cpAPI, carrypatch.PatchStatusAPIConfig{
+		DB:            database.SqlDB,
+		Queue:         mergeQueue,
+		WorkspaceRoot: cfg.Workspace.Path,
+		PatchStore:    cpPatchStore,
+	})
+
+	// Register the carry-patch sync hook so that POST /sync for carry_patch
+	// workspaces delegates to the carry-patch sync extension (16-REQ-5).
+	workspace.RegisterCarryPatchSyncHook(carrypatch.NewCarryPatchSyncHook(
+		carrypatch.SyncAPIConfig{
+			DB:            database.SqlDB,
+			Queue:         mergeQueue,
+			WorkspaceRoot: cfg.Workspace.Path,
+			NewGitRunner:  cpGitRunnerFactory,
+			Fetch:         carrypatch.DefaultFetchFunc(),
+			ResolveAuth: func(slug string) error {
+				return workspace.ResolveUpstreamAuth(store, slug)
+			},
+			GetVariable: store.GetVariableValue,
+			PatchStore:  cpPatchStore,
+		},
+	))
 
 	// Mount git smart HTTP handlers on the Echo instance. The git server
 	// registers routes at /git/:org/:slug.git/* outside the API group,

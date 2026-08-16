@@ -14,6 +14,32 @@ import (
 )
 
 // ===========================================================================
+// Sync hook for workspace sync handler integration
+// ===========================================================================
+
+// NewCarryPatchSyncHook returns a function suitable for use with
+// workspace.RegisterCarryPatchSyncHook. It wraps the carry-patch sync logic
+// so that it can be called from the workspace sync handler when the workspace
+// is in carry_patch mode (16-REQ-5).
+//
+// The returned function receives the Echo context, workspace slug, and repo
+// path from the workspace sync handler. It performs upstream fetch, merge
+// detection, and auto-rebuild enqueue, then returns (true, nil) to indicate
+// the sync was handled.
+func NewCarryPatchSyncHook(cfg SyncAPIConfig) func(c echo.Context, slug, repoPath string) (bool, error) {
+	handler := handleCarryPatchSyncEndpoint(cfg)
+	return func(c echo.Context, slug, repoPath string) (bool, error) {
+		// Delegate to the full carry-patch sync handler. Auth is already
+		// validated by the workspace sync handler, so this just executes
+		// the carry-patch-specific logic.
+		if err := handler(c); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+}
+
+// ===========================================================================
 // POST /workspaces/:slug/sync — carry-patch sync extension
 // ===========================================================================
 

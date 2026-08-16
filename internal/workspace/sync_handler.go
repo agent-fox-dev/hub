@@ -118,6 +118,23 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 				"sync already in progress for this workspace")
 		}
 
+		// ---- carry_patch mode delegation (16-REQ-5) ----
+		// If the workspace is in carry_patch mode and a carry-patch sync hook
+		// is registered, delegate to it. The hook handles upstream fetch,
+		// merge detection, and auto-rebuild enqueue independently of the
+		// standard sync flow.
+		if ws.WorkspaceMode == "carry_patch" && carryPatchSyncHook != nil {
+			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
+			handled, hookErr := carryPatchSyncHook(c, slug, repoPath)
+			if hookErr != nil {
+				return hookErr
+			}
+			if handled {
+				return nil
+			}
+			// If not handled, fall through to standard sync.
+		}
+
 		// ---- Set sync_status='syncing' (13-REQ-4.1, 13-REQ-9.1) ----
 		if err := setSyncStatus(db, slug, "syncing", nil, nil, nil); err != nil {
 			// 13-REQ-9.E2: DB failure at transition start.

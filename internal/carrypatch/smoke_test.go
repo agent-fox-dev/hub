@@ -3,8 +3,11 @@
 package carrypatch
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -265,10 +268,36 @@ func TestSmoke_RerereManagement(t *testing.T) {
 		"integration", "")
 
 	// Set up a mock rr-cache directory with recorded resolutions.
+	// Preimage files must contain conflict markers (<<<<<<< <path>) so that
+	// derivePathFromRRCache can extract the file path.
 	setupRRCacheDir(t, env.workspaceRoot, "my-workspace", []rrCacheEntry{
-		{hash: "abc123", preimage: "conflict content", postimage: "resolved content"},
-		{hash: "def456", preimage: "another conflict", postimage: "another resolution"},
+		{hash: "abc123", preimage: "<<<<<<< src/config.go\nours\n=======\ntheirs\n>>>>>>>"},
+		{hash: "def456", preimage: "<<<<<<< pkg/handler.go\nours\n=======\ntheirs\n>>>>>>>"},
 	})
+
+	// Configure mock GitRunner to simulate 'git rerere forget' by removing
+	// the matching rr-cache entry from the filesystem so re-listing reflects
+	// the deletion.
+	rrCacheDir := filepath.Join(env.workspaceRoot, "my-workspace", "trunk", ".git", "rr-cache")
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rerere" && args[1] == "forget" {
+			pathspec := args[2]
+			// Find and remove the rr-cache entry whose preimage references this pathspec.
+			entries, _ := os.ReadDir(rrCacheDir)
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				subdir := filepath.Join(rrCacheDir, entry.Name())
+				p := derivePathFromRRCache(subdir)
+				if p != nil && *p == pathspec {
+					os.RemoveAll(subdir)
+					break
+				}
+			}
+		}
+		return "", nil
+	}
 
 	// Step 1: List rerere resolutions.
 	rec := env.doRequest(t, http.MethodGet,

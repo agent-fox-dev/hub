@@ -916,6 +916,106 @@ Forget a specific recorded rerere resolution by executing `git rerere forget <pa
 
 ---
 
+## Rebuild Endpoints
+
+Rebuild endpoints allow operators to submit, list, and inspect rebuild jobs
+for carry-patch workspaces. A rebuild reconstructs the integration branch
+from upstream HEAD plus all active patches.
+
+### POST /api/v1/workspaces/:slug/rebuild
+
+Submit a new rebuild job for the workspace.
+
+**Required scope:** `rebuilds:write`
+
+**Preconditions:**
+
+- Workspace must be in `carry_patch` mode
+- Workspace status must be `active` with clone_status `ready`
+- At least one patch must have status `active` or `conflict`
+- No existing rebuild job may be queued or running for this workspace
+
+**Response (202 Accepted):**
+
+```json
+{
+  "id": "<uuid>",
+  "type": "rebuild",
+  "status": "queued",
+  "key": "<workspace-slug>",
+  "group_key": "<workspace-slug>:<integration-branch>",
+  "payload": {
+    "workspace_slug": "<slug>",
+    "strategy": "rebase"
+  }
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 202 | Job enqueued successfully |
+| 400 | Workspace not in carry_patch mode, not active, clone not ready, or no active patches |
+| 403 | Missing required scope `rebuilds:write` |
+| 409 | A rebuild job is already queued or running for this workspace |
+
+### GET /api/v1/workspaces/:slug/rebuilds
+
+List rebuild jobs for a workspace, ordered by creation time descending.
+
+**Required scope:** `rebuilds:read`
+
+**Response (200 OK):**
+
+```json
+{
+  "jobs": [
+    {
+      "id": "<uuid>",
+      "status": "completed",
+      "strategy": "rebase",
+      "created_at": "<rfc3339>",
+      "completed_at": "<rfc3339>",
+      "error": null
+    }
+  ]
+}
+```
+
+### GET /api/v1/workspaces/:slug/rebuilds/:id
+
+Get a single rebuild job by ID, including `patch_results` for completed jobs.
+
+**Required scope:** `rebuilds:read`
+
+**Response (200 OK):**
+
+```json
+{
+  "id": "<uuid>",
+  "status": "completed",
+  "strategy": "rebase",
+  "created_at": "<rfc3339>",
+  "completed_at": "<rfc3339>",
+  "patch_results": [
+    {
+      "patch_id": "<uuid>",
+      "branch_name": "feature/foo",
+      "position": 1,
+      "status": "success",
+      "new_head_sha": "<sha>"
+    }
+  ]
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Job found |
+| 403 | Missing required scope `rebuilds:read` |
+| 404 | Job not found or does not belong to this workspace |
+
+---
+
 ## Patch Status Dashboard Endpoint
 
 The patch-status endpoint provides a comprehensive health summary of the
