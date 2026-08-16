@@ -1212,6 +1212,196 @@ afc rerere forget <workspace-slug> <pathspec>
 
 ---
 
+## Patch Commands
+
+All patch commands are subcommands of `afc patch`. They manage the ordered
+patch list for carry-patch workspaces, controlling which branches are applied
+on top of the upstream base during integration branch rebuilds.
+
+### afc patch add
+
+Add a patch to a carry-patch workspace.
+
+**Usage:**
+
+```
+afc patch add <workspace-slug> --branch <name> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to add the patch to |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--branch` | yes | string | Branch name for the patch |
+| `--position` | no | int | Position in the patch list (appended if omitted) |
+| `--upstream-pr` | no | string | URL of the corresponding upstream pull request |
+| `--description` | no | string | Patch description |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/patches` with `branch_name` and
+  optional `position`, `upstream_pr_url`, and `description` in the request body.
+- Prints the created patch JSON to stdout, including `id`, `branch_name`,
+  `position`, and `status` (initially `active`).
+- Requires `patches:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Patch added successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing `--branch` flag |
+
+---
+
+### afc patch list
+
+List patches for a workspace in position order.
+
+**Usage:**
+
+```
+afc patch list <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to list patches for |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/patches`.
+- Prints a JSON array of patch records to stdout, ordered by position.
+- Requires `patches:read` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Patches listed successfully |
+| 1 | API error, network error, or timeout |
+
+---
+
+### afc patch remove
+
+Remove a patch from a workspace.
+
+**Usage:**
+
+```
+afc patch remove <workspace-slug> <patch-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<patch-id>` | The patch ID to remove |
+
+**Behavior:**
+
+- Sends `DELETE /api/v1/workspaces/<slug>/patches/<patch-id>`.
+- On success, prints a confirmation message to stderr.
+- Remaining patches are automatically compacted to fill the gap.
+- Requires `patches:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Patch removed successfully |
+| 1 | Patch not found, API error, network error, or timeout |
+
+---
+
+### afc patch update
+
+Update a patch's status, description, upstream PR URL, or position.
+
+**Usage:**
+
+```
+afc patch update <workspace-slug> <patch-id> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<patch-id>` | The patch ID to update |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--status` | no | string | Patch status (`active`, `merged_upstream`, `conflict`, `disabled`) |
+| `--description` | no | string | Patch description |
+| `--upstream-pr` | no | string | Upstream PR URL |
+| `--position` | no | int | New position in the patch list |
+
+**Behavior:**
+
+- Sends `PATCH /api/v1/workspaces/<slug>/patches/<patch-id>` with only the
+  flags that were explicitly provided.
+- Prints the updated patch JSON to stdout.
+- Requires `patches:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Patch updated successfully |
+| 1 | Patch not found, invalid status, API error, network error, or timeout |
+
+---
+
+### afc patch reorder
+
+Reorder the patches for a workspace by providing a complete ordered list of
+patch IDs.
+
+**Usage:**
+
+```
+afc patch reorder <workspace-slug> <patch-id-1> <patch-id-2> ...
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<patch-id-N>` | Patch IDs in the desired order (all patches must be included) |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/patches/reorder` with `patch_ids`
+  containing the ordered list of patch IDs.
+- Prints a JSON array of patches in the new order to stdout.
+- The list must be complete (all workspace patches) and duplicate-free.
+- Requires `patches:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Patches reordered successfully |
+| 1 | Incomplete or invalid patch ID list, API error, network error, or timeout |
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage
