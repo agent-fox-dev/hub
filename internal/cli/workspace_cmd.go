@@ -521,7 +521,6 @@ func newRecloneCmd() *cobra.Command {
 // It sends GET /api/v1/workspaces/:slug/patch-status and prints the
 // full status dashboard.
 // Requirements: 16-REQ-9.1
-// Stub: implementation in later task groups.
 func newPatchStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "patch-status <workspace-slug>",
@@ -530,8 +529,18 @@ func newPatchStatusCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: to be implemented in task group 8.
-			return nil
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
+				"/workspaces/"+args[0]+"/patch-status", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }

@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"net/http"
+
 	"github.com/spf13/cobra"
+	"github.com/txsvc/apikit"
 )
 
 // RebuildCmd returns the 'rebuild' parent cobra.Command with subcommands
@@ -29,7 +32,7 @@ func RebuildCmd() *cobra.Command {
 
 // newRebuildSubmitCmd returns the 'rebuild submit' subcommand.
 // It sends POST /api/v1/workspaces/:slug/rebuild and prints the job record.
-// Stub: implementation in later task groups.
+// Requirements: 16-REQ-7.1
 func newRebuildSubmitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "submit <workspace-slug>",
@@ -38,15 +41,25 @@ func newRebuildSubmitCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: to be implemented in task group 8.
-			return nil
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
+				"/workspaces/"+args[0]+"/rebuild", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }
 
 // newRebuildListCmd returns the 'rebuild list' subcommand.
 // It sends GET /api/v1/workspaces/:slug/rebuilds and prints the list.
-// Stub: implementation in later task groups.
+// Requirements: 16-REQ-7.2
 func newRebuildListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "list <workspace-slug>",
@@ -55,15 +68,25 @@ func newRebuildListCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: to be implemented in task group 8.
-			return nil
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
+				"/workspaces/"+args[0]+"/rebuilds", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }
 
 // newRebuildStatusCmd returns the 'rebuild status' subcommand.
 // It sends GET /api/v1/workspaces/:slug/rebuilds/:id and prints job details.
-// Stub: implementation in later task groups.
+// Requirements: 16-REQ-7.3
 func newRebuildStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "status <workspace-slug> <rebuild-id>",
@@ -72,8 +95,18 @@ func newRebuildStatusCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: to be implemented in task group 8.
-			return nil
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
+				"/workspaces/"+args[0]+"/rebuilds/"+args[1], nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }

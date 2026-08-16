@@ -29,7 +29,7 @@ they can access. The following scopes are available for workspace operations:
 
 | Scope | Description | Authorized Endpoints |
 |-------|-------------|---------------------|
-| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec |
+| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces/:slug/patch-status |
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
@@ -913,6 +913,121 @@ Forget a specific recorded rerere resolution by executing `git rerere forget <pa
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:read` scope |
 | 404 | Workspace not found; no recorded resolution for the given pathspec |
+
+---
+
+## Patch Status Dashboard Endpoint
+
+The patch-status endpoint provides a comprehensive health summary of the
+carry-patch stack for a workspace, aggregating workspace metadata, the most
+recent rebuild result, per-patch status with rerere resolution counts, and
+summary counts.
+
+### GET /api/v1/workspaces/:slug/patch-status
+
+Return a full status dashboard for the carry-patch stack.
+
+**Authentication:** API Key, or PAT with `workspaces:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Response (success):** HTTP 200 OK
+
+```json
+{
+  "workspace_slug": "my-workspace",
+  "workspace_mode": "carry_patch",
+  "upstream_url": "https://github.com/upstream/repo.git",
+  "upstream_head_sha": "abc123def456...",
+  "integration_branch": "integration",
+  "integration_head_sha": "def456abc123...",
+  "last_sync_at": "2024-06-15T10:30:00Z",
+  "last_rebuild": {
+    "id": "uuid-string",
+    "status": "completed"
+  },
+  "patches": [
+    {
+      "id": "uuid-string",
+      "branch_name": "feature/patch-a",
+      "position": 1,
+      "status": "active",
+      "last_rebuild_result": "success",
+      "rerere_resolution_count": 0
+    },
+    {
+      "id": "uuid-string",
+      "branch_name": "feature/conflict",
+      "position": 2,
+      "status": "conflict",
+      "last_rebuild_result": "conflict",
+      "conflict_files": ["pkg/api.go"],
+      "rerere_resolution_count": 1
+    }
+  ],
+  "summary": {
+    "total_patches": 2,
+    "active": 1,
+    "merged_upstream": 0,
+    "conflict": 1,
+    "disabled": 0
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workspace_slug` | string | The workspace slug |
+| `workspace_mode` | string | Always `"carry_patch"` |
+| `upstream_url` | string | The upstream repository URL |
+| `upstream_head_sha` | string | SHA of the upstream HEAD at last fetch |
+| `integration_branch` | string | Name of the integration branch |
+| `integration_head_sha` | string | SHA of the integration branch HEAD after last successful rebuild |
+| `last_sync_at` | string (RFC 3339) or null | Timestamp of the last sync operation |
+| `last_rebuild` | object or null | Most recent rebuild job record; null if no rebuild has been attempted |
+| `last_rebuild.id` | string | Rebuild job ID |
+| `last_rebuild.status` | string | Rebuild job status (`queued`, `running`, `completed`, `failed`) |
+| `patches` | array | All patches ordered by position |
+| `patches[].id` | string | Patch ID |
+| `patches[].branch_name` | string | Git branch name for the patch |
+| `patches[].position` | integer | 1-based position in the patch stack |
+| `patches[].status` | string | Current patch status (`active`, `conflict`, `disabled`, `merged_upstream`) |
+| `patches[].last_rebuild_result` | string or null | Per-patch result from most recent rebuild (`success`, `conflict`, `skipped`); null if no rebuild has been attempted |
+| `patches[].conflict_files` | array of strings | File paths with unresolved conflicts (present only when `last_rebuild_result` is `conflict`) |
+| `patches[].rerere_resolution_count` | integer | Count of recorded rerere resolutions relevant to files touched by this patch; 0 if rr-cache is inaccessible |
+| `summary` | object | Aggregate counts derived from the patches array |
+| `summary.total_patches` | integer | Total number of patches (equals length of `patches` array) |
+| `summary.active` | integer | Count of patches with status `active` |
+| `summary.merged_upstream` | integer | Count of patches with status `merged_upstream` |
+| `summary.conflict` | integer | Count of patches with status `conflict` |
+| `summary.disabled` | integer | Count of patches with status `disabled` |
+
+**Consistency invariant:** `summary.total_patches` equals `len(patches)`, and
+`summary.active + summary.merged_upstream + summary.conflict + summary.disabled`
+equals `summary.total_patches`.
+
+**Edge Cases:**
+
+- If the workspace is not in `carry_patch` mode, returns HTTP 400.
+- If no rebuild has been attempted, `last_rebuild` is null and all patches
+  have `last_rebuild_result` set to null.
+- If the patches table is empty, returns `patches: []` and all summary counts
+  at zero.
+- If the `rr-cache` directory is inaccessible, `rerere_resolution_count` is
+  set to 0 for all patches rather than failing the request.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Workspace is not in `carry_patch` mode |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `workspaces:read` scope |
+| 404 | Workspace not found |
 
 ---
 

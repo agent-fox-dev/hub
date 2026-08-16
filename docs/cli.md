@@ -371,6 +371,42 @@ afc workspace reclone <slug> --confirm
 
 ---
 
+### afc workspace patch-status
+
+View the carry-patch status dashboard for a workspace, showing workspace
+metadata, last rebuild summary, per-patch status, and summary counts.
+
+**Usage:**
+
+```
+afc workspace patch-status <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to view patch status for |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<workspace-slug>/patch-status`.
+- Prints the full patch-status dashboard as JSON to stdout, including
+  workspace metadata (`workspace_slug`, `workspace_mode`, `upstream_url`,
+  `upstream_head_sha`, `integration_branch`, `integration_head_sha`,
+  `last_sync_at`), `last_rebuild` summary, per-patch status array with
+  `last_rebuild_result` and `rerere_resolution_count`, and `summary` counts.
+- Requires `workspaces:read` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Dashboard retrieved successfully |
+| 1 | Workspace not found, workspace not in carry_patch mode (HTTP 400), API error, or network error |
+
+---
+
 ## Git Credential Helper
 
 The `afc` CLI includes a built-in git credential helper that automatically
@@ -1000,6 +1036,179 @@ afc merge cancel <workspace-slug> <merge-id>
 |------|-----------|
 | 0 | Merge job cancelled successfully |
 | 1 | Merge job not cancellable (wrong status), not found, API error, network error, or timeout |
+
+---
+
+## Rebuild Commands
+
+All rebuild commands are subcommands of `afc rebuild`. They manage rebuild
+jobs that reconstruct the integration branch for carry-patch workspaces.
+
+### afc rebuild submit
+
+Submit a rebuild job for a carry-patch workspace.
+
+**Usage:**
+
+```
+afc rebuild submit <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to submit the rebuild job for |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/rebuild`.
+- Prints the returned job record (JSON) to stdout, including job `id` and
+  `status` (`queued`).
+- Exits with code 0 on success.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Rebuild job submitted successfully |
+| 1 | Missing workspace slug, workspace not in carry_patch mode, no active patches, duplicate job, API error, or network error |
+
+---
+
+### afc rebuild list
+
+List rebuild jobs for a workspace.
+
+**Usage:**
+
+```
+afc rebuild list <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to list rebuild jobs for |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/rebuilds`.
+- Prints the rebuild job list as JSON to stdout.
+- Exits with code 0 on success.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Rebuild job list retrieved successfully |
+| 1 | Missing workspace slug, API error, or network error |
+
+---
+
+### afc rebuild status
+
+Get the status and patch results of a specific rebuild job.
+
+**Usage:**
+
+```
+afc rebuild status <workspace-slug> <rebuild-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<rebuild-id>` | The rebuild job ID to query |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/rebuilds/<rebuild-id>`.
+- Prints the rebuild job JSON to stdout, including status and per-patch
+  `patch_results`.
+- Exits with code 0 on success.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Rebuild job status retrieved successfully |
+| 1 | Missing arguments, rebuild job not found, API error, or network error |
+
+---
+
+## Rerere Commands
+
+All rerere commands are subcommands of `afc rerere`. They manage recorded
+git rerere (reuse-recorded-resolution) entries for carry-patch workspaces.
+
+### afc rerere list
+
+List recorded rerere resolutions for a workspace.
+
+**Usage:**
+
+```
+afc rerere list <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to list rerere resolutions for |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/rerere`.
+- Prints the resolution list as JSON to stdout, including `path` and
+  `recorded_at` for each resolution.
+- Exits with code 0 on success.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Resolution list retrieved successfully |
+| 1 | Missing workspace slug, API error, or network error |
+
+---
+
+### afc rerere forget
+
+Forget a specific recorded rerere resolution.
+
+**Usage:**
+
+```
+afc rerere forget <workspace-slug> <pathspec>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<pathspec>` | The file path to forget (may contain slashes, e.g. `src/config.go`) |
+
+**Behavior:**
+
+- Sends `DELETE /api/v1/workspaces/<slug>/rerere/<pathspec>`.
+- The pathspec is appended as a path segment without additional URL encoding
+  of slashes, relying on the server's wildcard route.
+- Prints confirmation to stdout on success.
+- Prints error to stderr and exits non-zero if the pathspec has no recorded
+  resolution (HTTP 404).
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Resolution forgotten successfully |
+| 1 | Missing arguments, pathspec not found, API error, or network error |
 
 ---
 

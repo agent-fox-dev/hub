@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"fmt"
+	"net/http"
+
 	"github.com/spf13/cobra"
+	"github.com/txsvc/apikit"
 )
 
 // RerereCmd returns the 'rerere' parent cobra.Command with subcommands
@@ -29,7 +33,7 @@ func RerereCmd() *cobra.Command {
 // newRerereListCmd returns the 'rerere list' subcommand.
 // It sends GET /api/v1/workspaces/:slug/rerere and prints the list of
 // recorded resolutions.
-// Stub: implementation in later task groups.
+// Requirements: 16-REQ-8.1
 func newRerereListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "list <workspace-slug>",
@@ -38,16 +42,28 @@ func newRerereListCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: to be implemented in task group 8.
-			return nil
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
+				"/workspaces/"+args[0]+"/rerere", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }
 
 // newRerereForgetCmd returns the 'rerere forget' subcommand.
-// It sends DELETE /api/v1/workspaces/:slug/rerere/*pathspec and prints
+// It sends DELETE /api/v1/workspaces/:slug/rerere/<pathspec> and prints
 // confirmation.
-// Stub: implementation in later task groups.
+// 16-REQ-8.E1: The pathspec is appended as a path segment after /rerere/
+// without additional URL encoding of slashes.
+// Requirements: 16-REQ-8.2
 func newRerereForgetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "forget <workspace-slug> <pathspec>",
@@ -56,7 +72,20 @@ func newRerereForgetCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stub: to be implemented in task group 8.
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			// 16-REQ-8.E1: append pathspec as path segment without encoding slashes.
+			path := "/workspaces/" + args[0] + "/rerere/" + args[1]
+
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, path, nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Rerere resolution for '%s' has been forgotten.\n", args[1])
 			return nil
 		},
 	}
