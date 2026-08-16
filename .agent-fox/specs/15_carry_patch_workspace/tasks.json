@@ -295,7 +295,7 @@
             "15-REQ-10",
             "15-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -316,7 +316,7 @@
           "requirement_refs": [
             "15-REQ-12"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -345,7 +345,7 @@
             "15-REQ-14",
             "15-REQ-15"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
