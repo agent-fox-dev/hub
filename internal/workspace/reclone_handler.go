@@ -86,7 +86,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		// ---- Atomic DB update (13-REQ-7.1, 13-REQ-7.2, 13-PROP-5) ----
 		// Set clone_status='pending', sync_status='idle', clear sync_error and
 		// upstream_head_sha. Workspace status remains 'active' — never modified.
-		now := time.Now().UTC().Format(time.RFC3339Nano)
+		now := time.Now().UTC().Format(timestampFormat)
 		_, err = db.Exec(
 			`UPDATE workspaces SET clone_status = 'pending', sync_status = 'idle', sync_error = NULL, upstream_head_sha = NULL, updated_at = ? WHERE slug = ?`,
 			now, slug,

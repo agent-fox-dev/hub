@@ -266,7 +266,7 @@ func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspac
 // updateCloneStatus updates the clone_status, head_sha, and clone_error
 // fields for the workspace identified by slug.
 func updateCloneStatus(db *sql.DB, slug string, cloneStatus string, headSHA *string, cloneError *string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
 		`UPDATE workspaces SET clone_status = ?, head_sha = ?, clone_error = ?, updated_at = ? WHERE slug = ?`,
 		cloneStatus, headSHA, cloneError, now, slug,
