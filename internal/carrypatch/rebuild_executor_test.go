@@ -497,6 +497,7 @@ func TestRebuildJobRegistration_TypeIsRebuild(t *testing.T) {
 	jobID, _, err := q.Enqueue(jobqueue.EnqueueParams{
 		Type:    "rebuild",
 		Key:     "test-ws",
+		Nonce:   "test-nonce-1",
 		Payload: payloadJSON,
 	})
 	if err != nil {
