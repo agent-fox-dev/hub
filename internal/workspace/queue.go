@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
@@ -201,9 +202,64 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 		return
 	}
 
+	// Step 5.5: Post-clone carry-patch setup (15-REQ-6).
+	// If workspace_mode is 'carry_patch', add upstream remote, set rerere
+	// config, and create integration branch. Standard workspaces skip this
+	// entirely (15-REQ-6.3). All post-clone setup failures are logged as
+	// warnings and do not prevent the workspace from being marked ready
+	// (15-REQ-6.2).
+	ws, wsErr := getWorkspaceBySlug(db, slug)
+	if wsErr == nil && ws != nil && ws.WorkspaceMode == "carry_patch" {
+		carryPatchPostCloneSetup(ctx, trunkDir, ws)
+	}
+
 	// Step 6: Clone succeeded — record HEAD SHA and set status to ready.
 	if err := updateCloneStatus(db, slug, "ready", &headSHA, nil); err != nil {
 		log.Printf("clone job %q: failed to set ready status: %v", slug, err)
+	}
+}
+
+// carryPatchPostCloneSetup performs post-clone configuration for carry_patch
+// workspaces: adds the upstream remote, enables rerere, and creates the
+// integration branch. All errors are logged as warnings; none prevent the
+// workspace from being marked ready (15-REQ-6.2).
+func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspace) {
+	runner, err := gitcmd.New(trunkDir, nil)
+	if err != nil {
+		log.Printf("clone job %q: warning: carry-patch setup: git runner init failed: %v", ws.Slug, err)
+		return
+	}
+
+	// Step 1: Add upstream remote (15-REQ-6.1).
+	if ws.UpstreamURL != nil && *ws.UpstreamURL != "" {
+		if err := runner.RemoteAdd(ctx, "upstream", *ws.UpstreamURL); err != nil {
+			log.Printf("clone job %q: warning: carry-patch setup: RemoteAdd: %v", ws.Slug, err)
+		}
+	}
+
+	// Step 2: Set rerere configuration (15-REQ-6.1).
+	if err := runner.ConfigSet(ctx, "rerere.enabled", "true"); err != nil {
+		log.Printf("clone job %q: warning: carry-patch setup: ConfigSet rerere.enabled: %v", ws.Slug, err)
+	}
+	if err := runner.ConfigSet(ctx, "rerere.autoupdate", "true"); err != nil {
+		log.Printf("clone job %q: warning: carry-patch setup: ConfigSet rerere.autoupdate: %v", ws.Slug, err)
+	}
+
+	// Step 3: Create integration branch (15-REQ-6.1).
+	// Ideally the branch would be created at the upstream tracking branch
+	// HEAD, but upstream refs are not available until the first fetch/sync.
+	// Check for the upstream tracking ref; if absent, fall back to HEAD
+	// and log a warning (15-REQ-6.E1).
+	if ws.IntegrationBranch != nil && *ws.IntegrationBranch != "" {
+		startPoint := "HEAD"
+		if _, err := runner.Run(ctx, "rev-parse", "--verify", "refs/remotes/upstream/HEAD"); err != nil {
+			log.Printf("clone job %q: warning: carry-patch setup: upstream tracking branch not available, creating integration branch at HEAD", ws.Slug)
+		} else {
+			startPoint = "refs/remotes/upstream/HEAD"
+		}
+		if err := runner.CreateBranch(ctx, *ws.IntegrationBranch, startPoint); err != nil {
+			log.Printf("clone job %q: warning: carry-patch setup: CreateBranch %q: %v", ws.Slug, *ws.IntegrationBranch, err)
+		}
 	}
 }
 
