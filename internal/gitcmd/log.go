@@ -11,6 +11,6 @@ import "context"
 //
 // When called with no args, Log runs `git log` with no additional arguments.
 func (r *GitRunner) Log(ctx context.Context, args ...string) (string, error) {
-	// TODO: implement in task group 9
-	return "", nil
+	cmdArgs := append([]string{"log"}, args...)
+	return r.Run(ctx, cmdArgs...)
 }

@@ -11,6 +11,6 @@ import "context"
 //
 // When called with no args, Diff runs `git diff` with no additional arguments.
 func (r *GitRunner) Diff(ctx context.Context, args ...string) (string, error) {
-	// TODO: implement in task group 9
-	return "", nil
+	cmdArgs := append([]string{"diff"}, args...)
+	return r.Run(ctx, cmdArgs...)
 }
