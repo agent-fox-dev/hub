@@ -182,7 +182,7 @@ workspace requires a real user as owner.
 
 | Field | Required | Type | Constraints |
 |-------|----------|------|-------------|
-| `slug` | yes | string | Globally unique, URL-safe identifier |
+| `slug` | yes | string | Globally unique, URL-safe identifier. 3-64 characters; must start with a lowercase letter; must end with a lowercase letter or digit; only lowercase letters, digits, and hyphens allowed; no consecutive hyphens. |
 | `git_url` | yes | string | Valid HTTPS or SSH git URL |
 | `branch` | no | string | Git ref; defaults to null |
 | `org_id` | no | string (UUID) | Must reference an org the owner is a member of; when omitted or empty, the server auto-assigns the user's personal organization |
@@ -391,16 +391,24 @@ enqueued.
 Trigger an upstream sync operation that fetches from the remote repository and
 fast-forwards the local integration branch if possible. If a force-push is
 detected (upstream history has diverged), the sync sets an error state with
-instructions to use the `--reset-to-upstream` flag for recovery.
+instructions to use the `reset_to_upstream` query parameter for recovery.
 
-**Authentication:** API Key, or PAT with `workspaces:sync` scope. Admin
-tokens can sync any workspace.
+**Authentication:** API Key, or PAT with `workspaces:sync` scope.
+Workspace ownership is not enforced: any API key holder can sync any
+workspace. PATs require `workspaces:sync` scope but also do not check
+workspace ownership.
 
 **Path Parameters:**
 
 | Parameter | Description |
 |-----------|-------------|
 | `:slug` | The workspace slug to sync |
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `reset_to_upstream` | boolean | `false` | When `true`, force-resets the local integration branch ref to the upstream HEAD, ignoring ancestry. Used to recover from diverged (force-push) state. |
 
 **Preconditions:**
 
@@ -417,6 +425,7 @@ The sync operation requires all of the following:
 |---------|-------------|-------------|
 | Up to date | Upstream HEAD equals local HEAD; `last_sync_at` is updated | 200 |
 | Fast-forward | Upstream HEAD is a descendant of local HEAD; `head_sha` is advanced to upstream HEAD | 200 |
+| Reset to upstream | `reset_to_upstream=true`: fetches upstream, force-updates local ref to upstream HEAD regardless of ancestry, sets `head_sha` and `upstream_head_sha` to upstream HEAD | 200 |
 | Diverged | Upstream HEAD is not a descendant of local HEAD (force-push detected); `sync_status` set to `"error"` | 409 |
 | Fetch failure | Network error, auth failure, or repo open failure; `sync_status` set to `"error"` | 502 |
 | Context cancelled | Request cancelled mid-sync (timeout or client disconnect); `sync_status` set to `"error"` | 504 |
@@ -495,8 +504,10 @@ to upstream first), deletes the local clone directory, and re-clones from
 upstream. The workspace status remains `"active"` throughout the entire reclone
 lifecycle.
 
-**Authentication:** API Key, or PAT with `workspaces:sync` scope. Admin
-tokens can reclone any workspace.
+**Authentication:** API Key, or PAT with `workspaces:sync` scope.
+Workspace ownership is not enforced: any API key holder can reclone any
+workspace. PATs require `workspaces:sync` scope but also do not check
+workspace ownership.
 
 **Path Parameters:**
 
@@ -576,6 +587,11 @@ tokens can delete any workspace.
 Patch endpoints manage the ordered list of patch branches for carry-patch
 workspaces. Patches represent git branches that are applied on top of the
 upstream base when rebuilding the integration branch.
+
+**Note:** Patch endpoints do not enforce workspace ownership. Any
+authenticated user with an API key, or a PAT with the appropriate scope
+(`patches:read` or `patches:write`), can read or modify patches for any
+workspace.
 
 ### Patch Response Schema
 
@@ -828,9 +844,9 @@ position order.
 | 400 | `patch_ids` is missing one or more patch IDs that exist for the workspace |
 | 400 | `patch_ids` contains duplicate IDs |
 | 400 | `patch_ids` contains an ID that does not belong to the specified workspace |
+| 400 | Database transaction failure during bulk position update (all errors from the reorder function are returned as 400) |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:write` scope |
-| 500 | Database transaction failure during bulk position update (no positions changed) |
 
 ---
 
@@ -922,6 +938,11 @@ Rebuild endpoints allow operators to submit, list, and inspect rebuild jobs
 for carry-patch workspaces. A rebuild reconstructs the integration branch
 from upstream HEAD plus all active patches.
 
+**Note:** Rebuild endpoints do not enforce workspace ownership. Any
+authenticated user with an API key, or a PAT with the appropriate scope
+(`rebuilds:read` or `rebuilds:write`), can view or submit rebuild jobs for
+any workspace.
+
 ### POST /api/v1/workspaces/:slug/rebuild
 
 Submit a new rebuild job for the workspace.
@@ -956,7 +977,9 @@ Submit a new rebuild job for the workspace.
 | 202 | Job enqueued successfully |
 | 400 | Workspace not in carry_patch mode, not active, clone not ready, or no active patches |
 | 403 | Missing required scope `rebuilds:write` |
+| 404 | Workspace not found |
 | 409 | A rebuild job is already queued or running for this workspace |
+| 500 | Internal server error (database error, payload marshal failure, or job enqueue failure) |
 
 ### GET /api/v1/workspaces/:slug/rebuilds
 
@@ -974,12 +997,22 @@ List rebuild jobs for a workspace, ordered by creation time descending.
       "status": "completed",
       "strategy": "rebase",
       "created_at": "<rfc3339>",
-      "completed_at": "<rfc3339>",
-      "error": null
+      "completed_at": "<rfc3339>"
     }
   ]
 }
 ```
+
+Fields with `omitempty` tags (`strategy`, `error`, `patch_results`) are
+omitted from the response when empty rather than included as null.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `rebuilds:read` scope |
+| 500 | Internal server error (failed to list rebuild jobs) |
 
 ### GET /api/v1/workspaces/:slug/rebuilds/:id
 
@@ -1007,6 +1040,11 @@ Get a single rebuild job by ID, including `patch_results` for completed jobs.
   ]
 }
 ```
+
+Fields with `omitempty` tags (`strategy`, `error`, `patch_results`) are
+omitted from the response when empty rather than included as null. For
+example, `error` only appears when non-empty; `patch_results` only appears
+for completed jobs with results.
 
 | Status | Meaning |
 |--------|---------|
@@ -1120,6 +1158,12 @@ equals `summary.total_patches`.
 - If the `rr-cache` directory is inaccessible, `rerere_resolution_count` is
   set to 0 for all patches rather than failing the request.
 
+**Known schema issues:** The code queries `integration_head_sha` from the
+workspaces table and `conflict_files` from the patches table, but neither
+column exists in the current production schema (`workspace/schema.go`). Until
+the corresponding `ALTER TABLE` migrations are applied, this endpoint will
+return HTTP 500 at runtime.
+
 **Error Codes:**
 
 | Status | Condition |
@@ -1128,6 +1172,7 @@ equals `summary.total_patches`.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:read` scope |
 | 404 | Workspace not found |
+| 500 | Database error (including missing schema columns; see note above) |
 
 ---
 
@@ -1233,6 +1278,9 @@ List merge jobs for a workspace.
 
 **Response:** HTTP 200 OK with a JSON array of merge job records scoped to the
 workspace. Returns an empty array `[]` when no merge jobs exist.
+
+**Note:** Workspace existence is not validated. A query for a non-existent
+workspace slug returns HTTP 200 with an empty array rather than 404.
 
 **Error Codes:**
 
