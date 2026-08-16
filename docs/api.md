@@ -29,13 +29,15 @@ they can access. The following scopes are available for workspace operations:
 
 | Scope | Description | Authorized Endpoints |
 |-------|-------------|---------------------|
-| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
+| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec |
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
 | `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches |
 | `patches:write` | Add, remove, update, and reorder patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/reorder |
+| `rebuilds:read` | View rebuild job status and history | GET /api/v1/workspaces/:slug/rebuilds, GET /api/v1/workspaces/:slug/rebuilds/:id |
+| `rebuilds:write` | Submit rebuild jobs for carry-patch workspaces | POST /api/v1/workspaces/:slug/rebuild |
 | `merges:read` | List and view merge job status | GET /api/v1/workspaces/:slug/merges, GET /api/v1/workspaces/:slug/merges/:id |
 | `merges:write` | Submit and cancel merge jobs; trigger batch rebase | POST /api/v1/workspaces/:slug/merges, DELETE /api/v1/workspaces/:slug/merges/:id, POST /api/v1/workspaces/:slug/rebase |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
@@ -447,6 +449,43 @@ or unexpected failures.
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
+#### Carry-Patch Sync Extension
+
+When the workspace is in `carry_patch` mode, the sync endpoint extends the
+standard behavior with upstream merge detection and automatic rebuild
+triggering. The response includes additional fields:
+
+```json
+{
+  "patches_merged": ["feature/already-merged"],
+  "rebuild_triggered": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `patches_merged` | string[] | Branch names of patches detected as merged upstream via ancestry check |
+| `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
+
+**Carry-Patch Sync Flow:**
+
+1. Resolve upstream credentials via `resolveUpstreamAuth`.
+2. Fetch from the `upstream` remote (not `origin`).
+3. Compare the new upstream HEAD against the stored `upstream_head_sha`.
+4. If unchanged, return immediately with `patches_merged=[]` and
+   `rebuild_triggered=false`.
+5. For each active patch, check if its branch HEAD is an ancestor of the new
+   upstream HEAD using `IsAncestor`. If true, transition the patch status to
+   `merged_upstream`.
+6. If `AUTO_REBUILD_AFTER_SYNC` is `true` (default) and the upstream ref
+   advanced or patches were merged, enqueue a rebuild job. If a rebuild job
+   is already queued or running, silently ignore the duplicate
+   (`rebuild_triggered=false`).
+
+**Standard Workspace Behavior:** When the workspace is in `standard` mode, the
+carry-patch-specific fields (`patches_merged`, `rebuild_triggered`) are omitted
+from the response.
+
 ---
 
 ### POST /api/v1/workspaces/:slug/reclone
@@ -655,6 +694,88 @@ position. Returns an empty array `[]` if no patches exist.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:read` scope |
 | 404 | Workspace does not exist |
+
+---
+
+## Rerere Management Endpoints
+
+Rerere endpoints let operators inspect and manage recorded git rerere
+(reuse-recorded-resolution) entries for a carry-patch workspace. Resolutions
+are stored in the `.git/rr-cache/` directory of the workspace clone.
+
+### GET /api/v1/workspaces/:slug/rerere
+
+List all recorded rerere resolutions for a workspace.
+
+**Authentication:** API Key, or PAT with `workspaces:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Response (success):** HTTP 200 OK
+
+```json
+{
+  "resolutions": [
+    {
+      "path": "src/config.go",
+      "recorded_at": "2024-06-15T10:30:00Z"
+    },
+    {
+      "path": "pkg/handler.go",
+      "recorded_at": "2024-06-14T08:15:00Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resolutions` | array | List of recorded rerere resolutions |
+| `resolutions[].path` | string or null | File path derived from the preimage/postimage conflict marker |
+| `resolutions[].recorded_at` | string (RFC 3339) or null | Timestamp derived from the file modification time of the rr-cache entry |
+
+**Edge Cases:**
+
+- If the `rr-cache` directory does not exist or is empty, returns `{"resolutions": []}`.
+- Malformed rr-cache subdirectories (no preimage or postimage file) are silently skipped.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `workspaces:read` scope |
+| 404 | Workspace not found |
+
+---
+
+### DELETE /api/v1/workspaces/:slug/rerere/\*pathspec
+
+Forget a specific recorded rerere resolution by executing `git rerere forget <pathspec>`.
+
+**Authentication:** API Key, or PAT with `workspaces:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `*pathspec` | The file path to forget (wildcard parameter captures slashes, e.g. `src/config.go`) |
+
+**Response (success):** HTTP 204 No Content
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Empty pathspec |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `workspaces:read` scope |
+| 404 | Workspace not found; no recorded resolution for the given pathspec |
 
 ---
 

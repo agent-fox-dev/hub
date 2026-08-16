@@ -302,8 +302,8 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List and view workspaces owned by the authenticated user |
-| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
+| **Grants** | List and view workspaces owned by the authenticated user; list and forget rerere resolutions |
+| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec` |
 | **Implied by** | `workspaces:create`, `workspaces:write` |
 
 ### workspaces:create
@@ -391,6 +391,30 @@ at startup.
 | **Source** | hub |
 | **Grants** | Submit merge requests, cancel queued merge jobs, and trigger batch rebase operations |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/rebase` |
+
+---
+
+## Hub Rebuild Permissions
+
+These 2 permissions are registered by `RebuildPermissions()` in
+`hub/internal/carrypatch/permissions.go` and passed to `apikit.Server.MountHandlers()`
+at startup via the `extraPerms` parameter.
+
+### rebuilds:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List and view rebuild job status and history for carry-patch workspaces |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/rebuilds`, `GET /api/v1/workspaces/:slug/rebuilds/:id` |
+
+### rebuilds:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Submit rebuild jobs for carry-patch workspaces |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/rebuild` |
 
 ---
 
@@ -527,7 +551,7 @@ for startup registration.
 
 ## Complete Permission List
 
-All 25 registered permission scopes, sorted alphabetically:
+All 27 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -540,22 +564,24 @@ All 25 registered permission scopes, sorted alphabetically:
 | 7 | `orgs:read` | apikit | orgs | read |
 | 8 | `patches:read` | hub | patches | read |
 | 9 | `patches:write` | hub | patches | write |
-| 10 | `secrets:delete` | hub | secrets | delete |
-| 11 | `secrets:list` | hub | secrets | list |
-| 12 | `secrets:manage` | hub | secrets | manage |
-| 13 | `secrets:write` | hub | secrets | write |
-| 14 | `tokens:manage` | apikit | tokens | manage |
-| 15 | `tokens:read` | apikit | tokens | read |
-| 16 | `users:read` | apikit | users | read |
-| 17 | `vars:delete` | hub | vars | delete |
-| 18 | `vars:manage` | hub | vars | manage |
-| 19 | `vars:read` | hub | vars | read |
-| 20 | `vars:write` | hub | vars | write |
-| 21 | `workspaces:create` | hub | workspaces | create |
-| 22 | `workspaces:delete` | hub | workspaces | delete |
-| 23 | `workspaces:read` | hub | workspaces | read |
-| 24 | `workspaces:sync` | hub | workspaces | sync |
-| 25 | `workspaces:write` | hub | workspaces | write |
+| 10 | `rebuilds:read` | hub | rebuilds | read |
+| 11 | `rebuilds:write` | hub | rebuilds | write |
+| 12 | `secrets:delete` | hub | secrets | delete |
+| 13 | `secrets:list` | hub | secrets | list |
+| 14 | `secrets:manage` | hub | secrets | manage |
+| 15 | `secrets:write` | hub | secrets | write |
+| 16 | `tokens:manage` | apikit | tokens | manage |
+| 17 | `tokens:read` | apikit | tokens | read |
+| 18 | `users:read` | apikit | users | read |
+| 19 | `vars:delete` | hub | vars | delete |
+| 20 | `vars:manage` | hub | vars | manage |
+| 21 | `vars:read` | hub | vars | read |
+| 22 | `vars:write` | hub | vars | write |
+| 23 | `workspaces:create` | hub | workspaces | create |
+| 24 | `workspaces:delete` | hub | workspaces | delete |
+| 25 | `workspaces:read` | hub | workspaces | read |
+| 26 | `workspaces:sync` | hub | workspaces | sync |
+| 27 | `workspaces:write` | hub | workspaces | write |
 
 ---
 

@@ -388,16 +388,14 @@ func jobToRebuildRecord(j *jobqueue.Job) RebuildJobRecord {
 }
 
 // RegisterRerereRoutes mounts rerere management endpoints on the API group.
-// Stub: implementation in later task groups.
-func RegisterRerereRoutes(_ *echo.Group, _ RerereAPIConfig) {
-	// GET    /workspaces/:slug/rerere — to be implemented.
-	// DELETE /workspaces/:slug/rerere/*pathspec — to be implemented.
+func RegisterRerereRoutes(api *echo.Group, cfg RerereAPIConfig) {
+	api.GET("/workspaces/:slug/rerere", handleListRerere(cfg))
+	api.DELETE("/workspaces/:slug/rerere/*", handleForgetRerere(cfg))
 }
 
 // RegisterSyncRoutes mounts carry-patch sync extension endpoints on the API group.
-// Stub: implementation in later task groups.
-func RegisterSyncRoutes(_ *echo.Group, _ SyncAPIConfig) {
-	// POST /workspaces/:slug/sync — carry-patch extension to be implemented.
+func RegisterSyncRoutes(api *echo.Group, cfg SyncAPIConfig) {
+	api.POST("/workspaces/:slug/sync", handleCarryPatchSyncEndpoint(cfg))
 }
 
 // RegisterPatchStatusRoutes mounts patch-status dashboard endpoints on the API group.
@@ -406,8 +404,3 @@ func RegisterPatchStatusRoutes(_ *echo.Group, _ PatchStatusAPIConfig) {
 	// GET /workspaces/:slug/patch-status — to be implemented.
 }
 
-// HandleCarryPatchSync handles a carry-patch sync operation.
-// Stub: implementation in later task groups.
-func HandleCarryPatchSync(_ *SyncAPIConfig, _ string) (*CarryPatchSyncResponse, error) {
-	return nil, nil
-}
