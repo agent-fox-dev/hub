@@ -92,10 +92,16 @@ keys — they have implicit `git:read` + `git:write`.
 are strictly scoped to resources they own:
 - REST `/user/*` endpoints query `WHERE user_id = ?` using the
   authenticated user's ID.
-- Workspace handlers check `ws.OwnerID == auth.UserID` and return 404 on
+- Core workspace CRUD handlers (create, list, get, update, archive,
+  reactivate, delete) check `ws.OwnerID == auth.UserID` and return 404 on
   mismatch (anti-enumeration). List endpoints filter by `owner_id`.
 - Git server checks `info.UserID != ws.OwnerID` and returns a pkt-line
   404 on mismatch.
+- **Exception:** The sync (`POST /api/v1/workspaces/:slug/sync`) and
+  reclone (`POST /api/v1/workspaces/:slug/reclone`) handlers do NOT
+  enforce ownership. They look up the workspace by slug without checking
+  `OwnerID`, so any authenticated API key (or admin token) can trigger
+  sync or reclone on any workspace.
 
 **3. Role-based escalation.** `IsAdmin()` returns true when
 `CredentialType == "api_key"` AND `Role == "admin"`. This grants access
@@ -305,6 +311,7 @@ at startup.
 | **Grants** | List and view workspaces owned by the authenticated user; list and forget rerere resolutions; view patch-status dashboard |
 | **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces/:slug/patch-status` |
 | **Implied by** | `workspaces:create`, `workspaces:write` |
+| **Ownership** | Enforced for workspace CRUD endpoints (list, get) via `lookupWorkspaceForAuth`. NOT enforced for rerere and patch-status endpoints -- these handlers check workspace existence but not ownership, so any authenticated user with `workspaces:read` can access rerere and patch-status for any workspace slug. |
 
 ### workspaces:create
 
@@ -320,8 +327,8 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user |
-| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate` (plus all `workspaces:read` endpoints) |
+| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. |
+| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only) (plus all `workspaces:read` endpoints) |
 | **Implies** | `workspaces:read` |
 
 ### workspaces:delete
@@ -341,6 +348,7 @@ at startup.
 | **Grants** | Trigger upstream sync and reclone operations on workspaces. Includes fetching from upstream, fast-forwarding the integration branch, triggering reset-to-upstream recovery, and nuclear reclone (archive + re-clone). |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/sync`, `POST /api/v1/workspaces/:slug/reclone` |
 | **Does NOT imply** | `workspaces:read` — a PAT with only `workspaces:sync` cannot list or view workspaces |
+| **Note** | For carry-patch workspaces, the carry-patch sync handler also accepts `workspaces:write` as an alternative scope. The standard sync handler and reclone handler require `workspaces:sync` exclusively. |
 
 ---
 
@@ -358,6 +366,7 @@ at startup. They control access to the carry-patch patch list endpoints.
 | **Grants** | List and view patches for a workspace |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/patches` |
 | **Implied by** | `patches:write` |
+| **Ownership** | Not enforced. Any authenticated user with the required scope can list patches for any workspace slug. |
 
 ### patches:write
 
@@ -367,6 +376,7 @@ at startup. They control access to the carry-patch patch list endpoints.
 | **Grants** | Add, remove, update, and reorder patches for a workspace |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/reorder` |
 | **Implies** | `patches:read` |
+| **Ownership** | Not enforced. Patch handlers check workspace existence and status but do NOT verify ownership. Any authenticated user with the required scope can manage patches for any workspace slug. |
 
 ---
 
@@ -383,6 +393,7 @@ at startup.
 | **Source** | hub |
 | **Grants** | List and view merge job status for workspaces |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/merges`, `GET /api/v1/workspaces/:slug/merges/:id` |
+| **Ownership** | Not enforced. Any authenticated user with the required scope can list/view merge jobs for any workspace slug. |
 
 ### merges:write
 
@@ -391,13 +402,14 @@ at startup.
 | **Source** | hub |
 | **Grants** | Submit merge requests, cancel queued merge jobs, and trigger batch rebase operations |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/rebase` |
+| **Ownership** | Not enforced. Merge handlers check workspace existence, active status, and ready clone status but do NOT verify `ws.OwnerID == auth.UserID`. Any authenticated user with the required scope can access these endpoints for any workspace slug. |
 
 ---
 
 ## Hub Rebuild Permissions
 
-These 2 permissions are registered by `RebuildPermissions()` in
-`hub/internal/carrypatch/permissions.go` and passed to `apikit.Server.MountHandlers()`
+These 2 permissions are registered by `CarryPatchPermissions()` in
+`hub/internal/carrypatch/wire.go` and passed to `apikit.Server.MountHandlers()`
 at startup via the `extraPerms` parameter.
 
 ### rebuilds:read
@@ -407,6 +419,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | List and view rebuild job status and history for carry-patch workspaces |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/rebuilds`, `GET /api/v1/workspaces/:slug/rebuilds/:id` |
+| **Ownership** | Not enforced. Any authenticated user with the required scope can list/view rebuild jobs for any workspace slug. |
 
 ### rebuilds:write
 
@@ -415,6 +428,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | Submit rebuild jobs for carry-patch workspaces |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/rebuild` |
+| **Ownership** | Not enforced. Rebuild handlers check workspace mode, status, and clone status but do NOT verify ownership. Any authenticated user with the required scope can submit rebuilds for any workspace slug. |
 
 ---
 
@@ -540,6 +554,7 @@ for startup registration.
 |-------|---------|
 | `workspaces:create` | `workspaces:read` |
 | `workspaces:write` | `workspaces:read` |
+| `workspaces:sync` | *(nothing)* |
 | `workspaces:delete` | *(nothing)* |
 | `patches:write` | `patches:read` |
 | `git:write` | `git:read` |
@@ -628,11 +643,20 @@ HTTP 404 (not 403) consistent with the anti-enumeration policy.
 
 ## Anti-Enumeration Policy
 
-When a PAT lacks the required scope for an endpoint, or the requested
-workspace is not owned by the PAT's user, the API returns HTTP 404 (not
-403) to avoid disclosing the existence of resources. The git server also
-returns HTTP 404 for non-owner access to prevent workspace slug
-enumeration.
+When a PAT lacks the required workspace or git scope, or when a workspace
+is not owned by the caller, the workspace CRUD endpoints (create, list,
+get, update, archive, reactivate, delete) and git endpoints return
+HTTP 404 (not 403) to avoid disclosing the existence of resources. The
+git server also returns HTTP 404 for non-owner access to prevent workspace
+slug enumeration.
+
+Other endpoint groups return HTTP 403 for missing PAT scopes:
+secrets and variables handlers return 403 with `"insufficient permission scope"`;
+merge handlers return 403 with `"PAT requires merges:write scope"` (or
+`merges:read`); rebuild handlers return 403 with `"missing required scope:
+rebuilds:write"` (or `rebuilds:read`); patch handlers return 403 with
+`"PAT requires patches:read scope"` (or `patches:write`); rerere and
+patch-status handlers return 403 for missing `workspaces:read` scope.
 
 ## Extending the Permission Registry
 

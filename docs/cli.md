@@ -37,7 +37,7 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--slug` | yes | string | Globally unique URL-safe identifier for the workspace |
 | `--git-url` | yes | string | HTTPS or SSH URL of the git repository |
 | `--branch` | no | string | Git ref to associate with the workspace |
-| `--org` | no | string | Organization slug to associate the workspace with (resolved to UUID) |
+| `--org` | no | string | Organization slug to associate the workspace with (sent as `org_id`) |
 | `--display-name` | no | string | Human-readable label; defaults to slug value if omitted |
 | `--description` | no | string | Free-form text describing the workspace; defaults to empty string |
 | `--sync-mode` | no | string | Upstream sync mode: `pull_only` (default) or `disabled`; invalid values are rejected client-side |
@@ -55,8 +55,8 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 **Behavior:**
 
 - Sends `POST /api/v1/workspaces` with the provided fields.
-- When `--org` is provided, the org slug is resolved to its UUID via the
-  user's org list before inclusion in the request.
+- When `--org` is provided, its value is sent as `org_id` in the request
+  body. The server resolves it.
 - When `--org` is omitted, the server automatically assigns the workspace to
   the user's personal organization.
 - When credential flags are provided, the server validates them against the
@@ -68,7 +68,8 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | Code | Condition |
 |------|-----------|
 | 0 | Workspace created successfully |
-| 1 | Missing required flags, credential validation error, API error (4xx/5xx), network error, or timeout |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing required flags (`--slug`, `--git-url`), credential validation error (mutual exclusion, pair completeness, empty values, non-HTTPS URL), or invalid `--sync-mode` value |
 
 ---
 
@@ -155,7 +156,7 @@ afc workspace update <slug> [flags]
 |------|------|-------------|
 | `--display-name` | string | Set the workspace display name (max 128 characters) |
 | `--description` | string | Set the workspace description (max 1024 characters) |
-| `--org` | string | Set the organization association (by org slug, resolved to UUID) |
+| `--org` | string | Set the organization association (sent as `org_id`) |
 | `--clear-display-name` | boolean | Reset display_name to the server-side default (slug value) |
 | `--clear-description` | boolean | Reset description to the server-side default (empty string) |
 | `--clear-org` | boolean | Remove the organization association |
@@ -163,11 +164,11 @@ afc workspace update <slug> [flags]
 **Behavior:**
 
 - If no update flags are provided, prints a usage hint to stderr and exits
-  with exit code 1 without making any HTTP request.
+  with exit code 2 without making any HTTP request.
 - Constructs a `PATCH /api/v1/workspaces/<slug>` request body containing
   only the fields specified by the provided flags.
 - Value flags (`--display-name`, `--description`, `--org`) set the field to
-  the provided value. The `--org` slug is resolved to a UUID before sending.
+  the provided value. The `--org` value is sent as `org_id` directly.
 - Clear flags (`--clear-display-name`, `--clear-description`, `--clear-org`)
   set the corresponding field to `null` in the PATCH body, which resets the
   field to its server-side default.
@@ -175,7 +176,7 @@ afc workspace update <slug> [flags]
 - If the API returns a non-2xx status, prints the error message from the
   JSON error body to stderr and exits with code 1.
 - If the API response body is malformed or missing expected fields, prints a
-  descriptive parse error to stderr and exits with code 1.
+  descriptive parse error to stderr and exits with code 2.
 - On timeout or network connection failure, exits with code 1 and prints the
   error to stderr.
 
@@ -184,7 +185,8 @@ afc workspace update <slug> [flags]
 | Code | Condition |
 |------|-----------|
 | 0 | Workspace updated successfully |
-| 1 | No flags provided (usage hint printed); API error (4xx/5xx); malformed response body; network error or timeout |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | No update flags provided; malformed or unexpected response body |
 
 ---
 
@@ -280,7 +282,8 @@ afc workspace delete <slug> --confirm
 | Code | Condition |
 |------|-----------|
 | 0 | Workspace deleted successfully |
-| 1 | Workspace not archived, `--confirm` flag not provided, not found, API error, network error, or timeout |
+| 1 | Workspace not archived, not found, API error, network error, or timeout |
+| 2 | `--confirm` flag not provided |
 
 ---
 
@@ -367,7 +370,8 @@ afc workspace reclone <slug> --confirm
 | Code | Condition |
 |------|-----------|
 | 0 | Reclone initiated successfully |
-| 1 | `--confirm` flag not provided, workspace not found, clone already in progress, API error, network error, or timeout |
+| 1 | Workspace not found, clone already in progress, API error, network error, or timeout |
+| 2 | `--confirm` flag not provided |
 
 ---
 
@@ -411,7 +415,9 @@ afc workspace patch-status <workspace-slug>
 
 The `afc` CLI includes a built-in git credential helper that automatically
 authenticates git operations against the hub using the API key stored in
-`~/.af/config.toml` (set during `afc login`).
+`~/.af/config.toml` (set during `afc login`). The `credential-helper`
+command is hidden from `afc --help` output by design, since it is intended
+to be called by git rather than invoked directly by users.
 
 ### Setup
 
@@ -875,7 +881,8 @@ afc vars resolve <workspace-slug>
 | `<workspace-slug>` | The workspace slug to resolve variables for |
 
 This command does not use scope flags. The workspace is specified as a
-positional argument.
+positional argument. Extra positional arguments beyond the workspace slug
+are silently ignored.
 
 **Behavior:**
 
@@ -1375,7 +1382,7 @@ patch IDs.
 **Usage:**
 
 ```
-afc patch reorder <workspace-slug> <patch-id-1> <patch-id-2> ...
+afc patch reorder <workspace-slug> <patch-id-1> [patch-id-2] ...
 ```
 
 **Arguments:**
@@ -1383,7 +1390,7 @@ afc patch reorder <workspace-slug> <patch-id-1> <patch-id-2> ...
 | Argument | Description |
 |----------|-------------|
 | `<workspace-slug>` | The workspace slug |
-| `<patch-id-N>` | Patch IDs in the desired order (all patches must be included) |
+| `<patch-id-N>` | Patch IDs in the desired order; at least one is required |
 
 **Behavior:**
 

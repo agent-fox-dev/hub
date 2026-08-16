@@ -56,13 +56,14 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | `"afhub.db"` | SQLite database file path. Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. |
+| `path` | string | `"./data/apikit.db"` | SQLite database file path. When omitted, defaults to `./data/apikit.db` (or `$XDG_DATA_HOME/apikit.db` when `XDG_DATA_HOME` is set). Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. All shipped `config.toml` examples override this to `"afhub.db"`. |
 
 ### [logging]
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `level` | string | `"info"` | Log level. Valid values: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`. |
+| `log_health_probes` | boolean | `false` | When `false`, health probe requests (`/healthz`, `/readyz`) are suppressed from access logs. |
 
 ### [workspace]
 
@@ -78,9 +79,12 @@ provider.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `name` | string | Provider name (e.g. `"github"`, `"google"`). |
-| `client_id` | string | OAuth client ID. Supports env var substitution via `${VAR}` syntax. |
-| `client_secret` | string | OAuth client secret. Supports env var substitution via `${VAR}` syntax. |
+| `name` | string | Provider name (e.g. `"github"`, `"google"`). Required. |
+| `client_id` | string | OAuth client ID. Supports env var substitution via `${VAR}` syntax. Required. |
+| `client_secret` | string | OAuth client secret. Supports env var substitution via `${VAR}` syntax. Required. |
+| `authorize_url` | string | Override the built-in OAuth authorization endpoint URL. Optional; used for custom or self-hosted providers. |
+| `token_url` | string | Override the built-in OAuth token endpoint URL. Optional; used for custom or self-hosted providers. |
+| `userinfo_url` | string | Override the built-in OAuth userinfo endpoint URL. Optional; used for custom or self-hosted providers. |
 
 ## Environment Variables
 
@@ -88,24 +92,39 @@ provider.
 |----------|-------------|
 | `XDG_CONFIG_HOME` | Base directory for config files. Server config is read from `$XDG_CONFIG_HOME/config.toml`. |
 | `XDG_DATA_HOME` | Base directory for data files. Bare database and workspace paths are resolved relative to `$XDG_DATA_HOME/`. |
-| `ADMIN_TOKEN` | Pre-existing admin token. When set, the server uses this token instead of generating a new one at boot. |
+| `ADMIN_TOKEN` | Makefile convenience variable for operator use (e.g. in `curl` commands). Not read by the server binary. The bootstrap sequence always generates tokens on first boot (or rotation) and validates them at request time by SHA-256 hash comparison against the database. |
 | `GITHUB_CLIENT_ID` | GitHub OAuth app client ID (referenced in `config.toml` via `${GITHUB_CLIENT_ID}`). |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (referenced in `config.toml` via `${GITHUB_CLIENT_SECRET}`). |
 
 ## First Boot
 
-On first boot the server requires `--admin-email` to bootstrap the admin
-account:
+The server can start without `--admin-email`. In that case, no admin account
+is created and the server begins accepting requests immediately:
+
+```
+bin/af-hub
+```
+
+To bootstrap the admin account, pass `--admin-email` on first boot:
 
 ```
 bin/af-hub --admin-email=admin@example.com
 ```
 
-The server generates an admin token and writes the plaintext to `admin_token`
-in the config directory. Save this value. On subsequent boots, pass it via the
-`ADMIN_TOKEN` environment variable.
+When `--admin-email` is provided, the server generates an admin token, writes
+the plaintext to `admin_token` in the config directory, and **exits
+immediately** (the process terminates with `log.Fatal`). It does not start
+serving. The operator must:
 
-To rotate the admin token, pass `--reset-admin-token`:
+1. Save the token value from the `admin_token` file.
+2. Delete the `admin_token` file.
+3. Restart the server without `--admin-email`.
+
+On subsequent boots the server refuses to start if the `admin_token` file
+still exists (file-presence guard).
+
+To rotate the admin token, pass `--reset-admin-token`. The same
+generate-and-exit behaviour applies:
 
 ```
 bin/af-hub --reset-admin-token
@@ -130,8 +149,20 @@ The container image sets:
 - `XDG_CONFIG_HOME=/config`
 - `XDG_DATA_HOME=/data`
 
-The default config path is `/config/config.toml` (override by mounting your
-own). The database is created at `/data/afhub.db`.
+The bundled default config is installed at `/config/af-hub/config.toml`.
+Because `XDG_CONFIG_HOME=/config`, the server looks for `/config/config.toml`,
+which does not match the bundled path. Without a volume mount or environment
+override, the server will not find the bundled config and will fall back to
+programmatic defaults.
+
+To use the bundled config, either mount your own config at
+`/config/config.toml` or override the environment variable:
+`XDG_CONFIG_HOME=/config/af-hub`.
+
+The database path depends on whether a config file is found:
+
+- **Config file found** (with `path = "afhub.db"`): `/data/afhub.db`
+- **No config file found** (programmatic default): `/data/apikit.db`
 
 ### Volumes
 
@@ -149,11 +180,18 @@ own). The database is created at `/data/afhub.db`.
 
 ## Kubernetes Deployment
 
+The Kubernetes `deployment.yaml` overrides the container image's environment
+variables to use subdirectories: `XDG_CONFIG_HOME=/config/af-hub` and
+`XDG_DATA_HOME=/data/af-hub`. Volumes are mounted at `/config/af-hub` and
+`/data/af-hub` accordingly. This means the Kubernetes deployment resolves the
+config file at `/config/af-hub/config.toml` and the database at
+`/data/af-hub/afhub.db` (when the configmap is found).
+
 The `deploy/` directory contains reference manifests:
 
 | File | Description |
 |------|-------------|
-| `deploy/configmap.yaml` | ConfigMap with `config.toml`. |
+| `deploy/configmap.yaml` | ConfigMap with `config.toml`. Omits the `[workspace]` section; omitted sections use programmatic defaults (`path` = `$XDG_DATA_HOME/workspaces`, `workers` = 4). |
 | `deploy/deployment.yaml` | Deployment spec with volume mounts, health probes, and resource limits. |
 | `deploy/pvc.yaml` | PersistentVolumeClaims for config and data. |
 | `deploy/service.yaml` | ClusterIP Service on port 8080. |

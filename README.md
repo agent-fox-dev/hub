@@ -16,14 +16,14 @@ The project produces two binaries:
 
 | Binary | Purpose |
 |--------|---------|
-| `af-hub` | API server -- owns user identity, OAuth, workspaces, and access control |
+| `hub` | API server -- owns user identity, OAuth, workspaces, and access control |
 | `afc` | CLI client -- authenticates with the hub and manages resources |
 
 Data is stored in an embedded SQLite database (pure Go, no CGo). Authentication
 supports three credential types: admin tokens, user API keys, and
 workspace-scoped tokens.
 
-The af-hub binary also includes a built-in git smart HTTP server that exposes
+The hub binary also includes a built-in git smart HTTP server that exposes
 workspace repositories at /git/<org>/<slug>.git for clone, fetch, and push
 operations.
 
@@ -44,14 +44,15 @@ This compiles both binaries into `bin/`.
 
 ### Configure the server
 
-Create a `config.toml` in the working directory (or pass `--config <path>`):
+Create a `config.toml` in the working directory (or set `XDG_CONFIG_HOME` to
+control the config file location):
 
 ```toml
 [server]
 port = 8080
 
 [database]
-path = "./data/af-hub.db"
+path = "afhub.db"
 
 [logging]
 level = "info"
@@ -69,7 +70,7 @@ client_secret = "your-github-client-secret"
 ### Start the server
 
 ```sh
-bin/af-hub
+bin/hub
 ```
 
 On first boot the server generates an admin token and writes the plaintext to
@@ -77,8 +78,8 @@ On first boot the server generates an admin token and writes the plaintext to
 subsequent starts:
 
 ```sh
-export AF_HUB_ADMIN_TOKEN=$(cat admin_token)
-bin/af-hub
+export ADMIN_TOKEN=$(cat admin_token)  # convenience variable for curl commands; not read by the server
+bin/hub
 ```
 
 ### Authenticate with the CLI
@@ -108,6 +109,7 @@ curl http://localhost:8080/readyz
 | [API Reference](docs/api.md) | REST API endpoints, authentication, request/response schemas |
 | [CLI Reference](docs/cli.md) | `afc` commands, flags, and configuration |
 | [Server Configuration](docs/configuration.md) | `config.toml` reference and environment variables |
+| [Permissions](docs/permissions.md) | Permission model, scopes, and access control |
 
 ## Development
 
@@ -117,8 +119,9 @@ make test             # tests only
 make lint             # go vet
 make buildc           # build container image via podman
 make hub-reset        # reset data and first-boot
-make hub-run          # run the container
-make clean            # remove bin/ and container image
+make hub-run          # run the server locally
+make hub-runc         # run the af-hub container
+make clean            # remove build binaries and container image
 ```
 
 The web UI scaffold (Vite + React + TypeScript) lives in `web/`:
