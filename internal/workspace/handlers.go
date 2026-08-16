@@ -58,26 +58,35 @@ func workspaceResponse(ws *Workspace, hubURL *string) map[string]any {
 		syncStatus = "idle"
 	}
 
+	// 15-REQ-4: Coalesce empty workspace_mode to default.
+	wsMode := ws.WorkspaceMode
+	if wsMode == "" {
+		wsMode = "standard"
+	}
+
 	return map[string]any{
-		"slug":              ws.Slug,
-		"git_url":           ws.GitURL,
-		"hub_url":           hubURL,
-		"branch":            ws.Branch,
-		"owner_id":          ws.OwnerID,
-		"org_id":            ws.OrgID,
-		"status":            ws.Status,
-		"display_name":      ws.DisplayName,
-		"description":       ws.Description,
-		"clone_status":      ws.CloneStatus,
-		"head_sha":          ws.HeadSHA,
-		"clone_error":       ws.CloneError,
-		"created_at":        ws.CreatedAt,
-		"updated_at":        ws.UpdatedAt,
-		"sync_mode":         syncMode,
-		"sync_status":       syncStatus,
-		"upstream_head_sha": ws.UpstreamHeadSHA,
-		"last_sync_at":      ws.LastSyncAt,
-		"sync_error":        ws.SyncError,
+		"slug":               ws.Slug,
+		"git_url":            ws.GitURL,
+		"hub_url":            hubURL,
+		"branch":             ws.Branch,
+		"owner_id":           ws.OwnerID,
+		"org_id":             ws.OrgID,
+		"status":             ws.Status,
+		"display_name":       ws.DisplayName,
+		"description":        ws.Description,
+		"clone_status":       ws.CloneStatus,
+		"head_sha":           ws.HeadSHA,
+		"clone_error":        ws.CloneError,
+		"created_at":         ws.CreatedAt,
+		"updated_at":         ws.UpdatedAt,
+		"sync_mode":          syncMode,
+		"sync_status":        syncStatus,
+		"upstream_head_sha":  ws.UpstreamHeadSHA,
+		"last_sync_at":       ws.LastSyncAt,
+		"sync_error":         ws.SyncError,
+		"workspace_mode":     wsMode,
+		"upstream_url":       ws.UpstreamURL,
+		"integration_branch": ws.IntegrationBranch,
 	}
 }
 
@@ -139,6 +148,12 @@ var validSyncModes = map[string]bool{
 	"disabled":  true,
 }
 
+// validWorkspaceModes lists the accepted values for the workspace_mode field.
+var validWorkspaceModes = map[string]bool{
+	"standard":    true,
+	"carry_patch": true,
+}
+
 // createWorkspaceRequest represents the JSON body of a create workspace request.
 type createWorkspaceRequest struct {
 	Slug        string  `json:"slug"`
@@ -148,6 +163,11 @@ type createWorkspaceRequest struct {
 	DisplayName *string `json:"display_name"` // nullable: nil or empty → slug
 	Description *string `json:"description"`  // nullable: nil → ""
 	SyncMode    *string `json:"sync_mode"`    // nullable: nil → "pull_only" (13-REQ-2.1)
+
+	// Carry-patch fields (15-REQ-2).
+	WorkspaceMode     *string `json:"workspace_mode"`     // nullable: nil → "standard"
+	UpstreamURL       *string `json:"upstream_url"`        // required for carry_patch mode
+	IntegrationBranch *string `json:"integration_branch"`  // nullable: nil → "deploy" for carry_patch
 
 	// Optional git credential fields (09-REQ-2.1).
 	// PAT and username/password are mutually exclusive.
@@ -324,6 +344,53 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			syncMode = *req.SyncMode
 		}
 
+		// ---- Carry-patch workspace mode validation (15-REQ-2) ----
+
+		// 15-REQ-2.E1: Validate workspace_mode value if provided.
+		workspaceMode := "standard" // default
+		if req.WorkspaceMode != nil && *req.WorkspaceMode != "" {
+			if !validWorkspaceModes[*req.WorkspaceMode] {
+				return respondError(c, http.StatusBadRequest,
+					"invalid workspace_mode value: must be 'standard' or 'carry_patch'")
+			}
+			workspaceMode = *req.WorkspaceMode
+		}
+
+		var upstreamURL *string
+		var integrationBranch *string
+
+		if workspaceMode == "carry_patch" {
+			// 15-REQ-2.2: upstream_url is required for carry_patch mode.
+			if req.UpstreamURL == nil || *req.UpstreamURL == "" {
+				return respondError(c, http.StatusBadRequest,
+					"upstream_url is required when workspace_mode is 'carry_patch'")
+			}
+			// 15-REQ-2.3: Validate upstream_url using the same rules as git_url.
+			if err := validateGitURL(*req.UpstreamURL); err != nil {
+				return respondError(c, http.StatusBadRequest, "invalid upstream_url: "+err.Error())
+			}
+			upstreamURL = req.UpstreamURL
+
+			// 15-REQ-2.6 / 15-REQ-2.E2: Default integration_branch to "deploy"
+			// if omitted or empty.
+			ib := "deploy"
+			if req.IntegrationBranch != nil && *req.IntegrationBranch != "" {
+				ib = *req.IntegrationBranch
+			}
+			integrationBranch = &ib
+		} else {
+			// 15-REQ-2.5: Standard mode must not include upstream_url or
+			// integration_branch.
+			if req.UpstreamURL != nil {
+				return respondError(c, http.StatusBadRequest,
+					"upstream_url is not allowed when workspace_mode is 'standard'")
+			}
+			if req.IntegrationBranch != nil {
+				return respondError(c, http.StatusBadRequest,
+					"integration_branch is not allowed when workspace_mode is 'standard'")
+			}
+		}
+
 		// ---- Credential validation via ls-remote (09-REQ-3) ----
 
 		if hasCreds && validateCredentialsFn != nil {
@@ -385,16 +452,19 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// Create workspace.
 		ws := &Workspace{
-			Slug:        req.Slug,
-			GitURL:      req.GitURL,
-			Branch:      req.Branch,
-			OwnerID:     auth.UserID,
-			OrgID:       req.OrgID,
-			Status:      "active",
-			DisplayName: displayName,
-			Description: description,
-			CloneStatus: "pending",
-			SyncMode:    syncMode,
+			Slug:              req.Slug,
+			GitURL:            req.GitURL,
+			Branch:            req.Branch,
+			OwnerID:           auth.UserID,
+			OrgID:             req.OrgID,
+			Status:            "active",
+			DisplayName:       displayName,
+			Description:       description,
+			CloneStatus:       "pending",
+			SyncMode:          syncMode,
+			WorkspaceMode:     workspaceMode,
+			UpstreamURL:       upstreamURL,
+			IntegrationBranch: integrationBranch,
 		}
 
 		if err := insertWorkspace(db, ws); err != nil {
@@ -559,8 +629,8 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
 
-		// Reject immutable fields in the PATCH body.
-		immutableFields := []string{"slug", "git_url", "branch", "owner_id"}
+		// Reject immutable fields in the PATCH body (15-REQ-3.1).
+		immutableFields := []string{"slug", "git_url", "branch", "owner_id", "workspace_mode", "upstream_url", "integration_branch"}
 		for _, field := range immutableFields {
 			if _, present := rawBody[field]; present {
 				return respondError(c, http.StatusBadRequest, field+" is immutable and cannot be updated")

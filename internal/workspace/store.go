@@ -47,6 +47,11 @@ type Workspace struct {
 	UpstreamHeadSHA *string // nullable: upstream HEAD SHA at last fetch
 	LastSyncAt      *string // nullable: RFC 3339 timestamp of last successful sync
 	SyncError       *string // nullable: error message from most recent failed sync
+
+	// Carry-patch fields (15-REQ-1).
+	WorkspaceMode     string  // standard (default) or carry_patch
+	UpstreamURL       *string // nullable: upstream repo URL for carry_patch workspaces
+	IntegrationBranch *string // nullable: integration branch name for carry_patch workspaces
 }
 
 // insertWorkspace inserts a new workspace record into the workspaces table.
@@ -54,6 +59,7 @@ type Workspace struct {
 // If CloneStatus is empty, it defaults to "pending".
 // If SyncMode is empty, it defaults to "pull_only" (13-REQ-1.3).
 // If SyncStatus is empty, it defaults to "idle" (13-REQ-1.3).
+// If WorkspaceMode is empty, it defaults to "standard" (15-REQ-1.3).
 func insertWorkspace(db *sql.DB, ws *Workspace) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	ws.CreatedAt = now
@@ -67,11 +73,14 @@ func insertWorkspace(db *sql.DB, ws *Workspace) error {
 	if ws.SyncStatus == "" {
 		ws.SyncStatus = "idle"
 	}
+	if ws.WorkspaceMode == "" {
+		ws.WorkspaceMode = "standard"
+	}
 
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ws.Slug, ws.GitURL, ws.Branch, ws.OwnerID, ws.OrgID, ws.Status, ws.DisplayName, ws.Description, ws.CloneStatus, ws.HeadSHA, ws.CloneError, ws.CreatedAt, ws.UpdatedAt, ws.SyncMode, ws.SyncStatus, ws.UpstreamHeadSHA, ws.LastSyncAt, ws.SyncError,
+		`INSERT INTO workspaces (slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ws.Slug, ws.GitURL, ws.Branch, ws.OwnerID, ws.OrgID, ws.Status, ws.DisplayName, ws.Description, ws.CloneStatus, ws.HeadSHA, ws.CloneError, ws.CreatedAt, ws.UpdatedAt, ws.SyncMode, ws.SyncStatus, ws.UpstreamHeadSHA, ws.LastSyncAt, ws.SyncError, ws.WorkspaceMode, ws.UpstreamURL, ws.IntegrationBranch,
 	)
 	if err != nil {
 		return fmt.Errorf("insert workspace %q: %w", ws.Slug, err)
@@ -82,7 +91,7 @@ func insertWorkspace(db *sql.DB, ws *Workspace) error {
 // workspaceSelectColumns is the column list for SELECT queries on the workspaces
 // table. All query functions and scanWorkspace use this list so it stays in sync
 // with the Workspace struct field order.
-const workspaceSelectColumns = `slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error`
+const workspaceSelectColumns = `slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch`
 
 // scanWorkspaceRow scans a single row into a Workspace struct. The row must
 // contain columns in workspaceSelectColumns order. Nullable sync fields
@@ -93,12 +102,14 @@ const workspaceSelectColumns = `slug, git_url, branch, owner_id, org_id, status,
 func scanWorkspaceRow(scanner interface{ Scan(dest ...any) error }) (*Workspace, error) {
 	ws := &Workspace{}
 	var syncMode, syncStatus *string
+	var workspaceMode *string
 	err := scanner.Scan(
 		&ws.Slug, &ws.GitURL, &ws.Branch, &ws.OwnerID, &ws.OrgID,
 		&ws.Status, &ws.DisplayName, &ws.Description, &ws.CloneStatus,
 		&ws.HeadSHA, &ws.CloneError, &ws.CreatedAt, &ws.UpdatedAt,
 		&syncMode, &syncStatus,
 		&ws.UpstreamHeadSHA, &ws.LastSyncAt, &ws.SyncError,
+		&workspaceMode, &ws.UpstreamURL, &ws.IntegrationBranch,
 	)
 	if err != nil {
 		return nil, err
@@ -113,6 +124,12 @@ func scanWorkspaceRow(scanner interface{ Scan(dest ...any) error }) (*Workspace,
 		ws.SyncStatus = *syncStatus
 	} else {
 		ws.SyncStatus = "idle"
+	}
+	// 15-REQ-1: Coalesce NULL workspace_mode to default.
+	if workspaceMode != nil {
+		ws.WorkspaceMode = *workspaceMode
+	} else {
+		ws.WorkspaceMode = "standard"
 	}
 	return ws, nil
 }

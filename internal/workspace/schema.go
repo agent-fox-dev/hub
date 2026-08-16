@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	sync_status       TEXT NOT NULL DEFAULT 'idle',
 	upstream_head_sha TEXT,
 	last_sync_at      TEXT,
-	sync_error        TEXT
+	sync_error        TEXT,
+	workspace_mode    TEXT NOT NULL DEFAULT 'standard',
+	upstream_url      TEXT,
+	integration_branch TEXT
 )`
 
 // syncFieldDDL contains ALTER TABLE statements that add the five sync-related
@@ -39,6 +42,16 @@ var syncFieldDDL = []string{
 	`ALTER TABLE workspaces ADD COLUMN upstream_head_sha TEXT`,
 	`ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT`,
 	`ALTER TABLE workspaces ADD COLUMN sync_error TEXT`,
+}
+
+// carryPatchFieldDDL contains ALTER TABLE statements that add the three
+// carry-patch columns to an existing workspaces table. Each statement is
+// executed individually; existing columns are skipped so the migration is
+// idempotent (15-REQ-1.E1).
+var carryPatchFieldDDL = []string{
+	`ALTER TABLE workspaces ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'standard'`,
+	`ALTER TABLE workspaces ADD COLUMN upstream_url TEXT`,
+	`ALTER TABLE workspaces ADD COLUMN integration_branch TEXT`,
 }
 
 // initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS
@@ -75,6 +88,26 @@ func initSchema(db *sql.DB) error {
 				continue
 			}
 			return fmt.Errorf("sync schema migration failed: %w", err)
+		}
+	}
+
+	// Apply carry-patch field migrations idempotently (15-REQ-1.1).
+	// Re-query existing columns to account for columns that may have been
+	// added by the CREATE TABLE DDL above (fresh database case).
+	existing, err = existingColumns(db, "workspaces")
+	if err != nil {
+		return fmt.Errorf("carry-patch schema migration: %w", err)
+	}
+	for _, ddl := range carryPatchFieldDDL {
+		col := extractColumnName(ddl)
+		if col != "" && existing[col] {
+			continue
+		}
+		if _, err := db.Exec(ddl); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
+			return fmt.Errorf("carry-patch schema migration failed: %w", err)
 		}
 	}
 

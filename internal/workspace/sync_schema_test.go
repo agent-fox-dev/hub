@@ -393,6 +393,11 @@ func TestSyncSchema_NullSyncFieldsCoalesced(t *testing.T) {
 		`ALTER TABLE workspaces ADD COLUMN upstream_head_sha TEXT`,
 		`ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT`,
 		`ALTER TABLE workspaces ADD COLUMN sync_error TEXT`,
+		// Carry-patch columns (15-REQ-1) — added so the SELECT scan matches
+		// the expected column count.
+		`ALTER TABLE workspaces ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'standard'`,
+		`ALTER TABLE workspaces ADD COLUMN upstream_url TEXT`,
+		`ALTER TABLE workspaces ADD COLUMN integration_branch TEXT`,
 	}
 	for _, ddl := range legacyMigrations {
 		if _, err := db.Exec(ddl); err != nil {
