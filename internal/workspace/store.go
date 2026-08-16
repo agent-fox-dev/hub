@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// timestampFormat is a fixed-width RFC 3339 layout with microsecond precision.
+// Go's time.RFC3339Nano strips trailing fractional zeros, producing
+// variable-length strings (e.g. ".1655Z" vs ".165556Z") whose lexicographic
+// order disagrees with chronological order because 'Z' (ASCII 90) > any digit.
+// A fixed-width format avoids this: strings of equal length sort correctly.
+const timestampFormat = "2006-01-02T15:04:05.000000Z07:00"
+
 // sqliteErrorCode is an interface that matches SQLite driver errors exposing
 // an integer error code. This avoids importing the concrete driver error type.
 type sqliteErrorCode interface {
@@ -61,7 +68,7 @@ type Workspace struct {
 // If SyncStatus is empty, it defaults to "idle" (13-REQ-1.3).
 // If WorkspaceMode is empty, it defaults to "standard" (15-REQ-1.3).
 func insertWorkspace(db *sql.DB, ws *Workspace) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	ws.CreatedAt = now
 	ws.UpdatedAt = now
 	if ws.CloneStatus == "" {
@@ -195,7 +202,7 @@ func listAllWorkspaces(db *sql.DB, includeArchived bool) ([]*Workspace, error) {
 // updateWorkspaceStatus updates the status of a workspace and refreshes updated_at.
 // Returns the updated workspace, or nil if no workspace with the given slug exists.
 func updateWorkspaceStatus(db *sql.DB, slug, status string) (*Workspace, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	result, err := db.Exec(
 		`UPDATE workspaces SET status = ?, updated_at = ? WHERE slug = ?`,
 		status, now, slug,
@@ -218,7 +225,7 @@ func updateWorkspaceStatus(db *sql.DB, slug, status string) (*Workspace, error) 
 // and applying only the provided field changes to the in-memory struct.
 // Returns the updated workspace, or an error if the update fails.
 func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID *string, syncMode string) (*Workspace, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
 		`UPDATE workspaces SET display_name = ?, description = ?, org_id = ?, sync_mode = ?, updated_at = ? WHERE slug = ?`,
 		displayName, description, orgID, syncMode, now, slug,
@@ -233,7 +240,7 @@ func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID
 // records the head_sha (may be nil for workspaces archived from pending/failed),
 // clears clone_error, and refreshes updated_at. Returns the updated workspace.
 func archiveWorkspaceDB(db *sql.DB, slug string, headSHA *string) (*Workspace, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
 		`UPDATE workspaces SET status = 'archived', clone_status = 'archived', head_sha = ?, clone_error = NULL, updated_at = ? WHERE slug = ?`,
 		headSHA, now, slug,
@@ -249,7 +256,7 @@ func archiveWorkspaceDB(db *sql.DB, slug string, headSHA *string) (*Workspace, e
 // Used by the reactivate handler to atomically reset all fields before
 // enqueuing a reclone job.
 func reactivateWorkspaceDB(db *sql.DB, slug string) (*Workspace, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
 		`UPDATE workspaces SET status = 'active', clone_status = 'pending', clone_error = NULL, updated_at = ? WHERE slug = ?`,
 		now, slug,

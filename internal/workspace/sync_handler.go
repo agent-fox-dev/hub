@@ -230,7 +230,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Process sync outcome ----
 
-		now := time.Now().UTC().Format(time.RFC3339Nano)
+		now := time.Now().UTC().Format(timestampFormat)
 
 		switch outcome {
 		case "up_to_date":
@@ -348,7 +348,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	// Step 3: Update workspace state (13-REQ-6.1, 13-PROP-8).
 	// Set head_sha=upstream HEAD, upstream_head_sha=upstream HEAD,
 	// sync_status='idle', last_sync_at=now, sync_error=NULL.
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	if err := setSyncStatusWithHeadSHA(db, slug, "idle", &upstreamHeadSHA, &upstreamHeadSHA, nil, &now); err != nil {
 		syncError := fmt.Sprintf("failed to update workspace state: %v", err)
 		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
@@ -370,7 +370,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 // optionally last_sync_at for the workspace identified by slug.
 // Only updates upstream_head_sha and last_sync_at if non-nil.
 func setSyncStatus(db *sql.DB, slug, syncStatus string, upstreamHeadSHA *string, syncError *string, lastSyncAt *string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 
 	if upstreamHeadSHA != nil && lastSyncAt != nil {
 		_, err := db.Exec(
@@ -404,7 +404,7 @@ func setSyncStatus(db *sql.DB, slug, syncStatus string, upstreamHeadSHA *string,
 // sync_error, and last_sync_at. Used after a successful fast-forward to update
 // both the local head_sha and upstream tracking state.
 func setSyncStatusWithHeadSHA(db *sql.DB, slug, syncStatus string, headSHA, upstreamHeadSHA *string, syncError *string, lastSyncAt *string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
 		`UPDATE workspaces SET sync_status = ?, head_sha = ?, upstream_head_sha = ?, sync_error = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
 		syncStatus, headSHA, upstreamHeadSHA, syncError, lastSyncAt, now, slug,
@@ -416,7 +416,7 @@ func setSyncStatusWithHeadSHA(db *sql.DB, slug, syncStatus string, headSHA, upst
 // and records the divergence error message. Does NOT modify head_sha or last_sync_at
 // (13-REQ-4.4, 13-PROP-2, 13-PROP-7).
 func setSyncStatusDiverged(db *sql.DB, slug string, upstreamHeadSHA *string, syncError *string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
 		`UPDATE workspaces SET sync_status = 'error', upstream_head_sha = ?, sync_error = ?, updated_at = ? WHERE slug = ?`,
 		upstreamHeadSHA, syncError, now, slug,

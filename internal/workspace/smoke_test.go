@@ -379,7 +379,12 @@ func TestSmoke_ReactivateArchivedWorkspace(t *testing.T) {
 		t.Errorf("updated_at %q is not valid RFC 3339: %v", dbAfter.UpdatedAt, parseErr)
 	}
 	// updated_at must be >= created_at (reactivation is always after creation).
-	if dbAfter.UpdatedAt < dbAfter.CreatedAt {
+	tUpdated, errU := time.Parse(timestampFormat, dbAfter.UpdatedAt)
+	tCreated, errC := time.Parse(timestampFormat, dbAfter.CreatedAt)
+	if errU != nil || errC != nil {
+		t.Fatalf("failed to parse timestamps: updated_at=%v, created_at=%v", errU, errC)
+	}
+	if tUpdated.Before(tCreated) {
 		t.Errorf("updated_at (%s) is before created_at (%s)",
 			dbAfter.UpdatedAt, dbAfter.CreatedAt)
 	}
