@@ -35,6 +35,7 @@ func WorkspaceCmd() *cobra.Command {
 		newDeleteCmd(),
 		newSyncCmd(),
 		newRecloneCmd(),
+		newPatchStatusCmd(),
 	)
 
 	return cmd
@@ -61,6 +62,8 @@ func BuildRootCommand() *cobra.Command {
 		SecretsCmd(),
 		VarsCmd(),
 		MergeCmd(),
+		RebuildCmd(),
+		RerereCmd(),
 	)
 
 	return root
@@ -511,4 +514,23 @@ func newRecloneCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "Confirm reclone operation (required)")
 
 	return cmd
+}
+
+// newPatchStatusCmd returns the 'workspace patch-status' subcommand.
+// It sends GET /api/v1/workspaces/:slug/patch-status and prints the
+// full status dashboard.
+// Requirements: 16-REQ-9.1
+// Stub: implementation in later task groups.
+func newPatchStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "patch-status <workspace-slug>",
+		Short:         "View carry-patch status dashboard",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Stub: to be implemented in task group 8.
+			return nil
+		},
+	}
 }

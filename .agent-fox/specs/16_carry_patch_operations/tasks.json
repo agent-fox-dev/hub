@@ -302,7 +302,7 @@
           "requirement_refs": [
             "16-REQ-7"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -323,7 +323,7 @@
             "16-REQ-8",
             "16-REQ-9"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -346,7 +346,7 @@
             "16-REQ-5",
             "16-REQ-6"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
