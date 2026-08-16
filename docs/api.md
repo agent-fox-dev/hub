@@ -697,6 +697,143 @@ position. Returns an empty array `[]` if no patches exist.
 
 ---
 
+### PATCH /api/v1/workspaces/:slug/patches/:id
+
+Update a patch's position, status, description, or upstream PR URL.
+
+**Authentication:** API Key, or PAT with `patches:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The patch UUID to update |
+
+**Request Body:**
+
+```json
+{
+  "position": 1,
+  "status": "disabled",
+  "description": "Updated description",
+  "upstream_pr_url": "https://github.com/upstream/repo/pull/99"
+}
+```
+
+| Field | Required | Type | Constraints |
+|-------|----------|------|-------------|
+| `position` | no | integer | 1-based; must be >= 1 and <= total patch count for the workspace |
+| `status` | no | string | Must be one of: `"active"`, `"merged_upstream"`, `"conflict"`, `"disabled"` |
+| `description` | no | string | Free-form description |
+| `upstream_pr_url` | no | string | URL of the upstream pull request |
+
+**Response:** HTTP 200 OK with the updated patch JSON object.
+
+**Behavior:**
+
+- Only the provided fields are updated; omitted fields remain unchanged.
+- `branch_name` is immutable after creation — if included in the request body,
+  it is silently ignored.
+- When `position` changes, other patches in the workspace are shifted to
+  maintain a contiguous 1-based sequence with no gaps or duplicates.
+- `updated_at` is set to the current RFC 3339 timestamp on every successful
+  update.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `status` is not one of the valid values |
+| 400 | `position` is less than 1 or greater than the total number of patches |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:write` scope |
+| 404 | Patch ID does not exist for the given workspace |
+
+---
+
+### DELETE /api/v1/workspaces/:slug/patches/:id
+
+Remove a patch from the workspace's patch list.
+
+**Authentication:** API Key, or PAT with `patches:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The patch UUID to remove |
+
+**Response:** HTTP 204 No Content (empty body).
+
+**Behavior:**
+
+- Deletes the patch row from the patches table.
+- Compacts positions for remaining patches so there are no gaps — positions are
+  reassigned as a contiguous 1-based sequence.
+- The delete and position compaction are performed atomically within a single
+  database transaction.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:write` scope |
+| 404 | Patch ID does not exist for the given workspace |
+| 500 | Database transaction failure during delete and compaction (no partial state persisted) |
+
+---
+
+### POST /api/v1/workspaces/:slug/patches/reorder
+
+Reorder the entire patch list by providing a complete ordered list of patch IDs.
+
+**Authentication:** API Key, or PAT with `patches:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+
+**Request Body:**
+
+```json
+{
+  "patch_ids": ["uuid-3", "uuid-1", "uuid-2"]
+}
+```
+
+| Field | Required | Type | Constraints |
+|-------|----------|------|-------------|
+| `patch_ids` | yes | string[] | Must contain exactly all patch IDs for the workspace — no missing, no extra, no duplicates |
+
+**Response:** HTTP 200 OK with a JSON array of all patch objects in the new
+position order.
+
+**Behavior:**
+
+- Assigns new 1-based positions to each patch based on array index (first
+  element gets position 1, second gets position 2, etc.).
+- Updates `updated_at` for each modified row.
+- The entire operation is performed within a single database transaction.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `patch_ids` is empty but the workspace has patches |
+| 400 | `patch_ids` is missing one or more patch IDs that exist for the workspace |
+| 400 | `patch_ids` contains duplicate IDs |
+| 400 | `patch_ids` contains an ID that does not belong to the specified workspace |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:write` scope |
+| 500 | Database transaction failure during bulk position update (no positions changed) |
+
+---
+
 ## Rerere Management Endpoints
 
 Rerere endpoints let operators inspect and manage recorded git rerere
