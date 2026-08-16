@@ -51,6 +51,20 @@ func parseRebaseConflictFiles(output string) []string {
 	return extractConflictPaths(output)
 }
 
+// parseConflictFilesWithFallback extracts conflicting file paths from the
+// combined stdout/stderr of a failed git command (cherry-pick, merge, etc.)
+// using parseRebaseConflictFiles. If no CONFLICT lines are found, it returns
+// a single-element slice containing the fallback string "(unresolved conflict)"
+// so that ConflictingFiles is never empty when the caller knows a conflict
+// occurred (14-REQ-13.E1, 14-PROP-6).
+func parseConflictFilesWithFallback(combinedOutput string) []string {
+	files := parseRebaseConflictFiles(combinedOutput)
+	if len(files) == 0 {
+		return []string{"(unresolved conflict)"}
+	}
+	return files
+}
+
 // extractConflictPaths is the shared implementation for parsing CONFLICT
 // lines from both merge-tree and rebase output. Both git commands use the
 // same "CONFLICT (content): Merge conflict in <path>" line format.

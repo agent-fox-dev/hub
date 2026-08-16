@@ -219,3 +219,62 @@ func TestConflictFallbackEntry(t *testing.T) {
 		t.Errorf("fallback entry = %q, want %q", mergeErr.ConflictingFiles[0], "(unresolved conflict)")
 	}
 }
+
+// TestParseConflictFilesWithFallback_ParsesConflicts verifies that
+// parseConflictFilesWithFallback returns parsed file paths when CONFLICT
+// lines are present in the output.
+//
+// TS-14-29
+// Requirement: 14-REQ-13.2
+func TestParseConflictFilesWithFallback_ParsesConflicts(t *testing.T) {
+	output := `CONFLICT (content): Merge conflict in path/to/file.go
+CONFLICT (content): Merge conflict in another/file.txt`
+
+	files := parseConflictFilesWithFallback(output)
+	if len(files) != 2 {
+		t.Fatalf("expected 2 conflict files, got %d: %v", len(files), files)
+	}
+	if files[0] != "path/to/file.go" {
+		t.Errorf("files[0] = %q, want %q", files[0], "path/to/file.go")
+	}
+	if files[1] != "another/file.txt" {
+		t.Errorf("files[1] = %q, want %q", files[1], "another/file.txt")
+	}
+}
+
+// TestParseConflictFilesWithFallback_EmptyOutput verifies that
+// parseConflictFilesWithFallback returns the fallback "(unresolved conflict)"
+// entry when output is empty (no CONFLICT lines to parse).
+//
+// TS-14-29
+// Requirement: 14-REQ-13.E1
+// Correctness property: 14-PROP-6
+func TestParseConflictFilesWithFallback_EmptyOutput(t *testing.T) {
+	files := parseConflictFilesWithFallback("")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 fallback entry, got %d: %v", len(files), files)
+	}
+	if files[0] != "(unresolved conflict)" {
+		t.Errorf("fallback entry = %q, want %q", files[0], "(unresolved conflict)")
+	}
+}
+
+// TestParseConflictFilesWithFallback_NoCONFLICTLines verifies that
+// parseConflictFilesWithFallback returns the fallback when the output
+// contains text but no CONFLICT-prefixed lines.
+//
+// TS-14-29
+// Requirement: 14-REQ-13.E1
+// Correctness property: 14-PROP-6
+func TestParseConflictFilesWithFallback_NoCONFLICTLines(t *testing.T) {
+	output := `error: could not apply abc1234
+hint: Resolve all conflicts manually`
+
+	files := parseConflictFilesWithFallback(output)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 fallback entry, got %d: %v", len(files), files)
+	}
+	if files[0] != "(unresolved conflict)" {
+		t.Errorf("fallback entry = %q, want %q", files[0], "(unresolved conflict)")
+	}
+}
