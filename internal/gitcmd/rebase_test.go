@@ -224,3 +224,114 @@ func TestRebaseAbort_NoRebaseState(t *testing.T) {
 		t.Error("GitError.Stderr should be non-empty")
 	}
 }
+
+// ========================================================================
+// Spec 14 Task 4.5: RebaseContinue success test
+// (TS-14-23)
+// Requirements: 14-REQ-11.1
+// ========================================================================
+
+// TestRebaseContinue_Success verifies that RebaseContinue while a rebase
+// is paused returns the new HEAD SHA and nil error, and that the rebase
+// is no longer in progress afterwards.
+//
+// Preconditions:
+// - A real git repository with a rebase paused at a conflict that has been
+//   manually resolved (all conflicts staged with `git add`)
+// - git user.email and user.name are configured in the repo
+//
+// TS-14-23
+// Requirement: 14-REQ-11.1
+func TestRebaseContinue_Success(t *testing.T) {
+	requireGitMinVersion(t, 2, 38)
+
+	// Set up a repo where rebase will conflict, then manually resolve.
+	dir := setupConflictingRebaseRepo(t)
+
+	// Start the rebase (it will conflict).
+	_, _ = runGitMayFail(t, dir, "rebase", "main")
+
+	// Verify we are in rebase state.
+	rebaseMerge := filepath.Join(dir, ".git", "rebase-merge")
+	rebaseApply := filepath.Join(dir, ".git", "rebase-apply")
+	if !dirExists(rebaseMerge) && !dirExists(rebaseApply) {
+		t.Skip("repository is not in rebase state after manual rebase; cannot test RebaseContinue")
+	}
+
+	// Resolve the conflict by accepting "main" version and staging.
+	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "resolved content")
+	runGit(t, dir, "add", "conflict.txt")
+
+	runner, err := New(dir, nil)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+	sha, err := runner.RebaseContinue(ctx)
+	if err != nil {
+		t.Fatalf("RebaseContinue returned unexpected error: %v", err)
+	}
+
+	// sha must be a valid 40-char hex SHA.
+	if len(sha) != 40 {
+		t.Errorf("SHA length = %d, want 40: %q", len(sha), sha)
+	}
+	if !shaRegexp.MatchString(sha) {
+		t.Errorf("SHA %q does not match /^[0-9a-f]{40}$/", sha)
+	}
+
+	// Rebase must no longer be in progress.
+	if dirExists(rebaseMerge) {
+		t.Error(".git/rebase-merge should not exist after RebaseContinue success")
+	}
+	if dirExists(rebaseApply) {
+		t.Error(".git/rebase-apply should not exist after RebaseContinue success")
+	}
+}
+
+// ========================================================================
+// Spec 14 Task 4.5: RebaseContinue failure test (no rebase in progress)
+// (TS-14-24)
+// Requirements: 14-REQ-11.2
+// Edge case: 14-REQ-11.E1
+// ========================================================================
+
+// TestRebaseContinue_NoRebaseInProgress verifies that RebaseContinue returns
+// ("", *GitError) with non-zero ExitCode when no rebase is in progress.
+//
+// Preconditions:
+// - A real git repository with no rebase in progress
+//
+// TS-14-24
+// Requirement: 14-REQ-11.2
+// Edge case: 14-REQ-11.E1
+func TestRebaseContinue_NoRebaseInProgress(t *testing.T) {
+	requireGitMinVersion(t, 2, 38)
+
+	// Use a clean repo that is NOT in rebase state.
+	dir := initTestRepoWithCommit(t)
+
+	runner, err := New(dir, nil)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+	sha, err := runner.RebaseContinue(ctx)
+
+	if sha != "" {
+		t.Errorf("RebaseContinue should return empty string when no rebase in progress, got %q", sha)
+	}
+	if err == nil {
+		t.Fatal("RebaseContinue should return non-nil error when no rebase in progress")
+	}
+
+	var ge *GitError
+	if !errors.As(err, &ge) {
+		t.Fatalf("error should be *GitError, got %T: %v", err, err)
+	}
+	if ge.ExitCode == 0 {
+		t.Error("GitError.ExitCode should be non-zero")
+	}
+}

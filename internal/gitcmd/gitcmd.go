@@ -389,6 +389,19 @@ func (r *GitRunner) RebaseAbort(ctx context.Context) error {
 	return err
 }
 
+// RebaseContinue runs `git rebase --continue` to resume a paused rebase
+// after conflicts have been resolved (e.g. by rerere).
+//
+// On success, returns (newHeadSHA, nil) where newHeadSHA is the 40-character
+// hex SHA of the resulting HEAD commit.
+//
+// If git rebase --continue exits with a non-zero code, returns ("", *GitError)
+// wrapping the exit code and stderr.
+func (r *GitRunner) RebaseContinue(ctx context.Context) (string, error) {
+	// TODO: implement in task group 10
+	return "", nil
+}
+
 // RevParse executes git rev-parse to resolve a ref to its full SHA.
 func (r *GitRunner) RevParse(ctx context.Context, ref string) (string, error) {
 	return r.Run(ctx, "rev-parse", ref)
