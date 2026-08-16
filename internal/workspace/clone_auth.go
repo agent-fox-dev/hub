@@ -70,6 +70,19 @@ func ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, 
 	return resolveCloneAuth(store, slug)
 }
 
+// resolveUpstreamAuth looks up upstream-specific credentials for a carry_patch
+// workspace. Falls back to resolveCloneAuth if no upstream-specific secrets
+// are found (15-REQ-5.1).
+//
+// Lookup order:
+//  1. UPSTREAM_GIT_PAT → &BasicAuth{Username: "x-token-auth", Password: <pat>}
+//  2. UPSTREAM_GIT_USERNAME + UPSTREAM_GIT_PASSWORD → &BasicAuth{...}
+//  3. Fall back to resolveCloneAuth (origin credentials or nil)
+func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMethod, error) {
+	// TODO: implement in task group 6
+	return nil, nil
+}
+
 // isNotFoundError checks whether err is a *secrets.NotFoundError.
 func isNotFoundError(err error) bool {
 	_, ok := err.(*secrets.NotFoundError)
