@@ -34,6 +34,8 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
+| `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches |
+| `patches:write` | Add, remove, update, and reorder patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/reorder |
 | `merges:read` | List and view merge job status | GET /api/v1/workspaces/:slug/merges, GET /api/v1/workspaces/:slug/merges/:id |
 | `merges:write` | Submit and cancel merge jobs; trigger batch rebase | POST /api/v1/workspaces/:slug/merges, DELETE /api/v1/workspaces/:slug/merges/:id, POST /api/v1/workspaces/:slug/rebase |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
@@ -55,6 +57,8 @@ they can access. The following scopes are available for workspace operations:
   also list and view workspaces.
 - `workspaces:delete` does **not** imply read access — a PAT with only
   `workspaces:delete` cannot list or view workspaces.
+- `patches:write` implies `patches:read` — a PAT with patches write scope can
+  also list patches.
 - `git:write` implies `git:read` — a PAT with git write scope can also clone
   and fetch.
 - `secrets:manage` implies `secrets:list`, `secrets:write`, and
@@ -96,6 +100,9 @@ schema:
   "upstream_head_sha": null,
   "last_sync_at": null,
   "sync_error": null,
+  "workspace_mode": "standard",
+  "upstream_url": null,
+  "integration_branch": null,
   "created_at": "2024-01-01T00:00:00Z",
   "updated_at": "2024-01-01T00:00:00Z"
 }
@@ -120,6 +127,9 @@ schema:
 | `upstream_head_sha` | string or null | HEAD SHA of the upstream tracking branch at last fetch. Null until first sync. |
 | `last_sync_at` | string (RFC 3339) or null | Timestamp of the last successful sync. Null until first sync. |
 | `sync_error` | string or null | Error message from the most recent failed sync. Null when no error. |
+| `workspace_mode` | string | Workspace operating mode: `"standard"` (default, single-remote) or `"carry_patch"` (dual-remote with patch list); immutable after creation |
+| `upstream_url` | string or null | URL of the upstream repository for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
+| `integration_branch` | string or null | Name of the mechanically rebuilt branch that combines the upstream base with all carried patches. Defaults to `"deploy"` for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
 | `created_at` | string (RFC 3339) | Timestamp of workspace creation; immutable |
 | `updated_at` | string (RFC 3339) | Timestamp of last modification |
 
@@ -159,6 +169,9 @@ workspace requires a real user as owner.
   "display_name": "My Project",
   "description": "A description of the workspace",
   "sync_mode": "pull_only",
+  "workspace_mode": "standard",
+  "upstream_url": "https://github.com/upstream/repo.git",
+  "integration_branch": "deploy",
   "git_pat": "ghp_xxxxxxxxxxxx",
   "git_username": "user",
   "git_password": "token-or-password"
@@ -174,6 +187,9 @@ workspace requires a real user as owner.
 | `display_name` | no | string | Max 128 characters; defaults to slug value if omitted or empty |
 | `description` | no | string | Max 1024 characters; defaults to empty string if omitted |
 | `sync_mode` | no | string | Upstream sync mode: `"pull_only"` (default) or `"disabled"`; invalid values are rejected with HTTP 400 |
+| `workspace_mode` | no | string | `"standard"` (default) or `"carry_patch"`; when `"carry_patch"`, `upstream_url` is required and `integration_branch` defaults to `"deploy"` |
+| `upstream_url` | conditional | string | Required when `workspace_mode` is `"carry_patch"`; must be a valid HTTPS or SSH git URL; rejected for standard workspaces |
+| `integration_branch` | no | string | Name of the integration branch; defaults to `"deploy"` for carry-patch workspaces; rejected for standard workspaces |
 | `git_pat` | no | string | Personal access token for private repo auth; mutually exclusive with `git_username`/`git_password`; requires HTTPS `git_url` |
 | `git_username` | no | string | Git username for HTTP basic auth; must be paired with `git_password`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
 | `git_password` | no | string | Git password for HTTP basic auth; must be paired with `git_username`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
@@ -293,9 +309,9 @@ mutable fields. At least one field must be provided.
 **Partial Update Behavior:**
 
 - Only explicitly provided fields are updated; omitted fields are not modified.
-- Immutable fields (`slug`, `git_url`, `branch`, `owner_id`) cannot be set
-  via this endpoint. Including an immutable field in the request body returns
-  HTTP 400.
+- Immutable fields (`slug`, `git_url`, `branch`, `owner_id`, `workspace_mode`,
+  `upstream_url`, `integration_branch`) cannot be set via this endpoint.
+  Including an immutable field in the request body returns HTTP 400.
 - The `updated_at` timestamp is automatically advanced on every successful
   update.
 
@@ -513,6 +529,132 @@ tokens can delete any workspace.
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:delete` scope; workspace not owned by the authenticated user (anti-enumeration) |
 | 409 | Workspace is not archived (must archive before deleting) |
+
+---
+
+## Patch Endpoints
+
+Patch endpoints manage the ordered list of patch branches for carry-patch
+workspaces. Patches represent git branches that are applied on top of the
+upstream base when rebuilding the integration branch.
+
+### Patch Response Schema
+
+All patch endpoints that return patch data use the following JSON schema:
+
+```json
+{
+  "id": "uuid-string",
+  "workspace_slug": "my-workspace",
+  "branch_name": "feature/auth-headers",
+  "position": 1,
+  "status": "active",
+  "upstream_pr_url": "https://github.com/upstream/repo/pull/42",
+  "description": null,
+  "added_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string (UUID) | Unique identifier for the patch |
+| `workspace_slug` | string | Slug of the workspace this patch belongs to |
+| `branch_name` | string | Name of the git branch associated with this patch |
+| `position` | integer | 1-based application order; lower values are applied first |
+| `status` | string | Patch status: `"active"`, `"merged_upstream"`, `"conflict"`, or `"disabled"` |
+| `upstream_pr_url` | string or null | URL of the corresponding upstream pull request |
+| `description` | string or null | Free-form description of the patch |
+| `added_at` | string (RFC 3339) | Timestamp of when the patch was added |
+| `updated_at` | string (RFC 3339) | Timestamp of when the patch was last modified |
+
+---
+
+### POST /api/v1/workspaces/:slug/patches
+
+Add a patch branch to a carry-patch workspace's patch list.
+
+**Authentication:** API Key, or PAT with `patches:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug to add the patch to |
+
+**Request Body:**
+
+```json
+{
+  "branch_name": "feature/auth-headers",
+  "position": 2,
+  "upstream_pr_url": "https://github.com/upstream/repo/pull/42",
+  "description": "Add authentication headers to API"
+}
+```
+
+| Field | Required | Type | Constraints |
+|-------|----------|------|-------------|
+| `branch_name` | yes | string | Must not be empty; must not equal the workspace's `integration_branch`; must not already exist in the patch list for this workspace |
+| `position` | no | integer | 1-based insertion position; must be >= 1; values > (max position + 1) are clamped to append; when omitted, appends at the end |
+| `upstream_pr_url` | no | string | URL of the upstream pull request |
+| `description` | no | string | Free-form description |
+
+**Response:** HTTP 201 Created with patch JSON.
+
+**Behavior:**
+
+- When `position` is omitted, the patch is appended at position = (current max
+  position + 1).
+- When `position` is specified, existing patches at that position or higher are
+  shifted down by one to make room.
+- Branch existence in the git repository is NOT validated at add time — that
+  validation occurs at rebuild time.
+- The patch is assigned a UUID, status `"active"`, and RFC 3339 timestamps.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `branch_name` is absent or empty |
+| 400 | `branch_name` equals the workspace's `integration_branch` |
+| 400 | Workspace is in `standard` mode (not `carry_patch`) |
+| 400 | Workspace does not exist or is not active |
+| 400 | `position` is less than 1 |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:write` scope |
+| 409 | `branch_name` already exists in the patch list for this workspace |
+
+---
+
+### GET /api/v1/workspaces/:slug/patches
+
+List all patches for a workspace, ordered by position ascending.
+
+**Authentication:** API Key, or PAT with `patches:read` or `patches:write`
+scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug to list patches for |
+
+**Response:** HTTP 200 OK with a JSON array of patch objects ordered by
+position. Returns an empty array `[]` if no patches exist.
+
+**Behavior:**
+
+- For carry-patch workspaces, returns all patches in position order.
+- For standard workspaces, returns an empty array (not an error).
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:read` scope |
+| 404 | Workspace does not exist |
 
 ---
 

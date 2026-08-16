@@ -17,6 +17,8 @@ func WorkspacePermissions() []apikit.Permission {
 		{Resource: "workspaces", Action: "write"},
 		{Resource: "workspaces", Action: "delete"},
 		{Resource: "workspaces", Action: "sync"},
+		{Resource: "patches", Action: "read"},
+		{Resource: "patches", Action: "write"},
 	}
 }
 

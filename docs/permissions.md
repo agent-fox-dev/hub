@@ -344,6 +344,32 @@ at startup.
 
 ---
 
+## Hub Patch Permissions
+
+These 2 permissions are registered by the workspace package in
+`hub/internal/workspace/routes.go` and passed to `apikit.Server.MountHandlers()`
+at startup. They control access to the carry-patch patch list endpoints.
+
+### patches:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List and view patches for a workspace |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/patches` |
+| **Implied by** | `patches:write` |
+
+### patches:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Add, remove, update, and reorder patches for a workspace |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/reorder` |
+| **Implies** | `patches:read` |
+
+---
+
 ## Hub Merge Permissions
 
 These 2 permissions are registered by `MergePermissions()` in
@@ -491,6 +517,7 @@ for startup registration.
 | `workspaces:create` | `workspaces:read` |
 | `workspaces:write` | `workspaces:read` |
 | `workspaces:delete` | *(nothing)* |
+| `patches:write` | `patches:read` |
 | `git:write` | `git:read` |
 | `secrets:manage` | `secrets:list`, `secrets:write`, `secrets:delete` |
 | `vars:manage` | `vars:read`, `vars:write`, `vars:delete` |
@@ -500,7 +527,7 @@ for startup registration.
 
 ## Complete Permission List
 
-All 23 registered permission scopes, sorted alphabetically:
+All 25 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -511,22 +538,24 @@ All 23 registered permission scopes, sorted alphabetically:
 | 5 | `merges:read` | hub | merges | read |
 | 6 | `merges:write` | hub | merges | write |
 | 7 | `orgs:read` | apikit | orgs | read |
-| 8 | `secrets:delete` | hub | secrets | delete |
-| 9 | `secrets:list` | hub | secrets | list |
-| 10 | `secrets:manage` | hub | secrets | manage |
-| 11 | `secrets:write` | hub | secrets | write |
-| 12 | `tokens:manage` | apikit | tokens | manage |
-| 13 | `tokens:read` | apikit | tokens | read |
-| 14 | `users:read` | apikit | users | read |
-| 15 | `vars:delete` | hub | vars | delete |
-| 16 | `vars:manage` | hub | vars | manage |
-| 17 | `vars:read` | hub | vars | read |
-| 18 | `vars:write` | hub | vars | write |
-| 19 | `workspaces:create` | hub | workspaces | create |
-| 20 | `workspaces:delete` | hub | workspaces | delete |
-| 21 | `workspaces:read` | hub | workspaces | read |
-| 22 | `workspaces:sync` | hub | workspaces | sync |
-| 23 | `workspaces:write` | hub | workspaces | write |
+| 8 | `patches:read` | hub | patches | read |
+| 9 | `patches:write` | hub | patches | write |
+| 10 | `secrets:delete` | hub | secrets | delete |
+| 11 | `secrets:list` | hub | secrets | list |
+| 12 | `secrets:manage` | hub | secrets | manage |
+| 13 | `secrets:write` | hub | secrets | write |
+| 14 | `tokens:manage` | apikit | tokens | manage |
+| 15 | `tokens:read` | apikit | tokens | read |
+| 16 | `users:read` | apikit | users | read |
+| 17 | `vars:delete` | hub | vars | delete |
+| 18 | `vars:manage` | hub | vars | manage |
+| 19 | `vars:read` | hub | vars | read |
+| 20 | `vars:write` | hub | vars | write |
+| 21 | `workspaces:create` | hub | workspaces | create |
+| 22 | `workspaces:delete` | hub | workspaces | delete |
+| 23 | `workspaces:read` | hub | workspaces | read |
+| 24 | `workspaces:sync` | hub | workspaces | sync |
+| 25 | `workspaces:write` | hub | workspaces | write |
 
 ---
 
