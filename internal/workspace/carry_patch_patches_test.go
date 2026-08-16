@@ -3,6 +3,7 @@ package workspace
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -26,6 +27,8 @@ func TestCarryPatch_PatchesTableSchema_AllColumns(t *testing.T) {
 		t.Fatalf("failed to open in-memory database: %v", err)
 	}
 	defer db.Close()
+	// Limit to one connection so all PRAGMAs see the same in-memory database.
+	db.SetMaxOpenConns(1)
 
 	// Run the schema initializer.
 	if err := initSchema(db); err != nil {
@@ -140,11 +143,12 @@ func TestCarryPatch_PatchesTableSchema_AllColumns(t *testing.T) {
 	}
 
 	// Verify UNIQUE constraints via PRAGMA index_list.
+	// Collect index names first, then close the rows before querying each
+	// index's columns to avoid nested queries on a single-connection pool.
 	idxRows, err := db.Query("PRAGMA index_list(patches)")
 	if err != nil {
 		t.Fatalf("PRAGMA index_list(patches) failed: %v", err)
 	}
-	defer idxRows.Close()
 
 	type indexInfo struct {
 		name    string
@@ -159,12 +163,15 @@ func TestCarryPatch_PatchesTableSchema_AllColumns(t *testing.T) {
 		if err := idxRows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
 			t.Fatalf("scan index_list failed: %v", err)
 		}
-		idx := indexInfo{name: name, unique: unique == 1}
+		indexes = append(indexes, indexInfo{name: name, unique: unique == 1})
+	}
+	idxRows.Close()
 
-		// Get columns for this index.
-		colRows, err := db.Query("PRAGMA index_info(?)", name)
+	// Now query columns for each index.
+	for i, idx := range indexes {
+		colRows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%s)", idx.name))
 		if err != nil {
-			t.Fatalf("PRAGMA index_info(%s) failed: %v", name, err)
+			t.Fatalf("PRAGMA index_info(%s) failed: %v", idx.name, err)
 		}
 		for colRows.Next() {
 			var seqno, cid int
@@ -172,11 +179,9 @@ func TestCarryPatch_PatchesTableSchema_AllColumns(t *testing.T) {
 			if err := colRows.Scan(&seqno, &cid, &colName); err != nil {
 				t.Fatalf("scan index_info failed: %v", err)
 			}
-			idx.columns = append(idx.columns, colName)
+			indexes[i].columns = append(indexes[i].columns, colName)
 		}
 		colRows.Close()
-
-		indexes = append(indexes, idx)
 	}
 
 	// Check for UNIQUE(workspace_slug, branch_name).

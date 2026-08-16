@@ -54,6 +54,22 @@ var carryPatchFieldDDL = []string{
 	`ALTER TABLE workspaces ADD COLUMN integration_branch TEXT`,
 }
 
+// createPatchesTableSQL is the DDL for the patches table (15-REQ-7.1).
+const createPatchesTableSQL = `
+CREATE TABLE IF NOT EXISTS patches (
+	id              TEXT PRIMARY KEY,
+	workspace_slug  TEXT NOT NULL,
+	branch_name     TEXT NOT NULL,
+	position        INTEGER NOT NULL,
+	status          TEXT NOT NULL DEFAULT 'active',
+	upstream_pr_url TEXT,
+	description     TEXT,
+	added_at        TEXT NOT NULL,
+	updated_at      TEXT NOT NULL,
+	UNIQUE(workspace_slug, branch_name),
+	UNIQUE(workspace_slug, position)
+)`
+
 // initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS
 // and applies any pending ALTER TABLE migrations for sync-related columns.
 // It is called during server boot to ensure the schema exists.
@@ -109,6 +125,11 @@ func initSchema(db *sql.DB) error {
 			}
 			return fmt.Errorf("carry-patch schema migration failed: %w", err)
 		}
+	}
+
+	// Create the patches table (15-REQ-7.1).
+	if _, err := db.Exec(createPatchesTableSQL); err != nil {
+		return fmt.Errorf("failed to create patches table: %w", err)
 	}
 
 	return nil

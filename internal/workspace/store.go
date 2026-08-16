@@ -282,6 +282,11 @@ func deleteWorkspace(db *sql.DB, slug string) error {
 		return fmt.Errorf("workspace %q not found", slug)
 	}
 
+	// Cascade-delete associated patches (15-REQ-13.1).
+	if _, err := tx.Exec(`DELETE FROM patches WHERE workspace_slug = ?`, slug); err != nil {
+		return fmt.Errorf("delete workspace %q patches: %w", slug, err)
+	}
+
 	// Cascade-delete associated secrets and variables (07-REQ-17.1).
 	if _, err := tx.Exec(`DELETE FROM secrets WHERE owner_type = 'workspace' AND owner_id = ?`, slug); err != nil {
 		return fmt.Errorf("delete workspace %q secrets: %w", slug, err)
