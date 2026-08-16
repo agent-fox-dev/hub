@@ -1031,7 +1031,7 @@
             "15-REQ-11",
             "15-REQ-12"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1060,7 +1060,7 @@
             "15-REQ-12",
             "15-REQ-13"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1085,7 +1085,7 @@
             "15-REQ-8",
             "15-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1109,7 +1109,7 @@
             "15-REQ-6",
             "15-REQ-13"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1155,7 +1155,7 @@
             "15-REQ-14",
             "15-REQ-15"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

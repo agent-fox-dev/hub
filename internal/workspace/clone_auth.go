@@ -121,6 +121,13 @@ func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMetho
 	}, nil
 }
 
+// ResolveUpstreamAuth is the exported version of resolveUpstreamAuth, provided
+// for use by other packages (e.g., the carrypatch sync handler) that need to
+// resolve upstream git credentials for a carry_patch workspace.
+func ResolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMethod, error) {
+	return resolveUpstreamAuth(store, slug)
+}
+
 // isNotFoundError checks whether err is a *secrets.NotFoundError.
 func isNotFoundError(err error) bool {
 	_, ok := err.(*secrets.NotFoundError)
