@@ -398,8 +398,28 @@ func (r *GitRunner) RebaseAbort(ctx context.Context) error {
 // If git rebase --continue exits with a non-zero code, returns ("", *GitError)
 // wrapping the exit code and stderr.
 func (r *GitRunner) RebaseContinue(ctx context.Context) (string, error) {
-	// TODO: implement in task group 10
-	return "", nil
+	// Use -c core.editor=true to avoid editor prompts during rebase --continue.
+	args := []string{"-c", "core.editor=true", "rebase", "--continue"}
+
+	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+
+	if exitCode != 0 {
+		return "", &GitError{
+			Args:     args,
+			ExitCode: exitCode,
+			Stderr:   stderr + stdout,
+		}
+	}
+
+	newSHA, err := r.RevParse(ctx, "HEAD")
+	if err != nil {
+		return "", err
+	}
+
+	return newSHA, nil
 }
 
 // RevParse executes git rev-parse to resolve a ref to its full SHA.
