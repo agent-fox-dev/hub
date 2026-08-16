@@ -1,0 +1,1462 @@
+{
+  "$schema": null,
+  "spec_id": "15",
+  "spec_name": "carry_patch_workspace",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/... -run TestCarryPatch -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "01",
+      "from_group": 1,
+      "to_group": 2,
+      "relationship": "Extended with workspace_mode, upstream_url, integration_branch",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "05",
+      "from_group": 1,
+      "to_group": 3,
+      "relationship": "Clone extended for dual-remote setup",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "07",
+      "from_group": 1,
+      "to_group": 3,
+      "relationship": "Upstream credential storage",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "09",
+      "from_group": 1,
+      "to_group": 3,
+      "relationship": "resolveUpstreamAuth alongside resolveCloneAuth",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "14",
+      "from_group": 2,
+      "to_group": 4,
+      "relationship": "Uses RemoteAdd, ConfigSet, CreateBranch",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Workspace Schema, Creation Validation, and Response Extension",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for workspace mode schema migration (REQ-1)",
+          "details": [
+            "Write test asserting ALTER TABLE adds workspace_mode TEXT NOT NULL DEFAULT 'standard' column idempotently",
+            "Write test asserting ALTER TABLE adds upstream_url TEXT NULL column idempotently",
+            "Write test asserting ALTER TABLE adds integration_branch TEXT NULL column idempotently",
+            "Write test asserting CREATE TABLE DDL includes all three new columns for fresh databases"
+          ],
+          "test_spec_refs": [
+            "TS-15-1",
+            "TS-15-2",
+            "TS-15-3"
+          ],
+          "requirement_refs": [
+            "15-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for carry_patch workspace creation validation (REQ-2)",
+          "details": [
+            "Write test: creating carry_patch workspace without upstream_url returns HTTP 400",
+            "Write test: creating carry_patch workspace with invalid upstream_url returns HTTP 400",
+            "Write test: creating carry_patch workspace with valid HTTPS upstream_url succeeds",
+            "Write test: creating carry_patch workspace with valid SSH upstream_url succeeds",
+            "Write test: integration_branch defaults to 'deploy' when not provided",
+            "Write test: creating standard workspace with upstream_url set returns HTTP 400"
+          ],
+          "test_spec_refs": [
+            "TS-15-4",
+            "TS-15-5",
+            "TS-15-6",
+            "TS-15-7",
+            "TS-15-8",
+            "TS-15-9"
+          ],
+          "requirement_refs": [
+            "15-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for immutability of structural fields and response schema (REQ-3, REQ-4)",
+          "details": [
+            "Write test: PATCH request attempting to change workspace_mode returns HTTP 400",
+            "Write test: PATCH request attempting to change upstream_url returns HTTP 400",
+            "Write test: PATCH request attempting to change integration_branch returns HTTP 400",
+            "Write test: carry_patch workspace GET response includes workspace_mode, upstream_url, integration_branch",
+            "Write test: standard workspace GET response has null upstream_url and null integration_branch",
+            "Write test: standard workspace GET response has workspace_mode='standard'"
+          ],
+          "test_spec_refs": [
+            "TS-15-10",
+            "TS-15-11",
+            "TS-15-12",
+            "TS-15-13"
+          ],
+          "requirement_refs": [
+            "15-REQ-3",
+            "15-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Tests for REQ-1 (TS-15-1, TS-15-2, TS-15-3) exist and fail as expected (red phase)",
+          "Tests for REQ-2 (TS-15-4 through TS-15-9) exist and fail as expected (red phase)",
+          "Tests for REQ-3 and REQ-4 (TS-15-10 through TS-15-13) exist and fail as expected (red phase)",
+          "No linter warnings introduced: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Upstream Credentials and Carry-Patch Clone Setup",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for upstream credential storage and resolution (REQ-5)",
+          "details": [
+            "Write test: resolveUpstreamAuth returns BasicAuth with x-token-auth when UPSTREAM_GIT_PAT is set",
+            "Write test: resolveUpstreamAuth returns BasicAuth with username/password when UPSTREAM_GIT_USERNAME and UPSTREAM_GIT_PASSWORD are set",
+            "Write test: resolveUpstreamAuth falls back to resolveCloneAuth when no UPSTREAM_ secrets exist",
+            "Write test: CLI accepts --upstream-git-pat flag on 'afc credential set' and stores as UPSTREAM_GIT_PAT secret"
+          ],
+          "test_spec_refs": [
+            "TS-15-14",
+            "TS-15-15",
+            "TS-15-16",
+            "TS-15-17"
+          ],
+          "requirement_refs": [
+            "15-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for carry-patch clone setup steps (REQ-6)",
+          "details": [
+            "Write test: after clone, 'upstream' remote is added pointing to upstream_url using RemoteAdd",
+            "Write test: after clone, rerere.enabled=true and rerere.autoupdate=true are set via ConfigSet",
+            "Write test: after clone, local integration_branch is created at upstream tracking branch HEAD via CreateBranch",
+            "Write test: if RemoteAdd fails, workspace is still marked ready and failure is logged as warning",
+            "Write test: if ConfigSet fails, workspace is still marked ready and failure is logged as warning"
+          ],
+          "test_spec_refs": [
+            "TS-15-18",
+            "TS-15-19",
+            "TS-15-20"
+          ],
+          "requirement_refs": [
+            "15-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Tests for REQ-5 (TS-15-14 through TS-15-17) exist and fail as expected (red phase)",
+          "Tests for REQ-6 (TS-15-18 through TS-15-20) exist and fail as expected (red phase)",
+          "No linter warnings introduced: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Patches Table Schema and Add/List Patch Operations",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for patches table schema (REQ-7)",
+          "details": [
+            "Write test: patches table is created with all required columns (id, workspace_slug, branch_name, position, status, upstream_pr_url, description, added_at, updated_at)",
+            "Write test: UNIQUE constraint on (workspace_slug, branch_name) is enforced",
+            "Write test: UNIQUE constraint on (workspace_slug, position) is enforced",
+            "Write test: status defaults to 'active' on insert"
+          ],
+          "test_spec_refs": [
+            "TS-15-21",
+            "TS-15-22"
+          ],
+          "requirement_refs": [
+            "15-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for add patch operation (REQ-8)",
+          "details": [
+            "Write test: POST /api/v1/workspaces/:slug/patches with only branch_name appends patch at end with next position",
+            "Write test: POST with explicit position inserts patch and shifts existing patches down",
+            "Write test: POST with branch_name equal to integration_branch returns HTTP 400",
+            "Write test: POST on standard workspace returns HTTP 400",
+            "Write test: POST with duplicate branch_name for same workspace returns HTTP 409",
+            "Write test: POST with non-existent branch_name succeeds (validation deferred to rebuild)"
+          ],
+          "test_spec_refs": [
+            "TS-15-23",
+            "TS-15-24",
+            "TS-15-25",
+            "TS-15-26",
+            "TS-15-27",
+            "TS-15-28"
+          ],
+          "requirement_refs": [
+            "15-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for list patches operation (REQ-9)",
+          "details": [
+            "Write test: GET /api/v1/workspaces/:slug/patches returns all patches in position order",
+            "Write test: GET returns empty array for workspace with no patches",
+            "Write test: GET response includes all patch fields matching the response schema"
+          ],
+          "test_spec_refs": [
+            "TS-15-29",
+            "TS-15-30"
+          ],
+          "requirement_refs": [
+            "15-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Tests for REQ-7 (TS-15-21, TS-15-22) exist and fail as expected (red phase)",
+          "Tests for REQ-8 (TS-15-23 through TS-15-28) exist and fail as expected (red phase)",
+          "Tests for REQ-9 (TS-15-29, TS-15-30) exist and fail as expected (red phase)",
+          "No linter warnings introduced: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write Tests: Update, Remove, Reorder Patches, Cascade Delete, CLI, and Permissions",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write tests for update and remove patch operations (REQ-10, REQ-11)",
+          "details": [
+            "Write test: PATCH /api/v1/workspaces/:slug/patches/:id updates position and shifts other patches accordingly",
+            "Write test: PATCH updates status, description, and upstream_pr_url fields",
+            "Write test: PATCH on non-existent patch ID returns HTTP 404",
+            "Write test: DELETE /api/v1/workspaces/:slug/patches/:id removes patch and compacts positions (no gaps)",
+            "Write test: DELETE on non-existent patch ID returns HTTP 404"
+          ],
+          "test_spec_refs": [
+            "TS-15-31",
+            "TS-15-32",
+            "TS-15-33",
+            "TS-15-34",
+            "TS-15-35"
+          ],
+          "requirement_refs": [
+            "15-REQ-10",
+            "15-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write tests for reorder patches operation (REQ-12)",
+          "details": [
+            "Write test: POST /api/v1/workspaces/:slug/patches/reorder with complete ordered patch_ids reassigns positions correctly",
+            "Write test: reorder with missing patch IDs (partial list) returns HTTP 400",
+            "Write test: reorder with duplicate patch IDs returns HTTP 400",
+            "Write test: reorder with extra patch IDs not belonging to workspace returns HTTP 400"
+          ],
+          "test_spec_refs": [
+            "TS-15-36",
+            "TS-15-37",
+            "TS-15-38",
+            "TS-15-39"
+          ],
+          "requirement_refs": [
+            "15-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write tests for cascade delete, CLI commands, and permissions (REQ-13, REQ-14, REQ-15)",
+          "details": [
+            "Write test: deleteWorkspace transaction deletes all patches with matching workspace_slug",
+            "Write test: 'afc patch add' CLI command calls POST /api/v1/workspaces/:slug/patches with correct body",
+            "Write test: 'afc patch list' CLI command calls GET and prints patches in position order",
+            "Write test: 'afc patch reorder' CLI command calls POST /reorder with ordered patch IDs",
+            "Write test: patches:read scope allows GET but rejects POST/PATCH/DELETE with HTTP 403",
+            "Write test: patches:write scope allows all patch operations"
+          ],
+          "test_spec_refs": [
+            "TS-15-40",
+            "TS-15-41",
+            "TS-15-42",
+            "TS-15-43",
+            "TS-15-44",
+            "TS-15-45",
+            "TS-15-46",
+            "TS-15-47"
+          ],
+          "requirement_refs": [
+            "15-REQ-13",
+            "15-REQ-14",
+            "15-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All written tests compile without errors: go build ./...",
+          "Tests for REQ-10, REQ-11 (TS-15-31 through TS-15-35) exist and fail as expected (red phase)",
+          "Tests for REQ-12 (TS-15-36 through TS-15-39) exist and fail as expected (red phase)",
+          "Tests for REQ-13 through REQ-15 (TS-15-40 through TS-15-47) exist and fail as expected (red phase)",
+          "No linter warnings introduced: go vet ./..."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement Workspace Schema Migration and Model Extension",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Add workspace_mode, upstream_url, integration_branch columns via ALTER TABLE migration",
+          "details": [
+            "Add idempotent ALTER TABLE statements for workspace_mode TEXT NOT NULL DEFAULT 'standard', upstream_url TEXT, integration_branch TEXT in the schema migration file",
+            "Update CREATE TABLE DDL in schema initialization to include all three columns for fresh databases",
+            "Follow the same migration pattern as the sync field migration (check column existence before ALTER)"
+          ],
+          "test_spec_refs": [
+            "TS-15-1",
+            "TS-15-2",
+            "TS-15-3"
+          ],
+          "requirement_refs": [
+            "15-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Extend Workspace Go struct and store layer with new fields",
+          "details": [
+            "Add WorkspaceMode string, UpstreamURL *string, IntegrationBranch *string fields to the Workspace struct in internal/store or equivalent package",
+            "Update all SQL SELECT queries for workspaces to include the three new columns",
+            "Update INSERT and scan logic to handle the new fields with correct NULL handling"
+          ],
+          "test_spec_refs": [
+            "TS-15-1",
+            "TS-15-2",
+            "TS-15-3",
+            "TS-15-11",
+            "TS-15-12",
+            "TS-15-13"
+          ],
+          "requirement_refs": [
+            "15-REQ-1",
+            "15-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement carry_patch workspace creation validation in POST /api/v1/workspaces handler",
+          "details": [
+            "Add validation: if workspace_mode == 'carry_patch', upstream_url is required; return HTTP 400 if missing",
+            "Reuse existing URL validation logic (HTTPS or SSH, non-empty host and path) for upstream_url; return HTTP 400 if invalid",
+            "Add validation: if workspace_mode == 'standard', reject upstream_url or integration_branch in request body with HTTP 400",
+            "Default workspace_mode to 'standard' if omitted; default integration_branch to 'deploy' for carry_patch workspaces"
+          ],
+          "test_spec_refs": [
+            "TS-15-4",
+            "TS-15-5",
+            "TS-15-6",
+            "TS-15-7",
+            "TS-15-8",
+            "TS-15-9"
+          ],
+          "requirement_refs": [
+            "15-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement immutability enforcement in PATCH /api/v1/workspaces/:slug handler",
+          "details": [
+            "In the workspace update handler, detect if request body contains workspace_mode, upstream_url, or integration_branch fields",
+            "Return HTTP 400 with WriteAPIError if any of these immutable fields are present in the PATCH body",
+            "Ensure standard workspace update path is unaffected for mutable fields"
+          ],
+          "test_spec_refs": [
+            "TS-15-10"
+          ],
+          "requirement_refs": [
+            "15-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.5",
+          "title": "Extend workspace JSON response serialization with new fields",
+          "details": [
+            "Update workspace response struct/marshaling to include workspace_mode, upstream_url, integration_branch in JSON output",
+            "Ensure standard workspaces serialize upstream_url and integration_branch as JSON null",
+            "Update all workspace response paths (GET single, GET list, POST create response) to include new fields"
+          ],
+          "test_spec_refs": [
+            "TS-15-11",
+            "TS-15-12",
+            "TS-15-13"
+          ],
+          "requirement_refs": [
+            "15-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Tests TS-15-1 through TS-15-13 pass: go test ./internal/... -run 'TestCarryPatch.*Schema|TestCarryPatch.*Create|TestCarryPatch.*Immut|TestCarryPatch.*Response' -count=1 -v",
+          "All existing workspace tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-1, 15-REQ-2, 15-REQ-3, 15-REQ-4 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement Upstream Credentials and resolveUpstreamAuth",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement resolveUpstreamAuth function with three-step fallback",
+          "details": [
+            "Create resolveUpstreamAuth(ctx context.Context, workspaceSlug string) (*BasicAuth, error) in the git credentials package",
+            "Step 1: look up UPSTREAM_GIT_PAT secret; if found, return BasicAuth{Username: 'x-token-auth', Password: pat}",
+            "Step 2: look up UPSTREAM_GIT_USERNAME and UPSTREAM_GIT_PASSWORD secrets; if both found, return BasicAuth{Username, Password}",
+            "Step 3: fall back to resolveCloneAuth for the same workspace"
+          ],
+          "test_spec_refs": [
+            "TS-15-14",
+            "TS-15-15",
+            "TS-15-16"
+          ],
+          "requirement_refs": [
+            "15-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Add upstream credential CLI flags to 'afc credential set' command",
+          "details": [
+            "Add --upstream-git-pat flag that stores value as UPSTREAM_GIT_PAT workspace secret",
+            "Add --upstream-git-username and --upstream-git-password flags that store values as UPSTREAM_GIT_USERNAME and UPSTREAM_GIT_PASSWORD workspace secrets",
+            "Follow the same storage, encryption, and access control rules as existing workspace credentials (spec 09)"
+          ],
+          "test_spec_refs": [
+            "TS-15-17"
+          ],
+          "requirement_refs": [
+            "15-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Tests TS-15-14 through TS-15-17 pass: go test ./internal/... -run 'TestResolveUpstreamAuth|TestUpstreamCredCLI' -count=1 -v",
+          "All existing credential tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-5 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Carry-Patch Clone Setup",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Extend clone job handler to detect carry_patch workspace mode",
+          "details": [
+            "In the clone job handler (workspace_checkout package), after standard clone completes, check if workspace.WorkspaceMode == 'carry_patch'",
+            "If carry_patch, proceed with post-clone setup steps; if standard, skip all post-clone steps",
+            "Ensure the standard clone path is completely unaffected"
+          ],
+          "test_spec_refs": [
+            "TS-15-18"
+          ],
+          "requirement_refs": [
+            "15-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Add upstream remote and configure rerere after clone",
+          "details": [
+            "Call GitRunner.RemoteAdd(repoPath, 'upstream', workspace.UpstreamURL) after clone completes",
+            "Call GitRunner.ConfigSet(repoPath, 'rerere.enabled', 'true') and GitRunner.ConfigSet(repoPath, 'rerere.autoupdate', 'true')",
+            "If RemoteAdd or ConfigSet fails, log a warning and continue (do not mark workspace as failed); workspace remains ready"
+          ],
+          "test_spec_refs": [
+            "TS-15-18",
+            "TS-15-19",
+            "TS-15-20"
+          ],
+          "requirement_refs": [
+            "15-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Create local integration branch at upstream tracking branch HEAD",
+          "details": [
+            "After remote add and config set, call GitRunner.CreateBranch(repoPath, workspace.IntegrationBranch, 'upstream/'+workspace.Branch) to create the integration branch",
+            "If CreateBranch fails (e.g., upstream not yet fetched), log a warning and continue; workspace remains ready",
+            "Resolve upstream auth via resolveUpstreamAuth when fetching upstream refs for branch creation"
+          ],
+          "test_spec_refs": [
+            "TS-15-18",
+            "TS-15-19",
+            "TS-15-20"
+          ],
+          "requirement_refs": [
+            "15-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Tests TS-15-18 through TS-15-20 pass: go test ./internal/... -run 'TestCarryPatchClone' -count=1 -v",
+          "All existing clone/checkout tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-6 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Patches Table Schema and Store Layer",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Create patches table DDL and schema initialization",
+          "details": [
+            "Add CREATE TABLE IF NOT EXISTS patches DDL with all columns: id TEXT PRIMARY KEY, workspace_slug TEXT NOT NULL, branch_name TEXT NOT NULL, position INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active', upstream_pr_url TEXT, description TEXT, added_at TEXT NOT NULL, updated_at TEXT NOT NULL",
+            "Add UNIQUE(workspace_slug, branch_name) and UNIQUE(workspace_slug, position) constraints",
+            "Register table creation in the schema initialization function alongside existing tables"
+          ],
+          "test_spec_refs": [
+            "TS-15-21",
+            "TS-15-22"
+          ],
+          "requirement_refs": [
+            "15-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement Patch Go struct and store CRUD methods",
+          "details": [
+            "Define Patch struct with all fields matching the patches table columns, using appropriate Go types (*string for nullable fields, time.Time or string for timestamps)",
+            "Implement AddPatch(ctx, patch *Patch) (*Patch, error) with UUID generation and RFC 3339 timestamps",
+            "Implement GetPatch(ctx, workspaceSlug, patchID string) (*Patch, error) returning ErrNotFound if absent",
+            "Implement ListPatches(ctx, workspaceSlug string) ([]*Patch, error) ordered by position ASC",
+            "Implement UpdatePatch(ctx, patch *Patch) (*Patch, error) updating updated_at timestamp",
+            "Implement DeletePatch(ctx, workspaceSlug, patchID string) error"
+          ],
+          "test_spec_refs": [
+            "TS-15-21",
+            "TS-15-22",
+            "TS-15-23",
+            "TS-15-29"
+          ],
+          "requirement_refs": [
+            "15-REQ-7",
+            "15-REQ-8",
+            "15-REQ-9",
+            "15-REQ-10",
+            "15-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement position management helpers in store layer",
+          "details": [
+            "Implement ShiftPositionsDown(ctx, workspaceSlug string, fromPosition int) error to increment position for all patches at or after fromPosition",
+            "Implement CompactPositions(ctx, workspaceSlug string) error to reassign sequential 1-based positions after a delete",
+            "Implement ReorderPatches(ctx, workspaceSlug string, orderedIDs []string) error that validates completeness and reassigns positions atomically in a transaction"
+          ],
+          "test_spec_refs": [
+            "TS-15-24",
+            "TS-15-34",
+            "TS-15-35",
+            "TS-15-36",
+            "TS-15-37",
+            "TS-15-38",
+            "TS-15-39"
+          ],
+          "requirement_refs": [
+            "15-REQ-8",
+            "15-REQ-11",
+            "15-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.4",
+          "title": "Extend deleteWorkspace transaction to cascade delete patches",
+          "details": [
+            "In store.go:deleteWorkspace, add DELETE FROM patches WHERE workspace_slug = ? within the existing delete transaction",
+            "Ensure the patch deletion occurs before or alongside workspace row deletion to maintain referential integrity",
+            "Add integration test verifying patches are deleted when workspace is deleted"
+          ],
+          "test_spec_refs": [
+            "TS-15-40"
+          ],
+          "requirement_refs": [
+            "15-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Tests TS-15-21, TS-15-22 pass: go test ./internal/... -run 'TestPatchesTable' -count=1 -v",
+          "Tests TS-15-40 passes: go test ./internal/... -run 'TestCascadeDeletePatches' -count=1 -v",
+          "All existing store tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-7, 15-REQ-13 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement Patch REST API Handlers: Add and List",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement POST /api/v1/workspaces/:slug/patches handler (add patch)",
+          "details": [
+            "Register route POST /api/v1/workspaces/:slug/patches in MountHandlers",
+            "Validate workspace exists and is in carry_patch mode; return HTTP 400 via WriteAPIError if standard",
+            "Parse request body: branch_name required, position optional, upstream_pr_url and description optional",
+            "Reject branch_name equal to workspace's integration_branch with HTTP 400",
+            "If position not specified, append at end (max position + 1); if specified, call ShiftPositionsDown then insert",
+            "Return HTTP 409 on duplicate (workspace_slug, branch_name) constraint violation"
+          ],
+          "test_spec_refs": [
+            "TS-15-23",
+            "TS-15-24",
+            "TS-15-25",
+            "TS-15-26",
+            "TS-15-27",
+            "TS-15-28"
+          ],
+          "requirement_refs": [
+            "15-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement GET /api/v1/workspaces/:slug/patches handler (list patches)",
+          "details": [
+            "Register route GET /api/v1/workspaces/:slug/patches in MountHandlers",
+            "Call ListPatches store method and return patches array in position order",
+            "Return empty JSON array [] when no patches exist for the workspace",
+            "Each patch in response must include all fields matching the patch response schema"
+          ],
+          "test_spec_refs": [
+            "TS-15-29",
+            "TS-15-30"
+          ],
+          "requirement_refs": [
+            "15-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "Tests TS-15-23 through TS-15-30 pass: go test ./internal/... -run 'TestAddPatch|TestListPatch' -count=1 -v",
+          "All existing handler tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-8, 15-REQ-9 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement Patch REST API Handlers: Update, Remove, and Reorder",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement PATCH /api/v1/workspaces/:slug/patches/:id handler (update patch)",
+          "details": [
+            "Register route PATCH /api/v1/workspaces/:slug/patches/:id in MountHandlers",
+            "Look up patch by ID; return HTTP 404 via WriteAPIError if not found",
+            "Support updating position (with shift logic), status, description, upstream_pr_url fields",
+            "Update updated_at to current RFC 3339 timestamp on every successful update",
+            "Return updated patch JSON matching the patch response schema"
+          ],
+          "test_spec_refs": [
+            "TS-15-31",
+            "TS-15-32",
+            "TS-15-33"
+          ],
+          "requirement_refs": [
+            "15-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement DELETE /api/v1/workspaces/:slug/patches/:id handler (remove patch)",
+          "details": [
+            "Register route DELETE /api/v1/workspaces/:slug/patches/:id in MountHandlers",
+            "Look up patch by ID; return HTTP 404 via WriteAPIError if not found",
+            "Delete patch and call CompactPositions to eliminate gaps in position sequence",
+            "Return HTTP 204 No Content on success"
+          ],
+          "test_spec_refs": [
+            "TS-15-34",
+            "TS-15-35"
+          ],
+          "requirement_refs": [
+            "15-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement POST /api/v1/workspaces/:slug/patches/reorder handler (bulk reorder)",
+          "details": [
+            "Register route POST /api/v1/workspaces/:slug/patches/reorder in MountHandlers",
+            "Parse request body: patch_ids array required",
+            "Validate that patch_ids contains exactly all patch IDs for the workspace (no missing, no extra, no duplicates); return HTTP 400 if invalid",
+            "Call ReorderPatches store method to atomically reassign positions based on provided order",
+            "Return updated patches list in new position order"
+          ],
+          "test_spec_refs": [
+            "TS-15-36",
+            "TS-15-37",
+            "TS-15-38",
+            "TS-15-39"
+          ],
+          "requirement_refs": [
+            "15-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "Tests TS-15-31 through TS-15-39 pass: go test ./internal/... -run 'TestUpdatePatch|TestRemovePatch|TestReorderPatch' -count=1 -v",
+          "All existing handler tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-10, 15-REQ-11, 15-REQ-12 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement Patch CLI Commands and Permission Scopes",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Implement 'afc patch add' and 'afc patch list' CLI commands",
+          "details": [
+            "Add 'afc patch add <workspace-slug>' command with --branch (required), --position, --upstream-pr, --description flags",
+            "Command calls POST /api/v1/workspaces/:slug/patches and prints created patch JSON or error",
+            "Add 'afc patch list <workspace-slug>' command that calls GET /api/v1/workspaces/:slug/patches and prints patches in position order"
+          ],
+          "test_spec_refs": [
+            "TS-15-41",
+            "TS-15-42"
+          ],
+          "requirement_refs": [
+            "15-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement 'afc patch remove', 'afc patch update', and 'afc patch reorder' CLI commands",
+          "details": [
+            "Add 'afc patch remove <workspace-slug> <patch-id>' command that calls DELETE /api/v1/workspaces/:slug/patches/:id",
+            "Add 'afc patch update <workspace-slug> <patch-id>' command with --position, --status, --description, --upstream-pr flags calling PATCH endpoint",
+            "Add 'afc patch reorder <workspace-slug> <patch-id-1> <patch-id-2> ...' command that calls POST /reorder with ordered IDs"
+          ],
+          "test_spec_refs": [
+            "TS-15-43",
+            "TS-15-44",
+            "TS-15-45"
+          ],
+          "requirement_refs": [
+            "15-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Register patches:read and patches:write permission scopes",
+          "details": [
+            "Register patches:read scope: grants GET /api/v1/workspaces/:slug/patches access for PATs",
+            "Register patches:write scope: grants POST, PATCH, DELETE, and reorder access for PATs",
+            "Admin tokens and API keys retain implicit full access without requiring explicit scope grants",
+            "Return HTTP 403 when a PAT with only patches:read attempts a write operation"
+          ],
+          "test_spec_refs": [
+            "TS-15-46",
+            "TS-15-47"
+          ],
+          "requirement_refs": [
+            "15-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "Tests TS-15-41 through TS-15-47 pass: go test ./internal/... -run 'TestPatchCLI|TestPatchPermission' -count=1 -v",
+          "All existing CLI and permission tests still pass: go test ./... -count=1",
+          "No linter warnings introduced: go vet ./...",
+          "15-REQ-14, 15-REQ-15 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "checkpoint",
+      "title": "Integration Checkpoint: Full Patch Lifecycle",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Run full patch lifecycle integration test",
+          "details": [
+            "Create a carry_patch workspace via POST /api/v1/workspaces with upstream_url, verify response includes all three new fields",
+            "Add three patches via POST /api/v1/workspaces/:slug/patches, verify positions 1, 2, 3",
+            "Reorder patches via POST /reorder, verify new positions match provided order",
+            "Update a patch's status and description via PATCH, verify updated_at changes",
+            "Remove a patch via DELETE, verify positions are compacted with no gaps",
+            "Delete the workspace and verify all patches are removed from the patches table"
+          ],
+          "test_spec_refs": [
+            "TS-15-4",
+            "TS-15-11",
+            "TS-15-23",
+            "TS-15-29",
+            "TS-15-31",
+            "TS-15-34",
+            "TS-15-36",
+            "TS-15-40"
+          ],
+          "requirement_refs": [
+            "15-REQ-2",
+            "15-REQ-4",
+            "15-REQ-8",
+            "15-REQ-9",
+            "15-REQ-10",
+            "15-REQ-11",
+            "15-REQ-12",
+            "15-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Verify error handling for all documented error conditions",
+          "details": [
+            "Verify carry-patch operation on standard workspace returns HTTP 400",
+            "Verify duplicate branch_name returns HTTP 409",
+            "Verify branch_name equal to integration_branch returns HTTP 400",
+            "Verify partial reorder returns HTTP 400",
+            "Verify patch not found returns HTTP 404",
+            "Verify PATCH on immutable fields (workspace_mode, upstream_url, integration_branch) returns HTTP 400"
+          ],
+          "test_spec_refs": [
+            "TS-15-5",
+            "TS-15-10",
+            "TS-15-25",
+            "TS-15-26",
+            "TS-15-27",
+            "TS-15-33",
+            "TS-15-35",
+            "TS-15-37",
+            "TS-15-38"
+          ],
+          "requirement_refs": [
+            "15-REQ-2",
+            "15-REQ-3",
+            "15-REQ-8",
+            "15-REQ-10",
+            "15-REQ-11",
+            "15-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/... -run 'TestCarryPatch' -count=1 -v",
+          "All existing tests still pass: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Full patch lifecycle integration test completes without errors",
+          "All documented error conditions return correct HTTP status codes"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration and Dead Code Audit",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Trace execution paths from HTTP routes through handlers to store",
+          "details": [
+            "Verify POST /api/v1/workspaces/:slug/patches route is registered in MountHandlers and calls addPatchHandler -> store.AddPatch",
+            "Verify GET /api/v1/workspaces/:slug/patches route calls listPatchesHandler -> store.ListPatches",
+            "Verify PATCH /api/v1/workspaces/:slug/patches/:id calls updatePatchHandler -> store.UpdatePatch",
+            "Verify DELETE /api/v1/workspaces/:slug/patches/:id calls deletePatchHandler -> store.DeletePatch -> CompactPositions",
+            "Verify POST /api/v1/workspaces/:slug/patches/reorder calls reorderPatchesHandler -> store.ReorderPatches",
+            "Verify clone job handler calls RemoteAdd, ConfigSet, CreateBranch for carry_patch workspaces"
+          ],
+          "test_spec_refs": [
+            "TS-15-18",
+            "TS-15-23",
+            "TS-15-29",
+            "TS-15-31",
+            "TS-15-34",
+            "TS-15-36"
+          ],
+          "requirement_refs": [
+            "15-REQ-6",
+            "15-REQ-8",
+            "15-REQ-9",
+            "15-REQ-10",
+            "15-REQ-11",
+            "15-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Verify return value propagation across the call chain",
+          "details": [
+            "Confirm addPatchHandler returns the created Patch struct from store.AddPatch as JSON response body",
+            "Confirm updatePatchHandler returns the updated Patch struct from store.UpdatePatch as JSON response body",
+            "Confirm reorderPatchesHandler returns the reordered patch list from store.ReorderPatches",
+            "Confirm resolveUpstreamAuth return value is passed as Auth to GitRunner calls during clone setup",
+            "Confirm deleteWorkspace propagates patch deletion error (if any) to the caller"
+          ],
+          "test_spec_refs": [
+            "TS-15-14",
+            "TS-15-18",
+            "TS-15-23",
+            "TS-15-31",
+            "TS-15-36",
+            "TS-15-40"
+          ],
+          "requirement_refs": [
+            "15-REQ-5",
+            "15-REQ-6",
+            "15-REQ-8",
+            "15-REQ-10",
+            "15-REQ-12",
+            "15-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Search for panic(\"not implemented\") in all files added or modified by this spec: grep -r 'panic(\"not implemented\")' internal/",
+            "Search for bare 'return nil' in non-trivial store methods that should return data",
+            "Search for // TODO comments in patch handler and store files",
+            "Verify resolveUpstreamAuth is called from production clone code, not only from tests",
+            "Verify ShiftPositionsDown and CompactPositions are called from production handler code, not only from tests"
+          ],
+          "test_spec_refs": [
+            "TS-15-14",
+            "TS-15-18",
+            "TS-15-23",
+            "TS-15-34"
+          ],
+          "requirement_refs": [
+            "15-REQ-5",
+            "15-REQ-6",
+            "15-REQ-8",
+            "15-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.4",
+          "title": "Verify cross-spec entry points are wired from production code",
+          "details": [
+            "Confirm GitRunner.RemoteAdd is called from the clone job handler (not just tested in isolation)",
+            "Confirm GitRunner.ConfigSet is called from the clone job handler for rerere.enabled and rerere.autoupdate",
+            "Confirm GitRunner.CreateBranch is called from the clone job handler for integration branch creation",
+            "Confirm resolveCloneAuth (spec 09) is still called for origin remote; resolveUpstreamAuth is called for upstream remote",
+            "Confirm deleteWorkspace (spec 01) transaction includes DELETE FROM patches in production store.go"
+          ],
+          "test_spec_refs": [
+            "TS-15-18",
+            "TS-15-19",
+            "TS-15-20",
+            "TS-15-40"
+          ],
+          "requirement_refs": [
+            "15-REQ-5",
+            "15-REQ-6",
+            "15-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.5",
+          "title": "Run all spec tests and verify full test suite passes",
+          "details": [
+            "Run all carry_patch_workspace spec tests: go test ./internal/... -run 'TestCarryPatch' -count=1 -v",
+            "Run full test suite: go test ./... -count=1",
+            "Run linter: go vet ./...",
+            "Verify test count matches expected: 47 test cases (TS-15-1 through TS-15-47) all pass"
+          ],
+          "test_spec_refs": [
+            "TS-15-1",
+            "TS-15-2",
+            "TS-15-3",
+            "TS-15-4",
+            "TS-15-5",
+            "TS-15-6",
+            "TS-15-7",
+            "TS-15-8",
+            "TS-15-9",
+            "TS-15-10",
+            "TS-15-11",
+            "TS-15-12",
+            "TS-15-13",
+            "TS-15-14",
+            "TS-15-15"
+          ],
+          "requirement_refs": [
+            "15-REQ-1",
+            "15-REQ-2",
+            "15-REQ-3",
+            "15-REQ-4",
+            "15-REQ-5",
+            "15-REQ-6",
+            "15-REQ-7",
+            "15-REQ-8",
+            "15-REQ-9",
+            "15-REQ-10",
+            "15-REQ-11",
+            "15-REQ-12",
+            "15-REQ-13",
+            "15-REQ-14",
+            "15-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "All 47 spec tests pass: go test ./internal/... -run 'TestCarryPatch' -count=1 -v",
+          "Full test suite passes: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "No panic(\"not implemented\") found in spec files: grep -r 'panic(\"not implemented\")' internal/ returns no results for new files",
+          "No // TODO stubs remain in patch handler or store files",
+          "All five REST routes for patches are registered in MountHandlers and reachable",
+          "resolveUpstreamAuth is called from production clone code (not dead code)",
+          "deleteWorkspace transaction includes DELETE FROM patches in production store.go",
+          "GitRunner.RemoteAdd, ConfigSet, CreateBranch are called from production clone job handler"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "15-REQ-1",
+      "test_spec_id": "TS-15-1",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-1",
+      "test_spec_id": "TS-15-2",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-1",
+      "test_spec_id": "TS-15-3",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-2",
+      "test_spec_id": "TS-15-4",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-2",
+      "test_spec_id": "TS-15-5",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-2",
+      "test_spec_id": "TS-15-6",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-2",
+      "test_spec_id": "TS-15-7",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-2",
+      "test_spec_id": "TS-15-8",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-2",
+      "test_spec_id": "TS-15-9",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-3",
+      "test_spec_id": "TS-15-10",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-4",
+      "test_spec_id": "TS-15-11",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-4",
+      "test_spec_id": "TS-15-12",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-4",
+      "test_spec_id": "TS-15-13",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-5",
+      "test_spec_id": "TS-15-14",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-5",
+      "test_spec_id": "TS-15-15",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-5",
+      "test_spec_id": "TS-15-16",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-5",
+      "test_spec_id": "TS-15-17",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-6",
+      "test_spec_id": "TS-15-18",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-6",
+      "test_spec_id": "TS-15-19",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-6",
+      "test_spec_id": "TS-15-20",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-7",
+      "test_spec_id": "TS-15-21",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-7",
+      "test_spec_id": "TS-15-22",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-8",
+      "test_spec_id": "TS-15-23",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-8",
+      "test_spec_id": "TS-15-24",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-8",
+      "test_spec_id": "TS-15-25",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-8",
+      "test_spec_id": "TS-15-26",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-8",
+      "test_spec_id": "TS-15-27",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-8",
+      "test_spec_id": "TS-15-28",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-9",
+      "test_spec_id": "TS-15-29",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-9",
+      "test_spec_id": "TS-15-30",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-10",
+      "test_spec_id": "TS-15-31",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-10",
+      "test_spec_id": "TS-15-32",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-10",
+      "test_spec_id": "TS-15-33",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-11",
+      "test_spec_id": "TS-15-34",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-11",
+      "test_spec_id": "TS-15-35",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-12",
+      "test_spec_id": "TS-15-36",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-12",
+      "test_spec_id": "TS-15-37",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-12",
+      "test_spec_id": "TS-15-38",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-12",
+      "test_spec_id": "TS-15-39",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-13",
+      "test_spec_id": "TS-15-40",
+      "task_id": "8.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-14",
+      "test_spec_id": "TS-15-41",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-14",
+      "test_spec_id": "TS-15-42",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-14",
+      "test_spec_id": "TS-15-43",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-14",
+      "test_spec_id": "TS-15-44",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-14",
+      "test_spec_id": "TS-15-45",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-15",
+      "test_spec_id": "TS-15-46",
+      "task_id": "11.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "15-REQ-15",
+      "test_spec_id": "TS-15-47",
+      "task_id": "11.3",
+      "test_path": null
+    }
+  ]
+}

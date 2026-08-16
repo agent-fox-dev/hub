@@ -1,0 +1,1281 @@
+{
+  "$schema": null,
+  "spec_id": "15",
+  "spec_name": "carry_patch_workspace",
+  "schema_version": 1,
+  "introduction": "This spec defines the workspace-level foundations for the carry-patch workflow in af-hub: a new `carry_patch` workspace mode, dual-remote clone setup, upstream credential management, and a declarative ordered patch list per workspace. Note: requirements referencing git_runner_extensions APIs (RemoteAdd, ConfigSet, CreateBranch) are based on PRD assumptions and should be cross-checked against the installed library before implementation.",
+  "glossary": {
+    "ConfigSet": "A GitRunner method (from the git_runner_extensions spec) that sets a git configuration key-value pair in a repository.",
+    "CreateBranch": "A GitRunner method (from the git_runner_extensions spec) that creates a local branch at a specified commit or reference.",
+    "GitRunner": "The Go struct (from spec 11) that executes git CLI commands with protocol allowlists and environment isolation.",
+    "RemoteAdd": "A GitRunner method (from the git_runner_extensions spec) that adds a named remote to a git repository.",
+    "UPSTREAM_GIT_PASSWORD": "A workspace secret key storing a password for basic authentication against the upstream remote.",
+    "UPSTREAM_GIT_PAT": "A workspace secret key storing a personal access token for authenticating against the upstream remote.",
+    "UPSTREAM_GIT_USERNAME": "A workspace secret key storing a username for basic authentication against the upstream remote.",
+    "WriteAPIError": "The apikit function used to write standardized JSON error responses to HTTP clients.",
+    "active": "A patch status indicating the patch is included in the next integration branch rebuild.",
+    "added_at": "An RFC 3339 timestamp column in the patches table recording when a patch was added.",
+    "afc": "The command-line interface for the af-hub platform.",
+    "apikit": "The server framework library (github.com/txsvc/apikit) used for HTTP routing, authentication, and CLI scaffolding in af-hub.",
+    "branch_name": "The name of the git branch associated with a patch entry in the patches table.",
+    "carry_patch": "A workspace mode that enables dual-remote clone setup, upstream credential management, and a declarative ordered patch list for maintaining a fork with pending upstream PRs.",
+    "conflict": "A patch status indicating the most recent rebuild failed when applying this patch; the patch is still included in subsequent rebuild attempts.",
+    "deleteWorkspace": "The existing Go function in store.go that deletes a workspace and its associated data within a transaction.",
+    "disabled": "A patch status indicating an operator has manually excluded this patch from rebuild.",
+    "integration_branch": "A TEXT column on the workspaces table naming the mechanically rebuilt branch that combines the upstream base with all carried patches; defaults to 'deploy'.",
+    "merged_upstream": "A patch status indicating the patch branch has been detected as merged into upstream; the patch is excluded from rebuild and automatically deleted after a successful rebuild.",
+    "patch": "A record in the patches table representing a git branch that should be applied on top of the upstream base when rebuilding the integration branch.",
+    "patches": "A SQLite table storing the ordered list of patch entries for carry-patch workspaces, each representing a git branch to be applied during integration branch rebuild.",
+    "patches:read": "A PAT permission scope granting the ability to list and view patches for a workspace.",
+    "patches:write": "A PAT permission scope granting the ability to add, remove, update, and reorder patches for a workspace.",
+    "position": "A 1-based INTEGER column in the patches table indicating the application order of a patch; lower values are applied first.",
+    "reorder": "A bulk patch operation that accepts a complete ordered list of patch IDs and reassigns positions accordingly.",
+    "rerere.autoupdate": "A git configuration key that causes git to automatically stage files resolved by rerere.",
+    "rerere.enabled": "A git configuration key that enables the reuse-recorded-resolution mechanism, allowing git to replay previously recorded conflict resolutions.",
+    "resolveCloneAuth": "The existing Go function that resolves authentication credentials for the origin (fork) remote.",
+    "resolveUpstreamAuth": "A Go function that resolves authentication credentials for the upstream remote, falling back to origin credentials if upstream-specific secrets are absent.",
+    "standard": "The default workspace mode representing existing single-remote behavior with no upstream URL, patch list, or rebuild operations.",
+    "updated_at": "An RFC 3339 timestamp column in the patches table recording when a patch was last modified.",
+    "upstream_pr_url": "An optional TEXT column in the patches table holding the URL of the corresponding upstream pull request.",
+    "upstream_url": "A TEXT column on the workspaces table holding the URL of the upstream repository for carry-patch workspaces.",
+    "workspace_mode": "A TEXT column on the workspaces table indicating whether a workspace operates in 'standard' (single-remote) or 'carry_patch' (dual-remote with patch list) mode.",
+    "workspace_slug": "The unique slug identifier for a workspace, used as a foreign key in the patches table."
+  },
+  "requirements": [
+    {
+      "id": "15-REQ-1",
+      "title": "Workspace Mode Schema Extension",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "have workspaces store their mode, upstream URL, and integration branch name in the database",
+        "benefit": "the system can distinguish carry-patch workspaces from standard ones and apply the correct behavior"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "database migration",
+          "action": "execute idempotent ALTER TABLE statements to add `workspace_mode` TEXT NOT NULL DEFAULT 'standard', `upstream_url` TEXT, and `integration_branch` TEXT columns to the workspaces table",
+          "return_contract": "migration completes without error; subsequent reads of existing rows return workspace_mode='standard', upstream_url=NULL, integration_branch=NULL",
+          "trigger": "the hub starts up against an existing database that lacks the new columns"
+        },
+        {
+          "id": "15-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "database schema initializer",
+          "action": "create the workspaces table with `workspace_mode`, `upstream_url`, and `integration_branch` columns included in the CREATE TABLE DDL",
+          "return_contract": "table is created with all three columns present; no ALTER TABLE statements are needed",
+          "trigger": "the hub starts up against a fresh (empty) database"
+        },
+        {
+          "id": "15-REQ-1.3",
+          "ears_pattern": "ubiquitous",
+          "system": "workspaces table",
+          "action": "enforce that `workspace_mode` is always non-null with a default value of 'standard' for every row",
+          "return_contract": "any INSERT that omits workspace_mode stores 'standard'; any INSERT that sets workspace_mode to NULL is rejected by the database constraint"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "database migration",
+          "action": "detect the existing column and skip the ALTER TABLE statement without returning an error",
+          "return_contract": "migration returns nil error; startup continues normally",
+          "error_condition": "the ALTER TABLE statement is executed on a database that already has the column"
+        },
+        {
+          "id": "15-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "database migration",
+          "action": "return the database error to the caller and abort startup",
+          "return_contract": "migration returns a non-nil error; hub process does not start",
+          "error_condition": "the database file is locked or the ALTER TABLE statement fails for a non-idempotency reason"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-2",
+      "title": "Carry-Patch Workspace Creation Validation",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "create a workspace in carry_patch mode by supplying a fork URL and an upstream URL",
+        "benefit": "the hub can set up dual-remote clones and maintain an integration branch for my fork"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace creation handler",
+          "action": "validate that upstream_url passes the same URL validation rules as git_url (HTTPS or SSH format, non-empty host and path), set integration_branch to the provided value or default to 'deploy', and persist the workspace with all three new fields",
+          "return_contract": "returns HTTP 201 with JSON workspace object including workspace_mode, upstream_url, and integration_branch fields",
+          "trigger": "a caller sends POST /api/v1/workspaces with workspace_mode='carry_patch' and a valid upstream_url"
+        },
+        {
+          "id": "15-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "workspace creation handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends POST /api/v1/workspaces with workspace_mode='carry_patch' but omits upstream_url or provides an empty string"
+        },
+        {
+          "id": "15-REQ-2.3",
+          "ears_pattern": "unwanted",
+          "system": "workspace creation handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends POST /api/v1/workspaces with workspace_mode='carry_patch' and an upstream_url that fails URL validation (e.g., missing host, plain HTTP without valid format)"
+        },
+        {
+          "id": "15-REQ-2.4",
+          "ears_pattern": "event_driven",
+          "system": "workspace creation handler",
+          "action": "store workspace_mode as 'standard', upstream_url as NULL, and integration_branch as NULL; ignore any integration_branch field if provided",
+          "return_contract": "returns HTTP 201 with JSON workspace object where workspace_mode='standard', upstream_url=null, integration_branch=null",
+          "trigger": "a caller sends POST /api/v1/workspaces with workspace_mode='standard' or omits workspace_mode"
+        },
+        {
+          "id": "15-REQ-2.5",
+          "ears_pattern": "unwanted",
+          "system": "workspace creation handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends POST /api/v1/workspaces with workspace_mode='standard' and also provides upstream_url or integration_branch"
+        },
+        {
+          "id": "15-REQ-2.6",
+          "ears_pattern": "event_driven",
+          "system": "workspace creation handler",
+          "action": "default integration_branch to 'deploy' and persist the workspace",
+          "return_contract": "returns HTTP 201 with JSON workspace object where integration_branch='deploy'",
+          "trigger": "a caller sends POST /api/v1/workspaces with workspace_mode='carry_patch' and omits integration_branch"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace creation handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends POST /api/v1/workspaces with workspace_mode set to an unrecognized string (not 'standard' or 'carry_patch')"
+        },
+        {
+          "id": "15-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace creation handler",
+          "action": "treat the empty string as absent and default integration_branch to 'deploy'",
+          "return_contract": "returns HTTP 201 with JSON workspace object where integration_branch='deploy'",
+          "error_condition": "a caller sends POST /api/v1/workspaces with workspace_mode='carry_patch' and integration_branch equal to an empty string"
+        },
+        {
+          "id": "15-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace creation handler",
+          "action": "reject the request before processing workspace fields",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a caller without workspace creation permission attempts to create a carry_patch workspace"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-3",
+      "title": "Immutability of Carry-Patch Structural Fields",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "be prevented from changing workspace_mode, upstream_url, or integration_branch after creation",
+        "benefit": "the patch list, rerere cache, and integration branch history remain consistent throughout the workspace lifetime"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-3.1",
+          "ears_pattern": "unwanted",
+          "system": "workspace update handler",
+          "action": "reject the request using `WriteAPIError` without modifying any workspace fields",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends PATCH /api/v1/workspaces/:slug with a body that includes workspace_mode, upstream_url, or integration_branch"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace update handler",
+          "action": "still reject the request; immutability applies regardless of whether the new value matches the existing value",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends PATCH /api/v1/workspaces/:slug with workspace_mode set to the same value already stored"
+        },
+        {
+          "id": "15-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace update handler",
+          "action": "reject the entire request without applying any changes",
+          "return_contract": "returns HTTP 400 with JSON error body; no fields are updated",
+          "error_condition": "a caller sends PATCH /api/v1/workspaces/:slug with both mutable fields (e.g., description) and immutable fields"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-4",
+      "title": "Workspace Response Schema Extension",
+      "user_story": {
+        "role": "API consumer",
+        "goal": "receive workspace_mode, upstream_url, and integration_branch in every workspace API response",
+        "benefit": "I can determine the workspace type and its carry-patch configuration without additional requests"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace response serializer",
+          "action": "include workspace_mode, upstream_url, and integration_branch fields in every workspace JSON response (GET, POST, PATCH)",
+          "return_contract": "JSON object always contains workspace_mode (string), upstream_url (string or null), integration_branch (string or null)"
+        },
+        {
+          "id": "15-REQ-4.2",
+          "ears_pattern": "state_driven",
+          "system": "workspace response serializer",
+          "action": "serialize upstream_url as null and integration_branch as null in the response",
+          "return_contract": "JSON object contains upstream_url: null and integration_branch: null",
+          "state": "the workspace has workspace_mode='standard'"
+        },
+        {
+          "id": "15-REQ-4.3",
+          "ears_pattern": "state_driven",
+          "system": "workspace response serializer",
+          "action": "serialize upstream_url and integration_branch with their stored non-null values",
+          "return_contract": "JSON object contains upstream_url: string and integration_branch: string",
+          "state": "the workspace has workspace_mode='carry_patch'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace response serializer",
+          "action": "serialize upstream_url as null and log a warning; do not panic or return an error response",
+          "return_contract": "returns HTTP 200 with JSON workspace object where upstream_url is null; warning is written to the server log",
+          "error_condition": "a workspace row in the database has workspace_mode='carry_patch' but upstream_url is NULL due to a data integrity issue"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-5",
+      "title": "Upstream Credential Storage and Resolution",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "store separate credentials for the upstream remote and have the system fall back to origin credentials when upstream-specific ones are absent",
+        "benefit": "I can authenticate against upstreams that use different credentials without being forced to duplicate secrets when the same PAT works for both"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "resolveUpstreamAuth function",
+          "action": "look up `UPSTREAM_GIT_PAT` in workspace secrets; if found, return BasicAuth with username 'x-token-auth' and the PAT as password; otherwise look up `UPSTREAM_GIT_USERNAME` and `UPSTREAM_GIT_PASSWORD`; if both found, return BasicAuth with those values; otherwise call `resolveCloneAuth` and return its result",
+          "return_contract": "returns a BasicAuth value or nil if no credentials are configured; never returns an error for the fallback case",
+          "trigger": "the system needs to authenticate against the upstream remote for a carry_patch workspace"
+        },
+        {
+          "id": "15-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "credential CLI",
+          "action": "store the provided value as workspace secret `UPSTREAM_GIT_PAT` using the existing secrets storage system",
+          "return_contract": "exits 0 on success; prints confirmation message",
+          "trigger": "an operator runs 'afc credential set' with --upstream-git-pat flag"
+        },
+        {
+          "id": "15-REQ-5.3",
+          "ears_pattern": "event_driven",
+          "system": "credential CLI",
+          "action": "store the provided values as workspace secrets `UPSTREAM_GIT_USERNAME` and `UPSTREAM_GIT_PASSWORD` using the existing secrets storage system",
+          "return_contract": "exits 0 on success; prints confirmation message",
+          "trigger": "an operator runs 'afc credential set' with --upstream-git-username and --upstream-git-password flags"
+        },
+        {
+          "id": "15-REQ-5.4",
+          "ears_pattern": "ubiquitous",
+          "system": "upstream credential system",
+          "action": "store, encrypt, and access-control upstream credentials (`UPSTREAM_GIT_PAT`, `UPSTREAM_GIT_USERNAME`, `UPSTREAM_GIT_PASSWORD`) using the same mechanisms as existing workspace credentials defined in spec 09",
+          "return_contract": "upstream credential values are never exposed in API responses; access is restricted to the workspace owner and admins"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "resolveUpstreamAuth function",
+          "action": "skip the username/password branch and fall back to `resolveCloneAuth`",
+          "return_contract": "returns the result of resolveCloneAuth; no error is returned for the missing password",
+          "error_condition": "`UPSTREAM_GIT_USERNAME` is set but `UPSTREAM_GIT_PASSWORD` is absent"
+        },
+        {
+          "id": "15-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "resolveUpstreamAuth function",
+          "action": "propagate the error to the caller rather than silently falling back",
+          "return_contract": "returns (nil, error) with the underlying store error",
+          "error_condition": "the secrets store returns an error when looking up upstream credentials"
+        },
+        {
+          "id": "15-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "credential CLI",
+          "action": "return an error from the API and display it via the CLI error handler",
+          "return_contract": "exits non-zero; prints error message indicating workspace not found",
+          "error_condition": "an operator attempts to set upstream credentials on a workspace that does not exist"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-6",
+      "title": "Carry-Patch Clone Setup",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "have carry-patch workspaces automatically configured with a second upstream remote and rerere settings at clone time",
+        "benefit": "the workspace is ready for integration branch rebuilds without manual git configuration"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace clone handler",
+          "action": "clone git_url as origin (identical to standard clone), then call `RemoteAdd` to add a remote named 'upstream' pointing to `upstream_url`, then call `ConfigSet` to set `rerere.enabled`=true and `rerere.autoupdate`=true, then call `CreateBranch` to create a local branch named per `integration_branch` at the upstream tracking branch HEAD",
+          "return_contract": "workspace clone_status is set to 'ready'; all four setup steps are attempted in order",
+          "trigger": "a carry_patch workspace clone job is executed"
+        },
+        {
+          "id": "15-REQ-6.2",
+          "ears_pattern": "unwanted",
+          "system": "workspace clone handler",
+          "action": "log the failure as a warning, mark the workspace clone_status as 'ready' (not failed), and continue",
+          "return_contract": "workspace is marked ready; warning is written to the server log; no error is returned to the job queue",
+          "error_condition": "any post-clone setup step (RemoteAdd, ConfigSet, or CreateBranch) fails after the core clone succeeds"
+        },
+        {
+          "id": "15-REQ-6.3",
+          "ears_pattern": "state_driven",
+          "system": "workspace clone handler",
+          "action": "perform the standard single-remote clone without adding an upstream remote, setting rerere config, or creating an integration branch",
+          "return_contract": "standard clone behavior is unchanged; no new git configuration is applied",
+          "state": "the workspace has workspace_mode='standard'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace clone handler",
+          "action": "log the failure as a warning and continue; the remote is still added to the repository config even if the URL cannot be contacted at clone time",
+          "return_contract": "workspace is marked ready; warning logged; RemoteAdd error is not propagated as a fatal error",
+          "error_condition": "the upstream remote URL is unreachable or returns an authentication error during RemoteAdd verification"
+        },
+        {
+          "id": "15-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace clone handler",
+          "action": "the job queue's existing timeout mechanism cancels the context and the clone is aborted; workspace clone_status is set to 'failed'",
+          "return_contract": "workspace clone_status='failed'; error is logged; no partial repository state is left in WORKSPACE_ROOT",
+          "error_condition": "the clone job hangs indefinitely during the initial git clone of git_url"
+        },
+        {
+          "id": "15-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace clone handler",
+          "action": "log the failure as a warning and mark the workspace ready; the existing branch is left as-is",
+          "return_contract": "workspace is marked ready; warning logged",
+          "error_condition": "CreateBranch fails because the integration_branch name already exists in the cloned repository"
+        },
+        {
+          "id": "15-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "workspace clone handler",
+          "action": "mark workspace clone_status as 'failed'; do not attempt any post-clone setup steps",
+          "return_contract": "workspace clone_status='failed'; error is logged; no post-clone steps are executed",
+          "error_condition": "the core clone of git_url fails (network error, auth failure, invalid URL)"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-7",
+      "title": "Patches Table Schema",
+      "user_story": {
+        "role": "platform engineer",
+        "goal": "have a patches table in the database that stores ordered patch entries per workspace",
+        "benefit": "the system has a durable, queryable record of which branches to apply during integration branch rebuilds"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "database schema initializer",
+          "action": "execute CREATE TABLE IF NOT EXISTS patches with columns id (TEXT PRIMARY KEY), workspace_slug (TEXT NOT NULL), branch_name (TEXT NOT NULL), position (INTEGER NOT NULL), status (TEXT NOT NULL DEFAULT 'active'), upstream_pr_url (TEXT), description (TEXT), added_at (TEXT NOT NULL), updated_at (TEXT NOT NULL), UNIQUE(workspace_slug, branch_name), UNIQUE(workspace_slug, position)",
+          "return_contract": "table is created or already exists; startup continues without error",
+          "trigger": "the hub starts up"
+        },
+        {
+          "id": "15-REQ-7.2",
+          "ears_pattern": "ubiquitous",
+          "system": "patches table",
+          "action": "enforce that (workspace_slug, branch_name) is unique and (workspace_slug, position) is unique via database constraints",
+          "return_contract": "any INSERT or UPDATE that violates either uniqueness constraint is rejected by the database with a constraint error"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "database schema initializer",
+          "action": "return the database error to the caller and abort startup",
+          "return_contract": "startup returns a non-nil error; hub process does not start",
+          "error_condition": "the database file is read-only or the CREATE TABLE statement fails"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-8",
+      "title": "Add Patch",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "add a patch branch to a carry-patch workspace's patch list",
+        "benefit": "the branch will be included in the next integration branch rebuild"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "patch add handler",
+          "action": "generate a UUID for the patch id, assign position = (current max position for workspace + 1), set status='active', set added_at and updated_at to the current RFC 3339 timestamp, and insert the row into the patches table",
+          "return_contract": "returns HTTP 201 with JSON patch object containing all fields",
+          "trigger": "a caller sends POST /api/v1/workspaces/:slug/patches with a valid branch_name and no position"
+        },
+        {
+          "id": "15-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "patch add handler",
+          "action": "insert the patch at the specified position, shifting all existing patches at that position or higher down by one",
+          "return_contract": "returns HTTP 201 with JSON patch object; existing patches have their positions incremented; no gaps exist in the position sequence",
+          "trigger": "a caller sends POST /api/v1/workspaces/:slug/patches with a valid branch_name and an explicit position value"
+        },
+        {
+          "id": "15-REQ-8.3",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "a caller sends POST /api/v1/workspaces/:slug/patches on a workspace with workspace_mode='standard'"
+        },
+        {
+          "id": "15-REQ-8.4",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 409 with JSON error body",
+          "error_condition": "the provided branch_name already exists in the patches table for this workspace"
+        },
+        {
+          "id": "15-REQ-8.5",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the provided branch_name equals the workspace's integration_branch"
+        },
+        {
+          "id": "15-REQ-8.6",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "branch_name is absent or empty in the request body"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "accept the patch and insert it into the patches table; branch existence is validated at rebuild time",
+          "return_contract": "returns HTTP 201 with JSON patch object; no error is returned for a non-existent branch",
+          "error_condition": "the specified branch does not exist in the workspace's git repository"
+        },
+        {
+          "id": "15-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "clamp the position to (current max position + 1), effectively appending the patch",
+          "return_contract": "returns HTTP 201 with JSON patch object where position equals the appended position",
+          "error_condition": "the specified position is greater than (current max position + 1)"
+        },
+        {
+          "id": "15-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the specified position is less than 1"
+        },
+        {
+          "id": "15-REQ-8.E4",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request before processing the patch fields",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a caller without patches:write scope attempts to add a patch"
+        },
+        {
+          "id": "15-REQ-8.E5",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "serialize the inserts using a database transaction; one request succeeds and the other either succeeds with the next available position or fails with a constraint error that is retried",
+          "return_contract": "both requests return HTTP 201 with distinct positions; no position gaps or duplicates exist after both complete",
+          "error_condition": "two concurrent requests attempt to add patches to the same workspace simultaneously"
+        },
+        {
+          "id": "15-REQ-8.E6",
+          "ears_pattern": "unwanted",
+          "system": "patch add handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the workspace does not exist or is not active"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-9",
+      "title": "List Patches",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "retrieve the ordered list of patches for a workspace",
+        "benefit": "I can inspect the current patch stack and verify the application order before triggering a rebuild"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "patch list handler",
+          "action": "query the patches table for all rows with the matching workspace_slug, ordered by position ascending",
+          "return_contract": "returns HTTP 200 with JSON array of patch objects in position order; empty array if no patches exist",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/patches"
+        },
+        {
+          "id": "15-REQ-9.2",
+          "ears_pattern": "unwanted",
+          "system": "patch list handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a caller without patches:read scope attempts to list patches"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch list handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the workspace does not exist"
+        },
+        {
+          "id": "15-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch list handler",
+          "action": "return an empty array rather than an error, since standard workspaces simply have no patches",
+          "return_contract": "returns HTTP 200 with JSON empty array []",
+          "error_condition": "a caller sends GET /api/v1/workspaces/:slug/patches on a workspace with workspace_mode='standard'"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-10",
+      "title": "Update Patch",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "modify a patch's position, status, description, or upstream PR URL",
+        "benefit": "I can reorganize the patch stack and track the lifecycle of each patch without removing and re-adding it"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "patch update handler",
+          "action": "apply the provided changes to the patch row; if position changes, shift other patches to maintain a contiguous sequence; update updated_at to the current RFC 3339 timestamp",
+          "return_contract": "returns HTTP 200 with JSON patch object reflecting the updated fields",
+          "trigger": "a caller sends PATCH /api/v1/workspaces/:slug/patches/:id with one or more of position, status, description, upstream_pr_url"
+        },
+        {
+          "id": "15-REQ-10.2",
+          "ears_pattern": "unwanted",
+          "system": "patch update handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the patch ID does not exist for the given workspace"
+        },
+        {
+          "id": "15-REQ-10.3",
+          "ears_pattern": "unwanted",
+          "system": "patch update handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the requested status value is not one of 'active', 'merged_upstream', 'conflict', 'disabled'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch update handler",
+          "action": "ignore the branch_name field in the update body; branch_name is immutable after creation",
+          "return_contract": "returns HTTP 200 with JSON patch object where branch_name is unchanged",
+          "error_condition": "a caller attempts to change branch_name via PATCH"
+        },
+        {
+          "id": "15-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch update handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a caller without patches:write scope attempts to update a patch"
+        },
+        {
+          "id": "15-REQ-10.E3",
+          "ears_pattern": "unwanted",
+          "system": "patch update handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the new position value is less than 1 or greater than the total number of patches for the workspace"
+        },
+        {
+          "id": "15-REQ-10.E4",
+          "ears_pattern": "unwanted",
+          "system": "patch update handler",
+          "action": "serialize the updates using a database transaction to prevent position conflicts",
+          "return_contract": "both requests complete without leaving duplicate or missing positions in the sequence",
+          "error_condition": "two concurrent requests attempt to update the position of different patches in the same workspace simultaneously"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-11",
+      "title": "Remove Patch",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "remove a patch from the workspace's patch list",
+        "benefit": "the branch will no longer be included in future integration branch rebuilds"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "patch remove handler",
+          "action": "delete the patch row from the patches table and compact positions for the workspace so there are no gaps in the sequence",
+          "return_contract": "returns HTTP 204 with no body; remaining patches have contiguous positions starting at 1",
+          "trigger": "a caller sends DELETE /api/v1/workspaces/:slug/patches/:id"
+        },
+        {
+          "id": "15-REQ-11.2",
+          "ears_pattern": "unwanted",
+          "system": "patch remove handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the patch ID does not exist for the given workspace"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch remove handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a caller without patches:write scope attempts to remove a patch"
+        },
+        {
+          "id": "15-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch remove handler",
+          "action": "roll back the transaction and return an error; no partial state is persisted",
+          "return_contract": "returns HTTP 500 with JSON error body; patches table is unchanged",
+          "error_condition": "the delete and position compaction cannot be completed atomically due to a database error"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-12",
+      "title": "Reorder Patches",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "reorder the entire patch list by providing a complete ordered list of patch IDs",
+        "benefit": "I can reorganize the patch application order in a single atomic operation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "patch reorder handler",
+          "action": "assign new positions to each patch based on the provided order (1-based, matching the array index), updating updated_at for each modified row, within a single database transaction",
+          "return_contract": "returns HTTP 200 with JSON array of all patch objects in the new position order",
+          "trigger": "a caller sends POST /api/v1/workspaces/:slug/patches/reorder with a complete ordered list of all patch IDs for the workspace"
+        },
+        {
+          "id": "15-REQ-12.2",
+          "ears_pattern": "unwanted",
+          "system": "patch reorder handler",
+          "action": "reject the request using `WriteAPIError` without modifying any positions",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the provided patch_ids list is missing one or more patch IDs that exist for the workspace"
+        },
+        {
+          "id": "15-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "patch reorder handler",
+          "action": "reject the request using `WriteAPIError` without modifying any positions",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the provided patch_ids list contains duplicate IDs"
+        },
+        {
+          "id": "15-REQ-12.4",
+          "ears_pattern": "unwanted",
+          "system": "patch reorder handler",
+          "action": "reject the request using `WriteAPIError` without modifying any positions",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the provided patch_ids list contains an ID that does not belong to the specified workspace"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch reorder handler",
+          "action": "reject the request using `WriteAPIError`",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the provided patch_ids list is empty but the workspace has patches"
+        },
+        {
+          "id": "15-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch reorder handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a caller without patches:write scope attempts to reorder patches"
+        },
+        {
+          "id": "15-REQ-12.E3",
+          "ears_pattern": "unwanted",
+          "system": "patch reorder handler",
+          "action": "roll back the transaction; no positions are changed",
+          "return_contract": "returns HTTP 500 with JSON error body; all patches retain their original positions",
+          "error_condition": "the database transaction for the bulk position update fails partway through"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-13",
+      "title": "Cascade Delete Patches on Workspace Deletion",
+      "user_story": {
+        "role": "platform engineer",
+        "goal": "have all patches for a workspace automatically deleted when the workspace is deleted",
+        "benefit": "the database does not accumulate orphaned patch rows after workspace deletion"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "deleteWorkspace function",
+          "action": "include DELETE FROM patches WHERE workspace_slug = ? in the existing cascade delete transaction alongside other workspace-associated data deletions",
+          "return_contract": "all patch rows for the workspace are deleted atomically with the workspace row; no orphaned patches remain",
+          "trigger": "a workspace deletion is executed"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "deleteWorkspace function",
+          "action": "roll back the entire transaction including the workspace row deletion",
+          "return_contract": "workspace and all its patches remain in the database; caller receives an error",
+          "error_condition": "the DELETE FROM patches statement fails within the transaction"
+        },
+        {
+          "id": "15-REQ-13.E2",
+          "ears_pattern": "event_driven",
+          "system": "deleteWorkspace function",
+          "action": "execute DELETE FROM patches WHERE workspace_slug = ? which affects zero rows; continue the transaction normally",
+          "return_contract": "workspace is deleted successfully; zero-row delete does not cause an error",
+          "trigger": "a workspace with no patches is deleted"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-14",
+      "title": "Patch CLI Commands",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "manage patches from the command line using afc patch subcommands",
+        "benefit": "I can add, list, update, remove, and reorder patches without using the REST API directly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send POST /api/v1/workspaces/:slug/patches with the provided branch name and optional position, upstream-pr, and description flags",
+          "return_contract": "prints the created patch object on success; exits 0; prints error and exits non-zero on failure",
+          "trigger": "an operator runs 'afc patch add <workspace-slug> --branch <name>'"
+        },
+        {
+          "id": "15-REQ-14.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send GET /api/v1/workspaces/:slug/patches and display the results in position order",
+          "return_contract": "prints the patch list on success; exits 0; prints error and exits non-zero on failure",
+          "trigger": "an operator runs 'afc patch list <workspace-slug>'"
+        },
+        {
+          "id": "15-REQ-14.3",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send DELETE /api/v1/workspaces/:slug/patches/:id",
+          "return_contract": "prints confirmation on success; exits 0; prints error and exits non-zero on failure",
+          "trigger": "an operator runs 'afc patch remove <workspace-slug> <patch-id>'"
+        },
+        {
+          "id": "15-REQ-14.4",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send POST /api/v1/workspaces/:slug/patches/reorder with the provided patch IDs in the given order",
+          "return_contract": "prints the reordered patch list on success; exits 0; prints error and exits non-zero on failure",
+          "trigger": "an operator runs 'afc patch reorder <workspace-slug> <patch-id-1> <patch-id-2> ...'"
+        },
+        {
+          "id": "15-REQ-14.5",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send PATCH /api/v1/workspaces/:slug/patches/:id with the provided fields",
+          "return_contract": "prints the updated patch object on success; exits 0; prints error and exits non-zero on failure",
+          "trigger": "an operator runs 'afc patch update <workspace-slug> <patch-id>' with one or more update flags"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "print a usage error and exit non-zero without making an API call",
+          "return_contract": "exits non-zero; prints usage message indicating --branch is required",
+          "error_condition": "an operator runs 'afc patch add' without the required --branch flag"
+        },
+        {
+          "id": "15-REQ-14.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "display the error message using the CLI error handler and exit non-zero",
+          "return_contract": "exits non-zero; error message is printed to stderr",
+          "error_condition": "the API returns an error response for any patch command"
+        },
+        {
+          "id": "15-REQ-14.E3",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "print a usage error and exit non-zero without making an API call",
+          "return_contract": "exits non-zero; prints usage message",
+          "error_condition": "an operator runs 'afc patch reorder' with no patch IDs"
+        }
+      ]
+    },
+    {
+      "id": "15-REQ-15",
+      "title": "Patch Permission Scopes",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "control access to patch management operations via PAT permission scopes",
+        "benefit": "I can grant read-only or read-write access to patch operations independently of workspace permissions"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "15-REQ-15.1",
+          "ears_pattern": "ubiquitous",
+          "system": "patch API authorization layer",
+          "action": "require `patches:read` scope for GET /api/v1/workspaces/:slug/patches and require `patches:write` scope for POST, PATCH, DELETE, and reorder endpoints; admin tokens and API keys have implicit full access",
+          "return_contract": "requests with insufficient scope receive HTTP 403 with JSON error body; requests with sufficient scope proceed to handler logic"
+        },
+        {
+          "id": "15-REQ-15.2",
+          "ears_pattern": "state_driven",
+          "system": "patch API authorization layer",
+          "action": "grant access to all patch endpoints without requiring explicit scope grants",
+          "return_contract": "request proceeds to handler logic; no scope check is performed",
+          "state": "the request is authenticated with an admin token or workspace API key"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "15-REQ-15.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch API authorization layer",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "a PAT with patches:read scope attempts a write operation (POST, PATCH, DELETE)"
+        },
+        {
+          "id": "15-REQ-15.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch API authorization layer",
+          "action": "reject the request before scope evaluation",
+          "return_contract": "returns HTTP 401 with JSON error body",
+          "error_condition": "an unauthenticated request is sent to any patch endpoint"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "15-PROP-1",
+      "title": "Patch Position Contiguity",
+      "for_any": "carry_patch workspace with N patches",
+      "invariant": "the set of position values in the patches table for that workspace is always exactly {1, 2, ..., N} with no gaps and no duplicates",
+      "validates": [
+        "15-REQ-8.1",
+        "15-REQ-8.2",
+        "15-REQ-11.1",
+        "15-REQ-12.1"
+      ]
+    },
+    {
+      "id": "15-PROP-2",
+      "title": "Branch Name Uniqueness Per Workspace",
+      "for_any": "carry_patch workspace",
+      "invariant": "no two patches in the patches table share the same (workspace_slug, branch_name) pair",
+      "validates": [
+        "15-REQ-7.2",
+        "15-REQ-8.4"
+      ]
+    },
+    {
+      "id": "15-PROP-3",
+      "title": "Integration Branch Not in Patch List",
+      "for_any": "carry_patch workspace with a defined integration_branch",
+      "invariant": "no patch in the patches table for that workspace has branch_name equal to the workspace's integration_branch",
+      "validates": [
+        "15-REQ-8.5"
+      ]
+    },
+    {
+      "id": "15-PROP-4",
+      "title": "Standard Workspace Has No Upstream Fields",
+      "for_any": "workspace with workspace_mode='standard'",
+      "invariant": "upstream_url is NULL and integration_branch is NULL in the workspaces table",
+      "validates": [
+        "15-REQ-2.4",
+        "15-REQ-4.2"
+      ]
+    },
+    {
+      "id": "15-PROP-5",
+      "title": "Carry-Patch Workspace Has Non-Null Upstream URL",
+      "for_any": "workspace with workspace_mode='carry_patch'",
+      "invariant": "upstream_url is non-null and non-empty in the workspaces table",
+      "validates": [
+        "15-REQ-2.1",
+        "15-REQ-2.2"
+      ]
+    },
+    {
+      "id": "15-PROP-6",
+      "title": "No Orphaned Patches After Workspace Deletion",
+      "for_any": "workspace that has been deleted",
+      "invariant": "the patches table contains no rows with workspace_slug equal to the deleted workspace's slug",
+      "validates": [
+        "15-REQ-13.1"
+      ]
+    },
+    {
+      "id": "15-PROP-7",
+      "title": "Reorder Preserves Patch Count",
+      "for_any": "reorder operation on a workspace with N patches",
+      "invariant": "after a successful reorder, the workspace still has exactly N patches with positions {1, 2, ..., N}",
+      "validates": [
+        "15-REQ-12.1",
+        "15-REQ-12.2",
+        "15-REQ-12.3"
+      ]
+    },
+    {
+      "id": "15-PROP-8",
+      "title": "Immutable Structural Fields After Creation",
+      "for_any": "workspace that has been successfully created",
+      "invariant": "workspace_mode, upstream_url, and integration_branch values in the workspaces table never change after the initial INSERT",
+      "validates": [
+        "15-REQ-3.1"
+      ]
+    },
+    {
+      "id": "15-PROP-9",
+      "title": "Upstream Auth Fallback Completeness",
+      "for_any": "carry_patch workspace",
+      "invariant": "resolveUpstreamAuth always returns a non-error result when resolveCloneAuth would return a non-error result for the same workspace",
+      "validates": [
+        "15-REQ-5.1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "15-PATH-1",
+      "title": "Create Carry-Patch Workspace and Clone with Dual-Remote Setup",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs 'afc workspace create --mode carry_patch --git-url https://github.com/myfork/repo --upstream-url https://github.com/upstream/repo --integration-branch deploy'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends POST /api/v1/workspaces with workspace_mode='carry_patch', git_url, upstream_url, and integration_branch='deploy'"
+        },
+        {
+          "actor": "workspace creation handler",
+          "action": "validates upstream_url format, defaults integration_branch to 'deploy', inserts workspace row with workspace_mode='carry_patch' into the workspaces table, enqueues a clone job, and returns HTTP 201 with the workspace JSON including all three new fields"
+        },
+        {
+          "actor": "clone job worker",
+          "action": "clones git_url as origin into the workspace directory using go-git PlainCloneContext"
+        },
+        {
+          "actor": "GitRunner (git_runner_extensions)",
+          "action": "calls RemoteAdd to add a remote named 'upstream' pointing to upstream_url"
+        },
+        {
+          "actor": "GitRunner (git_runner_extensions)",
+          "action": "calls ConfigSet to set rerere.enabled=true and rerere.autoupdate=true in the repository"
+        },
+        {
+          "actor": "GitRunner (git_runner_extensions)",
+          "action": "calls CreateBranch to create a local branch named 'deploy' at the upstream tracking branch HEAD"
+        },
+        {
+          "actor": "workspace store",
+          "action": "updates workspace clone_status to 'ready' in the workspaces table"
+        }
+      ]
+    },
+    {
+      "id": "15-PATH-2",
+      "title": "Add Patch with Explicit Position and Verify List Order",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs 'afc patch add my-workspace --branch feature/auth-headers --position 2 --upstream-pr https://github.com/upstream/repo/pull/42'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends POST /api/v1/workspaces/my-workspace/patches with branch_name='feature/auth-headers', position=2, upstream_pr_url set"
+        },
+        {
+          "actor": "patch add handler",
+          "action": "verifies workspace is carry_patch mode, checks branch_name is not integration_branch, checks branch_name is not already in patches table, shifts existing patches at position >= 2 down by one, inserts new patch row with generated UUID, status='active', added_at and updated_at set to current time"
+        },
+        {
+          "actor": "patch add handler",
+          "action": "returns HTTP 201 with JSON patch object"
+        },
+        {
+          "actor": "Operator",
+          "action": "runs 'afc patch list my-workspace'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends GET /api/v1/workspaces/my-workspace/patches"
+        },
+        {
+          "actor": "patch list handler",
+          "action": "queries patches table ordered by position ascending and returns HTTP 200 with JSON array showing the new patch at position 2 and all others shifted accordingly"
+        }
+      ]
+    },
+    {
+      "id": "15-PATH-3",
+      "title": "Reorder Patch List",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs 'afc patch reorder my-workspace uuid-3 uuid-1 uuid-2'"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends POST /api/v1/workspaces/my-workspace/patches/reorder with patch_ids=[uuid-3, uuid-1, uuid-2]"
+        },
+        {
+          "actor": "patch reorder handler",
+          "action": "verifies all patch IDs belong to the workspace and the list is complete and duplicate-free"
+        },
+        {
+          "actor": "patch reorder handler",
+          "action": "within a single database transaction, updates position of uuid-3 to 1, uuid-1 to 2, uuid-2 to 3, and sets updated_at for each"
+        },
+        {
+          "actor": "patch reorder handler",
+          "action": "returns HTTP 200 with JSON array of all patches in the new position order"
+        }
+      ]
+    },
+    {
+      "id": "15-PATH-4",
+      "title": "Delete Workspace Cascades to Patches",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "sends DELETE /api/v1/workspaces/my-workspace"
+        },
+        {
+          "actor": "workspace delete handler",
+          "action": "begins a database transaction"
+        },
+        {
+          "actor": "deleteWorkspace function",
+          "action": "executes DELETE FROM patches WHERE workspace_slug = 'my-workspace' within the transaction"
+        },
+        {
+          "actor": "deleteWorkspace function",
+          "action": "executes DELETE FROM workspaces WHERE slug = 'my-workspace' and other cascade deletes within the same transaction"
+        },
+        {
+          "actor": "deleteWorkspace function",
+          "action": "commits the transaction; workspace row and all associated patch rows are removed atomically"
+        },
+        {
+          "actor": "workspace delete handler",
+          "action": "returns HTTP 204 with no body"
+        }
+      ]
+    },
+    {
+      "id": "15-PATH-5",
+      "title": "Resolve Upstream Credentials with Fallback to Origin",
+      "steps": [
+        {
+          "actor": "clone job worker",
+          "action": "needs to authenticate against the upstream remote for a carry_patch workspace"
+        },
+        {
+          "actor": "resolveUpstreamAuth function",
+          "action": "looks up UPSTREAM_GIT_PAT in workspace secrets store"
+        },
+        {
+          "actor": "secrets store (spec 07)",
+          "action": "returns not-found for UPSTREAM_GIT_PAT"
+        },
+        {
+          "actor": "resolveUpstreamAuth function",
+          "action": "looks up UPSTREAM_GIT_USERNAME and UPSTREAM_GIT_PASSWORD in workspace secrets store"
+        },
+        {
+          "actor": "secrets store (spec 07)",
+          "action": "returns not-found for both"
+        },
+        {
+          "actor": "resolveUpstreamAuth function",
+          "action": "calls resolveCloneAuth (spec 09) to obtain origin credentials and returns the result"
+        },
+        {
+          "actor": "clone job worker",
+          "action": "uses the returned BasicAuth credentials to authenticate the upstream remote fetch"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "15-ERR-1",
+      "condition": "POST /api/v1/workspaces with workspace_mode='carry_patch' and missing or empty upstream_url",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-2.2"
+    },
+    {
+      "id": "15-ERR-2",
+      "condition": "POST /api/v1/workspaces with workspace_mode='carry_patch' and upstream_url that fails URL validation",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-2.3"
+    },
+    {
+      "id": "15-ERR-3",
+      "condition": "POST /api/v1/workspaces with workspace_mode='standard' and upstream_url or integration_branch provided",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-2.5"
+    },
+    {
+      "id": "15-ERR-4",
+      "condition": "PATCH /api/v1/workspaces/:slug with workspace_mode, upstream_url, or integration_branch in the request body",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError; no fields are modified",
+      "requirement_id": "15-REQ-3.1"
+    },
+    {
+      "id": "15-ERR-5",
+      "condition": "POST /api/v1/workspaces/:slug/patches on a workspace with workspace_mode='standard'",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-8.3"
+    },
+    {
+      "id": "15-ERR-6",
+      "condition": "POST /api/v1/workspaces/:slug/patches with branch_name already in the patch list for this workspace",
+      "behavior": "returns HTTP 409 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-8.4"
+    },
+    {
+      "id": "15-ERR-7",
+      "condition": "POST /api/v1/workspaces/:slug/patches with branch_name equal to the workspace's integration_branch",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-8.5"
+    },
+    {
+      "id": "15-ERR-8",
+      "condition": "POST /api/v1/workspaces/:slug/patches/reorder with incomplete, duplicate, or foreign patch ID list",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError; no positions are modified",
+      "requirement_id": "15-REQ-12.2"
+    },
+    {
+      "id": "15-ERR-9",
+      "condition": "PATCH or DELETE /api/v1/workspaces/:slug/patches/:id where the patch ID does not exist for the workspace",
+      "behavior": "returns HTTP 404 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-10.2"
+    },
+    {
+      "id": "15-ERR-10",
+      "condition": "any patch endpoint called by a PAT without the required patches:read or patches:write scope",
+      "behavior": "returns HTTP 403 with JSON error body",
+      "requirement_id": "15-REQ-15.1"
+    },
+    {
+      "id": "15-ERR-11",
+      "condition": "post-clone setup step (RemoteAdd, ConfigSet, or CreateBranch) fails after core clone succeeds",
+      "behavior": "logs a warning; workspace clone_status is set to 'ready'; no error is propagated to the job queue",
+      "requirement_id": "15-REQ-6.2"
+    },
+    {
+      "id": "15-ERR-12",
+      "condition": "UPSTREAM_GIT_USERNAME is set but UPSTREAM_GIT_PASSWORD is absent in workspace secrets",
+      "behavior": "resolveUpstreamAuth skips the username/password branch and falls back to resolveCloneAuth; no error is returned",
+      "requirement_id": "15-REQ-5.E1"
+    },
+    {
+      "id": "15-ERR-13",
+      "condition": "workspace does not exist or is not active when a patch operation is attempted",
+      "behavior": "returns HTTP 400 with JSON error body via WriteAPIError",
+      "requirement_id": "15-REQ-8.E6"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "unverified - cross-check before implementation",
+      "symbols": [
+        {
+          "name": "WriteAPIError",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "WriteAPIError(w http.ResponseWriter, status int, err error)",
+          "notes": "Used to write standardized JSON error envelopes for all error responses in this spec. Exact signature should be verified against installed library version."
+        }
+      ]
+    }
+  ]
+}

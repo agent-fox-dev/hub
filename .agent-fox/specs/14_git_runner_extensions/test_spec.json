@@ -1,0 +1,1401 @@
+{
+  "$schema": null,
+  "spec_id": "14",
+  "spec_name": "git_runner_extensions",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-14-1",
+      "requirement_id": "14-REQ-1.1",
+      "kind": "unit",
+      "description": "Checkout with a valid existing ref runs git checkout and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit on branch 'main'",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "ref": "main"
+      },
+      "expected": "Checkout returns nil; git HEAD points to 'main'",
+      "assertion_pseudocode": "err = runner.Checkout(ctx, \"main\"); assert err == nil; headRef = exec(\"git symbolic-ref HEAD\", workDir); assert headRef == \"refs/heads/main\""
+    },
+    {
+      "id": "TS-14-2",
+      "requirement_id": "14-REQ-1.2",
+      "kind": "unit",
+      "description": "Checkout returns a *GitError when git checkout exits with a non-zero code.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "ref": "nonexistent-branch-xyz"
+      },
+      "expected": "Checkout returns a non-nil error of type *GitError containing the exit code and stderr",
+      "assertion_pseudocode": "err = runner.Checkout(ctx, \"nonexistent-branch-xyz\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0; assert len(gitErr.Stderr) > 0"
+    },
+    {
+      "id": "TS-14-3",
+      "requirement_id": "14-REQ-2.1",
+      "kind": "unit",
+      "description": "CreateBranch with a valid name and startPoint runs git branch and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "Branch 'new-branch' does not exist"
+      ],
+      "input": {
+        "name": "new-branch",
+        "startPoint": "HEAD"
+      },
+      "expected": "CreateBranch returns nil; 'new-branch' exists in the repository",
+      "assertion_pseudocode": "err = runner.CreateBranch(ctx, \"new-branch\", \"HEAD\"); assert err == nil; branches = exec(\"git branch --list new-branch\", workDir); assert branches contains \"new-branch\""
+    },
+    {
+      "id": "TS-14-4",
+      "requirement_id": "14-REQ-2.2",
+      "kind": "unit",
+      "description": "CreateBranch returns a *GitError when git branch exits non-zero (e.g. branch already exists).",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "Branch 'existing-branch' already exists",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "existing-branch",
+        "startPoint": "HEAD"
+      },
+      "expected": "CreateBranch returns a non-nil *GitError with non-zero ExitCode",
+      "assertion_pseudocode": "err = runner.CreateBranch(ctx, \"existing-branch\", \"HEAD\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-5",
+      "requirement_id": "14-REQ-3.1",
+      "kind": "unit",
+      "description": "DeleteBranch with an existing branch name runs git branch -D and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "Branch 'to-delete' exists locally",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "Current HEAD is not on 'to-delete'"
+      ],
+      "input": {
+        "name": "to-delete"
+      },
+      "expected": "DeleteBranch returns nil; 'to-delete' no longer exists in the repository",
+      "assertion_pseudocode": "err = runner.DeleteBranch(ctx, \"to-delete\"); assert err == nil; branches = exec(\"git branch --list to-delete\", workDir); assert branches == \"\""
+    },
+    {
+      "id": "TS-14-6",
+      "requirement_id": "14-REQ-3.2",
+      "kind": "unit",
+      "description": "DeleteBranch returns a *GitError when git branch -D exits non-zero.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "Branch 'ghost-branch' does not exist",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "ghost-branch"
+      },
+      "expected": "DeleteBranch returns a non-nil *GitError with non-zero ExitCode",
+      "assertion_pseudocode": "err = runner.DeleteBranch(ctx, \"ghost-branch\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-7",
+      "requirement_id": "14-REQ-4.1",
+      "kind": "unit",
+      "description": "CherryPick with a valid commit SHA that applies cleanly returns the new HEAD SHA and nil error.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with two branches: 'main' (base) and 'feature' (one commit ahead of main)",
+        "Current HEAD is on 'main'",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "sha": "<SHA of the feature branch commit>"
+      },
+      "expected": "CherryPick returns (newHeadSHA string, nil) where newHeadSHA is a valid 40-char hex SHA different from the original HEAD",
+      "assertion_pseudocode": "originalHead = exec(\"git rev-parse HEAD\", workDir); sha, err = runner.CherryPick(ctx, featureCommitSHA); assert err == nil; assert len(sha) == 40; assert sha != originalHead; assert exec(\"git rev-parse HEAD\", workDir) == sha"
+    },
+    {
+      "id": "TS-14-8",
+      "requirement_id": "14-REQ-4.2",
+      "kind": "unit",
+      "description": "CherryPick auto-aborts and returns *CherryPickConflictError with ConflictingFiles when cherry-pick conflicts.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a conflicting commit on a side branch",
+        "Current HEAD is on 'main' with a conflicting change to the same file",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "sha": "<SHA of conflicting commit>"
+      },
+      "expected": "CherryPick returns (\"\", *CherryPickConflictError) with ConflictingFiles containing at least one file path; repository is in clean state (no cherry-pick in progress)",
+      "assertion_pseudocode": "sha, err = runner.CherryPick(ctx, conflictingSHA); assert sha == \"\"; assert err != nil; cpErr, ok = err.(*CherryPickConflictError); assert ok == true; assert len(cpErr.ConflictingFiles) > 0; cherryPickHead = fileExists(workDir + \"/.git/CHERRY_PICK_HEAD\"); assert cherryPickHead == false"
+    },
+    {
+      "id": "TS-14-9",
+      "requirement_id": "14-REQ-4.3",
+      "kind": "unit",
+      "description": "CherryPick returns ctx.Err() without aborting when the context is cancelled before completion.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A context that is already cancelled is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context",
+        "sha": "<any valid commit SHA>"
+      },
+      "expected": "CherryPick returns (\"\", context.Canceled) without running git cherry-pick --abort",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); sha, err = runner.CherryPick(ctx, validSHA); assert sha == \"\"; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-10",
+      "requirement_id": "14-REQ-5.1",
+      "kind": "unit",
+      "description": "ConfigSet with a valid key and value runs git config and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "key": "rerere.enabled",
+        "value": "true"
+      },
+      "expected": "ConfigSet returns nil; git config rerere.enabled reads back 'true'",
+      "assertion_pseudocode": "err = runner.ConfigSet(ctx, \"rerere.enabled\", \"true\"); assert err == nil; val = exec(\"git config rerere.enabled\", workDir); assert val == \"true\""
+    },
+    {
+      "id": "TS-14-11",
+      "requirement_id": "14-REQ-5.2",
+      "kind": "unit",
+      "description": "ConfigSet returns a *GitError when git config exits non-zero.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "key": "--invalid-key",
+        "value": "val"
+      },
+      "expected": "ConfigSet returns a non-nil *GitError with non-zero ExitCode",
+      "assertion_pseudocode": "err = runner.ConfigSet(ctx, \"--invalid-key\", \"val\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-12",
+      "requirement_id": "14-REQ-6.1",
+      "kind": "unit",
+      "description": "RemoteAdd with a valid name and URL runs git remote add and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "No remote named 'upstream' exists",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "upstream",
+        "url": "https://example.com/repo.git"
+      },
+      "expected": "RemoteAdd returns nil; 'upstream' appears in git remote -v output",
+      "assertion_pseudocode": "err = runner.RemoteAdd(ctx, \"upstream\", \"https://example.com/repo.git\"); assert err == nil; remotes = exec(\"git remote -v\", workDir); assert remotes contains \"upstream\""
+    },
+    {
+      "id": "TS-14-13",
+      "requirement_id": "14-REQ-6.2",
+      "kind": "unit",
+      "description": "RemoteAdd returns a *GitError when git remote add exits non-zero (e.g. remote already exists).",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "Remote 'origin' already exists",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "origin",
+        "url": "https://example.com/repo.git"
+      },
+      "expected": "RemoteAdd returns a non-nil *GitError with non-zero ExitCode",
+      "assertion_pseudocode": "err = runner.RemoteAdd(ctx, \"origin\", \"https://example.com/repo.git\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-14",
+      "requirement_id": "14-REQ-7.1",
+      "kind": "unit",
+      "description": "Log with args runs git log with those args and returns raw stdout and nil error.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least two commits",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": [
+          "--oneline",
+          "--format=%H"
+        ]
+      },
+      "expected": "Log returns (rawStdout string, nil) where rawStdout contains commit SHAs",
+      "assertion_pseudocode": "out, err = runner.Log(ctx, \"--oneline\", \"--format=%H\"); assert err == nil; assert len(out) > 0; assert out contains a 40-char hex string"
+    },
+    {
+      "id": "TS-14-15",
+      "requirement_id": "14-REQ-7.2",
+      "kind": "unit",
+      "description": "Log returns a *GitError when git log exits non-zero.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": [
+          "--invalid-flag-xyz"
+        ]
+      },
+      "expected": "Log returns (\"\", *GitError) with non-zero ExitCode",
+      "assertion_pseudocode": "out, err = runner.Log(ctx, \"--invalid-flag-xyz\"); assert out == \"\"; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-16",
+      "requirement_id": "14-REQ-8.1",
+      "kind": "unit",
+      "description": "Diff with args runs git diff with those args and returns raw stdout and nil error.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least two commits",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": [
+          "HEAD~1",
+          "HEAD"
+        ]
+      },
+      "expected": "Diff returns (rawStdout string, nil) where rawStdout contains diff output",
+      "assertion_pseudocode": "out, err = runner.Diff(ctx, \"HEAD~1\", \"HEAD\"); assert err == nil; assert len(out) > 0"
+    },
+    {
+      "id": "TS-14-17",
+      "requirement_id": "14-REQ-8.2",
+      "kind": "unit",
+      "description": "Diff returns a *GitError when git diff exits non-zero.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": [
+          "--invalid-flag-xyz"
+        ]
+      },
+      "expected": "Diff returns (\"\", *GitError) with non-zero ExitCode",
+      "assertion_pseudocode": "out, err = runner.Diff(ctx, \"--invalid-flag-xyz\"); assert out == \"\"; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-18",
+      "requirement_id": "14-REQ-9.1",
+      "kind": "unit",
+      "description": "MergeNoFF with a cleanly mergeable branch returns the merge commit SHA and nil error.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with 'main' and 'feature' branches that merge cleanly",
+        "Current HEAD is on 'main'",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "git user.email and user.name are configured in the repo"
+      ],
+      "input": {
+        "branch": "feature"
+      },
+      "expected": "MergeNoFF returns (mergeCommitSHA string, nil) where mergeCommitSHA is a valid 40-char hex SHA; git log shows a merge commit",
+      "assertion_pseudocode": "sha, err = runner.MergeNoFF(ctx, \"feature\"); assert err == nil; assert len(sha) == 40; logOut = exec(\"git log --oneline -1\", workDir); assert logOut contains \"Merge branch\""
+    },
+    {
+      "id": "TS-14-19",
+      "requirement_id": "14-REQ-9.2",
+      "kind": "unit",
+      "description": "MergeNoFF auto-aborts and returns *MergeNoFFConflictError with ConflictingFiles when merge conflicts.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with 'main' and 'feature' branches that have conflicting changes to the same file",
+        "Current HEAD is on 'main'",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "branch": "feature"
+      },
+      "expected": "MergeNoFF returns (\"\", *MergeNoFFConflictError) with ConflictingFiles containing at least one file path; repository is in clean state (no merge in progress)",
+      "assertion_pseudocode": "sha, err = runner.MergeNoFF(ctx, \"feature\"); assert sha == \"\"; assert err != nil; mergeErr, ok = err.(*MergeNoFFConflictError); assert ok == true; assert len(mergeErr.ConflictingFiles) > 0; mergeHead = fileExists(workDir + \"/.git/MERGE_HEAD\"); assert mergeHead == false"
+    },
+    {
+      "id": "TS-14-20",
+      "requirement_id": "14-REQ-9.3",
+      "kind": "unit",
+      "description": "MergeNoFF returns ctx.Err() without aborting when the context is cancelled before completion.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A context that is already cancelled is prepared"
+      ],
+      "input": {
+        "branch": "feature",
+        "ctx": "cancelled context"
+      },
+      "expected": "MergeNoFF returns (\"\", context.Canceled) without running git merge --abort",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); sha, err = runner.MergeNoFF(ctx, \"feature\"); assert sha == \"\"; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-21",
+      "requirement_id": "14-REQ-10.1",
+      "kind": "unit",
+      "description": "MergeAbort runs git merge --abort while a merge is in progress and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a merge conflict in progress (MERGE_HEAD file exists)",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {},
+      "expected": "MergeAbort returns nil; MERGE_HEAD file no longer exists in .git/",
+      "assertion_pseudocode": "err = runner.MergeAbort(ctx); assert err == nil; mergeHead = fileExists(workDir + \"/.git/MERGE_HEAD\"); assert mergeHead == false"
+    },
+    {
+      "id": "TS-14-22",
+      "requirement_id": "14-REQ-10.2",
+      "kind": "unit",
+      "description": "MergeAbort returns a *GitError when git merge --abort exits non-zero.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with no merge in progress",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {},
+      "expected": "MergeAbort returns a non-nil *GitError with non-zero ExitCode",
+      "assertion_pseudocode": "err = runner.MergeAbort(ctx); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-23",
+      "requirement_id": "14-REQ-11.1",
+      "kind": "unit",
+      "description": "RebaseContinue while a rebase is paused returns the new HEAD SHA and nil error.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a rebase paused at a conflict that has been manually resolved",
+        "git user.email and user.name are configured in the repo",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {},
+      "expected": "RebaseContinue returns (newHeadSHA string, nil) where newHeadSHA is a valid 40-char hex SHA; rebase is no longer in progress",
+      "assertion_pseudocode": "sha, err = runner.RebaseContinue(ctx); assert err == nil; assert len(sha) == 40; rebaseDir = fileExists(workDir + \"/.git/rebase-merge\"); assert rebaseDir == false"
+    },
+    {
+      "id": "TS-14-24",
+      "requirement_id": "14-REQ-11.2",
+      "kind": "unit",
+      "description": "RebaseContinue returns a *GitError when git rebase --continue exits non-zero.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with no rebase in progress",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {},
+      "expected": "RebaseContinue returns (\"\", *GitError) with non-zero ExitCode",
+      "assertion_pseudocode": "sha, err = runner.RebaseContinue(ctx); assert sha == \"\"; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0"
+    },
+    {
+      "id": "TS-14-25",
+      "requirement_id": "14-REQ-12.1",
+      "kind": "unit",
+      "description": "IsAncestor returns (true, nil) when commitA is an ancestor of commitB.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a linear history: commit A then commit B",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "commitA": "<SHA of first commit>",
+        "commitB": "<SHA of second commit>"
+      },
+      "expected": "IsAncestor returns (true, nil)",
+      "assertion_pseudocode": "result, err = runner.IsAncestor(ctx, commitA_SHA, commitB_SHA); assert err == nil; assert result == true"
+    },
+    {
+      "id": "TS-14-26",
+      "requirement_id": "14-REQ-12.2",
+      "kind": "unit",
+      "description": "IsAncestor returns (false, nil) when commitA is NOT an ancestor of commitB.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with two diverged branches; commitA is on branch-a, commitB is on branch-b, neither is an ancestor of the other",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "commitA": "<SHA on branch-a>",
+        "commitB": "<SHA on branch-b>"
+      },
+      "expected": "IsAncestor returns (false, nil)",
+      "assertion_pseudocode": "result, err = runner.IsAncestor(ctx, commitA_SHA, commitB_SHA); assert err == nil; assert result == false"
+    },
+    {
+      "id": "TS-14-27",
+      "requirement_id": "14-REQ-12.3",
+      "kind": "unit",
+      "description": "IsAncestor returns (false, *GitError) when git merge-base exits with a code other than 0 or 1.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "commitA": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "commitB": "cafebabecafebabecafebabecafebabecafebabe"
+      },
+      "expected": "IsAncestor returns (false, *GitError) with ExitCode != 0 and != 1",
+      "assertion_pseudocode": "result, err = runner.IsAncestor(ctx, \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\", \"cafebabecafebabecafebabecafebabecafebabe\"); assert result == false; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.ExitCode != 0; assert gitErr.ExitCode != 1"
+    },
+    {
+      "id": "TS-14-28",
+      "requirement_id": "14-REQ-13.1",
+      "kind": "unit",
+      "description": "CherryPickConflictError and MergeNoFFConflictError are exported types with ConflictingFiles field and Error() method satisfying the error interface.",
+      "preconditions": [
+        "internal/gitcmd package is compiled"
+      ],
+      "input": {
+        "conflictingFiles": [
+          "file1.go",
+          "file2.go"
+        ]
+      },
+      "expected": "Both types compile as public structs; Error() returns a non-empty human-readable string; both satisfy the error interface",
+      "assertion_pseudocode": "cpErr = &CherryPickConflictError{ConflictingFiles: [\"file1.go\", \"file2.go\"]}; assert cpErr.Error() != \"\"; var _ error = cpErr; mergeErr = &MergeNoFFConflictError{ConflictingFiles: [\"file1.go\"]}; assert mergeErr.Error() != \"\"; var _ error = mergeErr"
+    },
+    {
+      "id": "TS-14-29",
+      "requirement_id": "14-REQ-13.2",
+      "kind": "unit",
+      "description": "ConflictingFiles is populated by parseRebaseConflictFiles from git output; contains one entry per conflicting file path.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a cherry-pick conflict scenario involving two files",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "sha": "<SHA of commit conflicting with two files>"
+      },
+      "expected": "CherryPickConflictError.ConflictingFiles contains exactly the two conflicting file paths",
+      "assertion_pseudocode": "_, err = runner.CherryPick(ctx, conflictingSHA); cpErr = err.(*CherryPickConflictError); assert len(cpErr.ConflictingFiles) == 2; assert cpErr.ConflictingFiles contains \"file_a.txt\"; assert cpErr.ConflictingFiles contains \"file_b.txt\""
+    },
+    {
+      "id": "TS-14-30",
+      "requirement_id": "14-REQ-14.1",
+      "kind": "unit",
+      "description": "After sync fast-forward advances the local branch ref, worktree.Reset with HardReset updates on-disk files to match the new HEAD.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with two commits; the local ref points to the first commit",
+        "internal/workspace package is available",
+        "defaultSyncUpdateLocalRefFn is accessible for testing"
+      ],
+      "input": {
+        "newHeadSHA": "<SHA of second commit>"
+      },
+      "expected": "After defaultSyncUpdateLocalRefFn completes, on-disk files match the second commit; git status shows clean working tree",
+      "assertion_pseudocode": "defaultSyncUpdateLocalRefFn(ctx, repoPath, newHeadSHA); status = exec(\"git status --porcelain\", repoPath); assert status == \"\"; head = exec(\"git rev-parse HEAD\", repoPath); assert head == newHeadSHA"
+    },
+    {
+      "id": "TS-14-31",
+      "requirement_id": "14-REQ-14.2",
+      "kind": "unit",
+      "description": "When worktree.Reset fails after a successful ref update, defaultSyncUpdateLocalRefFn logs the error and returns nil.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "The ref update succeeds",
+        "worktree.Reset is stubbed/mocked to return an error",
+        "A log capture mechanism is in place"
+      ],
+      "input": {
+        "resetError": "simulated filesystem error"
+      },
+      "expected": "defaultSyncUpdateLocalRefFn returns nil; an error-level log entry is emitted containing the reset failure details",
+      "assertion_pseudocode": "mockReset = func() error { return errors.New(\"simulated filesystem error\") }; err = defaultSyncUpdateLocalRefFnWithMockReset(ctx, repoPath, newHeadSHA, mockReset); assert err == nil; assert logCapture contains \"simulated filesystem error\""
+    },
+    {
+      "id": "TS-14-32",
+      "requirement_id": "14-REQ-15.1",
+      "kind": "unit",
+      "description": "All new GitRunner methods inject GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM, and GIT_ALLOW_PROTOCOL into every git subprocess.",
+      "preconditions": [
+        "GitRunner is constructed with workDir pointing to a real temp git repository",
+        "A mechanism to capture subprocess environment variables is in place (e.g. a test git wrapper script)"
+      ],
+      "input": {
+        "method": "Checkout, CreateBranch, DeleteBranch, CherryPick, ConfigSet, RemoteAdd, Log, Diff, MergeNoFF, MergeAbort, RebaseContinue, IsAncestor"
+      },
+      "expected": "Each method's git subprocess receives GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1, and GIT_ALLOW_PROTOCOL set to the allowlist value",
+      "assertion_pseudocode": "for each newMethod in [Checkout, CreateBranch, DeleteBranch, ConfigSet, RemoteAdd, Log, Diff, MergeAbort, RebaseContinue]: capturedEnv = captureSubprocessEnv(runner, newMethod); assert capturedEnv[\"GIT_TERMINAL_PROMPT\"] == \"0\"; assert capturedEnv[\"GIT_CONFIG_NOSYSTEM\"] == \"1\"; assert capturedEnv[\"GIT_ALLOW_PROTOCOL\"] != \"\""
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-14-P1",
+      "property_id": "14-PROP-1",
+      "validates": [
+        "14-REQ-4.2",
+        "14-REQ-4.E3"
+      ],
+      "description": "For any commit SHA that causes a cherry-pick conflict, CherryPick always aborts before returning, leaving the repository in a clean state.",
+      "for_any_strategy": "Sample 10 distinct conflicting commit SHAs by creating a real git repo with diverging changes to the same file on different branches; each SHA is a real commit that conflicts with the current HEAD",
+      "invariant_check": "After CherryPick returns *CherryPickConflictError, assert fileExists(workDir + \"/.git/CHERRY_PICK_HEAD\") == false AND exec(\"git status --porcelain\", workDir) shows no conflict markers"
+    },
+    {
+      "id": "TS-14-P2",
+      "property_id": "14-PROP-2",
+      "validates": [
+        "14-REQ-9.2",
+        "14-REQ-9.E3"
+      ],
+      "description": "For any branch that causes a merge conflict, MergeNoFF always aborts before returning, leaving the repository in a clean state.",
+      "for_any_strategy": "Sample 10 distinct conflicting branch configurations by creating a real git repo with diverging changes to the same file; each branch has a real conflict with the current HEAD",
+      "invariant_check": "After MergeNoFF returns *MergeNoFFConflictError, assert fileExists(workDir + \"/.git/MERGE_HEAD\") == false AND exec(\"git status --porcelain\", workDir) shows no conflict markers"
+    },
+    {
+      "id": "TS-14-P3",
+      "property_id": "14-PROP-3",
+      "validates": [
+        "14-REQ-12.1",
+        "14-REQ-12.2",
+        "14-REQ-12.3"
+      ],
+      "description": "IsAncestor exit code discrimination is exhaustive: exit 0 → (true, nil), exit 1 → (false, nil), other → (false, *GitError).",
+      "for_any_strategy": "Enumerate all three cases using real git repos: (1) linear history where A precedes B, (2) diverged branches where A is not an ancestor of B, (3) non-existent SHAs that cause git to exit with code > 1",
+      "invariant_check": "For exit 0: result == true AND err == nil; for exit 1: result == false AND err == nil; for other exit: result == false AND err is *GitError with ExitCode != 0 AND ExitCode != 1; no exit code maps to any other combination"
+    },
+    {
+      "id": "TS-14-P4",
+      "property_id": "14-PROP-4",
+      "validates": [
+        "14-REQ-14.2",
+        "14-REQ-14.E1",
+        "14-REQ-14.E2",
+        "14-REQ-14.E4"
+      ],
+      "description": "A failure in worktree.Reset after a successful ref update never causes defaultSyncUpdateLocalRefFn to return an error.",
+      "for_any_strategy": "Enumerate 5 distinct reset failure modes: (1) PlainOpen fails, (2) Worktree() fails, (3) Reset returns I/O error, (4) Reset returns context.Canceled, (5) Reset returns context.DeadlineExceeded — each injected via a mock",
+      "invariant_check": "For each failure mode, assert defaultSyncUpdateLocalRefFn(ctx, repoPath, newHeadSHA) == nil; assert logCapture is non-empty (error was logged)"
+    },
+    {
+      "id": "TS-14-P5",
+      "property_id": "14-PROP-5",
+      "validates": [
+        "14-REQ-1.E2",
+        "14-REQ-2.E3",
+        "14-REQ-3.E3",
+        "14-REQ-4.E4",
+        "14-REQ-9.E4",
+        "14-REQ-11.E3",
+        "14-REQ-12.E3"
+      ],
+      "description": "All new GitRunner methods return within a bounded time after context cancellation, killing the git subprocess if necessary.",
+      "for_any_strategy": "For each of the 11 new methods (Checkout, CreateBranch, DeleteBranch, CherryPick, ConfigSet, RemoteAdd, Log, Diff, MergeNoFF, MergeAbort, RebaseContinue, IsAncestor), call the method with a pre-cancelled context against a real temp git repo",
+      "invariant_check": "Each method call completes within 2 seconds of context cancellation; assert the returned error is context.Canceled or context.DeadlineExceeded (not a *GitError from a subprocess that ran to completion)"
+    },
+    {
+      "id": "TS-14-P6",
+      "property_id": "14-PROP-6",
+      "validates": [
+        "14-REQ-4.E2",
+        "14-REQ-9.E2",
+        "14-REQ-13.E1"
+      ],
+      "description": "ConflictingFiles always contains at least one entry for any conflict error returned by CherryPick or MergeNoFF.",
+      "for_any_strategy": "Sample 20 conflict scenarios: 10 where git output contains parseable CONFLICT lines (varying file counts 1-5), 10 where git output contains no CONFLICT lines (binary conflicts, custom merge drivers, empty output)",
+      "invariant_check": "For every returned *CherryPickConflictError or *MergeNoFFConflictError, assert len(err.ConflictingFiles) >= 1; when no CONFLICT lines are present, assert ConflictingFiles == [\"(unresolved conflict)\"]"
+    },
+    {
+      "id": "TS-14-P7",
+      "property_id": "14-PROP-7",
+      "validates": [
+        "14-REQ-1.2",
+        "14-REQ-2.2",
+        "14-REQ-3.2",
+        "14-REQ-4.2",
+        "14-REQ-5.2",
+        "14-REQ-6.2",
+        "14-REQ-7.2",
+        "14-REQ-8.2",
+        "14-REQ-9.2",
+        "14-REQ-10.2",
+        "14-REQ-11.2",
+        "14-REQ-12.3"
+      ],
+      "description": "No new GitRunner method calls os.Exit or panics on any recoverable error condition.",
+      "for_any_strategy": "For each of the 11 new methods, exercise all error paths: empty args, non-existent refs, cancelled contexts, git subprocess failures — using real temp git repos and recover() to catch panics",
+      "invariant_check": "For each error path: recover() returns nil (no panic); the process is still running; the returned value is a Go error value (not a process exit); assert no os.Exit is called by wrapping os.Exit in a test stub"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-14-E1",
+      "requirement_id": "14-REQ-1.E1",
+      "kind": "unit",
+      "description": "Checkout with an empty ref string returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "ref": ""
+      },
+      "expected": "Checkout returns a non-nil *GitError immediately; no git subprocess is spawned",
+      "assertion_pseudocode": "err = runner.Checkout(ctx, \"\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.Message contains \"empty\" or \"invalid\""
+    },
+    {
+      "id": "TS-14-E2",
+      "requirement_id": "14-REQ-1.E2",
+      "kind": "unit",
+      "description": "Checkout returns the context error when the context is cancelled before git checkout completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context",
+        "ref": "main"
+      },
+      "expected": "Checkout returns (nil, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = runner.Checkout(ctx, \"main\"); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E3",
+      "requirement_id": "14-REQ-1.E3",
+      "kind": "unit",
+      "description": "Checkout returns a *GitError containing git's stderr when the ref does not exist.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "ref": "refs/heads/does-not-exist"
+      },
+      "expected": "Checkout returns a non-nil *GitError with Stderr containing git's error message about the missing ref",
+      "assertion_pseudocode": "err = runner.Checkout(ctx, \"refs/heads/does-not-exist\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert len(gitErr.Stderr) > 0"
+    },
+    {
+      "id": "TS-14-E4",
+      "requirement_id": "14-REQ-2.E1",
+      "kind": "unit",
+      "description": "CreateBranch with an empty name or startPoint returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "",
+        "startPoint": "HEAD"
+      },
+      "expected": "CreateBranch returns a non-nil *GitError immediately without spawning git",
+      "assertion_pseudocode": "err = runner.CreateBranch(ctx, \"\", \"HEAD\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; err2 = runner.CreateBranch(ctx, \"new-branch\", \"\"); assert err2 != nil; _, ok2 = err2.(*GitError); assert ok2 == true"
+    },
+    {
+      "id": "TS-14-E5",
+      "requirement_id": "14-REQ-2.E2",
+      "kind": "unit",
+      "description": "CreateBranch returns a *GitError wrapping git's stderr when the branch already exists.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "Branch 'existing' already exists",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "existing",
+        "startPoint": "HEAD"
+      },
+      "expected": "CreateBranch returns a non-nil *GitError with Stderr containing git's 'already exists' message",
+      "assertion_pseudocode": "err = runner.CreateBranch(ctx, \"existing\", \"HEAD\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.Stderr contains \"already exists\""
+    },
+    {
+      "id": "TS-14-E6",
+      "requirement_id": "14-REQ-2.E3",
+      "kind": "unit",
+      "description": "CreateBranch returns the context error when the context is cancelled before git branch completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context",
+        "name": "new-branch",
+        "startPoint": "HEAD"
+      },
+      "expected": "CreateBranch returns (nil, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = runner.CreateBranch(ctx, \"new-branch\", \"HEAD\"); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E7",
+      "requirement_id": "14-REQ-3.E1",
+      "kind": "unit",
+      "description": "DeleteBranch with an empty branch name returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": ""
+      },
+      "expected": "DeleteBranch returns a non-nil *GitError immediately without spawning git",
+      "assertion_pseudocode": "err = runner.DeleteBranch(ctx, \"\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true"
+    },
+    {
+      "id": "TS-14-E8",
+      "requirement_id": "14-REQ-3.E2",
+      "kind": "unit",
+      "description": "DeleteBranch returns a *GitError wrapping git's stderr when the branch does not exist.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "Branch 'ghost' does not exist",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "ghost"
+      },
+      "expected": "DeleteBranch returns a non-nil *GitError with Stderr containing git's error about the missing branch",
+      "assertion_pseudocode": "err = runner.DeleteBranch(ctx, \"ghost\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert len(gitErr.Stderr) > 0"
+    },
+    {
+      "id": "TS-14-E9",
+      "requirement_id": "14-REQ-3.E3",
+      "kind": "unit",
+      "description": "DeleteBranch returns the context error when the context is cancelled before git branch -D completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context",
+        "name": "some-branch"
+      },
+      "expected": "DeleteBranch returns (nil, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = runner.DeleteBranch(ctx, \"some-branch\"); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E10",
+      "requirement_id": "14-REQ-4.E1",
+      "kind": "unit",
+      "description": "CherryPick with an empty sha argument returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "sha": ""
+      },
+      "expected": "CherryPick returns (\"\", *GitError) immediately without spawning git",
+      "assertion_pseudocode": "sha, err = runner.CherryPick(ctx, \"\"); assert sha == \"\"; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true"
+    },
+    {
+      "id": "TS-14-E11",
+      "requirement_id": "14-REQ-4.E2",
+      "kind": "unit",
+      "description": "CherryPick includes '(unresolved conflict)' in ConflictingFiles when conflict output cannot be parsed.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "A scenario is constructed where cherry-pick conflicts but git output contains no CONFLICT lines (e.g. binary file conflict or custom merge driver)",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "sha": "<SHA causing unparseable conflict output>"
+      },
+      "expected": "CherryPick returns (\"\", *CherryPickConflictError) with ConflictingFiles == [\"(unresolved conflict)\"]; repository is in clean state",
+      "assertion_pseudocode": "sha, err = runner.CherryPick(ctx, conflictingSHA); assert sha == \"\"; cpErr, ok = err.(*CherryPickConflictError); assert ok == true; assert cpErr.ConflictingFiles == [\"(unresolved conflict)\"]; assert fileExists(workDir + \"/.git/CHERRY_PICK_HEAD\") == false"
+    },
+    {
+      "id": "TS-14-E12",
+      "requirement_id": "14-REQ-4.E3",
+      "kind": "unit",
+      "description": "CherryPick logs the abort failure and still returns the original *CherryPickConflictError when git cherry-pick --abort itself fails.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a cherry-pick conflict scenario",
+        "The abort command is stubbed to fail",
+        "A log capture mechanism is in place",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "sha": "<SHA causing conflict>"
+      },
+      "expected": "CherryPick returns (\"\", *CherryPickConflictError); an error-level log entry about the abort failure is emitted",
+      "assertion_pseudocode": "sha, err = runner.CherryPick(ctx, conflictingSHA); assert sha == \"\"; cpErr, ok = err.(*CherryPickConflictError); assert ok == true; assert logCapture contains \"abort\" or \"failed\""
+    },
+    {
+      "id": "TS-14-E13",
+      "requirement_id": "14-REQ-4.E4",
+      "kind": "unit",
+      "description": "CherryPick returns the context error without aborting when git cherry-pick hangs past the context deadline.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A context with a very short deadline is prepared"
+      ],
+      "input": {
+        "ctx": "deadline-exceeded context",
+        "sha": "<any valid commit SHA>"
+      },
+      "expected": "CherryPick returns (\"\", context.DeadlineExceeded) within a bounded time; no abort is run",
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 1*time.Millisecond); defer cancel(); sha, err = runner.CherryPick(ctx, validSHA); assert sha == \"\"; assert err == context.DeadlineExceeded or err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E14",
+      "requirement_id": "14-REQ-5.E1",
+      "kind": "unit",
+      "description": "ConfigSet with an empty key or value returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "key": "",
+        "value": "true"
+      },
+      "expected": "ConfigSet returns a non-nil *GitError immediately without spawning git",
+      "assertion_pseudocode": "err = runner.ConfigSet(ctx, \"\", \"true\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; err2 = runner.ConfigSet(ctx, \"rerere.enabled\", \"\"); assert err2 != nil; _, ok2 = err2.(*GitError); assert ok2 == true"
+    },
+    {
+      "id": "TS-14-E15",
+      "requirement_id": "14-REQ-5.E2",
+      "kind": "unit",
+      "description": "ConfigSet returns the context error when the context is cancelled before git config completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context",
+        "key": "rerere.enabled",
+        "value": "true"
+      },
+      "expected": "ConfigSet returns (nil, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = runner.ConfigSet(ctx, \"rerere.enabled\", \"true\"); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E16",
+      "requirement_id": "14-REQ-6.E1",
+      "kind": "unit",
+      "description": "RemoteAdd with an empty name or url returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "",
+        "url": "https://example.com/repo.git"
+      },
+      "expected": "RemoteAdd returns a non-nil *GitError immediately without spawning git",
+      "assertion_pseudocode": "err = runner.RemoteAdd(ctx, \"\", \"https://example.com/repo.git\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; err2 = runner.RemoteAdd(ctx, \"upstream\", \"\"); assert err2 != nil; _, ok2 = err2.(*GitError); assert ok2 == true"
+    },
+    {
+      "id": "TS-14-E17",
+      "requirement_id": "14-REQ-6.E2",
+      "kind": "unit",
+      "description": "RemoteAdd returns a *GitError wrapping git's stderr when a remote with the given name already exists.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "Remote 'origin' already exists",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "name": "origin",
+        "url": "https://example.com/other.git"
+      },
+      "expected": "RemoteAdd returns a non-nil *GitError with Stderr containing git's 'already exists' message",
+      "assertion_pseudocode": "err = runner.RemoteAdd(ctx, \"origin\", \"https://example.com/other.git\"); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert gitErr.Stderr contains \"already exists\""
+    },
+    {
+      "id": "TS-14-E18",
+      "requirement_id": "14-REQ-6.E3",
+      "kind": "unit",
+      "description": "RemoteAdd returns the context error when the context is cancelled before git remote add completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context",
+        "name": "upstream",
+        "url": "https://example.com/repo.git"
+      },
+      "expected": "RemoteAdd returns (nil, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = runner.RemoteAdd(ctx, \"upstream\", \"https://example.com/repo.git\"); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E19",
+      "requirement_id": "14-REQ-7.E1",
+      "kind": "unit",
+      "description": "Log with no args runs git log with no additional arguments and returns stdout.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": []
+      },
+      "expected": "Log returns (rawStdout string, nil) where rawStdout contains commit information",
+      "assertion_pseudocode": "out, err = runner.Log(ctx); assert err == nil; assert len(out) > 0"
+    },
+    {
+      "id": "TS-14-E20",
+      "requirement_id": "14-REQ-7.E2",
+      "kind": "unit",
+      "description": "Log returns the context error when the context is cancelled before git log completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "args": [],
+        "ctx": "cancelled context"
+      },
+      "expected": "Log returns (\"\", context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); out, err = runner.Log(ctx); assert out == \"\"; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E21",
+      "requirement_id": "14-REQ-7.E3",
+      "kind": "unit",
+      "description": "Log on a repository with no commits returns empty string without error (or a GitError if git exits non-zero).",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with no commits (git init only)",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": []
+      },
+      "expected": "Log returns either (\"\", nil) if git exits 0, or (\"\", *GitError) if git exits non-zero — both are acceptable; no panic occurs",
+      "assertion_pseudocode": "out, err = runner.Log(ctx); if err == nil { assert out == \"\" } else { gitErr, ok = err.(*GitError); assert ok == true }"
+    },
+    {
+      "id": "TS-14-E22",
+      "requirement_id": "14-REQ-8.E1",
+      "kind": "unit",
+      "description": "Diff with no args runs git diff with no additional arguments and returns stdout.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "args": []
+      },
+      "expected": "Diff returns (rawStdout string, nil); rawStdout may be empty if working tree is clean",
+      "assertion_pseudocode": "out, err = runner.Diff(ctx); assert err == nil"
+    },
+    {
+      "id": "TS-14-E23",
+      "requirement_id": "14-REQ-8.E2",
+      "kind": "unit",
+      "description": "Diff returns the context error when the context is cancelled before git diff completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "args": [],
+        "ctx": "cancelled context"
+      },
+      "expected": "Diff returns (\"\", context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); out, err = runner.Diff(ctx); assert out == \"\"; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E24",
+      "requirement_id": "14-REQ-9.E1",
+      "kind": "unit",
+      "description": "MergeNoFF with an empty branch argument returns a *GitError without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "branch": ""
+      },
+      "expected": "MergeNoFF returns (\"\", *GitError) immediately without spawning git",
+      "assertion_pseudocode": "sha, err = runner.MergeNoFF(ctx, \"\"); assert sha == \"\"; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true"
+    },
+    {
+      "id": "TS-14-E25",
+      "requirement_id": "14-REQ-9.E2",
+      "kind": "unit",
+      "description": "MergeNoFF includes '(unresolved conflict)' in ConflictingFiles when conflict output cannot be parsed.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a merge conflict scenario producing no CONFLICT lines in output",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "branch": "feature"
+      },
+      "expected": "MergeNoFF returns (\"\", *MergeNoFFConflictError) with ConflictingFiles == [\"(unresolved conflict)\"]; repository is in clean state",
+      "assertion_pseudocode": "sha, err = runner.MergeNoFF(ctx, \"feature\"); assert sha == \"\"; mergeErr, ok = err.(*MergeNoFFConflictError); assert ok == true; assert mergeErr.ConflictingFiles == [\"(unresolved conflict)\"]; assert fileExists(workDir + \"/.git/MERGE_HEAD\") == false"
+    },
+    {
+      "id": "TS-14-E26",
+      "requirement_id": "14-REQ-9.E3",
+      "kind": "unit",
+      "description": "MergeNoFF logs the abort failure and still returns the original *MergeNoFFConflictError when git merge --abort fails.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a merge conflict scenario",
+        "The abort command is stubbed to fail",
+        "A log capture mechanism is in place",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "branch": "feature"
+      },
+      "expected": "MergeNoFF returns (\"\", *MergeNoFFConflictError); an error-level log entry about the abort failure is emitted",
+      "assertion_pseudocode": "sha, err = runner.MergeNoFF(ctx, \"feature\"); assert sha == \"\"; mergeErr, ok = err.(*MergeNoFFConflictError); assert ok == true; assert logCapture contains \"abort\" or \"failed\""
+    },
+    {
+      "id": "TS-14-E27",
+      "requirement_id": "14-REQ-9.E4",
+      "kind": "unit",
+      "description": "MergeNoFF returns the context error without aborting when git merge --no-ff hangs past the context deadline.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A context with a very short deadline is prepared"
+      ],
+      "input": {
+        "branch": "feature",
+        "ctx": "deadline-exceeded context"
+      },
+      "expected": "MergeNoFF returns (\"\", context.DeadlineExceeded or context.Canceled) within a bounded time; no abort is run",
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 1*time.Millisecond); defer cancel(); sha, err = runner.MergeNoFF(ctx, \"feature\"); assert sha == \"\"; assert err == context.DeadlineExceeded or err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E28",
+      "requirement_id": "14-REQ-10.E1",
+      "kind": "unit",
+      "description": "MergeAbort returns a *GitError wrapping git's stderr when no merge is in progress.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with no merge in progress",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {},
+      "expected": "MergeAbort returns a non-nil *GitError with Stderr containing git's error about no merge in progress",
+      "assertion_pseudocode": "err = runner.MergeAbort(ctx); assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert len(gitErr.Stderr) > 0"
+    },
+    {
+      "id": "TS-14-E29",
+      "requirement_id": "14-REQ-10.E2",
+      "kind": "unit",
+      "description": "MergeAbort returns the context error when the context is cancelled before git merge --abort completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context"
+      },
+      "expected": "MergeAbort returns (nil, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = runner.MergeAbort(ctx); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E30",
+      "requirement_id": "14-REQ-11.E1",
+      "kind": "unit",
+      "description": "RebaseContinue returns a *GitError wrapping git's stderr when no rebase is in progress.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with no rebase in progress",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {},
+      "expected": "RebaseContinue returns (\"\", *GitError) with Stderr containing git's error about no rebase in progress",
+      "assertion_pseudocode": "sha, err = runner.RebaseContinue(ctx); assert sha == \"\"; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert len(gitErr.Stderr) > 0"
+    },
+    {
+      "id": "TS-14-E31",
+      "requirement_id": "14-REQ-11.E2",
+      "kind": "unit",
+      "description": "RebaseContinue returns the context error when the context is cancelled before git rebase --continue completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a rebase paused",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "ctx": "cancelled context"
+      },
+      "expected": "RebaseContinue returns (\"\", context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); sha, err = runner.RebaseContinue(ctx); assert sha == \"\"; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E32",
+      "requirement_id": "14-REQ-11.E3",
+      "kind": "unit",
+      "description": "RebaseContinue returns the context error when git rebase --continue hangs past the context deadline.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with a rebase paused",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A context with a very short deadline is prepared"
+      ],
+      "input": {
+        "ctx": "deadline-exceeded context"
+      },
+      "expected": "RebaseContinue returns (\"\", context.DeadlineExceeded or context.Canceled) within a bounded time",
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 1*time.Millisecond); defer cancel(); sha, err = runner.RebaseContinue(ctx); assert sha == \"\"; assert err == context.DeadlineExceeded or err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E33",
+      "requirement_id": "14-REQ-12.E1",
+      "kind": "unit",
+      "description": "IsAncestor with an empty commitA or commitB returns (false, *GitError) without spawning a git subprocess.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "commitA": "",
+        "commitB": "abc123"
+      },
+      "expected": "IsAncestor returns (false, *GitError) immediately without spawning git",
+      "assertion_pseudocode": "result, err = runner.IsAncestor(ctx, \"\", \"abc123\"); assert result == false; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; result2, err2 = runner.IsAncestor(ctx, \"abc123\", \"\"); assert result2 == false; assert err2 != nil"
+    },
+    {
+      "id": "TS-14-E34",
+      "requirement_id": "14-REQ-12.E2",
+      "kind": "unit",
+      "description": "IsAncestor returns (false, *GitError) wrapping git's stderr when one or both commit SHAs do not exist.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with at least one commit",
+        "GitRunner is constructed with workDir pointing to the temp repo"
+      ],
+      "input": {
+        "commitA": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "commitB": "cafebabecafebabecafebabecafebabecafebabe"
+      },
+      "expected": "IsAncestor returns (false, *GitError) with non-empty Stderr",
+      "assertion_pseudocode": "result, err = runner.IsAncestor(ctx, \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\", \"cafebabecafebabecafebabecafebabecafebabe\"); assert result == false; assert err != nil; gitErr, ok = err.(*GitError); assert ok == true; assert len(gitErr.Stderr) > 0"
+    },
+    {
+      "id": "TS-14-E35",
+      "requirement_id": "14-REQ-12.E3",
+      "kind": "unit",
+      "description": "IsAncestor returns the context error when the context is cancelled before git merge-base completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "GitRunner is constructed with workDir pointing to the temp repo",
+        "A pre-cancelled context is prepared"
+      ],
+      "input": {
+        "commitA": "<valid SHA>",
+        "commitB": "<valid SHA>",
+        "ctx": "cancelled context"
+      },
+      "expected": "IsAncestor returns (false, context.Canceled)",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); result, err = runner.IsAncestor(ctx, validSHA_A, validSHA_B); assert result == false; assert err == context.Canceled"
+    },
+    {
+      "id": "TS-14-E36",
+      "requirement_id": "14-REQ-13.E1",
+      "kind": "unit",
+      "description": "ConflictingFiles is set to ['(unresolved conflict)'] when git output contains no CONFLICT lines.",
+      "preconditions": [
+        "internal/gitcmd package is available",
+        "A CherryPickConflictError or MergeNoFFConflictError is constructed with empty git output passed to parseRebaseConflictFiles"
+      ],
+      "input": {
+        "gitOutput": ""
+      },
+      "expected": "ConflictingFiles equals [\"(unresolved conflict)\"]",
+      "assertion_pseudocode": "files = parseRebaseConflictFiles(\"\"); if len(files) == 0 { files = [\"(unresolved conflict)\"] }; assert files == [\"(unresolved conflict)\"]"
+    },
+    {
+      "id": "TS-14-E37",
+      "requirement_id": "14-REQ-14.E1",
+      "kind": "unit",
+      "description": "defaultSyncUpdateLocalRefFn logs the error and returns nil when the repository directory does not exist during PlainOpen.",
+      "preconditions": [
+        "A non-existent directory path is provided as the repository path",
+        "A log capture mechanism is in place"
+      ],
+      "input": {
+        "newHeadSHA": "abc123",
+        "repoPath": "/tmp/nonexistent-repo-xyz"
+      },
+      "expected": "defaultSyncUpdateLocalRefFn returns nil; an error-level log entry is emitted about the PlainOpen failure",
+      "assertion_pseudocode": "err = defaultSyncUpdateLocalRefFn(ctx, \"/tmp/nonexistent-repo-xyz\", \"abc123\"); assert err == nil; assert logCapture contains \"PlainOpen\" or \"not a git repository\" or similar"
+    },
+    {
+      "id": "TS-14-E38",
+      "requirement_id": "14-REQ-14.E2",
+      "kind": "unit",
+      "description": "defaultSyncUpdateLocalRefFn logs the context error and returns nil when the context is cancelled before worktree.Reset completes.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "The ref update succeeds",
+        "worktree.Reset is stubbed to block until context cancellation",
+        "A log capture mechanism is in place"
+      ],
+      "input": {
+        "ctx": "cancelled context"
+      },
+      "expected": "defaultSyncUpdateLocalRefFn returns nil; an error-level log entry is emitted about the context cancellation",
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(context.Background()); cancel(); err = defaultSyncUpdateLocalRefFn(ctx, repoPath, newHeadSHA); assert err == nil; assert logCapture contains context error message"
+    },
+    {
+      "id": "TS-14-E39",
+      "requirement_id": "14-REQ-14.E3",
+      "kind": "unit",
+      "description": "HardReset during sync fast-forward discards local modifications and working tree matches new HEAD.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory with two commits",
+        "The working tree has uncommitted local modifications to a tracked file",
+        "The local ref points to the first commit"
+      ],
+      "input": {
+        "newHeadSHA": "<SHA of second commit>"
+      },
+      "expected": "After defaultSyncUpdateLocalRefFn completes, working tree matches new HEAD; local modifications are discarded; git status shows clean",
+      "assertion_pseudocode": "defaultSyncUpdateLocalRefFn(ctx, repoPath, newHeadSHA); status = exec(\"git status --porcelain\", repoPath); assert status == \"\"; head = exec(\"git rev-parse HEAD\", repoPath); assert head == newHeadSHA"
+    },
+    {
+      "id": "TS-14-E40",
+      "requirement_id": "14-REQ-14.E4",
+      "kind": "unit",
+      "description": "defaultSyncUpdateLocalRefFn logs the error and returns nil when worktree.Reset hangs due to filesystem lock.",
+      "preconditions": [
+        "A real git repository is initialised in a temp directory",
+        "The ref update succeeds",
+        "worktree.Reset is stubbed to simulate a hang/timeout",
+        "A log capture mechanism is in place"
+      ],
+      "input": {
+        "resetError": "simulated filesystem lock"
+      },
+      "expected": "defaultSyncUpdateLocalRefFn returns nil; an error-level log entry is emitted about the reset failure",
+      "assertion_pseudocode": "mockReset = func() error { return errors.New(\"simulated filesystem lock\") }; err = defaultSyncUpdateLocalRefFnWithMockReset(ctx, repoPath, newHeadSHA, mockReset); assert err == nil; assert logCapture contains \"simulated filesystem lock\""
+    },
+    {
+      "id": "TS-14-E41",
+      "requirement_id": "14-REQ-15.E1",
+      "kind": "unit",
+      "description": "GitRunner's extraEnv safety values take precedence over conflicting values in the caller's environment.",
+      "preconditions": [
+        "The test process environment has GIT_TERMINAL_PROMPT=1 set",
+        "GitRunner is constructed with workDir pointing to a real temp git repository"
+      ],
+      "input": {
+        "callerEnv": {
+          "GIT_TERMINAL_PROMPT": "1"
+        }
+      },
+      "expected": "The git subprocess spawned by any new method receives GIT_TERMINAL_PROMPT=0 (GitRunner's value), not 1",
+      "assertion_pseudocode": "os.Setenv(\"GIT_TERMINAL_PROMPT\", \"1\"); capturedEnv = captureSubprocessEnv(runner, runner.Log); assert capturedEnv[\"GIT_TERMINAL_PROMPT\"] == \"0\""
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-14-SMOKE-1",
+      "execution_path_id": "14-PATH-1",
+      "description": "CherryPick happy path: a valid commit is applied cleanly and the new HEAD SHA is returned.",
+      "trigger": "Call GitRunner.CherryPick(ctx, featureCommitSHA) on a repo where 'main' and 'feature' branches diverge cleanly",
+      "real_components": [
+        "GitRunner (internal/gitcmd)",
+        "git subprocess",
+        "carry-patch caller (test harness)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "CherryPick returns (newHeadSHA, nil) where newHeadSHA is a valid 40-char hex SHA",
+        "git rev-parse HEAD in workDir equals newHeadSHA",
+        "git log --oneline shows the cherry-picked commit message at HEAD",
+        "No CHERRY_PICK_HEAD file exists in .git/"
+      ]
+    },
+    {
+      "id": "TS-14-SMOKE-2",
+      "execution_path_id": "14-PATH-2",
+      "description": "CherryPick conflict path: auto-abort runs and *CherryPickConflictError with ConflictingFiles is returned.",
+      "trigger": "Call GitRunner.CherryPick(ctx, conflictingSHA) on a repo where the commit conflicts with the current HEAD",
+      "real_components": [
+        "GitRunner (internal/gitcmd)",
+        "git subprocess (cherry-pick)",
+        "git subprocess (cherry-pick --abort)",
+        "carry-patch caller (test harness)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "CherryPick returns (\"\", *CherryPickConflictError)",
+        "CherryPickConflictError.ConflictingFiles contains at least one file path",
+        "No CHERRY_PICK_HEAD file exists in .git/ (abort succeeded)",
+        "git status --porcelain shows clean working tree"
+      ]
+    },
+    {
+      "id": "TS-14-SMOKE-3",
+      "execution_path_id": "14-PATH-3",
+      "description": "MergeNoFF happy path: a clean merge produces a merge commit and the SHA is returned.",
+      "trigger": "Call GitRunner.MergeNoFF(ctx, 'feature') on a repo where 'feature' merges cleanly into 'main'",
+      "real_components": [
+        "GitRunner (internal/gitcmd)",
+        "git subprocess",
+        "carry-patch caller (test harness)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "MergeNoFF returns (mergeCommitSHA, nil) where mergeCommitSHA is a valid 40-char hex SHA",
+        "git rev-parse HEAD in workDir equals mergeCommitSHA",
+        "git log --oneline -1 shows a merge commit message",
+        "No MERGE_HEAD file exists in .git/"
+      ]
+    },
+    {
+      "id": "TS-14-SMOKE-4",
+      "execution_path_id": "14-PATH-4",
+      "description": "IsAncestor three-way exit code discrimination: all three outcomes (ancestor, not ancestor, error) are correctly mapped.",
+      "trigger": "Call GitRunner.IsAncestor with three different input pairs covering exit codes 0, 1, and other",
+      "real_components": [
+        "GitRunner (internal/gitcmd)",
+        "git subprocess (merge-base --is-ancestor)",
+        "carry-patch caller (test harness)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "For commitA ancestor of commitB: returns (true, nil)",
+        "For commitA not ancestor of commitB: returns (false, nil)",
+        "For non-existent SHAs: returns (false, *GitError) with ExitCode != 0 and != 1"
+      ]
+    },
+    {
+      "id": "TS-14-SMOKE-5",
+      "execution_path_id": "14-PATH-5",
+      "description": "Sync fast-forward with working tree reset: on-disk files are updated to match the new HEAD after ref advancement.",
+      "trigger": "Invoke defaultSyncUpdateLocalRefFn with a new HEAD SHA that is two commits ahead of the current local ref",
+      "real_components": [
+        "defaultSyncUpdateLocalRefFn (internal/workspace)",
+        "go-git PlainOpen",
+        "go-git Worktree.Reset",
+        "workspace filesystem"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "defaultSyncUpdateLocalRefFn returns nil",
+        "git rev-parse HEAD in the workspace repo equals the new HEAD SHA",
+        "On-disk files match the new HEAD commit content",
+        "git status --porcelain shows clean working tree"
+      ]
+    },
+    {
+      "id": "TS-14-SMOKE-6",
+      "execution_path_id": "14-PATH-6",
+      "description": "Sync fast-forward with best-effort working tree reset failure: ref update is preserved and nil is returned despite reset failure.",
+      "trigger": "Invoke defaultSyncUpdateLocalRefFn where the ref update succeeds but worktree.Reset is injected to return an error",
+      "real_components": [
+        "defaultSyncUpdateLocalRefFn (internal/workspace)",
+        "go-git PlainOpen",
+        "upstream sync trigger (test harness)"
+      ],
+      "mockable": [
+        "go-git Worktree.Reset (stubbed to return error)"
+      ],
+      "expected_effects": [
+        "defaultSyncUpdateLocalRefFn returns nil",
+        "The local branch ref has been advanced to the new HEAD SHA (Storer.SetReference succeeded)",
+        "An error-level log entry is emitted describing the reset failure",
+        "The sync operation is not marked as failed"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

@@ -1,0 +1,2134 @@
+{
+  "$schema": null,
+  "spec_id": "15",
+  "spec_name": "carry_patch_workspace",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-15-1",
+      "requirement_id": "15-REQ-1.1",
+      "kind": "unit",
+      "description": "Running the migration against an existing database that lacks the new columns adds workspace_mode, upstream_url, and integration_branch columns, and existing rows read back with correct defaults.",
+      "preconditions": [
+        "SQLite database file exists with a workspaces table that does NOT have workspace_mode, upstream_url, or integration_branch columns",
+        "At least one existing workspace row is present in the table",
+        "Hub migration function is available"
+      ],
+      "input": "Call the database migration function against the existing database",
+      "expected": {
+        "existing_row_integration_branch": null,
+        "existing_row_upstream_url": null,
+        "existing_row_workspace_mode": "standard",
+        "migration_result": "nil error"
+      },
+      "assertion_pseudocode": "err = runMigration(db); assert err == nil; row = db.QueryRow('SELECT workspace_mode, upstream_url, integration_branch FROM workspaces WHERE slug = existing_slug'); assert row.workspace_mode == 'standard'; assert row.upstream_url == NULL; assert row.integration_branch == NULL"
+    },
+    {
+      "id": "TS-15-2",
+      "requirement_id": "15-REQ-1.2",
+      "kind": "unit",
+      "description": "Initializing schema against a fresh empty database creates the workspaces table with all three new columns present without requiring ALTER TABLE.",
+      "preconditions": [
+        "Fresh empty SQLite database file (no tables)",
+        "Hub schema initializer function is available"
+      ],
+      "input": "Call the schema initializer against the empty database",
+      "expected": {
+        "columns_present": [
+          "workspace_mode",
+          "upstream_url",
+          "integration_branch"
+        ],
+        "result": "nil error"
+      },
+      "assertion_pseudocode": "err = initSchema(db); assert err == nil; cols = db.QueryRow('PRAGMA table_info(workspaces)'); assert cols contains 'workspace_mode'; assert cols contains 'upstream_url'; assert cols contains 'integration_branch'"
+    },
+    {
+      "id": "TS-15-3",
+      "requirement_id": "15-REQ-1.3",
+      "kind": "unit",
+      "description": "Inserting a workspace row without specifying workspace_mode stores 'standard' as the default, and inserting with workspace_mode=NULL is rejected by the database constraint.",
+      "preconditions": [
+        "SQLite database initialized with the updated workspaces schema including workspace_mode NOT NULL DEFAULT 'standard'"
+      ],
+      "input": {
+        "case_a": "INSERT INTO workspaces omitting workspace_mode column",
+        "case_b": "INSERT INTO workspaces with workspace_mode = NULL"
+      },
+      "expected": {
+        "case_a": "Row inserted successfully; SELECT workspace_mode returns 'standard'",
+        "case_b": "Database returns a NOT NULL constraint violation error"
+      },
+      "assertion_pseudocode": "// Case A: err = db.Exec('INSERT INTO workspaces (slug, ...) VALUES (?, ...)', 'test-slug', ...); assert err == nil; row = db.QueryRow('SELECT workspace_mode FROM workspaces WHERE slug = ?', 'test-slug'); assert row.workspace_mode == 'standard'; // Case B: err = db.Exec('INSERT INTO workspaces (slug, workspace_mode, ...) VALUES (?, NULL, ...)', 'test-slug2', ...); assert err != nil; assert err contains 'NOT NULL constraint'"
+    },
+    {
+      "id": "TS-15-4",
+      "requirement_id": "15-REQ-2.1",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode='carry_patch', a valid upstream_url, and an explicit integration_branch returns HTTP 201 with all three new fields populated correctly.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission",
+        "upstream_url 'https://github.com/upstream/repo.git' is a valid HTTPS URL"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "integration_branch": "deploy",
+          "name": "my-fork-workspace",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": "deploy",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "carry_patch"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 201; assert resp.body.workspace_mode == 'carry_patch'; assert resp.body.upstream_url == 'https://github.com/upstream/repo.git'; assert resp.body.integration_branch == 'deploy'"
+    },
+    {
+      "id": "TS-15-5",
+      "requirement_id": "15-REQ-2.2",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode='carry_patch' but omitting upstream_url returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "my-fork-workspace",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-6",
+      "requirement_id": "15-REQ-2.3",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode='carry_patch' and an upstream_url that fails URL validation (e.g., missing host) returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "my-fork-workspace",
+          "upstream_url": "http://",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-7",
+      "requirement_id": "15-REQ-2.4",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode='standard' (or omitting workspace_mode) stores upstream_url as NULL and integration_branch as NULL in the response.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "standard-workspace",
+          "workspace_mode": "standard"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": null,
+          "upstream_url": null,
+          "workspace_mode": "standard"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 201; assert resp.body.workspace_mode == 'standard'; assert resp.body.upstream_url == null; assert resp.body.integration_branch == null"
+    },
+    {
+      "id": "TS-15-8",
+      "requirement_id": "15-REQ-2.5",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode='standard' and also providing upstream_url returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "standard-workspace",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "standard"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-9",
+      "requirement_id": "15-REQ-2.6",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode='carry_patch' and omitting integration_branch defaults integration_branch to 'deploy' in the response.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "my-fork-workspace",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": "deploy"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 201; assert resp.body.integration_branch == 'deploy'"
+    },
+    {
+      "id": "TS-15-10",
+      "requirement_id": "15-REQ-3.1",
+      "kind": "integration",
+      "description": "Sending PATCH /api/v1/workspaces/:slug with workspace_mode in the body returns HTTP 400 and does not modify any workspace fields.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with slug 'test-ws' exists in the database",
+        "Caller has workspace update permission"
+      ],
+      "input": {
+        "body": {
+          "workspace_mode": "carry_patch"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/test-ws"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400,
+        "workspace_unchanged": true
+      },
+      "assertion_pseudocode": "original = db.QueryRow('SELECT workspace_mode FROM workspaces WHERE slug = ?', 'test-ws'); resp = client.patch('/api/v1/workspaces/test-ws', body); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil; after = db.QueryRow('SELECT workspace_mode FROM workspaces WHERE slug = ?', 'test-ws'); assert after.workspace_mode == original.workspace_mode"
+    },
+    {
+      "id": "TS-15-11",
+      "requirement_id": "15-REQ-4.1",
+      "kind": "integration",
+      "description": "Every workspace JSON response (GET, POST, PATCH) always includes workspace_mode, upstream_url, and integration_branch fields.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A standard workspace with slug 'std-ws' exists",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Caller has workspace read permission"
+      ],
+      "input": {
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/v1/workspaces/std-ws"
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/workspaces/cp-ws"
+          }
+        ]
+      },
+      "expected": {
+        "all_responses_contain": [
+          "workspace_mode",
+          "upstream_url",
+          "integration_branch"
+        ]
+      },
+      "assertion_pseudocode": "for each endpoint in [GET /api/v1/workspaces/std-ws, GET /api/v1/workspaces/cp-ws]: resp = client.request(endpoint); assert resp.status == 200; assert 'workspace_mode' in resp.body; assert 'upstream_url' in resp.body; assert 'integration_branch' in resp.body"
+    },
+    {
+      "id": "TS-15-12",
+      "requirement_id": "15-REQ-4.2",
+      "kind": "integration",
+      "description": "A standard workspace response serializes upstream_url as null and integration_branch as null.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with workspace_mode='standard' and slug 'std-ws' exists",
+        "Caller has workspace read permission"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/std-ws"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": null,
+          "upstream_url": null,
+          "workspace_mode": "standard"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/std-ws'); assert resp.status == 200; assert resp.body.upstream_url == null; assert resp.body.integration_branch == null"
+    },
+    {
+      "id": "TS-15-13",
+      "requirement_id": "15-REQ-4.3",
+      "kind": "integration",
+      "description": "A carry_patch workspace response serializes upstream_url and integration_branch with their stored non-null values.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with workspace_mode='carry_patch', upstream_url='https://github.com/upstream/repo.git', integration_branch='deploy', slug 'cp-ws' exists",
+        "Caller has workspace read permission"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/cp-ws"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": "deploy",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "carry_patch"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/cp-ws'); assert resp.status == 200; assert resp.body.upstream_url == 'https://github.com/upstream/repo.git'; assert resp.body.integration_branch == 'deploy'"
+    },
+    {
+      "id": "TS-15-14",
+      "requirement_id": "15-REQ-5.1",
+      "kind": "unit",
+      "description": "resolveUpstreamAuth returns BasicAuth with 'x-token-auth' username when UPSTREAM_GIT_PAT is present, falls back to username/password when only those are set, and falls back to resolveCloneAuth when neither upstream secret is present.",
+      "preconditions": [
+        "Workspace secrets store is initialized",
+        "resolveCloneAuth is available and returns a known BasicAuth value for the workspace"
+      ],
+      "input": {
+        "case_fallback": "No upstream secrets set",
+        "case_pat": "UPSTREAM_GIT_PAT='mytoken' set in workspace secrets",
+        "case_userpass": "UPSTREAM_GIT_USERNAME='user', UPSTREAM_GIT_PASSWORD='pass' set; no PAT"
+      },
+      "expected": {
+        "case_fallback": "Result of resolveCloneAuth, nil error",
+        "case_pat": "BasicAuth{Username: 'x-token-auth', Password: 'mytoken'}, nil error",
+        "case_userpass": "BasicAuth{Username: 'user', Password: 'pass'}, nil error"
+      },
+      "assertion_pseudocode": "// Case PAT: secrets.Set('UPSTREAM_GIT_PAT', 'mytoken'); auth, err = resolveUpstreamAuth(ctx, workspaceSlug); assert err == nil; assert auth.Username == 'x-token-auth'; assert auth.Password == 'mytoken'; // Case user/pass: secrets.Set('UPSTREAM_GIT_USERNAME', 'user'); secrets.Set('UPSTREAM_GIT_PASSWORD', 'pass'); auth, err = resolveUpstreamAuth(ctx, workspaceSlug); assert err == nil; assert auth.Username == 'user'; assert auth.Password == 'pass'; // Case fallback: auth, err = resolveUpstreamAuth(ctx, workspaceSlug); assert err == nil; assert auth == resolveCloneAuth(ctx, workspaceSlug)"
+    },
+    {
+      "id": "TS-15-15",
+      "requirement_id": "15-REQ-5.2",
+      "kind": "integration",
+      "description": "Running 'afc credential set --upstream-git-pat <token>' stores the value as workspace secret UPSTREAM_GIT_PAT and exits 0.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'my-ws' exists",
+        "Operator is authenticated with workspace owner credentials"
+      ],
+      "input": "afc credential set my-ws --upstream-git-pat mytoken123",
+      "expected": {
+        "exit_code": 0,
+        "secret_stored": "UPSTREAM_GIT_PAT=mytoken123 in workspace secrets for 'my-ws'",
+        "stdout_contains": "confirmation message"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc credential set my-ws --upstream-git-pat mytoken123'); assert exitCode == 0; assert stdout contains confirmation text; secret = secretsStore.Get('my-ws', 'UPSTREAM_GIT_PAT'); assert secret == 'mytoken123'"
+    },
+    {
+      "id": "TS-15-16",
+      "requirement_id": "15-REQ-5.3",
+      "kind": "integration",
+      "description": "Running 'afc credential set --upstream-git-username <u> --upstream-git-password <p>' stores both secrets and exits 0.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'my-ws' exists",
+        "Operator is authenticated with workspace owner credentials"
+      ],
+      "input": "afc credential set my-ws --upstream-git-username myuser --upstream-git-password mypass",
+      "expected": {
+        "exit_code": 0,
+        "secrets_stored": [
+          "UPSTREAM_GIT_USERNAME=myuser",
+          "UPSTREAM_GIT_PASSWORD=mypass"
+        ],
+        "stdout_contains": "confirmation message"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc credential set my-ws --upstream-git-username myuser --upstream-git-password mypass'); assert exitCode == 0; assert stdout contains confirmation text; assert secretsStore.Get('my-ws', 'UPSTREAM_GIT_USERNAME') == 'myuser'; assert secretsStore.Get('my-ws', 'UPSTREAM_GIT_PASSWORD') == 'mypass'"
+    },
+    {
+      "id": "TS-15-17",
+      "requirement_id": "15-REQ-5.4",
+      "kind": "unit",
+      "description": "Upstream credential values (UPSTREAM_GIT_PAT, UPSTREAM_GIT_USERNAME, UPSTREAM_GIT_PASSWORD) are never exposed in API responses and access is restricted to workspace owner and admins.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'my-ws' exists with UPSTREAM_GIT_PAT set",
+        "A non-owner authenticated user exists"
+      ],
+      "input": {
+        "case_api": "GET /api/v1/workspaces/my-ws/secrets",
+        "case_unauthorized": "GET /api/v1/workspaces/my-ws/secrets by non-owner"
+      },
+      "expected": {
+        "case_api": "Secret values are not returned in response body (only keys are listed)",
+        "case_unauthorized": "HTTP 403 response"
+      },
+      "assertion_pseudocode": "resp = ownerClient.get('/api/v1/workspaces/my-ws/secrets'); assert resp.body does not contain 'UPSTREAM_GIT_PAT' value; nonOwnerResp = nonOwnerClient.get('/api/v1/workspaces/my-ws/secrets'); assert nonOwnerResp.status == 403"
+    },
+    {
+      "id": "TS-15-18",
+      "requirement_id": "15-REQ-6.1",
+      "kind": "integration",
+      "description": "When a carry_patch workspace clone job executes, it clones git_url as origin, adds 'upstream' remote, sets rerere config, and creates the integration branch, then marks clone_status as 'ready'.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with git_url, upstream_url='https://github.com/upstream/repo.git', integration_branch='deploy' exists with clone_status='pending'",
+        "GitRunner with RemoteAdd, ConfigSet, CreateBranch methods is available (mocked)",
+        "go-git PlainCloneContext is available (mocked)"
+      ],
+      "input": "Clone job is dequeued and executed for the carry_patch workspace",
+      "expected": {
+        "clone_status": "ready",
+        "integration_branch_created": "deploy branch at upstream tracking HEAD",
+        "remote_added": "upstream remote pointing to upstream_url",
+        "rerere_autoupdate": true,
+        "rerere_enabled": true
+      },
+      "assertion_pseudocode": "executeCloneJob(workspaceSlug); ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', workspaceSlug); assert ws.clone_status == 'ready'; assert mockGitRunner.RemoteAddCalled with ('upstream', upstream_url); assert mockGitRunner.ConfigSetCalled with ('rerere.enabled', 'true'); assert mockGitRunner.ConfigSetCalled with ('rerere.autoupdate', 'true'); assert mockGitRunner.CreateBranchCalled with ('deploy', upstreamTrackingHEAD)"
+    },
+    {
+      "id": "TS-15-19",
+      "requirement_id": "15-REQ-6.2",
+      "kind": "unit",
+      "description": "When a post-clone setup step (e.g., RemoteAdd) fails after the core clone succeeds, the workspace is still marked 'ready' and a warning is logged.",
+      "preconditions": [
+        "A carry_patch workspace clone job is about to execute",
+        "go-git PlainCloneContext succeeds",
+        "GitRunner.RemoteAdd is configured to return an error"
+      ],
+      "input": "Clone job executes; RemoteAdd returns error 'connection refused'",
+      "expected": {
+        "clone_status": "ready",
+        "error_not_propagated_to_job_queue": true,
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "mockGitRunner.RemoteAdd = func() error { return errors.New('connection refused') }; err = executeCloneJob(workspaceSlug); assert err == nil; ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', workspaceSlug); assert ws.clone_status == 'ready'; assert logBuffer contains 'warning' or 'warn'"
+    },
+    {
+      "id": "TS-15-20",
+      "requirement_id": "15-REQ-6.3",
+      "kind": "unit",
+      "description": "When a standard workspace clone job executes, no upstream remote is added, no rerere config is set, and no integration branch is created.",
+      "preconditions": [
+        "A standard workspace clone job is about to execute",
+        "go-git PlainCloneContext is available (mocked)",
+        "GitRunner methods are available (mocked and call-tracked)"
+      ],
+      "input": "Clone job executes for a workspace with workspace_mode='standard'",
+      "expected": {
+        "ConfigSet_called": false,
+        "CreateBranch_called": false,
+        "RemoteAdd_called": false,
+        "clone_status": "ready"
+      },
+      "assertion_pseudocode": "executeCloneJob(standardWorkspaceSlug); assert mockGitRunner.RemoteAddCallCount == 0; assert mockGitRunner.ConfigSetCallCount == 0; assert mockGitRunner.CreateBranchCallCount == 0; ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', standardWorkspaceSlug); assert ws.clone_status == 'ready'"
+    },
+    {
+      "id": "TS-15-21",
+      "requirement_id": "15-REQ-7.1",
+      "kind": "unit",
+      "description": "Hub startup creates the patches table with all required columns and constraints when the table does not yet exist.",
+      "preconditions": [
+        "Fresh SQLite database with no patches table",
+        "Hub schema initializer function is available"
+      ],
+      "input": "Call the schema initializer",
+      "expected": {
+        "columns": [
+          "id",
+          "workspace_slug",
+          "branch_name",
+          "position",
+          "status",
+          "upstream_pr_url",
+          "description",
+          "added_at",
+          "updated_at"
+        ],
+        "result": "nil error",
+        "table_exists": true,
+        "unique_constraints": [
+          "(workspace_slug, branch_name)",
+          "(workspace_slug, position)"
+        ]
+      },
+      "assertion_pseudocode": "err = initSchema(db); assert err == nil; cols = db.Query('PRAGMA table_info(patches)'); assert cols contains all required column names; indexes = db.Query('PRAGMA index_list(patches)'); assert indexes contains unique index on (workspace_slug, branch_name); assert indexes contains unique index on (workspace_slug, position)"
+    },
+    {
+      "id": "TS-15-22",
+      "requirement_id": "15-REQ-7.2",
+      "kind": "unit",
+      "description": "Inserting two patches with the same (workspace_slug, branch_name) pair is rejected by the database unique constraint.",
+      "preconditions": [
+        "SQLite database with patches table initialized",
+        "A carry_patch workspace with slug 'cp-ws' exists"
+      ],
+      "input": {
+        "first_insert": "INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at) VALUES ('uuid-1', 'cp-ws', 'feature/foo', 1, 'active', now, now)",
+        "second_insert": "INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at) VALUES ('uuid-2', 'cp-ws', 'feature/foo', 2, 'active', now, now)"
+      },
+      "expected": {
+        "first_insert": "success",
+        "second_insert": "UNIQUE constraint failed error"
+      },
+      "assertion_pseudocode": "err1 = db.Exec(firstInsert); assert err1 == nil; err2 = db.Exec(secondInsert); assert err2 != nil; assert err2 contains 'UNIQUE constraint failed'"
+    },
+    {
+      "id": "TS-15-23",
+      "requirement_id": "15-REQ-8.1",
+      "kind": "integration",
+      "description": "Adding a patch with only branch_name (no position) appends it at the end with position = max+1, status='active', and returns HTTP 201 with all patch fields.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Two patches already exist at positions 1 and 2",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/new-patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body": {
+          "added_at": "RFC 3339 timestamp",
+          "branch_name": "feature/new-patch",
+          "id": "non-empty UUID",
+          "position": 3,
+          "status": "active",
+          "updated_at": "RFC 3339 timestamp"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/new-patch'}); assert resp.status == 201; assert resp.body.position == 3; assert resp.body.status == 'active'; assert isUUID(resp.body.id); assert isRFC3339(resp.body.added_at); assert isRFC3339(resp.body.updated_at)"
+    },
+    {
+      "id": "TS-15-24",
+      "requirement_id": "15-REQ-8.2",
+      "kind": "integration",
+      "description": "Adding a patch with an explicit position inserts it at that position and shifts existing patches at that position or higher down by one.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Two patches exist at positions 1 ('feature/a') and 2 ('feature/b')",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/inserted",
+          "position": 2
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "feature_a_position": 1,
+        "feature_b_position": 3,
+        "new_patch_position": 2,
+        "no_gaps": true,
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/inserted', position: 2}); assert resp.status == 201; assert resp.body.position == 2; patches = db.Query('SELECT branch_name, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert patches[0] == {branch_name: 'feature/a', position: 1}; assert patches[1] == {branch_name: 'feature/inserted', position: 2}; assert patches[2] == {branch_name: 'feature/b', position: 3}"
+    },
+    {
+      "id": "TS-15-25",
+      "requirement_id": "15-REQ-8.3",
+      "kind": "integration",
+      "description": "Attempting to add a patch to a workspace with workspace_mode='standard' returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with workspace_mode='standard' and slug 'std-ws' exists and is active",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/foo"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/std-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/std-ws/patches', {branch_name: 'feature/foo'}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-26",
+      "requirement_id": "15-REQ-8.4",
+      "kind": "integration",
+      "description": "Adding a patch with a branch_name that already exists in the patch list for the workspace returns HTTP 409 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "A patch with branch_name='feature/existing' already exists for 'cp-ws'",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/existing"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/existing'}); assert resp.status == 409; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-27",
+      "requirement_id": "15-REQ-8.5",
+      "kind": "integration",
+      "description": "Adding a patch whose branch_name equals the workspace's integration_branch returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws', integration_branch='deploy' exists and is active",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "deploy"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'deploy'}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-28",
+      "requirement_id": "15-REQ-8.6",
+      "kind": "integration",
+      "description": "Adding a patch with an absent or empty branch_name returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": ""
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: ''}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil; resp2 = client.post('/api/v1/workspaces/cp-ws/patches', {}); assert resp2.status == 400"
+    },
+    {
+      "id": "TS-15-29",
+      "requirement_id": "15-REQ-9.1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/patches returns HTTP 200 with a JSON array of patches ordered by position ascending.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Three patches exist at positions 1, 2, 3",
+        "Caller has patches:read scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body": "JSON array of 3 patch objects ordered by position 1, 2, 3",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/cp-ws/patches'); assert resp.status == 200; assert isArray(resp.body); assert len(resp.body) == 3; assert resp.body[0].position == 1; assert resp.body[1].position == 2; assert resp.body[2].position == 3"
+    },
+    {
+      "id": "TS-15-30",
+      "requirement_id": "15-REQ-9.2",
+      "kind": "integration",
+      "description": "A caller without patches:read scope attempting to list patches receives HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Caller is authenticated with a PAT that has no patches:read scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = noScopeClient.get('/api/v1/workspaces/cp-ws/patches'); assert resp.status == 403; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-31",
+      "requirement_id": "15-REQ-10.1",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug/patches/:id with a new position shifts other patches and returns HTTP 200 with the updated patch object.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Three patches exist at positions 1 ('uuid-1'), 2 ('uuid-2'), 3 ('uuid-3')",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "position": 1
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/cp-ws/patches/uuid-3"
+      },
+      "expected": {
+        "body": {
+          "id": "uuid-3",
+          "position": 1
+        },
+        "other_patches_shifted": "uuid-1 at position 2, uuid-2 at position 3",
+        "status": 200,
+        "updated_at_changed": true
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/cp-ws/patches/uuid-3', {position: 1}); assert resp.status == 200; assert resp.body.id == 'uuid-3'; assert resp.body.position == 1; patches = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert patches[0] == {id: 'uuid-3', position: 1}; assert patches[1] == {id: 'uuid-1', position: 2}; assert patches[2] == {id: 'uuid-2', position: 3}"
+    },
+    {
+      "id": "TS-15-32",
+      "requirement_id": "15-REQ-10.2",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug/patches/:id with a non-existent patch ID returns HTTP 404 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "description": "updated"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/cp-ws/patches/nonexistent-uuid"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/cp-ws/patches/nonexistent-uuid', {description: 'updated'}); assert resp.status == 404; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-33",
+      "requirement_id": "15-REQ-10.3",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug/patches/:id with an invalid status value returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "A patch with id 'uuid-1' exists for 'cp-ws'",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "status": "invalid_status"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/cp-ws/patches/uuid-1"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/cp-ws/patches/uuid-1', {status: 'invalid_status'}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-34",
+      "requirement_id": "15-REQ-11.1",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug/patches/:id removes the patch and compacts positions so there are no gaps, returning HTTP 204.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Three patches exist at positions 1 ('uuid-1'), 2 ('uuid-2'), 3 ('uuid-3')",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/cp-ws/patches/uuid-2"
+      },
+      "expected": {
+        "body": "empty",
+        "remaining_patches": "uuid-1 at position 1, uuid-3 at position 2 (no gaps)",
+        "status": 204
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/cp-ws/patches/uuid-2'); assert resp.status == 204; patches = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert len(patches) == 2; assert patches[0] == {id: 'uuid-1', position: 1}; assert patches[1] == {id: 'uuid-3', position: 2}"
+    },
+    {
+      "id": "TS-15-35",
+      "requirement_id": "15-REQ-11.2",
+      "kind": "integration",
+      "description": "DELETE /api/v1/workspaces/:slug/patches/:id with a non-existent patch ID returns HTTP 404 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/cp-ws/patches/nonexistent-uuid"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/cp-ws/patches/nonexistent-uuid'); assert resp.status == 404; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-36",
+      "requirement_id": "15-REQ-12.1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/patches/reorder with a complete ordered list of all patch IDs reassigns positions 1-based and returns HTTP 200 with the reordered patch array.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Three patches exist: uuid-1 at position 1, uuid-2 at position 2, uuid-3 at position 3",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "patch_ids": [
+            "uuid-3",
+            "uuid-1",
+            "uuid-2"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches/reorder"
+      },
+      "expected": {
+        "body": "JSON array with uuid-3 at position 1, uuid-1 at position 2, uuid-2 at position 3",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: ['uuid-3', 'uuid-1', 'uuid-2']}); assert resp.status == 200; assert isArray(resp.body); assert resp.body[0].id == 'uuid-3' AND resp.body[0].position == 1; assert resp.body[1].id == 'uuid-1' AND resp.body[1].position == 2; assert resp.body[2].id == 'uuid-2' AND resp.body[2].position == 3"
+    },
+    {
+      "id": "TS-15-37",
+      "requirement_id": "15-REQ-12.2",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/patches/reorder with a patch_ids list missing one or more workspace patches returns HTTP 400 and does not modify any positions.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Three patches exist: uuid-1, uuid-2, uuid-3",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "patch_ids": [
+            "uuid-1",
+            "uuid-2"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches/reorder"
+      },
+      "expected": {
+        "body_has_error": true,
+        "positions_unchanged": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "before = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); resp = client.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: ['uuid-1', 'uuid-2']}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil; after = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert after == before"
+    },
+    {
+      "id": "TS-15-38",
+      "requirement_id": "15-REQ-12.3",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/patches/reorder with duplicate patch IDs in the list returns HTTP 400 and does not modify any positions.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Three patches exist: uuid-1, uuid-2, uuid-3",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "patch_ids": [
+            "uuid-1",
+            "uuid-1",
+            "uuid-2",
+            "uuid-3"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches/reorder"
+      },
+      "expected": {
+        "body_has_error": true,
+        "positions_unchanged": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "before = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); resp = client.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: ['uuid-1', 'uuid-1', 'uuid-2', 'uuid-3']}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil; after = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert after == before"
+    },
+    {
+      "id": "TS-15-39",
+      "requirement_id": "15-REQ-12.4",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/patches/reorder with a patch ID that belongs to a different workspace returns HTTP 400 and does not modify any positions.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists with patches uuid-1, uuid-2",
+        "A different workspace 'other-ws' has a patch uuid-foreign",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "patch_ids": [
+            "uuid-1",
+            "uuid-foreign"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches/reorder"
+      },
+      "expected": {
+        "body_has_error": true,
+        "positions_unchanged": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: ['uuid-1', 'uuid-foreign']}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-40",
+      "requirement_id": "15-REQ-13.1",
+      "kind": "integration",
+      "description": "Deleting a workspace also deletes all associated patches atomically within the same transaction.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with slug 'cp-ws' exists with 3 patches in the patches table",
+        "Caller has workspace delete permission"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/cp-ws"
+      },
+      "expected": {
+        "patches_deleted": "0 rows in patches table with workspace_slug='cp-ws'",
+        "status": 204,
+        "workspace_deleted": true
+      },
+      "assertion_pseudocode": "resp = client.delete('/api/v1/workspaces/cp-ws'); assert resp.status == 204; wsCount = db.QueryRow('SELECT COUNT(*) FROM workspaces WHERE slug = ?', 'cp-ws'); assert wsCount == 0; patchCount = db.QueryRow('SELECT COUNT(*) FROM patches WHERE workspace_slug = ?', 'cp-ws'); assert patchCount == 0"
+    },
+    {
+      "id": "TS-15-41",
+      "requirement_id": "15-REQ-14.1",
+      "kind": "integration",
+      "description": "Running 'afc patch add <workspace-slug> --branch <name>' sends POST to the patches endpoint and prints the created patch on success, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Operator is authenticated with patches:write scope"
+      ],
+      "input": "afc patch add cp-ws --branch feature/my-patch",
+      "expected": {
+        "api_called": "POST /api/v1/workspaces/cp-ws/patches",
+        "exit_code": 0,
+        "stdout_contains": "feature/my-patch"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch add cp-ws --branch feature/my-patch'); assert exitCode == 0; assert stdout contains 'feature/my-patch'"
+    },
+    {
+      "id": "TS-15-42",
+      "requirement_id": "15-REQ-14.2",
+      "kind": "integration",
+      "description": "Running 'afc patch list <workspace-slug>' sends GET to the patches endpoint and prints patches in position order, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "A carry_patch workspace with slug 'cp-ws' exists with 2 patches",
+        "Operator is authenticated with patches:read scope"
+      ],
+      "input": "afc patch list cp-ws",
+      "expected": {
+        "api_called": "GET /api/v1/workspaces/cp-ws/patches",
+        "exit_code": 0,
+        "stdout_contains": "patch list in position order"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch list cp-ws'); assert exitCode == 0; assert stdout contains patch branch names in position order"
+    },
+    {
+      "id": "TS-15-43",
+      "requirement_id": "15-REQ-14.3",
+      "kind": "integration",
+      "description": "Running 'afc patch remove <workspace-slug> <patch-id>' sends DELETE to the patches endpoint and prints confirmation, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "A carry_patch workspace with slug 'cp-ws' exists with a patch 'uuid-1'",
+        "Operator is authenticated with patches:write scope"
+      ],
+      "input": "afc patch remove cp-ws uuid-1",
+      "expected": {
+        "api_called": "DELETE /api/v1/workspaces/cp-ws/patches/uuid-1",
+        "exit_code": 0,
+        "stdout_contains": "confirmation message"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch remove cp-ws uuid-1'); assert exitCode == 0; assert stdout contains confirmation text"
+    },
+    {
+      "id": "TS-15-44",
+      "requirement_id": "15-REQ-14.4",
+      "kind": "integration",
+      "description": "Running 'afc patch reorder <workspace-slug> <id1> <id2> <id3>' sends POST to the reorder endpoint and prints the reordered list, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "A carry_patch workspace with slug 'cp-ws' exists with patches uuid-1, uuid-2, uuid-3",
+        "Operator is authenticated with patches:write scope"
+      ],
+      "input": "afc patch reorder cp-ws uuid-3 uuid-1 uuid-2",
+      "expected": {
+        "api_called": "POST /api/v1/workspaces/cp-ws/patches/reorder with patch_ids=[uuid-3, uuid-1, uuid-2]",
+        "exit_code": 0,
+        "stdout_contains": "reordered patch list"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch reorder cp-ws uuid-3 uuid-1 uuid-2'); assert exitCode == 0; assert stdout contains patch IDs in new order"
+    },
+    {
+      "id": "TS-15-45",
+      "requirement_id": "15-REQ-14.5",
+      "kind": "integration",
+      "description": "Running 'afc patch update <workspace-slug> <patch-id> --status disabled' sends PATCH to the patch endpoint and prints the updated patch, exiting 0.",
+      "preconditions": [
+        "Hub server is running",
+        "A carry_patch workspace with slug 'cp-ws' exists with patch 'uuid-1'",
+        "Operator is authenticated with patches:write scope"
+      ],
+      "input": "afc patch update cp-ws uuid-1 --status disabled",
+      "expected": {
+        "api_called": "PATCH /api/v1/workspaces/cp-ws/patches/uuid-1 with status=disabled",
+        "exit_code": 0,
+        "stdout_contains": "disabled"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch update cp-ws uuid-1 --status disabled'); assert exitCode == 0; assert stdout contains 'disabled'"
+    },
+    {
+      "id": "TS-15-46",
+      "requirement_id": "15-REQ-15.1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/patches requires patches:read scope and POST/PATCH/DELETE require patches:write scope; insufficient scope returns HTTP 403.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "A PAT with no patch scopes is available",
+        "A PAT with only patches:read scope is available"
+      ],
+      "input": {
+        "case_read_no_scope": "GET /api/v1/workspaces/cp-ws/patches with no-scope PAT",
+        "case_write_read_only_scope": "POST /api/v1/workspaces/cp-ws/patches with patches:read-only PAT"
+      },
+      "expected": {
+        "case_read_no_scope": "HTTP 403 with JSON error body",
+        "case_write_read_only_scope": "HTTP 403 with JSON error body"
+      },
+      "assertion_pseudocode": "resp1 = noScopeClient.get('/api/v1/workspaces/cp-ws/patches'); assert resp1.status == 403; resp2 = readOnlyClient.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/x'}); assert resp2.status == 403"
+    },
+    {
+      "id": "TS-15-47",
+      "requirement_id": "15-REQ-15.2",
+      "kind": "integration",
+      "description": "Admin tokens and workspace API keys have implicit full access to all patch endpoints without requiring explicit scope grants.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "An admin token is available",
+        "A workspace API key is available"
+      ],
+      "input": {
+        "case_admin": "GET /api/v1/workspaces/cp-ws/patches with admin token",
+        "case_api_key": "GET /api/v1/workspaces/cp-ws/patches with workspace API key"
+      },
+      "expected": {
+        "case_admin": "HTTP 200 with patch list",
+        "case_api_key": "HTTP 200 with patch list"
+      },
+      "assertion_pseudocode": "resp1 = adminClient.get('/api/v1/workspaces/cp-ws/patches'); assert resp1.status == 200; resp2 = apiKeyClient.get('/api/v1/workspaces/cp-ws/patches'); assert resp2.status == 200"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-15-P1",
+      "property_id": "15-PROP-1",
+      "validates": [
+        "15-REQ-8.1",
+        "15-REQ-8.2",
+        "15-REQ-11.1",
+        "15-REQ-12.1"
+      ],
+      "description": "For any sequence of add, remove, and update-position operations on a carry_patch workspace, the set of position values is always exactly {1, 2, ..., N} with no gaps and no duplicates.",
+      "for_any_strategy": "Generate a random sequence of 1-20 operations (add with random branch name, remove random existing patch, update position of random existing patch) applied to a carry_patch workspace starting with 0 patches. Sample 100 such sequences.",
+      "invariant_check": "After each operation, query 'SELECT position FROM patches WHERE workspace_slug = ? ORDER BY position'; assert the result equals [1, 2, ..., N] where N is the current patch count; assert no duplicates exist; assert no gaps exist"
+    },
+    {
+      "id": "TS-15-P2",
+      "property_id": "15-PROP-2",
+      "validates": [
+        "15-REQ-7.2",
+        "15-REQ-8.4"
+      ],
+      "description": "For any carry_patch workspace, no two patches ever share the same (workspace_slug, branch_name) pair.",
+      "for_any_strategy": "Generate random sequences of add-patch operations with random branch names (including deliberate duplicates) for a carry_patch workspace. Sample 50 sequences of up to 30 operations each.",
+      "invariant_check": "After each add operation, query 'SELECT COUNT(*) FROM patches WHERE workspace_slug = ? GROUP BY branch_name HAVING COUNT(*) > 1'; assert the result is empty (zero rows)"
+    },
+    {
+      "id": "TS-15-P3",
+      "property_id": "15-PROP-3",
+      "validates": [
+        "15-REQ-8.5"
+      ],
+      "description": "For any carry_patch workspace with a defined integration_branch, no patch in the patches table ever has branch_name equal to the workspace's integration_branch.",
+      "for_any_strategy": "Generate carry_patch workspaces with random integration_branch names (e.g., 'deploy', 'main', 'integration', random strings). For each, attempt to add patches with branch names including the integration_branch value. Sample 50 workspaces with 10 add attempts each.",
+      "invariant_check": "After each add attempt, query 'SELECT COUNT(*) FROM patches p JOIN workspaces w ON p.workspace_slug = w.slug WHERE p.branch_name = w.integration_branch'; assert result == 0"
+    },
+    {
+      "id": "TS-15-P4",
+      "property_id": "15-PROP-4",
+      "validates": [
+        "15-REQ-2.4",
+        "15-REQ-4.2"
+      ],
+      "description": "For any workspace with workspace_mode='standard', upstream_url is always NULL and integration_branch is always NULL in the workspaces table.",
+      "for_any_strategy": "Generate standard workspaces via POST /api/v1/workspaces with workspace_mode='standard' or omitted. Sample 30 such workspaces with varying other fields.",
+      "invariant_check": "After creation, query 'SELECT upstream_url, integration_branch FROM workspaces WHERE slug = ?'; assert upstream_url IS NULL; assert integration_branch IS NULL"
+    },
+    {
+      "id": "TS-15-P5",
+      "property_id": "15-PROP-5",
+      "validates": [
+        "15-REQ-2.1",
+        "15-REQ-2.2"
+      ],
+      "description": "For any workspace with workspace_mode='carry_patch', upstream_url is always non-null and non-empty in the workspaces table.",
+      "for_any_strategy": "Generate carry_patch workspaces via POST /api/v1/workspaces with valid upstream_url values (HTTPS and SSH formats). Sample 30 such workspaces.",
+      "invariant_check": "After creation, query 'SELECT upstream_url FROM workspaces WHERE slug = ?'; assert upstream_url IS NOT NULL; assert upstream_url != ''"
+    },
+    {
+      "id": "TS-15-P6",
+      "property_id": "15-PROP-6",
+      "validates": [
+        "15-REQ-13.1"
+      ],
+      "description": "For any workspace that has been deleted, the patches table contains no rows with workspace_slug equal to the deleted workspace's slug.",
+      "for_any_strategy": "Generate carry_patch workspaces with 0-10 randomly added patches, then delete each workspace. Sample 30 such workspaces.",
+      "invariant_check": "After deleteWorkspace completes, query 'SELECT COUNT(*) FROM patches WHERE workspace_slug = ?'; assert result == 0"
+    },
+    {
+      "id": "TS-15-P7",
+      "property_id": "15-PROP-7",
+      "validates": [
+        "15-REQ-12.1",
+        "15-REQ-12.2",
+        "15-REQ-12.3"
+      ],
+      "description": "For any reorder operation on a workspace with N patches, after a successful reorder the workspace still has exactly N patches with positions {1, 2, ..., N}.",
+      "for_any_strategy": "Generate carry_patch workspaces with 1-10 patches, then apply random permutations of the patch ID list as reorder operations. Sample 50 workspaces with 5 reorder operations each.",
+      "invariant_check": "After each successful reorder, query 'SELECT COUNT(*) as cnt, MIN(position) as minp, MAX(position) as maxp FROM patches WHERE workspace_slug = ?'; assert cnt == N; assert minp == 1; assert maxp == N; assert no duplicate positions exist"
+    },
+    {
+      "id": "TS-15-P8",
+      "property_id": "15-PROP-8",
+      "validates": [
+        "15-REQ-3.1"
+      ],
+      "description": "For any workspace that has been successfully created, workspace_mode, upstream_url, and integration_branch values never change after the initial INSERT regardless of PATCH attempts.",
+      "for_any_strategy": "Generate workspaces (both standard and carry_patch), then attempt random PATCH requests including workspace_mode, upstream_url, and integration_branch fields with random values. Sample 30 workspaces with 5 PATCH attempts each.",
+      "invariant_check": "Before each PATCH attempt, record (workspace_mode, upstream_url, integration_branch). After the PATCH (which should return 400), re-query the database and assert all three values are identical to the pre-PATCH values"
+    },
+    {
+      "id": "TS-15-P9",
+      "property_id": "15-PROP-9",
+      "validates": [
+        "15-REQ-5.1"
+      ],
+      "description": "resolveUpstreamAuth always returns a non-error result when resolveCloneAuth would return a non-error result for the same workspace, regardless of which upstream secrets are present.",
+      "for_any_strategy": "Generate carry_patch workspaces with random combinations of upstream secrets (UPSTREAM_GIT_PAT present/absent, UPSTREAM_GIT_USERNAME present/absent, UPSTREAM_GIT_PASSWORD present/absent) where resolveCloneAuth is configured to always succeed. Sample all 8 combinations of secret presence/absence, 10 times each.",
+      "invariant_check": "For each combination, call resolveUpstreamAuth(ctx, workspaceSlug); assert err == nil; assert auth != nil OR (auth == nil AND resolveCloneAuth returns nil)"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-15-E1",
+      "requirement_id": "15-REQ-1.E1",
+      "kind": "unit",
+      "description": "Running the migration against a database that already has the workspace_mode column skips the ALTER TABLE and returns nil error.",
+      "preconditions": [
+        "SQLite database with workspaces table that already has workspace_mode, upstream_url, and integration_branch columns"
+      ],
+      "input": "Call the database migration function",
+      "expected": {
+        "result": "nil error",
+        "startup_continues": true
+      },
+      "assertion_pseudocode": "err = runMigration(db); assert err == nil"
+    },
+    {
+      "id": "TS-15-E2",
+      "requirement_id": "15-REQ-1.E2",
+      "kind": "unit",
+      "description": "When the database file is locked and ALTER TABLE fails for a non-idempotency reason, the migration returns a non-nil error and startup is aborted.",
+      "preconditions": [
+        "SQLite database file is locked by another process",
+        "workspaces table does not have the new columns"
+      ],
+      "input": "Call the database migration function against the locked database",
+      "expected": {
+        "result": "non-nil error",
+        "startup_aborted": true
+      },
+      "assertion_pseudocode": "lockDatabase(db); err = runMigration(db); assert err != nil"
+    },
+    {
+      "id": "TS-15-E3",
+      "requirement_id": "15-REQ-2.E1",
+      "kind": "integration",
+      "description": "Creating a workspace with workspace_mode set to an unrecognized string returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "test-ws",
+          "workspace_mode": "unknown_mode"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', {name: 'test-ws', git_url: 'https://github.com/myfork/repo.git', workspace_mode: 'unknown_mode'}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E4",
+      "requirement_id": "15-REQ-2.E2",
+      "kind": "integration",
+      "description": "Creating a carry_patch workspace with integration_branch set to an empty string defaults integration_branch to 'deploy' and returns HTTP 201.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller has workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "integration_branch": "",
+          "name": "cp-ws",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": "deploy"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces', body); assert resp.status == 201; assert resp.body.integration_branch == 'deploy'"
+    },
+    {
+      "id": "TS-15-E5",
+      "requirement_id": "15-REQ-2.E3",
+      "kind": "integration",
+      "description": "A caller without workspace creation permission attempting to create a carry_patch workspace receives HTTP 403 before any workspace fields are processed.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Caller is authenticated but lacks workspace creation permission"
+      ],
+      "input": {
+        "body": {
+          "git_url": "https://github.com/myfork/repo.git",
+          "name": "cp-ws",
+          "upstream_url": "https://github.com/upstream/repo.git",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces"
+      },
+      "expected": {
+        "body_has_error": true,
+        "no_workspace_created": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = noPermClient.post('/api/v1/workspaces', body); assert resp.status == 403; wsCount = db.QueryRow('SELECT COUNT(*) FROM workspaces WHERE name = ?', 'cp-ws'); assert wsCount == 0"
+    },
+    {
+      "id": "TS-15-E6",
+      "requirement_id": "15-REQ-3.E1",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug with workspace_mode set to the same value already stored still returns HTTP 400 (immutability applies regardless of value match).",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with slug 'std-ws' and workspace_mode='standard' exists",
+        "Caller has workspace update permission"
+      ],
+      "input": {
+        "body": {
+          "workspace_mode": "standard"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/std-ws"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/std-ws', {workspace_mode: 'standard'}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E7",
+      "requirement_id": "15-REQ-3.E2",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug with both mutable and immutable fields returns HTTP 400 and no fields are updated.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with slug 'std-ws', description='old description' exists",
+        "Caller has workspace update permission"
+      ],
+      "input": {
+        "body": {
+          "description": "new description",
+          "workspace_mode": "carry_patch"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/std-ws"
+      },
+      "expected": {
+        "body_has_error": true,
+        "description_unchanged": "old description",
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/std-ws', {description: 'new description', workspace_mode: 'carry_patch'}); assert resp.status == 400; ws = db.QueryRow('SELECT description FROM workspaces WHERE slug = ?', 'std-ws'); assert ws.description == 'old description'"
+    },
+    {
+      "id": "TS-15-E8",
+      "requirement_id": "15-REQ-4.E1",
+      "kind": "unit",
+      "description": "When a workspace row has workspace_mode='carry_patch' but upstream_url is NULL due to data integrity issue, the response serializes upstream_url as null and logs a warning without panicking.",
+      "preconditions": [
+        "SQLite database has a workspace row with workspace_mode='carry_patch' and upstream_url=NULL (data integrity violation)",
+        "Hub server is running"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/corrupt-ws"
+      },
+      "expected": {
+        "body": {
+          "upstream_url": null
+        },
+        "no_panic": true,
+        "status": 200,
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "db.Exec('INSERT INTO workspaces (slug, workspace_mode, upstream_url, ...) VALUES (?, ?, NULL, ...)', 'corrupt-ws', 'carry_patch'); resp = client.get('/api/v1/workspaces/corrupt-ws'); assert resp.status == 200; assert resp.body.upstream_url == null; assert logBuffer contains 'warning' or 'warn'"
+    },
+    {
+      "id": "TS-15-E9",
+      "requirement_id": "15-REQ-5.E1",
+      "kind": "unit",
+      "description": "When UPSTREAM_GIT_USERNAME is set but UPSTREAM_GIT_PASSWORD is absent, resolveUpstreamAuth skips username/password and falls back to resolveCloneAuth without returning an error.",
+      "preconditions": [
+        "Workspace secrets store has UPSTREAM_GIT_USERNAME='user' but no UPSTREAM_GIT_PASSWORD",
+        "resolveCloneAuth returns a known BasicAuth value"
+      ],
+      "input": "Call resolveUpstreamAuth for the workspace",
+      "expected": {
+        "error": "nil",
+        "result": "BasicAuth from resolveCloneAuth"
+      },
+      "assertion_pseudocode": "secrets.Set('UPSTREAM_GIT_USERNAME', 'user'); auth, err = resolveUpstreamAuth(ctx, workspaceSlug); assert err == nil; assert auth == resolveCloneAuth(ctx, workspaceSlug)"
+    },
+    {
+      "id": "TS-15-E10",
+      "requirement_id": "15-REQ-5.E2",
+      "kind": "unit",
+      "description": "When the secrets store returns an error during upstream credential lookup, resolveUpstreamAuth propagates the error to the caller rather than silently falling back.",
+      "preconditions": [
+        "Workspace secrets store is configured to return an error on lookup"
+      ],
+      "input": "Call resolveUpstreamAuth for the workspace",
+      "expected": {
+        "error": "non-nil error containing the underlying store error",
+        "result": "nil auth"
+      },
+      "assertion_pseudocode": "mockSecretsStore.LookupError = errors.New('store unavailable'); auth, err = resolveUpstreamAuth(ctx, workspaceSlug); assert auth == nil; assert err != nil; assert err.Error() contains 'store unavailable'"
+    },
+    {
+      "id": "TS-15-E11",
+      "requirement_id": "15-REQ-5.E3",
+      "kind": "integration",
+      "description": "Running 'afc credential set' for upstream credentials on a non-existent workspace exits non-zero and prints an error message.",
+      "preconditions": [
+        "Hub server is running",
+        "Workspace 'nonexistent-ws' does not exist",
+        "Operator is authenticated"
+      ],
+      "input": "afc credential set nonexistent-ws --upstream-git-pat mytoken",
+      "expected": {
+        "exit_code": "non-zero",
+        "stderr_contains": "workspace not found or error message"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc credential set nonexistent-ws --upstream-git-pat mytoken'); assert exitCode != 0; assert stderr contains 'not found' OR stdout contains 'not found'"
+    },
+    {
+      "id": "TS-15-E12",
+      "requirement_id": "15-REQ-6.E1",
+      "kind": "unit",
+      "description": "When the upstream remote URL is unreachable during RemoteAdd, the clone handler logs a warning and marks the workspace ready without propagating the error.",
+      "preconditions": [
+        "A carry_patch workspace clone job is about to execute",
+        "go-git PlainCloneContext succeeds",
+        "GitRunner.RemoteAdd returns an authentication error for the upstream URL"
+      ],
+      "input": "Clone job executes; RemoteAdd returns 'authentication required'",
+      "expected": {
+        "clone_status": "ready",
+        "error_not_propagated": true,
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "mockGitRunner.RemoteAdd = func() error { return errors.New('authentication required') }; err = executeCloneJob(workspaceSlug); assert err == nil; ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', workspaceSlug); assert ws.clone_status == 'ready'; assert logBuffer contains 'warn'"
+    },
+    {
+      "id": "TS-15-E13",
+      "requirement_id": "15-REQ-6.E2",
+      "kind": "unit",
+      "description": "When the clone job hangs and the context is cancelled by the job queue timeout, workspace clone_status is set to 'failed' and no partial repository state is left.",
+      "preconditions": [
+        "A carry_patch workspace clone job is about to execute",
+        "go-git PlainCloneContext is configured to block until context is cancelled",
+        "Job queue timeout is set to a short duration"
+      ],
+      "input": "Clone job executes; context is cancelled after timeout",
+      "expected": {
+        "clone_status": "failed",
+        "error_logged": true,
+        "no_partial_repo": true
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond); mockClone = func(ctx) error { <-ctx.Done(); return ctx.Err() }; err = executeCloneJobWithContext(ctx, workspaceSlug); ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', workspaceSlug); assert ws.clone_status == 'failed'; assert !fileExists(workspaceDir)"
+    },
+    {
+      "id": "TS-15-E14",
+      "requirement_id": "15-REQ-6.E3",
+      "kind": "unit",
+      "description": "When CreateBranch fails because the integration_branch already exists, the clone handler logs a warning and marks the workspace ready.",
+      "preconditions": [
+        "A carry_patch workspace clone job is about to execute",
+        "go-git PlainCloneContext succeeds",
+        "GitRunner.RemoteAdd and ConfigSet succeed",
+        "GitRunner.CreateBranch returns 'branch already exists' error"
+      ],
+      "input": "Clone job executes; CreateBranch returns 'branch already exists'",
+      "expected": {
+        "clone_status": "ready",
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "mockGitRunner.CreateBranch = func() error { return errors.New('branch already exists') }; err = executeCloneJob(workspaceSlug); assert err == nil; ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', workspaceSlug); assert ws.clone_status == 'ready'; assert logBuffer contains 'warn'"
+    },
+    {
+      "id": "TS-15-E15",
+      "requirement_id": "15-REQ-6.E4",
+      "kind": "unit",
+      "description": "When the core clone of git_url fails (e.g., network error), workspace clone_status is set to 'failed' and no post-clone setup steps are attempted.",
+      "preconditions": [
+        "A carry_patch workspace clone job is about to execute",
+        "go-git PlainCloneContext is configured to return a network error",
+        "GitRunner methods are call-tracked"
+      ],
+      "input": "Clone job executes; PlainCloneContext returns 'connection refused'",
+      "expected": {
+        "ConfigSet_called": false,
+        "CreateBranch_called": false,
+        "RemoteAdd_called": false,
+        "clone_status": "failed"
+      },
+      "assertion_pseudocode": "mockClone = func() error { return errors.New('connection refused') }; executeCloneJob(workspaceSlug); ws = db.QueryRow('SELECT clone_status FROM workspaces WHERE slug = ?', workspaceSlug); assert ws.clone_status == 'failed'; assert mockGitRunner.RemoteAddCallCount == 0; assert mockGitRunner.ConfigSetCallCount == 0; assert mockGitRunner.CreateBranchCallCount == 0"
+    },
+    {
+      "id": "TS-15-E16",
+      "requirement_id": "15-REQ-7.E1",
+      "kind": "unit",
+      "description": "When the database file is read-only and CREATE TABLE patches fails, the schema initializer returns a non-nil error and startup is aborted.",
+      "preconditions": [
+        "SQLite database file is read-only",
+        "Hub schema initializer function is available"
+      ],
+      "input": "Call the schema initializer against the read-only database",
+      "expected": {
+        "result": "non-nil error",
+        "startup_aborted": true
+      },
+      "assertion_pseudocode": "makeReadOnly(dbFile); err = initSchema(db); assert err != nil"
+    },
+    {
+      "id": "TS-15-E17",
+      "requirement_id": "15-REQ-8.E1",
+      "kind": "integration",
+      "description": "Adding a patch whose branch does not exist in the workspace git repository succeeds with HTTP 201 (branch existence is validated at rebuild time).",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "The branch 'feature/nonexistent' does not exist in the workspace git repository",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/nonexistent"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body": {
+          "branch_name": "feature/nonexistent",
+          "status": "active"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/nonexistent'}); assert resp.status == 201; assert resp.body.branch_name == 'feature/nonexistent'"
+    },
+    {
+      "id": "TS-15-E18",
+      "requirement_id": "15-REQ-8.E2",
+      "kind": "integration",
+      "description": "Adding a patch with a position greater than (max+1) clamps the position to (max+1), effectively appending the patch.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Two patches exist at positions 1 and 2",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/new",
+          "position": 999
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body": {
+          "position": 3
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/new', position: 999}); assert resp.status == 201; assert resp.body.position == 3"
+    },
+    {
+      "id": "TS-15-E19",
+      "requirement_id": "15-REQ-8.E3",
+      "kind": "integration",
+      "description": "Adding a patch with position less than 1 returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/new",
+          "position": 0
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/new', position: 0}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E20",
+      "requirement_id": "15-REQ-8.E4",
+      "kind": "integration",
+      "description": "A caller without patches:write scope attempting to add a patch receives HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active",
+        "Caller is authenticated with a PAT that has no patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/new"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = noWriteClient.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/new'}); assert resp.status == 403; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E21",
+      "requirement_id": "15-REQ-8.E5",
+      "kind": "integration",
+      "description": "Two concurrent requests to add patches to the same workspace both complete with HTTP 201 and distinct positions, with no gaps or duplicates in the position sequence.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists and is active with no patches",
+        "Two callers have patches:write scope"
+      ],
+      "input": "Two concurrent POST /api/v1/workspaces/cp-ws/patches requests with different branch names",
+      "expected": {
+        "both_status": 201,
+        "positions": "distinct values {1, 2} with no gaps or duplicates"
+      },
+      "assertion_pseudocode": "resp1, resp2 = concurrentPost('/api/v1/workspaces/cp-ws/patches', [{branch_name: 'feature/a'}, {branch_name: 'feature/b'}]); assert resp1.status == 201; assert resp2.status == 201; assert resp1.body.position != resp2.body.position; positions = db.Query('SELECT position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert positions == [1, 2]"
+    },
+    {
+      "id": "TS-15-E22",
+      "requirement_id": "15-REQ-8.E6",
+      "kind": "integration",
+      "description": "Adding a patch to a workspace that does not exist returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Workspace 'nonexistent-ws' does not exist",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/new"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/nonexistent-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-ws/patches', {branch_name: 'feature/new'}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E23",
+      "requirement_id": "15-REQ-9.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/patches for a non-existent workspace returns HTTP 404 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "Workspace 'nonexistent-ws' does not exist",
+        "Caller has patches:read scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/nonexistent-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/nonexistent-ws/patches'); assert resp.status == 404; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E24",
+      "requirement_id": "15-REQ-9.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/patches on a standard workspace returns HTTP 200 with an empty array.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A workspace with workspace_mode='standard' and slug 'std-ws' exists",
+        "Caller has patches:read scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/std-ws/patches"
+      },
+      "expected": {
+        "body": [],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/std-ws/patches'); assert resp.status == 200; assert isArray(resp.body); assert len(resp.body) == 0"
+    },
+    {
+      "id": "TS-15-E25",
+      "requirement_id": "15-REQ-10.E1",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug/patches/:id with a branch_name field in the body ignores the field and returns HTTP 200 with branch_name unchanged.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "A patch with id 'uuid-1' and branch_name='feature/original' exists",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/changed",
+          "description": "updated desc"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/cp-ws/patches/uuid-1"
+      },
+      "expected": {
+        "body": {
+          "branch_name": "feature/original",
+          "description": "updated desc"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = client.patch('/api/v1/workspaces/cp-ws/patches/uuid-1', {branch_name: 'feature/changed', description: 'updated desc'}); assert resp.status == 200; assert resp.body.branch_name == 'feature/original'; assert resp.body.description == 'updated desc'"
+    },
+    {
+      "id": "TS-15-E26",
+      "requirement_id": "15-REQ-10.E2",
+      "kind": "integration",
+      "description": "A caller without patches:write scope attempting to update a patch receives HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "A patch with id 'uuid-1' exists",
+        "Caller is authenticated with a PAT that has only patches:read scope"
+      ],
+      "input": {
+        "body": {
+          "description": "updated"
+        },
+        "method": "PATCH",
+        "path": "/api/v1/workspaces/cp-ws/patches/uuid-1"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = readOnlyClient.patch('/api/v1/workspaces/cp-ws/patches/uuid-1', {description: 'updated'}); assert resp.status == 403; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E27",
+      "requirement_id": "15-REQ-10.E3",
+      "kind": "integration",
+      "description": "PATCH /api/v1/workspaces/:slug/patches/:id with a position value less than 1 or greater than total patch count returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists with 3 patches",
+        "A patch with id 'uuid-1' exists",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "case_above": {
+          "position": 10
+        },
+        "case_below": {
+          "position": 0
+        }
+      },
+      "expected": {
+        "both_cases": "HTTP 400 with JSON error body"
+      },
+      "assertion_pseudocode": "resp1 = client.patch('/api/v1/workspaces/cp-ws/patches/uuid-1', {position: 0}); assert resp1.status == 400; resp2 = client.patch('/api/v1/workspaces/cp-ws/patches/uuid-1', {position: 10}); assert resp2.status == 400"
+    },
+    {
+      "id": "TS-15-E28",
+      "requirement_id": "15-REQ-10.E4",
+      "kind": "integration",
+      "description": "Two concurrent requests to update positions of different patches in the same workspace both complete without leaving duplicate or missing positions.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists with 3 patches at positions 1, 2, 3",
+        "Two callers have patches:write scope"
+      ],
+      "input": "Concurrent PATCH requests: one moves uuid-1 to position 3, another moves uuid-3 to position 1",
+      "expected": {
+        "final_positions": "{1, 2, 3} with no gaps",
+        "no_duplicate_positions": true,
+        "no_missing_positions": true
+      },
+      "assertion_pseudocode": "concurrentPatch([{id: 'uuid-1', position: 3}, {id: 'uuid-3', position: 1}]); positions = db.Query('SELECT position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert positions == [1, 2, 3]"
+    },
+    {
+      "id": "TS-15-E29",
+      "requirement_id": "15-REQ-11.E1",
+      "kind": "integration",
+      "description": "A caller without patches:write scope attempting to remove a patch receives HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "A patch with id 'uuid-1' exists",
+        "Caller is authenticated with a PAT that has only patches:read scope"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/cp-ws/patches/uuid-1"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = readOnlyClient.delete('/api/v1/workspaces/cp-ws/patches/uuid-1'); assert resp.status == 403; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E30",
+      "requirement_id": "15-REQ-11.E2",
+      "kind": "unit",
+      "description": "When the delete and position compaction cannot be completed atomically due to a database error, the transaction is rolled back and the patches table is unchanged.",
+      "preconditions": [
+        "A carry_patch workspace with slug 'cp-ws' exists with 3 patches",
+        "Database is configured to fail on the position compaction UPDATE statement"
+      ],
+      "input": "DELETE /api/v1/workspaces/cp-ws/patches/uuid-2 where compaction fails",
+      "expected": {
+        "body_has_error": true,
+        "patches_unchanged": "3 patches remain with original positions",
+        "status": 500
+      },
+      "assertion_pseudocode": "mockDB.FailOnCompactionUpdate = true; resp = client.delete('/api/v1/workspaces/cp-ws/patches/uuid-2'); assert resp.status == 500; patchCount = db.QueryRow('SELECT COUNT(*) FROM patches WHERE workspace_slug = ?', 'cp-ws'); assert patchCount == 3"
+    },
+    {
+      "id": "TS-15-E31",
+      "requirement_id": "15-REQ-12.E1",
+      "kind": "integration",
+      "description": "POST /api/v1/workspaces/:slug/patches/reorder with an empty patch_ids list when the workspace has patches returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists with 2 patches",
+        "Caller has patches:write scope"
+      ],
+      "input": {
+        "body": {
+          "patch_ids": []
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches/reorder"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: []}); assert resp.status == 400; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E32",
+      "requirement_id": "15-REQ-12.E2",
+      "kind": "integration",
+      "description": "A caller without patches:write scope attempting to reorder patches receives HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists with patches uuid-1, uuid-2",
+        "Caller is authenticated with a PAT that has only patches:read scope"
+      ],
+      "input": {
+        "body": {
+          "patch_ids": [
+            "uuid-2",
+            "uuid-1"
+          ]
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches/reorder"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = readOnlyClient.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: ['uuid-2', 'uuid-1']}); assert resp.status == 403; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E33",
+      "requirement_id": "15-REQ-12.E3",
+      "kind": "unit",
+      "description": "When the database transaction for bulk position update fails partway through, the transaction is rolled back and all patches retain their original positions.",
+      "preconditions": [
+        "A carry_patch workspace with slug 'cp-ws' exists with 3 patches at positions 1, 2, 3",
+        "Database is configured to fail partway through the bulk UPDATE"
+      ],
+      "input": "POST /api/v1/workspaces/cp-ws/patches/reorder with [uuid-3, uuid-1, uuid-2]; DB fails on second UPDATE",
+      "expected": {
+        "body_has_error": true,
+        "positions_unchanged": "uuid-1 at 1, uuid-2 at 2, uuid-3 at 3",
+        "status": 500
+      },
+      "assertion_pseudocode": "mockDB.FailOnSecondUpdate = true; resp = client.post('/api/v1/workspaces/cp-ws/patches/reorder', {patch_ids: ['uuid-3', 'uuid-1', 'uuid-2']}); assert resp.status == 500; patches = db.Query('SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position', 'cp-ws'); assert patches[0] == {id: 'uuid-1', position: 1}; assert patches[1] == {id: 'uuid-2', position: 2}; assert patches[2] == {id: 'uuid-3', position: 3}"
+    },
+    {
+      "id": "TS-15-E34",
+      "requirement_id": "15-REQ-13.E1",
+      "kind": "unit",
+      "description": "When DELETE FROM patches fails within the deleteWorkspace transaction, the entire transaction is rolled back and both the workspace and its patches remain in the database.",
+      "preconditions": [
+        "A workspace with slug 'cp-ws' exists with 2 patches",
+        "Database is configured to fail on DELETE FROM patches"
+      ],
+      "input": "Call deleteWorkspace('cp-ws') where patches delete fails",
+      "expected": {
+        "patches_exist": true,
+        "result": "non-nil error returned to caller",
+        "workspace_exists": true
+      },
+      "assertion_pseudocode": "mockDB.FailOnDeletePatches = true; err = deleteWorkspace(db, 'cp-ws'); assert err != nil; wsCount = db.QueryRow('SELECT COUNT(*) FROM workspaces WHERE slug = ?', 'cp-ws'); assert wsCount == 1; patchCount = db.QueryRow('SELECT COUNT(*) FROM patches WHERE workspace_slug = ?', 'cp-ws'); assert patchCount == 2"
+    },
+    {
+      "id": "TS-15-E35",
+      "requirement_id": "15-REQ-13.E2",
+      "kind": "unit",
+      "description": "Deleting a workspace with no patches executes DELETE FROM patches affecting zero rows and completes successfully.",
+      "preconditions": [
+        "A workspace with slug 'no-patch-ws' exists with no patches in the patches table"
+      ],
+      "input": "Call deleteWorkspace('no-patch-ws')",
+      "expected": {
+        "result": "nil error",
+        "workspace_deleted": true,
+        "zero_row_delete_no_error": true
+      },
+      "assertion_pseudocode": "err = deleteWorkspace(db, 'no-patch-ws'); assert err == nil; wsCount = db.QueryRow('SELECT COUNT(*) FROM workspaces WHERE slug = ?', 'no-patch-ws'); assert wsCount == 0"
+    },
+    {
+      "id": "TS-15-E36",
+      "requirement_id": "15-REQ-14.E1",
+      "kind": "unit",
+      "description": "Running 'afc patch add' without the required --branch flag prints a usage error and exits non-zero without making an API call.",
+      "preconditions": [
+        "afc CLI is available",
+        "Operator is authenticated"
+      ],
+      "input": "afc patch add cp-ws",
+      "expected": {
+        "api_not_called": true,
+        "exit_code": "non-zero",
+        "stderr_or_stdout_contains": "usage message indicating --branch is required"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch add cp-ws'); assert exitCode != 0; assert (stderr contains '--branch' OR stdout contains '--branch')"
+    },
+    {
+      "id": "TS-15-E37",
+      "requirement_id": "15-REQ-14.E2",
+      "kind": "integration",
+      "description": "When the API returns an error response for any patch command, the CLI displays the error message to stderr and exits non-zero.",
+      "preconditions": [
+        "Hub server is running and returns HTTP 400 for the patch add request",
+        "Operator is authenticated"
+      ],
+      "input": "afc patch add std-ws --branch feature/foo (standard workspace, will fail)",
+      "expected": {
+        "exit_code": "non-zero",
+        "stderr_contains": "error message from API"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch add std-ws --branch feature/foo'); assert exitCode != 0; assert stderr != '' OR stdout contains error text"
+    },
+    {
+      "id": "TS-15-E38",
+      "requirement_id": "15-REQ-14.E3",
+      "kind": "unit",
+      "description": "Running 'afc patch reorder' with no patch IDs prints a usage error and exits non-zero without making an API call.",
+      "preconditions": [
+        "afc CLI is available",
+        "Operator is authenticated"
+      ],
+      "input": "afc patch reorder cp-ws",
+      "expected": {
+        "api_not_called": true,
+        "exit_code": "non-zero",
+        "stderr_or_stdout_contains": "usage message"
+      },
+      "assertion_pseudocode": "exitCode, stdout, stderr = runCLI('afc patch reorder cp-ws'); assert exitCode != 0; assert (stderr contains 'usage' OR stdout contains 'usage' OR stderr != '')"
+    },
+    {
+      "id": "TS-15-E39",
+      "requirement_id": "15-REQ-15.E1",
+      "kind": "integration",
+      "description": "A PAT with patches:read scope attempting a write operation (POST to add patch) receives HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists",
+        "Caller is authenticated with a PAT that has only patches:read scope"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature/new"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = readOnlyScopeClient.post('/api/v1/workspaces/cp-ws/patches', {branch_name: 'feature/new'}); assert resp.status == 403; assert resp.body.error != nil OR resp.body.message != nil"
+    },
+    {
+      "id": "TS-15-E40",
+      "requirement_id": "15-REQ-15.E2",
+      "kind": "integration",
+      "description": "An unauthenticated request to any patch endpoint receives HTTP 401 with a JSON error body.",
+      "preconditions": [
+        "Hub server is running with initialized SQLite database",
+        "A carry_patch workspace with slug 'cp-ws' exists"
+      ],
+      "input": {
+        "auth": "none",
+        "method": "GET",
+        "path": "/api/v1/workspaces/cp-ws/patches"
+      },
+      "expected": {
+        "body_has_error": true,
+        "status": 401
+      },
+      "assertion_pseudocode": "resp = unauthenticatedClient.get('/api/v1/workspaces/cp-ws/patches'); assert resp.status == 401; assert resp.body.error != nil OR resp.body.message != nil"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-15-SMOKE-1",
+      "execution_path_id": "15-PATH-1",
+      "description": "End-to-end smoke test: create a carry_patch workspace via CLI, verify HTTP 201 response with all new fields, and confirm the clone job adds the upstream remote, sets rerere config, and creates the integration branch.",
+      "trigger": "Run 'afc workspace create --mode carry_patch --git-url https://github.com/myfork/repo --upstream-url https://github.com/upstream/repo --integration-branch deploy' against a running hub server",
+      "real_components": [
+        "afc CLI",
+        "workspace creation handler (POST /api/v1/workspaces)",
+        "workspace store (SQLite workspaces table)",
+        "clone job worker",
+        "GitRunner (RemoteAdd, ConfigSet, CreateBranch from git_runner_extensions)"
+      ],
+      "mockable": [
+        "go-git PlainCloneContext (filesystem/network)",
+        "upstream git remote (network)"
+      ],
+      "expected_effects": [
+        "HTTP 201 response with workspace_mode='carry_patch', upstream_url='https://github.com/upstream/repo', integration_branch='deploy'",
+        "Workspace row inserted in SQLite workspaces table with all three new fields",
+        "Clone job enqueued and executed",
+        "GitRunner.RemoteAdd called with ('upstream', 'https://github.com/upstream/repo')",
+        "GitRunner.ConfigSet called with ('rerere.enabled', 'true') and ('rerere.autoupdate', 'true')",
+        "GitRunner.CreateBranch called with ('deploy', upstream tracking HEAD)",
+        "workspace clone_status updated to 'ready' in workspaces table"
+      ]
+    },
+    {
+      "id": "TS-15-SMOKE-2",
+      "execution_path_id": "15-PATH-2",
+      "description": "End-to-end smoke test: add a patch with explicit position via CLI, verify HTTP 201 with correct position, then list patches and confirm ordering.",
+      "trigger": "Run 'afc patch add my-workspace --branch feature/auth-headers --position 2 --upstream-pr https://github.com/upstream/repo/pull/42' then 'afc patch list my-workspace' against a running hub server",
+      "real_components": [
+        "afc CLI",
+        "patch add handler (POST /api/v1/workspaces/:slug/patches)",
+        "patch list handler (GET /api/v1/workspaces/:slug/patches)",
+        "patches table (SQLite)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 201 response with branch_name='feature/auth-headers', position=2, status='active', upstream_pr_url set",
+        "Existing patches at position >= 2 shifted down by one in the patches table",
+        "Patch list response returns patches in position order with new patch at position 2",
+        "No gaps in position sequence after insertion"
+      ]
+    },
+    {
+      "id": "TS-15-SMOKE-3",
+      "execution_path_id": "15-PATH-3",
+      "description": "End-to-end smoke test: reorder the patch list via CLI and verify positions are reassigned correctly in the database.",
+      "trigger": "Run 'afc patch reorder my-workspace uuid-3 uuid-1 uuid-2' against a running hub server with 3 existing patches",
+      "real_components": [
+        "afc CLI",
+        "patch reorder handler (POST /api/v1/workspaces/:slug/patches/reorder)",
+        "patches table (SQLite)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with JSON array showing uuid-3 at position 1, uuid-1 at position 2, uuid-2 at position 3",
+        "patches table updated atomically within a single transaction",
+        "updated_at timestamps updated for all three patches",
+        "No gaps or duplicates in position sequence"
+      ]
+    },
+    {
+      "id": "TS-15-SMOKE-4",
+      "execution_path_id": "15-PATH-4",
+      "description": "End-to-end smoke test: delete a workspace and verify all associated patches are deleted atomically.",
+      "trigger": "Send DELETE /api/v1/workspaces/my-workspace to a running hub server where the workspace has 3 patches",
+      "real_components": [
+        "workspace delete handler (DELETE /api/v1/workspaces/:slug)",
+        "deleteWorkspace function (store.go)",
+        "workspaces table (SQLite)",
+        "patches table (SQLite)"
+      ],
+      "mockable": [
+        "filesystem (workspace directory removal)"
+      ],
+      "expected_effects": [
+        "HTTP 204 response with no body",
+        "Workspace row removed from workspaces table",
+        "All 3 patch rows removed from patches table (workspace_slug='my-workspace')",
+        "Deletion is atomic: either all rows are deleted or none are"
+      ]
+    },
+    {
+      "id": "TS-15-SMOKE-5",
+      "execution_path_id": "15-PATH-5",
+      "description": "End-to-end smoke test: resolveUpstreamAuth falls back to resolveCloneAuth when no upstream-specific secrets are set.",
+      "trigger": "Execute a carry_patch workspace clone job where no UPSTREAM_GIT_PAT, UPSTREAM_GIT_USERNAME, or UPSTREAM_GIT_PASSWORD secrets are set for the workspace",
+      "real_components": [
+        "clone job worker",
+        "resolveUpstreamAuth function",
+        "resolveCloneAuth function (spec 09)",
+        "secrets store (spec 07)"
+      ],
+      "mockable": [
+        "upstream git remote (network)",
+        "origin git remote (network)"
+      ],
+      "expected_effects": [
+        "resolveUpstreamAuth looks up UPSTREAM_GIT_PAT in secrets store and receives not-found",
+        "resolveUpstreamAuth looks up UPSTREAM_GIT_USERNAME and UPSTREAM_GIT_PASSWORD and receives not-found",
+        "resolveUpstreamAuth calls resolveCloneAuth and returns its result",
+        "Clone job uses the origin credentials for upstream remote authentication",
+        "No error is returned from resolveUpstreamAuth"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

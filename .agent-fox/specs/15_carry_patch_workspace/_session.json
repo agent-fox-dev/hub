@@ -1,0 +1,70 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `carry_patch_workspace` PRD (spec 15) is thorough and well-structured. It clearly articulates intent, goals, non-goals, functional requirements, schema design, REST API surface, CLI commands, permissions, error responses, tech stack, and dependencies. All major spec dimensions are covered at a high quality level. The PRD correctly scopes itself as the data-model and workspace-extension layer, explicitly deferring rebuild logic, sync extensions, and status aggregation to `carry_patch_operations`. Dependencies on active specs (workspaces, workspace_checkout, secrets_variables, git_credentials, git_runner_extensions) are correctly declared. One minor cross-spec consideration is raised regarding potential overlap with `workspace_write_delete` for the immutability enforcement on PATCH requests, and a clarifying question is surfaced about the new PAT permission scopes (`patches:read`, `patches:write`) and how they integrate with the existing PAT scope grant machinery.",
+      "gaps": [
+        "The PRD introduces two new PAT permission scopes (`patches:read`, `patches:write`) but does not specify how these are registered with the existing apikit permission/scope grant machinery (as defined in the `workspace_write_delete` and `workspaces` specs). The existing scope-grant infrastructure may need extension.",
+        "The PATCH /api/v1/workspaces/:slug endpoint's immutability enforcement for `workspace_mode`, `upstream_url`, and `integration_branch` overlaps with the handler logic defined in `workspace_write_delete` (spec `workspace_write_delete`). It is unclear whether the immutability guard lives in the existing PATCH handler or requires a new code path.",
+        "The `afc credential set` command is extended with `--upstream-git-pat` and `--upstream-git-username`/`--upstream-git-password` flags, but there is no mention of which spec owns the `afc credential set` command definition. It may be defined in `git_credentials` (spec 09) and this spec should explicitly declare that dependency or note the CLI extension point.",
+        "The `resolveUpstreamAuth` fallback chain mentions `resolveCloneAuth` but does not specify the package/file location or whether it will be co-located with the existing auth resolution logic from `git_credentials` (spec 09). A brief note on implementation location would remove ambiguity for artifact generation.",
+        "There is no explicit test tooling mentioned (e.g., Go's `testing` package, testify, or integration test framework), which is a minor gap in the tech stack section."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How should the new `patches:read` and `patches:write` PAT permission scopes be registered with the existing apikit scope/permission system? Should they be added to the same registration point as `workspaces:read` / `workspaces:create` (in spec `workspaces` or `workspace_write_delete`), or does this spec own their registration?",
+          "context": "The PRD defines two new PAT scopes but does not describe how they plug into the existing scope grant infrastructure. This could affect which spec owns the registration code and whether `workspace_write_delete` needs a corresponding update.",
+          "options": [
+            "This spec owns the registration of patches:read and patches:write alongside the patch handler mount.",
+            "The workspaces spec (01) or workspace_write_delete spec should be updated to register the new scopes.",
+            "A future permissions/scopes spec will centralize all scope registration."
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "The immutability enforcement for `workspace_mode`, `upstream_url`, and `integration_branch` on PATCH requests overlaps with the PATCH /api/v1/workspaces/:slug handler defined in the `workspace_write_delete` spec. Should this spec extend that handler, or does it add a separate validation layer?",
+          "context": "The `workspace_write_delete` spec owns the PATCH workspace handler. Adding immutability guards for new fields may require coordination with or a declared extension of that spec to avoid conflicting handler implementations.",
+          "options": [
+            "This spec extends the existing PATCH handler in workspace_write_delete to add the immutability checks.",
+            "This spec adds a middleware/validation layer that runs before the existing handler.",
+            "workspace_write_delete spec will be updated separately; this spec only documents the expected behavior."
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "The `afc credential set` CLI command is extended with upstream credential flags. Which spec owns the base `afc credential set` command \u2014 is it `git_credentials` (spec 09) \u2014 and should this spec declare an explicit CLI extension dependency on it?",
+          "context": "Without knowing the owning spec for `afc credential set`, artifact generation may produce conflicting or duplicate CLI command definitions.",
+          "options": [
+            "git_credentials (spec 09) owns afc credential set; this spec should declare a CLI extension dependency on it.",
+            "This spec introduces afc credential set from scratch as part of upstream credential management.",
+            "The credential CLI lives in secrets_variables_cli; this spec extends it there."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What test tooling should be used for this spec? The tech stack section names Go 1.26+ but does not specify the test framework or test patterns expected (e.g., standard `testing` + `testify`, table-driven tests, integration tests against a SQLite in-memory DB).",
+          "context": "Missing test tooling information can lead to inconsistent test artifacts. Other specs in the landscape likely establish a convention \u2014 confirming it here ensures consistency.",
+          "options": [
+            "Standard Go testing + testify/assert, consistent with other specs in the project.",
+            "Standard Go testing only, no third-party assertion libraries.",
+            "Integration tests using a real SQLite file; unit tests with mocks for git operations."
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

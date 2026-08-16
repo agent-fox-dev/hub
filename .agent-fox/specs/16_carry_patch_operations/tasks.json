@@ -1,0 +1,1205 @@
+{
+  "$schema": null,
+  "spec_id": "16",
+  "spec_name": "carry_patch_operations",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/carrypatch/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "10",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Rebuild registered as new job type in durable job queue",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "12",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Rebuild shares group_key serialization with merge operations",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "13",
+      "from_group": 1,
+      "to_group": 3,
+      "relationship": "Sync handler extended for carry-patch workspaces",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "14",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Uses cherry-pick, merge-noff, checkout, branch, config, log, is-ancestor from GitRunner extensions",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "15",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Uses workspace mode, upstream_url, patches table, resolveUpstreamAuth from carry_patch_workspace",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Rebuild Job Core Algorithm (REQ-1)",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for rebuild job registration and enqueue validation",
+          "details": [
+            "Write TS-16-1: POST /api/v1/workspaces/:slug/rebuild enqueues a 'rebuild' job with correct key=<slug>, group=<slug>:<integration_branch>, payload includes workspace_slug, submitted_by, strategy",
+            "Write TS-16-2: POST returns 400 for standard workspace mode",
+            "Write TS-16-3: POST returns 400 when workspace not active or clone not ready",
+            "Write TS-16-4: POST returns 400 when no active or conflict patches exist",
+            "Write TS-16-5: POST returns 409 when rebuild already queued or running (duplicate key)",
+            "Use table-driven tests with mock job queue and mock workspace store"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-2",
+            "TS-16-3",
+            "TS-16-4",
+            "TS-16-5"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for rebuild algorithm: rebase strategy (cherry-pick path)",
+          "details": [
+            "Write TS-16-6: Rebase strategy cherry-picks unique commits per patch in position order onto temp branch, force-updates integration branch ref on success",
+            "Write TS-16-7: Patches with status merged_upstream or disabled are skipped and reported as 'skipped' in patch_results",
+            "Write TS-16-8: Missing patch branch is skipped (not fatal), reported as 'skipped', rebuild continues",
+            "Mock GitRunner methods: LogCommits, CherryPick, CreateBranch, ForceUpdateRef, DeleteBranch",
+            "Assert patch_results array contains correct status, patch_id, branch_name, position, new_head_sha fields"
+          ],
+          "test_spec_refs": [
+            "TS-16-6",
+            "TS-16-7",
+            "TS-16-8"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for rebuild algorithm: merge strategy and conflict fail-fast",
+          "details": [
+            "Write TS-16-7 (merge variant): Merge strategy applies each patch with --no-ff, producing merge commits",
+            "Write TS-16-8 (conflict variant): Conflict during cherry-pick/merge triggers fail-fast: temp branch deleted, integration branch NOT updated, patch status set to 'conflict', conflict_files recorded",
+            "Assert rebuild result JSON shape: upstream_head_sha, integration_head_sha (null on conflict), strategy, patches_applied, patches_skipped, patches_removed, patch_results",
+            "Mock GitRunner MergeNoFF and CherryPick to return MergeNoFFConflictError / CherryPickConflictError",
+            "Assert DB patch record updated to status='conflict' with conflict_files populated"
+          ],
+          "test_spec_refs": [
+            "TS-16-7",
+            "TS-16-8"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write tests for rebuild success path: auto-cleanup and ref update",
+          "details": [
+            "Write TS-16-1 (success path): After all patches applied cleanly, integration branch ref force-updated, head_sha updated in DB, temp branch deleted",
+            "Write TS-16-2 (cleanup): merged_upstream patches deleted from DB after successful rebuild, remaining positions compacted",
+            "Assert patches_removed count in result matches deleted merged_upstream patches",
+            "Assert integration_head_sha in result equals new HEAD SHA",
+            "Use in-memory SQLite for DB assertions"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-2"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files in this group compile without errors: go build ./internal/carrypatch/...",
+          "Test stubs exist for TS-16-1 through TS-16-8 and are discoverable by go test",
+          "No linter warnings introduced: go vet ./internal/carrypatch/...",
+          "Mock interfaces for GitRunner, job queue, and workspace store are defined and used consistently"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Rebuild List/Status, Rerere, Sync Extension (REQ-2 through REQ-5)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for rebuild list and status endpoints (REQ-2)",
+          "details": [
+            "Write TS-16-9: GET /api/v1/workspaces/:slug/rebuilds returns paginated list of rebuild jobs for the workspace",
+            "Write TS-16-10: GET /api/v1/workspaces/:slug/rebuilds/:id returns job record with status, payload, and result fields",
+            "Assert rebuilds:read permission is required for both endpoints",
+            "Assert rebuilds:write permission is required for POST /rebuild",
+            "Use mock job queue ListByKey and GetByID methods"
+          ],
+          "test_spec_refs": [
+            "TS-16-9",
+            "TS-16-10"
+          ],
+          "requirement_refs": [
+            "16-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for rerere integration during rebuild (REQ-3)",
+          "details": [
+            "Write TS-16-11: When cherry-pick/merge produces conflict and rerere resolves all conflicts (git diff --name-only --diff-filter=U returns empty), rebuild continues and advances temp branch",
+            "Write TS-16-12: When rerere cannot resolve all conflicts (unresolved files remain), rebuild aborts, patch marked conflict, conflict_files populated from diff output",
+            "Mock GitRunner.DiffUnresolved to return empty list (rerere resolved) or non-empty list (unresolved)",
+            "Assert rerere check is performed after each cherry-pick failure in rebase strategy and after merge failure in merge strategy"
+          ],
+          "test_spec_refs": [
+            "TS-16-11",
+            "TS-16-12"
+          ],
+          "requirement_refs": [
+            "16-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for rerere management API (REQ-4)",
+          "details": [
+            "Write TS-16-13: GET /api/v1/workspaces/:slug/rerere returns list of resolutions from .git/rr-cache/ with path and recorded_at (RFC 3339 or null)",
+            "Write TS-16-14: DELETE /api/v1/workspaces/:slug/rerere/*pathspec executes 'git rerere forget <pathspec>' and returns 404 if no recorded resolution exists for the pathspec",
+            "Assert Echo wildcard parameter *pathspec correctly captures paths containing slashes (e.g. src/config.go)",
+            "Mock rr-cache directory reading and GitRunner.RerereForget"
+          ],
+          "test_spec_refs": [
+            "TS-16-13",
+            "TS-16-14"
+          ],
+          "requirement_refs": [
+            "16-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write tests for carry-patch sync extension: upstream fetch and merge detection (REQ-5)",
+          "details": [
+            "Write TS-16-15: Carry-patch sync fetches from 'upstream' remote using resolveUpstreamAuth credentials (not origin)",
+            "Write TS-16-16: After fetch, each active patch is checked via GitRunner.IsAncestor; patches where branch HEAD is ancestor of new upstream HEAD are transitioned to merged_upstream status",
+            "Write TS-16-17: Sync response includes patches_merged list of branch names and rebuild_triggered boolean",
+            "Mock GitRunner.IsAncestor to return true/false per patch branch"
+          ],
+          "test_spec_refs": [
+            "TS-16-15",
+            "TS-16-16",
+            "TS-16-17"
+          ],
+          "requirement_refs": [
+            "16-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write tests for carry-patch sync extension: auto-rebuild trigger (REQ-5)",
+          "details": [
+            "Write TS-16-18: When AUTO_REBUILD_AFTER_SYNC=true and upstream ref advanced or patches merged, rebuild job is enqueued; rebuild_triggered=true in response",
+            "Write TS-16-18 (duplicate): When rebuild already queued (duplicate key), enqueue is silently ignored and rebuild_triggered=false",
+            "Write TS-16-18 (disabled): When AUTO_REBUILD_AFTER_SYNC=false, no rebuild job is enqueued",
+            "Mock job queue EnqueueParams and assert dedup key behavior"
+          ],
+          "test_spec_refs": [
+            "TS-16-18"
+          ],
+          "requirement_refs": [
+            "16-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.6",
+          "title": "Write tests for carry-patch status dashboard (REQ-6)",
+          "details": [
+            "Write TS-16-19: GET /api/v1/workspaces/:slug/patch-status returns full dashboard JSON with workspace_slug, workspace_mode, upstream_url, upstream_head_sha, integration_branch, integration_head_sha, last_sync_at, last_rebuild, patches array, summary",
+            "Write TS-16-20: last_rebuild is null when no rebuild has been attempted; last_rebuild_result and conflict_files per patch are null when no rebuild has run",
+            "Write TS-16-21: Returns HTTP 400 when workspace is not in carry_patch mode",
+            "Assert summary counts (total_patches, active, merged_upstream, conflict, disabled) are computed correctly",
+            "Assert rerere_resolution_count per patch is populated from rr-cache"
+          ],
+          "test_spec_refs": [
+            "TS-16-19",
+            "TS-16-20",
+            "TS-16-21"
+          ],
+          "requirement_refs": [
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files in this group compile without errors: go build ./internal/carrypatch/...",
+          "Test stubs exist for TS-16-9 through TS-16-21 and are discoverable by go test",
+          "No linter warnings introduced: go vet ./internal/carrypatch/...",
+          "Echo wildcard route registration for DELETE rerere endpoint compiles and routes correctly in test server setup"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: CLI Commands and Smoke Tests (REQ-7 through REQ-9)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for rebuild CLI commands (REQ-7)",
+          "details": [
+            "Write TS-16-22: 'afc rebuild submit <workspace-slug>' calls POST /api/v1/workspaces/:slug/rebuild and prints job record",
+            "Write TS-16-23: 'afc rebuild list <workspace-slug>' calls GET /api/v1/workspaces/:slug/rebuilds and prints job list",
+            "Write TS-16-24: 'afc rebuild status <workspace-slug> <rebuild-id>' calls GET /api/v1/workspaces/:slug/rebuilds/:id and prints job status",
+            "Use CLIClient mock with DoRequest assertions; verify CLIPrintResult output format"
+          ],
+          "test_spec_refs": [
+            "TS-16-22",
+            "TS-16-23",
+            "TS-16-24"
+          ],
+          "requirement_refs": [
+            "16-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for rerere and patch-status CLI commands (REQ-8, REQ-9)",
+          "details": [
+            "Write TS-16-25: 'afc rerere list <workspace-slug>' calls GET /api/v1/workspaces/:slug/rerere and prints resolution list",
+            "Write TS-16-26: 'afc rerere forget <workspace-slug> <pathspec>' calls DELETE /api/v1/workspaces/:slug/rerere/<pathspec> and prints confirmation",
+            "Write TS-16-27: 'afc workspace patch-status <workspace-slug>' calls GET /api/v1/workspaces/:slug/patch-status and prints dashboard",
+            "Assert CLIHandleError is called on non-2xx responses; verify command registration under BuildRootCommand"
+          ],
+          "test_spec_refs": [
+            "TS-16-25",
+            "TS-16-26",
+            "TS-16-27"
+          ],
+          "requirement_refs": [
+            "16-REQ-8",
+            "16-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write smoke tests for end-to-end carry-patch operations",
+          "details": [
+            "Write TS-16-SMOKE-1: Full rebuild flow — create carry_patch workspace, add active patches, POST /rebuild, poll until completed, verify integration branch HEAD updated in DB and git ref",
+            "Write TS-16-SMOKE-2: Sync + auto-rebuild — trigger sync on carry_patch workspace with upstream changes, verify patches_merged populated and rebuild job enqueued",
+            "Write TS-16-SMOKE-3: Status dashboard — after rebuild, GET /patch-status returns correct summary counts and last_rebuild populated",
+            "Use real SQLite in-memory DB and real git repos (bare upstream + workspace clone) for smoke tests",
+            "Smoke tests live in internal/carrypatch/smoke_test.go with build tag 'smoke'"
+          ],
+          "test_spec_refs": [
+            "TS-16-SMOKE-1",
+            "TS-16-SMOKE-2",
+            "TS-16-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-5",
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All CLI test files compile: go build ./internal/carrypatch/...",
+          "Smoke test stubs compile with build tag: go build -tags smoke ./internal/carrypatch/...",
+          "TS-16-22 through TS-16-27 test stubs are discoverable by go test",
+          "No linter warnings: go vet ./internal/carrypatch/...",
+          "Smoke test file exists at internal/carrypatch/smoke_test.go with correct build tag"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement Rebuild Job: Registration, Enqueue, and Validation",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Define rebuild job type and payload struct",
+          "details": [
+            "Define RebuildJobPayload struct with fields: WorkspaceSlug string, SubmittedBy string, Strategy string",
+            "Register 'rebuild' job type with the durable job queue (spec 10) in job type registry",
+            "Set job Key=<workspace_slug>, Group=<workspace_slug>:<integration_branch>",
+            "Mark job as not retryable on conflict (permanent error), retryable on transient errors (network, filesystem)",
+            "Capture REBUILD_STRATEGY workspace variable at enqueue time (not execution time) for determinism"
+          ],
+          "test_spec_refs": [
+            "TS-16-1"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement POST /api/v1/workspaces/:slug/rebuild handler",
+          "details": [
+            "Add route POST /api/v1/workspaces/:slug/rebuild in MountHandlers",
+            "Validate: workspace must be carry_patch mode (400 otherwise)",
+            "Validate: workspace must be active and clone ready (400 otherwise)",
+            "Validate: at least one patch with status active or conflict must exist (400 otherwise)",
+            "Check for duplicate queued/running rebuild job (409 if exists)",
+            "Require rebuilds:write permission scope",
+            "Enqueue rebuild job and return job record with status 'queued'"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-2",
+            "TS-16-3",
+            "TS-16-4",
+            "TS-16-5"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement GET rebuild list and status endpoints",
+          "details": [
+            "Add route GET /api/v1/workspaces/:slug/rebuilds — calls job queue ListByKey with key=<slug> and type='rebuild'",
+            "Add route GET /api/v1/workspaces/:slug/rebuilds/:id — calls job queue GetByID, returns 404 if not found",
+            "Require rebuilds:read permission scope for both endpoints",
+            "Return job records including status, payload, result, created_at, completed_at fields"
+          ],
+          "test_spec_refs": [
+            "TS-16-9",
+            "TS-16-10"
+          ],
+          "requirement_refs": [
+            "16-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Spec tests for rebuild enqueue and validation pass: go test ./internal/carrypatch/... -run TestRebuildEnqueue -count=1 -v",
+          "Spec tests for list/status endpoints pass: go test ./internal/carrypatch/... -run TestRebuildList -count=1 -v",
+          "No linter warnings: go vet ./internal/carrypatch/...",
+          "16-REQ-1 and 16-REQ-2 acceptance criteria met: correct HTTP status codes, permission checks, and job payload fields"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement Rebuild Algorithm: Rebase Strategy",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement rebuild executor: upstream fetch and temp branch setup",
+          "details": [
+            "Implement RebuildExecutor.Execute(ctx, payload RebuildJobPayload) (*RebuildResult, error)",
+            "Step 1: Resolve upstream credentials via resolveUpstreamAuth (from spec 15) with fallback to origin credentials",
+            "Step 2: Fetch from upstream remote using go-git FetchContext with resolved auth",
+            "Step 3: Resolve upstream tracking branch HEAD (workspace.branch field, defaulting to remote default branch)",
+            "Step 4: Create temporary branch at upstream HEAD using GitRunner.CreateBranch",
+            "Collect patches: query patches table for status IN ('active','conflict') ORDER BY position ASC"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-6"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement rebase strategy: per-patch cherry-pick loop",
+          "details": [
+            "For each patch in position order: call GitRunner.LogCommits(upstreamHead, patchBranch) to get unique commits",
+            "If patch branch does not exist: append skipped result, continue (do not halt)",
+            "Cherry-pick each commit in reverse-log order onto temp branch via GitRunner.CherryPick",
+            "On success: advance temp branch pointer, append success result with new_head_sha",
+            "On CherryPickConflictError: check rerere resolution (see REQ-3 implementation), handle conflict or continue"
+          ],
+          "test_spec_refs": [
+            "TS-16-6",
+            "TS-16-7",
+            "TS-16-8"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement rebuild success path: ref update and merged_upstream cleanup",
+          "details": [
+            "After all patches applied: force-update integration branch ref to temp branch HEAD via GitRunner.ForceUpdateRef",
+            "Update workspace.head_sha in DB to new integration HEAD SHA",
+            "Delete temp branch via GitRunner.DeleteBranch",
+            "Auto-cleanup: DELETE FROM patches WHERE workspace_id=? AND status='merged_upstream'",
+            "Compact remaining positions: UPDATE patches SET position=row_number ORDER BY position",
+            "Populate RebuildResult: upstream_head_sha, integration_head_sha, strategy, patches_applied, patches_skipped, patches_removed, patch_results"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-2"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Rebase strategy tests pass: go test ./internal/carrypatch/... -run TestRebuildRebase -count=1 -v",
+          "Success path tests pass including ref update and cleanup: go test ./internal/carrypatch/... -run TestRebuildSuccess -count=1 -v",
+          "No linter warnings: go vet ./internal/carrypatch/...",
+          "16-REQ-1 acceptance criteria for rebase strategy and success path met"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement Rebuild Algorithm: Merge Strategy and Conflict Fail-Fast",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement merge strategy: per-patch --no-ff merge loop",
+          "details": [
+            "When payload.Strategy == 'merge': for each patch call GitRunner.MergeNoFF(tempBranch, patchBranch)",
+            "On success: advance temp branch pointer, append success result with new_head_sha",
+            "On MergeNoFFConflictError: invoke rerere resolution check (shared with rebase path)",
+            "If patch branch does not exist: append skipped result, continue",
+            "Ensure REBUILD_STRATEGY defaults to 'rebase' when workspace variable is empty or unset"
+          ],
+          "test_spec_refs": [
+            "TS-16-7"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement conflict fail-fast: abort, DB update, temp branch cleanup",
+          "details": [
+            "On unresolved conflict: abort cherry-pick or merge via GitRunner.AbortCherryPick / GitRunner.AbortMerge",
+            "UPDATE patches SET status='conflict', conflict_files=<json array> WHERE id=<patch_id>",
+            "Delete temp branch via GitRunner.DeleteBranch",
+            "Do NOT update integration branch ref",
+            "Return RebuildResult with integration_head_sha=null, patch_results showing conflicting patch with status='conflict' and conflict_files populated"
+          ],
+          "test_spec_refs": [
+            "TS-16-8"
+          ],
+          "requirement_refs": [
+            "16-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement rerere resolution check helper",
+          "details": [
+            "Implement checkRerereResolved(ctx, repoPath string) (bool, []string, error)",
+            "Run GitRunner command: git diff --name-only --diff-filter=U to list unresolved conflict files",
+            "If output is empty: return true (all resolved), nil files",
+            "If output is non-empty: return false, list of unresolved file paths",
+            "This helper is called after every CherryPickConflictError and MergeNoFFConflictError",
+            "If rerere resolved all: continue cherry-pick/merge (git cherry-pick --continue or git merge --continue)"
+          ],
+          "test_spec_refs": [
+            "TS-16-11",
+            "TS-16-12"
+          ],
+          "requirement_refs": [
+            "16-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Merge strategy tests pass: go test ./internal/carrypatch/... -run TestRebuildMerge -count=1 -v",
+          "Conflict fail-fast tests pass: go test ./internal/carrypatch/... -run TestRebuildConflict -count=1 -v",
+          "Rerere resolution check tests pass: go test ./internal/carrypatch/... -run TestCheckRerereResolved -count=1 -v",
+          "No linter warnings: go vet ./internal/carrypatch/...",
+          "16-REQ-1 and 16-REQ-3 acceptance criteria for conflict handling met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Rerere Management API and Carry-Patch Sync Extension",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement GET /api/v1/workspaces/:slug/rerere endpoint",
+          "details": [
+            "Read .git/rr-cache/ directory for the workspace clone path",
+            "For each subdirectory: read preimage or postimage file to extract the conflicted path",
+            "Derive recorded_at from file modification time (os.Stat); set null if unavailable",
+            "Return JSON: {resolutions: [{path: string, recorded_at: string|null}]}",
+            "Require workspaces:read permission (existing scope)"
+          ],
+          "test_spec_refs": [
+            "TS-16-13"
+          ],
+          "requirement_refs": [
+            "16-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement DELETE /api/v1/workspaces/:slug/rerere/*pathspec endpoint",
+          "details": [
+            "Register Echo route with wildcard: DELETE /api/v1/workspaces/:slug/rerere/*pathspec",
+            "Extract pathspec from Echo wildcard parameter (handles slashes in file paths)",
+            "Check if pathspec has a recorded resolution in rr-cache; return 404 if not found",
+            "Execute GitRunner command: git rerere forget <pathspec>",
+            "Return 204 on success",
+            "Require workspaces:read permission (existing scope)"
+          ],
+          "test_spec_refs": [
+            "TS-16-14"
+          ],
+          "requirement_refs": [
+            "16-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement carry-patch sync extension: upstream fetch and merge detection",
+          "details": [
+            "Extend existing sync handler (spec 13) with carry-patch branch: detect workspace.mode == 'carry_patch'",
+            "Resolve upstream credentials via resolveUpstreamAuth; fetch from 'upstream' remote",
+            "Compare new upstream HEAD against stored upstream_head_sha",
+            "Advance upstream tracking ref using same fast-forward logic as standard sync",
+            "For each active patch: call GitRunner.IsAncestor(patchBranchHead, newUpstreamHead)",
+            "Transition detected patches to merged_upstream status; collect branch names for response"
+          ],
+          "test_spec_refs": [
+            "TS-16-15",
+            "TS-16-16",
+            "TS-16-17"
+          ],
+          "requirement_refs": [
+            "16-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.4",
+          "title": "Implement auto-rebuild trigger after carry-patch sync",
+          "details": [
+            "After sync completes: check if upstream ref advanced OR any patches transitioned to merged_upstream",
+            "Read AUTO_REBUILD_AFTER_SYNC workspace variable; default to true if unset",
+            "If true: enqueue rebuild job via job queue; set rebuild_triggered=true in sync response",
+            "If enqueue returns duplicate key error: set rebuild_triggered=false (silently ignore)",
+            "If AUTO_REBUILD_AFTER_SYNC=false: set rebuild_triggered=false, do not enqueue",
+            "Extend sync response JSON with patches_merged and rebuild_triggered fields (omit for standard workspaces)"
+          ],
+          "test_spec_refs": [
+            "TS-16-18"
+          ],
+          "requirement_refs": [
+            "16-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Rerere API tests pass: go test ./internal/carrypatch/... -run TestRerere -count=1 -v",
+          "Sync extension tests pass: go test ./internal/carrypatch/... -run TestCarryPatchSync -count=1 -v",
+          "Auto-rebuild trigger tests pass: go test ./internal/carrypatch/... -run TestAutoRebuild -count=1 -v",
+          "No linter warnings: go vet ./internal/carrypatch/...",
+          "16-REQ-4 and 16-REQ-5 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Carry-Patch Status Dashboard and CLI Commands",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement GET /api/v1/workspaces/:slug/patch-status endpoint",
+          "details": [
+            "Return 400 if workspace.mode != 'carry_patch'",
+            "Aggregate: workspace fields (slug, mode, upstream_url, upstream_head_sha, integration_branch, integration_head_sha, last_sync_at)",
+            "Query most recent completed/failed rebuild job for last_rebuild (id, status, completed_at, strategy, error); null if none",
+            "Query all patches ordered by position; for each patch populate last_rebuild_result and conflict_files from most recent rebuild job result",
+            "Compute rerere_resolution_count per patch by scanning rr-cache for files touched by the patch branch",
+            "Compute summary: total_patches, active, merged_upstream, conflict, disabled counts",
+            "Require workspaces:read permission"
+          ],
+          "test_spec_refs": [
+            "TS-16-19",
+            "TS-16-20",
+            "TS-16-21"
+          ],
+          "requirement_refs": [
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement rebuild CLI commands (afc rebuild submit/list/status)",
+          "details": [
+            "Add 'rebuild' command group to BuildRootCommand",
+            "afc rebuild submit <workspace-slug>: POST /api/v1/workspaces/:slug/rebuild, print job record via CLIPrintResult",
+            "afc rebuild list <workspace-slug>: GET /api/v1/workspaces/:slug/rebuilds, print job list",
+            "afc rebuild status <workspace-slug> <rebuild-id>: GET /api/v1/workspaces/:slug/rebuilds/:id, print job status",
+            "Use CLIClientFromCmd, DoRequest, CLIHandleError pattern consistent with existing CLI commands"
+          ],
+          "test_spec_refs": [
+            "TS-16-22",
+            "TS-16-23",
+            "TS-16-24"
+          ],
+          "requirement_refs": [
+            "16-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement rerere and patch-status CLI commands",
+          "details": [
+            "Add 'rerere' command group to BuildRootCommand",
+            "afc rerere list <workspace-slug>: GET /api/v1/workspaces/:slug/rerere, print resolution list",
+            "afc rerere forget <workspace-slug> <pathspec>: DELETE /api/v1/workspaces/:slug/rerere/<pathspec>, print confirmation or CLIHandleError on 404",
+            "Extend 'afc workspace' command group with patch-status subcommand",
+            "afc workspace patch-status <workspace-slug>: GET /api/v1/workspaces/:slug/patch-status, print dashboard in human-readable format"
+          ],
+          "test_spec_refs": [
+            "TS-16-25",
+            "TS-16-26",
+            "TS-16-27"
+          ],
+          "requirement_refs": [
+            "16-REQ-8",
+            "16-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Status dashboard tests pass: go test ./internal/carrypatch/... -run TestPatchStatus -count=1 -v",
+          "CLI command tests pass: go test ./internal/carrypatch/... -run TestCLI -count=1 -v",
+          "No linter warnings: go vet ./internal/carrypatch/...",
+          "16-REQ-6, 16-REQ-7, 16-REQ-8, 16-REQ-9 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "checkpoint",
+      "title": "Integration Checkpoint: Full Test Suite and Coverage",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run full spec test suite and verify all TS-16-* tests pass",
+          "details": [
+            "Run: go test ./internal/carrypatch/... -count=1 -v",
+            "Verify all 27 test cases (TS-16-1 through TS-16-27) pass",
+            "Verify no test is skipped due to missing implementation (no t.Skip() calls remaining)",
+            "Check test coverage: go test ./internal/carrypatch/... -cover -coverprofile=coverage.out"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-2",
+            "TS-16-3",
+            "TS-16-4",
+            "TS-16-5",
+            "TS-16-6",
+            "TS-16-7",
+            "TS-16-8",
+            "TS-16-9",
+            "TS-16-10",
+            "TS-16-11",
+            "TS-16-12",
+            "TS-16-13",
+            "TS-16-14",
+            "TS-16-15"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-2",
+            "16-REQ-3",
+            "16-REQ-4",
+            "16-REQ-5",
+            "16-REQ-6",
+            "16-REQ-7",
+            "16-REQ-8",
+            "16-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Run remaining spec tests and verify cross-spec integration",
+          "details": [
+            "Verify TS-16-16 through TS-16-27 all pass",
+            "Run full test suite to check for regressions: go test ./... -count=1",
+            "Verify sync extension does not break standard workspace sync (spec 13 tests still pass)",
+            "Verify rebuild job type registration does not conflict with existing job types (spec 10)"
+          ],
+          "test_spec_refs": [
+            "TS-16-16",
+            "TS-16-17",
+            "TS-16-18",
+            "TS-16-19",
+            "TS-16-20",
+            "TS-16-21",
+            "TS-16-22",
+            "TS-16-23",
+            "TS-16-24",
+            "TS-16-25",
+            "TS-16-26",
+            "TS-16-27"
+          ],
+          "requirement_refs": [
+            "16-REQ-5",
+            "16-REQ-6",
+            "16-REQ-7",
+            "16-REQ-8",
+            "16-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Linter and vet clean pass",
+          "details": [
+            "Run: go vet ./...",
+            "Fix any vet warnings introduced by this spec's implementation",
+            "Verify no unused imports, undefined variables, or type mismatches",
+            "Confirm all exported types and functions have doc comments"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-9",
+            "TS-16-13",
+            "TS-16-15",
+            "TS-16-19",
+            "TS-16-22"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-2",
+            "16-REQ-3",
+            "16-REQ-4",
+            "16-REQ-5",
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All spec tests pass: go test ./internal/carrypatch/... -count=1 -v",
+          "Full test suite passes with no regressions: go test ./... -count=1",
+          "No linter warnings: go vet ./...",
+          "Test coverage report generated: go test ./internal/carrypatch/... -cover"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration and Smoke Tests",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Trace execution paths: verify all entry points wire to implementation",
+          "details": [
+            "Verify POST /api/v1/workspaces/:slug/rebuild route is registered in MountHandlers and calls RebuildHandler -> enqueueRebuildJob -> job queue",
+            "Verify GET /api/v1/workspaces/:slug/rebuilds and /rebuilds/:id routes are registered and call job queue ListByKey / GetByID",
+            "Verify GET /api/v1/workspaces/:slug/rerere calls rr-cache reader; DELETE /rerere/*pathspec calls GitRunner.RerereForget",
+            "Verify GET /api/v1/workspaces/:slug/patch-status calls PatchStatusAggregator with real DB and rr-cache",
+            "Verify sync handler branch for carry_patch mode calls resolveUpstreamAuth, IsAncestor, and enqueueRebuildJob"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-9",
+            "TS-16-13",
+            "TS-16-15",
+            "TS-16-19"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-2",
+            "16-REQ-4",
+            "16-REQ-5",
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Verify return value propagation across the rebuild pipeline",
+          "details": [
+            "Confirm RebuildExecutor.Execute return value (*RebuildResult, error) is stored as job result in durable job queue",
+            "Confirm GET /rebuilds/:id response includes the stored RebuildResult fields (patch_results, upstream_head_sha, integration_head_sha)",
+            "Confirm sync handler propagates patches_merged and rebuild_triggered into sync response JSON",
+            "Confirm PatchStatusAggregator reads last_rebuild from job queue result and populates per-patch last_rebuild_result"
+          ],
+          "test_spec_refs": [
+            "TS-16-2",
+            "TS-16-10",
+            "TS-16-17",
+            "TS-16-20"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-2",
+            "16-REQ-5",
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Stub and dead-code audit",
+          "details": [
+            "Search for panic(\"not implemented\") in internal/carrypatch/: grep -r 'panic(\"not implemented\")' internal/carrypatch/",
+            "Search for bare 'return nil' in non-trivial functions: grep -n 'return nil' internal/carrypatch/*.go and review each",
+            "Search for // TODO markers: grep -rn 'TODO' internal/carrypatch/ and resolve or document each",
+            "Confirm no stub implementations remain in RebuildExecutor, PatchStatusAggregator, or sync extension",
+            "Confirm checkRerereResolved helper is fully implemented (not returning hardcoded values)"
+          ],
+          "test_spec_refs": [
+            "TS-16-6",
+            "TS-16-11",
+            "TS-16-15",
+            "TS-16-19"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-3",
+            "16-REQ-5",
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Run smoke tests with real components",
+          "details": [
+            "Run smoke tests: go test -tags smoke ./internal/carrypatch/... -count=1 -v -run TestSmoke",
+            "TS-16-SMOKE-1: Full rebuild flow completes with real git repos and SQLite DB",
+            "TS-16-SMOKE-2: Sync + auto-rebuild enqueues job and populates patches_merged in response",
+            "TS-16-SMOKE-3: Status dashboard returns correct summary after rebuild",
+            "Verify integration branch git ref is actually updated in the real git repo (not just in DB)"
+          ],
+          "test_spec_refs": [
+            "TS-16-SMOKE-1",
+            "TS-16-SMOKE-2",
+            "TS-16-SMOKE-3"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-5",
+            "16-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.5",
+          "title": "Cross-spec entry point and call-site verification",
+          "details": [
+            "Verify resolveUpstreamAuth (spec 15) is called from production code in both RebuildExecutor and carry-patch sync handler (not just in tests)",
+            "Verify GitRunner.IsAncestor (spec 14) is called from production sync extension code",
+            "Verify GitRunner.CherryPick and GitRunner.MergeNoFF (spec 14) are called from RebuildExecutor production code",
+            "Verify durable job queue EnqueueParams (spec 10) is called from production rebuild handler and auto-rebuild trigger",
+            "Verify CLI commands are registered in BuildRootCommand and reachable via 'afc rebuild', 'afc rerere', 'afc workspace patch-status'"
+          ],
+          "test_spec_refs": [
+            "TS-16-1",
+            "TS-16-15",
+            "TS-16-22",
+            "TS-16-25",
+            "TS-16-27"
+          ],
+          "requirement_refs": [
+            "16-REQ-1",
+            "16-REQ-5",
+            "16-REQ-7",
+            "16-REQ-8",
+            "16-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All smoke tests pass: go test -tags smoke ./internal/carrypatch/... -count=1 -v -run TestSmoke",
+          "Full test suite passes: go test ./... -count=1",
+          "No stub markers found: grep -r 'panic(\"not implemented\")' internal/carrypatch/ returns empty",
+          "No linter warnings: go vet ./...",
+          "All routes registered: server startup log or route dump shows all 8 carry-patch endpoints",
+          "CLI commands reachable: afc rebuild --help, afc rerere --help, afc workspace patch-status --help all succeed"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-1",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-2",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-3",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-4",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-5",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-6",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-7",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-1",
+      "test_spec_id": "TS-16-8",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-2",
+      "test_spec_id": "TS-16-9",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-2",
+      "test_spec_id": "TS-16-10",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-3",
+      "test_spec_id": "TS-16-11",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-3",
+      "test_spec_id": "TS-16-12",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-4",
+      "test_spec_id": "TS-16-13",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-4",
+      "test_spec_id": "TS-16-14",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-5",
+      "test_spec_id": "TS-16-15",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-5",
+      "test_spec_id": "TS-16-16",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-5",
+      "test_spec_id": "TS-16-17",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-5",
+      "test_spec_id": "TS-16-18",
+      "task_id": "7.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-6",
+      "test_spec_id": "TS-16-19",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-6",
+      "test_spec_id": "TS-16-20",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-6",
+      "test_spec_id": "TS-16-21",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-7",
+      "test_spec_id": "TS-16-22",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-7",
+      "test_spec_id": "TS-16-23",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-7",
+      "test_spec_id": "TS-16-24",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-8",
+      "test_spec_id": "TS-16-25",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-8",
+      "test_spec_id": "TS-16-26",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "16-REQ-9",
+      "test_spec_id": "TS-16-27",
+      "task_id": "8.3",
+      "test_path": null
+    }
+  ]
+}

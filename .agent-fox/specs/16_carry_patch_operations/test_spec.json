@@ -1,0 +1,1625 @@
+{
+  "$schema": null,
+  "spec_id": "16",
+  "spec_name": "carry_patch_operations",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-16-1",
+      "requirement_id": "16-REQ-1.1",
+      "kind": "unit",
+      "description": "POST /api/v1/workspaces/:slug/rebuild on a valid carry_patch workspace enqueues a rebuild job with correct key, group_key, and strategy captured at enqueue time, returning HTTP 202 with the queued job record.",
+      "preconditions": [
+        "SQLite database has a workspace record with mode='carry_patch', status='active', clone_status='ready'",
+        "Workspace has at least one patch with status='active'",
+        "REBUILD_STRATEGY workspace variable is set to 'rebase'",
+        "Caller has 'rebuilds:write' permission scope",
+        "No existing rebuild job is queued or running for this workspace"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer <valid-pat>"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/rebuild"
+      },
+      "expected": {
+        "body": {
+          "group_key": "my-workspace:<integration_branch>",
+          "id": "<uuid>",
+          "key": "my-workspace",
+          "payload": {
+            "strategy": "rebase",
+            "workspace_slug": "my-workspace"
+          },
+          "status": "queued",
+          "type": "rebuild"
+        },
+        "status": 202
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/rebuild'); assert resp.status == 202; assert resp.body.status == 'queued'; assert resp.body.type == 'rebuild'; assert resp.body.key == 'my-workspace'; assert resp.body.group_key == 'my-workspace:' + integration_branch; assert resp.body.payload.strategy == 'rebase'"
+    },
+    {
+      "id": "TS-16-2",
+      "requirement_id": "16-REQ-1.2",
+      "kind": "integration",
+      "description": "Rebuild job executor fetches from upstream, applies all active/conflict patches in position order, force-updates the integration branch, updates integration_head_sha, deletes the temporary branch, removes merged_upstream patches, and compacts positions on success.",
+      "preconditions": [
+        "SQLite database has a carry_patch workspace with integration_branch='integration'",
+        "Patches table has 2 active patches at positions 1 and 2, and 1 merged_upstream patch at position 3",
+        "Upstream remote is reachable and resolveUpstreamAuth returns valid credentials",
+        "Git repository exists at WORKSPACE_ROOT/<slug>",
+        "REBUILD_STRATEGY captured in job payload is 'rebase'"
+      ],
+      "input": {
+        "job_type": "rebuild",
+        "payload": {
+          "strategy": "rebase",
+          "submitted_by": "operator",
+          "workspace_slug": "my-workspace"
+        }
+      },
+      "expected": {
+        "integration_branch_updated": true,
+        "integration_head_sha": "<new-sha>",
+        "job_status": "completed",
+        "merged_upstream_patches_deleted_from_db": true,
+        "patches_applied": 2,
+        "patches_removed": 1,
+        "patches_skipped": 1,
+        "remaining_positions_contiguous": true,
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'completed'; result = parseJobResult(job); assert result.patches_applied == 2; assert result.patches_skipped == 1; assert result.patches_removed == 1; assert result.integration_head_sha != null; ws = getWorkspace('my-workspace'); assert ws.integration_head_sha == result.integration_head_sha; patches = listPatches('my-workspace'); assert len(patches) == 2; assert patches[0].position == 1; assert patches[1].position == 2; assert tempBranchExists(repoPath) == false"
+    },
+    {
+      "id": "TS-16-3",
+      "requirement_id": "16-REQ-1.3",
+      "kind": "unit",
+      "description": "With REBUILD_STRATEGY='rebase', the executor identifies unique commits via 'git log --reverse --format=%H <upstream_head>..<patch_branch>' and cherry-picks each commit onto the temporary branch, preserving original patch branch refs.",
+      "preconditions": [
+        "Git repository has a patch branch 'feature/foo' with 2 commits not present in upstream HEAD",
+        "Temporary branch is checked out at upstream HEAD",
+        "REBUILD_STRATEGY in job payload is 'rebase'"
+      ],
+      "input": {
+        "patch_branch": "feature/foo",
+        "strategy": "rebase",
+        "upstream_head": "<upstream-sha>"
+      },
+      "expected": {
+        "cherry_pick_called_twice": true,
+        "git_log_called_with": "--reverse --format=%H <upstream-sha>..feature/foo",
+        "new_head_sha": "<resulting-sha>",
+        "patch_branch_ref_unchanged": true,
+        "patch_result_status": "success"
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); applyPatchRebase(repoPath, upstreamHead, 'feature/foo'); assert spy.logCalls[0].args contains '--reverse --format=%H ' + upstreamHead + '..feature/foo'; assert len(spy.cherryPickCalls) == 2; originalRef = getRef(repoPath, 'feature/foo'); assert originalRef == preTestRef; result = getPatchResult('feature/foo'); assert result.status == 'success'; assert result.new_head_sha != null"
+    },
+    {
+      "id": "TS-16-4",
+      "requirement_id": "16-REQ-1.4",
+      "kind": "unit",
+      "description": "With REBUILD_STRATEGY='merge', the executor merges each patch branch into the temporary branch with --no-ff, producing a merge commit, and records the merge commit SHA in patch_results.",
+      "preconditions": [
+        "Git repository has a patch branch 'feature/bar' with commits not in upstream HEAD",
+        "Temporary branch is checked out at upstream HEAD",
+        "REBUILD_STRATEGY in job payload is 'merge'"
+      ],
+      "input": {
+        "patch_branch": "feature/bar",
+        "strategy": "merge",
+        "upstream_head": "<upstream-sha>"
+      },
+      "expected": {
+        "merge_commit_created": true,
+        "merge_no_ff_called_with": "feature/bar",
+        "new_head_sha": "<merge-commit-sha>",
+        "patch_result_status": "success"
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); applyPatchMerge(repoPath, 'feature/bar'); assert spy.mergeNoFFCalls[0].branch == 'feature/bar'; headAfter = getHEAD(repoPath); assert isMergeCommit(headAfter) == true; result = getPatchResult('feature/bar'); assert result.status == 'success'; assert result.new_head_sha == headAfter"
+    },
+    {
+      "id": "TS-16-5",
+      "requirement_id": "16-REQ-1.5",
+      "kind": "unit",
+      "description": "When a cherry-pick produces a conflict that rerere cannot fully resolve, the executor aborts, sets the patch status to 'conflict' in the database, records conflict_files, deletes the temporary branch, and halts the rebuild without updating the integration branch.",
+      "preconditions": [
+        "Git repository has a patch branch 'feature/conflict' whose cherry-pick produces a conflict",
+        "rerere has no recorded resolution for this conflict",
+        "'git diff --name-only --diff-filter=U' returns ['src/main.go']",
+        "Temporary branch exists at upstream HEAD",
+        "Integration branch exists at a prior SHA"
+      ],
+      "input": {
+        "patch_branch": "feature/conflict",
+        "strategy": "rebase"
+      },
+      "expected": {
+        "conflict_files_in_db": [
+          "src/main.go"
+        ],
+        "integration_branch_unchanged": true,
+        "job_status": "failed",
+        "patch_result_status": "conflict",
+        "patch_status_in_db": "conflict",
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "priorIntegrationSHA = getRef(repoPath, 'integration'); executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'failed'; patch = getPatch('feature/conflict'); assert patch.status == 'conflict'; assert patch.conflict_files == ['src/main.go']; assert getRef(repoPath, 'integration') == priorIntegrationSHA; assert tempBranchExists(repoPath) == false; result = parseJobResult(job); assert result.patch_results[0].status == 'conflict'; assert result.patch_results[0].conflict_files == ['src/main.go']"
+    },
+    {
+      "id": "TS-16-6",
+      "requirement_id": "16-REQ-1.6",
+      "kind": "unit",
+      "description": "When a patch's branch does not exist in the repository during rebuild, the executor skips it with status 'skipped' and null new_head_sha in patch_results, and continues to the next patch without halting.",
+      "preconditions": [
+        "Patches table has two active patches: 'feature/exists' (branch exists in repo) and 'feature/missing' (branch does not exist in repo)",
+        "Patches are at positions 1 and 2 respectively"
+      ],
+      "input": {
+        "patches": [
+          {
+            "branch_name": "feature/exists",
+            "position": 1
+          },
+          {
+            "branch_name": "feature/missing",
+            "position": 2
+          }
+        ]
+      },
+      "expected": {
+        "patch_results": [
+          {
+            "branch_name": "feature/exists",
+            "status": "success"
+          },
+          {
+            "branch_name": "feature/missing",
+            "new_head_sha": null,
+            "status": "skipped"
+          }
+        ],
+        "patches_skipped": 1,
+        "rebuild_continues": true
+      },
+      "assertion_pseudocode": "executeJob(rebuildJob); result = parseJobResult(getJobByID(jobID)); assert result.patch_results[0].branch_name == 'feature/exists'; assert result.patch_results[0].status == 'success'; assert result.patch_results[1].branch_name == 'feature/missing'; assert result.patch_results[1].status == 'skipped'; assert result.patch_results[1].new_head_sha == null; assert result.patches_skipped == 1"
+    },
+    {
+      "id": "TS-16-7",
+      "requirement_id": "16-REQ-1.7",
+      "kind": "unit",
+      "description": "Patches with status 'merged_upstream' or 'disabled' are reported as 'skipped' in patch_results without any attempt to apply them.",
+      "preconditions": [
+        "Patches table has one patch with status='merged_upstream' and one with status='disabled'",
+        "No active or conflict patches exist"
+      ],
+      "input": {
+        "patches": [
+          {
+            "branch_name": "feature/merged",
+            "position": 1,
+            "status": "merged_upstream"
+          },
+          {
+            "branch_name": "feature/disabled",
+            "position": 2,
+            "status": "disabled"
+          }
+        ]
+      },
+      "expected": {
+        "cherry_pick_not_called": true,
+        "merge_no_ff_not_called": true,
+        "patch_results": [
+          {
+            "branch_name": "feature/merged",
+            "new_head_sha": null,
+            "status": "skipped"
+          },
+          {
+            "branch_name": "feature/disabled",
+            "new_head_sha": null,
+            "status": "skipped"
+          }
+        ]
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); executeJob(rebuildJob); result = parseJobResult(getJobByID(jobID)); for each pr in result.patch_results: assert pr.status == 'skipped'; assert pr.new_head_sha == null; assert len(spy.cherryPickCalls) == 0; assert len(spy.mergeNoFFCalls) == 0"
+    },
+    {
+      "id": "TS-16-8",
+      "requirement_id": "16-REQ-1.8",
+      "kind": "unit",
+      "description": "The rebuild job is registered as type 'rebuild' in the durable_job_queue, is marked as permanently failed (non-retryable) on conflict, and is retryable on transient failures such as network errors.",
+      "preconditions": [
+        "Durable job queue is initialized with SQLite backend",
+        "Rebuild job type is registered"
+      ],
+      "input": {
+        "conflict_scenario": {
+          "error_type": "CherryPickConflictError"
+        },
+        "transient_scenario": {
+          "error_type": "NetworkError"
+        }
+      },
+      "expected": {
+        "conflict_job_retryable": false,
+        "job_type_registered": "rebuild",
+        "transient_job_retryable": true
+      },
+      "assertion_pseudocode": "assert jobTypeRegistry.has('rebuild') == true; conflictJob = simulateJobWithError(CherryPickConflictError); assert conflictJob.retryable == false; assert conflictJob.status == 'failed'; transientJob = simulateJobWithError(NetworkError); assert transientJob.retryable == true"
+    },
+    {
+      "id": "TS-16-9",
+      "requirement_id": "16-REQ-2.1",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rebuilds returns HTTP 200 with a JSON array of rebuild job records ordered by creation time descending.",
+      "preconditions": [
+        "SQLite database has a workspace 'my-workspace' with 3 rebuild jobs at different created_at timestamps",
+        "Caller has 'rebuilds:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rebuilds"
+      },
+      "expected": {
+        "body": {
+          "jobs": [
+            {
+              "created_at": "<latest>",
+              "id": "<uuid3>",
+              "status": "completed"
+            },
+            {
+              "id": "<uuid2>",
+              "status": "failed"
+            },
+            {
+              "created_at": "<earliest>",
+              "id": "<uuid1>",
+              "status": "completed"
+            }
+          ]
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rebuilds'); assert resp.status == 200; jobs = resp.body.jobs; assert len(jobs) == 3; assert jobs[0].created_at >= jobs[1].created_at; assert jobs[1].created_at >= jobs[2].created_at; for job in jobs: assert job.id != null; assert job.status in ['queued','running','completed','failed']"
+    },
+    {
+      "id": "TS-16-10",
+      "requirement_id": "16-REQ-2.2",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rebuilds/:id returns HTTP 200 with the full job record including patch_results payload for a completed job.",
+      "preconditions": [
+        "SQLite database has a completed rebuild job with id='job-uuid-1' belonging to workspace 'my-workspace'",
+        "Job result payload contains patch_results array",
+        "Caller has 'rebuilds:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1"
+      },
+      "expected": {
+        "body": {
+          "id": "job-uuid-1",
+          "patch_results": [
+            {
+              "branch_name": "feature/foo",
+              "patch_id": "<uuid>",
+              "position": 1,
+              "status": "success"
+            }
+          ],
+          "status": "completed"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1'); assert resp.status == 200; assert resp.body.id == 'job-uuid-1'; assert resp.body.status == 'completed'; assert resp.body.patch_results != null; assert len(resp.body.patch_results) > 0"
+    },
+    {
+      "id": "TS-16-11",
+      "requirement_id": "16-REQ-3.1",
+      "kind": "unit",
+      "description": "When a cherry-pick produces a conflict and rerere has a recorded resolution, rerere auto-stages the resolved files, 'git diff --name-only --diff-filter=U' returns empty, and the rebuild continues to the next patch recording the resolved patch as 'success'.",
+      "preconditions": [
+        "Git repository has rerere.enabled=true and rerere.autoupdate=true in repo config",
+        "rr-cache has a recorded resolution for the conflict in 'feature/foo'",
+        "Cherry-pick of 'feature/foo' produces a conflict that rerere can resolve"
+      ],
+      "input": {
+        "patch_branch": "feature/foo",
+        "strategy": "rebase"
+      },
+      "expected": {
+        "patch_result_status": "success",
+        "rebuild_continues": true,
+        "rerere_invoked": true,
+        "unresolved_conflicts_after_rerere": []
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); executeJob(rebuildJob); result = parseJobResult(getJobByID(jobID)); patchResult = findPatchResult(result, 'feature/foo'); assert patchResult.status == 'success'; assert patchResult.conflict_files == []; assert spy.diffUnresolvedCalls[0].output == ''; assert job.status == 'completed'"
+    },
+    {
+      "id": "TS-16-12",
+      "requirement_id": "16-REQ-3.2",
+      "kind": "unit",
+      "description": "When rerere cannot resolve all conflicts (unresolved conflict markers remain after rerere runs), the executor aborts the cherry-pick, sets patch status to 'conflict', records conflict_files, deletes the temporary branch, and halts the rebuild.",
+      "preconditions": [
+        "Git repository has rerere.enabled=true and rerere.autoupdate=true",
+        "rr-cache has no resolution for the conflict in 'feature/conflict'",
+        "'git diff --name-only --diff-filter=U' returns ['pkg/api.go'] after rerere runs"
+      ],
+      "input": {
+        "patch_branch": "feature/conflict",
+        "strategy": "rebase"
+      },
+      "expected": {
+        "conflict_files": [
+          "pkg/api.go"
+        ],
+        "integration_branch_unchanged": true,
+        "job_status": "failed",
+        "patch_status_in_db": "conflict",
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "priorSHA = getRef(repoPath, 'integration'); executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'failed'; patch = getPatch('feature/conflict'); assert patch.status == 'conflict'; assert patch.conflict_files == ['pkg/api.go']; assert getRef(repoPath, 'integration') == priorSHA; assert tempBranchExists(repoPath) == false"
+    },
+    {
+      "id": "TS-16-13",
+      "requirement_id": "16-REQ-4.1",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rerere reads the rr-cache directory, enumerates subdirectories, derives path from preimage/postimage files, and returns HTTP 200 with the resolutions list including recorded_at timestamps.",
+      "preconditions": [
+        "Workspace git repository exists at WORKSPACE_ROOT/my-workspace",
+        ".git/rr-cache/ contains two subdirectories, each with a preimage file",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rerere"
+      },
+      "expected": {
+        "body": {
+          "resolutions": [
+            {
+              "path": "src/config.go",
+              "recorded_at": "<rfc3339-timestamp>"
+            },
+            {
+              "path": "pkg/handler.go",
+              "recorded_at": "<rfc3339-timestamp>"
+            }
+          ]
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rerere'); assert resp.status == 200; assert resp.body.resolutions != null; assert len(resp.body.resolutions) == 2; for r in resp.body.resolutions: assert r.path != null; assert r.path != ''"
+    },
+    {
+      "id": "TS-16-14",
+      "requirement_id": "16-REQ-4.2",
+      "kind": "unit",
+      "description": "DELETE /api/v1/workspaces/:slug/rerere/*pathspec executes 'git rerere forget <pathspec>' via GitRunner and returns HTTP 204 on success; returns HTTP 404 if the pathspec has no recorded resolution.",
+      "preconditions": [
+        "Workspace git repository exists at WORKSPACE_ROOT/my-workspace",
+        ".git/rr-cache/ has a recorded resolution for 'src/config.go'",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/my-workspace/rerere/src/config.go"
+      },
+      "expected": {
+        "git_rerere_forget_called_with": "src/config.go",
+        "status": 204
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); resp = DELETE('/api/v1/workspaces/my-workspace/rerere/src/config.go'); assert resp.status == 204; assert spy.rerereForgotCalls[0].pathspec == 'src/config.go'; resp404 = DELETE('/api/v1/workspaces/my-workspace/rerere/nonexistent.go'); assert resp404.status == 404"
+    },
+    {
+      "id": "TS-16-15",
+      "requirement_id": "16-REQ-5.1",
+      "kind": "integration",
+      "description": "Sync on a carry_patch workspace resolves upstream credentials, fetches from the 'upstream' remote, advances the upstream_tracking_ref, checks each active patch for upstream merge via IsAncestor, and returns a sync response with patches_merged and rebuild_triggered fields.",
+      "preconditions": [
+        "Workspace is in carry_patch mode with upstream_url configured",
+        "resolveUpstreamAuth returns valid credentials",
+        "Upstream remote is reachable",
+        "Patches table has 2 active patches",
+        "AUTO_REBUILD_AFTER_SYNC is 'true'"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/sync"
+      },
+      "expected": {
+        "body": {
+          "patches_merged": [],
+          "rebuild_triggered": true
+        },
+        "is_ancestor_called_for_each_active_patch": true,
+        "status": 200,
+        "upstream_tracking_ref_advanced": true
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status == 200; assert 'patches_merged' in resp.body; assert 'rebuild_triggered' in resp.body; assert len(spy.isAncestorCalls) == 2; ws = getWorkspace('my-workspace'); assert ws.upstream_head_sha != null"
+    },
+    {
+      "id": "TS-16-16",
+      "requirement_id": "16-REQ-5.2",
+      "kind": "unit",
+      "description": "When IsAncestor returns true for a patch branch HEAD against the new upstream HEAD, the sync handler transitions that patch to 'merged_upstream' in the database and includes its branch name in patches_merged.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "Patches table has an active patch 'feature/already-merged' whose branch HEAD is an ancestor of the new upstream HEAD",
+        "IsAncestor returns true for 'feature/already-merged'"
+      ],
+      "input": {
+        "patch_branch": "feature/already-merged",
+        "upstream_head": "<new-upstream-sha>"
+      },
+      "expected": {
+        "patch_status_in_db": "merged_upstream",
+        "patches_merged_in_response": [
+          "feature/already-merged"
+        ]
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status == 200; assert 'feature/already-merged' in resp.body.patches_merged; patch = getPatch('feature/already-merged'); assert patch.status == 'merged_upstream'"
+    },
+    {
+      "id": "TS-16-17",
+      "requirement_id": "16-REQ-5.3",
+      "kind": "unit",
+      "description": "After sync completes with at least one patch merged upstream and AUTO_REBUILD_AFTER_SYNC='true', a rebuild job is enqueued and rebuild_triggered=true; if a rebuild is already queued, rebuild_triggered=false.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "AUTO_REBUILD_AFTER_SYNC workspace variable is 'true'",
+        "Sync detects one patch as merged_upstream",
+        "No existing rebuild job is queued (first scenario); an existing rebuild job is queued (second scenario)"
+      ],
+      "input": {
+        "scenario_1": "no existing rebuild job",
+        "scenario_2": "rebuild job already queued"
+      },
+      "expected": {
+        "scenario_1": {
+          "new_job_enqueued": true,
+          "rebuild_triggered": true
+        },
+        "scenario_2": {
+          "new_job_enqueued": false,
+          "rebuild_triggered": false
+        }
+      },
+      "assertion_pseudocode": "resp1 = POST('/api/v1/workspaces/my-workspace/sync'); assert resp1.body.rebuild_triggered == true; jobsBefore = listJobs('my-workspace'); assert len(jobsBefore) == 1; resp2 = POST('/api/v1/workspaces/my-workspace/sync'); assert resp2.body.rebuild_triggered == false; jobsAfter = listJobs('my-workspace'); assert len(jobsAfter) == 1"
+    },
+    {
+      "id": "TS-16-18",
+      "requirement_id": "16-REQ-5.4",
+      "kind": "unit",
+      "description": "When AUTO_REBUILD_AFTER_SYNC is 'false', no rebuild job is enqueued after sync regardless of merged patches or upstream ref advancement, and rebuild_triggered=false.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "AUTO_REBUILD_AFTER_SYNC workspace variable is 'false'",
+        "Sync detects one patch as merged_upstream and upstream ref advances"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/sync"
+      },
+      "expected": {
+        "body": {
+          "rebuild_triggered": false
+        },
+        "no_rebuild_job_enqueued": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "jobsBefore = listJobs('my-workspace'); resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status == 200; assert resp.body.rebuild_triggered == false; jobsAfter = listJobs('my-workspace'); assert len(jobsAfter) == len(jobsBefore)"
+    },
+    {
+      "id": "TS-16-19",
+      "requirement_id": "16-REQ-6.1",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/patch-status returns HTTP 200 with a fully aggregated response including workspace metadata, last_rebuild, patches array with last_rebuild_result and rerere_resolution_count, and summary counts.",
+      "preconditions": [
+        "Workspace is in carry_patch mode with upstream_url, upstream_head_sha, integration_branch, integration_head_sha, and last_sync_at set",
+        "Patches table has 3 patches: 2 active, 1 conflict",
+        "One completed rebuild job exists with patch_results",
+        "rr-cache has 1 resolution relevant to the conflict patch",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/patch-status"
+      },
+      "expected": {
+        "body": {
+          "integration_branch": "integration",
+          "integration_head_sha": "<sha>",
+          "last_rebuild": {
+            "id": "<uuid>",
+            "status": "completed"
+          },
+          "last_sync_at": "<rfc3339>",
+          "patches": [
+            {
+              "id": "<uuid>",
+              "last_rebuild_result": "success",
+              "rerere_resolution_count": 0
+            }
+          ],
+          "summary": {
+            "active": 2,
+            "conflict": 1,
+            "disabled": 0,
+            "merged_upstream": 0,
+            "total_patches": 3
+          },
+          "upstream_head_sha": "<sha>",
+          "upstream_url": "<url>",
+          "workspace_mode": "carry_patch",
+          "workspace_slug": "my-workspace"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/patch-status'); assert resp.status == 200; b = resp.body; assert b.workspace_slug == 'my-workspace'; assert b.workspace_mode == 'carry_patch'; assert b.upstream_url != null; assert b.last_rebuild != null; assert len(b.patches) == 3; assert b.summary.total_patches == 3; assert b.summary.active == 2; assert b.summary.conflict == 1"
+    },
+    {
+      "id": "TS-16-20",
+      "requirement_id": "16-REQ-6.2",
+      "kind": "unit",
+      "description": "The summary object in the patch-status response has counts that are accurate and consistent with the patches array: total_patches equals len(patches) and the sum of status counts equals total_patches.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "Patches table has 5 patches: 2 active, 1 merged_upstream, 1 conflict, 1 disabled"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/patch-status"
+      },
+      "expected": {
+        "summary": {
+          "active": 2,
+          "conflict": 1,
+          "disabled": 1,
+          "merged_upstream": 1,
+          "total_patches": 5
+        }
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/patch-status'); s = resp.body.summary; assert s.total_patches == len(resp.body.patches); assert s.active + s.merged_upstream + s.conflict + s.disabled == s.total_patches; assert s.total_patches == 5; assert s.active == 2; assert s.merged_upstream == 1; assert s.conflict == 1; assert s.disabled == 1"
+    },
+    {
+      "id": "TS-16-21",
+      "requirement_id": "16-REQ-6.3",
+      "kind": "unit",
+      "description": "When no rebuild has been attempted for the workspace, patch-status returns last_rebuild=null and all patch last_rebuild_result fields as null.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "No rebuild jobs exist for this workspace",
+        "Patches table has 2 active patches"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/patch-status"
+      },
+      "expected": {
+        "body": {
+          "last_rebuild": null,
+          "patches": [
+            {
+              "last_rebuild_result": null
+            },
+            {
+              "last_rebuild_result": null
+            }
+          ]
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/patch-status'); assert resp.status == 200; assert resp.body.last_rebuild == null; for patch in resp.body.patches: assert patch.last_rebuild_result == null"
+    },
+    {
+      "id": "TS-16-22",
+      "requirement_id": "16-REQ-7.1",
+      "kind": "unit",
+      "description": "'afc rebuild submit <workspace-slug>' sends POST /api/v1/workspaces/:slug/rebuild, prints the job id and status 'queued' to stdout, and exits with code 0.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' is in carry_patch mode with active patches",
+        "No existing rebuild job is queued"
+      ],
+      "input": {
+        "command": "afc rebuild submit my-workspace"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request": {
+          "method": "POST",
+          "path": "/api/v1/workspaces/my-workspace/rebuild"
+        },
+        "stdout_contains": [
+          "queued"
+        ]
+      },
+      "assertion_pseudocode": "result = runCLI('afc rebuild submit my-workspace'); assert result.exit_code == 0; assert 'queued' in result.stdout; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-16-23",
+      "requirement_id": "16-REQ-7.2",
+      "kind": "unit",
+      "description": "'afc rebuild list <workspace-slug>' sends GET /api/v1/workspaces/:slug/rebuilds and prints the list of rebuild jobs to stdout, exiting with code 0.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' has 2 rebuild jobs in the database"
+      ],
+      "input": {
+        "command": "afc rebuild list my-workspace"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request": {
+          "method": "GET",
+          "path": "/api/v1/workspaces/my-workspace/rebuilds"
+        },
+        "stdout_contains_job_records": true
+      },
+      "assertion_pseudocode": "result = runCLI('afc rebuild list my-workspace'); assert result.exit_code == 0; assert len(result.stdout) > 0; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-16-24",
+      "requirement_id": "16-REQ-7.3",
+      "kind": "unit",
+      "description": "'afc rebuild status <workspace-slug> <rebuild-id>' sends GET /api/v1/workspaces/:slug/rebuilds/:id and prints job details including patch_results to stdout, exiting with code 0; exits non-zero if job not found.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' has a completed rebuild job with id 'job-uuid-1'"
+      ],
+      "input": {
+        "command": "afc rebuild status my-workspace job-uuid-1"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request": {
+          "method": "GET",
+          "path": "/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1"
+        },
+        "stdout_contains": [
+          "job-uuid-1",
+          "completed"
+        ]
+      },
+      "assertion_pseudocode": "result = runCLI('afc rebuild status my-workspace job-uuid-1'); assert result.exit_code == 0; assert 'job-uuid-1' in result.stdout; assert 'completed' in result.stdout; result404 = runCLI('afc rebuild status my-workspace nonexistent-id'); assert result404.exit_code != 0"
+    },
+    {
+      "id": "TS-16-25",
+      "requirement_id": "16-REQ-8.1",
+      "kind": "unit",
+      "description": "'afc rerere list <workspace-slug>' sends GET /api/v1/workspaces/:slug/rerere and prints the list of recorded resolutions with path and recorded_at to stdout, exiting with code 0.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' has 2 recorded rerere resolutions in rr-cache"
+      ],
+      "input": {
+        "command": "afc rerere list my-workspace"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request": {
+          "method": "GET",
+          "path": "/api/v1/workspaces/my-workspace/rerere"
+        },
+        "stdout_contains_resolutions": true
+      },
+      "assertion_pseudocode": "result = runCLI('afc rerere list my-workspace'); assert result.exit_code == 0; assert 'src/config.go' in result.stdout; assert result.stderr == ''"
+    },
+    {
+      "id": "TS-16-26",
+      "requirement_id": "16-REQ-8.2",
+      "kind": "unit",
+      "description": "'afc rerere forget <workspace-slug> <pathspec>' sends DELETE /api/v1/workspaces/:slug/rerere/*pathspec and prints confirmation to stdout; prints error to stderr and exits non-zero if pathspec not found.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' has a recorded rerere resolution for 'src/config.go'"
+      ],
+      "input": {
+        "command": "afc rerere forget my-workspace src/config.go"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request": {
+          "method": "DELETE",
+          "path": "/api/v1/workspaces/my-workspace/rerere/src/config.go"
+        },
+        "stdout_contains_confirmation": true
+      },
+      "assertion_pseudocode": "result = runCLI('afc rerere forget my-workspace src/config.go'); assert result.exit_code == 0; assert result.stderr == ''; result404 = runCLI('afc rerere forget my-workspace nonexistent.go'); assert result404.exit_code != 0; assert result404.stderr != ''"
+    },
+    {
+      "id": "TS-16-27",
+      "requirement_id": "16-REQ-9.1",
+      "kind": "unit",
+      "description": "'afc workspace patch-status <workspace-slug>' sends GET /api/v1/workspaces/:slug/patch-status and prints workspace metadata, last_rebuild summary, per-patch status table, and summary counts to stdout, exiting with code 0.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' is in carry_patch mode with patches and a completed rebuild"
+      ],
+      "input": {
+        "command": "afc workspace patch-status my-workspace"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request": {
+          "method": "GET",
+          "path": "/api/v1/workspaces/my-workspace/patch-status"
+        },
+        "stdout_contains": [
+          "my-workspace",
+          "carry_patch",
+          "total_patches"
+        ]
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace patch-status my-workspace'); assert result.exit_code == 0; assert 'my-workspace' in result.stdout; assert result.stderr == ''"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-16-P1",
+      "property_id": "16-PROP-1",
+      "validates": [],
+      "description": "For any combination of active, conflict, merged_upstream, and disabled patches, a successful rebuild always produces an integration branch that equals the result of applying only active/conflict patches in position order onto upstream HEAD, with no influence from prior integration branch state.",
+      "for_any_strategy": "Generate a carry_patch workspace with 0-10 patches randomly assigned statuses (active, conflict, merged_upstream, disabled) and random positions. Vary REBUILD_STRATEGY between 'rebase' and 'merge'. Use table-driven test cases in Go covering edge counts (0 active, 1 active, max active).",
+      "invariant_check": "After executeJob(rebuildJob) completes with status='completed': let expected = applyPatchesFromScratch(upstreamHeadSHA, activePatchesInPositionOrder, strategy); assert getRef(repoPath, integrationBranch) == expected.headSHA; assert result.patches_applied == len(activePatchesInPositionOrder); assert result.patches_skipped == len(skippedPatches)"
+    },
+    {
+      "id": "TS-16-P2",
+      "property_id": "16-PROP-2",
+      "validates": [],
+      "description": "For any rebuild with N patches where patch K produces an unresolvable conflict, the rebuild halts after patch K, patches K+1 through N are not attempted, the integration branch ref is unchanged, and the temporary branch is deleted.",
+      "for_any_strategy": "Generate a patch list of 2-8 patches. Randomly select one patch K (1 <= K <= N) to produce an unresolvable conflict. Use Go table-driven tests with K at positions 1, middle, and N.",
+      "invariant_check": "priorSHA = getRef(repoPath, integrationBranch); executeJob(rebuildJob); assert job.status == 'failed'; assert len(result.patch_results) == K; for i in range(K+1, N+1): assert patchAtPosition(i) not in result.patch_results; assert getRef(repoPath, integrationBranch) == priorSHA; assert tempBranchExists(repoPath) == false"
+    },
+    {
+      "id": "TS-16-P3",
+      "property_id": "16-PROP-3",
+      "validates": [],
+      "description": "For any rebuild job enqueued with REBUILD_STRATEGY value S, the job executes with strategy S regardless of any subsequent changes to the REBUILD_STRATEGY workspace variable before the job runs.",
+      "for_any_strategy": "Enqueue a rebuild job with strategy='rebase'. Before the job executes (while it is queued), update REBUILD_STRATEGY workspace variable to 'merge'. Then execute the job. Repeat with initial strategy='merge' and change to 'rebase'.",
+      "invariant_check": "job = enqueueRebuild(workspace, strategy='rebase'); updateWorkspaceVar(workspace, 'REBUILD_STRATEGY', 'merge'); executeJob(job); result = parseJobResult(job); assert result.strategy == 'rebase'; assert spy.mergeNoFFCalls == []; assert spy.cherryPickCalls != []"
+    },
+    {
+      "id": "TS-16-P4",
+      "property_id": "16-PROP-4",
+      "validates": [],
+      "description": "For any workspace with one or more patches in merged_upstream status at the start of a rebuild, after a successful rebuild all merged_upstream patches are deleted from the patches_table and remaining positions are compacted to be contiguous starting from 1.",
+      "for_any_strategy": "Generate a workspace with 1-5 active patches and 1-3 merged_upstream patches at arbitrary positions. Execute a successful rebuild. Vary the number and positions of merged_upstream patches.",
+      "invariant_check": "executeJob(rebuildJob); assert job.status == 'completed'; remainingPatches = listPatches(workspace); for p in remainingPatches: assert p.status != 'merged_upstream'; positions = sorted([p.position for p in remainingPatches]); assert positions == list(range(1, len(remainingPatches)+1))"
+    },
+    {
+      "id": "TS-16-P5",
+      "property_id": "16-PROP-5",
+      "validates": [],
+      "description": "For any number of rebuilds that encounter the same conflict in the same patch, if rerere has a recorded resolution, each rebuild attempt resolves the conflict automatically and produces the same successful result.",
+      "for_any_strategy": "Set up a patch that produces a deterministic conflict. Record a rerere resolution. Execute the rebuild 3-5 times (simulating repeated rebuilds). Use Go subtests to run N iterations.",
+      "invariant_check": "recordRerereResolution(conflict); for i in range(N): executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'completed'; result = parseJobResult(job); assert result.integration_head_sha == expectedSHA; assert result.patches_applied == expectedCount"
+    },
+    {
+      "id": "TS-16-P6",
+      "property_id": "16-PROP-6",
+      "validates": [],
+      "description": "For any patch P and two consecutive upstream fetches where upstream HEAD advances, if P was detected as merged_upstream at SHA1, it remains merged_upstream at SHA2 and is never reverted to active by a subsequent sync.",
+      "for_any_strategy": "Set up a patch P that is an ancestor of upstream SHA1. Run sync at SHA1 (P transitions to merged_upstream). Advance upstream to SHA2. Run sync at SHA2. Use Go table-driven tests with different SHA advancement scenarios.",
+      "invariant_check": "sync1 = POST('/api/v1/workspaces/my-workspace/sync'); assert 'feature/P' in sync1.body.patches_merged; assert getPatch('feature/P').status == 'merged_upstream'; advanceUpstream(SHA2); sync2 = POST('/api/v1/workspaces/my-workspace/sync'); assert getPatch('feature/P').status == 'merged_upstream'; assert 'feature/P' not in sync2.body.patches_merged"
+    },
+    {
+      "id": "TS-16-P7",
+      "property_id": "16-PROP-7",
+      "validates": [],
+      "description": "For any number of concurrent or sequential rebuild submission attempts for the same workspace_slug while a rebuild_job is already queued or running, exactly one rebuild_job is active at a time.",
+      "for_any_strategy": "Submit 2-10 concurrent rebuild requests for the same workspace using Go goroutines. Also test sequential submissions while a job is queued. Use sync.WaitGroup to coordinate concurrent submissions.",
+      "invariant_check": "wg = sync.WaitGroup; results = make([]Response, N); for i in range(N): go func(i): results[i] = POST('/api/v1/workspaces/my-workspace/rebuild'); wg.Done(); wg.Wait(); successCount = count(r for r in results if r.status == 202); conflictCount = count(r for r in results if r.status == 409); assert successCount == 1; assert conflictCount == N-1; assert len(listJobs('my-workspace', status='queued')) == 1"
+    },
+    {
+      "id": "TS-16-P8",
+      "property_id": "16-PROP-8",
+      "validates": [],
+      "description": "For any GET /api/v1/workspaces/:slug/patch-status response, summary.total_patches equals len(patches) and the sum of all status counts equals total_patches.",
+      "for_any_strategy": "Generate workspaces with 0-20 patches in random combinations of statuses (active, merged_upstream, conflict, disabled). Use Go table-driven tests with boundary cases (0 patches, all same status, all different statuses).",
+      "invariant_check": "resp = GET('/api/v1/workspaces/my-workspace/patch-status'); s = resp.body.summary; assert s.total_patches == len(resp.body.patches); assert s.active + s.merged_upstream + s.conflict + s.disabled == s.total_patches; statusCounts = countByStatus(resp.body.patches); assert statusCounts['active'] == s.active; assert statusCounts['merged_upstream'] == s.merged_upstream; assert statusCounts['conflict'] == s.conflict; assert statusCounts['disabled'] == s.disabled"
+    },
+    {
+      "id": "TS-16-P9",
+      "property_id": "16-PROP-9",
+      "validates": [],
+      "description": "For any rebuild execution that creates a temporary branch, regardless of outcome (success, conflict, or unexpected error), the temporary branch does not exist in the repository after the rebuild job terminates.",
+      "for_any_strategy": "Run rebuild jobs with three outcome scenarios: (1) all patches apply cleanly, (2) a conflict halts the rebuild, (3) an unexpected error (simulated panic/filesystem error) occurs mid-rebuild. Use Go subtests for each scenario.",
+      "invariant_check": "for scenario in [success, conflict, unexpected_error]: executeJob(rebuildJob, scenario=scenario); assert tempBranchExists(repoPath) == false; assert len(listBranches(repoPath, prefix='tmp-rebuild-')) == 0"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-16-E1",
+      "requirement_id": "16-REQ-1.E1",
+      "kind": "unit",
+      "description": "POST /api/v1/workspaces/:slug/rebuild on a workspace in 'standard' mode returns HTTP 400 with a JSON error body and does not enqueue any job.",
+      "preconditions": [
+        "SQLite database has a workspace 'standard-ws' with mode='standard'",
+        "Caller has 'rebuilds:write' permission scope"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/standard-ws/rebuild"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating workspace is not in carry_patch mode>"
+        },
+        "no_job_enqueued": true,
+        "status": 400
+      },
+      "assertion_pseudocode": "jobsBefore = listJobs('standard-ws'); resp = POST('/api/v1/workspaces/standard-ws/rebuild'); assert resp.status == 400; assert resp.body.error != null; jobsAfter = listJobs('standard-ws'); assert len(jobsAfter) == len(jobsBefore)"
+    },
+    {
+      "id": "TS-16-E2",
+      "requirement_id": "16-REQ-1.E2",
+      "kind": "unit",
+      "description": "POST /api/v1/workspaces/:slug/rebuild on a workspace that is not active or whose clone is not ready returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "SQLite database has a carry_patch workspace 'my-workspace' with status='archived' or clone_status='cloning'",
+        "Caller has 'rebuilds:write' permission scope"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/rebuild"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating workspace not active or clone not ready>"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/rebuild'); assert resp.status == 400; assert resp.body.error != null; assert resp.body.error != ''"
+    },
+    {
+      "id": "TS-16-E3",
+      "requirement_id": "16-REQ-1.E3",
+      "kind": "unit",
+      "description": "POST /api/v1/workspaces/:slug/rebuild when no patches have status 'active' or 'conflict' returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "SQLite database has a carry_patch workspace 'my-workspace' that is active with a ready clone",
+        "All patches have status 'disabled' or 'merged_upstream'",
+        "Caller has 'rebuilds:write' permission scope"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/rebuild"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating no active or conflict patches>"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/rebuild'); assert resp.status == 400; assert resp.body.error != null; assert 'active' in resp.body.error.lower() or 'patch' in resp.body.error.lower()"
+    },
+    {
+      "id": "TS-16-E4",
+      "requirement_id": "16-REQ-1.E4",
+      "kind": "unit",
+      "description": "POST /api/v1/workspaces/:slug/rebuild when a rebuild job is already queued or running for the workspace returns HTTP 409 with a JSON error body and does not create an additional job.",
+      "preconditions": [
+        "SQLite database has a carry_patch workspace 'my-workspace' that is active with active patches",
+        "A rebuild job with key='my-workspace' already exists with status='queued'",
+        "Caller has 'rebuilds:write' permission scope"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/rebuild"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating rebuild already queued or running>"
+        },
+        "no_additional_job_created": true,
+        "status": 409
+      },
+      "assertion_pseudocode": "jobsBefore = listJobs('my-workspace'); resp = POST('/api/v1/workspaces/my-workspace/rebuild'); assert resp.status == 409; assert resp.body.error != null; jobsAfter = listJobs('my-workspace'); assert len(jobsAfter) == len(jobsBefore)"
+    },
+    {
+      "id": "TS-16-E5",
+      "requirement_id": "16-REQ-1.E5",
+      "kind": "unit",
+      "description": "When the upstream fetch hangs beyond the configured timeout, the rebuild job cancels the fetch, deletes the temporary branch if created, and marks the job as failed with a retryable transient error.",
+      "preconditions": [
+        "Upstream remote is configured to hang indefinitely (simulated via mock)",
+        "Rebuild job is dispatched with a short fetch timeout",
+        "Temporary branch may have been created before the fetch attempt"
+      ],
+      "input": {
+        "fetch_timeout": "5s",
+        "simulated_fetch_behavior": "hang_indefinitely"
+      },
+      "expected": {
+        "integration_branch_unchanged": true,
+        "job_retryable": true,
+        "job_status": "failed",
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "executeJobWithTimeout(rebuildJob, fetchTimeout='5s'); job = getJobByID(jobID); assert job.status == 'failed'; assert job.retryable == true; assert tempBranchExists(repoPath) == false; assert getRef(repoPath, 'integration') == priorIntegrationSHA"
+    },
+    {
+      "id": "TS-16-E6",
+      "requirement_id": "16-REQ-1.E6",
+      "kind": "unit",
+      "description": "When the rebuild fails midway after creating the temporary branch, the temporary branch is deleted and the integration branch ref is not updated.",
+      "preconditions": [
+        "Rebuild job has created a temporary branch at upstream HEAD",
+        "A simulated error occurs during patch application (e.g., filesystem error)",
+        "Integration branch exists at a prior SHA"
+      ],
+      "input": {
+        "simulated_error": "filesystem_error_during_cherry_pick"
+      },
+      "expected": {
+        "integration_branch_unchanged": true,
+        "job_status": "failed",
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "priorSHA = getRef(repoPath, 'integration'); executeJobWithSimulatedError(rebuildJob, 'filesystem_error'); job = getJobByID(jobID); assert job.status == 'failed'; assert tempBranchExists(repoPath) == false; assert getRef(repoPath, 'integration') == priorSHA"
+    },
+    {
+      "id": "TS-16-E7",
+      "requirement_id": "16-REQ-1.E7",
+      "kind": "unit",
+      "description": "When all patches are filtered out at execution time (all are merged_upstream or disabled), the rebuild completes successfully with patches_applied=0 and integration_head_sha equal to upstream_head_sha.",
+      "preconditions": [
+        "Patches table has only merged_upstream and disabled patches at job execution time",
+        "Upstream HEAD is at a known SHA"
+      ],
+      "input": {
+        "patches": [
+          {
+            "status": "merged_upstream"
+          },
+          {
+            "status": "disabled"
+          }
+        ]
+      },
+      "expected": {
+        "integration_head_sha_equals_upstream_head_sha": true,
+        "job_status": "completed",
+        "patches_applied": 0
+      },
+      "assertion_pseudocode": "executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'completed'; result = parseJobResult(job); assert result.patches_applied == 0; ws = getWorkspace('my-workspace'); assert ws.integration_head_sha == upstreamHeadSHA"
+    },
+    {
+      "id": "TS-16-E8",
+      "requirement_id": "16-REQ-1.E8",
+      "kind": "unit",
+      "description": "POST /api/v1/workspaces/:slug/rebuild by a caller lacking 'rebuilds:write' permission returns HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Workspace 'my-workspace' is in carry_patch mode with active patches",
+        "Caller's PAT has only 'rebuilds:read' scope, not 'rebuilds:write'"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer <read-only-pat>"
+        },
+        "method": "POST",
+        "path": "/api/v1/workspaces/my-workspace/rebuild"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating insufficient permissions>"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/rebuild', headers={'Authorization': 'Bearer read-only-pat'}); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-16-E9",
+      "requirement_id": "16-REQ-1.E9",
+      "kind": "unit",
+      "description": "When resolveUpstreamAuth returns no credentials and the upstream remote requires authentication, the rebuild job fails the fetch step and marks the job as failed with a transient error without modifying the integration branch.",
+      "preconditions": [
+        "resolveUpstreamAuth returns empty/nil credentials",
+        "Upstream remote requires authentication",
+        "Integration branch exists at a prior SHA"
+      ],
+      "input": {
+        "upstream_auth": null
+      },
+      "expected": {
+        "error_contains": "authentication",
+        "integration_branch_unchanged": true,
+        "job_retryable": true,
+        "job_status": "failed"
+      },
+      "assertion_pseudocode": "priorSHA = getRef(repoPath, 'integration'); executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'failed'; assert job.retryable == true; assert 'auth' in job.error.lower(); assert getRef(repoPath, 'integration') == priorSHA"
+    },
+    {
+      "id": "TS-16-E10",
+      "requirement_id": "16-REQ-2.E1",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rebuilds by a caller lacking 'rebuilds:read' permission returns HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Workspace 'my-workspace' exists",
+        "Caller's PAT has no 'rebuilds:read' scope"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer <no-rebuild-read-pat>"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rebuilds"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating insufficient permissions>"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rebuilds', headers={'Authorization': 'Bearer no-rebuild-read-pat'}); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-16-E11",
+      "requirement_id": "16-REQ-2.E2",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rebuilds/:id returns HTTP 404 when the rebuild id belongs to a different workspace, preventing cross-workspace information leakage.",
+      "preconditions": [
+        "Workspace 'workspace-a' has rebuild job 'job-uuid-a'",
+        "Workspace 'workspace-b' exists but does not own 'job-uuid-a'",
+        "Caller has 'rebuilds:read' permission for 'workspace-b'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/workspace-b/rebuilds/job-uuid-a"
+      },
+      "expected": {
+        "body": {
+          "error": "<not found message>"
+        },
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/workspace-b/rebuilds/job-uuid-a'); assert resp.status == 404; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-16-E12",
+      "requirement_id": "16-REQ-2.E3",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rebuilds returns HTTP 200 with an empty jobs array when the workspace has no rebuild history.",
+      "preconditions": [
+        "Workspace 'new-workspace' exists in carry_patch mode with no rebuild jobs",
+        "Caller has 'rebuilds:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/new-workspace/rebuilds"
+      },
+      "expected": {
+        "body": {
+          "jobs": []
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/new-workspace/rebuilds'); assert resp.status == 200; assert resp.body.jobs == []"
+    },
+    {
+      "id": "TS-16-E13",
+      "requirement_id": "16-REQ-3.E1",
+      "kind": "unit",
+      "description": "When rerere is not enabled in the repository config, the rebuild proceeds without rerere replay; conflicts are detected via 'git diff --name-only --diff-filter=U' and cause fail-fast halt.",
+      "preconditions": [
+        "Git repository has rerere.enabled=false (or not set) in repo config",
+        "A cherry-pick produces a conflict",
+        "'git diff --name-only --diff-filter=U' returns non-empty list"
+      ],
+      "input": {
+        "conflict_in_patch": "feature/conflict",
+        "rerere_enabled": false
+      },
+      "expected": {
+        "conflict_files_recorded": true,
+        "job_status": "failed",
+        "patch_status_in_db": "conflict",
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'failed'; patch = getPatch('feature/conflict'); assert patch.status == 'conflict'; assert len(patch.conflict_files) > 0; assert tempBranchExists(repoPath) == false"
+    },
+    {
+      "id": "TS-16-E14",
+      "requirement_id": "16-REQ-3.E2",
+      "kind": "unit",
+      "description": "When rerere partially resolves conflicts (some files resolved, others not), the executor treats the operation as still conflicted, aborts, records only the unresolved files in conflict_files, and halts.",
+      "preconditions": [
+        "Git repository has rerere.enabled=true and rerere.autoupdate=true",
+        "Cherry-pick produces conflicts in 2 files: rerere resolves 'file-a.go' but not 'file-b.go'",
+        "'git diff --name-only --diff-filter=U' returns ['file-b.go'] after rerere runs"
+      ],
+      "input": {
+        "conflict_files_before_rerere": [
+          "file-a.go",
+          "file-b.go"
+        ],
+        "rerere_resolved": [
+          "file-a.go"
+        ],
+        "rerere_unresolved": [
+          "file-b.go"
+        ]
+      },
+      "expected": {
+        "conflict_files_in_db": [
+          "file-b.go"
+        ],
+        "job_status": "failed",
+        "temporary_branch_deleted": true
+      },
+      "assertion_pseudocode": "executeJob(rebuildJob); job = getJobByID(jobID); assert job.status == 'failed'; patch = getPatch('feature/conflict'); assert patch.conflict_files == ['file-b.go']; assert 'file-a.go' not in patch.conflict_files; assert tempBranchExists(repoPath) == false"
+    },
+    {
+      "id": "TS-16-E15",
+      "requirement_id": "16-REQ-4.E1",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rerere returns HTTP 200 with an empty resolutions list when the rr-cache directory does not exist or is empty.",
+      "preconditions": [
+        "Workspace git repository exists at WORKSPACE_ROOT/my-workspace",
+        ".git/rr-cache/ does not exist or contains no subdirectories",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rerere"
+      },
+      "expected": {
+        "body": {
+          "resolutions": []
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rerere'); assert resp.status == 200; assert resp.body.resolutions == []"
+    },
+    {
+      "id": "TS-16-E16",
+      "requirement_id": "16-REQ-4.E2",
+      "kind": "unit",
+      "description": "DELETE /api/v1/workspaces/:slug/rerere/src/config.go correctly captures the full path including slashes via the Echo *pathspec wildcard and passes it to 'git rerere forget', returning HTTP 204.",
+      "preconditions": [
+        "Workspace git repository exists at WORKSPACE_ROOT/my-workspace",
+        ".git/rr-cache/ has a recorded resolution for 'src/config.go'",
+        "Echo route is registered as DELETE /api/v1/workspaces/:slug/rerere/*pathspec",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/my-workspace/rerere/src/config.go"
+      },
+      "expected": {
+        "git_rerere_forget_pathspec": "src/config.go",
+        "status": 204
+      },
+      "assertion_pseudocode": "spy = instrumentGitRunner(); resp = DELETE('/api/v1/workspaces/my-workspace/rerere/src/config.go'); assert resp.status == 204; assert spy.rerereForgotCalls[0].pathspec == 'src/config.go'"
+    },
+    {
+      "id": "TS-16-E17",
+      "requirement_id": "16-REQ-4.E3",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rerere returns HTTP 200 and omits malformed rr-cache entries (subdirectories with no preimage or postimage file) without crashing.",
+      "preconditions": [
+        "Workspace git repository exists at WORKSPACE_ROOT/my-workspace",
+        ".git/rr-cache/ has one valid subdirectory and one malformed subdirectory (no preimage/postimage)",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rerere"
+      },
+      "expected": {
+        "body": {
+          "resolutions": [
+            {
+              "path": "src/valid.go"
+            }
+          ]
+        },
+        "malformed_entry_omitted": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rerere'); assert resp.status == 200; assert len(resp.body.resolutions) == 1; assert resp.body.resolutions[0].path == 'src/valid.go'"
+    },
+    {
+      "id": "TS-16-E18",
+      "requirement_id": "16-REQ-4.E4",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/rerere by a caller lacking 'workspaces:read' permission returns HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Workspace 'my-workspace' exists",
+        "Caller's PAT has no 'workspaces:read' scope"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer <no-read-pat>"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/rerere"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating insufficient permissions>"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/rerere', headers={'Authorization': 'Bearer no-read-pat'}); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-16-E19",
+      "requirement_id": "16-REQ-5.E1",
+      "kind": "unit",
+      "description": "When the upstream fetch fails due to a network error or authentication failure during carry-patch sync, the sync aborts without modifying the upstream_tracking_ref or any patch statuses, returning an appropriate error response.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "Upstream remote is unreachable (simulated network error)",
+        "Patches table has 2 active patches with known statuses"
+      ],
+      "input": {
+        "simulated_error": "network_error_on_fetch"
+      },
+      "expected": {
+        "patch_statuses_unchanged": true,
+        "status": 502,
+        "upstream_tracking_ref_unchanged": true
+      },
+      "assertion_pseudocode": "priorRef = getUpstreamTrackingRef(repoPath); priorStatuses = getPatchStatuses('my-workspace'); resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status in [502, 503, 500]; assert getUpstreamTrackingRef(repoPath) == priorRef; assert getPatchStatuses('my-workspace') == priorStatuses"
+    },
+    {
+      "id": "TS-16-E20",
+      "requirement_id": "16-REQ-5.E2",
+      "kind": "unit",
+      "description": "When IsAncestor returns an error for a specific patch (e.g., branch ref does not exist locally), the sync skips that patch's ancestry check, leaves its status unchanged, and continues checking remaining patches.",
+      "preconditions": [
+        "Workspace is in carry_patch mode with 2 active patches",
+        "IsAncestor returns an error for patch 'feature/missing-ref' (ref not found locally)",
+        "IsAncestor returns false for patch 'feature/still-active'"
+      ],
+      "input": {
+        "patches": [
+          {
+            "branch_name": "feature/missing-ref",
+            "is_ancestor_error": true
+          },
+          {
+            "branch_name": "feature/still-active",
+            "is_ancestor_result": false
+          }
+        ]
+      },
+      "expected": {
+        "feature_missing_ref_status_unchanged": "active",
+        "feature_still_active_status_unchanged": "active",
+        "patches_merged": []
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status == 200; assert resp.body.patches_merged == []; assert getPatch('feature/missing-ref').status == 'active'; assert getPatch('feature/still-active').status == 'active'"
+    },
+    {
+      "id": "TS-16-E21",
+      "requirement_id": "16-REQ-5.E3",
+      "kind": "unit",
+      "description": "When the upstream HEAD has not changed since the last sync, the sync completes successfully with patches_merged=[] and rebuild_triggered=false.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "upstream_head_sha in database equals the current upstream HEAD",
+        "AUTO_REBUILD_AFTER_SYNC is 'true'"
+      ],
+      "input": {
+        "upstream_head_unchanged": true
+      },
+      "expected": {
+        "body": {
+          "patches_merged": [],
+          "rebuild_triggered": false
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status == 200; assert resp.body.patches_merged == []; assert resp.body.rebuild_triggered == false"
+    },
+    {
+      "id": "TS-16-E22",
+      "requirement_id": "16-REQ-5.E4",
+      "kind": "unit",
+      "description": "When sync is triggered on a 'standard' workspace, the standard sync handler is used without carry-patch extensions, and patches_merged and rebuild_triggered fields are omitted from the response.",
+      "preconditions": [
+        "Workspace 'standard-ws' is in 'standard' mode",
+        "Caller has sync permissions"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/standard-ws/sync"
+      },
+      "expected": {
+        "patches_merged_field_absent": true,
+        "rebuild_triggered_field_absent": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/standard-ws/sync'); assert resp.status == 200; assert 'patches_merged' not in resp.body; assert 'rebuild_triggered' not in resp.body"
+    },
+    {
+      "id": "TS-16-E23",
+      "requirement_id": "16-REQ-5.E5",
+      "kind": "unit",
+      "description": "When the upstream fetch hangs during carry-patch sync, the sync enforces a timeout, aborts the fetch, and returns an error without modifying the upstream_tracking_ref or patch statuses.",
+      "preconditions": [
+        "Workspace is in carry_patch mode",
+        "Upstream remote is configured to hang indefinitely (simulated)",
+        "Sync fetch timeout is configured to a short duration"
+      ],
+      "input": {
+        "fetch_timeout": "5s",
+        "simulated_fetch_behavior": "hang_indefinitely"
+      },
+      "expected": {
+        "error_response": true,
+        "patch_statuses_unchanged": true,
+        "upstream_tracking_ref_unchanged": true
+      },
+      "assertion_pseudocode": "priorRef = getUpstreamTrackingRef(repoPath); resp = POST('/api/v1/workspaces/my-workspace/sync'); assert resp.status != 200; assert getUpstreamTrackingRef(repoPath) == priorRef"
+    },
+    {
+      "id": "TS-16-E24",
+      "requirement_id": "16-REQ-6.E1",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/patch-status on a workspace not in carry_patch mode returns HTTP 400 with a JSON error body.",
+      "preconditions": [
+        "Workspace 'standard-ws' is in 'standard' mode",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/standard-ws/patch-status"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating workspace is not in carry_patch mode>"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/standard-ws/patch-status'); assert resp.status == 400; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-16-E25",
+      "requirement_id": "16-REQ-6.E2",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/patch-status by a caller lacking 'workspaces:read' permission returns HTTP 403 with a JSON error body.",
+      "preconditions": [
+        "Workspace 'my-workspace' is in carry_patch mode",
+        "Caller's PAT has no 'workspaces:read' scope"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer <no-read-pat>"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/patch-status"
+      },
+      "expected": {
+        "body": {
+          "error": "<message indicating insufficient permissions>"
+        },
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/patch-status', headers={'Authorization': 'Bearer no-read-pat'}); assert resp.status == 403; assert resp.body.error != null"
+    },
+    {
+      "id": "TS-16-E26",
+      "requirement_id": "16-REQ-6.E3",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/patch-status when no patches have been added returns HTTP 200 with an empty patches array and all summary counts at zero.",
+      "preconditions": [
+        "Workspace 'my-workspace' is in carry_patch mode",
+        "Patches table has no rows for this workspace",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/my-workspace/patch-status"
+      },
+      "expected": {
+        "body": {
+          "patches": [],
+          "summary": {
+            "active": 0,
+            "conflict": 0,
+            "disabled": 0,
+            "merged_upstream": 0,
+            "total_patches": 0
+          }
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/patch-status'); assert resp.status == 200; assert resp.body.patches == []; s = resp.body.summary; assert s.total_patches == 0; assert s.active == 0; assert s.merged_upstream == 0; assert s.conflict == 0; assert s.disabled == 0"
+    },
+    {
+      "id": "TS-16-E27",
+      "requirement_id": "16-REQ-6.E4",
+      "kind": "unit",
+      "description": "When the rr-cache directory is inaccessible during patch-status computation, rerere_resolution_count is set to 0 for all patches and the request still returns HTTP 200.",
+      "preconditions": [
+        "Workspace 'my-workspace' is in carry_patch mode with 2 active patches",
+        ".git/rr-cache/ is inaccessible (simulated permission error)",
+        "Caller has 'workspaces:read' permission scope"
+      ],
+      "input": {
+        "rr_cache_accessible": false
+      },
+      "expected": {
+        "all_rerere_resolution_counts": 0,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/my-workspace/patch-status'); assert resp.status == 200; for patch in resp.body.patches: assert patch.rerere_resolution_count == 0"
+    },
+    {
+      "id": "TS-16-E28",
+      "requirement_id": "16-REQ-7.E1",
+      "kind": "unit",
+      "description": "When the API returns an error response for any rebuild CLI command, the CLI prints the error message to stderr and exits with a non-zero exit code.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint",
+        "API returns HTTP 400 for the rebuild submit command"
+      ],
+      "input": {
+        "command": "afc rebuild submit nonexistent-workspace"
+      },
+      "expected": {
+        "exit_code_nonzero": true,
+        "stderr_contains_error": true,
+        "stdout_empty": true
+      },
+      "assertion_pseudocode": "result = runCLI('afc rebuild submit nonexistent-workspace'); assert result.exit_code != 0; assert result.stderr != ''; assert result.stdout == '' or result.stdout.strip() == ''"
+    },
+    {
+      "id": "TS-16-E29",
+      "requirement_id": "16-REQ-7.E2",
+      "kind": "unit",
+      "description": "When the workspace-slug argument is missing from any rebuild CLI command, the CLI prints usage information to stderr and exits with a non-zero exit code.",
+      "preconditions": [
+        "afc CLI is installed and configured"
+      ],
+      "input": {
+        "command": "afc rebuild submit"
+      },
+      "expected": {
+        "exit_code_nonzero": true,
+        "stderr_contains_usage": true
+      },
+      "assertion_pseudocode": "result = runCLI('afc rebuild submit'); assert result.exit_code != 0; assert 'usage' in result.stderr.lower() or 'Usage' in result.stderr"
+    },
+    {
+      "id": "TS-16-E30",
+      "requirement_id": "16-REQ-8.E1",
+      "kind": "unit",
+      "description": "When the pathspec argument contains slashes, 'afc rerere forget' constructs the DELETE URL by appending the pathspec as a path segment after /rerere/ without additional URL encoding of slashes, and the server receives the full pathspec.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'my-workspace' has a recorded rerere resolution for 'src/config.go'"
+      ],
+      "input": {
+        "command": "afc rerere forget my-workspace src/config.go"
+      },
+      "expected": {
+        "exit_code": 0,
+        "http_request_path": "/api/v1/workspaces/my-workspace/rerere/src/config.go",
+        "status": 204
+      },
+      "assertion_pseudocode": "spy = interceptHTTPRequests(); result = runCLI('afc rerere forget my-workspace src/config.go'); assert result.exit_code == 0; req = spy.lastRequest; assert req.method == 'DELETE'; assert req.path == '/api/v1/workspaces/my-workspace/rerere/src/config.go'"
+    },
+    {
+      "id": "TS-16-E31",
+      "requirement_id": "16-REQ-9.E1",
+      "kind": "unit",
+      "description": "When 'afc workspace patch-status' is called on a workspace not in carry_patch mode and the API returns HTTP 400, the CLI prints the error message to stderr and exits with a non-zero exit code.",
+      "preconditions": [
+        "afc CLI is configured with a valid API endpoint and PAT",
+        "Workspace 'standard-ws' is in 'standard' mode"
+      ],
+      "input": {
+        "command": "afc workspace patch-status standard-ws"
+      },
+      "expected": {
+        "exit_code_nonzero": true,
+        "stderr_contains_error": true
+      },
+      "assertion_pseudocode": "result = runCLI('afc workspace patch-status standard-ws'); assert result.exit_code != 0; assert result.stderr != ''"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-16-SMOKE-1",
+      "execution_path_id": "16-PATH-1",
+      "description": "Full carry-patch end-to-end smoke test: operator checks patch status, triggers sync which detects merged patches and auto-enqueues rebuild, rebuild executes applying patches via rebase strategy, integration branch is updated, and final status check shows completed rebuild.",
+      "trigger": "Operator runs 'afc workspace patch-status my-workspace', then POST /api/v1/workspaces/my-workspace/sync, then waits for the rebuild job to complete, then runs 'afc workspace patch-status my-workspace' again.",
+      "real_components": [
+        "afc CLI",
+        "patch-status handler",
+        "carry-patch sync handler",
+        "resolveUpstreamAuth (carry_patch_workspace spec 15)",
+        "GitRunner.IsAncestor (git_runner_extensions spec 14)",
+        "GitRunner.CherryPick (git_runner_extensions spec 14)",
+        "durable_job_queue worker (spec 10)",
+        "rebuild job executor",
+        "patches_table (SQLite)",
+        "workspace database (SQLite)"
+      ],
+      "mockable": [
+        "upstream git remote (network I/O)",
+        "filesystem clock for recorded_at timestamps"
+      ],
+      "expected_effects": [
+        "Initial patch-status returns HTTP 200 with workspace_mode='carry_patch' and patches array",
+        "Sync returns HTTP 200 with patches_merged containing merged branch names and rebuild_triggered=true",
+        "Merged patches have status='merged_upstream' in the patches_table after sync",
+        "A rebuild job with type='rebuild' and status='queued' exists in the durable_job_queue after sync",
+        "Rebuild job completes with status='completed' and integration_head_sha updated in the database",
+        "Temporary branch does not exist in the repository after rebuild completes",
+        "merged_upstream patches are deleted from patches_table after successful rebuild",
+        "Remaining patch positions are contiguous starting from 1",
+        "Final patch-status returns HTTP 200 with last_rebuild.status='completed' and all active patches showing last_rebuild_result='success'"
+      ]
+    },
+    {
+      "id": "TS-16-SMOKE-2",
+      "execution_path_id": "16-PATH-2",
+      "description": "Rebuild conflict smoke test: operator triggers rebuild which fails on a conflicting patch, inspects the failure, manually records a rerere resolution, re-triggers rebuild which succeeds via rerere replay.",
+      "trigger": "Operator sends POST /api/v1/workspaces/my-workspace/rebuild, waits for failure, sends GET /api/v1/workspaces/my-workspace/rebuilds/:id, records rerere resolution in the git repo, sends POST /api/v1/workspaces/my-workspace/rebuild again.",
+      "real_components": [
+        "rebuild handler",
+        "durable_job_queue worker (spec 10)",
+        "rebuild job executor",
+        "GitRunner.CherryPick (git_runner_extensions spec 14)",
+        "rebuild status handler",
+        "patches_table (SQLite)",
+        "workspace database (SQLite)",
+        "git rerere (via git CLI in workspace repository)"
+      ],
+      "mockable": [
+        "upstream git remote (network I/O)"
+      ],
+      "expected_effects": [
+        "First rebuild job returns HTTP 202 with status='queued'",
+        "First rebuild job completes with status='failed'",
+        "Conflicting patch has status='conflict' in patches_table with non-empty conflict_files",
+        "GET /api/v1/workspaces/my-workspace/rebuilds/:id returns HTTP 200 with patch_results showing conflict",
+        "Temporary branch does not exist after first rebuild failure",
+        "Integration branch is unchanged after first rebuild failure",
+        "After rerere resolution is recorded in rr-cache, second rebuild job returns HTTP 202 with status='queued'",
+        "Second rebuild job completes with status='completed'",
+        "Integration branch is updated to new HEAD SHA after second rebuild",
+        "Temporary branch does not exist after second rebuild completes"
+      ]
+    },
+    {
+      "id": "TS-16-SMOKE-3",
+      "execution_path_id": "16-PATH-3",
+      "description": "Rerere resolution management smoke test: operator lists recorded resolutions, identifies a stale one, deletes it via the forget endpoint, and confirms it is removed from the list.",
+      "trigger": "Operator sends GET /api/v1/workspaces/my-workspace/rerere, then DELETE /api/v1/workspaces/my-workspace/rerere/src/config.go, then GET /api/v1/workspaces/my-workspace/rerere again.",
+      "real_components": [
+        "rerere list handler",
+        "rerere forget handler",
+        "GitRunner (git_runner_extensions spec 14)",
+        "workspace git repository filesystem (.git/rr-cache/)"
+      ],
+      "mockable": [
+        "filesystem clock for recorded_at timestamps"
+      ],
+      "expected_effects": [
+        "First GET /api/v1/workspaces/my-workspace/rerere returns HTTP 200 with resolutions array containing 'src/config.go'",
+        "DELETE /api/v1/workspaces/my-workspace/rerere/src/config.go returns HTTP 204",
+        "'git rerere forget src/config.go' is executed in the workspace repository",
+        "rr-cache no longer contains the entry for 'src/config.go'",
+        "Second GET /api/v1/workspaces/my-workspace/rerere returns HTTP 200 with resolutions array not containing 'src/config.go'"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

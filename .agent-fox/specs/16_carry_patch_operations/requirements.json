@@ -1,0 +1,1000 @@
+{
+  "$schema": null,
+  "spec_id": "16",
+  "spec_name": "carry_patch_operations",
+  "schema_version": 1,
+  "introduction": "This spec defines the operational layer for carry-patch workspaces: the integration branch rebuild algorithm, git rerere conflict-resolution replay, upstream merge detection via sync extension, and a status dashboard for monitoring patch stack health. Note: requirements referencing external library APIs (go-git, apikit, GitRunner) are based on PRD descriptions and should be cross-checked against installed library versions before implementation.",
+  "glossary": {
+    "AUTO_REBUILD_AFTER_SYNC": "Workspace variable (boolean string 'true'/'false') controlling whether a rebuild job is automatically enqueued after a successful sync.",
+    "GitRunner": "The hub's internal abstraction for executing git CLI commands safely, with protocol allowlists and environment isolation.",
+    "IsAncestor": "GitRunner method wrapping 'git merge-base --is-ancestor' to check if one commit is an ancestor of another.",
+    "REBUILD_STRATEGY": "Workspace variable controlling how patches are applied during rebuild: 'rebase' (cherry-pick, linear history) or 'merge' (--no-ff, merge commits).",
+    "UPSTREAM_GIT_PASSWORD": "Workspace secret holding the password for authenticating against the upstream git remote.",
+    "UPSTREAM_GIT_PAT": "Workspace secret holding the personal access token for authenticating against the upstream git remote.",
+    "UPSTREAM_GIT_USERNAME": "Workspace secret holding the username for authenticating against the upstream git remote.",
+    "active": "Patch status indicating the patch is in the normal state and should be applied during rebuild.",
+    "autoupdate": "The rerere.autoupdate git config option; when true, rerere automatically stages files for which it has a recorded resolution.",
+    "carry_patch": "A workspace mode where the hub maintains an integration branch composed of an upstream base plus a stack of carried patch branches.",
+    "carry_patch_workspace": "The upstream spec (spec 15) that defines workspace mode, upstream_url, patches table, and resolveUpstreamAuth.",
+    "conflict": "Patch status indicating the patch produced an unresolved conflict during the last rebuild attempt.",
+    "conflict_files": "List of file paths that had unresolved conflicts when a patch failed during rebuild.",
+    "disabled": "Patch status indicating the patch is excluded from rebuild.",
+    "durable_job_queue": "The SQLite-backed background job queue (spec 10) used to execute rebuild jobs reliably.",
+    "group_key": "The job queue field that serializes jobs targeting the same resource; for rebuilds, set to '<workspace_slug>:<integration_branch>'.",
+    "integration_branch": "The git branch that combines the upstream base with all carried patches; always rebuilt from scratch, never edited directly.",
+    "integration_head_sha": "The 40-character hex SHA of the HEAD commit on the integration branch after a successful rebuild.",
+    "last_rebuild_result": "The outcome of the most recent rebuild job for a given patch: 'success', 'conflict', 'skipped', or null.",
+    "merged_upstream": "Patch status indicating the patch branch has been detected as an ancestor of the upstream HEAD, meaning it was merged upstream.",
+    "patch_list": "The ordered list of carry patches associated with a workspace, stored in the patches table.",
+    "patch_results": "Per-patch outcome array in the rebuild job result, containing status, patch_id, branch_name, position, new_head_sha, and conflict_files for each patch processed.",
+    "patches_merged": "Sync response field listing branch names of patches detected as merged upstream during the sync operation.",
+    "patches_table": "The database table storing carry patch records (id, workspace_id, branch_name, position, status, etc.) defined by the carry_patch_workspace spec.",
+    "position": "The 1-based integer ordering of a patch within the patch list, determining application order during rebuild.",
+    "postimage": "A file in an rr-cache subdirectory containing the resolved file content after rerere records a resolution.",
+    "preimage": "A file in an rr-cache subdirectory containing the conflicted file content before resolution.",
+    "rebuild_job": "A durable background job of type 'rebuild' that executes the integration branch rebuild algorithm.",
+    "rebuild_triggered": "Sync response field indicating whether a new rebuild job was enqueued as a result of the sync.",
+    "rerere": "Git's reuse recorded resolution feature; records how conflicts are resolved and replays those resolutions automatically on subsequent conflicts.",
+    "rerere_resolution_count": "The count of recorded rerere resolutions relevant to files touched by a given patch, shown in the status dashboard.",
+    "resolveUpstreamAuth": "Internal function that resolves upstream git credentials from workspace secrets (UPSTREAM_GIT_PAT, UPSTREAM_GIT_USERNAME, UPSTREAM_GIT_PASSWORD), falling back to origin credentials.",
+    "rr-cache": "The .git/rr-cache/ directory where git rerere stores recorded conflict resolutions.",
+    "submitted_by": "The identity of the operator who triggered the rebuild, captured in the job payload.",
+    "upstream_head_sha": "The 40-character hex SHA of the HEAD commit on the upstream tracking branch at the time of the last fetch.",
+    "upstream_sync": "The upstream spec (spec 13) that defines the base sync handler extended by this spec for carry-patch workspaces.",
+    "upstream_tracking_ref": "The local git ref that tracks the upstream remote's branch HEAD.",
+    "workspace_slug": "The URL-safe identifier for a workspace, used as the dedup key for rebuild jobs."
+  },
+  "requirements": [
+    {
+      "id": "16-REQ-1",
+      "title": "Integration Branch Rebuild Job",
+      "user_story": {
+        "role": "operator maintaining a carry-patch workspace",
+        "goal": "trigger a rebuild of the integration branch from upstream HEAD plus all active patches",
+        "benefit": "the integration branch always reflects the current upstream plus all carried patches in a reproducible way"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "rebuild handler",
+          "action": "validate the workspace is in carry_patch mode and is active with a ready clone, capture the REBUILD_STRATEGY workspace variable at enqueue time, enqueue a rebuild_job with type 'rebuild', key set to workspace_slug, and group_key set to '<workspace_slug>:<integration_branch>', and return the job record",
+          "return_contract": "returns HTTP 202 with JSON body containing the job record with status 'queued'",
+          "trigger": "a caller sends POST /api/v1/workspaces/:slug/rebuild"
+        },
+        {
+          "id": "16-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "rebuild job executor",
+          "action": "fetch from the upstream remote using resolveUpstreamAuth credentials, resolve the upstream tracking ref HEAD, create a temporary branch at that HEAD, collect all patches with status 'active' or 'conflict' in position order, apply each patch using the strategy captured in the job payload, and on full success force-update the integration_branch ref, update integration_head_sha in the database, delete the temporary branch, delete any patches with status 'merged_upstream', and compact remaining positions",
+          "return_contract": "job completes with structured patch_results payload containing upstream_head_sha, integration_head_sha, strategy, patches_applied, patches_skipped, patches_removed, and per-patch results",
+          "trigger": "the durable_job_queue dispatches a rebuild_job"
+        },
+        {
+          "id": "16-REQ-1.3",
+          "ears_pattern": "state_driven",
+          "system": "rebuild job executor",
+          "action": "for each patch, determine commits unique to the patch branch via 'git log --reverse --format=%H <upstream_head>..<patch_branch>', then cherry-pick each commit onto the temporary branch in order, preserving original patch branch refs",
+          "return_contract": "each successfully applied patch is recorded in patch_results with status 'success' and new_head_sha set to the resulting commit SHA",
+          "state": "REBUILD_STRATEGY is 'rebase' or not set"
+        },
+        {
+          "id": "16-REQ-1.4",
+          "ears_pattern": "state_driven",
+          "system": "rebuild job executor",
+          "action": "for each patch, merge the patch branch into the temporary branch with --no-ff, producing a merge commit that delineates the patch boundary",
+          "return_contract": "each successfully applied patch is recorded in patch_results with status 'success' and new_head_sha set to the merge commit SHA",
+          "state": "REBUILD_STRATEGY is 'merge'"
+        },
+        {
+          "id": "16-REQ-1.5",
+          "ears_pattern": "event_driven",
+          "system": "rebuild job executor",
+          "action": "allow git rerere with autoupdate to stage resolved files, then run 'git diff --name-only --diff-filter=U' to check for remaining unresolved conflicts; if all conflicts resolved by rerere, continue the operation; if unresolved conflicts remain, abort the operation, set the patch status to 'conflict' in the database, record conflict_files, delete the temporary branch, and halt the rebuild (fail-fast)",
+          "return_contract": "job fails with structured error containing conflicting patch_id, branch_name, and conflict_files list; integration_branch is not updated",
+          "trigger": "a cherry-pick or merge produces a conflict during rebuild"
+        },
+        {
+          "id": "16-REQ-1.6",
+          "ears_pattern": "event_driven",
+          "system": "rebuild job executor",
+          "action": "skip the patch without halting the rebuild, record it in patch_results with status 'skipped', and continue to the next patch",
+          "return_contract": "patch_results entry has status 'skipped' and null new_head_sha; rebuild continues",
+          "trigger": "a patch's branch does not exist in the repository during rebuild"
+        },
+        {
+          "id": "16-REQ-1.7",
+          "ears_pattern": "ubiquitous",
+          "system": "rebuild job executor",
+          "action": "report patches with status 'merged_upstream' or 'disabled' as 'skipped' in patch_results without attempting to apply them",
+          "return_contract": "patch_results entries for skipped patches have status 'skipped' and null new_head_sha"
+        },
+        {
+          "id": "16-REQ-1.8",
+          "ears_pattern": "ubiquitous",
+          "system": "rebuild job",
+          "action": "be registered as type 'rebuild' in the durable_job_queue, be non-retryable on conflict (permanent error), and be retryable on transient failures such as network errors during fetch or temporary filesystem errors",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "rebuild handler",
+          "action": "reject the rebuild request",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the workspace is in 'standard' mode (not carry_patch)"
+        },
+        {
+          "id": "16-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "rebuild handler",
+          "action": "reject the rebuild request",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the workspace is not active or the clone is not ready"
+        },
+        {
+          "id": "16-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "rebuild handler",
+          "action": "reject the rebuild request",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "there are no patches with status 'active' or 'conflict' in the patch_list"
+        },
+        {
+          "id": "16-REQ-1.E4",
+          "ears_pattern": "unwanted",
+          "system": "rebuild handler",
+          "action": "reject the duplicate submission",
+          "return_contract": "returns HTTP 409 with JSON error body",
+          "error_condition": "a rebuild_job with the same workspace_slug key is already queued or running"
+        },
+        {
+          "id": "16-REQ-1.E5",
+          "ears_pattern": "unwanted",
+          "system": "rebuild job executor",
+          "action": "cancel the fetch operation, delete the temporary branch if created, mark the job as failed with a transient error so it is retried",
+          "return_contract": "job status transitions to 'failed' with a transient error; integration_branch is not modified",
+          "error_condition": "the upstream fetch hangs or does not return within a reasonable timeout"
+        },
+        {
+          "id": "16-REQ-1.E6",
+          "ears_pattern": "unwanted",
+          "system": "rebuild job executor",
+          "action": "delete the temporary branch to release partial state, do not update the integration_branch ref or integration_head_sha",
+          "return_contract": "job status transitions to 'failed'; temporary branch is removed; integration_branch is unchanged",
+          "error_condition": "the rebuild fails midway (e.g., after creating the temporary branch but before completing all patches)"
+        },
+        {
+          "id": "16-REQ-1.E7",
+          "ears_pattern": "unwanted",
+          "system": "rebuild job executor",
+          "action": "complete the rebuild with zero patches applied, force-update the integration_branch to the upstream HEAD, and report patches_applied as 0",
+          "return_contract": "job completes successfully with patches_applied=0 and integration_head_sha equal to upstream_head_sha",
+          "error_condition": "the patch_list is empty after filtering out 'merged_upstream' and 'disabled' patches at execution time"
+        },
+        {
+          "id": "16-REQ-1.E8",
+          "ears_pattern": "unwanted",
+          "system": "rebuild handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller lacks the 'rebuilds:write' permission scope"
+        },
+        {
+          "id": "16-REQ-1.E9",
+          "ears_pattern": "unwanted",
+          "system": "rebuild job executor",
+          "action": "fail the fetch step, mark the job as failed with a transient error",
+          "return_contract": "job status transitions to 'failed' with error indicating authentication failure; integration_branch is not modified",
+          "error_condition": "resolveUpstreamAuth returns no credentials and the upstream remote requires authentication"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-2",
+      "title": "Rebuild Job List and Status Endpoints",
+      "user_story": {
+        "role": "operator",
+        "goal": "list and inspect rebuild jobs for a workspace",
+        "benefit": "I can monitor rebuild progress and diagnose failures"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "rebuild list handler",
+          "action": "return the list of rebuild_job records for the workspace ordered by creation time descending",
+          "return_contract": "returns HTTP 200 with JSON array of job records including id, status, created_at, completed_at, strategy, and error fields",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/rebuilds"
+        },
+        {
+          "id": "16-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "rebuild status handler",
+          "action": "return the rebuild_job record for the given id, including the full patch_results payload if the job has completed",
+          "return_contract": "returns HTTP 200 with JSON job record; returns HTTP 404 if the job id does not exist for the workspace",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/rebuilds/:id"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "rebuild list handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller lacks the 'rebuilds:read' permission scope"
+        },
+        {
+          "id": "16-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "rebuild status handler",
+          "action": "return not found to prevent cross-workspace information leakage",
+          "return_contract": "returns HTTP 404 with JSON error body",
+          "error_condition": "the rebuild id does not belong to the specified workspace_slug"
+        },
+        {
+          "id": "16-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "rebuild list handler",
+          "action": "return an empty list",
+          "return_contract": "returns HTTP 200 with JSON body {\"jobs\": []}",
+          "error_condition": "the workspace has no rebuild history"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-3",
+      "title": "Git Rerere Integration During Rebuild",
+      "user_story": {
+        "role": "operator",
+        "goal": "have previously resolved conflicts replayed automatically during rebuild",
+        "benefit": "I do not need to manually resolve the same conflict every time the integration branch is rebuilt"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "rebuild job executor",
+          "action": "invoke git rerere (which is enabled with autoupdate=true in the repo config set at clone time) to check for and apply recorded resolutions; run 'git diff --name-only --diff-filter=U' to determine if any unresolved conflicts remain; if none remain, stage the resolved files and continue the operation",
+          "return_contract": "rebuild continues to the next patch; the resolved patch is recorded in patch_results with status 'success'",
+          "trigger": "a cherry-pick or merge produces a conflict"
+        },
+        {
+          "id": "16-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "rebuild job executor",
+          "action": "abort the cherry-pick or merge, set the patch status to 'conflict' in the patches_table, record conflict_files, delete the temporary branch, and halt the rebuild",
+          "return_contract": "job fails with structured error; patch_results entry for the conflicting patch has status 'conflict' and non-empty conflict_files",
+          "trigger": "rerere cannot resolve all conflicts (unresolved conflict markers remain after rerere runs)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "rebuild job executor",
+          "action": "proceed with rebuild without rerere replay; conflicts are detected and reported normally via 'git diff --name-only --diff-filter=U'",
+          "return_contract": "rebuild behaves as if rerere found no resolutions; conflicts cause fail-fast halt",
+          "error_condition": "rerere is not enabled in the repository config (e.g., workspace was created before rerere config was applied)"
+        },
+        {
+          "id": "16-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "rebuild job executor",
+          "action": "treat the operation as still conflicted; abort, record all remaining conflict_files from 'git diff --name-only --diff-filter=U', and halt",
+          "return_contract": "job fails; conflict_files contains only the unresolved files",
+          "error_condition": "rerere partially resolves conflicts (some files resolved, others not)"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-4",
+      "title": "Rerere Management API",
+      "user_story": {
+        "role": "operator",
+        "goal": "inspect and clear recorded rerere resolutions for a workspace",
+        "benefit": "I can manage stale or incorrect resolutions that would otherwise be replayed incorrectly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "rerere list handler",
+          "action": "read the rr-cache directory in the workspace's .git directory, enumerate subdirectories each representing a recorded resolution, derive the path from the preimage or postimage file, and derive recorded_at from the file modification time",
+          "return_contract": "returns HTTP 200 with JSON body {\"resolutions\": [{\"path\": string, \"recorded_at\": string|null}]}",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/rerere"
+        },
+        {
+          "id": "16-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "rerere forget handler",
+          "action": "execute 'git rerere forget <pathspec>' via GitRunner for the workspace repository",
+          "return_contract": "returns HTTP 204 on success; returns HTTP 404 if the pathspec has no recorded resolution in rr-cache",
+          "trigger": "a caller sends DELETE /api/v1/workspaces/:slug/rerere/*pathspec"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "rerere list handler",
+          "action": "return an empty resolutions list",
+          "return_contract": "returns HTTP 200 with JSON body {\"resolutions\": []}",
+          "error_condition": "the rr-cache directory does not exist or is empty"
+        },
+        {
+          "id": "16-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "rerere forget handler",
+          "action": "use the Echo *pathspec wildcard route parameter to capture the full path including slashes without requiring URL encoding",
+          "return_contract": "returns HTTP 204 on success with the full path correctly passed to 'git rerere forget'",
+          "error_condition": "the pathspec contains slashes (e.g., 'src/config.go') and the Echo wildcard parameter does not capture the full path"
+        },
+        {
+          "id": "16-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "rerere list handler",
+          "action": "skip that entry or include it with path set to null; do not crash",
+          "return_contract": "returns HTTP 200; malformed entries are omitted from the resolutions array",
+          "error_condition": "a rr-cache subdirectory exists but contains no preimage or postimage file"
+        },
+        {
+          "id": "16-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "rerere forget handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller lacks the 'workspaces:read' permission scope"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-5",
+      "title": "Carry-Patch Sync Extension",
+      "user_story": {
+        "role": "operator",
+        "goal": "sync a carry-patch workspace against upstream and automatically detect merged patches",
+        "benefit": "the patch_list stays accurate without manual inspection after each upstream update"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "carry-patch sync handler",
+          "action": "resolve upstream credentials via resolveUpstreamAuth, fetch from the 'upstream' remote (not 'origin'), compare the new upstream HEAD against the stored upstream_head_sha, advance the upstream_tracking_ref using the same fast-forward logic as the standard sync handler, then check each active patch for upstream merge using IsAncestor",
+          "return_contract": "sync response includes patches_merged (list of branch names) and rebuild_triggered (boolean) in addition to standard sync fields",
+          "trigger": "a sync operation is triggered for a workspace in carry_patch mode"
+        },
+        {
+          "id": "16-REQ-5.2",
+          "ears_pattern": "event_driven",
+          "system": "carry-patch sync handler",
+          "action": "transition the patch status to 'merged_upstream' in the patches_table and include the branch name in the patches_merged list in the sync response",
+          "return_contract": "sync response patches_merged array contains the branch name; patch record in database has status 'merged_upstream'",
+          "trigger": "a patch branch HEAD is determined to be an ancestor of (or equal to) the new upstream HEAD via IsAncestor"
+        },
+        {
+          "id": "16-REQ-5.3",
+          "ears_pattern": "complex_event",
+          "system": "carry-patch sync handler",
+          "action": "enqueue a rebuild_job for the workspace; if a rebuild_job with the same workspace_slug key is already queued or running, silently ignore the duplicate and set rebuild_triggered to false in the response",
+          "return_contract": "sync response has rebuild_triggered=true if a new job was enqueued, rebuild_triggered=false if a duplicate was detected",
+          "trigger": "sync completes for a carry_patch workspace",
+          "condition": "at least one patch was transitioned to 'merged_upstream' OR the upstream_tracking_ref advanced, AND AUTO_REBUILD_AFTER_SYNC is 'true' (or not set)"
+        },
+        {
+          "id": "16-REQ-5.4",
+          "ears_pattern": "complex_event",
+          "system": "carry-patch sync handler",
+          "action": "do not enqueue a rebuild_job regardless of whether patches were merged or the upstream ref advanced",
+          "return_contract": "sync response has rebuild_triggered=false",
+          "trigger": "sync completes for a carry_patch workspace",
+          "condition": "AUTO_REBUILD_AFTER_SYNC is 'false'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "carry-patch sync handler",
+          "action": "abort the sync, do not modify the upstream_tracking_ref or any patch statuses",
+          "return_contract": "returns HTTP 502 or appropriate error status with JSON error body; no state is mutated",
+          "error_condition": "the upstream fetch fails due to a network error or authentication failure"
+        },
+        {
+          "id": "16-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "carry-patch sync handler",
+          "action": "skip the ancestry check for that patch, leave its status unchanged, and continue checking remaining patches",
+          "return_contract": "sync completes; the patch with the missing ref is not included in patches_merged",
+          "error_condition": "IsAncestor returns an error for a specific patch (e.g., the patch branch ref does not exist locally)"
+        },
+        {
+          "id": "16-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "carry-patch sync handler",
+          "action": "complete the sync successfully with no patches_merged and no rebuild triggered (unless AUTO_REBUILD_AFTER_SYNC logic applies for other reasons)",
+          "return_contract": "sync response has patches_merged=[] and rebuild_triggered=false",
+          "error_condition": "the upstream HEAD has not changed since the last sync (upstream_head_sha is unchanged)"
+        },
+        {
+          "id": "16-REQ-5.E4",
+          "ears_pattern": "unwanted",
+          "system": "carry-patch sync handler",
+          "action": "use the standard sync handler behavior without carry-patch extensions; patches_merged and rebuild_triggered fields are omitted from the response",
+          "return_contract": "standard sync response without carry-patch fields",
+          "error_condition": "the sync is triggered on a 'standard' workspace"
+        },
+        {
+          "id": "16-REQ-5.E5",
+          "ears_pattern": "unwanted",
+          "system": "carry-patch sync handler",
+          "action": "enforce a timeout on the fetch operation; if exceeded, abort the sync and return an error",
+          "return_contract": "returns an error response; upstream_tracking_ref and patch statuses are not modified",
+          "error_condition": "the upstream fetch hangs and does not return"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-6",
+      "title": "Carry-Patch Status Dashboard",
+      "user_story": {
+        "role": "operator",
+        "goal": "view a comprehensive health summary of the patch stack for a workspace",
+        "benefit": "I can quickly assess which patches are clean, conflicting, or already merged without running multiple queries"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "patch-status handler",
+          "action": "aggregate workspace metadata (upstream_url, upstream_head_sha, integration_branch, integration_head_sha, last_sync_at), the most recent rebuild_job record, all patches from the patches_table with their last_rebuild_result and conflict_files from the most recent rebuild, and rerere_resolution_count per patch, then return the combined response",
+          "return_contract": "returns HTTP 200 with JSON body matching the patch-status schema including workspace_slug, workspace_mode, upstream_url, upstream_head_sha, integration_branch, integration_head_sha, last_sync_at, last_rebuild, patches array, and summary counts",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/patch-status"
+        },
+        {
+          "id": "16-REQ-6.2",
+          "ears_pattern": "ubiquitous",
+          "system": "patch-status handler",
+          "action": "compute the summary object with total_patches, active, merged_upstream, conflict, and disabled counts derived from the current patches_table state",
+          "return_contract": "summary counts are accurate and consistent with the patches array in the same response"
+        },
+        {
+          "id": "16-REQ-6.3",
+          "ears_pattern": "state_driven",
+          "system": "patch-status handler",
+          "action": "return last_rebuild as null and each patch's last_rebuild_result as null",
+          "return_contract": "returns HTTP 200 with last_rebuild=null and all patch last_rebuild_result fields null",
+          "state": "no rebuild has been attempted for the workspace"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "patch-status handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with JSON error body",
+          "error_condition": "the workspace is not in carry_patch mode"
+        },
+        {
+          "id": "16-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "patch-status handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 403 with JSON error body",
+          "error_condition": "the caller lacks the 'workspaces:read' permission scope"
+        },
+        {
+          "id": "16-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "patch-status handler",
+          "action": "return an empty patches array and summary with all counts at zero",
+          "return_contract": "returns HTTP 200 with patches=[] and summary={total_patches:0, active:0, merged_upstream:0, conflict:0, disabled:0}",
+          "error_condition": "the patches_table is empty (no patches have been added)"
+        },
+        {
+          "id": "16-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "patch-status handler",
+          "action": "set rerere_resolution_count to 0 for all patches rather than failing the request",
+          "return_contract": "returns HTTP 200 with rerere_resolution_count=0 for all patches",
+          "error_condition": "the rr-cache directory is inaccessible when computing rerere_resolution_count"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-7",
+      "title": "Rebuild CLI Commands",
+      "user_story": {
+        "role": "operator",
+        "goal": "submit, list, and inspect rebuild jobs from the command line",
+        "benefit": "I can manage rebuild operations without using the REST API directly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send POST /api/v1/workspaces/:slug/rebuild and print the returned job record",
+          "return_contract": "prints job id and status 'queued' to stdout; exits with code 0 on success, non-zero on error",
+          "trigger": "the operator runs 'afc rebuild submit <workspace-slug>'"
+        },
+        {
+          "id": "16-REQ-7.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send GET /api/v1/workspaces/:slug/rebuilds and print the list of rebuild jobs",
+          "return_contract": "prints tabular or JSON list of rebuild jobs to stdout; exits with code 0 on success",
+          "trigger": "the operator runs 'afc rebuild list <workspace-slug>'"
+        },
+        {
+          "id": "16-REQ-7.3",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send GET /api/v1/workspaces/:slug/rebuilds/:id and print the job status and patch_results",
+          "return_contract": "prints job details including status and per-patch results to stdout; exits with code 0 on success, non-zero if job not found",
+          "trigger": "the operator runs 'afc rebuild status <workspace-slug> <rebuild-id>'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "print the error message to stderr and exit with a non-zero exit code",
+          "return_contract": "error message printed to stderr; process exits with non-zero code",
+          "error_condition": "the API returns an error response for any rebuild CLI command"
+        },
+        {
+          "id": "16-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "print usage information and exit with a non-zero exit code",
+          "return_contract": "usage text printed to stderr; process exits with non-zero code",
+          "error_condition": "the workspace-slug argument is missing from any rebuild CLI command"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-8",
+      "title": "Rerere CLI Commands",
+      "user_story": {
+        "role": "operator",
+        "goal": "list and forget rerere resolutions from the command line",
+        "benefit": "I can manage conflict resolution records without using the REST API directly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send GET /api/v1/workspaces/:slug/rerere and print the list of recorded resolutions",
+          "return_contract": "prints list of resolutions with path and recorded_at to stdout; exits with code 0",
+          "trigger": "the operator runs 'afc rerere list <workspace-slug>'"
+        },
+        {
+          "id": "16-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send DELETE /api/v1/workspaces/:slug/rerere/*pathspec and print confirmation",
+          "return_contract": "prints confirmation to stdout on success; prints error to stderr and exits non-zero if pathspec not found",
+          "trigger": "the operator runs 'afc rerere forget <workspace-slug> <pathspec>'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "append the pathspec as a path segment after /rerere/ without additional URL encoding of slashes, relying on the Echo wildcard route to capture the full path",
+          "return_contract": "DELETE request reaches the server with the full pathspec; returns HTTP 204 on success",
+          "error_condition": "the pathspec argument contains slashes and the CLI must construct the DELETE URL correctly"
+        }
+      ]
+    },
+    {
+      "id": "16-REQ-9",
+      "title": "Patch Status CLI Command",
+      "user_story": {
+        "role": "operator",
+        "goal": "view the patch stack health dashboard from the command line",
+        "benefit": "I can quickly assess workspace patch health without opening a browser or crafting API calls"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "16-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "afc CLI",
+          "action": "send GET /api/v1/workspaces/:slug/patch-status and print the full status dashboard",
+          "return_contract": "prints workspace metadata, last_rebuild summary, per-patch status table, and summary counts to stdout; exits with code 0 on success, non-zero on error",
+          "trigger": "the operator runs 'afc workspace patch-status <workspace-slug>'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "16-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "afc CLI",
+          "action": "print the error message to stderr and exit with a non-zero exit code",
+          "return_contract": "error message printed to stderr; process exits with non-zero code",
+          "error_condition": "the workspace is not in carry_patch mode and the API returns HTTP 400"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "16-PROP-1",
+      "title": "Integration branch is always rebuilt from scratch",
+      "for_any": "carry_patch workspace with any combination of active, conflict, merged_upstream, and disabled patches",
+      "invariant": "after a successful rebuild, the integration_branch ref equals the result of applying all active and conflict patches (in position order, using the captured strategy) onto the upstream_head_sha; no prior integration_branch state influences the result",
+      "validates": [
+        "16-REQ-1.2",
+        "16-REQ-1.3",
+        "16-REQ-1.4"
+      ]
+    },
+    {
+      "id": "16-PROP-2",
+      "title": "Fail-fast halts on first conflict",
+      "for_any": "rebuild with N patches where patch K (1 <= K <= N) produces an unresolvable conflict",
+      "invariant": "the rebuild halts after patch K; patches K+1 through N are not attempted; the integration_branch ref is not updated; the temporary branch is deleted",
+      "validates": [
+        "16-REQ-1.5",
+        "16-REQ-3.2"
+      ]
+    },
+    {
+      "id": "16-PROP-3",
+      "title": "Rebuild strategy is captured at enqueue time",
+      "for_any": "rebuild job enqueued with REBUILD_STRATEGY value S",
+      "invariant": "the job executes with strategy S regardless of any subsequent changes to the REBUILD_STRATEGY workspace variable before the job runs",
+      "validates": [
+        "16-REQ-1.1",
+        "16-REQ-1.8"
+      ]
+    },
+    {
+      "id": "16-PROP-4",
+      "title": "Merged patches are cleaned up after successful rebuild",
+      "for_any": "workspace with one or more patches in merged_upstream status at the start of a rebuild",
+      "invariant": "after a successful rebuild, all patches that had merged_upstream status are deleted from the patches_table and remaining positions are compacted to be contiguous",
+      "validates": [
+        "16-REQ-1.2"
+      ]
+    },
+    {
+      "id": "16-PROP-5",
+      "title": "Rerere replay is idempotent",
+      "for_any": "any number of rebuilds that encounter the same conflict in the same patch",
+      "invariant": "if rerere has a recorded resolution for the conflict, each rebuild attempt that encounters that conflict will have it resolved automatically; the rebuild result is the same as if the conflict never occurred",
+      "validates": [
+        "16-REQ-3.1"
+      ]
+    },
+    {
+      "id": "16-PROP-6",
+      "title": "Ancestry-based merge detection is monotonic",
+      "for_any": "any patch P and any two consecutive upstream fetches where the upstream HEAD advances from SHA1 to SHA2",
+      "invariant": "if P was detected as merged_upstream at SHA1, it remains merged_upstream at SHA2; the merged_upstream status is never reverted by a subsequent sync",
+      "validates": [
+        "16-REQ-5.2"
+      ]
+    },
+    {
+      "id": "16-PROP-7",
+      "title": "Duplicate rebuild enqueue is idempotent",
+      "for_any": "any number of concurrent or sequential rebuild submission attempts for the same workspace_slug while a rebuild_job is already queued or running",
+      "invariant": "exactly one rebuild_job is active at a time for a given workspace_slug; duplicate submissions are rejected with HTTP 409 or silently ignored (auto-rebuild path) without creating additional jobs",
+      "validates": [
+        "16-REQ-1.E4",
+        "16-REQ-5.3"
+      ]
+    },
+    {
+      "id": "16-PROP-8",
+      "title": "Status dashboard counts are consistent with patch array",
+      "for_any": "any GET /api/v1/workspaces/:slug/patch-status response",
+      "invariant": "summary.total_patches equals the length of the patches array; summary.active + summary.merged_upstream + summary.conflict + summary.disabled equals summary.total_patches",
+      "validates": [
+        "16-REQ-6.1",
+        "16-REQ-6.2"
+      ]
+    },
+    {
+      "id": "16-PROP-9",
+      "title": "Temporary branch is always cleaned up",
+      "for_any": "any rebuild execution that creates a temporary branch, regardless of outcome (success, conflict, or unexpected error)",
+      "invariant": "the temporary branch does not exist in the repository after the rebuild job terminates",
+      "validates": [
+        "16-REQ-1.2",
+        "16-REQ-1.5",
+        "16-REQ-1.E6"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "16-PATH-1",
+      "title": "Full carry-patch end-to-end: sync, rebuild, status check",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "runs 'afc workspace patch-status <slug>' to confirm patch stack state before sync"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends GET /api/v1/workspaces/:slug/patch-status to the hub"
+        },
+        {
+          "actor": "patch-status handler (this spec)",
+          "action": "reads workspace metadata, patches_table, and last rebuild result from the database and returns the aggregated status response"
+        },
+        {
+          "actor": "Operator",
+          "action": "triggers sync by sending POST /api/v1/workspaces/:slug/sync"
+        },
+        {
+          "actor": "carry-patch sync handler (this spec, extending upstream_sync spec 13)",
+          "action": "calls resolveUpstreamAuth (carry_patch_workspace spec 15) to get upstream credentials, fetches from the 'upstream' remote via go-git, advances the upstream_tracking_ref"
+        },
+        {
+          "actor": "carry-patch sync handler",
+          "action": "calls GitRunner.IsAncestor (git_runner_extensions spec 14) for each active patch to detect merged patches; transitions detected patches to 'merged_upstream' in the patches_table"
+        },
+        {
+          "actor": "carry-patch sync handler",
+          "action": "checks AUTO_REBUILD_AFTER_SYNC workspace variable; enqueues a rebuild_job in the durable_job_queue (spec 10) with key=workspace_slug and group_key='<slug>:<integration_branch>'; returns sync response with patches_merged and rebuild_triggered=true"
+        },
+        {
+          "actor": "durable_job_queue worker (spec 10)",
+          "action": "dispatches the rebuild_job to the rebuild job executor"
+        },
+        {
+          "actor": "rebuild job executor (this spec)",
+          "action": "calls resolveUpstreamAuth, fetches from upstream remote, resolves upstream_tracking_ref HEAD, creates a temporary branch at that HEAD"
+        },
+        {
+          "actor": "rebuild job executor",
+          "action": "collects patches with status 'active' or 'conflict' in position order from the patches_table; skips 'merged_upstream' and 'disabled' patches"
+        },
+        {
+          "actor": "rebuild job executor",
+          "action": "for each active patch (rebase strategy): calls GitRunner log to find unique commits, then calls GitRunner CherryPick (git_runner_extensions spec 14) for each commit onto the temporary branch; on conflict, invokes rerere and checks 'git diff --name-only --diff-filter=U'"
+        },
+        {
+          "actor": "rebuild job executor",
+          "action": "on full success: force-updates the integration_branch ref to the temporary branch HEAD, updates integration_head_sha in the database, deletes the temporary branch, deletes merged_upstream patches from the patches_table, and compacts positions"
+        },
+        {
+          "actor": "Operator",
+          "action": "runs 'afc workspace patch-status <slug>' to verify the updated integration_head_sha and clean patch stack"
+        },
+        {
+          "actor": "patch-status handler (this spec)",
+          "action": "returns updated status with last_rebuild showing 'completed', patches_applied count, and all patches showing last_rebuild_result='success'"
+        }
+      ]
+    },
+    {
+      "id": "16-PATH-2",
+      "title": "Rebuild conflict: detection, rerere replay, and manual re-trigger",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "sends POST /api/v1/workspaces/:slug/rebuild to trigger a rebuild"
+        },
+        {
+          "actor": "rebuild handler (this spec)",
+          "action": "validates workspace is carry_patch mode, active, and has active patches; enqueues rebuild_job; returns HTTP 202 with job record"
+        },
+        {
+          "actor": "durable_job_queue worker (spec 10)",
+          "action": "dispatches the rebuild_job"
+        },
+        {
+          "actor": "rebuild job executor (this spec)",
+          "action": "applies patches in order; a cherry-pick produces a conflict; rerere (autoupdate=true) stages resolved files; 'git diff --name-only --diff-filter=U' returns non-empty list"
+        },
+        {
+          "actor": "rebuild job executor",
+          "action": "aborts the cherry-pick, sets patch status to 'conflict' in patches_table, records conflict_files, deletes the temporary branch, marks job as failed (permanent error)"
+        },
+        {
+          "actor": "Operator",
+          "action": "sends GET /api/v1/workspaces/:slug/rebuilds/:id to inspect the failure"
+        },
+        {
+          "actor": "rebuild status handler (this spec)",
+          "action": "returns job record with status 'failed' and patch_results showing the conflicting patch with conflict_files"
+        },
+        {
+          "actor": "Operator",
+          "action": "manually resolves the conflict in the patch branch and runs 'git rerere' to record the resolution in rr-cache"
+        },
+        {
+          "actor": "Operator",
+          "action": "sends POST /api/v1/workspaces/:slug/rebuild to re-trigger the rebuild"
+        },
+        {
+          "actor": "rebuild job executor (this spec)",
+          "action": "re-applies patches; the previously conflicting cherry-pick now triggers rerere which replays the recorded resolution; 'git diff --name-only --diff-filter=U' returns empty; rebuild continues and succeeds"
+        },
+        {
+          "actor": "rebuild job executor",
+          "action": "force-updates integration_branch, updates integration_head_sha, deletes temporary branch; job completes successfully"
+        }
+      ]
+    },
+    {
+      "id": "16-PATH-3",
+      "title": "Rerere resolution management: list and forget",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "sends GET /api/v1/workspaces/:slug/rerere to list recorded resolutions"
+        },
+        {
+          "actor": "rerere list handler (this spec)",
+          "action": "reads the rr-cache directory, enumerates subdirectories, reads preimage/postimage files to derive paths and recorded_at timestamps, returns the resolutions list"
+        },
+        {
+          "actor": "Operator",
+          "action": "identifies a stale resolution and sends DELETE /api/v1/workspaces/:slug/rerere/src/config.go"
+        },
+        {
+          "actor": "rerere forget handler (this spec)",
+          "action": "executes 'git rerere forget src/config.go' via GitRunner in the workspace repository; returns HTTP 204"
+        },
+        {
+          "actor": "Operator",
+          "action": "sends GET /api/v1/workspaces/:slug/rerere to confirm the resolution was removed"
+        },
+        {
+          "actor": "rerere list handler (this spec)",
+          "action": "returns updated resolutions list without the forgotten path"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "16-ERR-1",
+      "condition": "POST /api/v1/workspaces/:slug/rebuild called on a workspace not in carry_patch mode",
+      "behavior": "returns HTTP 400 with JSON error body; no job is enqueued",
+      "requirement_id": "16-REQ-1.E1"
+    },
+    {
+      "id": "16-ERR-2",
+      "condition": "POST /api/v1/workspaces/:slug/rebuild called when workspace is not active or clone is not ready",
+      "behavior": "returns HTTP 400 with JSON error body; no job is enqueued",
+      "requirement_id": "16-REQ-1.E2"
+    },
+    {
+      "id": "16-ERR-3",
+      "condition": "POST /api/v1/workspaces/:slug/rebuild called when no patches have status 'active' or 'conflict'",
+      "behavior": "returns HTTP 400 with JSON error body; no job is enqueued",
+      "requirement_id": "16-REQ-1.E3"
+    },
+    {
+      "id": "16-ERR-4",
+      "condition": "POST /api/v1/workspaces/:slug/rebuild called when a rebuild_job with the same workspace_slug key is already queued or running",
+      "behavior": "returns HTTP 409 with JSON error body; no additional job is enqueued",
+      "requirement_id": "16-REQ-1.E4"
+    },
+    {
+      "id": "16-ERR-5",
+      "condition": "rebuild job executor encounters an unresolvable conflict during cherry-pick or merge",
+      "behavior": "aborts the operation, sets patch status to 'conflict' in patches_table, records conflict_files, deletes the temporary branch, marks job as permanently failed; integration_branch is not updated",
+      "requirement_id": "16-REQ-1.5"
+    },
+    {
+      "id": "16-ERR-6",
+      "condition": "rebuild job executor encounters a transient error (network failure during fetch, temporary filesystem error)",
+      "behavior": "marks the job as failed with a retryable error; the durable_job_queue will retry the job; temporary branch is cleaned up if created",
+      "requirement_id": "16-REQ-1.E5"
+    },
+    {
+      "id": "16-ERR-7",
+      "condition": "DELETE /api/v1/workspaces/:slug/rerere/*pathspec called for a pathspec with no recorded resolution in rr-cache",
+      "behavior": "returns HTTP 404 with JSON error body; no git command is executed",
+      "requirement_id": "16-REQ-4.2"
+    },
+    {
+      "id": "16-ERR-8",
+      "condition": "carry-patch sync handler fails to fetch from the upstream remote",
+      "behavior": "aborts the sync; upstream_tracking_ref and patch statuses are not modified; returns an error response to the caller",
+      "requirement_id": "16-REQ-5.E1"
+    },
+    {
+      "id": "16-ERR-9",
+      "condition": "GET /api/v1/workspaces/:slug/patch-status called on a workspace not in carry_patch mode",
+      "behavior": "returns HTTP 400 with JSON error body",
+      "requirement_id": "16-REQ-6.E1"
+    },
+    {
+      "id": "16-ERR-10",
+      "condition": "caller lacks required permission scope for any rebuild, rerere, or patch-status endpoint",
+      "behavior": "returns HTTP 403 with JSON error body; no operation is performed",
+      "requirement_id": "16-REQ-1.E8"
+    },
+    {
+      "id": "16-ERR-11",
+      "condition": "rebuild job executor cannot resolve upstream credentials via resolveUpstreamAuth and the upstream remote requires authentication",
+      "behavior": "fails the fetch step, marks the job as failed with a transient error for retry; integration_branch is not modified",
+      "requirement_id": "16-REQ-1.E9"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "GitRunner (spec 14 git_runner_extensions)",
+      "version": "internal",
+      "symbols": [
+        {
+          "name": "CherryPick",
+          "import_path": "internal/gitrunner",
+          "signature": "CherryPick(ctx context.Context, repoPath string, commitSHA string) error",
+          "notes": "Returns CherryPickConflictError on conflict. Used by rebuild executor for rebase strategy."
+        },
+        {
+          "name": "MergeNoFF",
+          "import_path": "internal/gitrunner",
+          "signature": "MergeNoFF(ctx context.Context, repoPath string, branch string) error",
+          "notes": "Returns MergeNoFFConflictError on conflict. Used by rebuild executor for merge strategy."
+        },
+        {
+          "name": "IsAncestor",
+          "import_path": "internal/gitrunner",
+          "signature": "IsAncestor(ctx context.Context, repoPath string, ancestorSHA string, descendantSHA string) (bool, error)",
+          "notes": "Wraps 'git merge-base --is-ancestor'. Used by sync handler for upstream merge detection."
+        },
+        {
+          "name": "HardReset",
+          "import_path": "internal/gitrunner",
+          "signature": "HardReset(ctx context.Context, repoPath string, ref string) error",
+          "notes": "Used for cleanup during rebuild abort."
+        }
+      ]
+    },
+    {
+      "package": "carry_patch_workspace (spec 15)",
+      "version": "internal",
+      "symbols": [
+        {
+          "name": "resolveUpstreamAuth",
+          "import_path": "internal/workspace",
+          "signature": "resolveUpstreamAuth(ctx context.Context, workspaceID string) (AuthInfo, error)",
+          "notes": "Resolves upstream credentials from UPSTREAM_GIT_PAT, UPSTREAM_GIT_USERNAME, UPSTREAM_GIT_PASSWORD secrets with fallback to origin credentials."
+        }
+      ]
+    },
+    {
+      "package": "durable_job_queue (spec 10)",
+      "version": "internal",
+      "symbols": [
+        {
+          "name": "Enqueue",
+          "import_path": "internal/jobs",
+          "signature": "Enqueue(ctx context.Context, params EnqueueParams) (*Job, error)",
+          "notes": "Enqueues a job with dedup by key. Returns error if duplicate key exists with queued/running status."
+        },
+        {
+          "name": "ListByKey",
+          "import_path": "internal/jobs",
+          "signature": "ListByKey(ctx context.Context, key string, opts ListOpts) ([]*Job, error)",
+          "notes": "Lists jobs by workspace_slug key for rebuild list endpoint."
+        },
+        {
+          "name": "GetByID",
+          "import_path": "internal/jobs",
+          "signature": "GetByID(ctx context.Context, id string) (*Job, error)",
+          "notes": "Retrieves a single job by ID for rebuild status endpoint."
+        }
+      ]
+    }
+  ]
+}

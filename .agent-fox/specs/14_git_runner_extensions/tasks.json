@@ -1,0 +1,1467 @@
+{
+  "$schema": null,
+  "spec_id": "14",
+  "spec_name": "git_runner_extensions",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/gitcmd/... ./internal/workspace/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "11",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Extends existing GitRunner with new methods",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "13",
+      "from_group": 1,
+      "to_group": 9,
+      "relationship": "Sync working tree fix modifies the sync fast-forward path",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: Checkout, CreateBranch, DeleteBranch",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write test for Checkout success (existing branch)",
+          "details": [
+            "In internal/gitcmd/checkout_test.go, create a temp git repo with two branches",
+            "Call runner.Checkout(ctx, branchName) and assert no error is returned",
+            "Verify HEAD points to the checked-out branch via git symbolic-ref HEAD"
+          ],
+          "test_spec_refs": [
+            "TS-14-1"
+          ],
+          "requirement_refs": [
+            "14-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write test for Checkout failure (non-existent ref)",
+          "details": [
+            "Call runner.Checkout(ctx, 'nonexistent-branch') on a repo without that branch",
+            "Assert the returned error is *GitError",
+            "Confirm the error message contains the git stderr output"
+          ],
+          "test_spec_refs": [
+            "TS-14-2"
+          ],
+          "requirement_refs": [
+            "14-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write test for CreateBranch success",
+          "details": [
+            "In internal/gitcmd/branch_test.go, create a temp repo with at least one commit",
+            "Call runner.CreateBranch(ctx, 'new-branch', 'HEAD') and assert no error",
+            "Verify the branch exists via git branch --list new-branch"
+          ],
+          "test_spec_refs": [
+            "TS-14-3"
+          ],
+          "requirement_refs": [
+            "14-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write test for CreateBranch failure (branch already exists)",
+          "details": [
+            "Create a branch that already exists in the temp repo",
+            "Call runner.CreateBranch(ctx, existingBranch, 'HEAD') and assert *GitError is returned",
+            "Confirm error wraps the git stderr output"
+          ],
+          "test_spec_refs": [
+            "TS-14-4"
+          ],
+          "requirement_refs": [
+            "14-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write test for DeleteBranch success (force delete)",
+          "details": [
+            "Create a branch in the temp repo that is not fully merged",
+            "Call runner.DeleteBranch(ctx, branchName) and assert no error",
+            "Verify the branch no longer appears in git branch --list"
+          ],
+          "test_spec_refs": [
+            "TS-14-5"
+          ],
+          "requirement_refs": [
+            "14-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.6",
+          "title": "Write test for DeleteBranch failure (non-existent branch)",
+          "details": [
+            "Call runner.DeleteBranch(ctx, 'does-not-exist') and assert *GitError is returned",
+            "Confirm the error message reflects git's stderr output for missing branch"
+          ],
+          "test_spec_refs": [
+            "TS-14-6"
+          ],
+          "requirement_refs": [
+            "14-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/gitcmd/...",
+          "Tests in this group pass (or are skipped as stubs): go test ./internal/gitcmd/... -run 'TestCheckout|TestCreateBranch|TestDeleteBranch' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/gitcmd/...",
+          "Requirements 14-REQ-1, 14-REQ-2, 14-REQ-3 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: CherryPick and conflict error types",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write test for CherryPick success (returns new HEAD SHA)",
+          "details": [
+            "In internal/gitcmd/cherrypick_test.go, set up a repo with a commit on a side branch",
+            "Call runner.CherryPick(ctx, sha) and assert no error",
+            "Assert the returned string equals the new HEAD SHA (git rev-parse HEAD)"
+          ],
+          "test_spec_refs": [
+            "TS-14-7"
+          ],
+          "requirement_refs": [
+            "14-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write test for CherryPick conflict (auto-abort and CherryPickConflictError)",
+          "details": [
+            "Set up a repo where cherry-picking a commit will produce a conflict",
+            "Call runner.CherryPick(ctx, sha) and assert the error is *CherryPickConflictError",
+            "Assert ConflictingFiles is non-empty and contains the expected file path",
+            "Assert the repo is no longer in cherry-pick state (no CHERRY_PICK_HEAD)"
+          ],
+          "test_spec_refs": [
+            "TS-14-8",
+            "TS-14-28"
+          ],
+          "requirement_refs": [
+            "14-REQ-4",
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write test for CherryPick context cancellation (no abort)",
+          "details": [
+            "Use a cancelled context and call runner.CherryPick(cancelledCtx, sha)",
+            "Assert the returned error is the context error (not *CherryPickConflictError)",
+            "Confirm no git cherry-pick --abort was invoked (repo state unchanged)"
+          ],
+          "test_spec_refs": [
+            "TS-14-9"
+          ],
+          "requirement_refs": [
+            "14-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write test for CherryPickConflictError and MergeNoFFConflictError types",
+          "details": [
+            "In internal/gitcmd/conflict_errors_test.go, assert CherryPickConflictError implements error interface",
+            "Assert MergeNoFFConflictError implements error interface",
+            "Assert Error() message format matches RebaseConflictError pattern",
+            "Assert ConflictingFiles field is populated correctly"
+          ],
+          "test_spec_refs": [
+            "TS-14-28",
+            "TS-14-29"
+          ],
+          "requirement_refs": [
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write test for conflict file parsing fallback",
+          "details": [
+            "Test parseRebaseConflictFiles (or equivalent) with empty/unparseable git output",
+            "Assert fallback entry '(unresolved conflict)' is included in ConflictingFiles",
+            "Verify the function correctly parses standard CONFLICT lines from git output"
+          ],
+          "test_spec_refs": [
+            "TS-14-29"
+          ],
+          "requirement_refs": [
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/gitcmd/...",
+          "Tests in this group pass (or are skipped as stubs): go test ./internal/gitcmd/... -run 'TestCherryPick|TestConflictError' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/gitcmd/...",
+          "Requirements 14-REQ-4, 14-REQ-13 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: ConfigSet, RemoteAdd, Log, Diff",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write test for ConfigSet success",
+          "details": [
+            "In internal/gitcmd/config_test.go, call runner.ConfigSet(ctx, 'user.name', 'Test User') on a temp repo",
+            "Assert no error is returned",
+            "Verify the config value via git config --local user.name"
+          ],
+          "test_spec_refs": [
+            "TS-14-10"
+          ],
+          "requirement_refs": [
+            "14-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write test for ConfigSet failure (invalid key)",
+          "details": [
+            "Call runner.ConfigSet(ctx, '', 'value') or an invalid key format",
+            "Assert *GitError is returned with non-empty message"
+          ],
+          "test_spec_refs": [
+            "TS-14-11"
+          ],
+          "requirement_refs": [
+            "14-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write test for RemoteAdd success and failure",
+          "details": [
+            "In internal/gitcmd/remote_test.go, call runner.RemoteAdd(ctx, 'origin2', 'https://example.com/repo.git') and assert no error",
+            "Verify remote exists via git remote -v",
+            "Call RemoteAdd again with the same name and assert *GitError (already exists)"
+          ],
+          "test_spec_refs": [
+            "TS-14-12",
+            "TS-14-13"
+          ],
+          "requirement_refs": [
+            "14-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write test for Log success and failure",
+          "details": [
+            "In internal/gitcmd/log_test.go, call runner.Log(ctx, '--oneline', '-1') on a repo with commits",
+            "Assert no error and non-empty stdout returned",
+            "Call runner.Log(ctx, '--invalid-flag') and assert *GitError is returned"
+          ],
+          "test_spec_refs": [
+            "TS-14-14",
+            "TS-14-15"
+          ],
+          "requirement_refs": [
+            "14-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write test for Diff success and failure",
+          "details": [
+            "In internal/gitcmd/diff_test.go, make a change in the working tree and call runner.Diff(ctx, 'HEAD')",
+            "Assert no error and diff output contains the changed file",
+            "Call runner.Diff(ctx, 'nonexistent..HEAD') and assert *GitError is returned"
+          ],
+          "test_spec_refs": [
+            "TS-14-16",
+            "TS-14-17"
+          ],
+          "requirement_refs": [
+            "14-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/gitcmd/...",
+          "Tests in this group pass (or are skipped as stubs): go test ./internal/gitcmd/... -run 'TestConfigSet|TestRemoteAdd|TestLog|TestDiff' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/gitcmd/...",
+          "Requirements 14-REQ-5, 14-REQ-6, 14-REQ-7, 14-REQ-8 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: MergeNoFF, MergeAbort, RebaseContinue, IsAncestor",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write test for MergeNoFF success (returns merge commit SHA)",
+          "details": [
+            "In internal/gitcmd/merge_test.go, set up a repo with diverged branches",
+            "Call runner.MergeNoFF(ctx, branchName) and assert no error",
+            "Assert returned SHA equals git rev-parse HEAD and is a merge commit (two parents)"
+          ],
+          "test_spec_refs": [
+            "TS-14-18"
+          ],
+          "requirement_refs": [
+            "14-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write test for MergeNoFF conflict (auto-abort and MergeNoFFConflictError)",
+          "details": [
+            "Set up a repo where merging will produce a conflict",
+            "Call runner.MergeNoFF(ctx, branchName) and assert *MergeNoFFConflictError is returned",
+            "Assert ConflictingFiles is non-empty",
+            "Assert repo is no longer in merge state (no MERGE_HEAD file)"
+          ],
+          "test_spec_refs": [
+            "TS-14-19",
+            "TS-14-29"
+          ],
+          "requirement_refs": [
+            "14-REQ-9",
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write test for MergeNoFF context cancellation (no abort)",
+          "details": [
+            "Use a cancelled context and call runner.MergeNoFF(cancelledCtx, branchName)",
+            "Assert the returned error is the context error",
+            "Confirm no git merge --abort was invoked"
+          ],
+          "test_spec_refs": [
+            "TS-14-20"
+          ],
+          "requirement_refs": [
+            "14-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write test for MergeAbort success and failure",
+          "details": [
+            "In internal/gitcmd/merge_test.go, trigger a merge conflict manually, then call runner.MergeAbort(ctx)",
+            "Assert no error and repo is clean",
+            "Call MergeAbort when no merge is in progress and assert *GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-21",
+            "TS-14-22"
+          ],
+          "requirement_refs": [
+            "14-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.5",
+          "title": "Write test for RebaseContinue success and failure",
+          "details": [
+            "In internal/gitcmd/rebase_test.go, set up a paused rebase with resolved conflicts",
+            "Call runner.RebaseContinue(ctx) and assert no error and returned SHA is new HEAD",
+            "Call RebaseContinue when no rebase is in progress and assert *GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-23",
+            "TS-14-24"
+          ],
+          "requirement_refs": [
+            "14-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.6",
+          "title": "Write test for IsAncestor (true, false, error cases)",
+          "details": [
+            "In internal/gitcmd/ancestor_test.go, create a linear commit history",
+            "Assert IsAncestor(ctx, parentSHA, childSHA) returns (true, nil)",
+            "Assert IsAncestor(ctx, childSHA, parentSHA) returns (false, nil)",
+            "Assert IsAncestor(ctx, 'invalid', 'invalid') returns (false, *GitError)"
+          ],
+          "test_spec_refs": [
+            "TS-14-25",
+            "TS-14-26",
+            "TS-14-27"
+          ],
+          "requirement_refs": [
+            "14-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/gitcmd/...",
+          "Tests in this group pass (or are skipped as stubs): go test ./internal/gitcmd/... -run 'TestMergeNoFF|TestMergeAbort|TestRebaseContinue|TestIsAncestor' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/gitcmd/...",
+          "Requirements 14-REQ-9, 14-REQ-10, 14-REQ-11, 14-REQ-12 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "tests",
+      "title": "Write tests: Sync working tree fix and safety env vars",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Write test for sync working tree reset after fast-forward",
+          "details": [
+            "In internal/workspace/sync_test.go, set up a workspace with a local repo behind upstream",
+            "Trigger a sync fast-forward and assert the working tree files match the new HEAD commit",
+            "Verify on-disk file contents reflect the advanced commit, not the old commit"
+          ],
+          "test_spec_refs": [
+            "TS-14-30"
+          ],
+          "requirement_refs": [
+            "14-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Write test for sync working tree reset failure (best-effort, no sync failure)",
+          "details": [
+            "Simulate a working tree reset failure (e.g., by making worktree.Reset return an error)",
+            "Assert the sync operation still returns success (no error propagated)",
+            "Assert an error is logged (check log output or use a test logger)"
+          ],
+          "test_spec_refs": [
+            "TS-14-31"
+          ],
+          "requirement_refs": [
+            "14-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Write test for safety environment variables on new methods",
+          "details": [
+            "In internal/gitcmd/safety_test.go, verify that Checkout, CreateBranch, DeleteBranch, CherryPick, ConfigSet, RemoteAdd, Log, Diff, MergeNoFF, MergeAbort, RebaseContinue, IsAncestor all inherit GitRunner's extraEnv",
+            "Assert GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1, GIT_ALLOW_PROTOCOL are present in subprocess environment"
+          ],
+          "test_spec_refs": [
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/workspace/... ./internal/gitcmd/...",
+          "Tests in this group pass (or are skipped as stubs): go test ./internal/workspace/... ./internal/gitcmd/... -run 'TestSync|TestSafety' -count=1 -v",
+          "No linter warnings introduced: go vet ./internal/workspace/... ./internal/gitcmd/...",
+          "Requirements 14-REQ-14, 14-REQ-15 test coverage is present"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement conflict error types and shared conflict file parsing",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Define CherryPickConflictError and MergeNoFFConflictError types",
+          "details": [
+            "In internal/gitcmd/errors.go (or a new conflict_errors.go), define CherryPickConflictError struct with ConflictingFiles []string",
+            "Define MergeNoFFConflictError struct with ConflictingFiles []string",
+            "Implement Error() string on both types using the same message format as RebaseConflictError",
+            "Ensure both types satisfy the error interface"
+          ],
+          "test_spec_refs": [
+            "TS-14-28",
+            "TS-14-29"
+          ],
+          "requirement_refs": [
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Extend or reuse parseRebaseConflictFiles for cherry-pick and merge",
+          "details": [
+            "Confirm parseRebaseConflictFiles in internal/gitcmd parses CONFLICT lines from git output",
+            "If the function is unexported or needs extension, refactor to accept raw git output string and return []string",
+            "Add fallback: if output is empty or unparseable but conflict state is detected, return []string{'(unresolved conflict)'}",
+            "Write unit assertions confirming the fallback behavior"
+          ],
+          "test_spec_refs": [
+            "TS-14-29"
+          ],
+          "requirement_refs": [
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "go build ./internal/gitcmd/... succeeds with no errors",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "go test ./internal/gitcmd/... -run 'TestConflictError' -count=1 -v passes",
+          "CherryPickConflictError and MergeNoFFConflictError both implement the error interface (verified by compile-time interface check)",
+          "Requirements 14-REQ-13 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Checkout, CreateBranch, DeleteBranch methods",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement Checkout method on GitRunner",
+          "details": [
+            "In internal/gitcmd/checkout.go, add func (r *GitRunner) Checkout(ctx context.Context, ref string) error",
+            "Invoke git checkout <ref> via the existing Run/runWithExitCode pattern",
+            "On non-zero exit, return *GitError wrapping stderr",
+            "Ensure safety env vars (extraEnv) are applied via the existing mechanism"
+          ],
+          "test_spec_refs": [
+            "TS-14-1",
+            "TS-14-2",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-1",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement CreateBranch method on GitRunner",
+          "details": [
+            "In internal/gitcmd/branch.go, add func (r *GitRunner) CreateBranch(ctx context.Context, name, startPoint string) error",
+            "Invoke git branch <name> <startPoint> via the existing Run pattern",
+            "On non-zero exit, return *GitError wrapping stderr"
+          ],
+          "test_spec_refs": [
+            "TS-14-3",
+            "TS-14-4",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-2",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement DeleteBranch method on GitRunner",
+          "details": [
+            "In internal/gitcmd/branch.go, add func (r *GitRunner) DeleteBranch(ctx context.Context, name string) error",
+            "Invoke git branch -D <name> via the existing Run pattern (force delete)",
+            "On non-zero exit, return *GitError wrapping stderr"
+          ],
+          "test_spec_refs": [
+            "TS-14-5",
+            "TS-14-6",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-3",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "go build ./internal/gitcmd/... succeeds",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "go test ./internal/gitcmd/... -run 'TestCheckout|TestCreateBranch|TestDeleteBranch' -count=1 -v passes",
+          "Requirements 14-REQ-1, 14-REQ-2, 14-REQ-3 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement CherryPick method with auto-abort",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Implement CherryPick method on GitRunner",
+          "details": [
+            "In internal/gitcmd/cherrypick.go, add func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error)",
+            "Invoke git cherry-pick <sha> via runWithExitCode",
+            "On success (exit 0), return git rev-parse HEAD as the new HEAD SHA",
+            "On context cancellation, return ctx.Err() without aborting"
+          ],
+          "test_spec_refs": [
+            "TS-14-7",
+            "TS-14-9",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-4",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement CherryPick conflict detection and auto-abort",
+          "details": [
+            "On non-zero exit from git cherry-pick, parse stdout/stderr for CONFLICT lines using parseRebaseConflictFiles",
+            "If conflict detected, run git cherry-pick --abort",
+            "Return *CherryPickConflictError with ConflictingFiles populated (fallback to '(unresolved conflict)' if parsing fails)",
+            "For other non-zero exits (not conflict), return *GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-8",
+            "TS-14-28"
+          ],
+          "requirement_refs": [
+            "14-REQ-4",
+            "14-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "go build ./internal/gitcmd/... succeeds",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "go test ./internal/gitcmd/... -run 'TestCherryPick' -count=1 -v passes",
+          "Requirements 14-REQ-4 acceptance criteria met including auto-abort on conflict"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement ConfigSet, RemoteAdd, Log, Diff methods",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Implement ConfigSet method on GitRunner",
+          "details": [
+            "In internal/gitcmd/config.go, add func (r *GitRunner) ConfigSet(ctx context.Context, key, value string) error",
+            "Invoke git config <key> <value> via the existing Run pattern",
+            "On non-zero exit, return *GitError wrapping stderr"
+          ],
+          "test_spec_refs": [
+            "TS-14-10",
+            "TS-14-11",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-5",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Implement RemoteAdd method on GitRunner",
+          "details": [
+            "In internal/gitcmd/remote.go, add func (r *GitRunner) RemoteAdd(ctx context.Context, name, url string) error",
+            "Invoke git remote add <name> <url> via the existing Run pattern",
+            "On non-zero exit, return *GitError wrapping stderr"
+          ],
+          "test_spec_refs": [
+            "TS-14-12",
+            "TS-14-13",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-6",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Implement Log method on GitRunner",
+          "details": [
+            "In internal/gitcmd/log.go, add func (r *GitRunner) Log(ctx context.Context, args ...string) (string, error)",
+            "Invoke git log <args...> via the existing Run pattern, returning raw stdout",
+            "On non-zero exit, return empty string and *GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-14",
+            "TS-14-15",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-7",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.4",
+          "title": "Implement Diff method on GitRunner",
+          "details": [
+            "In internal/gitcmd/diff.go, add func (r *GitRunner) Diff(ctx context.Context, args ...string) (string, error)",
+            "Invoke git diff <args...> via the existing Run pattern, returning raw stdout",
+            "On non-zero exit, return empty string and *GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-16",
+            "TS-14-17",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-8",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "go build ./internal/gitcmd/... succeeds",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "go test ./internal/gitcmd/... -run 'TestConfigSet|TestRemoteAdd|TestLog|TestDiff' -count=1 -v passes",
+          "Requirements 14-REQ-5, 14-REQ-6, 14-REQ-7, 14-REQ-8 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement MergeNoFF, MergeAbort, RebaseContinue, IsAncestor methods",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Implement MergeNoFF method with auto-abort on conflict",
+          "details": [
+            "In internal/gitcmd/merge.go, add func (r *GitRunner) MergeNoFF(ctx context.Context, branch string) (string, error)",
+            "Invoke git merge --no-ff <branch> via runWithExitCode",
+            "On success, return git rev-parse HEAD as the merge commit SHA",
+            "On conflict: parse CONFLICT lines, run git merge --abort, return *MergeNoFFConflictError",
+            "On context cancellation, return ctx.Err() without aborting"
+          ],
+          "test_spec_refs": [
+            "TS-14-18",
+            "TS-14-19",
+            "TS-14-20",
+            "TS-14-29",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-9",
+            "14-REQ-13",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Implement MergeAbort method on GitRunner",
+          "details": [
+            "In internal/gitcmd/merge.go, add func (r *GitRunner) MergeAbort(ctx context.Context) error",
+            "Invoke git merge --abort via the existing Run pattern",
+            "On non-zero exit, return *GitError wrapping stderr"
+          ],
+          "test_spec_refs": [
+            "TS-14-21",
+            "TS-14-22",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-10",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Implement RebaseContinue method on GitRunner",
+          "details": [
+            "In internal/gitcmd/rebase.go (alongside existing Rebase), add func (r *GitRunner) RebaseContinue(ctx context.Context) (string, error)",
+            "Invoke git rebase --continue via runWithExitCode with GIT_EDITOR=true to avoid editor prompts",
+            "On success (exit 0), return git rev-parse HEAD as the new HEAD SHA",
+            "On non-zero exit, return empty string and *GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-23",
+            "TS-14-24",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-11",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Implement IsAncestor method on GitRunner",
+          "details": [
+            "In internal/gitcmd/ancestor.go, add func (r *GitRunner) IsAncestor(ctx context.Context, commitA, commitB string) (bool, error)",
+            "Invoke git merge-base --is-ancestor <commitA> <commitB> via runWithExitCode",
+            "Return (true, nil) on exit code 0, (false, nil) on exit code 1",
+            "Return (false, *GitError) on any other exit code"
+          ],
+          "test_spec_refs": [
+            "TS-14-25",
+            "TS-14-26",
+            "TS-14-27",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-12",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "go build ./internal/gitcmd/... succeeds",
+          "go vet ./internal/gitcmd/... reports no issues",
+          "go test ./internal/gitcmd/... -run 'TestMergeNoFF|TestMergeAbort|TestRebaseContinue|TestIsAncestor' -count=1 -v passes",
+          "Requirements 14-REQ-9, 14-REQ-10, 14-REQ-11, 14-REQ-12 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement sync working tree reset after fast-forward",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Add working tree reset call in defaultSyncUpdateLocalRefFn",
+          "details": [
+            "In internal/workspace (the sync fast-forward path), locate defaultSyncUpdateLocalRefFn or equivalent",
+            "After Storer.SetReference advances the branch ref, open the repository with go-git PlainOpen",
+            "Obtain the Worktree and call worktree.Reset(&git.ResetOptions{Mode: git.HardReset})",
+            "Apply to both standard and carry-patch workspace modes"
+          ],
+          "test_spec_refs": [
+            "TS-14-30"
+          ],
+          "requirement_refs": [
+            "14-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Implement best-effort error handling for working tree reset",
+          "details": [
+            "If worktree.Reset returns an error, log the error using the workspace logger (do not return the error)",
+            "Ensure the sync function returns success even when the working tree reset fails",
+            "Add a structured log entry with the workspace slug and the reset error for observability"
+          ],
+          "test_spec_refs": [
+            "TS-14-31"
+          ],
+          "requirement_refs": [
+            "14-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "go build ./internal/workspace/... succeeds",
+          "go vet ./internal/workspace/... reports no issues",
+          "go test ./internal/workspace/... -run 'TestSync' -count=1 -v passes",
+          "Sync fast-forward no longer leaves working tree at old commit (verified by TS-14-30)",
+          "Requirements 14-REQ-14 acceptance criteria met"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "checkpoint",
+      "title": "Integration checkpoint: all new GitRunner methods and sync fix",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Run full gitcmd and workspace test suites",
+          "details": [
+            "Execute go test ./internal/gitcmd/... ./internal/workspace/... -count=1 -v",
+            "Confirm all 32 test cases (TS-14-1 through TS-14-32) pass",
+            "Confirm no regressions in existing GitRunner tests (Rebase, MergeConflict, etc.)"
+          ],
+          "test_spec_refs": [
+            "TS-14-1",
+            "TS-14-2",
+            "TS-14-3",
+            "TS-14-4",
+            "TS-14-5",
+            "TS-14-6",
+            "TS-14-7",
+            "TS-14-8",
+            "TS-14-9",
+            "TS-14-10",
+            "TS-14-11",
+            "TS-14-12",
+            "TS-14-13",
+            "TS-14-14",
+            "TS-14-15"
+          ],
+          "requirement_refs": [
+            "14-REQ-1",
+            "14-REQ-2",
+            "14-REQ-3",
+            "14-REQ-4",
+            "14-REQ-5",
+            "14-REQ-6",
+            "14-REQ-7",
+            "14-REQ-8",
+            "14-REQ-9",
+            "14-REQ-10",
+            "14-REQ-11",
+            "14-REQ-12",
+            "14-REQ-13",
+            "14-REQ-14",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Verify no panic stubs remain in new method implementations",
+          "details": [
+            "Search internal/gitcmd and internal/workspace for panic(\"not implemented\"), bare return nil in non-trivial paths, and // TODO markers",
+            "Confirm all new methods have real implementations, not stubs",
+            "Run go vet ./... to catch any obvious issues"
+          ],
+          "test_spec_refs": [
+            "TS-14-16",
+            "TS-14-17",
+            "TS-14-18",
+            "TS-14-19",
+            "TS-14-20",
+            "TS-14-21",
+            "TS-14-22",
+            "TS-14-23",
+            "TS-14-24",
+            "TS-14-25",
+            "TS-14-26",
+            "TS-14-27",
+            "TS-14-28",
+            "TS-14-29",
+            "TS-14-30"
+          ],
+          "requirement_refs": [
+            "14-REQ-1",
+            "14-REQ-2",
+            "14-REQ-3",
+            "14-REQ-4",
+            "14-REQ-5",
+            "14-REQ-6",
+            "14-REQ-7",
+            "14-REQ-8",
+            "14-REQ-9",
+            "14-REQ-10",
+            "14-REQ-11",
+            "14-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Verify safety env vars applied to all new methods",
+          "details": [
+            "Confirm each new method routes through the GitRunner's existing Run or runWithExitCode helper",
+            "Confirm extraEnv (GIT_TERMINAL_PROMPT=0, GIT_CONFIG_NOSYSTEM=1, GIT_ALLOW_PROTOCOL) is injected for all 12 new methods",
+            "Run go test ./internal/gitcmd/... -run 'TestSafety' -count=1 -v"
+          ],
+          "test_spec_refs": [
+            "TS-14-31",
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "go test ./internal/gitcmd/... ./internal/workspace/... -count=1 passes with zero failures",
+          "go test ./... -count=1 passes with no regressions in other packages",
+          "go vet ./... reports no issues",
+          "All 32 TS-14-* test cases are accounted for and passing"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and dead-code audit",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Trace execution paths for all new GitRunner methods",
+          "details": [
+            "Verify Checkout, CreateBranch, DeleteBranch, CherryPick, ConfigSet, RemoteAdd, Log, Diff, MergeNoFF, MergeAbort, RebaseContinue, IsAncestor each call Run or runWithExitCode (no stubs remain)",
+            "Confirm each method's entry point in internal/gitcmd routes to the git subprocess via the existing exec pattern",
+            "Confirm CherryPick and MergeNoFF call their respective --abort commands on conflict before returning"
+          ],
+          "test_spec_refs": [
+            "TS-14-1",
+            "TS-14-7",
+            "TS-14-18",
+            "TS-14-25"
+          ],
+          "requirement_refs": [
+            "14-REQ-1",
+            "14-REQ-2",
+            "14-REQ-3",
+            "14-REQ-4",
+            "14-REQ-9",
+            "14-REQ-10",
+            "14-REQ-11",
+            "14-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Verify return value propagation for SHA-returning methods",
+          "details": [
+            "Confirm CherryPick returns the actual new HEAD SHA (not a hardcoded or empty string)",
+            "Confirm MergeNoFF returns the actual merge commit SHA",
+            "Confirm RebaseContinue returns the actual new HEAD SHA after rebase completes",
+            "Confirm IsAncestor correctly maps exit codes 0→true, 1→false, other→*GitError"
+          ],
+          "test_spec_refs": [
+            "TS-14-7",
+            "TS-14-18",
+            "TS-14-23",
+            "TS-14-25",
+            "TS-14-26",
+            "TS-14-27"
+          ],
+          "requirement_refs": [
+            "14-REQ-4",
+            "14-REQ-9",
+            "14-REQ-11",
+            "14-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Stub and dead-code audit across internal/gitcmd and internal/workspace",
+          "details": [
+            "Search for panic(\"not implemented\") in internal/gitcmd and internal/workspace — must return zero results",
+            "Search for bare // TODO comments on new method bodies — must return zero results",
+            "Search for methods that return nil without any git invocation — must return zero results for new methods",
+            "Run: grep -rn 'not implemented\\|TODO' internal/gitcmd internal/workspace"
+          ],
+          "test_spec_refs": [
+            "TS-14-32"
+          ],
+          "requirement_refs": [
+            "14-REQ-1",
+            "14-REQ-2",
+            "14-REQ-3",
+            "14-REQ-4",
+            "14-REQ-5",
+            "14-REQ-6",
+            "14-REQ-7",
+            "14-REQ-8",
+            "14-REQ-9",
+            "14-REQ-10",
+            "14-REQ-11",
+            "14-REQ-12",
+            "14-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.4",
+          "title": "Verify sync working tree reset is wired into production sync path",
+          "details": [
+            "Confirm defaultSyncUpdateLocalRefFn (or equivalent) in internal/workspace calls worktree.Reset after Storer.SetReference",
+            "Confirm the reset is applied for both standard and carry-patch workspace modes",
+            "Confirm error from Reset is logged but not returned (best-effort pattern)"
+          ],
+          "test_spec_refs": [
+            "TS-14-30",
+            "TS-14-31"
+          ],
+          "requirement_refs": [
+            "14-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.5",
+          "title": "Run full test suite and confirm no regressions",
+          "details": [
+            "Execute go test ./... -count=1 and confirm zero failures",
+            "Execute go vet ./... and confirm zero warnings",
+            "Confirm all existing spec 11 (GitRunner) and spec 13 (upstream sync) tests still pass"
+          ],
+          "test_spec_refs": [
+            "TS-14-1",
+            "TS-14-2",
+            "TS-14-3",
+            "TS-14-4",
+            "TS-14-5",
+            "TS-14-6",
+            "TS-14-7",
+            "TS-14-8",
+            "TS-14-9",
+            "TS-14-10",
+            "TS-14-11",
+            "TS-14-12",
+            "TS-14-13",
+            "TS-14-14",
+            "TS-14-15"
+          ],
+          "requirement_refs": [
+            "14-REQ-1",
+            "14-REQ-2",
+            "14-REQ-3",
+            "14-REQ-4",
+            "14-REQ-5",
+            "14-REQ-6",
+            "14-REQ-7",
+            "14-REQ-8",
+            "14-REQ-9",
+            "14-REQ-10",
+            "14-REQ-11",
+            "14-REQ-12",
+            "14-REQ-13",
+            "14-REQ-14",
+            "14-REQ-15"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "go test ./... -count=1 passes with zero failures",
+          "go vet ./... reports zero issues",
+          "grep -rn 'panic(\"not implemented\")' internal/gitcmd internal/workspace returns zero results (stub audit)",
+          "All 12 new GitRunner methods are reachable from production call sites (not dead code)",
+          "defaultSyncUpdateLocalRefFn calls worktree.Reset after ref advancement (confirmed by code review and TS-14-30)",
+          "CherryPickConflictError and MergeNoFFConflictError are returned from production code paths (not just defined)",
+          "IsAncestor exit-code discrimination (0/1/other) is implemented and verified by TS-14-25, TS-14-26, TS-14-27"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "14-REQ-1",
+      "test_spec_id": "TS-14-1",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-1",
+      "test_spec_id": "TS-14-2",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-2",
+      "test_spec_id": "TS-14-3",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-2",
+      "test_spec_id": "TS-14-4",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-3",
+      "test_spec_id": "TS-14-5",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-3",
+      "test_spec_id": "TS-14-6",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-4",
+      "test_spec_id": "TS-14-7",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-4",
+      "test_spec_id": "TS-14-8",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-4",
+      "test_spec_id": "TS-14-9",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-5",
+      "test_spec_id": "TS-14-10",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-5",
+      "test_spec_id": "TS-14-11",
+      "task_id": "9.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-6",
+      "test_spec_id": "TS-14-12",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-6",
+      "test_spec_id": "TS-14-13",
+      "task_id": "9.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-7",
+      "test_spec_id": "TS-14-14",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-7",
+      "test_spec_id": "TS-14-15",
+      "task_id": "9.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-8",
+      "test_spec_id": "TS-14-16",
+      "task_id": "9.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-8",
+      "test_spec_id": "TS-14-17",
+      "task_id": "9.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-9",
+      "test_spec_id": "TS-14-18",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-9",
+      "test_spec_id": "TS-14-19",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-9",
+      "test_spec_id": "TS-14-20",
+      "task_id": "10.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-10",
+      "test_spec_id": "TS-14-21",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-10",
+      "test_spec_id": "TS-14-22",
+      "task_id": "10.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-11",
+      "test_spec_id": "TS-14-23",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-11",
+      "test_spec_id": "TS-14-24",
+      "task_id": "10.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-12",
+      "test_spec_id": "TS-14-25",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-12",
+      "test_spec_id": "TS-14-26",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-12",
+      "test_spec_id": "TS-14-27",
+      "task_id": "10.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-13",
+      "test_spec_id": "TS-14-28",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-13",
+      "test_spec_id": "TS-14-29",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-14",
+      "test_spec_id": "TS-14-30",
+      "task_id": "11.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-14",
+      "test_spec_id": "TS-14-31",
+      "task_id": "11.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "14-REQ-15",
+      "test_spec_id": "TS-14-32",
+      "task_id": "5.3",
+      "test_path": null
+    }
+  ]
+}

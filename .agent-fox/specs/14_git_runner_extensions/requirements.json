@@ -1,0 +1,1176 @@
+{
+  "$schema": null,
+  "spec_id": "14",
+  "spec_name": "git_runner_extensions",
+  "schema_version": 1,
+  "introduction": "This spec extends the `GitRunner` in `internal/gitcmd` with new git CLI convenience methods required by the carry-patch workflow, introduces typed conflict error types for cherry-pick and merge operations, and fixes a working-tree staleness bug in the upstream sync fast-forward path.",
+  "glossary": {
+    "CherryPickConflictError": "Typed error returned by CherryPick when git cherry-pick exits with conflicts; contains a ConflictingFiles []string field.",
+    "GIT_ALLOW_PROTOCOL": "Environment variable set by GitRunner to restrict which git transport protocols are permitted.",
+    "GIT_CONFIG_NOSYSTEM": "Environment variable set by GitRunner to ignore system-level git configuration.",
+    "GIT_TERMINAL_PROMPT": "Environment variable set to 0 by GitRunner to prevent git from prompting for credentials interactively.",
+    "GitError": "Typed error returned by GitRunner when a git command exits with a non-zero code and the exit code does not map to a more specific error type.",
+    "GitRunner": "The Go struct in internal/gitcmd that wraps git CLI invocations with safety environment variables, allowlists, and typed error returns (spec 11).",
+    "HardReset": "go-git ResetOptions mode that resets both the index and working tree to match the target commit.",
+    "MergeNoFFConflictError": "Typed error returned by MergeNoFF when git merge --no-ff exits with conflicts; contains a ConflictingFiles []string field.",
+    "RebaseConflictError": "Existing typed conflict error in internal/gitcmd returned by the Rebase method (spec 11).",
+    "carry-patch workflow": "A multi-spec feature (carry_patch_workspace and carry_patch_operations specs) that applies patches across workspace branches using cherry-pick and rebase operations.",
+    "defaultSyncUpdateLocalRefFn": "The function in internal/workspace responsible for advancing the local branch ref during a sync fast-forward (spec 13).",
+    "extraEnv": "Additional environment variables injected into git subprocess invocations by GitRunner to enforce safety (e.g. GIT_TERMINAL_PROMPT=0).",
+    "integration branch": "The primary branch within a workspace repository into which agent work branches are merged.",
+    "parseRebaseConflictFiles": "Existing internal function in internal/gitcmd that parses CONFLICT lines from git stdout/stderr to extract conflicting file paths.",
+    "rerere": "Git's reuse-recorded-resolution mechanism that can automatically resolve previously seen conflicts during rebase --continue.",
+    "runWithExitCode": "Internal GitRunner helper that runs a git command and returns both the output and the raw exit code for exit-code-discriminated logic.",
+    "startPoint": "A commit SHA or ref name used as the starting point when creating a new branch.",
+    "sync fast-forward": "The operation in the upstream sync path (spec 13) that advances the local integration branch ref to match the upstream HEAD without a merge commit.",
+    "workDir": "The absolute filesystem path of the git repository that a GitRunner instance operates on.",
+    "worktree": "The go-git Worktree object obtained from a Repository, used to perform working-tree operations such as Reset."
+  },
+  "requirements": [
+    {
+      "id": "14-REQ-1",
+      "title": "Checkout method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "switch the working tree to an existing branch or detached HEAD",
+        "benefit": "so that subsequent git operations target the correct commit"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git checkout <ref>` in workDir with the standard safety environment variables",
+          "return_contract": "returns nil",
+          "trigger": "Checkout is called with a valid ref that exists in the repository"
+        },
+        {
+          "id": "14-REQ-1.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "git checkout exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (*GitError, non-nil) with a descriptive message",
+          "error_condition": "the ref string is empty"
+        },
+        {
+          "id": "14-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (nil, ctx.Err())",
+          "error_condition": "the context is cancelled before git checkout completes"
+        },
+        {
+          "id": "14-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError containing git's stderr output",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "the ref does not exist in the repository"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-2",
+      "title": "CreateBranch method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "create a new local branch at a specified commit or ref",
+        "benefit": "so that temporary branches can be established for patch rebuilds"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git branch <name> <startPoint>` in workDir with the standard safety environment variables",
+          "return_contract": "returns nil",
+          "trigger": "CreateBranch is called with a valid name and startPoint that exist in the repository"
+        },
+        {
+          "id": "14-REQ-2.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "git branch exits with a non-zero code (e.g. branch already exists)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "name or startPoint is an empty string"
+        },
+        {
+          "id": "14-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError wrapping git's stderr",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "a branch with the given name already exists"
+        },
+        {
+          "id": "14-REQ-2.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (nil, ctx.Err())",
+          "error_condition": "the context is cancelled before git branch completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-3",
+      "title": "DeleteBranch method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "force-delete a local branch regardless of merge status",
+        "benefit": "so that temporary branches created during patch rebuilds can be cleaned up"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git branch -D <name>` in workDir with the standard safety environment variables",
+          "return_contract": "returns nil",
+          "trigger": "DeleteBranch is called with a branch name that exists locally"
+        },
+        {
+          "id": "14-REQ-3.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "git branch -D exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "the branch name is empty"
+        },
+        {
+          "id": "14-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError wrapping git's stderr",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "the branch does not exist"
+        },
+        {
+          "id": "14-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (nil, ctx.Err())",
+          "error_condition": "the context is cancelled before git branch -D completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-4",
+      "title": "CherryPick method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "apply a single commit onto the current HEAD and get the resulting SHA",
+        "benefit": "so that the patch rebuild algorithm can cherry-pick commits one at a time"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git cherry-pick <sha>` in workDir and reads the resulting HEAD SHA",
+          "return_contract": "returns (newHeadSHA string, nil)",
+          "trigger": "CherryPick is called with a valid commit SHA that applies cleanly"
+        },
+        {
+          "id": "14-REQ-4.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "automatically runs `git cherry-pick --abort`, parses conflicting file paths from git output using `parseRebaseConflictFiles`, and returns a CherryPickConflictError",
+          "return_contract": "returns (\"\", *CherryPickConflictError) with ConflictingFiles populated",
+          "error_condition": "git cherry-pick exits with conflicts"
+        },
+        {
+          "id": "14-REQ-4.3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error without running git cherry-pick --abort; the caller is responsible for cleanup",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "the context is cancelled before git cherry-pick completes"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (\"\", *GitError)",
+          "error_condition": "the sha argument is empty"
+        },
+        {
+          "id": "14-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "includes the fallback entry \"(unresolved conflict)\" in ConflictingFiles and still aborts",
+          "return_contract": "returns (\"\", *CherryPickConflictError) with ConflictingFiles containing \"(unresolved conflict)\"",
+          "error_condition": "conflict output cannot be parsed by parseRebaseConflictFiles"
+        },
+        {
+          "id": "14-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "logs the abort failure and still returns the CherryPickConflictError from the original conflict",
+          "return_contract": "returns (\"\", *CherryPickConflictError)",
+          "error_condition": "git cherry-pick --abort itself fails after a conflict"
+        },
+        {
+          "id": "14-REQ-4.E4",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "the context cancellation kills the subprocess and returns the context error without aborting",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "git cherry-pick hangs and does not return within the context deadline"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-5",
+      "title": "ConfigSet method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "set a repository-local git config value programmatically",
+        "benefit": "so that per-repo settings such as rerere.enabled can be configured without manual intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git config <key> <value>` in workDir with the standard safety environment variables",
+          "return_contract": "returns nil",
+          "trigger": "ConfigSet is called with a valid key and value"
+        },
+        {
+          "id": "14-REQ-5.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "git config exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "key or value is an empty string"
+        },
+        {
+          "id": "14-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (nil, ctx.Err())",
+          "error_condition": "the context is cancelled before git config completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-6",
+      "title": "RemoteAdd method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "add a named remote to the repository",
+        "benefit": "so that the carry-patch workflow can reference upstream or patch-source remotes by name"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git remote add <name> <url>` in workDir with the standard safety environment variables",
+          "return_contract": "returns nil",
+          "trigger": "RemoteAdd is called with a valid name and URL"
+        },
+        {
+          "id": "14-REQ-6.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "git remote add exits with a non-zero code (e.g. remote already exists)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "name or url is an empty string"
+        },
+        {
+          "id": "14-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError wrapping git's stderr",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "a remote with the given name already exists"
+        },
+        {
+          "id": "14-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (nil, ctx.Err())",
+          "error_condition": "the context is cancelled before git remote add completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-7",
+      "title": "Log method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "query commit history with caller-controlled formatting arguments",
+        "benefit": "so that the workflow can enumerate commits for patch extraction without hardcoding output formats"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git log <args...>` in workDir with the standard safety environment variables and captures stdout",
+          "return_contract": "returns (rawStdout string, nil)",
+          "trigger": "Log is called with zero or more args"
+        },
+        {
+          "id": "14-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (\"\", *GitError)",
+          "error_condition": "git log exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-7.E1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git log` with no additional arguments",
+          "return_contract": "returns (rawStdout string, nil)",
+          "trigger": "Log is called with no args"
+        },
+        {
+          "id": "14-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "the context is cancelled before git log completes"
+        },
+        {
+          "id": "14-REQ-7.E3",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "returns the empty string without error if git log exits 0, or a GitError if git log exits non-zero",
+          "return_contract": "returns (\"\" , nil) or (\"\", *GitError) depending on git's exit code",
+          "trigger": "Log is called on a repository with no commits"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-8",
+      "title": "Diff method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "compare trees or commits with caller-controlled arguments",
+        "benefit": "so that the workflow can detect changes between commits without hardcoding diff flags"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git diff <args...>` in workDir with the standard safety environment variables and captures stdout",
+          "return_contract": "returns (rawStdout string, nil)",
+          "trigger": "Diff is called with zero or more args"
+        },
+        {
+          "id": "14-REQ-8.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (\"\", *GitError)",
+          "error_condition": "git diff exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-8.E1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git diff` with no additional arguments",
+          "return_contract": "returns (rawStdout string, nil)",
+          "trigger": "Diff is called with no args"
+        },
+        {
+          "id": "14-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "the context is cancelled before git diff completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-9",
+      "title": "MergeNoFF method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "merge a branch with --no-ff and get the resulting merge commit SHA",
+        "benefit": "so that the workflow can produce explicit merge commits that preserve branch topology"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git merge --no-ff <branch>` in workDir and reads the resulting HEAD SHA",
+          "return_contract": "returns (mergeCommitSHA string, nil)",
+          "trigger": "MergeNoFF is called with a branch name that merges cleanly"
+        },
+        {
+          "id": "14-REQ-9.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "automatically runs `git merge --abort`, parses conflicting file paths from git output using `parseRebaseConflictFiles`, and returns a MergeNoFFConflictError",
+          "return_contract": "returns (\"\", *MergeNoFFConflictError) with ConflictingFiles populated",
+          "error_condition": "git merge --no-ff exits with conflicts"
+        },
+        {
+          "id": "14-REQ-9.3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error without running git merge --abort; the caller is responsible for cleanup",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "the context is cancelled before git merge --no-ff completes"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (\"\", *GitError)",
+          "error_condition": "the branch argument is empty"
+        },
+        {
+          "id": "14-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "includes the fallback entry \"(unresolved conflict)\" in ConflictingFiles and still aborts",
+          "return_contract": "returns (\"\", *MergeNoFFConflictError) with ConflictingFiles containing \"(unresolved conflict)\"",
+          "error_condition": "conflict output cannot be parsed by parseRebaseConflictFiles"
+        },
+        {
+          "id": "14-REQ-9.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "logs the abort failure and still returns the MergeNoFFConflictError from the original conflict",
+          "return_contract": "returns (\"\", *MergeNoFFConflictError)",
+          "error_condition": "git merge --abort itself fails after a conflict"
+        },
+        {
+          "id": "14-REQ-9.E4",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "the context cancellation kills the subprocess and returns the context error without aborting",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "git merge --no-ff hangs and does not return within the context deadline"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-10",
+      "title": "MergeAbort method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "manually abort a merge that was left in progress after context cancellation",
+        "benefit": "so that the repository can be recovered to a clean state without external intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git merge --abort` in workDir with the standard safety environment variables",
+          "return_contract": "returns nil",
+          "trigger": "MergeAbort is called while a merge is in progress"
+        },
+        {
+          "id": "14-REQ-10.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "git merge --abort exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError wrapping git's stderr",
+          "return_contract": "returns (*GitError, non-nil)",
+          "error_condition": "no merge is in progress"
+        },
+        {
+          "id": "14-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (nil, ctx.Err())",
+          "error_condition": "the context is cancelled before git merge --abort completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-11",
+      "title": "RebaseContinue method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "continue a paused rebase after rerere has auto-resolved conflicts",
+        "benefit": "so that the workflow can resume without manual intervention when rerere resolves conflicts"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git rebase --continue` in workDir with the standard safety environment variables and reads the resulting HEAD SHA",
+          "return_contract": "returns (newHeadSHA string, nil)",
+          "trigger": "RebaseContinue is called while a rebase is paused"
+        },
+        {
+          "id": "14-REQ-11.2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (\"\", *GitError)",
+          "error_condition": "git rebase --continue exits with a non-zero code"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError wrapping git's stderr",
+          "return_contract": "returns (\"\", *GitError)",
+          "error_condition": "no rebase is in progress"
+        },
+        {
+          "id": "14-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "the context is cancelled before git rebase --continue completes"
+        },
+        {
+          "id": "14-REQ-11.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "the context cancellation kills the subprocess and returns the context error",
+          "return_contract": "returns (\"\", ctx.Err())",
+          "error_condition": "git rebase --continue hangs and does not return within the context deadline"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-12",
+      "title": "IsAncestor method",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "determine whether one commit is an ancestor of another",
+        "benefit": "so that the workflow can make branching decisions without parsing log output"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git merge-base --is-ancestor <commitA> <commitB>` via runWithExitCode and observes exit code 0",
+          "return_contract": "returns (true, nil)",
+          "trigger": "IsAncestor is called with commitA and commitB where commitA is an ancestor of commitB"
+        },
+        {
+          "id": "14-REQ-12.2",
+          "ears_pattern": "event_driven",
+          "system": "GitRunner",
+          "action": "runs `git merge-base --is-ancestor <commitA> <commitB>` via runWithExitCode and observes exit code 1",
+          "return_contract": "returns (false, nil)",
+          "trigger": "IsAncestor is called with commitA and commitB where commitA is NOT an ancestor of commitB"
+        },
+        {
+          "id": "14-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "wraps the exit code and stderr in a GitError and returns it",
+          "return_contract": "returns (false, *GitError)",
+          "error_condition": "git merge-base --is-ancestor exits with a code other than 0 or 1"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError without invoking the git subprocess",
+          "return_contract": "returns (false, *GitError)",
+          "error_condition": "commitA or commitB is an empty string"
+        },
+        {
+          "id": "14-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns a GitError wrapping git's stderr",
+          "return_contract": "returns (false, *GitError)",
+          "error_condition": "one or both commit SHAs do not exist in the repository"
+        },
+        {
+          "id": "14-REQ-12.E3",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "returns the context error",
+          "return_contract": "returns (false, ctx.Err())",
+          "error_condition": "the context is cancelled before git merge-base completes"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-13",
+      "title": "CherryPickConflictError and MergeNoFFConflictError types",
+      "user_story": {
+        "role": "carry-patch workflow caller",
+        "goal": "receive typed conflict errors with conflicting file paths from cherry-pick and merge operations",
+        "benefit": "so that callers can programmatically inspect which files conflicted without parsing error strings"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-13.1",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner package",
+          "action": "exports CherryPickConflictError and MergeNoFFConflictError as public struct types in internal/gitcmd, each with a ConflictingFiles []string field and an Error() string method",
+          "return_contract": "both types satisfy the error interface; Error() returns a human-readable message consistent with RebaseConflictError's format"
+        },
+        {
+          "id": "14-REQ-13.2",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner package",
+          "action": "populates ConflictingFiles by reusing parseRebaseConflictFiles on the combined stdout/stderr of the failed git command",
+          "return_contract": "ConflictingFiles contains one entry per conflicting file path, or [\"(unresolved conflict)\"] when parsing fails"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner package",
+          "action": "sets ConflictingFiles to [\"(unresolved conflict)\"] as a fallback",
+          "return_contract": "ConflictingFiles equals [\"(unresolved conflict)\"]",
+          "error_condition": "git output contains no CONFLICT lines when a conflict error is constructed"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-14",
+      "title": "Sync working tree reset after fast-forward",
+      "user_story": {
+        "role": "workspace user or agent",
+        "goal": "have the on-disk working tree reflect the new HEAD after a sync fast-forward",
+        "benefit": "so that tools reading files from the workspace see the latest upstream content immediately after sync"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "defaultSyncUpdateLocalRefFn",
+          "action": "opens the repository with go-git and calls worktree.Reset with HardReset mode targeting the new HEAD SHA, for both standard and carry-patch workspaces",
+          "return_contract": "the working tree files on disk match the new HEAD commit after the reset",
+          "trigger": "the sync fast-forward path advances the local branch ref to a new HEAD SHA"
+        },
+        {
+          "id": "14-REQ-14.2",
+          "ears_pattern": "unwanted",
+          "system": "defaultSyncUpdateLocalRefFn",
+          "action": "logs the error at error level but does not fail the sync operation; the ref update is already committed",
+          "return_contract": "the sync operation returns nil (success); the working tree may be stale until the next mutation",
+          "error_condition": "the worktree.Reset call fails after the sync fast-forward ref has been advanced"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "defaultSyncUpdateLocalRefFn",
+          "action": "logs the error and returns without failing the sync",
+          "return_contract": "sync returns nil; error is logged",
+          "error_condition": "the repository directory does not exist or is not a valid git repository when go-git PlainOpen is called during the sync fast-forward"
+        },
+        {
+          "id": "14-REQ-14.E2",
+          "ears_pattern": "unwanted",
+          "system": "defaultSyncUpdateLocalRefFn",
+          "action": "logs the context error and returns without failing the sync",
+          "return_contract": "sync returns nil; error is logged",
+          "error_condition": "the context is cancelled before worktree.Reset completes during the sync fast-forward"
+        },
+        {
+          "id": "14-REQ-14.E3",
+          "ears_pattern": "unwanted",
+          "system": "defaultSyncUpdateLocalRefFn",
+          "action": "HardReset discards local modifications; this is the expected behavior for a managed workspace",
+          "return_contract": "working tree matches new HEAD; local modifications are discarded",
+          "error_condition": "the working tree has uncommitted local modifications when the sync fast-forward reset is attempted"
+        },
+        {
+          "id": "14-REQ-14.E4",
+          "ears_pattern": "unwanted",
+          "system": "defaultSyncUpdateLocalRefFn",
+          "action": "the context deadline cancels the operation; the error is logged and sync returns nil",
+          "return_contract": "sync returns nil; error is logged",
+          "error_condition": "the worktree.Reset call hangs due to filesystem lock or I/O issue during the sync fast-forward"
+        }
+      ]
+    },
+    {
+      "id": "14-REQ-15",
+      "title": "Safety environment variables on all new methods",
+      "user_story": {
+        "role": "platform operator",
+        "goal": "ensure all new GitRunner methods enforce the same safety environment as existing methods",
+        "benefit": "so that new methods cannot hang on prompts, use system config, or use disallowed protocols"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "14-REQ-15.1",
+          "ears_pattern": "ubiquitous",
+          "system": "GitRunner",
+          "action": "injects GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM, and GIT_ALLOW_PROTOCOL into every git subprocess spawned by the new methods, identical to the extraEnv set used by existing methods",
+          "return_contract": "all new methods inherit the same safety environment as Rebase and other existing GitRunner methods"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "14-REQ-15.E1",
+          "ears_pattern": "unwanted",
+          "system": "GitRunner",
+          "action": "GitRunner's extraEnv values take precedence over the inherited environment",
+          "return_contract": "the subprocess runs with GitRunner's safety values regardless of the caller's environment",
+          "error_condition": "the caller's environment contains conflicting values for GIT_TERMINAL_PROMPT or GIT_CONFIG_NOSYSTEM when a new method spawns a git subprocess"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "14-PROP-1",
+      "title": "CherryPick always aborts on conflict before returning",
+      "for_any": "commit SHA that causes a cherry-pick conflict",
+      "invariant": "CherryPick runs `git cherry-pick --abort` before returning a CherryPickConflictError, leaving the repository in a clean state",
+      "validates": [
+        "14-REQ-4.2",
+        "14-REQ-4.E3"
+      ]
+    },
+    {
+      "id": "14-PROP-2",
+      "title": "MergeNoFF always aborts on conflict before returning",
+      "for_any": "branch that causes a merge conflict",
+      "invariant": "MergeNoFF runs `git merge --abort` before returning a MergeNoFFConflictError, leaving the repository in a clean state",
+      "validates": [
+        "14-REQ-9.2",
+        "14-REQ-9.E3"
+      ]
+    },
+    {
+      "id": "14-PROP-3",
+      "title": "IsAncestor exit code discrimination is exhaustive",
+      "for_any": "pair of commit SHAs passed to IsAncestor",
+      "invariant": "exit code 0 maps to (true, nil), exit code 1 maps to (false, nil), and any other exit code maps to (false, *GitError) — no exit code is silently ignored",
+      "validates": [
+        "14-REQ-12.1",
+        "14-REQ-12.2",
+        "14-REQ-12.3"
+      ]
+    },
+    {
+      "id": "14-PROP-4",
+      "title": "Sync working tree reset is best-effort and never fails the sync",
+      "for_any": "sync fast-forward operation that advances the local branch ref",
+      "invariant": "a failure in worktree.Reset after a successful ref update does not cause defaultSyncUpdateLocalRefFn to return an error",
+      "validates": [
+        "14-REQ-14.2",
+        "14-REQ-14.E1",
+        "14-REQ-14.E2",
+        "14-REQ-14.E4"
+      ]
+    },
+    {
+      "id": "14-PROP-5",
+      "title": "All new methods propagate context cancellation without hanging",
+      "for_any": "new GitRunner method called with a cancelled or deadline-exceeded context",
+      "invariant": "the method returns within a bounded time after context cancellation, killing the git subprocess if necessary",
+      "validates": [
+        "14-REQ-1.E2",
+        "14-REQ-2.E3",
+        "14-REQ-3.E3",
+        "14-REQ-4.E4",
+        "14-REQ-9.E4",
+        "14-REQ-11.E3",
+        "14-REQ-12.E3"
+      ]
+    },
+    {
+      "id": "14-PROP-6",
+      "title": "ConflictingFiles fallback is always non-empty",
+      "for_any": "conflict error returned by CherryPick or MergeNoFF",
+      "invariant": "ConflictingFiles always contains at least one entry — either parsed file paths or the fallback \"(unresolved conflict)\" string",
+      "validates": [
+        "14-REQ-4.E2",
+        "14-REQ-9.E2",
+        "14-REQ-13.E1"
+      ]
+    },
+    {
+      "id": "14-PROP-7",
+      "title": "New methods never terminate the process",
+      "for_any": "error condition encountered by any new GitRunner method",
+      "invariant": "errors are returned as Go error values; no new method calls os.Exit or panics on recoverable errors",
+      "validates": [
+        "14-REQ-1.2",
+        "14-REQ-2.2",
+        "14-REQ-3.2",
+        "14-REQ-4.2",
+        "14-REQ-5.2",
+        "14-REQ-6.2",
+        "14-REQ-7.2",
+        "14-REQ-8.2",
+        "14-REQ-9.2",
+        "14-REQ-10.2",
+        "14-REQ-11.2",
+        "14-REQ-12.3"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "14-PATH-1",
+      "title": "CherryPick happy path: commit applied and new HEAD returned",
+      "steps": [
+        {
+          "actor": "carry-patch caller",
+          "action": "calls GitRunner.CherryPick(ctx, sha)"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "builds git cherry-pick command with extraEnv safety variables"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "spawns git cherry-pick subprocess in workDir"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "applies the commit cleanly and exits 0"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "reads the new HEAD SHA via git rev-parse HEAD"
+        },
+        {
+          "actor": "carry-patch caller",
+          "action": "receives (newHeadSHA, nil)"
+        }
+      ]
+    },
+    {
+      "id": "14-PATH-2",
+      "title": "CherryPick conflict path: auto-abort and typed error returned",
+      "steps": [
+        {
+          "actor": "carry-patch caller",
+          "action": "calls GitRunner.CherryPick(ctx, sha)"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "spawns git cherry-pick subprocess in workDir"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "exits non-zero with CONFLICT lines in output"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "calls parseRebaseConflictFiles on combined output to extract conflicting file paths"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "spawns git cherry-pick --abort subprocess to restore clean state"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "constructs CherryPickConflictError with ConflictingFiles"
+        },
+        {
+          "actor": "carry-patch caller",
+          "action": "receives (\"\", *CherryPickConflictError) and inspects ConflictingFiles"
+        }
+      ]
+    },
+    {
+      "id": "14-PATH-3",
+      "title": "MergeNoFF happy path: merge commit SHA returned",
+      "steps": [
+        {
+          "actor": "carry-patch caller",
+          "action": "calls GitRunner.MergeNoFF(ctx, branch)"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "builds git merge --no-ff command with extraEnv safety variables"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "spawns git merge --no-ff subprocess in workDir"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "creates a merge commit and exits 0"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "reads the new HEAD SHA via git rev-parse HEAD"
+        },
+        {
+          "actor": "carry-patch caller",
+          "action": "receives (mergeCommitSHA, nil)"
+        }
+      ]
+    },
+    {
+      "id": "14-PATH-4",
+      "title": "IsAncestor: three-way exit code discrimination",
+      "steps": [
+        {
+          "actor": "carry-patch caller",
+          "action": "calls GitRunner.IsAncestor(ctx, commitA, commitB)"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "builds git merge-base --is-ancestor command"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "spawns subprocess via runWithExitCode to capture raw exit code"
+        },
+        {
+          "actor": "git subprocess",
+          "action": "exits with 0 (ancestor), 1 (not ancestor), or other (error)"
+        },
+        {
+          "actor": "GitRunner",
+          "action": "maps exit code 0 to (true, nil), exit code 1 to (false, nil), other to (false, *GitError)"
+        },
+        {
+          "actor": "carry-patch caller",
+          "action": "receives a boolean result or a typed error"
+        }
+      ]
+    },
+    {
+      "id": "14-PATH-5",
+      "title": "Sync fast-forward with working tree reset",
+      "steps": [
+        {
+          "actor": "upstream sync trigger",
+          "action": "initiates a sync fast-forward for a workspace"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "advances the local branch ref to the new upstream HEAD SHA via Storer.SetReference"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "opens the workspace repository with go-git PlainOpen"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "obtains the worktree from the go-git repository"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "calls worktree.Reset with HardReset mode targeting the new HEAD SHA"
+        },
+        {
+          "actor": "workspace filesystem",
+          "action": "on-disk files are updated to match the new HEAD commit"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "returns nil to the sync caller; working tree is now consistent with the ref"
+        }
+      ]
+    },
+    {
+      "id": "14-PATH-6",
+      "title": "Sync fast-forward with best-effort working tree reset failure",
+      "steps": [
+        {
+          "actor": "upstream sync trigger",
+          "action": "initiates a sync fast-forward for a workspace"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "advances the local branch ref to the new upstream HEAD SHA via Storer.SetReference"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "attempts to open the repository and call worktree.Reset"
+        },
+        {
+          "actor": "go-git worktree",
+          "action": "returns an error (e.g. filesystem lock or I/O failure)"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "logs the error at error level"
+        },
+        {
+          "actor": "defaultSyncUpdateLocalRefFn",
+          "action": "returns nil to the sync caller; ref update is preserved, working tree will self-correct on next mutation"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "14-ERR-1",
+      "condition": "git cherry-pick exits with conflicts",
+      "behavior": "GitRunner runs git cherry-pick --abort, parses CONFLICT lines via parseRebaseConflictFiles, and returns *CherryPickConflictError with ConflictingFiles populated",
+      "requirement_id": "14-REQ-4.2"
+    },
+    {
+      "id": "14-ERR-2",
+      "condition": "git merge --no-ff exits with conflicts",
+      "behavior": "GitRunner runs git merge --abort, parses CONFLICT lines via parseRebaseConflictFiles, and returns *MergeNoFFConflictError with ConflictingFiles populated",
+      "requirement_id": "14-REQ-9.2"
+    },
+    {
+      "id": "14-ERR-3",
+      "condition": "context is cancelled during CherryPick or MergeNoFF",
+      "behavior": "GitRunner returns ctx.Err() without running the abort command; the caller is responsible for calling MergeAbort or equivalent cleanup",
+      "requirement_id": "14-REQ-4.3"
+    },
+    {
+      "id": "14-ERR-4",
+      "condition": "conflict output cannot be parsed by parseRebaseConflictFiles",
+      "behavior": "ConflictingFiles is set to [\"(unresolved conflict)\"] as a fallback; the abort still runs and the typed conflict error is returned",
+      "requirement_id": "14-REQ-13.E1"
+    },
+    {
+      "id": "14-ERR-5",
+      "condition": "worktree.Reset fails after a successful sync fast-forward ref update",
+      "behavior": "defaultSyncUpdateLocalRefFn logs the error at error level and returns nil; the sync is not failed",
+      "requirement_id": "14-REQ-14.2"
+    },
+    {
+      "id": "14-ERR-6",
+      "condition": "git merge-base --is-ancestor exits with a code other than 0 or 1",
+      "behavior": "GitRunner returns (false, *GitError) wrapping the exit code and stderr",
+      "requirement_id": "14-REQ-12.3"
+    },
+    {
+      "id": "14-ERR-7",
+      "condition": "any new GitRunner method receives an empty required string argument",
+      "behavior": "GitRunner returns a *GitError immediately without spawning a git subprocess",
+      "requirement_id": "14-REQ-1.E1"
+    },
+    {
+      "id": "14-ERR-8",
+      "condition": "git cherry-pick --abort fails after a conflict",
+      "behavior": "GitRunner logs the abort failure and returns the original *CherryPickConflictError",
+      "requirement_id": "14-REQ-4.E3"
+    },
+    {
+      "id": "14-ERR-9",
+      "condition": "git merge --abort fails after a MergeNoFF conflict",
+      "behavior": "GitRunner logs the abort failure and returns the original *MergeNoFFConflictError",
+      "requirement_id": "14-REQ-9.E3"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5.x",
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)",
+          "notes": "Used in defaultSyncUpdateLocalRefFn to open the workspace repository for working tree reset."
+        },
+        {
+          "name": "Worktree.Reset",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (w *Worktree) Reset(opts *ResetOptions) error",
+          "notes": "Called with Mode: HardReset to reset the working tree to the new HEAD after sync fast-forward."
+        },
+        {
+          "name": "ResetOptions",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "type ResetOptions struct { Commit plumbing.Hash; Mode ResetMode }",
+          "notes": "Options struct passed to Worktree.Reset; Mode is set to HardReset."
+        },
+        {
+          "name": "HardReset",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "const HardReset ResetMode = 3",
+          "notes": "ResetMode constant that resets both index and working tree to match the target commit."
+        }
+      ]
+    }
+  ]
+}

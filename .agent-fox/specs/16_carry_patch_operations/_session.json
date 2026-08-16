@@ -1,0 +1,73 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `carry_patch_operations` PRD (spec 16) is thorough and well-structured. It covers intent, goals, non-goals, detailed functional requirements, REST API surface, CLI commands, error handling, permissions, a complete tech stack, an explicit dependency table, and numbered design decisions. The spec clearly positions itself as the operational layer built on top of `carry_patch_workspace` (spec 15), `git_runner_extensions` (spec 14), `upstream_sync` (spec 13), `merge_operations` (spec 12), and `durable_job_queue` (spec 10) \u2014 all active specs whose dependencies are properly declared. No external third-party APIs are consumed (git is a host binary, not an API). One minor area of potential ambiguity exists around the rerere management API's path resolution from `.git/rr-cache/`, but it is sufficiently described for implementation. Overall, this PRD is ready to proceed to artifact generation.",
+      "gaps": [
+        "The rerere GET endpoint describes deriving the `path` field by reading `preimage` or `postimage` files inside rr-cache subdirectories, but does not specify the exact parsing algorithm (e.g., whether it reads the first line of the preimage, uses the subdirectory name, or another method). This may cause implementation ambiguity.",
+        "The `rerere_resolution_count` field in the status dashboard is described as 'the number of recorded rerere resolutions relevant to files touched by this patch (0 if unknown)' but no algorithm is given for correlating rr-cache entries to specific patches. This could lead to inconsistent implementations.",
+        "The `last_sync_at` field in the patch-status response is referenced but the spec does not state which database column or source provides this value \u2014 the patches table schema is owned by carry_patch_workspace (spec 15) and it is unclear if a sync timestamp is stored there or on the workspace record.",
+        "No explicit mention of authorization checks for the new `rebuilds:read` and `rebuilds:write` PAT scopes \u2014 specifically whether these scopes need to be registered in apikit and how they interact with admin tokens and workspace-owner-only access patterns established in workspace_write_delete (spec 03)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How should the rerere GET endpoint determine the `path` field for each resolution entry in `.git/rr-cache/`? For example: read the first conflicting file path from the `preimage` file, use the subdirectory hash name as an opaque identifier, or run `git rerere status` to obtain human-readable paths?",
+          "context": "The PRD states the path is 'obtained by reading the preimage or postimage files' but doesn't specify the parsing logic. Implementors need a precise algorithm to avoid divergent implementations.",
+          "options": [
+            "Parse the first conflict-marker block in the preimage file to extract the filename",
+            "Run `git rerere status` and parse its output for each rr-cache entry",
+            "Use the rr-cache subdirectory name as an opaque key and omit the `path` field",
+            "Store the path mapping in the database when the conflict is first recorded"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "What is the intended algorithm for computing `rerere_resolution_count` per patch in the status dashboard? Should the hub track which files each patch touches (e.g., from cherry-pick output) and cross-reference against rr-cache entries, or is a simpler heuristic (e.g., total rr-cache entries) acceptable?",
+          "context": "The field is defined as 'resolutions relevant to files touched by this patch' but no join/correlation method is specified. Without a clear algorithm this field risks being always 0 or always the total count.",
+          "options": [
+            "Track touched files per patch during rebuild and store them; cross-reference with rr-cache on status query",
+            "Report the global rr-cache count for all patches (simpler, less precise)",
+            "Omit the field from the initial implementation and add it in a follow-up spec",
+            "Run `git diff-tree` on each patch's commits to get touched files, then match against rr-cache"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Where does the `last_sync_at` timestamp in the `GET /api/v1/workspaces/:slug/patch-status` response come from? Is it stored on the workspace record, the patches table, or a separate sync log?",
+          "context": "The status dashboard response includes `last_sync_at` but the spec does not identify the source column or table. The patches table schema is defined in carry_patch_workspace (spec 15), and it is unclear whether a sync timestamp is tracked there or elsewhere.",
+          "options": [
+            "It comes from an existing `last_synced_at` column on the workspace record (defined in upstream_sync spec 13)",
+            "It needs to be added as a new column to the workspace record as part of this spec",
+            "It comes from the most recent durable job record of type `sync` for this workspace",
+            "It is not yet tracked and should be marked null/omitted in the initial implementation"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Do the new `rebuilds:read` and `rebuilds:write` PAT scopes need to be explicitly registered in apikit, and should admin tokens automatically have both scopes (consistent with the pattern in workspace_write_delete spec 03)? Are there any workspace-owner-only restrictions on triggering rebuilds?",
+          "context": "The PRD defines the two scopes but does not describe their registration mechanism or how they interact with admin tokens and owner-only access. The workspace_write_delete spec (spec 03) established conventions for scope registration that this spec should follow consistently.",
+          "options": [
+            "Yes, register in apikit the same way as existing scopes; admin tokens get both automatically; no owner-only restriction",
+            "Rebuilds are owner-only (like archive/delete) regardless of PAT scope",
+            "The scopes are additive on top of workspaces:write; no separate registration needed",
+            "Defer scope design to the implementation phase"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

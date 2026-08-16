@@ -1,0 +1,64 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The \"git_runner_extensions\" PRD is well-structured and complete. It clearly states its intent, provides measurable goals, explicit non-goals, detailed functional requirements with method signatures and error semantics, technical boundaries (language, package, test tooling), and a dependency table. The document follows the patterns established by spec 11 (git_runner) and spec 13 (upstream_sync), on which it explicitly depends. No external API surface is required (the feature is a Go library wrapping the local git CLI). One minor landscape consideration: the spec references two forward specs (\"carry_patch_workspace\" and \"carry_patch_operations\") that do not yet appear in the active spec landscape \u2014 this is worth confirming but does not block readiness. Overall, this PRD is sufficiently detailed to proceed to artifact generation.",
+      "gaps": [
+        "The Intent references two upstream consumer specs ('carry_patch_workspace' and 'carry_patch_operations') that are not present in the active spec landscape. If these specs are planned but not yet created, the dependency relationship is forward-looking and unverifiable, which is a minor traceability risk.",
+        "The owner field is empty, which means there is no accountable author assigned to this spec.",
+        "The PRD does not document the exact git stdout/stderr patterns used by parseRebaseConflictFiles (or the equivalent) for conflict file extraction. Since CherryPick and MergeNoFF reuse this logic, any deviation in git's output format across versions could silently drop conflict paths. This is an implementation risk that could benefit from a brief note or a reference to the existing parsing implementation.",
+        "The working tree fix silently degrades (logs error, does not fail) on a reset failure. The conditions under which this degradation is acceptable (e.g., bare repos, detached HEAD, no worktree) are not enumerated, making it harder to write complete tests for those edge cases."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The PRD references 'carry_patch_workspace' and 'carry_patch_operations' specs as consumers, but these do not appear in the current active spec landscape. Are these specs planned or already in draft elsewhere? Should they be listed as reverse-dependencies or should this PRD note that it is a prerequisite for those future specs?",
+          "context": "Traceability: knowing which specs depend on this one helps reviewers understand the full scope and prevents premature changes to the new GitRunner API surface.",
+          "options": [
+            "They are planned but not yet created \u2014 add a 'Required By' note in the PRD",
+            "They exist in a separate repo/branch \u2014 link them",
+            "This spec should be self-contained and not reference them"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Who is the owner/author of this spec? The 'owner' field is currently empty.",
+          "context": "An assigned owner ensures accountability for reviews, sign-offs, and future amendments.",
+          "options": [],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "The conflict file extraction for CherryPick and MergeNoFF reuses 'parseRebaseConflictFiles'. Should the PRD explicitly reference or reproduce the expected git output pattern (e.g., 'CONFLICT (content): Merge conflict in <path>') so that tests can be written without reading the existing implementation?",
+          "context": "Documenting the expected output format makes the spec self-contained and prevents test coverage gaps if the parsing logic is refactored.",
+          "options": [
+            "Yes \u2014 add a brief regex/pattern snippet to the spec",
+            "No \u2014 a reference to the existing function in internal/gitcmd is sufficient",
+            "No \u2014 this is an implementation detail, not a requirement"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "The working tree reset after sync fast-forward is described as best-effort (logs error, does not fail). Should the PRD enumerate the known conditions under which a reset can legitimately fail (e.g., bare clone, detached HEAD, worktree dirty from an in-progress operation) so that test cases and monitoring alerts can be scoped correctly?",
+          "context": "Without enumerating failure conditions, it is difficult to write exhaustive tests or set up alerts that distinguish expected from unexpected degradation.",
+          "options": [
+            "Yes \u2014 add a 'Known acceptable failure conditions' list",
+            "No \u2014 the best-effort note is sufficient for now"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}
