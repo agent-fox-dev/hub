@@ -13,8 +13,15 @@ import "context"
 // If name or startPoint is empty, CreateBranch returns a *GitError without
 // invoking the git subprocess.
 func (r *GitRunner) CreateBranch(ctx context.Context, name, startPoint string) error {
-	// TODO: implement in task group 7
-	return nil
+	if name == "" || startPoint == "" {
+		return &GitError{
+			Args:     []string{"branch", name, startPoint},
+			ExitCode: -1,
+			Stderr:   "name and startPoint must not be empty",
+		}
+	}
+	_, err := r.Run(ctx, "branch", name, startPoint)
+	return err
 }
 
 // DeleteBranch force-deletes a local branch regardless of merge status by
@@ -28,6 +35,13 @@ func (r *GitRunner) CreateBranch(ctx context.Context, name, startPoint string) e
 // If name is empty, DeleteBranch returns a *GitError without invoking the
 // git subprocess.
 func (r *GitRunner) DeleteBranch(ctx context.Context, name string) error {
-	// TODO: implement in task group 7
-	return nil
+	if name == "" {
+		return &GitError{
+			Args:     []string{"branch", "-D"},
+			ExitCode: -1,
+			Stderr:   "branch name must not be empty",
+		}
+	}
+	_, err := r.Run(ctx, "branch", "-D", name)
+	return err
 }

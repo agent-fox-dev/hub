@@ -620,7 +620,7 @@
             "14-REQ-1",
             "14-REQ-15"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -640,7 +640,7 @@
             "14-REQ-2",
             "14-REQ-15"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -660,7 +660,7 @@
             "14-REQ-3",
             "14-REQ-15"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

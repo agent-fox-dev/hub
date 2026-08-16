@@ -13,6 +13,13 @@ import "context"
 // If ref is empty, Checkout returns a *GitError without invoking the git
 // subprocess.
 func (r *GitRunner) Checkout(ctx context.Context, ref string) error {
-	// TODO: implement in task group 7
-	return nil
+	if ref == "" {
+		return &GitError{
+			Args:     []string{"checkout"},
+			ExitCode: -1,
+			Stderr:   "ref must not be empty",
+		}
+	}
+	_, err := r.Run(ctx, "checkout", ref)
+	return err
 }
