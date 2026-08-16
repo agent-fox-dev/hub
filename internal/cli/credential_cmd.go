@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
+	"github.com/txsvc/apikit"
 )
 
 // afConfig is a minimal representation of ~/.af/config.toml,
@@ -64,6 +66,99 @@ func CredentialHelperCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// CredentialCmd returns the 'credential' parent command with the 'set'
+// subcommand for storing upstream git credentials as workspace secrets.
+func CredentialCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "credential",
+		Short:         "Manage git credentials",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+	}
+
+	cmd.AddCommand(newCredentialSetCmd())
+
+	return cmd
+}
+
+// newCredentialSetCmd returns the 'credential set' subcommand that stores
+// upstream git credentials as workspace secrets via the secrets API.
+// Supports --upstream-git-pat, --upstream-git-username, --upstream-git-password.
+// Requirements: 15-REQ-5.2, 15-REQ-5.3
+func newCredentialSetCmd() *cobra.Command {
+	var (
+		upstreamGitPAT      string
+		upstreamGitUsername  string
+		upstreamGitPassword string
+	)
+
+	cmd := &cobra.Command{
+		Use:           "set <workspace-slug>",
+		Short:         "Set upstream git credentials for a workspace",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+
+			hasPAT := cmd.Flags().Changed("upstream-git-pat")
+			hasUsername := cmd.Flags().Changed("upstream-git-username")
+			hasPassword := cmd.Flags().Changed("upstream-git-password")
+
+			if !hasPAT && !hasUsername && !hasPassword {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"at least one credential flag is required (--upstream-git-pat, --upstream-git-username/--upstream-git-password)"))
+			}
+
+			// Build the list of secret entries to store.
+			var entries []map[string]string
+
+			if hasPAT {
+				entries = append(entries, map[string]string{
+					"key":   "UPSTREAM_GIT_PAT",
+					"value": upstreamGitPAT,
+				})
+			}
+			if hasUsername {
+				entries = append(entries, map[string]string{
+					"key":   "UPSTREAM_GIT_USERNAME",
+					"value": upstreamGitUsername,
+				})
+			}
+			if hasPassword {
+				entries = append(entries, map[string]string{
+					"key":   "UPSTREAM_GIT_PASSWORD",
+					"value": upstreamGitPassword,
+				})
+			}
+
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			body := map[string]any{
+				"entries": entries,
+			}
+
+			_, err = client.DoRequest(cmd.Context(), http.MethodPost,
+				"/workspaces/"+slug+"/secrets", body)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Upstream credentials stored for workspace '%s'.\n", slug)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&upstreamGitPAT, "upstream-git-pat", "", "Upstream personal access token")
+	cmd.Flags().StringVar(&upstreamGitUsername, "upstream-git-username", "", "Upstream git username")
+	cmd.Flags().StringVar(&upstreamGitPassword, "upstream-git-password", "", "Upstream git password")
+
+	return cmd
 }
 
 func loadAFConfig() (*afConfig, error) {

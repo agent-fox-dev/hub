@@ -79,8 +79,46 @@ func ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, 
 //  2. UPSTREAM_GIT_USERNAME + UPSTREAM_GIT_PASSWORD → &BasicAuth{...}
 //  3. Fall back to resolveCloneAuth (origin credentials or nil)
 func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMethod, error) {
-	// TODO: implement in task group 6
-	return nil, nil
+	// Step 1: Look up UPSTREAM_GIT_PAT (15-REQ-5.1).
+	pat, err := store.GetSecretValue("workspace", slug, "UPSTREAM_GIT_PAT")
+	if err == nil {
+		return &githttp.BasicAuth{
+			Username: "x-token-auth",
+			Password: pat,
+		}, nil
+	}
+	if !isNotFoundError(err) {
+		// 15-REQ-5.E2: propagate store errors rather than silently falling back.
+		return nil, fmt.Errorf("lookup UPSTREAM_GIT_PAT for workspace %q: %w", slug, err)
+	}
+
+	// Step 2: UPSTREAM_GIT_PAT not found — try UPSTREAM_GIT_USERNAME + UPSTREAM_GIT_PASSWORD (15-REQ-5.1).
+	username, err := store.GetSecretValue("workspace", slug, "UPSTREAM_GIT_USERNAME")
+	if err != nil {
+		if !isNotFoundError(err) {
+			// 15-REQ-5.E2: propagate store errors.
+			return nil, fmt.Errorf("lookup UPSTREAM_GIT_USERNAME for workspace %q: %w", slug, err)
+		}
+		// Neither UPSTREAM_GIT_PAT nor UPSTREAM_GIT_USERNAME found — fall back to origin (step 3).
+		return resolveCloneAuth(store, slug)
+	}
+
+	// UPSTREAM_GIT_USERNAME found — look up UPSTREAM_GIT_PASSWORD.
+	password, err := store.GetSecretValue("workspace", slug, "UPSTREAM_GIT_PASSWORD")
+	if err != nil {
+		if !isNotFoundError(err) {
+			// 15-REQ-5.E2: propagate store errors.
+			return nil, fmt.Errorf("lookup UPSTREAM_GIT_PASSWORD for workspace %q: %w", slug, err)
+		}
+		// 15-REQ-5.E1: UPSTREAM_GIT_USERNAME set but UPSTREAM_GIT_PASSWORD absent —
+		// skip username/password branch, fall back to resolveCloneAuth.
+		return resolveCloneAuth(store, slug)
+	}
+
+	return &githttp.BasicAuth{
+		Username: username,
+		Password: password,
+	}, nil
 }
 
 // isNotFoundError checks whether err is a *secrets.NotFoundError.

@@ -411,6 +411,60 @@ are managed by `afc login`.
 
 ---
 
+## Credential Commands
+
+All credential commands are subcommands of `afc credential`.
+
+### afc credential set
+
+Store upstream git credentials as workspace secrets. Used for carry-patch
+workspaces that authenticate against a separate upstream remote.
+
+**Usage:**
+
+```
+afc credential set <workspace-slug> [flags]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to store credentials for |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--upstream-git-pat` | no | string | Personal access token for authenticating against the upstream remote |
+| `--upstream-git-username` | no | string | Username for HTTP basic auth against the upstream remote |
+| `--upstream-git-password` | no | string | Password for HTTP basic auth against the upstream remote |
+
+At least one credential flag must be provided. The `--upstream-git-pat` flag
+stores a `UPSTREAM_GIT_PAT` workspace secret. The `--upstream-git-username` and
+`--upstream-git-password` flags store `UPSTREAM_GIT_USERNAME` and
+`UPSTREAM_GIT_PASSWORD` workspace secrets respectively.
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/secrets` with the credential entries.
+- Upstream credentials use the same storage, encryption, and access control
+  mechanisms as existing workspace credentials (spec 09).
+- The `resolveUpstreamAuth` function resolves credentials in priority order:
+  `UPSTREAM_GIT_PAT` → `UPSTREAM_GIT_USERNAME`+`UPSTREAM_GIT_PASSWORD` →
+  falls back to origin credentials via `resolveCloneAuth`.
+- On success, prints a confirmation message to stdout.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Credentials stored successfully |
+| 1 | Workspace not found, API error, network error, or timeout |
+| 2 | No credential flags provided |
+
+---
+
 ## Secrets Commands
 
 All secrets commands are subcommands of `afc secrets`. They use scope flags to
