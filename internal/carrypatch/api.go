@@ -228,11 +228,12 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			}
 		}
 
-		// Build payload.
+		// Build payload. 16-PROP-3: capture strategy at enqueue time.
 		payload := RebuildPayload{
-			WorkspaceSlug: slug,
-			Strategy:      strategy,
-			SubmittedBy:   auth.UserID,
+			WorkspaceSlug:     slug,
+			Strategy:          strategy,
+			SubmittedBy:       auth.UserID,
+			IntegrationBranch: integrationBranch,
 		}
 		payloadJSON, err := json.Marshal(payload)
 		if err != nil {

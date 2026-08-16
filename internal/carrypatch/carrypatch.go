@@ -82,9 +82,10 @@ type Patch struct {
 
 // RebuildPayload is the JSON payload stored in the job queue for rebuild jobs.
 type RebuildPayload struct {
-	WorkspaceSlug string `json:"workspace_slug"`
-	Strategy      string `json:"strategy"`
-	SubmittedBy   string `json:"submitted_by"`
+	WorkspaceSlug     string `json:"workspace_slug"`
+	Strategy          string `json:"strategy"`
+	SubmittedBy       string `json:"submitted_by"`
+	IntegrationBranch string `json:"integration_branch,omitempty"`
 }
 
 // PatchResult is the per-patch outcome recorded in the rebuild result.
@@ -163,9 +164,4 @@ func RegisterRebuildJob(q *jobqueue.Queue, h *RebuildHandler) error {
 	return q.Register("rebuild", jobqueue.HandlerFunc(handler), nil)
 }
 
-// HandleRebuildJob executes the rebuild algorithm.
-// Returns (result, retryable, error).
-// Stub: returns nil for group 1 tests (implementation in later groups).
-func (h *RebuildHandler) HandleRebuildJob(_ context.Context, _ json.RawMessage) (any, bool, error) {
-	return nil, false, nil
-}
+// HandleRebuildJob is implemented in rebuild_executor.go.
