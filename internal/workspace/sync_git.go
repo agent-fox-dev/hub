@@ -124,6 +124,23 @@ func defaultSyncUpdateLocalRefFn(repoPath string, branch *string, newSHA string)
 		return fmt.Errorf("update ref %s: %w", refName, err)
 	}
 
+	// Best-effort working tree reset (14-REQ-14.1, 14-REQ-14.2).
+	// After the ref is advanced, reset the on-disk working tree to match
+	// the new HEAD so that tools reading files see the latest content.
+	// If the reset fails, the ref update is already committed — log the
+	// error and return nil (14-PROP-4).
+	wt, wtErr := repo.Worktree()
+	if wtErr != nil {
+		log.Printf("ERROR: worktree reset after sync fast-forward: failed to get worktree for %s: %v", repoPath, wtErr)
+		return nil
+	}
+	if resetErr := wt.Reset(&git.ResetOptions{
+		Commit: newHash,
+		Mode:   git.HardReset,
+	}); resetErr != nil {
+		log.Printf("ERROR: worktree reset after sync fast-forward: failed to reset working tree for %s: %v", repoPath, resetErr)
+	}
+
 	return nil
 }
 
