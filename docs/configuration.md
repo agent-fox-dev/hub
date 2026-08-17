@@ -56,7 +56,7 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | `"./data/apikit.db"` | SQLite database file path. When omitted, defaults to `./data/apikit.db` (or `$XDG_DATA_HOME/apikit.db` when `XDG_DATA_HOME` is set). Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. All shipped `config.toml` examples override this to `"afhub.db"`. |
+| `path` | string | `"./data/afhub.db"` | SQLite database file path. When omitted, defaults to `./data/afhub.db` (or `$XDG_DATA_HOME/apikit.db` when `XDG_DATA_HOME` is set). Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. All shipped `config.toml` examples override this to `"afhub.db"`. |
 
 ### [logging]
 
@@ -162,7 +162,7 @@ To use the bundled config, either mount your own config at
 The database path depends on whether a config file is found:
 
 - **Config file found** (with `path = "afhub.db"`): `/data/afhub.db`
-- **No config file found** (programmatic default): `/data/apikit.db`
+- **No config file found** (programmatic default): `/data/afhub.db`
 
 ### Volumes
 
