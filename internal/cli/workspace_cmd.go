@@ -73,16 +73,19 @@ func BuildRootCommand() *cobra.Command {
 // newCreateCmd returns the 'workspace create' subcommand.
 func newCreateCmd() *cobra.Command {
 	var (
-		gitURL      string
-		slug        string
-		branch      string
-		org         string
-		displayName string
-		description string
-		syncMode    string
-		gitPAT      string
-		gitUsername  string
-		gitPassword string
+		gitURL            string
+		slug              string
+		branch            string
+		org               string
+		displayName       string
+		description       string
+		syncMode          string
+		workspaceMode     string
+		upstreamURL       string
+		integrationBranch string
+		gitPAT            string
+		gitUsername        string
+		gitPassword       string
 	)
 
 	cmd := &cobra.Command{
@@ -146,6 +149,29 @@ func newCreateCmd() *cobra.Command {
 				}
 			}
 
+			// 15-REQ-2: Validate --workspace-mode and carry-patch flags.
+			if cmd.Flags().Changed("workspace-mode") {
+				validWsModes := map[string]bool{"standard": true, "carry_patch": true}
+				if !validWsModes[workspaceMode] {
+					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+						"invalid --workspace-mode value: must be 'standard' or 'carry_patch'"))
+				}
+			}
+			if workspaceMode == "carry_patch" && upstreamURL == "" {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--upstream-url is required when --workspace-mode is 'carry_patch'"))
+			}
+			if workspaceMode != "carry_patch" {
+				if cmd.Flags().Changed("upstream-url") {
+					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+						"--upstream-url is not allowed when --workspace-mode is 'standard'"))
+				}
+				if cmd.Flags().Changed("integration-branch") {
+					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+						"--integration-branch is not allowed when --workspace-mode is 'standard'"))
+				}
+			}
+
 			client, err := apikit.CLIClientFromCmd(cmd)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
@@ -166,6 +192,15 @@ func newCreateCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("sync-mode") {
 				body["sync_mode"] = syncMode
+			}
+			if cmd.Flags().Changed("workspace-mode") {
+				body["workspace_mode"] = workspaceMode
+			}
+			if cmd.Flags().Changed("upstream-url") {
+				body["upstream_url"] = upstreamURL
+			}
+			if cmd.Flags().Changed("integration-branch") {
+				body["integration_branch"] = integrationBranch
 			}
 
 			if org != "" {
@@ -199,6 +234,9 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&displayName, "display-name", "", "Workspace display name (optional)")
 	cmd.Flags().StringVar(&description, "description", "", "Workspace description (optional)")
 	cmd.Flags().StringVar(&syncMode, "sync-mode", "", "Sync mode: 'pull_only' (default) or 'disabled' (optional)")
+	cmd.Flags().StringVar(&workspaceMode, "workspace-mode", "", "Workspace mode: 'standard' (default) or 'carry_patch' (optional)")
+	cmd.Flags().StringVar(&upstreamURL, "upstream-url", "", "Upstream repo URL for carry_patch mode (required for carry_patch)")
+	cmd.Flags().StringVar(&integrationBranch, "integration-branch", "", "Integration branch name for carry_patch mode (default: 'deploy')")
 	cmd.Flags().StringVar(&gitPAT, "git-pat", "", "Personal access token for private repo (optional)")
 	cmd.Flags().StringVar(&gitUsername, "git-username", "", "Git username for private repo (optional)")
 	cmd.Flags().StringVar(&gitPassword, "git-password", "", "Git password for private repo (optional)")
