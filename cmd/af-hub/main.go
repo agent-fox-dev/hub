@@ -100,9 +100,34 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Start the durable job queue workers. Workers dispatch merge jobs
-	// using group_key serialization (12-REQ-1.4) so at most one merge
-	// per target branch runs at a time.
+	// ---------------------------------------------------------------------------
+	// Carry-patch job registration (must happen before queue start)
+	// ---------------------------------------------------------------------------
+
+	cpPatchStore := carrypatch.NewSQLPatchStore(database.SqlDB)
+	cpGitRunnerFactory := carrypatch.NewGitRunnerFactory()
+
+	rebuildHandler := &carrypatch.RebuildHandler{
+		DB:            database.SqlDB,
+		Queue:         mergeQueue,
+		Logger:        slog.Default(),
+		WorkspaceRoot: cfg.Workspace.Path,
+		NewGitRunner:  cpGitRunnerFactory,
+		Fetch:         carrypatch.DefaultFetchFunc(),
+		ResolveAuth: func(slug string) error {
+			return workspace.ResolveUpstreamAuth(store, slug)
+		},
+		GetVariable: store.GetVariableValue,
+		PatchStore:  cpPatchStore,
+	}
+
+	if err := carrypatch.RegisterRebuildJob(mergeQueue, rebuildHandler); err != nil {
+		log.Fatal(err)
+	}
+
+	// Start the durable job queue workers. Workers dispatch merge and
+	// rebuild jobs using group_key serialization so at most one job per
+	// target runs at a time. All job types must be registered above.
 	if err := mergeQueue.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -163,32 +188,8 @@ func main() {
 	merge.RegisterMergeRoutes(server.APIGroup(), mergeCfg)
 
 	// ---------------------------------------------------------------------------
-	// Carry-patch operations (spec 16)
+	// Carry-patch HTTP routes (spec 16)
 	// ---------------------------------------------------------------------------
-
-	// Create the carry-patch patch store backed by the patches table.
-	cpPatchStore := carrypatch.NewSQLPatchStore(database.SqlDB)
-	cpGitRunnerFactory := carrypatch.NewGitRunnerFactory()
-
-	// Create and register the rebuild job handler with all cross-spec
-	// dependencies wired (16-REQ-1.2, 16-REQ-1.8).
-	rebuildHandler := &carrypatch.RebuildHandler{
-		DB:            database.SqlDB,
-		Queue:         mergeQueue,
-		Logger:        slog.Default(),
-		WorkspaceRoot: cfg.Workspace.Path,
-		NewGitRunner:  cpGitRunnerFactory,
-		Fetch:         carrypatch.DefaultFetchFunc(),
-		ResolveAuth: func(slug string) error {
-			return workspace.ResolveUpstreamAuth(store, slug)
-		},
-		GetVariable: store.GetVariableValue,
-		PatchStore:  cpPatchStore,
-	}
-
-	if err := carrypatch.RegisterRebuildJob(mergeQueue, rebuildHandler); err != nil {
-		log.Fatal(err)
-	}
 
 	// Mount carry-patch REST API routes.
 	cpAPI := server.APIGroup()
