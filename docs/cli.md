@@ -41,6 +41,9 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--display-name` | no | string | Human-readable label; defaults to slug value if omitted |
 | `--description` | no | string | Free-form text describing the workspace; defaults to empty string |
 | `--sync-mode` | no | string | Upstream sync mode: `pull_only` (default) or `disabled`; invalid values are rejected client-side |
+| `--workspace-mode` | no | string | Workspace mode: `standard` (default) or `carry_patch`; invalid values are rejected client-side |
+| `--upstream-url` | conditional | string | Upstream repository URL; required when `--workspace-mode` is `carry_patch`, rejected for `standard` |
+| `--integration-branch` | no | string | Integration branch name for carry-patch workspaces; defaults to `deploy` when omitted; rejected for `standard` |
 | `--git-pat` | no | string | Personal access token for authenticating against a private repository |
 | `--git-username` | no | string | Git username for HTTP basic auth (must be paired with `--git-password`) |
 | `--git-password` | no | string | Git password for HTTP basic auth (must be paired with `--git-username`) |
@@ -59,6 +62,10 @@ afc workspace create --slug <slug> --git-url <url> [flags]
   body. The server resolves it.
 - When `--org` is omitted, the server automatically assigns the workspace to
   the user's personal organization.
+- When `--workspace-mode carry_patch` is provided, `--upstream-url` is
+  required. The server defaults `integration_branch` to `"deploy"` when
+  omitted. Standard-mode workspaces reject `--upstream-url` and
+  `--integration-branch`.
 - When credential flags are provided, the server validates them against the
   remote repository before creating the workspace.
 - Prints the created workspace JSON to stdout.
@@ -69,7 +76,7 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 |------|-----------|
 | 0 | Workspace created successfully |
 | 1 | API error (4xx/5xx), network error, or timeout |
-| 2 | Missing required flags (`--slug`, `--git-url`), credential validation error (mutual exclusion, pair completeness, empty values, non-HTTPS URL), or invalid `--sync-mode` value |
+| 2 | Missing required flags (`--slug`, `--git-url`), credential validation error (mutual exclusion, pair completeness, empty values, non-HTTPS URL), invalid `--sync-mode` value, invalid `--workspace-mode` value, missing `--upstream-url` for carry_patch, or `--upstream-url`/`--integration-branch` provided with standard mode |
 
 ---
 
