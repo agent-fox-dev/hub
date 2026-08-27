@@ -144,7 +144,10 @@ func handleListPatches(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
-		// 15-REQ-9.E2: standard workspace returns empty array.
+		if ws.WorkspaceMode != "carry_patch" {
+			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
+		}
+
 		patches, err := listPatches(db, slug)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
