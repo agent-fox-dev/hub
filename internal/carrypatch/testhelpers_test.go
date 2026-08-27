@@ -72,8 +72,8 @@ func nopLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// createWorkspacesTable creates a minimal workspaces table for tests.
-// Includes carry-patch-specific columns: workspace_mode, integration_branch.
+// createWorkspacesTable creates the workspaces table for tests, matching the
+// production schema in workspace/schema.go.
 func createWorkspacesTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 	_, err := db.Exec(`
@@ -89,11 +89,16 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 			clone_status      TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
 			head_sha          TEXT,
 			clone_error       TEXT,
-			workspace_mode    TEXT NOT NULL DEFAULT 'standard',
-			integration_branch TEXT NOT NULL DEFAULT 'integration',
-			integration_head_sha TEXT,
 			created_at        TEXT NOT NULL,
-			updated_at        TEXT NOT NULL
+			updated_at        TEXT NOT NULL,
+			sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
+			sync_status       TEXT NOT NULL DEFAULT 'idle',
+			upstream_head_sha TEXT,
+			last_sync_at      TEXT,
+			sync_error        TEXT,
+			workspace_mode    TEXT NOT NULL DEFAULT 'standard',
+			upstream_url      TEXT,
+			integration_branch TEXT
 		)`)
 	if err != nil {
 		t.Fatalf("failed to create workspaces table: %v", err)
@@ -779,13 +784,13 @@ func addWorkspaceColumns(t *testing.T, db *sql.DB) {
 }
 
 // seedWorkspaceCarryPatch inserts a carry_patch workspace with all fields set.
-func seedWorkspaceCarryPatch(t *testing.T, db *sql.DB, slug, ownerID, upstreamURL, upstreamHeadSHA, integrationBranch, integrationHeadSHA string) {
+func seedWorkspaceCarryPatch(t *testing.T, db *sql.DB, slug, ownerID, upstreamURL, upstreamHeadSHA, integrationBranch, _ string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, integration_head_sha, last_sync_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?, ?)`,
-		slug, "https://github.com/example/repo", ownerID, integrationBranch, upstreamURL, upstreamHeadSHA, integrationHeadSHA, now, now, now,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, last_sync_at, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?)`,
+		slug, "https://github.com/example/repo", ownerID, integrationBranch, upstreamURL, upstreamHeadSHA, now, now, now,
 	)
 	if err != nil {
 		t.Fatalf("seedWorkspaceCarryPatch(%q) returned error: %v", slug, err)

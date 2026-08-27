@@ -182,7 +182,8 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// 2. Load workspace and validate.
-		var mode, status, cloneStatus, integrationBranch string
+		var mode, status, cloneStatus string
+		var integrationBranch sql.NullString
 		err := cfg.DB.QueryRow(
 			`SELECT workspace_mode, status, clone_status, integration_branch
 			 FROM workspaces WHERE slug = ?`, slug,
@@ -231,11 +232,12 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		// Build payload. 16-PROP-3: capture strategy at enqueue time.
+		ib := nullStr(integrationBranch)
 		payload := RebuildPayload{
 			WorkspaceSlug:     slug,
 			Strategy:          strategy,
 			SubmittedBy:       auth.UserID,
-			IntegrationBranch: integrationBranch,
+			IntegrationBranch: ib,
 		}
 		payloadJSON, err := json.Marshal(payload)
 		if err != nil {
@@ -243,7 +245,7 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		// 16-REQ-1.1: enqueue with key=workspace_slug, group_key=<slug>:<integration_branch>.
-		groupKey := slug + ":" + integrationBranch
+		groupKey := slug + ":" + ib
 		nonce := uuid.New().String()
 
 		jobID, duplicate, err := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
@@ -431,12 +433,12 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// Load workspace metadata.
-		var mode, upstreamURL, integrationBranch string
-		var upstreamHeadSHA, integrationHeadSHA, lastSyncAt sql.NullString
+		var mode string
+		var upstreamURL, upstreamHeadSHA, integrationBranch, lastSyncAt sql.NullString
 		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, upstream_url, upstream_head_sha, integration_branch, integration_head_sha, last_sync_at
+			`SELECT workspace_mode, upstream_url, upstream_head_sha, integration_branch, last_sync_at
 			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &upstreamURL, &upstreamHeadSHA, &integrationBranch, &integrationHeadSHA, &lastSyncAt)
+		).Scan(&mode, &upstreamURL, &upstreamHeadSHA, &integrationBranch, &lastSyncAt)
 		if err == sql.ErrNoRows {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
@@ -549,14 +551,20 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 			}
 		}
 
+		// Derive integration_head_sha from the last rebuild result.
+		integrationHeadSHA := ""
+		if lastRebuildResult != nil {
+			integrationHeadSHA = lastRebuildResult.IntegrationHeadSHA
+		}
+
 		// Build response.
 		resp := PatchStatusResponse{
 			WorkspaceSlug:      slug,
 			WorkspaceMode:      mode,
-			UpstreamURL:        upstreamURL,
+			UpstreamURL:        nullStr(upstreamURL),
 			UpstreamHeadSHA:    nullStr(upstreamHeadSHA),
-			IntegrationBranch:  integrationBranch,
-			IntegrationHeadSHA: nullStr(integrationHeadSHA),
+			IntegrationBranch:  nullStr(integrationBranch),
+			IntegrationHeadSHA: integrationHeadSHA,
 			LastRebuild:        lastRebuild,
 			Patches:            patchEntries,
 			Summary:            summary,
