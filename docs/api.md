@@ -700,13 +700,14 @@ position. Returns an empty array `[]` if no patches exist.
 
 **Behavior:**
 
-- For carry-patch workspaces, returns all patches in position order.
-- For standard workspaces, returns an empty array (not an error).
+- Returns all patches in position order for carry-patch workspaces.
+- Returns an empty array `[]` if the workspace has no patches.
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
+| 400 | Workspace is not in carry_patch mode |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:read` scope |
 | 404 | Workspace does not exist |
@@ -1124,7 +1125,7 @@ Return a full status dashboard for the carry-patch stack.
 | `upstream_url` | string | The upstream repository URL |
 | `upstream_head_sha` | string | SHA of the upstream HEAD at last fetch |
 | `integration_branch` | string | Name of the integration branch |
-| `integration_head_sha` | string | SHA of the integration branch HEAD after last successful rebuild |
+| `integration_head_sha` | string | SHA of the integration branch HEAD after last rebuild; derived from the rebuild result, empty string if no rebuild has been attempted |
 | `last_sync_at` | string (RFC 3339) or null | Timestamp of the last sync operation |
 | `last_rebuild` | object or null | Most recent rebuild job record; null if no rebuild has been attempted |
 | `last_rebuild.id` | string | Rebuild job ID |
@@ -1158,11 +1159,11 @@ equals `summary.total_patches`.
 - If the `rr-cache` directory is inaccessible, `rerere_resolution_count` is
   set to 0 for all patches rather than failing the request.
 
-**Known schema issues:** The code queries `integration_head_sha` from the
-workspaces table and `conflict_files` from the patches table, but neither
-column exists in the current production schema (`workspace/schema.go`). Until
-the corresponding `ALTER TABLE` migrations are applied, this endpoint will
-return HTTP 500 at runtime.
+**Known schema issue:** The code queries `conflict_files` from the patches
+table, but this column does not exist in the current production schema
+(`workspace/schema.go`). Until the corresponding `ALTER TABLE` migration is
+applied, this endpoint will return HTTP 500 for carry_patch workspaces that
+have patches.
 
 **Error Codes:**
 
