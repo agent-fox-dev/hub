@@ -748,7 +748,7 @@ func TestCLI_WorkspaceDelete_Success(t *testing.T) {
 	server := mockAPIServer(t, workspaces, nil)
 	defer server.Close()
 
-	_, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
+	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"delete", "my-ws", "--confirm")
 
 	if err != nil {
@@ -756,6 +756,15 @@ func TestCLI_WorkspaceDelete_Success(t *testing.T) {
 	}
 	if stderr == "" {
 		t.Error("stderr is empty; want confirmation message")
+	}
+
+	// TS-NS-4: stdout must contain valid JSON with at least a status field.
+	var v map[string]any
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if v["status"] == nil || v["status"] == "" {
+		t.Error("JSON response missing non-empty 'status' field")
 	}
 }
 

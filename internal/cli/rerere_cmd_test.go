@@ -290,10 +290,22 @@ func TestRerereCLI_Forget_Success(t *testing.T) {
 		t.Errorf("path = %q; want /api/v1/workspaces/my-workspace/rerere/src/config.go", req.Path)
 	}
 
-	// Either stdout or stderr should contain confirmation.
-	combined := stdout + stderr
-	if len(combined) == 0 {
-		t.Error("expected confirmation output after successful forget")
+	// TS-NS-3: stdout must contain valid JSON; human-readable confirmation
+	// text goes to stderr only.
+	var v map[string]any
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if v["status"] == nil || v["status"] == "" {
+		t.Error("JSON response missing non-empty 'status' field")
+	}
+
+	// Human-readable confirmation should be on stderr, not stdout.
+	if stderr == "" {
+		t.Error("expected confirmation message on stderr")
+	}
+	if strings.Contains(stdout, "forgotten") && !strings.Contains(stdout, `"forgotten"`) {
+		t.Errorf("stdout should not contain unquoted human-readable text; got: %s", stdout)
 	}
 }
 

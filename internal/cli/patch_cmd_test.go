@@ -267,7 +267,7 @@ func TestCLI_PatchRemove_Success(t *testing.T) {
 	server := mockPatchAPIServer(t, patches)
 	defer server.Close()
 
-	_, _, err := runPatchCmd(t, server.URL, "test-api-key",
+	stdout, _, err := runPatchCmd(t, server.URL, "test-api-key",
 		"remove", "cp-ws", "uuid-1")
 
 	if err != nil {
@@ -277,6 +277,18 @@ func TestCLI_PatchRemove_Success(t *testing.T) {
 	// Verify the patch was removed from the mock server.
 	if _, exists := patches["uuid-1"]; exists {
 		t.Error("patch should have been deleted from mock server")
+	}
+
+	// TS-NS-2: stdout must contain valid JSON with status and patch_id fields.
+	var v map[string]any
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if v["status"] == nil || v["status"] == "" {
+		t.Error("JSON response missing non-empty 'status' field")
+	}
+	if v["patch_id"] == nil || v["patch_id"] == "" {
+		t.Error("JSON response missing non-empty 'patch_id' field")
 	}
 }
 

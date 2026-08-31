@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -476,6 +477,14 @@ func newDeleteCmd() *cobra.Command {
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
+
+			// Emit synthetic JSON status object to stdout (server returns 204 No Content).
+			synthetic := map[string]string{
+				"status": "deleted",
+				"slug":   slug,
+			}
+			data, _ := json.MarshalIndent(synthetic, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "Workspace '%s' has been permanently deleted.\n", slug)
 			return nil

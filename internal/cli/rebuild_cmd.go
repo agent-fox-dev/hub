@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -197,6 +198,14 @@ func newRebuildCancelCmd() *cobra.Command {
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
+
+			// Emit synthetic JSON status object to stdout (server returns 204 No Content).
+			synthetic := map[string]string{
+				"status":     "cancelled",
+				"rebuild_id": args[1],
+			}
+			data, _ := json.MarshalIndent(synthetic, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "Rebuild job '%s' has been cancelled.\n", args[1])
 			return nil

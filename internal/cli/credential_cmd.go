@@ -143,13 +143,17 @@ func newCredentialSetCmd() *cobra.Command {
 				"entries": entries,
 			}
 
-			_, err = client.DoRequest(cmd.Context(), http.MethodPost,
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
 				"/workspaces/"+slug+"/secrets", body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Upstream credentials stored for workspace '%s'.\n", slug)
+			// Print API response JSON to stdout; human-readable confirmation to stderr.
+			if err := apikit.CLIPrintResult(cmd, result); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "Upstream credentials stored for workspace '%s'.\n", slug)
 			return nil
 		},
 	}

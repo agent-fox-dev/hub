@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -85,7 +86,16 @@ func newRerereForgetCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Rerere resolution for '%s' has been forgotten.\n", args[1])
+			// Emit synthetic JSON status object to stdout (server returns 204 No Content).
+			synthetic := map[string]string{
+				"status":   "forgotten",
+				"pathspec": args[1],
+			}
+			data, _ := json.MarshalIndent(synthetic, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+
+			// Human-readable confirmation to stderr only.
+			fmt.Fprintf(cmd.ErrOrStderr(), "Rerere resolution for '%s' has been forgotten.\n", args[1])
 			return nil
 		},
 	}

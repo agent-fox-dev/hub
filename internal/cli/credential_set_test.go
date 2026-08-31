@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,21 @@ func TestCLI_CredentialSet_UpstreamGitPAT(t *testing.T) {
 	}
 	if stored["my-ws"]["UPSTREAM_GIT_PAT"] != "mytoken123" {
 		t.Errorf("stored UPSTREAM_GIT_PAT = %q; want %q", stored["my-ws"]["UPSTREAM_GIT_PAT"], "mytoken123")
+	}
+
+	// TS-NS-1: stdout must contain valid JSON matching the API response;
+	// no human-readable text appears on stdout.
+	var v any
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if strings.Contains(stdout, "stored") {
+		t.Errorf("stdout should not contain human-readable text 'stored'; got: %s", stdout)
+	}
+
+	// Human-readable confirmation should be on stderr.
+	if !strings.Contains(stderr, "stored") {
+		t.Errorf("stderr should contain confirmation text; got: %s", stderr)
 	}
 }
 

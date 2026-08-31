@@ -730,7 +730,7 @@ func TestRebuildCLI_Cancel_Success(t *testing.T) {
 	server, records := rebuildCLIMockServer(t, nil)
 	defer server.Close()
 
-	_, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
 		"cancel", "my-workspace", "job-uuid-1")
 
 	if err != nil {
@@ -749,6 +749,15 @@ func TestRebuildCLI_Cancel_Success(t *testing.T) {
 	}
 	if req.Path != "/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1" {
 		t.Errorf("path = %q; want /api/v1/workspaces/my-workspace/rebuilds/job-uuid-1", req.Path)
+	}
+
+	// stdout must contain valid JSON with at least a status field.
+	var v map[string]any
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if v["status"] == nil || v["status"] == "" {
+		t.Error("JSON response missing non-empty 'status' field")
 	}
 
 	// Verify confirmation is printed.

@@ -513,7 +513,7 @@ func TestMergeCLI_Cancel_Success(t *testing.T) {
 	server, records := mergeMockServer(t, nil)
 	defer server.Close()
 
-	_, stderr, err := runMergeCmd(t, server.URL, "test-api-key",
+	stdout, stderr, err := runMergeCmd(t, server.URL, "test-api-key",
 		"cancel", "ws1", "job-uuid-1")
 
 	if err != nil {
@@ -532,6 +532,15 @@ func TestMergeCLI_Cancel_Success(t *testing.T) {
 	}
 	if req.Path != "/api/v1/workspaces/ws1/merges/job-uuid-1" {
 		t.Errorf("path = %q; want /api/v1/workspaces/ws1/merges/job-uuid-1", req.Path)
+	}
+
+	// TS-NS-4: stdout must contain valid JSON with at least a status field.
+	var v map[string]any
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if v["status"] == nil || v["status"] == "" {
+		t.Error("JSON response missing non-empty 'status' field")
 	}
 
 	// Verify confirmation is printed (to stderr, following the workspace delete pattern).

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -171,6 +172,14 @@ func newMergeCancelCmd() *cobra.Command {
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
+
+			// Emit synthetic JSON status object to stdout (server returns 204 No Content).
+			synthetic := map[string]string{
+				"status":   "cancelled",
+				"merge_id": args[1],
+			}
+			data, _ := json.MarshalIndent(synthetic, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "Merge job '%s' has been cancelled.\n", args[1])
 			return nil

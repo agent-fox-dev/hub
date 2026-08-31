@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -147,6 +148,14 @@ func newPatchRemoveCmd() *cobra.Command {
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
+
+			// Emit synthetic JSON status object to stdout (server returns 204 No Content).
+			synthetic := map[string]string{
+				"status":   "removed",
+				"patch_id": args[1],
+			}
+			data, _ := json.MarshalIndent(synthetic, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "Patch '%s' has been removed.\n", args[1])
 			return nil
