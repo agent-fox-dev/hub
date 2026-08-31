@@ -110,6 +110,7 @@ curl http://localhost:8080/readyz
 | [CLI Reference](docs/cli.md) | `afc` commands, flags, and configuration |
 | [Server Configuration](docs/configuration.md) | `config.toml` reference and environment variables |
 | [Permissions](docs/permissions.md) | Permission model, scopes, and access control |
+| [Carry-Patch Workflow](docs/carry_patch_workflow.md) | Guide to maintaining fork patches with automated rebuild |
 
 ## Development
 
