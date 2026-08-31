@@ -393,9 +393,12 @@ func TestRebuildExecutor_MissingBranch_Skipped(t *testing.T) {
 		t.Errorf("expected first patch status='success', got %q", rebuildResult.PatchResults[0].Status)
 	}
 
-	// Second patch (missing) should be skipped.
+	// Second patch (missing) should be skipped with skipped_reason='branch_not_found'.
 	if rebuildResult.PatchResults[1].Status != "skipped" {
 		t.Errorf("expected second patch status='skipped', got %q", rebuildResult.PatchResults[1].Status)
+	}
+	if rebuildResult.PatchResults[1].SkippedReason != "branch_not_found" {
+		t.Errorf("expected second patch skipped_reason='branch_not_found', got %q", rebuildResult.PatchResults[1].SkippedReason)
 	}
 	if rebuildResult.PatchResults[1].NewHeadSHA != nil {
 		t.Errorf("expected null new_head_sha for skipped patch, got %v", rebuildResult.PatchResults[1].NewHeadSHA)
@@ -450,7 +453,7 @@ func TestRebuildExecutor_MergedAndDisabled_Skipped(t *testing.T) {
 		t.Fatalf("expected result to be *RebuildResult, got %T", result)
 	}
 
-	// Both patches should be 'skipped'.
+	// Both patches should be 'skipped' with appropriate skipped_reason.
 	for _, pr := range rebuildResult.PatchResults {
 		if pr.Status != "skipped" {
 			t.Errorf("expected patch %q status='skipped', got %q", pr.BranchName, pr.Status)
@@ -460,12 +463,105 @@ func TestRebuildExecutor_MergedAndDisabled_Skipped(t *testing.T) {
 		}
 	}
 
+	// Verify skipped_reason is set to the patch status (not 'branch_not_found').
+	if rebuildResult.PatchResults[0].SkippedReason != "merged_upstream" {
+		t.Errorf("expected merged patch skipped_reason='merged_upstream', got %q",
+			rebuildResult.PatchResults[0].SkippedReason)
+	}
+	if rebuildResult.PatchResults[1].SkippedReason != "disabled" {
+		t.Errorf("expected disabled patch skipped_reason='disabled', got %q",
+			rebuildResult.PatchResults[1].SkippedReason)
+	}
+
 	// No cherry-pick or merge calls should have been made.
 	if len(mock.CherryPickCalls) != 0 {
 		t.Errorf("expected 0 cherry-pick calls for skipped patches, got %d", len(mock.CherryPickCalls))
 	}
 	if len(mock.MergeNoFFCalls) != 0 {
 		t.Errorf("expected 0 MergeNoFF calls for skipped patches, got %d", len(mock.MergeNoFFCalls))
+	}
+}
+
+// ===========================================================================
+// TS-NS-4 + TS-NS-5: Rebuild skipped_reason differentiates between
+// branch_not_found, disabled, and merged_upstream.
+// ===========================================================================
+
+func TestRebuildExecutor_SkippedReason_Differentiation(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p-merged", WorkspaceID: "ws1", BranchName: "feature/merged", Position: 1, Status: PatchStatusMergedUpstream},
+		{ID: "p-disabled", WorkspaceID: "ws1", BranchName: "feature/disabled", Position: 2, Status: PatchStatusDisabled},
+		{ID: "p-missing", WorkspaceID: "ws1", BranchName: "feature/missing", Position: 3, Status: PatchStatusActive},
+	})
+
+	upstreamHead := "aaaa000000000000000000000000000000000001"
+
+	// Mock: all git log calls for the missing branch fail.
+	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		for _, arg := range args {
+			if arg == "--reverse" {
+				return "", fmt.Errorf("unknown revision: feature/missing")
+			}
+		}
+		return upstreamHead, nil
+	}
+
+	h := &RebuildHandler{
+		PatchStore:   patches,
+		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
+		Fetch:        func(_ context.Context, _ string) error { return nil },
+		ResolveAuth:  func(_ string) error { return nil },
+	}
+
+	payload := RebuildPayload{
+		WorkspaceSlug: "ws1",
+		Strategy:      StrategyRebase,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+	if err != nil {
+		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	}
+
+	rebuildResult, ok := result.(*RebuildResult)
+	if !ok {
+		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+	}
+
+	if len(rebuildResult.PatchResults) != 3 {
+		t.Fatalf("expected 3 patch results, got %d", len(rebuildResult.PatchResults))
+	}
+
+	// Verify each patch has the correct skipped_reason.
+	tests := []struct {
+		patchID       string
+		wantStatus    string
+		wantReason    string
+		notWantReason string
+	}{
+		{"p-merged", "skipped", "merged_upstream", "branch_not_found"},
+		{"p-disabled", "skipped", "disabled", "branch_not_found"},
+		{"p-missing", "skipped", "branch_not_found", ""},
+	}
+
+	for i, tt := range tests {
+		pr := rebuildResult.PatchResults[i]
+		if pr.PatchID != tt.patchID {
+			t.Errorf("patch[%d]: expected id=%q, got %q", i, tt.patchID, pr.PatchID)
+		}
+		if pr.Status != tt.wantStatus {
+			t.Errorf("patch %q: expected status=%q, got %q", tt.patchID, tt.wantStatus, pr.Status)
+		}
+		if pr.SkippedReason != tt.wantReason {
+			t.Errorf("patch %q: expected skipped_reason=%q, got %q", tt.patchID, tt.wantReason, pr.SkippedReason)
+		}
+		if tt.notWantReason != "" && pr.SkippedReason == tt.notWantReason {
+			t.Errorf("patch %q: skipped_reason should NOT be %q", tt.patchID, tt.notWantReason)
+		}
 	}
 }
 

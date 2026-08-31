@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"log/slog"
+	"path/filepath"
 
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -218,6 +219,17 @@ func main() {
 		Queue:         mergeQueue,
 		WorkspaceRoot: cfg.Workspace.Path,
 		PatchStore:    cpPatchStore,
+	})
+
+	// Register the branch-check hook so that POST /patches validates that the
+	// branch exists in the workspace git repository before inserting.
+	workspace.RegisterBranchCheckHook(func(slug, branchName string) error {
+		runner, err := cpGitRunnerFactory(filepath.Join(cfg.Workspace.Path, slug, "trunk"))
+		if err != nil {
+			return err
+		}
+		_, err = runner.Run(context.Background(), "rev-parse", "--verify", branchName)
+		return err
 	})
 
 	// Register the carry-patch sync hook so that POST /sync for carry_patch

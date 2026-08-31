@@ -91,11 +91,12 @@ type RebuildPayload struct {
 
 // PatchResult is the per-patch outcome recorded in the rebuild result.
 type PatchResult struct {
-	PatchID      string   `json:"patch_id"`
-	BranchName   string   `json:"branch_name"`
-	Position     int      `json:"position"`
-	Status       string   `json:"status"`
-	NewHeadSHA   *string  `json:"new_head_sha"`
+	PatchID       string   `json:"patch_id"`
+	BranchName    string   `json:"branch_name"`
+	Position      int      `json:"position"`
+	Status        string   `json:"status"`
+	SkippedReason string   `json:"skipped_reason,omitempty"`
+	NewHeadSHA    *string  `json:"new_head_sha"`
 	ConflictFiles []string `json:"conflict_files,omitempty"`
 }
 

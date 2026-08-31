@@ -37,10 +37,11 @@ func PatchCmd() *cobra.Command {
 // Requirements: 15-REQ-14.1
 func newPatchAddCmd() *cobra.Command {
 	var (
-		branch      string
-		position    int
-		upstreamPR  string
-		description string
+		branch           string
+		position         int
+		upstreamPR       string
+		description      string
+		skipBranchCheck  bool
 	)
 
 	cmd := &cobra.Command{
@@ -72,6 +73,9 @@ func newPatchAddCmd() *cobra.Command {
 			if description != "" {
 				body["description"] = description
 			}
+			if skipBranchCheck {
+				body["skip_branch_check"] = true
+			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/patches", body)
 			if err != nil {
@@ -86,6 +90,7 @@ func newPatchAddCmd() *cobra.Command {
 	cmd.Flags().IntVar(&position, "position", 0, "Position in the patch list (optional)")
 	cmd.Flags().StringVar(&upstreamPR, "upstream-pr", "", "Upstream PR URL (optional)")
 	cmd.Flags().StringVar(&description, "description", "", "Patch description (optional)")
+	cmd.Flags().BoolVar(&skipBranchCheck, "skip-branch-check", false, "Skip branch existence validation (optional)")
 
 	return cmd
 }

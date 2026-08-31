@@ -68,10 +68,11 @@ func handleAddPatch(db *sql.DB) echo.HandlerFunc {
 
 		// Parse request body.
 		var req struct {
-			BranchName    string  `json:"branch_name"`
-			Position      *int    `json:"position"`
-			UpstreamPRURL *string `json:"upstream_pr_url"`
-			Description   *string `json:"description"`
+			BranchName       string  `json:"branch_name"`
+			Position         *int    `json:"position"`
+			UpstreamPRURL    *string `json:"upstream_pr_url"`
+			Description      *string `json:"description"`
+			SkipBranchCheck  *bool   `json:"skip_branch_check"`
 		}
 		if c.Request().Body == nil {
 			return respondError(c, http.StatusBadRequest, "request body is required")
@@ -88,6 +89,14 @@ func handleAddPatch(db *sql.DB) echo.HandlerFunc {
 		// 15-REQ-8.5: Reject if branch_name equals integration_branch.
 		if ws.IntegrationBranch != nil && req.BranchName == *ws.IntegrationBranch {
 			return respondError(c, http.StatusBadRequest, "branch_name cannot be the integration branch")
+		}
+
+		// Validate branch existence in the git repo unless skip_branch_check is set.
+		skipCheck := req.SkipBranchCheck != nil && *req.SkipBranchCheck
+		if !skipCheck && branchCheckHook != nil {
+			if err := branchCheckHook(slug, req.BranchName); err != nil {
+				return respondError(c, http.StatusBadRequest, "branch does not exist in repository")
+			}
 		}
 
 		// 15-REQ-8.4: Reject if branch_name already exists.

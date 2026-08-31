@@ -377,6 +377,93 @@ func TestCLI_PatchUpdate_Success(t *testing.T) {
 	}
 }
 
+// TS-NS-3: The `patch add` CLI command accepts a `--skip-branch-check` flag
+// and passes it as skip_branch_check: true in the request body.
+func TestCLI_PatchAdd_SkipBranchCheck(t *testing.T) {
+	var capturedBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/workspaces/{slug}/patches", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResp{})
+			return
+		}
+		p := patchResp{
+			ID:            "generated-uuid",
+			WorkspaceSlug: r.PathValue("slug"),
+			BranchName:    capturedBody["branch_name"].(string),
+			Position:      1,
+			Status:        "active",
+			AddedAt:       "2025-01-01T00:00:00Z",
+			UpdatedAt:     "2025-01-01T00:00:00Z",
+		}
+		writeJSON(w, http.StatusCreated, p)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, _, err := runPatchCmd(t, server.URL, "test-api-key",
+		"add", "cp-ws", "--branch", "nonexistent", "--skip-branch-check")
+
+	if err != nil {
+		t.Fatalf("command returned error: %v", err)
+	}
+
+	// Verify the request body includes skip_branch_check=true.
+	if capturedBody == nil {
+		t.Fatal("expected request body to be captured")
+	}
+	skipCheck, ok := capturedBody["skip_branch_check"]
+	if !ok {
+		t.Fatal("request body missing 'skip_branch_check' field")
+	}
+	if skipCheck != true {
+		t.Errorf("expected skip_branch_check=true, got %v", skipCheck)
+	}
+	branchName, ok := capturedBody["branch_name"]
+	if !ok || branchName != "nonexistent" {
+		t.Errorf("expected branch_name='nonexistent', got %v", branchName)
+	}
+}
+
+// Verify --skip-branch-check is NOT sent when the flag is not used.
+func TestCLI_PatchAdd_NoSkipBranchCheck(t *testing.T) {
+	var capturedBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/workspaces/{slug}/patches", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResp{})
+			return
+		}
+		p := patchResp{
+			ID:            "generated-uuid",
+			WorkspaceSlug: r.PathValue("slug"),
+			BranchName:    capturedBody["branch_name"].(string),
+			Position:      1,
+			Status:        "active",
+			AddedAt:       "2025-01-01T00:00:00Z",
+			UpdatedAt:     "2025-01-01T00:00:00Z",
+		}
+		writeJSON(w, http.StatusCreated, p)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, _, err := runPatchCmd(t, server.URL, "test-api-key",
+		"add", "cp-ws", "--branch", "feature/test")
+
+	if err != nil {
+		t.Fatalf("command returned error: %v", err)
+	}
+
+	// Verify the request body does NOT include skip_branch_check.
+	if capturedBody == nil {
+		t.Fatal("expected request body to be captured")
+	}
+	if _, ok := capturedBody["skip_branch_check"]; ok {
+		t.Error("request body should NOT contain 'skip_branch_check' when flag is not used")
+	}
+}
+
 // 15-REQ-14.E2: API error response for any patch command displays error message
 // and exits non-zero.
 // Requirement: 15-REQ-14.E2

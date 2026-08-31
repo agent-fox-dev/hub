@@ -681,19 +681,116 @@ func TestCarryPatch_AddPatch_EmptyBranchName(t *testing.T) {
 	})
 }
 
-// 15-REQ-8.E1: Branch existence is NOT validated at add time — non-existent
-// branches are accepted (validation deferred to rebuild).
-// Requirement: 15-REQ-8.E1
-func TestCarryPatch_AddPatch_NonExistentBranchAccepted(t *testing.T) {
+// When no branch-check hook is registered, non-existent branches are accepted
+// (backwards-compatible behavior before branch validation was added).
+func TestCarryPatch_AddPatch_NonExistentBranchAccepted_NoHook(t *testing.T) {
 	slug := "cp-add-noexist"
 	env := newPatchTestEnv(t, slug, "deploy")
 	auth := userAuth("user-1")
+
+	// Ensure no hook is registered.
+	RegisterBranchCheckHook(nil)
+	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
 
 	body := `{"branch_name": "feature/does-not-exist-in-git"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
 
 	if rec.Code != http.StatusCreated {
-		t.Errorf("POST with non-existent branch: status = %d; want %d (accepted); body: %s",
+		t.Errorf("POST with non-existent branch (no hook): status = %d; want %d (accepted); body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+// TS-NS-1: POST /workspaces/:slug/patches returns HTTP 400 when the given
+// branch_name does not exist in the workspace git repository.
+func TestCarryPatch_AddPatch_NonExistentBranchRejected(t *testing.T) {
+	slug := "cp-add-noexist-400"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Register a hook that always fails (simulates branch not found).
+	RegisterBranchCheckHook(func(_, _ string) error {
+		return fmt.Errorf("unknown revision")
+	})
+	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+
+	body := `{"branch_name": "feature/does-not-exist-in-git"}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST with non-existent branch: status = %d; want %d; body: %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	// Verify error message mentions branch.
+	var errResp errorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if !strings.Contains(errResp.Error.Message, "branch does not exist") {
+		t.Errorf("error message = %q; want message containing 'branch does not exist'",
+			errResp.Error.Message)
+	}
+
+	// Verify no patch was created in the database.
+	patches, err := listPatches(env.db, slug)
+	if err != nil {
+		t.Fatalf("listPatches: %v", err)
+	}
+	if len(patches) != 0 {
+		t.Errorf("expected 0 patches after failed add; got %d", len(patches))
+	}
+}
+
+// TS-NS-2: POST /workspaces/:slug/patches with skip_branch_check: true
+// succeeds even when the branch does not exist in the repository.
+func TestCarryPatch_AddPatch_SkipBranchCheck(t *testing.T) {
+	slug := "cp-add-skipcheck"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Register a hook that always fails (simulates branch not found).
+	RegisterBranchCheckHook(func(_, _ string) error {
+		return fmt.Errorf("unknown revision")
+	})
+	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+
+	body := `{"branch_name": "feature/will-be-pushed-later", "skip_branch_check": true}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("POST with skip_branch_check=true: status = %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	// Verify patch was created.
+	patches, err := listPatches(env.db, slug)
+	if err != nil {
+		t.Fatalf("listPatches: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Errorf("expected 1 patch after add with skip_branch_check; got %d", len(patches))
+	}
+}
+
+// When the branch-check hook is registered and the branch exists,
+// the patch is created successfully.
+func TestCarryPatch_AddPatch_ExistingBranchAccepted(t *testing.T) {
+	slug := "cp-add-exists-ok"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Register a hook that always succeeds (simulates branch found).
+	RegisterBranchCheckHook(func(_, _ string) error {
+		return nil
+	})
+	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+
+	body := `{"branch_name": "feature/valid-branch"}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST with existing branch: status = %d; want %d; body: %s",
 			rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }

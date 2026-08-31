@@ -137,6 +137,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		// 16-REQ-1.7: skip merged_upstream and disabled patches.
 		if patch.Status == PatchStatusMergedUpstream || patch.Status == PatchStatusDisabled {
 			pr.Status = "skipped"
+			pr.SkippedReason = patch.Status // "merged_upstream" or "disabled"
 			result.PatchResults = append(result.PatchResults, pr)
 			result.PatchesSkipped++
 			if patch.Status == PatchStatusMergedUpstream {
@@ -162,6 +163,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			// 16-REQ-1.6: branch not found -> skip.
 			if errors.Is(applyErr, errPatchBranchNotFound) {
 				pr.Status = "skipped"
+				pr.SkippedReason = "branch_not_found"
 				result.PatchResults = append(result.PatchResults, pr)
 				result.PatchesSkipped++
 				continue
