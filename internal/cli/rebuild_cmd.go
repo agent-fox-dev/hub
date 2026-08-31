@@ -37,6 +37,7 @@ func RebuildCmd() *cobra.Command {
 // Requirements: 16-REQ-7.1
 func newRebuildSubmitCmd() *cobra.Command {
 	var wf waitFlags
+	var strategy string
 
 	cmd := &cobra.Command{
 		Use:           "submit <workspace-slug>",
@@ -52,8 +53,16 @@ func newRebuildSubmitCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
+			// Build request body: nil when no flags, map with strategy when set.
+			var body any
+			if strategy != "" {
+				body = map[string]any{
+					"strategy": strategy,
+				}
+			}
+
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+slug+"/rebuild", nil)
+				"/workspaces/"+slug+"/rebuild", body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -78,6 +87,7 @@ func newRebuildSubmitCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&strategy, "strategy", "", "rebuild strategy override (rebase|merge)")
 	addWaitFlags(cmd, &wf)
 	return cmd
 }

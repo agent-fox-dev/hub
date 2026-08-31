@@ -291,3 +291,85 @@ func TestSubmitRebuild_PATWithWriteScope_Returns202(t *testing.T) {
 			rec.Code, http.StatusAccepted, rec.Body.String())
 	}
 }
+
+// ===========================================================================
+// TS-NS-1: POST /rebuild with body {"strategy":"merge"} uses merge strategy
+// regardless of the REBUILD_STRATEGY variable.
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestSubmitRebuild_BodyStrategyOverride(t *testing.T) {
+	// Create env where GetVariable returns 'rebase' (default).
+	env := newRebuildTestEnvWithStrategy(t, "rebase")
+
+	seedWorkspace(t, env.db, "ws-override", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-o1", "ws-override", "feature/foo", 1, PatchStatusActive)
+
+	// Send POST with body strategy=merge; variable says rebase.
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-override/rebuild",
+		`{"strategy":"merge"}`, rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
+			rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	resp := parseRebuildJobResponse(t, rec)
+	var payload RebuildPayload
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.Strategy != "merge" {
+		t.Errorf("expected payload.strategy='merge' (body override), got %q", payload.Strategy)
+	}
+}
+
+// Also test that body strategy=rebase overrides a merge variable.
+func TestSubmitRebuild_BodyStrategyOverride_Rebase(t *testing.T) {
+	env := newRebuildTestEnvWithStrategy(t, "merge")
+
+	seedWorkspace(t, env.db, "ws-override2", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-o2", "ws-override2", "feature/foo", 1, PatchStatusActive)
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-override2/rebuild",
+		`{"strategy":"rebase"}`, rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
+			rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	resp := parseRebuildJobResponse(t, rec)
+	var payload RebuildPayload
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.Strategy != "rebase" {
+		t.Errorf("expected payload.strategy='rebase' (body override), got %q", payload.Strategy)
+	}
+}
+
+// ===========================================================================
+// TS-NS-3: POST /rebuild with an invalid strategy value returns 400.
+// Requirement: NS-REQ-3
+// ===========================================================================
+
+func TestSubmitRebuild_InvalidBodyStrategy_Returns400(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-invalid", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-i1", "ws-invalid", "feature/foo", 1, PatchStatusActive)
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-invalid/rebuild",
+		`{"strategy":"squash"}`, rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /rebuild (invalid strategy) status = %d; want %d; body = %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	resp := parseErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for invalid strategy")
+	}
+}

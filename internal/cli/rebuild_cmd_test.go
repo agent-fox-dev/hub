@@ -556,6 +556,101 @@ func TestRebuildCLI_Preview_MissingSlug(t *testing.T) {
 	}
 }
 
+// =========================================================================
+// TS-NS-4: 'afc rebuild submit <slug> --strategy merge' sends a POST body
+// containing {"strategy": "merge"} to the API.
+// Requirement: NS-REQ-4
+// =========================================================================
+
+func TestRebuildCLI_Submit_WithStrategyFlag(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace", "--strategy", "merge")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr; got: %s", stderr)
+	}
+
+	// Verify stdout contains the job status 'queued'.
+	if !strings.Contains(stdout, "queued") {
+		t.Errorf("stdout should contain 'queued'; got: %s", stdout)
+	}
+
+	// Verify the request body contains {"strategy":"merge"}.
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.Method != "POST" {
+		t.Errorf("method = %q; want POST", req.Method)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+		t.Fatalf("request body is not valid JSON: %v\nbody: %s", err, req.Body)
+	}
+	if body["strategy"] != "merge" {
+		t.Errorf("expected body strategy='merge'; got %v", body["strategy"])
+	}
+}
+
+func TestRebuildCLI_Submit_WithStrategyRebase(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace", "--strategy", "rebase")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("request body is not valid JSON: %v\nbody: %s", err, reqs[0].Body)
+	}
+	if body["strategy"] != "rebase" {
+		t.Errorf("expected body strategy='rebase'; got %v", body["strategy"])
+	}
+}
+
+// TS-NS-5: 'afc rebuild submit <slug>' with no --strategy flag sends a POST
+// with no body (or omits the strategy field).
+// Requirement: NS-REQ-5
+func TestRebuildCLI_Submit_NoStrategyFlag_EmptyBody(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	// Body should be empty (nil body) when --strategy is not supplied.
+	if reqs[0].Body != "" {
+		t.Errorf("expected empty request body when --strategy not supplied; got: %s", reqs[0].Body)
+	}
+}
+
 // TS-NS-4: Verify RebuildCmd() has a 'preview' subcommand.
 func TestRebuildCmd_HasPreviewSubcommand(t *testing.T) {
 	cmd := RebuildCmd()

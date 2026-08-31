@@ -396,12 +396,33 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "no patches with status active or conflict")
 		}
 
+		// Parse optional strategy override from request body.
+		var bodyStrategy string
+		if c.Request().ContentLength > 0 {
+			var body struct {
+				Strategy string `json:"strategy"`
+			}
+			if err := c.Bind(&body); err != nil {
+				return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid request body")
+			}
+			if body.Strategy != "" {
+				if body.Strategy != StrategyRebase && body.Strategy != StrategyMerge {
+					return apikit.WriteAPIError(c, http.StatusBadRequest, "strategy must be 'rebase' or 'merge'")
+				}
+				bodyStrategy = body.Strategy
+			}
+		}
+
 		// 16-REQ-1.1: capture REBUILD_STRATEGY at enqueue time.
-		strategy := StrategyRebase // default
-		if cfg.GetVariable != nil {
-			val, varErr := cfg.GetVariable("workspace", slug, "REBUILD_STRATEGY")
-			if varErr == nil && val != "" {
-				strategy = val
+		// Body strategy overrides the workspace variable.
+		strategy := bodyStrategy
+		if strategy == "" {
+			strategy = StrategyRebase // default
+			if cfg.GetVariable != nil {
+				val, varErr := cfg.GetVariable("workspace", slug, "REBUILD_STRATEGY")
+				if varErr == nil && val != "" {
+					strategy = val
+				}
 			}
 		}
 
