@@ -25,6 +25,7 @@ func RebuildCmd() *cobra.Command {
 		newRebuildSubmitCmd(),
 		newRebuildListCmd(),
 		newRebuildStatusCmd(),
+		newRebuildPreviewCmd(),
 	)
 
 	return cmd
@@ -126,6 +127,33 @@ func newRebuildStatusCmd() *cobra.Command {
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
 				"/workspaces/"+args[0]+"/rebuilds/"+args[1], nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+}
+
+// newRebuildPreviewCmd returns the 'rebuild preview' subcommand.
+// It sends GET /api/v1/workspaces/:slug/rebuild-preview and prints the
+// per-patch conflict prediction to stdout.
+func newRebuildPreviewCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "preview <workspace-slug>",
+		Short:         "Preview rebuild conflicts without executing",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
+				"/workspaces/"+args[0]+"/rebuild-preview", nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

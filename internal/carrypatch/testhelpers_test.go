@@ -198,6 +198,12 @@ type runCall struct {
 	Args []string
 }
 
+// mergeTreeCall records a MergeTree invocation.
+type mergeTreeCall struct {
+	Base string
+	Head string
+}
+
 // mockGitRunner is a recording mock for the GitRunner interface.
 type mockGitRunner struct {
 	mu sync.Mutex
@@ -208,6 +214,8 @@ type mockGitRunner struct {
 	CherryPickFunc  func(ctx context.Context, commitSHA string) error
 	MergeNoFFCalls  []mergeNoFFCall
 	MergeNoFFFunc   func(ctx context.Context, branch string) error
+	MergeTreeCalls  []mergeTreeCall
+	MergeTreeFunc   func(ctx context.Context, base, head string) (string, error)
 	IsAncestorFunc  func(ctx context.Context, ancestor, descendant string) (bool, error)
 	CherryFunc      func(ctx context.Context, upstream, head string) ([]string, []string, error)
 	HardResetFunc   func(ctx context.Context, ref string) error
@@ -223,6 +231,9 @@ func newMockGitRunner() *mockGitRunner {
 		},
 		MergeNoFFFunc: func(_ context.Context, _ string) error {
 			return nil
+		},
+		MergeTreeFunc: func(_ context.Context, _, _ string) (string, error) {
+			return "aaaa", nil
 		},
 		IsAncestorFunc: func(_ context.Context, _, _ string) (bool, error) {
 			return false, nil
@@ -255,6 +266,13 @@ func (m *mockGitRunner) MergeNoFF(ctx context.Context, branch string) error {
 	m.MergeNoFFCalls = append(m.MergeNoFFCalls, mergeNoFFCall{Branch: branch})
 	m.mu.Unlock()
 	return m.MergeNoFFFunc(ctx, branch)
+}
+
+func (m *mockGitRunner) MergeTree(ctx context.Context, base, head string) (string, error) {
+	m.mu.Lock()
+	m.MergeTreeCalls = append(m.MergeTreeCalls, mergeTreeCall{Base: base, Head: head})
+	m.mu.Unlock()
+	return m.MergeTreeFunc(ctx, base, head)
 }
 
 func (m *mockGitRunner) IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
@@ -658,6 +676,16 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	}
 	RegisterSyncRoutes(api, syncCfg)
 
+	rebuildPreviewCfg := RebuildPreviewAPIConfig{
+		DB:            db,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+		PatchStore: patches,
+	}
+	RegisterRebuildPreviewRoutes(api, rebuildPreviewCfg)
+
 	patchStatusCfg := PatchStatusAPIConfig{
 		DB:            db,
 		Queue:         q,
@@ -728,6 +756,16 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 		PatchStore:  patches,
 	}
 	RegisterSyncRoutes(api, syncCfg)
+
+	rebuildPreviewCfg := RebuildPreviewAPIConfig{
+		DB:            db,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+		PatchStore: patches,
+	}
+	RegisterRebuildPreviewRoutes(api, rebuildPreviewCfg)
 
 	patchStatusCfg := PatchStatusAPIConfig{
 		DB:            db,

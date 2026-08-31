@@ -119,6 +119,7 @@ type GitRunner interface {
 	Run(ctx context.Context, args ...string) (string, error)
 	CherryPick(ctx context.Context, commitSHA string) error
 	MergeNoFF(ctx context.Context, branch string) error
+	MergeTree(ctx context.Context, base, head string) (string, error)
 	IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
 	Cherry(ctx context.Context, upstream, head string) (applied []string, pending []string, err error)
 	HardReset(ctx context.Context, ref string) error

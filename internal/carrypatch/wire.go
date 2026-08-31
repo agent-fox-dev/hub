@@ -68,6 +68,12 @@ func (a *GitRunnerAdapter) MergeNoFF(ctx context.Context, branch string) error {
 	return nil
 }
 
+// MergeTree delegates to the underlying gitcmd.GitRunner.MergeTree for
+// read-only conflict detection (git merge-tree --write-tree).
+func (a *GitRunnerAdapter) MergeTree(ctx context.Context, base, head string) (string, error) {
+	return a.runner.MergeTree(ctx, base, head)
+}
+
 // IsAncestor delegates to the underlying gitcmd.GitRunner.IsAncestor.
 func (a *GitRunnerAdapter) IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
 	return a.runner.IsAncestor(ctx, ancestor, descendant)

@@ -206,6 +206,13 @@ func main() {
 		NewGitRunner:  cpGitRunnerFactory,
 	})
 
+	carrypatch.RegisterRebuildPreviewRoutes(cpAPI, carrypatch.RebuildPreviewAPIConfig{
+		DB:            database.SqlDB,
+		WorkspaceRoot: cfg.Workspace.Path,
+		NewGitRunner:  cpGitRunnerFactory,
+		PatchStore:    cpPatchStore,
+	})
+
 	carrypatch.RegisterPatchStatusRoutes(cpAPI, carrypatch.PatchStatusAPIConfig{
 		DB:            database.SqlDB,
 		Queue:         mergeQueue,

@@ -3,15 +3,18 @@ package carrypatch
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
@@ -50,6 +53,29 @@ type RebuildJobRecord struct {
 	CreatedAt    string          `json:"created_at"`
 	CompletedAt  *string         `json:"completed_at"`
 	PatchResults json.RawMessage `json:"patch_results,omitempty"`
+}
+
+// RebuildPreviewAPIConfig holds dependencies for the rebuild-preview endpoint.
+type RebuildPreviewAPIConfig struct {
+	DB            *sql.DB
+	WorkspaceRoot string
+	NewGitRunner  func(repoPath string) (GitRunner, error)
+	PatchStore    PatchStore
+}
+
+// RebuildPreviewResponse is the JSON response for GET /rebuild-preview.
+type RebuildPreviewResponse struct {
+	PatchResults []RebuildPreviewPatchResult `json:"patch_results"`
+}
+
+// RebuildPreviewPatchResult is a per-patch prediction in the rebuild-preview response.
+type RebuildPreviewPatchResult struct {
+	PatchID       string   `json:"patch_id"`
+	BranchName    string   `json:"branch_name"`
+	Position      int      `json:"position"`
+	Status        string   `json:"status"`
+	TreeSHA       string   `json:"tree_sha,omitempty"`
+	ConflictFiles []string `json:"conflict_files"`
 }
 
 // RerereAPIConfig holds dependencies for rerere HTTP endpoints.
@@ -171,6 +197,145 @@ func RegisterRebuildRoutes(api *echo.Group, cfg RebuildAPIConfig) {
 	api.POST("/workspaces/:slug/rebuild", handleSubmitRebuild(cfg))
 	api.GET("/workspaces/:slug/rebuilds", handleListRebuilds(cfg))
 	api.GET("/workspaces/:slug/rebuilds/:id", handleGetRebuild(cfg))
+}
+
+// RegisterRebuildPreviewRoutes mounts the rebuild-preview endpoint on the API group.
+func RegisterRebuildPreviewRoutes(api *echo.Group, cfg RebuildPreviewAPIConfig) {
+	api.GET("/workspaces/:slug/rebuild-preview", handleRebuildPreview(cfg))
+}
+
+// ===========================================================================
+// GET /workspaces/:slug/rebuild-preview
+// ===========================================================================
+
+// handleRebuildPreview performs a read-only conflict prediction for each active
+// patch in position order using git merge-tree --write-tree. It does not modify
+// any git refs, branches, or patch statuses.
+func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// 1. Auth check.
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
+			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if isPAT(auth) && !hasScope(auth, "rebuilds:read") {
+			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:read")
+		}
+
+		slug := c.Param("slug")
+
+		// 2. Load workspace and validate.
+		var mode, status, cloneStatus string
+		err := cfg.DB.QueryRow(
+			`SELECT workspace_mode, status, clone_status
+			 FROM workspaces WHERE slug = ?`, slug,
+		).Scan(&mode, &status, &cloneStatus)
+		if err == sql.ErrNoRows {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		}
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
+		}
+
+		// Workspace must be carry_patch mode.
+		if mode != "carry_patch" {
+			return apikit.WriteAPIError(c, http.StatusBadRequest,
+				"rebuild-preview is only supported for carry_patch workspaces")
+		}
+
+		// 3. Determine repo path and create GitRunner.
+		repoPath := filepath.Join(cfg.WorkspaceRoot, slug, "trunk")
+		git, gitErr := cfg.NewGitRunner(repoPath)
+		if gitErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError,
+				"failed to initialize git runner")
+		}
+
+		// 4. Resolve upstream HEAD.
+		upstreamHead, headErr := git.Run(c.Request().Context(), "rev-parse", "HEAD")
+		if headErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError,
+				"failed to resolve upstream HEAD")
+		}
+
+		// 5. List active patches in position order.
+		patches, listErr := cfg.PatchStore.ListPatches(c.Request().Context(), slug)
+		if listErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError,
+				"failed to list patches")
+		}
+
+		// 6. Filter to active/conflict patches and sort by position.
+		sort.Slice(patches, func(i, j int) bool {
+			return patches[i].Position < patches[j].Position
+		})
+
+		// 7. Iterate patches and predict each one using MergeTree.
+		ctx := c.Request().Context()
+		currentBase := upstreamHead
+		results := make([]RebuildPreviewPatchResult, 0, len(patches))
+
+		for _, patch := range patches {
+			pr := RebuildPreviewPatchResult{
+				PatchID:       patch.ID,
+				BranchName:    patch.BranchName,
+				Position:      patch.Position,
+				ConflictFiles: []string{},
+			}
+
+			// Skip non-active patches (disabled, merged_upstream).
+			if patch.Status == PatchStatusDisabled || patch.Status == PatchStatusMergedUpstream {
+				continue
+			}
+
+			// Resolve the patch branch tip commit.
+			patchHead, revErr := git.Run(ctx, "rev-parse", "--verify", patch.BranchName)
+			if revErr != nil {
+				// Branch doesn't exist; skip this patch.
+				pr.Status = "would_succeed"
+				results = append(results, pr)
+				continue
+			}
+
+			// Perform read-only merge-tree check.
+			treeSHA, mergeErr := git.MergeTree(ctx, currentBase, patchHead)
+			if mergeErr != nil {
+				// Check for MergeConflictError from gitcmd.
+				var conflictErr *gitcmd.MergeConflictError
+				if errors.As(mergeErr, &conflictErr) {
+					pr.Status = "would_conflict"
+					pr.ConflictFiles = conflictErr.ConflictingFiles
+					results = append(results, pr)
+					// Don't update currentBase on conflict; subsequent
+					// patches are tested against the last successful base.
+					continue
+				}
+				// Unknown error; report as would_conflict with no files.
+				pr.Status = "would_conflict"
+				results = append(results, pr)
+				continue
+			}
+
+			// Clean merge.
+			pr.Status = "would_succeed"
+			pr.TreeSHA = treeSHA
+			results = append(results, pr)
+
+			// For cumulative preview: create a temporary commit from the
+			// tree SHA so subsequent patches can be tested against it.
+			// Use git commit-tree to create a parentless commit object
+			// (read-only: only creates an unreferenced object, no ref updates).
+			commitSHA, commitErr := git.Run(ctx, "commit-tree", treeSHA,
+				"-p", currentBase, "-p", patchHead, "-m", "preview")
+			if commitErr == nil {
+				currentBase = commitSHA
+			}
+		}
+
+		return c.JSON(http.StatusOK, RebuildPreviewResponse{
+			PatchResults: results,
+		})
+	}
 }
 
 // ===========================================================================

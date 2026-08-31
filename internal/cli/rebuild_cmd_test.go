@@ -72,6 +72,30 @@ func rebuildCLIMockServer(t *testing.T, failPaths map[string]int) (*httptest.Ser
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 
+			// Handle rebuild-preview endpoint.
+			if strings.HasSuffix(r.URL.Path, "/rebuild-preview") {
+				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+					"patch_results": []map[string]any{
+						{
+							"patch_id":       "p1",
+							"branch_name":    "feature/a",
+							"position":       1,
+							"status":         "would_succeed",
+							"tree_sha":       "abc123",
+							"conflict_files": []string{},
+						},
+						{
+							"patch_id":       "p2",
+							"branch_name":    "feature/b",
+							"position":       2,
+							"status":         "would_conflict",
+							"conflict_files": []string{"base.txt"},
+						},
+					},
+				})
+				return
+			}
+
 			// Distinguish between list (ends with /rebuilds) and get (has /:id).
 			if strings.HasSuffix(r.URL.Path, "/rebuilds") {
 				// GET /api/v1/workspaces/:slug/rebuilds -- list rebuild jobs.
@@ -420,5 +444,129 @@ func TestRebuildCLI_Status_MissingAllArgs(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected non-zero exit when all args are missing; got nil error")
+	}
+}
+
+// =========================================================================
+// TS-NS-4: 'afc rebuild preview <workspace-slug>' sends GET
+// /api/v1/workspaces/:slug/rebuild-preview and prints the JSON result
+// to stdout, exiting with code 0.
+// Requirement: NS-REQ-4
+// =========================================================================
+
+func TestRebuildCLI_Preview_Success(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"preview", "my-workspace")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr; got: %s", stderr)
+	}
+
+	// Verify the correct API call was made.
+	reqs := getRebuildCLIRecords(records)
+	found := false
+	for _, req := range reqs {
+		if req.Method == "GET" && req.Path == "/api/v1/workspaces/my-workspace/rebuild-preview" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected GET /api/v1/workspaces/my-workspace/rebuild-preview request")
+	}
+
+	// Verify stdout is valid JSON containing patch_results.
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if _, ok := result["patch_results"]; !ok {
+		t.Error("response JSON missing 'patch_results' field")
+	}
+
+	// Verify it contains status values.
+	if !strings.Contains(stdout, "would_succeed") {
+		t.Errorf("stdout should contain 'would_succeed'; got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "would_conflict") {
+		t.Errorf("stdout should contain 'would_conflict'; got: %s", stdout)
+	}
+}
+
+func TestRebuildCLI_Preview_PrintsValidJSON(t *testing.T) {
+	server, _ := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	stdout, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"preview", "my-workspace")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	patchResults, ok := result["patch_results"].([]any)
+	if !ok {
+		t.Fatal("patch_results is not an array")
+	}
+	if len(patchResults) != 2 {
+		t.Fatalf("expected 2 patch_results; got %d", len(patchResults))
+	}
+}
+
+func TestRebuildCLI_Preview_APIError(t *testing.T) {
+	failPaths := map[string]int{
+		"/api/v1/workspaces/my-workspace/rebuild-preview": http.StatusBadRequest,
+	}
+	server, _ := rebuildCLIMockServer(t, failPaths)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"preview", "my-workspace")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit on API error; got nil error")
+	}
+}
+
+func TestRebuildCLI_Preview_MissingSlug(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"preview")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit when workspace-slug is missing; got nil error")
+	}
+
+	// No API call should have been made.
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 0 {
+		t.Errorf("expected 0 API requests; got %d", len(reqs))
+	}
+}
+
+// TS-NS-4: Verify RebuildCmd() has a 'preview' subcommand.
+func TestRebuildCmd_HasPreviewSubcommand(t *testing.T) {
+	cmd := RebuildCmd()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if strings.HasPrefix(sub.Use, "preview") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("RebuildCmd() should have a 'preview' subcommand")
 	}
 }
