@@ -161,22 +161,22 @@ type PatchStatusRebuild struct {
 
 // PatchStatusEntry is a single patch in the patch-status response.
 type PatchStatusEntry struct {
-	ID                    string   `json:"id"`
-	BranchName            string   `json:"branch_name"`
-	Position              int      `json:"position"`
-	Status                string   `json:"status"`
-	LastRebuildResult     *string  `json:"last_rebuild_result"`
-	ConflictFiles         []string `json:"conflict_files,omitempty"`
-	RerereResolutionCount int      `json:"rerere_resolution_count"`
+	ID                string   `json:"id"`
+	BranchName        string   `json:"branch_name"`
+	Position          int      `json:"position"`
+	Status            string   `json:"status"`
+	LastRebuildResult *string  `json:"last_rebuild_result"`
+	ConflictFiles     []string `json:"conflict_files,omitempty"`
 }
 
 // PatchStatusSummary aggregates patch status counts.
 type PatchStatusSummary struct {
-	TotalPatches   int `json:"total_patches"`
-	Active         int `json:"active"`
-	MergedUpstream int `json:"merged_upstream"`
-	Conflict       int `json:"conflict"`
-	Disabled       int `json:"disabled"`
+	TotalPatches          int `json:"total_patches"`
+	Active                int `json:"active"`
+	MergedUpstream        int `json:"merged_upstream"`
+	Conflict              int `json:"conflict"`
+	Disabled              int `json:"disabled"`
+	TotalRerereResolutions int `json:"total_rerere_resolutions"`
 }
 
 // ===========================================================================
@@ -847,11 +847,11 @@ func RegisterPatchStatusRoutes(api *echo.Group, cfg PatchStatusAPIConfig) {
 // handlePatchStatus handles GET /api/v1/workspaces/:slug/patch-status.
 //
 // 16-REQ-6.1: Aggregates workspace metadata, last rebuild, patches with
-// last_rebuild_result and rerere_resolution_count, and summary counts.
+// last_rebuild_result, and summary counts including total_rerere_resolutions.
 // 16-REQ-6.E1: Returns 400 if workspace is not in carry_patch mode.
 // 16-REQ-6.E2: Returns 403 if PAT lacks 'workspaces:read' scope.
 // 16-REQ-6.E3: Returns empty patches array and zero summary if no patches.
-// 16-REQ-6.E4: Sets rerere_resolution_count to 0 if rr-cache is inaccessible.
+// 16-REQ-6.E4: Sets total_rerere_resolutions to 0 if rr-cache is inaccessible.
 func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
@@ -945,10 +945,10 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 			}
 		}
 
-		// Count rerere resolutions per patch.
+		// Count total rerere resolutions for the workspace.
 		// 16-REQ-6.E4: If rr-cache is inaccessible, count remains 0.
 		rrCacheDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git", "rr-cache")
-		rrResolutions := countRerereResolutions(rrCacheDir)
+		totalRerereResolutions := countRerereResolutions(rrCacheDir)
 
 		// Build patches array.
 		patchEntries := make([]PatchStatusEntry, 0, len(patches))
@@ -967,15 +967,13 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 			}
 			// If no rebuild has been attempted, last_rebuild_result stays nil.
 
-			// Count rerere resolutions relevant to this patch.
-			entry.RerereResolutionCount = countPatchRerereResolutions(rrResolutions, p.BranchName)
-
 			patchEntries = append(patchEntries, entry)
 		}
 
 		// 16-REQ-6.2: Compute summary counts from patch statuses.
 		summary := PatchStatusSummary{
-			TotalPatches: len(patchEntries),
+			TotalPatches:           len(patchEntries),
+			TotalRerereResolutions: totalRerereResolutions,
 		}
 		for _, p := range patchEntries {
 			switch p.Status {
@@ -1032,15 +1030,15 @@ func nullStr(ns sql.NullString) string {
 	return ""
 }
 
-// countRerereResolutions reads the rr-cache directory and returns a map of
-// conflict file paths to their count. Returns an empty map if rr-cache is
-// inaccessible (16-REQ-6.E4).
-func countRerereResolutions(rrCacheDir string) map[string]int {
-	counts := make(map[string]int)
+// countRerereResolutions reads the rr-cache directory and returns the total
+// count of resolution entries. Returns 0 if rr-cache is inaccessible
+// (16-REQ-6.E4).
+func countRerereResolutions(rrCacheDir string) int {
 	entries, err := os.ReadDir(rrCacheDir)
 	if err != nil {
-		return counts
+		return 0
 	}
+	count := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -1048,22 +1046,9 @@ func countRerereResolutions(rrCacheDir string) map[string]int {
 		subdir := filepath.Join(rrCacheDir, entry.Name())
 		path := derivePathFromRRCache(subdir)
 		if path != nil {
-			counts[*path]++
+			count++
 		}
 	}
-	return counts
-}
-
-// countPatchRerereResolutions counts how many rerere resolutions are relevant
-// to the given patch branch. Currently counts all resolutions as potentially
-// relevant since we don't have branch-level file tracking. This matches the
-// spec requirement to count resolutions "relevant to files touched by the
-// patch branch".
-func countPatchRerereResolutions(resolutions map[string]int, _ string) int {
-	total := 0
-	for _, count := range resolutions {
-		total += count
-	}
-	return total
+	return count
 }
 

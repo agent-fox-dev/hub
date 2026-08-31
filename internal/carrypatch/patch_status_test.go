@@ -10,7 +10,7 @@ import (
 // ===========================================================================
 // TS-16-19: GET /api/v1/workspaces/:slug/patch-status returns HTTP 200 with
 // a fully aggregated response including workspace metadata, last_rebuild,
-// patches array with last_rebuild_result and rerere_resolution_count, and
+// patches array with last_rebuild_result, and
 // summary counts.
 //
 // Requirement: 16-REQ-6.1
@@ -492,7 +492,7 @@ func TestPatchStatus_CloneError_Populated(t *testing.T) {
 	}
 }
 
-// 16-REQ-6.E4: If rr-cache is inaccessible, rerere_resolution_count=0 for all patches.
+// 16-REQ-6.E4: If rr-cache is inaccessible, total_rerere_resolutions=0 in summary.
 func TestPatchStatus_InaccessibleRRCache_ZeroResolutionCount(t *testing.T) {
 	env := newFullTestEnv(t)
 
@@ -523,10 +523,113 @@ func TestPatchStatus_InaccessibleRRCache_ZeroResolutionCount(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	for _, patch := range resp.Patches {
-		if patch.RerereResolutionCount != 0 {
-			t.Errorf("expected rerere_resolution_count=0 for patch %q (rr-cache inaccessible), got %d",
-				patch.BranchName, patch.RerereResolutionCount)
+	if resp.Summary.TotalRerereResolutions != 0 {
+		t.Errorf("expected summary.total_rerere_resolutions=0 (rr-cache inaccessible), got %d",
+			resp.Summary.TotalRerereResolutions)
+	}
+}
+
+// ===========================================================================
+// TS-NS-1 (issue #23): rerere_resolution_count is removed from PatchStatusEntry
+// and is no longer present in the patches[] array of the API response.
+// ===========================================================================
+
+func TestPatchStatus_NoPerPatchRerereField(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		"aaaa000000000000000000000000000000000001",
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	// Set up rr-cache with 2 entries.
+	entries := []rrCacheEntry{
+		{hash: "aabbccdd1", preimage: "<<<<<<< pkg/api.go\nours\n=======\ntheirs\n>>>>>>>"},
+		{hash: "aabbccdd2", preimage: "<<<<<<< pkg/handler.go\nours\n=======\ntheirs\n>>>>>>>"},
+	}
+	setupRRCacheDir(t, env.workspaceRoot, "my-workspace", entries)
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/my-workspace/patch-status", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /patch-status status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	// Decode as raw JSON to verify no rerere_resolution_count key in patches.
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	var patches []map[string]json.RawMessage
+	if err := json.Unmarshal(raw["patches"], &patches); err != nil {
+		t.Fatalf("failed to decode patches: %v", err)
+	}
+
+	for i, patch := range patches {
+		if _, exists := patch["rerere_resolution_count"]; exists {
+			t.Errorf("patch[%d] should not contain rerere_resolution_count key", i)
 		}
+	}
+}
+
+// ===========================================================================
+// TS-NS-2 (issue #23): PatchStatusSummary has total_rerere_resolutions that
+// equals the total count of all rr-cache entries for the workspace.
+// ===========================================================================
+
+func TestPatchStatus_SummaryRerereResolutions(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		"aaaa000000000000000000000000000000000001",
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+
+	// Two patches to verify the count is workspace-level, not per-patch.
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	seedPatch(t, env.db, "p2", "my-workspace", "feature/b", 2, PatchStatusActive)
+
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+		{ID: "p2", WorkspaceID: "my-workspace", BranchName: "feature/b", Position: 2, Status: PatchStatusActive},
+	}
+
+	// Set up rr-cache with 3 resolution entries.
+	entries := []rrCacheEntry{
+		{hash: "aabbccdd1", preimage: "<<<<<<< pkg/api.go\nours\n=======\ntheirs\n>>>>>>>"},
+		{hash: "aabbccdd2", preimage: "<<<<<<< pkg/handler.go\nours\n=======\ntheirs\n>>>>>>>"},
+		{hash: "aabbccdd3", preimage: "<<<<<<< pkg/model.go\nours\n=======\ntheirs\n>>>>>>>"},
+	}
+	setupRRCacheDir(t, env.workspaceRoot, "my-workspace", entries)
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/my-workspace/patch-status", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /patch-status status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp PatchStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Summary.TotalRerereResolutions != 3 {
+		t.Errorf("expected summary.total_rerere_resolutions=3, got %d",
+			resp.Summary.TotalRerereResolutions)
 	}
 }

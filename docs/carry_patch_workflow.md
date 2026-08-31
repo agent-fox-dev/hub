@@ -631,9 +631,9 @@ until after the first sync and rebuild.
 the `REBUILD_STRATEGY` workspace variable. There is no flag to override the
 strategy for a single rebuild.
 
-**Rerere resolution count is global.** The `rerere_resolution_count` in the
-patch-status dashboard counts all recorded rerere resolutions for the
-workspace, not per-patch. The count is the same for every patch in the list.
+**Rerere resolution count is workspace-level.** The `total_rerere_resolutions`
+field in the patch-status dashboard summary counts all recorded rerere
+resolutions for the workspace. It is not broken down per-patch.
 
 **Post-clone setup failures are non-fatal.** If adding the `upstream`
 remote, enabling rerere, or creating the integration branch fails during

@@ -1063,8 +1063,8 @@ for completed jobs with results.
 
 The patch-status endpoint provides a comprehensive health summary of the
 carry-patch stack for a workspace, aggregating workspace metadata, the most
-recent rebuild result, per-patch status with rerere resolution counts, and
-summary counts.
+recent rebuild result, per-patch status, and summary counts including the
+total rerere resolution count for the workspace.
 
 ### GET /api/v1/workspaces/:slug/patch-status
 
@@ -1107,8 +1107,7 @@ Return a full status dashboard for the carry-patch stack.
       "branch_name": "feature/patch-a",
       "position": 1,
       "status": "active",
-      "last_rebuild_result": "success",
-      "rerere_resolution_count": 0
+      "last_rebuild_result": "success"
     },
     {
       "id": "uuid-string",
@@ -1116,8 +1115,7 @@ Return a full status dashboard for the carry-patch stack.
       "position": 2,
       "status": "conflict",
       "last_rebuild_result": "conflict",
-      "conflict_files": ["pkg/api.go"],
-      "rerere_resolution_count": 1
+      "conflict_files": ["pkg/api.go"]
     }
   ],
   "summary": {
@@ -1125,7 +1123,8 @@ Return a full status dashboard for the carry-patch stack.
     "active": 1,
     "merged_upstream": 0,
     "conflict": 1,
-    "disabled": 0
+    "disabled": 0,
+    "total_rerere_resolutions": 1
   }
 }
 ```
@@ -1157,13 +1156,13 @@ Return a full status dashboard for the carry-patch stack.
 | `patches[].status` | string | Current patch status (`active`, `conflict`, `disabled`, `merged_upstream`) |
 | `patches[].last_rebuild_result` | string or null | Per-patch result from most recent rebuild (`success`, `conflict`, `skipped`); null if no rebuild has been attempted |
 | `patches[].conflict_files` | array of strings | File paths with unresolved conflicts (present only when `last_rebuild_result` is `conflict`) |
-| `patches[].rerere_resolution_count` | integer | Count of recorded rerere resolutions relevant to files touched by this patch; 0 if rr-cache is inaccessible |
 | `summary` | object | Aggregate counts derived from the patches array |
 | `summary.total_patches` | integer | Total number of patches (equals length of `patches` array) |
 | `summary.active` | integer | Count of patches with status `active` |
 | `summary.merged_upstream` | integer | Count of patches with status `merged_upstream` |
 | `summary.conflict` | integer | Count of patches with status `conflict` |
 | `summary.disabled` | integer | Count of patches with status `disabled` |
+| `summary.total_rerere_resolutions` | integer | Total count of recorded rerere resolutions for the workspace; 0 if rr-cache is inaccessible |
 
 **Consistency invariant:** `summary.total_patches` equals `len(patches)`, and
 `summary.active + summary.merged_upstream + summary.conflict + summary.disabled`
@@ -1176,8 +1175,8 @@ equals `summary.total_patches`.
   have `last_rebuild_result` set to null.
 - If the patches table is empty, returns `patches: []` and all summary counts
   at zero.
-- If the `rr-cache` directory is inaccessible, `rerere_resolution_count` is
-  set to 0 for all patches rather than failing the request.
+- If the `rr-cache` directory is inaccessible, `summary.total_rerere_resolutions`
+  is set to 0 rather than failing the request.
 
 **Known schema issue:** The code queries `conflict_files` from the patches
 table, but this column does not exist in the current production schema

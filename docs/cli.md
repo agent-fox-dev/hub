@@ -419,7 +419,7 @@ afc workspace patch-status <workspace-slug>
   workspace metadata (`workspace_slug`, `workspace_mode`, `upstream_url`,
   `upstream_head_sha`, `integration_branch`, `integration_head_sha`,
   `last_sync_at`), `last_rebuild` summary, per-patch status array with
-  `last_rebuild_result` and `rerere_resolution_count`, and `summary` counts.
+  `last_rebuild_result`, and `summary` counts (including `total_rerere_resolutions`).
 - Requires `workspaces:read` permission scope for PATs.
 
 **Exit Codes:**
