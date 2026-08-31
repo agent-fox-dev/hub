@@ -101,6 +101,14 @@ type PatchStatusAPIConfig struct {
 type PatchStatusResponse struct {
 	WorkspaceSlug      string             `json:"workspace_slug"`
 	WorkspaceMode      string             `json:"workspace_mode"`
+	Status             string             `json:"status"`
+	CloneStatus        string             `json:"clone_status"`
+	CloneError         string             `json:"clone_error,omitempty"`
+	SyncStatus         string             `json:"sync_status"`
+	SyncError          string             `json:"sync_error,omitempty"`
+	SyncMode           string             `json:"sync_mode"`
+	HeadSHA            string             `json:"head_sha"`
+	GitURL             string             `json:"git_url"`
 	UpstreamURL        string             `json:"upstream_url"`
 	UpstreamHeadSHA    string             `json:"upstream_head_sha"`
 	IntegrationBranch  string             `json:"integration_branch"`
@@ -434,12 +442,17 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// Load workspace metadata.
-		var mode string
+		var mode, wsStatus, cloneStatus, syncStatus, syncMode string
 		var upstreamURL, upstreamHeadSHA, integrationBranch, lastSyncAt sql.NullString
+		var cloneError, syncError, headSHA, gitURL sql.NullString
 		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, upstream_url, upstream_head_sha, integration_branch, last_sync_at
+			`SELECT workspace_mode, status, clone_status, clone_error,
+			        sync_status, sync_error, sync_mode, head_sha, git_url,
+			        upstream_url, upstream_head_sha, integration_branch, last_sync_at
 			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &upstreamURL, &upstreamHeadSHA, &integrationBranch, &lastSyncAt)
+		).Scan(&mode, &wsStatus, &cloneStatus, &cloneError,
+			&syncStatus, &syncError, &syncMode, &headSHA, &gitURL,
+			&upstreamURL, &upstreamHeadSHA, &integrationBranch, &lastSyncAt)
 		if err == sql.ErrNoRows {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
@@ -562,6 +575,14 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		resp := PatchStatusResponse{
 			WorkspaceSlug:      slug,
 			WorkspaceMode:      mode,
+			Status:             wsStatus,
+			CloneStatus:        cloneStatus,
+			CloneError:         nullStr(cloneError),
+			SyncStatus:         syncStatus,
+			SyncError:          nullStr(syncError),
+			SyncMode:           syncMode,
+			HeadSHA:            nullStr(headSHA),
+			GitURL:             nullStr(gitURL),
 			UpstreamURL:        nullStr(upstreamURL),
 			UpstreamHeadSHA:    nullStr(upstreamHeadSHA),
 			IntegrationBranch:  nullStr(integrationBranch),

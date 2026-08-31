@@ -1084,6 +1084,14 @@ Return a full status dashboard for the carry-patch stack.
 {
   "workspace_slug": "my-workspace",
   "workspace_mode": "carry_patch",
+  "status": "active",
+  "clone_status": "ready",
+  "clone_error": "",
+  "sync_status": "idle",
+  "sync_error": "",
+  "sync_mode": "pull_only",
+  "head_sha": "fedcba987654...",
+  "git_url": "https://github.com/example/repo.git",
   "upstream_url": "https://github.com/upstream/repo.git",
   "upstream_head_sha": "abc123def456...",
   "integration_branch": "integration",
@@ -1126,6 +1134,14 @@ Return a full status dashboard for the carry-patch stack.
 |-------|------|-------------|
 | `workspace_slug` | string | The workspace slug |
 | `workspace_mode` | string | Always `"carry_patch"` |
+| `status` | string | Workspace status (`active`, `archived`, etc.) |
+| `clone_status` | string | Clone status (`pending`, `cloning`, `ready`, `failed`, `archived`) |
+| `clone_error` | string | Clone error message; empty string if no error (omitted from JSON when empty) |
+| `sync_status` | string | Sync status (`idle`, `syncing`, etc.) |
+| `sync_error` | string | Sync error message; empty string if no error (omitted from JSON when empty) |
+| `sync_mode` | string | Sync mode (`pull_only`, etc.) |
+| `head_sha` | string | SHA of the workspace HEAD; empty string if not yet cloned |
+| `git_url` | string | The workspace git repository URL |
 | `upstream_url` | string | The upstream repository URL |
 | `upstream_head_sha` | string | SHA of the upstream HEAD at last fetch |
 | `integration_branch` | string | Name of the integration branch |

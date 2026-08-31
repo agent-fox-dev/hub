@@ -335,6 +335,163 @@ func TestPatchStatus_EmptyPatches_ReturnsZeroCounts(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// TS-NS-1: Patch-status response includes workspace health fields.
+//
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestPatchStatus_IncludesWorkspaceHealthFields(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	// Seed workspace with known values for all fields.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode,
+		 integration_branch, upstream_url, upstream_head_sha, last_sync_at, head_sha, sync_mode,
+		 sync_status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, 'pull_only', 'idle', ?, ?)`,
+		"ws-health", "https://github.com/example/repo", "alice",
+		"integration",
+		"https://github.com/example/upstream",
+		"aaaa000000000000000000000000000000000001",
+		now,
+		"cccc000000000000000000000000000000000001",
+		now, now,
+	)
+	if err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-health/patch-status", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /patch-status status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp PatchStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Status != "active" {
+		t.Errorf("expected status='active', got %q", resp.Status)
+	}
+	if resp.CloneStatus != "ready" {
+		t.Errorf("expected clone_status='ready', got %q", resp.CloneStatus)
+	}
+	if resp.HeadSHA != "cccc000000000000000000000000000000000001" {
+		t.Errorf("expected head_sha='cccc...0001', got %q", resp.HeadSHA)
+	}
+	if resp.GitURL != "https://github.com/example/repo" {
+		t.Errorf("expected git_url='https://github.com/example/repo', got %q", resp.GitURL)
+	}
+	if resp.SyncMode != "pull_only" {
+		t.Errorf("expected sync_mode='pull_only', got %q", resp.SyncMode)
+	}
+	if resp.SyncStatus != "idle" {
+		t.Errorf("expected sync_status='idle', got %q", resp.SyncStatus)
+	}
+	// No sync error or clone error set — should be empty.
+	if resp.SyncError != "" {
+		t.Errorf("expected sync_error='', got %q", resp.SyncError)
+	}
+	if resp.CloneError != "" {
+		t.Errorf("expected clone_error='', got %q", resp.CloneError)
+	}
+}
+
+// ===========================================================================
+// TS-NS-2: When a workspace has a sync error, sync_error is populated.
+//
+// Requirement: NS-REQ-2
+// ===========================================================================
+
+func TestPatchStatus_SyncError_Populated(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode,
+		 integration_branch, upstream_url, upstream_head_sha, last_sync_at, sync_error, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?, ?)`,
+		"ws-sync-err", "https://github.com/example/repo", "alice",
+		"integration",
+		"https://github.com/example/upstream",
+		"aaaa000000000000000000000000000000000001",
+		now,
+		"remote: not found",
+		now, now,
+	)
+	if err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-sync-err/patch-status", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /patch-status status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp PatchStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.SyncError != "remote: not found" {
+		t.Errorf("expected sync_error='remote: not found', got %q", resp.SyncError)
+	}
+}
+
+// ===========================================================================
+// TS-NS-3: When a workspace clone failed, clone_error is populated.
+//
+// Requirement: NS-REQ-3
+// ===========================================================================
+
+func TestPatchStatus_CloneError_Populated(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode,
+		 integration_branch, upstream_url, clone_error, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'failed', 'carry_patch', ?, ?, ?, ?, ?)`,
+		"ws-clone-err", "https://github.com/example/repo", "alice",
+		"integration",
+		"https://github.com/example/upstream",
+		"authentication failure",
+		now, now,
+	)
+	if err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-clone-err/patch-status", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /patch-status status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp PatchStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.CloneError != "authentication failure" {
+		t.Errorf("expected clone_error='authentication failure', got %q", resp.CloneError)
+	}
+	if resp.CloneStatus != "failed" {
+		t.Errorf("expected clone_status='failed', got %q", resp.CloneStatus)
+	}
+}
+
 // 16-REQ-6.E4: If rr-cache is inaccessible, rerere_resolution_count=0 for all patches.
 func TestPatchStatus_InaccessibleRRCache_ZeroResolutionCount(t *testing.T) {
 	env := newFullTestEnv(t)
