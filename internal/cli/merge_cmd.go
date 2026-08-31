@@ -35,10 +35,12 @@ func MergeCmd() *cobra.Command {
 // newMergeSubmitCmd returns the 'merge submit' subcommand.
 // It sends POST /api/v1/workspaces/:slug/merges with the target and source
 // branches specified via --target and --source flags.
+// With --wait, it polls the merge job status until a terminal state is reached.
 func newMergeSubmitCmd() *cobra.Command {
 	var (
 		target string
 		source string
+		wf     waitFlags
 	)
 
 	cmd := &cobra.Command{
@@ -48,6 +50,8 @@ func newMergeSubmitCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+
 			if target == "" {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "--target flag is required"))
 			}
@@ -65,17 +69,34 @@ func newMergeSubmitCmd() *cobra.Command {
 				"source_ref":    source,
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/merges", body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+slug+"/merges", body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			return apikit.CLIPrintResult(cmd, result)
+			if !wf.Wait {
+				return apikit.CLIPrintResult(cmd, result)
+			}
+
+			// Print the initial submit response, then poll for completion.
+			printJSON(cmd, result)
+
+			jobID, err := extractJobID(result)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			statusPath := "/workspaces/" + slug + "/merges/" + jobID
+			if err := pollJobStatus(cmd, client, wf, statusPath); err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&target, "target", "", "Target branch (required)")
 	cmd.Flags().StringVar(&source, "source", "", "Source branch (required)")
+	addWaitFlags(cmd, &wf)
 
 	return cmd
 }

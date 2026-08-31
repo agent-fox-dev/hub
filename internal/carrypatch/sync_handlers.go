@@ -232,7 +232,7 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 			groupKey := slug + ":" + integrationBranch
 			nonce := uuid.New().String()
 
-			_, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
+			jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
 				Type:        "rebuild",
 				Key:         slug,
 				Nonce:       nonce,
@@ -243,6 +243,7 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 
 			if enqErr == nil && !duplicate {
 				resp.RebuildTriggered = true
+				resp.RebuildJobID = &jobID
 			}
 			// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
 			// running, silently ignore — rebuild_triggered stays false.

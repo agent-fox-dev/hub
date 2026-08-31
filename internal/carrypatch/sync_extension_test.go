@@ -321,6 +321,106 @@ func TestCarryPatchSync_IsAncestorError_SkipsPatch(t *testing.T) {
 }
 
 // ===========================================================================
+// TS-NS-1: Sync response includes rebuild_job_id when a rebuild is triggered.
+// When rebuild_triggered=true, rebuild_job_id must be a non-empty string
+// matching an actual queued rebuild job. When rebuild_triggered=false,
+// rebuild_job_id must be absent.
+//
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestCarryPatchSync_RebuildJobID_Present(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		"aaaa000000000000000000000000000000000001",
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/sync", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resp.RebuildTriggered {
+		t.Fatal("expected rebuild_triggered=true when upstream advanced")
+	}
+
+	if resp.RebuildJobID == nil || *resp.RebuildJobID == "" {
+		t.Fatal("expected non-empty rebuild_job_id when rebuild_triggered=true")
+	}
+
+	// Verify the job ID matches an actual queued rebuild job by fetching it.
+	jobRec := env.doRequest(t, http.MethodGet,
+		"/api/v1/workspaces/my-workspace/rebuilds/"+*resp.RebuildJobID, "", auth)
+
+	if jobRec.Code != http.StatusOK {
+		t.Fatalf("GET /rebuilds/%s status = %d; want %d; body = %s",
+			*resp.RebuildJobID, jobRec.Code, http.StatusOK, jobRec.Body.String())
+	}
+}
+
+func TestCarryPatchSync_RebuildJobID_Absent_WhenNoRebuild(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		"aaaa000000000000000000000000000000000001",
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	// Mock: upstream HEAD hasn't changed.
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		return "aaaa000000000000000000000000000000000001", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/sync", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.RebuildTriggered {
+		t.Error("expected rebuild_triggered=false when upstream unchanged")
+	}
+
+	if resp.RebuildJobID != nil {
+		t.Errorf("expected rebuild_job_id to be nil when rebuild not triggered, got %q", *resp.RebuildJobID)
+	}
+}
+
+// ===========================================================================
 // TS-16-17: After sync completes with patches merged and AUTO_REBUILD_AFTER_SYNC
 // ='true', a rebuild job is enqueued and rebuild_triggered=true; if a rebuild
 // is already queued, rebuild_triggered=false.

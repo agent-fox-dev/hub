@@ -71,6 +71,8 @@ func BuildRootCommand() *cobra.Command {
 }
 
 // newCreateCmd returns the 'workspace create' subcommand.
+// With --wait, it polls the workspace's clone_status until it reaches
+// "ready" or "failed".
 func newCreateCmd() *cobra.Command {
 	var (
 		gitURL            string
@@ -86,6 +88,7 @@ func newCreateCmd() *cobra.Command {
 		gitPAT            string
 		gitUsername        string
 		gitPassword       string
+		wf                waitFlags
 	)
 
 	cmd := &cobra.Command{
@@ -223,7 +226,17 @@ func newCreateCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			return apikit.CLIPrintResult(cmd, result)
+			if !wf.Wait {
+				return apikit.CLIPrintResult(cmd, result)
+			}
+
+			// Print the initial create response, then poll for clone completion.
+			printJSON(cmd, result)
+
+			if err := pollWorkspaceCloneStatus(cmd, client, wf, slug); err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+			return nil
 		},
 	}
 
@@ -240,6 +253,7 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gitPAT, "git-pat", "", "Personal access token for private repo (optional)")
 	cmd.Flags().StringVar(&gitUsername, "git-username", "", "Git username for private repo (optional)")
 	cmd.Flags().StringVar(&gitPassword, "git-password", "", "Git password for private repo (optional)")
+	addWaitFlags(cmd, &wf)
 
 	return cmd
 }
@@ -475,9 +489,14 @@ func newDeleteCmd() *cobra.Command {
 
 // newSyncCmd returns the 'workspace sync' subcommand.
 // It triggers an upstream sync operation for a workspace.
+// With --wait, if a rebuild is triggered, it polls the rebuild status until
+// a terminal state is reached.
 // Requirements: 13-REQ-2.3, 13-REQ-8
 func newSyncCmd() *cobra.Command {
-	var resetToUpstream bool
+	var (
+		resetToUpstream bool
+		wf              waitFlags
+	)
 
 	cmd := &cobra.Command{
 		Use:           "sync <slug>",
@@ -503,12 +522,31 @@ func newSyncCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			return apikit.CLIPrintResult(cmd, result)
+			if !wf.Wait {
+				return apikit.CLIPrintResult(cmd, result)
+			}
+
+			// Print the sync response first.
+			printJSON(cmd, result)
+
+			// If a rebuild was triggered, poll for its completion.
+			rebuildJobID := extractRebuildJobID(result)
+			if rebuildJobID == "" {
+				// No rebuild triggered — nothing to wait for.
+				return nil
+			}
+
+			statusPath := "/workspaces/" + slug + "/rebuilds/" + rebuildJobID
+			if err := pollJobStatus(cmd, client, wf, statusPath); err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&resetToUpstream, "reset-to-upstream", false,
 		"Force-reset the local integration branch to match upstream HEAD (recovery after force-push)")
+	addWaitFlags(cmd, &wf)
 
 	return cmd
 }

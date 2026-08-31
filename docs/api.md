@@ -467,7 +467,8 @@ triggering. The response includes additional fields:
 ```json
 {
   "patches_merged": ["feature/already-merged"],
-  "rebuild_triggered": true
+  "rebuild_triggered": true,
+  "rebuild_job_id": "d3b07384-d113-4ec5-8a4e-a12345678901"
 }
 ```
 
@@ -475,6 +476,7 @@ triggering. The response includes additional fields:
 |-------|------|-------------|
 | `patches_merged` | string[] | Branch names of patches detected as merged upstream via ancestry check |
 | `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
+| `rebuild_job_id` | string or null | ID of the enqueued rebuild job (present only when `rebuild_triggered` is `true`) |
 
 **Carry-Patch Sync Flow:**
 

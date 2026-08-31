@@ -86,6 +86,7 @@ type SyncAPIConfig struct {
 type CarryPatchSyncResponse struct {
 	PatchesMerged    []string `json:"patches_merged"`
 	RebuildTriggered bool     `json:"rebuild_triggered"`
+	RebuildJobID     *string  `json:"rebuild_job_id,omitempty"`
 }
 
 // PatchStatusAPIConfig holds dependencies for patch-status endpoint.

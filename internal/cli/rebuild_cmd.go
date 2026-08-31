@@ -32,29 +32,53 @@ func RebuildCmd() *cobra.Command {
 
 // newRebuildSubmitCmd returns the 'rebuild submit' subcommand.
 // It sends POST /api/v1/workspaces/:slug/rebuild and prints the job record.
+// With --wait, it polls the rebuild status until a terminal state is reached.
 // Requirements: 16-REQ-7.1
 func newRebuildSubmitCmd() *cobra.Command {
-	return &cobra.Command{
+	var wf waitFlags
+
+	cmd := &cobra.Command{
 		Use:           "submit <workspace-slug>",
 		Short:         "Submit a rebuild job",
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+
 			client, err := apikit.CLIClientFromCmd(cmd)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+args[0]+"/rebuild", nil)
+				"/workspaces/"+slug+"/rebuild", nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			return apikit.CLIPrintResult(cmd, result)
+			if !wf.Wait {
+				return apikit.CLIPrintResult(cmd, result)
+			}
+
+			// Print the initial submit response, then poll for completion.
+			printJSON(cmd, result)
+
+			jobID, err := extractJobID(result)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			statusPath := "/workspaces/" + slug + "/rebuilds/" + jobID
+			if err := pollJobStatus(cmd, client, wf, statusPath); err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+			return nil
 		},
 	}
+
+	addWaitFlags(cmd, &wf)
+	return cmd
 }
 
 // newRebuildListCmd returns the 'rebuild list' subcommand.

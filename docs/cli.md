@@ -47,6 +47,9 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--git-pat` | no | string | Personal access token for authenticating against a private repository |
 | `--git-username` | no | string | Git username for HTTP basic auth (must be paired with `--git-password`) |
 | `--git-password` | no | string | Git password for HTTP basic auth (must be paired with `--git-username`) |
+| `--wait` | no | boolean | Block until the workspace clone reaches `ready` or `failed` status |
+| `--timeout` | no | duration | Maximum time to wait for clone completion (default `5m0s`, only effective with `--wait`) |
+| `--poll-interval` | no | duration | Interval between clone status polls (default `5s`, only effective with `--wait`) |
 
 **Credential flag rules:**
 
@@ -302,7 +305,7 @@ repository and fast-forwards the local integration branch.
 **Usage:**
 
 ```
-afc workspace sync <slug> [flags]
+afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] [--poll-interval <duration>]
 ```
 
 **Arguments:**
@@ -313,9 +316,12 @@ afc workspace sync <slug> [flags]
 
 **Flags:**
 
-| Flag | Required | Type | Description |
-|------|----------|------|-------------|
-| `--reset-to-upstream` | no | boolean | Force-reset the local integration branch to match upstream HEAD (recovery after force-push) |
+| Flag | Required | Type | Default | Description |
+|------|----------|------|---------|-------------|
+| `--reset-to-upstream` | no | boolean | `false` | Force-reset the local integration branch to match upstream HEAD (recovery after force-push) |
+| `--wait` | no | boolean | `false` | Block until the auto-triggered rebuild (if any) reaches a terminal state |
+| `--timeout` | no | duration | `5m0s` | Maximum time to wait for rebuild completion (only effective with `--wait`) |
+| `--poll-interval` | no | duration | `5s` | Interval between rebuild status polls (only effective with `--wait`) |
 
 **Behavior:**
 
@@ -326,14 +332,21 @@ afc workspace sync <slug> [flags]
 - Prints the updated workspace JSON to stdout, including sync status fields
   (`sync_status`, `sync_mode`, `upstream_head_sha`, `last_sync_at`,
   `sync_error`).
+- For carry-patch workspaces, the response includes `rebuild_triggered` and
+  `rebuild_job_id` fields.
+- With `--wait`: if a rebuild was triggered (`rebuild_job_id` is present),
+  polls `GET /api/v1/workspaces/<slug>/rebuilds/<id>` until the rebuild
+  reaches a terminal state. Prints the final rebuild record and exits 0.
+  If no rebuild was triggered, exits immediately after printing the sync
+  response.
 - Requires `workspaces:sync` permission scope for PATs.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
-| 0 | Sync completed successfully |
-| 1 | Workspace not found, sync disabled, clone not ready, sync already in progress, API error, network error, or timeout |
+| 0 | Sync completed successfully (and rebuild completed when using `--wait`) |
+| 1 | Workspace not found, sync disabled, clone not ready, sync already in progress, API error, network error, or timeout (with `--wait`) |
 
 ---
 
@@ -920,7 +933,7 @@ Submit a merge job for a workspace.
 **Usage:**
 
 ```
-afc merge submit <workspace-slug> --target <branch> --source <branch>
+afc merge submit <workspace-slug> --target <branch> --source <branch> [--wait] [--timeout <duration>] [--poll-interval <duration>]
 ```
 
 **Arguments:**
@@ -935,6 +948,9 @@ afc merge submit <workspace-slug> --target <branch> --source <branch>
 |------|----------|------|-------------|
 | `--target` | yes | string | Target branch to merge into |
 | `--source` | yes | string | Source branch to merge from |
+| `--wait` | no | boolean | Block until the merge job reaches a terminal state |
+| `--timeout` | no | duration | Maximum time to wait for completion (default `5m0s`, only effective with `--wait`) |
+| `--poll-interval` | no | duration | Interval between status polls (default `5s`, only effective with `--wait`) |
 
 **Behavior:**
 
@@ -942,14 +958,19 @@ afc merge submit <workspace-slug> --target <branch> --source <branch>
   `source_ref` in the request body.
 - Prints the created merge job JSON to stdout, including `id` and
   `status` (initially `queued`).
+- With `--wait`: prints the initial submit response, then polls
+  `GET /api/v1/workspaces/<slug>/merges/<id>` until the job reaches a
+  terminal state (`completed`, `failed`, `dead_letter`, or `cancelled`).
+  Prints the final job record and exits 0. If the timeout is exceeded,
+  prints a timeout message to stderr and exits 1.
 - Requires `merges:write` permission scope for PATs.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
-| 0 | Merge job submitted successfully |
-| 1 | API error (4xx/5xx), network error, or timeout |
+| 0 | Merge job submitted successfully (or completed when using `--wait`) |
+| 1 | API error (4xx/5xx), network error, or timeout (with `--wait`) |
 | 2 | Missing `--target` or `--source` flag |
 
 ---
@@ -1065,7 +1086,7 @@ Submit a rebuild job for a carry-patch workspace.
 **Usage:**
 
 ```
-afc rebuild submit <workspace-slug>
+afc rebuild submit <workspace-slug> [--wait] [--timeout <duration>] [--poll-interval <duration>]
 ```
 
 **Arguments:**
@@ -1074,19 +1095,32 @@ afc rebuild submit <workspace-slug>
 |----------|-------------|
 | `<workspace-slug>` | The workspace slug to submit the rebuild job for |
 
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--wait` | `false` | Block until the rebuild job reaches a terminal state |
+| `--timeout` | `5m0s` | Maximum time to wait for completion (only effective with `--wait`) |
+| `--poll-interval` | `5s` | Interval between status polls (only effective with `--wait`) |
+
 **Behavior:**
 
 - Sends `POST /api/v1/workspaces/<slug>/rebuild`.
 - Prints the returned job record (JSON) to stdout, including job `id` and
   `status` (`queued`).
 - Exits with code 0 on success.
+- With `--wait`: prints the initial submit response, then polls
+  `GET /api/v1/workspaces/<slug>/rebuilds/<id>` until the job reaches a
+  terminal state (`completed`, `failed`, `dead_letter`, or `cancelled`).
+  Prints the final job record and exits 0. If the timeout is exceeded,
+  prints a timeout message to stderr and exits 1.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
-| 0 | Rebuild job submitted successfully |
-| 1 | Missing workspace slug, workspace not in carry_patch mode, no active patches, duplicate job, API error, or network error |
+| 0 | Rebuild job submitted successfully (or completed when using `--wait`) |
+| 1 | Missing workspace slug, workspace not in carry_patch mode, no active patches, duplicate job, API error, network error, or timeout (with `--wait`) |
 
 ---
 
