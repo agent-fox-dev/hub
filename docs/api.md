@@ -29,9 +29,9 @@ they can access. The following scopes are available for workspace operations:
 
 | Scope | Description | Authorized Endpoints |
 |-------|-------------|---------------------|
-| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces/:slug/patch-status |
+| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, GET /api/v1/workspaces/:slug/patch-status |
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
-| `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
+| `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
 | `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches |
@@ -913,7 +913,7 @@ List all recorded rerere resolutions for a workspace.
 
 Forget a specific recorded rerere resolution by executing `git rerere forget <pathspec>`.
 
-**Authentication:** API Key, or PAT with `workspaces:read` scope.
+**Authentication:** API Key, or PAT with `workspaces:write` scope.
 
 **Path Parameters:**
 
@@ -930,7 +930,7 @@ Forget a specific recorded rerere resolution by executing `git rerere forget <pa
 |--------|-----------|
 | 400 | Empty pathspec |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `workspaces:read` scope |
+| 403 | PAT lacks `workspaces:write` scope |
 | 404 | Workspace not found; no recorded resolution for the given pathspec |
 
 ---

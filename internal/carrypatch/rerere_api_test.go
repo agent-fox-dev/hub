@@ -220,7 +220,7 @@ func TestRerereForget_PathWithSlashes_CapturedCorrectly(t *testing.T) {
 	}
 }
 
-// 16-REQ-4.E4: PAT without 'workspaces:read' scope returns 403 for forget.
+// PAT without any scope returns 403 for forget.
 func TestRerereForget_PATWithoutScope_Returns403(t *testing.T) {
 	env := newFullTestEnv(t)
 
@@ -232,5 +232,48 @@ func TestRerereForget_PATWithoutScope_Returns403(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("DELETE /rerere (PAT without scope) status = %d; want %d; body = %s",
 			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// Issue #10: PAT with only workspaces:read (but not workspaces:write) returns
+// 403 for DELETE rerere — destructive mutations require write scope.
+func TestRerereForget_PATWithReadOnly_Returns403(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+
+	auth := rebuildPATAuth("alice", "workspaces:read") // read-only, no write
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/my-workspace/rerere/src/config.go", "", auth)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("DELETE /rerere (PAT with workspaces:read only) status = %d; want %d; body = %s",
+			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// Issue #10: PAT with workspaces:write scope can successfully forget a rerere
+// resolution (returns 204).
+func TestRerereForget_PATWithWriteScope_Returns204(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+
+	// Set up rr-cache with a resolution for src/config.go.
+	entries := []rrCacheEntry{
+		{hash: "aabbccdd1", preimage: "<<<<<<< src/config.go\nours\n=======\ntheirs\n>>>>>>>"},
+	}
+	setupRRCacheDir(t, env.workspaceRoot, "my-workspace", entries)
+
+	// Mock git rerere forget to succeed.
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		return "", nil
+	}
+
+	auth := rebuildPATAuth("alice", "workspaces:write")
+	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/my-workspace/rerere/src/config.go", "", auth)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /rerere (PAT with workspaces:write) status = %d; want %d; body = %s",
+			rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }

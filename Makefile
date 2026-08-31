@@ -37,11 +37,18 @@ build:
 	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 	cp bin/afc ${DEVEL}/tools/afc
 
+<<<<<<< Updated upstream
 # Build the af-hub container locally 
 buildc: build
 	-cd ../apikit && git push origin main
 	-git push origin main
+=======
+# Build the af-hub container locally.
+# Uses sibling ../apikit via additional build context (go.mod replace).
+build-container: build
+>>>>>>> Stashed changes
 	podman build \
+		--build-context apikit=../apikit \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg BUILD=$(COMMIT) \
 		--build-arg BUILD_TIME=$(BUILD_TIME) \

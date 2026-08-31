@@ -11,7 +11,9 @@ ARG BUILD_TIME=
 USER root
 WORKDIR /build
 
-RUN git clone https://github.com/txsvc/apikit.git apikit
+# Local replace github.com/txsvc/apikit => ../apikit (see go.mod).
+# Supply the sibling tree via: podman build --build-context apikit=../apikit
+COPY --from=apikit . /build/apikit
 WORKDIR /build/hub
 COPY go.mod go.sum ./
 RUN go mod download

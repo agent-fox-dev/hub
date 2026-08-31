@@ -310,10 +310,10 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List and view workspaces owned by the authenticated user; list and forget rerere resolutions; view patch-status dashboard |
-| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces/:slug/patch-status` |
-| **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere and patch-status handlers check for the literal `workspaces:read` scope via `hasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere or patch-status endpoints. |
-| **Ownership** | Enforced for workspace CRUD endpoints (list, get) via `lookupWorkspaceForAuth`. NOT enforced for rerere and patch-status endpoints -- these handlers check workspace existence but not ownership, so any authenticated user with `workspaces:read` can access rerere and patch-status for any workspace slug. |
+| **Grants** | List and view workspaces owned by the authenticated user; list rerere resolutions; view patch-status dashboard |
+| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `GET /api/v1/workspaces/:slug/patch-status` |
+| **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere list and patch-status handlers check for the literal `workspaces:read` scope via `hasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere list or patch-status endpoints. |
+| **Ownership** | Enforced for workspace CRUD endpoints (list, get) via `lookupWorkspaceForAuth`. NOT enforced for rerere list and patch-status endpoints -- these handlers check workspace existence but not ownership, so any authenticated user with `workspaces:read` can access rerere list and patch-status for any workspace slug. |
 
 ### workspaces:create
 
@@ -329,9 +329,9 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. |
-| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only), `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
-| **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere or patch-status which require the literal `workspaces:read` scope) |
+| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. Grants access to forget (delete) rerere resolutions. |
+| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only), `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
+| **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere list or patch-status which require the literal `workspaces:read` scope) |
 
 ### workspaces:delete
 
@@ -568,10 +568,11 @@ for startup registration.
 `workspaces:read` is implemented via `hasReadAccess()` in workspace CRUD
 handlers only. It applies to `GET /api/v1/workspaces` and
 `GET /api/v1/workspaces/:slug`. It does NOT apply to rerere
-(`GET /api/v1/workspaces/:slug/rerere`,
-`DELETE /api/v1/workspaces/:slug/rerere/*`) or patch-status
+(`GET /api/v1/workspaces/:slug/rerere`) or patch-status
 (`GET /api/v1/workspaces/:slug/patch-status`), which check for the literal
 `workspaces:read` scope string.
+The `DELETE /api/v1/workspaces/:slug/rerere/*`
+endpoint checks for the literal `workspaces:write` scope string.
 
 ---
 
