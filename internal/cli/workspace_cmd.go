@@ -66,6 +66,7 @@ func BuildRootCommand() *cobra.Command {
 		MergeCmd(),
 		RebuildCmd(),
 		RerereCmd(),
+		RebaseCmd(),
 	)
 
 	return root

@@ -1074,6 +1074,54 @@ afc merge cancel <workspace-slug> <merge-id>
 
 ---
 
+## Rebase Commands
+
+All rebase commands are subcommands of `afc rebase`. They manage batch rebase
+operations that rebase multiple branches onto a target ref.
+
+### afc rebase submit
+
+Submit a batch rebase for a workspace, rebasing one or more branches onto a
+target ref.
+
+**Usage:**
+
+```
+afc rebase submit <workspace-slug> --target-ref <ref> --branches <branch1,branch2,...>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to submit the rebase for |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--target-ref` | yes | string | Target ref to rebase the branches onto |
+| `--branches` | yes | string | Comma-separated list of branch names to rebase |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/rebase` with `target_ref` and
+  `branches` (as a JSON array) in the request body.
+- The operation runs synchronously and returns per-branch results including
+  the new SHA on success or conflict status on failure.
+- Prints the JSON response to stdout.
+- Requires `merges:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Batch rebase completed successfully |
+| 1 | API error (4xx/5xx), network error, or timeout |
+| 2 | Missing `--target-ref` or `--branches` flag |
+
+---
+
 ## Rebuild Commands
 
 All rebuild commands are subcommands of `afc rebuild`. They manage rebuild
