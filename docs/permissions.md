@@ -166,7 +166,7 @@ git config --global credential.<hub-url>.helper "!afc credential-helper"
 | `GET /user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
 | `DELETE /user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
 
-#### Workspace Endpoints (all API keys, ownership enforced)
+#### Workspace Endpoints (all API keys)
 
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
@@ -177,6 +177,8 @@ git config --global credential.<hub-url>.helper "!afc credential-helper"
 | `POST /api/v1/workspaces/:slug/archive` | allowed | must own |
 | `POST /api/v1/workspaces/:slug/reactivate` | allowed | must own |
 | `DELETE /api/v1/workspaces/:slug` | allowed | must own, must be archived |
+| `POST /api/v1/workspaces/:slug/sync` | allowed | no ownership check |
+| `POST /api/v1/workspaces/:slug/reclone` | allowed | no ownership check |
 
 Admin-role API keys have the same access as user-role — they do NOT see
 other users' workspaces.
@@ -310,7 +312,7 @@ at startup.
 | **Source** | hub |
 | **Grants** | List and view workspaces owned by the authenticated user; list and forget rerere resolutions; view patch-status dashboard |
 | **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces/:slug/patch-status` |
-| **Implied by** | `workspaces:create`, `workspaces:write` |
+| **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere and patch-status handlers check for the literal `workspaces:read` scope via `hasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere or patch-status endpoints. |
 | **Ownership** | Enforced for workspace CRUD endpoints (list, get) via `lookupWorkspaceForAuth`. NOT enforced for rerere and patch-status endpoints -- these handlers check workspace existence but not ownership, so any authenticated user with `workspaces:read` can access rerere and patch-status for any workspace slug. |
 
 ### workspaces:create
@@ -319,8 +321,8 @@ at startup.
 |---|---|
 | **Source** | hub |
 | **Grants** | Create new workspaces. Admin tokens cannot create workspaces (HTTP 403) because a real user identity is required as owner. |
-| **Endpoints** | `POST /api/v1/workspaces` (plus all `workspaces:read` endpoints) |
-| **Implies** | `workspaces:read` |
+| **Endpoints** | `POST /api/v1/workspaces`, `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
+| **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere or patch-status which require the literal `workspaces:read` scope) |
 
 ### workspaces:write
 
@@ -328,8 +330,8 @@ at startup.
 |---|---|
 | **Source** | hub |
 | **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. |
-| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only) (plus all `workspaces:read` endpoints) |
-| **Implies** | `workspaces:read` |
+| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only), `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
+| **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere or patch-status which require the literal `workspaces:read` scope) |
 
 ### workspaces:delete
 
@@ -552,8 +554,8 @@ for startup registration.
 
 | Scope | Implies |
 |-------|---------|
-| `workspaces:create` | `workspaces:read` |
-| `workspaces:write` | `workspaces:read` |
+| `workspaces:create` | `workspaces:read` * |
+| `workspaces:write` | `workspaces:read` * |
 | `workspaces:sync` | *(nothing)* |
 | `workspaces:delete` | *(nothing)* |
 | `patches:write` | `patches:read` |
@@ -561,6 +563,15 @@ for startup registration.
 | `secrets:manage` | `secrets:list`, `secrets:write`, `secrets:delete` |
 | `vars:manage` | `vars:read`, `vars:write`, `vars:delete` |
 | `vars:write` | `vars:read` |
+
+\* The `workspaces:create` and `workspaces:write` implication of
+`workspaces:read` is implemented via `hasReadAccess()` in workspace CRUD
+handlers only. It applies to `GET /api/v1/workspaces` and
+`GET /api/v1/workspaces/:slug`. It does NOT apply to rerere
+(`GET /api/v1/workspaces/:slug/rerere`,
+`DELETE /api/v1/workspaces/:slug/rerere/*`) or patch-status
+(`GET /api/v1/workspaces/:slug/patch-status`), which check for the literal
+`workspaces:read` scope string.
 
 ---
 
@@ -643,14 +654,20 @@ HTTP 404 (not 403) consistent with the anti-enumeration policy.
 
 ## Anti-Enumeration Policy
 
-When a PAT lacks the required workspace or git scope, or when a workspace
-is not owned by the caller, the workspace CRUD endpoints (create, list,
-get, update, archive, reactivate, delete) and git endpoints return
-HTTP 404 (not 403) to avoid disclosing the existence of resources. The
-git server also returns HTTP 404 for non-owner access to prevent workspace
-slug enumeration.
+When a PAT lacks the required workspace scope, or when a workspace is
+not owned by the caller, the workspace CRUD endpoints (list, get, update,
+archive, reactivate, delete) return HTTP 404 (not 403) to avoid disclosing
+the existence of resources. The workspace create endpoint returns HTTP 403
+(`"PAT requires workspaces:create scope to create workspaces"`) because
+there is no existing resource to enumerate. The git server returns HTTP 404
+for non-owner access (`authorizeGitAccess` writes a pkt-line 404
+`"repository not found"`) to prevent workspace slug enumeration.
 
 Other endpoint groups return HTTP 403 for missing PAT scopes:
+git scope check returns 403 with `"insufficient git permissions"`;
+sync handler returns 403 with `"PAT requires workspaces:sync scope to sync workspaces"`;
+reclone handler returns 403 with `"PAT requires workspaces:sync scope to reclone workspaces"`;
+carry-patch sync handler returns 403 with `"missing required scope: workspaces:sync"`;
 secrets and variables handlers return 403 with `"insufficient permission scope"`;
 merge handlers return 403 with `"PAT requires merges:write scope"` (or
 `merges:read`); rebuild handlers return 403 with `"missing required scope:

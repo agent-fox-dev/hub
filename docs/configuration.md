@@ -31,8 +31,7 @@ path = "afhub.db"
 level = "info"
 
 [workspace]
-path    = "/var/lib/af-hub/workspaces"
-workers = 4
+workers = 4              # path omitted; resolved at runtime (see defaults below)
 
 [[oauth.providers]]
 name          = "github"
@@ -56,7 +55,7 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | `"./data/afhub.db"` | SQLite database file path. When omitted, defaults to `./data/afhub.db` (or `$XDG_DATA_HOME/apikit.db` when `XDG_DATA_HOME` is set). Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. All shipped `config.toml` examples override this to `"afhub.db"`. |
+| `path` | string | `"./data/apikit.db"` | SQLite database file path. When omitted, defaults to `./data/apikit.db` (or `$XDG_DATA_HOME/apikit.db` when `XDG_DATA_HOME` is set). Bare filenames are resolved relative to `$XDG_DATA_HOME/` when that variable is set, or relative to the working directory otherwise. All shipped `config.toml` examples override this to `"afhub.db"`. |
 
 ### [logging]
 
@@ -102,13 +101,13 @@ The server can start without `--admin-email`. In that case, no admin account
 is created and the server begins accepting requests immediately:
 
 ```
-bin/af-hub
+bin/hub
 ```
 
 To bootstrap the admin account, pass `--admin-email` on first boot:
 
 ```
-bin/af-hub --admin-email=admin@example.com
+bin/hub --admin-email=admin@example.com
 ```
 
 When `--admin-email` is provided, the server generates an admin token, writes
@@ -127,7 +126,7 @@ To rotate the admin token, pass `--reset-admin-token`. The same
 generate-and-exit behaviour applies:
 
 ```
-bin/af-hub --reset-admin-token
+bin/hub --reset-admin-token
 ```
 
 ## CLI Configuration (~/.af/config.toml)
@@ -137,6 +136,7 @@ After running `afc login`, credentials are stored in `~/.af/config.toml`:
 | Key | Description |
 |-----|-------------|
 | `endpoint_url` | Hub server URL (e.g. `"http://localhost:8080"`). |
+| `user_id` | Authenticated user ID. |
 | `api_key` | API key obtained during login. |
 
 The credential helper (`afc credential-helper`) reads from this file to supply

@@ -973,10 +973,11 @@ Submit a new rebuild job for the workspace.
 }
 ```
 
-| Status | Meaning |
-|--------|---------|
+| Status | Condition |
+|--------|-----------|
 | 202 | Job enqueued successfully |
 | 400 | Workspace not in carry_patch mode, not active, clone not ready, or no active patches |
+| 401 | Unauthenticated request |
 | 403 | Missing required scope `rebuilds:write` |
 | 404 | Workspace not found |
 | 409 | A rebuild job is already queued or running for this workspace |
@@ -1047,9 +1048,10 @@ omitted from the response when empty rather than included as null. For
 example, `error` only appears when non-empty; `patch_results` only appears
 for completed jobs with results.
 
-| Status | Meaning |
-|--------|---------|
+| Status | Condition |
+|--------|-----------|
 | 200 | Job found |
+| 401 | Unauthenticated request |
 | 403 | Missing required scope `rebuilds:read` |
 | 404 | Job not found or does not belong to this workspace |
 
