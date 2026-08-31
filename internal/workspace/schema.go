@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS patches (
 	branch_name     TEXT NOT NULL,
 	position        INTEGER NOT NULL,
 	status          TEXT NOT NULL DEFAULT 'active',
+	conflict_files  TEXT,
 	upstream_pr_url TEXT,
 	description     TEXT,
 	added_at        TEXT NOT NULL,
@@ -69,6 +70,13 @@ CREATE TABLE IF NOT EXISTS patches (
 	UNIQUE(workspace_slug, branch_name),
 	UNIQUE(workspace_slug, position)
 )`
+
+// patchFieldDDL contains ALTER TABLE statements that add columns to an
+// existing patches table. Each statement is executed individually; existing
+// columns are skipped so the migration is idempotent.
+var patchFieldDDL = []string{
+	`ALTER TABLE patches ADD COLUMN conflict_files TEXT`,
+}
 
 // initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS
 // and applies any pending ALTER TABLE migrations for sync-related columns.
@@ -130,6 +138,24 @@ func initSchema(db *sql.DB) error {
 	// Create the patches table (15-REQ-7.1).
 	if _, err := db.Exec(createPatchesTableSQL); err != nil {
 		return fmt.Errorf("failed to create patches table: %w", err)
+	}
+
+	// Apply patches table field migrations idempotently.
+	existing, err = existingColumns(db, "patches")
+	if err != nil {
+		return fmt.Errorf("patches schema migration: %w", err)
+	}
+	for _, ddl := range patchFieldDDL {
+		col := extractColumnName(ddl)
+		if col != "" && existing[col] {
+			continue
+		}
+		if _, err := db.Exec(ddl); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
+			return fmt.Errorf("patches schema migration failed: %w", err)
+		}
 	}
 
 	return nil

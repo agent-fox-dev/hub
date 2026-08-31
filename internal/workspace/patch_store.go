@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -10,15 +11,16 @@ import (
 
 // Patch represents a row in the patches table (15-REQ-7).
 type Patch struct {
-	ID            string  // TEXT PRIMARY KEY (UUID)
-	WorkspaceSlug string  // TEXT NOT NULL
-	BranchName    string  // TEXT NOT NULL
-	Position      int     // INTEGER NOT NULL
-	Status        string  // TEXT NOT NULL DEFAULT 'active'
-	UpstreamPRURL *string // TEXT (nullable)
-	Description   *string // TEXT (nullable)
-	AddedAt       string  // TEXT NOT NULL (RFC 3339)
-	UpdatedAt     string  // TEXT NOT NULL (RFC 3339)
+	ID            string   // TEXT PRIMARY KEY (UUID)
+	WorkspaceSlug string   // TEXT NOT NULL
+	BranchName    string   // TEXT NOT NULL
+	Position      int      // INTEGER NOT NULL
+	Status        string   // TEXT NOT NULL DEFAULT 'active'
+	ConflictFiles []string // TEXT (nullable, JSON array)
+	UpstreamPRURL *string  // TEXT (nullable)
+	Description   *string  // TEXT (nullable)
+	AddedAt       string   // TEXT NOT NULL (RFC 3339)
+	UpdatedAt     string   // TEXT NOT NULL (RFC 3339)
 }
 
 // patchResponse converts a Patch to a JSON-serializable map for API responses.
@@ -31,6 +33,9 @@ func patchResponse(p *Patch) map[string]any {
 		"status":         p.Status,
 		"added_at":       p.AddedAt,
 		"updated_at":     p.UpdatedAt,
+	}
+	if len(p.ConflictFiles) > 0 {
+		resp["conflict_files"] = p.ConflictFiles
 	}
 	if p.UpstreamPRURL != nil {
 		resp["upstream_pr_url"] = *p.UpstreamPRURL
@@ -48,19 +53,23 @@ func patchResponse(p *Patch) map[string]any {
 // scanPatch scans a single row from the patches table into a Patch struct.
 func scanPatch(scanner interface{ Scan(dest ...any) error }) (*Patch, error) {
 	p := &Patch{}
+	var conflictFilesJSON sql.NullString
 	err := scanner.Scan(
 		&p.ID, &p.WorkspaceSlug, &p.BranchName, &p.Position,
-		&p.Status, &p.UpstreamPRURL, &p.Description,
+		&p.Status, &conflictFilesJSON, &p.UpstreamPRURL, &p.Description,
 		&p.AddedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if conflictFilesJSON.Valid && conflictFilesJSON.String != "" {
+		_ = json.Unmarshal([]byte(conflictFilesJSON.String), &p.ConflictFiles)
+	}
 	return p, nil
 }
 
 // patchSelectColumns is the column list for SELECT queries on the patches table.
-const patchSelectColumns = `id, workspace_slug, branch_name, position, status, upstream_pr_url, description, added_at, updated_at`
+const patchSelectColumns = `id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url, description, added_at, updated_at`
 
 // getPatch retrieves a single patch by workspace slug and patch ID.
 // Returns nil, nil if the patch is not found.

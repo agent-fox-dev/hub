@@ -153,3 +153,113 @@ func TestWorkspaceSchema_UnavailableDB(t *testing.T) {
 		t.Error("initSchema(closed DB) returned nil; want non-nil error")
 	}
 }
+
+// TS-NS-1: Fresh database: patches table includes conflict_files column after boot.
+// Requirement: NS-REQ-1
+func TestPatchesSchema_FreshDB_HasConflictFilesColumn(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory database: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema() returned error: %v", err)
+	}
+
+	cols, err := existingColumns(db, "patches")
+	if err != nil {
+		t.Fatalf("existingColumns(patches) returned error: %v", err)
+	}
+
+	if !cols["conflict_files"] {
+		t.Error("patches table missing conflict_files column on fresh database")
+	}
+}
+
+// TS-NS-2: Existing database without conflict_files: idempotent migration adds
+// the column on boot. A second call to initSchema does not error.
+// Requirement: NS-REQ-2
+func TestPatchesSchema_Migration_AddsConflictFilesColumn(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory database: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	// Create the old patches DDL without conflict_files.
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS workspaces (
+			slug              TEXT PRIMARY KEY,
+			git_url           TEXT NOT NULL,
+			branch            TEXT,
+			owner_id          TEXT NOT NULL,
+			org_id            TEXT,
+			status            TEXT NOT NULL DEFAULT 'active',
+			display_name      TEXT NOT NULL DEFAULT '',
+			description       TEXT NOT NULL DEFAULT '',
+			clone_status      TEXT NOT NULL DEFAULT 'pending',
+			head_sha          TEXT,
+			clone_error       TEXT,
+			created_at        TEXT NOT NULL,
+			updated_at        TEXT NOT NULL,
+			sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
+			sync_status       TEXT NOT NULL DEFAULT 'idle',
+			upstream_head_sha TEXT,
+			last_sync_at      TEXT,
+			sync_error        TEXT,
+			workspace_mode    TEXT NOT NULL DEFAULT 'standard',
+			upstream_url      TEXT,
+			integration_branch TEXT
+		)`)
+	if err != nil {
+		t.Fatalf("failed to create old workspaces table: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS patches (
+			id              TEXT PRIMARY KEY,
+			workspace_slug  TEXT NOT NULL,
+			branch_name     TEXT NOT NULL,
+			position        INTEGER NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'active',
+			upstream_pr_url TEXT,
+			description     TEXT,
+			added_at        TEXT NOT NULL,
+			updated_at      TEXT NOT NULL,
+			UNIQUE(workspace_slug, branch_name),
+			UNIQUE(workspace_slug, position)
+		)`)
+	if err != nil {
+		t.Fatalf("failed to create old patches table: %v", err)
+	}
+
+	// Verify conflict_files is absent before migration.
+	cols, err := existingColumns(db, "patches")
+	if err != nil {
+		t.Fatalf("existingColumns(patches) returned error: %v", err)
+	}
+	if cols["conflict_files"] {
+		t.Fatal("conflict_files should not exist before migration")
+	}
+
+	// Run initSchema — should add conflict_files via ALTER TABLE.
+	if err := initSchema(db); err != nil {
+		t.Fatalf("first initSchema() returned error: %v", err)
+	}
+
+	cols, err = existingColumns(db, "patches")
+	if err != nil {
+		t.Fatalf("existingColumns(patches) returned error: %v", err)
+	}
+	if !cols["conflict_files"] {
+		t.Error("conflict_files column not added by migration")
+	}
+
+	// Second call to initSchema should succeed (idempotent).
+	if err := initSchema(db); err != nil {
+		t.Errorf("second initSchema() returned error: %v; want nil", err)
+	}
+}

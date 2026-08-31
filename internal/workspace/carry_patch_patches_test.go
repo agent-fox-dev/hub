@@ -77,7 +77,7 @@ func TestCarryPatch_PatchesTableSchema_AllColumns(t *testing.T) {
 	// Required columns per 15-REQ-7.1.
 	requiredColumns := []string{
 		"id", "workspace_slug", "branch_name", "position",
-		"status", "upstream_pr_url", "description",
+		"status", "conflict_files", "upstream_pr_url", "description",
 		"added_at", "updated_at",
 	}
 	for _, col := range requiredColumns {
@@ -932,5 +932,199 @@ func TestCarryPatch_ListPatches_StandardWorkspaceReturns400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET status = %d; want %d; body: %s",
 			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// seedPatchRawWithConflictFiles inserts a patch row with conflict_files set.
+func seedPatchRawWithConflictFiles(t *testing.T, db *sql.DB, id, workspaceSlug, branchName string, position int, status string, conflictFiles []string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	var cfJSON *string
+	if len(conflictFiles) > 0 {
+		b, err := json.Marshal(conflictFiles)
+		if err != nil {
+			t.Fatalf("seedPatchRawWithConflictFiles: marshal: %v", err)
+		}
+		s := string(b)
+		cfJSON = &s
+	}
+	_, err := db.Exec(
+		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, conflict_files, added_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, workspaceSlug, branchName, position, status, cfJSON, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedPatchRawWithConflictFiles(%q) failed: %v", id, err)
+	}
+}
+
+// TS-NS-4: GET /workspaces/:slug/patches response includes conflict_files for
+// each patch when present.
+// Requirement: NS-REQ-4
+func TestCarryPatch_ListPatches_IncludesConflictFiles(t *testing.T) {
+	slug := "cp-list-cf"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Seed a conflicting patch with conflict_files.
+	seedPatchRawWithConflictFiles(t, env.db, "cf-1", slug, "feature/conflict", 1, "conflict", []string{"pkg/api.go", "pkg/handler.go"})
+	// Seed a clean patch without conflict_files.
+	seedPatchRaw(t, env.db, "cf-2", slug, "feature/clean", 2)
+
+	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/"+slug+"/patches", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d; want %d; body: %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var patches []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &patches); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(patches) != 2 {
+		t.Fatalf("got %d patches; want 2", len(patches))
+	}
+
+	// First patch (conflict) should have conflict_files.
+	cf, ok := patches[0]["conflict_files"]
+	if !ok {
+		t.Fatal("patch[0] (conflict) missing conflict_files field")
+	}
+	cfSlice, ok := cf.([]any)
+	if !ok {
+		t.Fatalf("patch[0] conflict_files is not an array: %T", cf)
+	}
+	if len(cfSlice) != 2 {
+		t.Fatalf("patch[0] conflict_files has %d entries; want 2", len(cfSlice))
+	}
+	expectedFiles := []string{"pkg/api.go", "pkg/handler.go"}
+	for i, expected := range expectedFiles {
+		if got, _ := cfSlice[i].(string); got != expected {
+			t.Errorf("patch[0] conflict_files[%d] = %q; want %q", i, got, expected)
+		}
+	}
+
+	// Second patch (clean) should not have conflict_files (omitted or absent).
+	if cf2, ok := patches[1]["conflict_files"]; ok {
+		t.Errorf("patch[1] (clean) should not have conflict_files, got %v", cf2)
+	}
+}
+
+// TS-NS-3: SQLPatchStore.ListPatches and UpdatePatchStatus execute without
+// error on a fresh database with conflict_files.
+// Requirement: NS-REQ-3
+func TestPatchStore_ConflictFilesRoundTrip(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema() returned error: %v", err)
+	}
+
+	// Insert a workspace.
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?)`,
+		"ws-cf-rt", "https://github.com/org/repo", "user-1", now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+
+	// Insert a patch.
+	_, err = db.Exec(
+		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+		"p1", "ws-cf-rt", "feature/test", 1, now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert patch: %v", err)
+	}
+
+	// Update conflict_files via raw SQL (simulating UpdatePatchStatus).
+	conflictJSON := `["pkg/api.go","pkg/handler.go"]`
+	_, err = db.Exec(
+		`UPDATE patches SET status = ?, conflict_files = ?, updated_at = ? WHERE id = ?`,
+		"conflict", conflictJSON, now, "p1",
+	)
+	if err != nil {
+		t.Fatalf("update conflict_files: %v", err)
+	}
+
+	// Read back via listPatches.
+	patches, err := listPatches(db, "ws-cf-rt")
+	if err != nil {
+		t.Fatalf("listPatches returned error: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("got %d patches; want 1", len(patches))
+	}
+
+	p := patches[0]
+	if p.Status != "conflict" {
+		t.Errorf("patch status = %q; want %q", p.Status, "conflict")
+	}
+	if len(p.ConflictFiles) != 2 {
+		t.Fatalf("patch ConflictFiles has %d entries; want 2", len(p.ConflictFiles))
+	}
+	if p.ConflictFiles[0] != "pkg/api.go" {
+		t.Errorf("ConflictFiles[0] = %q; want %q", p.ConflictFiles[0], "pkg/api.go")
+	}
+	if p.ConflictFiles[1] != "pkg/handler.go" {
+		t.Errorf("ConflictFiles[1] = %q; want %q", p.ConflictFiles[1], "pkg/handler.go")
+	}
+}
+
+// TestPatchStore_ConflictFilesNullHandling verifies that patches without
+// conflict_files return nil/empty ConflictFiles slice.
+func TestPatchStore_ConflictFilesNullHandling(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema() returned error: %v", err)
+	}
+
+	// Insert a workspace and patch without conflict_files.
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?)`,
+		"ws-cf-null", "https://github.com/org/repo", "user-1", now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+
+	_, err = db.Exec(
+		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+		"p1", "ws-cf-null", "feature/test", 1, now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert patch: %v", err)
+	}
+
+	patches, err := listPatches(db, "ws-cf-null")
+	if err != nil {
+		t.Fatalf("listPatches returned error: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("got %d patches; want 1", len(patches))
+	}
+
+	if len(patches[0].ConflictFiles) != 0 {
+		t.Errorf("ConflictFiles should be empty for non-conflict patch, got %v", patches[0].ConflictFiles)
 	}
 }
