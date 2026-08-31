@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
@@ -17,6 +18,7 @@ var validPatchStatuses = map[string]bool{
 	"merged_upstream": true,
 	"conflict":        true,
 	"disabled":        true,
+	"deleted":         true,
 }
 
 // requirePatchReadScope checks that the caller has patches:read scope.
@@ -394,6 +396,79 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 		}
 
 		return c.NoContent(http.StatusNoContent)
+	}
+}
+
+// handleRestorePatch handles POST /api/v1/workspaces/:slug/patches/:id/restore.
+// It transitions a soft-deleted patch back to active status and clears deleted_at.
+func handleRestorePatch(db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if err := requirePatchWriteScope(c); err != nil {
+			return err
+		}
+
+		slug := c.Param("slug")
+		patchID := c.Param("id")
+
+		// Look up workspace.
+		ws, err := getWorkspaceBySlug(db, slug)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if ws == nil || ws.Status != "active" {
+			return respondError(c, http.StatusBadRequest, "workspace not found or not active")
+		}
+		if ws.WorkspaceMode != "carry_patch" {
+			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
+		}
+
+		// Look up the patch by ID — must include deleted patches.
+		row := db.QueryRow(
+			`SELECT `+patchSelectColumns+` FROM patches WHERE workspace_slug = ? AND id = ?`,
+			slug, patchID,
+		)
+		p, scanErr := scanPatch(row)
+		if scanErr != nil {
+			return respondError(c, http.StatusNotFound, "patch not found")
+		}
+
+		// Patch must be in 'deleted' status to restore.
+		if p.Status != "deleted" {
+			return respondError(c, http.StatusBadRequest, "patch is not in deleted status")
+		}
+
+		// Restore: set status to active, clear deleted_at, assign position at end.
+		now := time.Now().UTC().Format(time.RFC3339)
+
+		// Get max position for non-deleted patches.
+		var maxPos sql.NullInt64
+		err = db.QueryRow(
+			`SELECT MAX(position) FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL)`,
+			slug,
+		).Scan(&maxPos)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		newPosition := 1
+		if maxPos.Valid {
+			newPosition = int(maxPos.Int64) + 1
+		}
+
+		_, err = db.Exec(
+			`UPDATE patches SET status = 'active', deleted_at = NULL, position = ?, updated_at = ? WHERE id = ? AND workspace_slug = ?`,
+			newPosition, now, patchID, slug,
+		)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "failed to restore patch")
+		}
+
+		// Re-fetch the restored patch.
+		p, err = getPatch(db, slug, patchID)
+		if err != nil || p == nil {
+			return respondError(c, http.StatusInternalServerError, "failed to fetch restored patch")
+		}
+
+		return c.JSON(http.StatusOK, patchResponse(p))
 	}
 }
 

@@ -150,10 +150,10 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			Position:   patch.Position,
 		}
 
-		// 16-REQ-1.7: skip merged_upstream and disabled patches.
-		if patch.Status == PatchStatusMergedUpstream || patch.Status == PatchStatusDisabled {
+		// 16-REQ-1.7: skip merged_upstream, disabled, and deleted patches.
+		if patch.Status == PatchStatusMergedUpstream || patch.Status == PatchStatusDisabled || patch.Status == PatchStatusDeleted {
 			pr.Status = "skipped"
-			pr.SkippedReason = patch.Status // "merged_upstream" or "disabled"
+			pr.SkippedReason = patch.Status // "merged_upstream", "disabled", or "deleted"
 			result.PatchResults = append(result.PatchResults, pr)
 			result.PatchesSkipped++
 			if patch.Status == PatchStatusMergedUpstream {
@@ -280,9 +280,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// Delete temporary branch (16-PROP-9).
 	cleanupTempBranch()
 
-	// Delete merged_upstream patches from the database (16-PROP-4).
+	// Soft-delete merged_upstream patches (set status='deleted', deleted_at).
 	for _, id := range mergedPatchIDs {
-		_ = h.PatchStore.DeletePatch(ctx, id)
+		_ = h.PatchStore.SoftDeletePatch(ctx, id)
 	}
 	result.PatchesRemoved = len(mergedPatchIDs)
 

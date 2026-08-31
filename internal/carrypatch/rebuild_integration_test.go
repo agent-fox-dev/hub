@@ -134,12 +134,15 @@ func TestRebuildExecutor_FullSuccessPath(t *testing.T) {
 		}
 	}
 
-	// Verify merged_upstream patch was deleted from the store.
-	if len(patches.DeletedPatches) != 1 {
-		t.Fatalf("expected 1 deleted patch (merged_upstream), got %d", len(patches.DeletedPatches))
+	// Verify merged_upstream patch was soft-deleted (not hard-deleted).
+	if len(patches.SoftDeletedPatches) != 1 {
+		t.Fatalf("expected 1 soft-deleted patch (merged_upstream), got %d", len(patches.SoftDeletedPatches))
 	}
-	if patches.DeletedPatches[0] != "p-merged" {
-		t.Errorf("expected deleted patch id='p-merged', got %q", patches.DeletedPatches[0])
+	if patches.SoftDeletedPatches[0] != "p-merged" {
+		t.Errorf("expected soft-deleted patch id='p-merged', got %q", patches.SoftDeletedPatches[0])
+	}
+	if len(patches.DeletedPatches) != 0 {
+		t.Errorf("expected 0 hard-deleted patches, got %d", len(patches.DeletedPatches))
 	}
 
 	// Verify positions were compacted.
@@ -204,9 +207,9 @@ func TestRebuildExecutor_NoActivePatchesAtExecutionTime_Succeeds(t *testing.T) {
 			rebuildResult.IntegrationHeadSHA, rebuildResult.UpstreamHeadSHA)
 	}
 
-	// merged_upstream patches should be deleted.
-	if len(patches.DeletedPatches) != 1 {
-		t.Errorf("expected 1 deleted patch, got %d", len(patches.DeletedPatches))
+	// merged_upstream patches should be soft-deleted (not hard-deleted).
+	if len(patches.SoftDeletedPatches) != 1 {
+		t.Errorf("expected 1 soft-deleted patch, got %d", len(patches.SoftDeletedPatches))
 	}
 }
 
@@ -261,21 +264,26 @@ func TestRebuildExecutor_MergedPatchesCleanedUp(t *testing.T) {
 		t.Errorf("expected patches_removed=2, got %d", rebuildResult.PatchesRemoved)
 	}
 
-	// Both merged_upstream patches should have been deleted.
-	if len(patches.DeletedPatches) != 2 {
-		t.Fatalf("expected 2 deleted patches, got %d", len(patches.DeletedPatches))
+	// Both merged_upstream patches should have been soft-deleted.
+	if len(patches.SoftDeletedPatches) != 2 {
+		t.Fatalf("expected 2 soft-deleted patches, got %d", len(patches.SoftDeletedPatches))
 	}
 
-	// Verify specific patches were deleted.
+	// Verify specific patches were soft-deleted.
 	deletedSet := make(map[string]bool)
-	for _, id := range patches.DeletedPatches {
+	for _, id := range patches.SoftDeletedPatches {
 		deletedSet[id] = true
 	}
 	if !deletedSet["p2"] {
-		t.Error("expected patch 'p2' (merged1) to be deleted")
+		t.Error("expected patch 'p2' (merged1) to be soft-deleted")
 	}
 	if !deletedSet["p4"] {
-		t.Error("expected patch 'p4' (merged2) to be deleted")
+		t.Error("expected patch 'p4' (merged2) to be soft-deleted")
+	}
+
+	// Verify no hard deletes occurred.
+	if len(patches.DeletedPatches) != 0 {
+		t.Errorf("expected 0 hard-deleted patches, got %d", len(patches.DeletedPatches))
 	}
 
 	// Positions should have been compacted.

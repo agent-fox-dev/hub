@@ -890,9 +890,10 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		}
 
 		// Query patches from the database, ordered by position.
+		// Exclude soft-deleted patches from the patch-status dashboard.
 		patchRows, queryErr := cfg.DB.Query(
 			`SELECT id, workspace_slug, branch_name, position, status, conflict_files
-			 FROM patches WHERE workspace_slug = ? ORDER BY position ASC`, slug,
+			 FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`, slug,
 		)
 		if queryErr != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")

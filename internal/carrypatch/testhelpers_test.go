@@ -117,7 +117,7 @@ func createPatchesTable(t *testing.T, db *sql.DB) {
 			workspace_slug  TEXT NOT NULL,
 			branch_name     TEXT NOT NULL,
 			position        INTEGER NOT NULL,
-			status          TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','conflict','disabled','merged_upstream')),
+			status          TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','conflict','disabled','merged_upstream','deleted')),
 			conflict_files  TEXT,
 			created_at      TEXT NOT NULL,
 			updated_at      TEXT NOT NULL,
@@ -296,11 +296,14 @@ func (m *mockGitRunner) HardReset(ctx context.Context, ref string) error {
 
 // mockPatchStore is a recording mock for the PatchStore interface.
 type mockPatchStore struct {
-	mu             sync.Mutex
-	Patches        []Patch
-	UpdatedPatches map[string]Patch // id -> updated patch
-	DeletedPatches []string
-	Compacted      bool
+	mu                 sync.Mutex
+	Patches            []Patch
+	UpdatedPatches     map[string]Patch // id -> updated patch
+	DeletedPatches     []string
+	SoftDeletedPatches []string
+	RestoredPatches    []string
+	PurgedCount        int64
+	Compacted          bool
 }
 
 func newMockPatchStore(patches []Patch) *mockPatchStore {
@@ -334,6 +337,26 @@ func (m *mockPatchStore) DeletePatch(_ context.Context, patchID string) error {
 	defer m.mu.Unlock()
 	m.DeletedPatches = append(m.DeletedPatches, patchID)
 	return nil
+}
+
+func (m *mockPatchStore) SoftDeletePatch(_ context.Context, patchID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.SoftDeletedPatches = append(m.SoftDeletedPatches, patchID)
+	return nil
+}
+
+func (m *mockPatchStore) RestorePatch(_ context.Context, patchID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RestoredPatches = append(m.RestoredPatches, patchID)
+	return nil
+}
+
+func (m *mockPatchStore) PurgeDeletedPatches(_ context.Context, _ string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.PurgedCount, nil
 }
 
 func (m *mockPatchStore) CompactPositions(_ context.Context, _ string) error {

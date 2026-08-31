@@ -73,6 +73,7 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.PATCH("/workspaces/:slug/patches/:id", handleUpdatePatch(db))
 	api.DELETE("/workspaces/:slug/patches/:id", handleRemovePatch(db))
 	api.POST("/workspaces/:slug/patches/reorder", handleReorderPatches(db))
+	api.POST("/workspaces/:slug/patches/:id/restore", handleRestorePatch(db))
 
 	return nil
 }

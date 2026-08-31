@@ -19,6 +19,7 @@ type Patch struct {
 	ConflictFiles []string // TEXT (nullable, JSON array)
 	UpstreamPRURL *string  // TEXT (nullable)
 	Description   *string  // TEXT (nullable)
+	DeletedAt     *string  // TEXT (nullable, RFC 3339)
 	AddedAt       string   // TEXT NOT NULL (RFC 3339)
 	UpdatedAt     string   // TEXT NOT NULL (RFC 3339)
 }
@@ -47,6 +48,11 @@ func patchResponse(p *Patch) map[string]any {
 	} else {
 		resp["description"] = nil
 	}
+	if p.DeletedAt != nil {
+		resp["deleted_at"] = *p.DeletedAt
+	} else {
+		resp["deleted_at"] = nil
+	}
 	return resp
 }
 
@@ -57,7 +63,7 @@ func scanPatch(scanner interface{ Scan(dest ...any) error }) (*Patch, error) {
 	err := scanner.Scan(
 		&p.ID, &p.WorkspaceSlug, &p.BranchName, &p.Position,
 		&p.Status, &conflictFilesJSON, &p.UpstreamPRURL, &p.Description,
-		&p.AddedAt, &p.UpdatedAt,
+		&p.DeletedAt, &p.AddedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -69,7 +75,7 @@ func scanPatch(scanner interface{ Scan(dest ...any) error }) (*Patch, error) {
 }
 
 // patchSelectColumns is the column list for SELECT queries on the patches table.
-const patchSelectColumns = `id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url, description, added_at, updated_at`
+const patchSelectColumns = `id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url, description, deleted_at, added_at, updated_at`
 
 // getPatch retrieves a single patch by workspace slug and patch ID.
 // Returns nil, nil if the patch is not found.
@@ -88,11 +94,11 @@ func getPatch(db *sql.DB, workspaceSlug, patchID string) (*Patch, error) {
 	return p, nil
 }
 
-// listPatches retrieves all patches for a workspace, ordered by position ASC.
+// listPatches retrieves all non-deleted patches for a workspace, ordered by position ASC.
 // Returns an empty slice (not nil) if no patches exist (15-REQ-9.1).
 func listPatches(db *sql.DB, workspaceSlug string) ([]*Patch, error) {
 	rows, err := db.Query(
-		`SELECT `+patchSelectColumns+` FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		`SELECT `+patchSelectColumns+` FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {
@@ -326,12 +332,12 @@ func shiftPositionsDown(tx *sql.Tx, workspaceSlug string, fromPosition int) erro
 	return nil
 }
 
-// compactPositions reassigns sequential 1-based positions to all patches
-// in a workspace after a deletion, ordered by their current position.
+// compactPositions reassigns sequential 1-based positions to all non-deleted
+// patches in a workspace after a deletion, ordered by their current position.
 // Must be called within a transaction (15-REQ-11.1).
 func compactPositions(tx *sql.Tx, workspaceSlug string) error {
 	rows, err := tx.Query(
-		`SELECT id FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		`SELECT id FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {

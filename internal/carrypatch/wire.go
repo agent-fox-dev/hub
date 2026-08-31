@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/txsvc/apikit"
 
@@ -116,11 +117,11 @@ func NewSQLPatchStore(db *sql.DB) *SQLPatchStore {
 	return &SQLPatchStore{DB: db}
 }
 
-// ListPatches returns all patches for a workspace ordered by position.
+// ListPatches returns all non-deleted patches for a workspace ordered by position.
 func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]Patch, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url
-		 FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		 FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {
@@ -131,12 +132,12 @@ func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]
 	var patches []Patch
 	for rows.Next() {
 		var p Patch
-		var conflictFilesJSON string
+		var conflictFilesJSON sql.NullString
 		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON, &p.UpstreamPRURL); err != nil {
 			return nil, err
 		}
-		if conflictFilesJSON != "" {
-			_ = json.Unmarshal([]byte(conflictFilesJSON), &p.ConflictFiles)
+		if conflictFilesJSON.Valid && conflictFilesJSON.String != "" {
+			_ = json.Unmarshal([]byte(conflictFilesJSON.String), &p.ConflictFiles)
 		}
 		patches = append(patches, p)
 	}
@@ -167,10 +168,44 @@ func (s *SQLPatchStore) DeletePatch(_ context.Context, patchID string) error {
 	return err
 }
 
-// CompactPositions re-numbers patch positions to be contiguous starting from 1.
+// SoftDeletePatch transitions a patch to status='deleted' and sets deleted_at.
+func (s *SQLPatchStore) SoftDeletePatch(_ context.Context, patchID string) error {
+	now := apikit.NowUTC()
+	_, err := s.DB.Exec(
+		`UPDATE patches SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?`,
+		now, now, patchID,
+	)
+	return err
+}
+
+// RestorePatch transitions a soft-deleted patch back to status='active' and clears deleted_at.
+func (s *SQLPatchStore) RestorePatch(_ context.Context, patchID string) error {
+	now := apikit.NowUTC()
+	_, err := s.DB.Exec(
+		`UPDATE patches SET status = 'active', deleted_at = NULL, updated_at = ? WHERE id = ? AND status = 'deleted'`,
+		now, patchID,
+	)
+	return err
+}
+
+// PurgeDeletedPatches permanently removes patches with status='deleted' whose
+// deleted_at is older than the provided cutoff time (RFC3339 string).
+func (s *SQLPatchStore) PurgeDeletedPatches(_ context.Context, olderThan string) (int64, error) {
+	result, err := s.DB.Exec(
+		`DELETE FROM patches WHERE status = 'deleted' AND deleted_at IS NOT NULL AND deleted_at < ?`,
+		olderThan,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// CompactPositions re-numbers patch positions to be contiguous starting from 1,
+// ignoring soft-deleted patches.
 func (s *SQLPatchStore) CompactPositions(_ context.Context, workspaceSlug string) error {
 	rows, err := s.DB.Query(
-		`SELECT id FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		`SELECT id FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {
@@ -200,6 +235,18 @@ func (s *SQLPatchStore) CompactPositions(_ context.Context, workspaceSlug string
 		}
 	}
 	return nil
+}
+
+// ===========================================================================
+// PurgeExpiredDeletedPatches: cleanup routine for soft-deleted patches
+// ===========================================================================
+
+// PurgeExpiredDeletedPatches permanently removes patches that have been in
+// status='deleted' for longer than the specified retention period (7 days).
+// Returns the number of patches purged.
+func PurgeExpiredDeletedPatches(ctx context.Context, store PatchStore) (int64, error) {
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+	return store.PurgeDeletedPatches(ctx, cutoff)
 }
 
 // ===========================================================================

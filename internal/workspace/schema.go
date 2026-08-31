@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS patches (
 	conflict_files  TEXT,
 	upstream_pr_url TEXT,
 	description     TEXT,
+	deleted_at      TEXT,
 	added_at        TEXT NOT NULL,
 	updated_at      TEXT NOT NULL,
 	UNIQUE(workspace_slug, branch_name),
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS patches (
 // columns are skipped so the migration is idempotent.
 var patchFieldDDL = []string{
 	`ALTER TABLE patches ADD COLUMN conflict_files TEXT`,
+	`ALTER TABLE patches ADD COLUMN deleted_at TEXT`,
 }
 
 // initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS

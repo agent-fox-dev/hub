@@ -34,6 +34,7 @@ const (
 	PatchStatusConflict       = "conflict"
 	PatchStatusDisabled       = "disabled"
 	PatchStatusMergedUpstream = "merged_upstream"
+	PatchStatusDeleted        = "deleted"
 )
 
 // ===========================================================================
@@ -87,6 +88,7 @@ type Patch struct {
 	Status         string   `json:"status"`
 	ConflictFiles  []string `json:"conflict_files,omitempty"`
 	UpstreamPRURL  *string  `json:"upstream_pr_url,omitempty"`
+	DeletedAt      *string  `json:"deleted_at,omitempty"`
 }
 
 // RebuildPayload is the JSON payload stored in the job queue for rebuild jobs.
@@ -143,6 +145,9 @@ type PatchStore interface {
 	ListPatches(ctx context.Context, workspaceSlug string) ([]Patch, error)
 	UpdatePatchStatus(ctx context.Context, patchID, status string, conflictFiles []string) error
 	DeletePatch(ctx context.Context, patchID string) error
+	SoftDeletePatch(ctx context.Context, patchID string) error
+	RestorePatch(ctx context.Context, patchID string) error
+	PurgeDeletedPatches(ctx context.Context, olderThan string) (int64, error)
 	CompactPositions(ctx context.Context, workspaceSlug string) error
 }
 

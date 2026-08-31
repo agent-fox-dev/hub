@@ -27,6 +27,7 @@ func PatchCmd() *cobra.Command {
 		newPatchRemoveCmd(),
 		newPatchReorderCmd(),
 		newPatchUpdateCmd(),
+		newPatchRestoreCmd(),
 	)
 
 	return cmd
@@ -247,4 +248,30 @@ func newPatchUpdateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&position, "position", 0, "New position")
 
 	return cmd
+}
+
+// newPatchRestoreCmd returns the 'patch restore' subcommand.
+// It sends POST /api/v1/workspaces/:slug/patches/:id/restore to transition
+// a soft-deleted patch back to active status.
+func newPatchRestoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "restore <workspace-slug> <patch-id>",
+		Short:         "Restore a soft-deleted patch",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/patches/"+args[1]+"/restore", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
 }
