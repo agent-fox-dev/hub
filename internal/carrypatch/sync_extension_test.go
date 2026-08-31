@@ -3,6 +3,7 @@ package carrypatch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -186,16 +187,18 @@ func TestCarryPatchSync_PatchMergedUpstream(t *testing.T) {
 		return false, nil
 	}
 
-	// Use a more sophisticated mock: track which patch is being checked.
-	isAncestorCallCount := 0
-	env.gitRunner.IsAncestorFunc = func(_ context.Context, _, _ string) (bool, error) {
-		isAncestorCallCount++
-		// First call for feature/already-merged: return true (merged).
-		if isAncestorCallCount == 1 {
-			return true, nil
+	// Use a more sophisticated mock: distinguish by ancestor argument.
+	// The force-push check passes the storedSHA as ancestor, while patch
+	// merge checks pass the branch name.
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, _ string) (bool, error) {
+		switch ancestor {
+		case "aaaa000000000000000000000000000000000001":
+			return true, nil // upstream ancestry check: normal advance
+		case "feature/already-merged":
+			return true, nil // patch merged upstream
+		default:
+			return false, nil // feature/not-merged: not merged
 		}
-		// Second call for feature/not-merged: return false.
-		return false, nil
 	}
 
 	auth := rebuildUserAuth("alice")
@@ -550,5 +553,219 @@ func TestCarryPatchSync_AutoRebuildDisabled_NoJobEnqueued(t *testing.T) {
 	}
 	if jobCount != 0 {
 		t.Errorf("expected 0 rebuild jobs when auto-rebuild disabled, got %d", jobCount)
+	}
+}
+
+// ===========================================================================
+// TS-NS-1: Force-push detection — upstream force-push sets force_push_detected.
+//
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestCarryPatchSync_ForcePushDetected(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	storedSHA := "aaaa000000000000000000000000000000000001"
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		storedSHA,
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	// IsAncestor: return false for the upstream force-push check
+	// (storedSHA is NOT an ancestor of newUpstreamHead) and false for patch
+	// branch checks.
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, _ string) (bool, error) {
+		return false, nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/sync", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resp.ForcePushDetected {
+		t.Error("expected force_push_detected=true when upstream was force-pushed")
+	}
+
+	// NS-REQ-3: sync still completes successfully.
+	if !resp.RebuildTriggered {
+		t.Error("expected rebuild_triggered=true even when force-push detected")
+	}
+}
+
+// ===========================================================================
+// TS-NS-2: Normal fast-forward — force_push_detected is false.
+//
+// Requirement: NS-REQ-2
+// ===========================================================================
+
+func TestCarryPatchSync_NormalAdvance_ForcePushFalse(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	storedSHA := "aaaa000000000000000000000000000000000001"
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		storedSHA,
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	// IsAncestor: storedSHA IS an ancestor of newUpstreamHead (normal advance).
+	// The first call is the upstream force-push check (storedSHA vs new HEAD),
+	// patch-level calls come after.
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, _ string) (bool, error) {
+		if ancestor == storedSHA {
+			return true, nil // normal fast-forward
+		}
+		return false, nil // patch not merged
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/sync", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.ForcePushDetected {
+		t.Error("expected force_push_detected=false for normal fast-forward advance")
+	}
+}
+
+// ===========================================================================
+// TS-NS-4: Empty storedSHA (first sync) — ancestry check skipped,
+// force_push_detected is false.
+//
+// Requirement: NS-REQ-4
+// ===========================================================================
+
+func TestCarryPatchSync_EmptyStoredSHA_ForcePushFalse(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	// Seed workspace with NULL upstream_head_sha (first sync).
+	now := "2024-01-01T00:00:00Z"
+	_, err := env.db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?)`,
+		"my-workspace", "https://github.com/example/repo", "alice", "integration", "https://github.com/example/upstream", now, now,
+	)
+	if err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	// Track whether IsAncestor is called with empty-string ancestor (it should not be).
+	isAncestorCalledWithEmpty := false
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, _ string) (bool, error) {
+		if ancestor == "" {
+			isAncestorCalledWithEmpty = true
+		}
+		return false, nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/sync", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.ForcePushDetected {
+		t.Error("expected force_push_detected=false when storedSHA is empty (first sync)")
+	}
+
+	if isAncestorCalledWithEmpty {
+		t.Error("IsAncestor should not be called with empty storedSHA for force-push check")
+	}
+}
+
+// ===========================================================================
+// TS-NS-5: IsAncestor error during force-push check — sync proceeds,
+// force_push_detected is false (conservative).
+//
+// Requirement: NS-REQ-5
+// ===========================================================================
+
+func TestCarryPatchSync_IsAncestorError_ForcePushFalse(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	storedSHA := "aaaa000000000000000000000000000000000001"
+	seedWorkspaceCarryPatch(t, env.db, "my-workspace", "alice",
+		"https://github.com/example/upstream",
+		storedSHA,
+		"integration",
+		"bbbb000000000000000000000000000000000001",
+	)
+
+	seedPatch(t, env.db, "p1", "my-workspace", "feature/a", 1, PatchStatusActive)
+	env.patchStore.Patches = []Patch{
+		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
+	}
+
+	// IsAncestor returns error for the force-push check (storedSHA as ancestor),
+	// but works for patch-level checks.
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, _ string) (bool, error) {
+		if ancestor == storedSHA {
+			return false, fmt.Errorf("git error: ambiguous ref")
+		}
+		return false, nil // patch not merged
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/sync", "", auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.ForcePushDetected {
+		t.Error("expected force_push_detected=false when IsAncestor returns error (conservative)")
+	}
+
+	// Sync should still complete normally.
+	if !resp.RebuildTriggered {
+		t.Error("expected rebuild_triggered=true even when IsAncestor errors for force-push check")
 	}
 }

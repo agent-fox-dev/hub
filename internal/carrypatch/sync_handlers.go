@@ -124,10 +124,25 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 		}
 		upstreamAdvanced := newUpstreamHead != storedSHA
 
+		// Detect upstream force-push via ancestry check.
+		// If the stored SHA is non-empty and the new upstream HEAD is not
+		// a descendant of it, the upstream has been force-pushed (history
+		// rewrite). The flag is informational — sync still proceeds.
+		forcePushDetected := false
+		if upstreamAdvanced && storedSHA != "" {
+			isAnc, ancErr := git.IsAncestor(ctx, storedSHA, newUpstreamHead)
+			if ancErr == nil && !isAnc {
+				forcePushDetected = true
+			}
+			// If IsAncestor errors, conservatively leave forcePushDetected
+			// as false to avoid false alarms (NS-REQ-5).
+		}
+
 		// Prepare response.
 		resp := CarryPatchSyncResponse{
-			PatchesMerged:    make([]string, 0),
-			RebuildTriggered: false,
+			PatchesMerged:     make([]string, 0),
+			RebuildTriggered:  false,
+			ForcePushDetected: forcePushDetected,
 		}
 
 		// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync

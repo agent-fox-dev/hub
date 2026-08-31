@@ -483,10 +483,13 @@ func TestSquashMerge_ContentBasedMode_SkipsAncestryCheck(t *testing.T) {
 		{ID: "p1", WorkspaceID: "my-workspace", BranchName: "feature/squash-merged", Position: 1, Status: PatchStatusActive},
 	}
 
-	// IsAncestor should NOT be called in content_based mode.
-	isAncestorCalled := false
-	env.gitRunner.IsAncestorFunc = func(_ context.Context, _, _ string) (bool, error) {
-		isAncestorCalled = true
+	// IsAncestor should NOT be called for patch-level checks in content_based
+	// mode. The force-push detection call (storedSHA as ancestor) is expected.
+	patchIsAncestorCalled := false
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, _ string) (bool, error) {
+		if ancestor != "aaaa000000000000000000000000000000000001" {
+			patchIsAncestorCalled = true
+		}
 		return false, nil
 	}
 
@@ -508,8 +511,8 @@ func TestSquashMerge_ContentBasedMode_SkipsAncestryCheck(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if isAncestorCalled {
-		t.Error("expected IsAncestor NOT to be called in content_based mode")
+	if patchIsAncestorCalled {
+		t.Error("expected patch-level IsAncestor NOT to be called in content_based mode")
 	}
 
 	// Patch should be in patches_merged.

@@ -117,9 +117,10 @@ type SyncAPIConfig struct {
 
 // CarryPatchSyncResponse extends the standard sync response with carry-patch fields.
 type CarryPatchSyncResponse struct {
-	PatchesMerged    []string `json:"patches_merged"`
-	RebuildTriggered bool     `json:"rebuild_triggered"`
-	RebuildJobID     *string  `json:"rebuild_job_id,omitempty"`
+	PatchesMerged     []string `json:"patches_merged"`
+	RebuildTriggered  bool     `json:"rebuild_triggered"`
+	RebuildJobID      *string  `json:"rebuild_job_id,omitempty"`
+	ForcePushDetected bool     `json:"force_push_detected"`
 }
 
 // PatchStatusAPIConfig holds dependencies for patch-status endpoint.
