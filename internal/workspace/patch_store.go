@@ -114,6 +114,156 @@ func listPatches(db *sql.DB, workspaceSlug string) ([]*Patch, error) {
 	return patches, nil
 }
 
+// getPatchByBranch retrieves a single patch by workspace slug and branch name.
+// Returns nil, nil if the patch is not found.
+func getPatchByBranch(db *sql.DB, workspaceSlug, branchName string) (*Patch, error) {
+	row := db.QueryRow(
+		`SELECT `+patchSelectColumns+` FROM patches WHERE workspace_slug = ? AND branch_name = ?`,
+		workspaceSlug, branchName,
+	)
+	p, err := scanPatch(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get patch by branch %q/%q: %w", workspaceSlug, branchName, err)
+	}
+	return p, nil
+}
+
+// addPatchesBatch inserts multiple patches atomically in a single transaction.
+// Patches without an explicit position are appended after the current max.
+// Patches with an explicit position shift existing patches to make room.
+// Uses a two-pass approach to avoid UNIQUE constraint violations on position.
+// Returns the inserted patches or an error (the entire transaction rolls back).
+func addPatchesBatch(db *sql.DB, patches []*Patch) ([]*Patch, error) {
+	if len(patches) == 0 {
+		return []*Patch{}, nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("batch add begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	workspaceSlug := patches[0].WorkspaceSlug
+
+	// Load existing patches in position order.
+	rows, err := tx.Query(
+		`SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		workspaceSlug,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("batch add list existing: %w", err)
+	}
+	type idPos struct {
+		id  string
+		pos int
+	}
+	var existing []idPos
+	for rows.Next() {
+		var ip idPos
+		if err := rows.Scan(&ip.id, &ip.pos); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("batch add scan existing: %w", err)
+		}
+		existing = append(existing, ip)
+	}
+	rows.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Generate IDs and set timestamps for new patches.
+	for _, p := range patches {
+		if p.ID == "" {
+			p.ID = uuid.New().String()
+		}
+		p.AddedAt = now
+		p.UpdatedAt = now
+		if p.Status == "" {
+			p.Status = "active"
+		}
+	}
+
+	// Build the merged ordering. Start with existing IDs in order.
+	// Process new patches: those with explicit positions get inserted at
+	// that index; those without are appended.
+	order := make([]string, 0, len(existing)+len(patches))
+	for _, ip := range existing {
+		order = append(order, ip.id)
+	}
+
+	// Separate patches with explicit positions from appends.
+	// Process explicit positions first (in batch order), then appends.
+	var appends []*Patch
+	for _, p := range patches {
+		if p.Position > 0 && p.Position <= len(order)+1 {
+			// Insert at explicit position (1-based → 0-based index).
+			idx := p.Position - 1
+			order = append(order, "") // grow
+			copy(order[idx+1:], order[idx:])
+			order[idx] = p.ID
+		} else {
+			appends = append(appends, p)
+		}
+	}
+	for _, p := range appends {
+		order = append(order, p.ID)
+	}
+
+	// Move all existing patches to negative temporary positions to avoid
+	// UNIQUE constraint violations during reassignment.
+	for i, ip := range existing {
+		negPos := -(i + 1)
+		if _, err := tx.Exec(
+			`UPDATE patches SET position = ?, updated_at = ? WHERE workspace_slug = ? AND id = ?`,
+			negPos, now, workspaceSlug, ip.id,
+		); err != nil {
+			return nil, fmt.Errorf("batch add temp position %q: %w", ip.id, err)
+		}
+	}
+
+	// Insert new patches with negative temporary positions.
+	for i, p := range patches {
+		negPos := -(len(existing) + i + 1)
+		_, err = tx.Exec(
+			`INSERT INTO patches (id, workspace_slug, branch_name, position, status, upstream_pr_url, description, added_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			p.ID, p.WorkspaceSlug, p.BranchName, negPos, p.Status,
+			p.UpstreamPRURL, p.Description, p.AddedAt, p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("batch insert patch[%d] %q: %w", i, p.BranchName, err)
+		}
+	}
+
+	// Assign final positions according to the merged order.
+	newPatchPositions := make(map[string]int, len(patches))
+	for i, id := range order {
+		finalPos := i + 1
+		if _, err := tx.Exec(
+			`UPDATE patches SET position = ? WHERE workspace_slug = ? AND id = ?`,
+			finalPos, workspaceSlug, id,
+		); err != nil {
+			return nil, fmt.Errorf("batch add final position %q: %w", id, err)
+		}
+		newPatchPositions[id] = finalPos
+	}
+
+	// Update the Position field on the returned patch structs.
+	for _, p := range patches {
+		if pos, ok := newPatchPositions[p.ID]; ok {
+			p.Position = pos
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("batch add commit: %w", err)
+	}
+	return patches, nil
+}
+
 // updatePatch updates mutable fields of a patch (status, description,
 // upstream_pr_url, position) and refreshes updated_at.
 // branch_name is immutable and ignored even if set on the input (15-REQ-10.E1).

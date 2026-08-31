@@ -464,6 +464,95 @@ func TestCLI_PatchAdd_NoSkipBranchCheck(t *testing.T) {
 	}
 }
 
+// TS-NS-5 (Issue #13): The `patch add` CLI command accepts `--if-not-exists`
+// flag and passes if_not_exists: true in the request body.
+// Requirement: NS-REQ-5
+func TestCLI_PatchAdd_IfNotExists(t *testing.T) {
+	var capturedBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/workspaces/{slug}/patches", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResp{})
+			return
+		}
+		p := patchResp{
+			ID:            "existing-uuid",
+			WorkspaceSlug: r.PathValue("slug"),
+			BranchName:    capturedBody["branch_name"].(string),
+			Position:      1,
+			Status:        "active",
+			AddedAt:       "2025-01-01T00:00:00Z",
+			UpdatedAt:     "2025-01-01T00:00:00Z",
+		}
+		writeJSON(w, http.StatusOK, p)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	stdout, _, err := runPatchCmd(t, server.URL, "test-api-key",
+		"add", "cp-ws", "--branch", "feature/z", "--if-not-exists")
+
+	if err != nil {
+		t.Fatalf("command returned error: %v", err)
+	}
+
+	// Verify the request body includes if_not_exists=true.
+	if capturedBody == nil {
+		t.Fatal("expected request body to be captured")
+	}
+	ifne, ok := capturedBody["if_not_exists"]
+	if !ok {
+		t.Fatal("request body missing 'if_not_exists' field")
+	}
+	if ifne != true {
+		t.Errorf("expected if_not_exists=true, got %v", ifne)
+	}
+
+	// Verify command exited 0 and printed the patch JSON.
+	if !strings.Contains(stdout, "feature/z") {
+		t.Errorf("stdout should contain 'feature/z'; got: %s", stdout)
+	}
+}
+
+// Verify --if-not-exists is NOT sent when the flag is not used.
+func TestCLI_PatchAdd_NoIfNotExists(t *testing.T) {
+	var capturedBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/workspaces/{slug}/patches", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResp{})
+			return
+		}
+		p := patchResp{
+			ID:            "generated-uuid",
+			WorkspaceSlug: r.PathValue("slug"),
+			BranchName:    capturedBody["branch_name"].(string),
+			Position:      1,
+			Status:        "active",
+			AddedAt:       "2025-01-01T00:00:00Z",
+			UpdatedAt:     "2025-01-01T00:00:00Z",
+		}
+		writeJSON(w, http.StatusCreated, p)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, _, err := runPatchCmd(t, server.URL, "test-api-key",
+		"add", "cp-ws", "--branch", "feature/test")
+
+	if err != nil {
+		t.Fatalf("command returned error: %v", err)
+	}
+
+	// Verify the request body does NOT include if_not_exists.
+	if capturedBody == nil {
+		t.Fatal("expected request body to be captured")
+	}
+	if _, ok := capturedBody["if_not_exists"]; ok {
+		t.Error("request body should NOT contain 'if_not_exists' when flag is not used")
+	}
+}
+
 // 15-REQ-14.E2: API error response for any patch command displays error message
 // and exits non-zero.
 // Requirement: 15-REQ-14.E2

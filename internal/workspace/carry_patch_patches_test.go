@@ -1225,3 +1225,326 @@ func TestPatchStore_ConflictFilesNullHandling(t *testing.T) {
 		t.Errorf("ConflictFiles should be empty for non-conflict patch, got %v", patches[0].ConflictFiles)
 	}
 }
+
+// ========================================================================
+// Issue #13: Idempotent and batch patch-add operations
+// ========================================================================
+
+// TS-NS-1 (Issue #13): POST /patches with if_not_exists:true and an existing
+// branch returns HTTP 200 with the existing record.
+// Requirement: NS-REQ-1
+func TestCarryPatch_AddPatch_IfNotExists_ReturnsExisting(t *testing.T) {
+	slug := "cp-idempotent"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Seed an existing patch.
+	seedPatchRaw(t, env.db, "existing-id", slug, "feature/x", 1)
+
+	// Retrieve the seeded patch to get its full state.
+	var origAddedAt, origUpdatedAt string
+	err := env.db.QueryRow(
+		`SELECT added_at, updated_at FROM patches WHERE id = ?`, "existing-id",
+	).Scan(&origAddedAt, &origUpdatedAt)
+	if err != nil {
+		t.Fatalf("failed to retrieve original patch: %v", err)
+	}
+
+	body := `{"branch_name": "feature/x", "if_not_exists": true}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST with if_not_exists=true: status = %d; want %d; body: %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify the returned record is the existing one.
+	if resp["id"] != "existing-id" {
+		t.Errorf("id = %v; want %q", resp["id"], "existing-id")
+	}
+	if resp["position"] != float64(1) {
+		t.Errorf("position = %v; want 1", resp["position"])
+	}
+	if resp["status"] != "active" {
+		t.Errorf("status = %v; want %q", resp["status"], "active")
+	}
+	if resp["added_at"] != origAddedAt {
+		t.Errorf("added_at = %v; want %q (original)", resp["added_at"], origAddedAt)
+	}
+
+	// Verify only one row exists for this branch.
+	var count int
+	err = env.db.QueryRow(
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ? AND branch_name = ?`,
+		slug, "feature/x",
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 patch for feature/x; got %d", count)
+	}
+}
+
+// TS-NS-2 (Issue #13): POST /patches without if_not_exists (or false) and an
+// existing branch still returns HTTP 409. No behaviour regression.
+// Requirement: NS-REQ-2
+func TestCarryPatch_AddPatch_DuplicateWithoutIfNotExists_Returns409(t *testing.T) {
+	slug := "cp-no-idempotent"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	seedPatchRaw(t, env.db, "existing-dup", slug, "feature/y", 1)
+
+	t.Run("absent_if_not_exists", func(t *testing.T) {
+		body := `{"branch_name": "feature/y"}`
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("POST without if_not_exists: status = %d; want %d; body: %s",
+				rec.Code, http.StatusConflict, rec.Body.String())
+		}
+	})
+
+	t.Run("if_not_exists_false", func(t *testing.T) {
+		body := `{"branch_name": "feature/y", "if_not_exists": false}`
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("POST with if_not_exists=false: status = %d; want %d; body: %s",
+				rec.Code, http.StatusConflict, rec.Body.String())
+		}
+	})
+}
+
+// TS-NS-1 (Issue #13): POST /patches with if_not_exists:true and a NEW branch
+// still creates the patch (201).
+func TestCarryPatch_AddPatch_IfNotExists_NewBranch_Creates(t *testing.T) {
+	slug := "cp-idempotent-new"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	body := `{"branch_name": "feature/brand-new", "if_not_exists": true}`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST with if_not_exists=true (new branch): status = %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp["branch_name"] != "feature/brand-new" {
+		t.Errorf("branch_name = %v; want %q", resp["branch_name"], "feature/brand-new")
+	}
+}
+
+// TS-NS-3 (Issue #13): Batch add with array body inserts all patches atomically
+// with sequential positions.
+// Requirement: NS-REQ-3
+func TestCarryPatch_AddPatch_BatchInsert(t *testing.T) {
+	slug := "cp-batch"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	body := `[{"branch_name":"a"},{"branch_name":"b"},{"branch_name":"c"}]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST batch: status = %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var resp []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp) != 3 {
+		t.Fatalf("response has %d patches; want 3", len(resp))
+	}
+
+	// Verify positions are 1, 2, 3.
+	for i, expected := range []float64{1, 2, 3} {
+		if resp[i]["position"] != expected {
+			t.Errorf("patch[%d] position = %v; want %v", i, resp[i]["position"], expected)
+		}
+	}
+
+	// Verify database has exactly 3 rows.
+	var count int
+	err := env.db.QueryRow(
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ?`, slug,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 patches in database; got %d", count)
+	}
+}
+
+// TS-NS-3 (Issue #13): Batch add with a duplicate branch rolls back entirely.
+// Requirement: NS-REQ-3
+func TestCarryPatch_AddPatch_BatchRollbackOnDuplicate(t *testing.T) {
+	slug := "cp-batch-dup"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Seed an existing patch.
+	seedPatchRaw(t, env.db, "pre-existing", slug, "feature/dup", 1)
+
+	// Batch includes existing branch — should fail.
+	body := `[{"branch_name":"feature/new1"},{"branch_name":"feature/dup"},{"branch_name":"feature/new2"}]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("POST batch with duplicate: status = %d; want %d; body: %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	// Verify no new patches were inserted (only the pre-existing one remains).
+	var count int
+	err := env.db.QueryRow(
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ?`, slug,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 patch (pre-existing only) after failed batch; got %d", count)
+	}
+}
+
+// TS-NS-3 (Issue #13): Batch add with duplicate branch_name within the batch
+// is rejected.
+func TestCarryPatch_AddPatch_BatchDuplicateWithinBatch(t *testing.T) {
+	slug := "cp-batch-indup"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	body := `[{"branch_name":"feature/same"},{"branch_name":"feature/same"}]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("POST batch with internal duplicate: status = %d; want %d; body: %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+// TS-NS-4 (Issue #13): Batch add with explicit position shifts existing patches.
+// Requirement: NS-REQ-4
+func TestCarryPatch_AddPatch_BatchWithExplicitPosition(t *testing.T) {
+	slug := "cp-batch-pos"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Seed two existing patches at positions 1 and 2.
+	seedPatchRaw(t, env.db, "orig-1", slug, "feature/orig1", 1)
+	seedPatchRaw(t, env.db, "orig-2", slug, "feature/orig2", 2)
+
+	// Insert: x at position 1 (shifts existing), y appended.
+	body := `[{"branch_name":"x","position":1},{"branch_name":"y"}]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST batch with position: status = %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	// Verify database state: should have 4 patches with contiguous positions.
+	rows, err := env.db.Query(
+		`SELECT branch_name, position FROM patches WHERE workspace_slug = ? ORDER BY position`,
+		slug,
+	)
+	if err != nil {
+		t.Fatalf("query patches failed: %v", err)
+	}
+	defer rows.Close()
+
+	type branchPos struct {
+		branch   string
+		position int
+	}
+	var got []branchPos
+	for rows.Next() {
+		var bp branchPos
+		if err := rows.Scan(&bp.branch, &bp.position); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		got = append(got, bp)
+	}
+
+	if len(got) != 4 {
+		t.Fatalf("got %d patches; want 4", len(got))
+	}
+
+	// Verify positions are contiguous 1-based.
+	for i, bp := range got {
+		if bp.position != i+1 {
+			t.Errorf("patch %q: position = %d; want %d", bp.branch, bp.position, i+1)
+		}
+	}
+
+	// Verify x is at position 1.
+	if got[0].branch != "x" {
+		t.Errorf("patch at position 1 = %q; want %q", got[0].branch, "x")
+	}
+}
+
+// TS-NS-4 (Issue #13): Batch add appends after existing when no position specified.
+func TestCarryPatch_AddPatch_BatchAppendAfterExisting(t *testing.T) {
+	slug := "cp-batch-append"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	// Seed 2 existing patches.
+	seedPatchRaw(t, env.db, "orig-a", slug, "feature/a", 1)
+	seedPatchRaw(t, env.db, "orig-b", slug, "feature/b", 2)
+
+	body := `[{"branch_name":"c"},{"branch_name":"d"}]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST batch append: status = %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var resp []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// New patches should be at positions 3 and 4.
+	if len(resp) != 2 {
+		t.Fatalf("response has %d patches; want 2", len(resp))
+	}
+	if resp[0]["position"] != float64(3) {
+		t.Errorf("patch c position = %v; want 3", resp[0]["position"])
+	}
+	if resp[1]["position"] != float64(4) {
+		t.Errorf("patch d position = %v; want 4", resp[1]["position"])
+	}
+}
+
+// Batch add with empty array returns 400.
+func TestCarryPatch_AddPatch_BatchEmptyArray(t *testing.T) {
+	slug := "cp-batch-empty"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	body := `[]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST empty batch: status = %d; want %d; body: %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
