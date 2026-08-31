@@ -92,6 +92,7 @@ provider.
 | `XDG_CONFIG_HOME` | Base directory for config files. Server config is read from `$XDG_CONFIG_HOME/config.toml`. |
 | `XDG_DATA_HOME` | Base directory for data files. Bare database and workspace paths are resolved relative to `$XDG_DATA_HOME/`. |
 | `ADMIN_TOKEN` | Makefile convenience variable for operator use (e.g. in `curl` commands). Not read by the server binary. The bootstrap sequence always generates tokens on first boot (or rotation) and validates them at request time by SHA-256 hash comparison against the database. |
+| `ADMIN_EMAIL` | Kubernetes deployment convenience variable. Not read by the server binary; the `deployment.yaml` init script passes its value as the `--admin-email` flag argument. Sourced from the `af-hub-secrets` Secret. |
 | `GITHUB_CLIENT_ID` | GitHub OAuth app client ID (referenced in `config.toml` via `${GITHUB_CLIENT_ID}`). |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (referenced in `config.toml` via `${GITHUB_CLIENT_SECRET}`). |
 
@@ -149,11 +150,13 @@ The container image sets:
 - `XDG_CONFIG_HOME=/config`
 - `XDG_DATA_HOME=/data`
 
-The bundled default config is installed at `/config/af-hub/config.toml`.
-Because `XDG_CONFIG_HOME=/config`, the server looks for `/config/config.toml`,
-which does not match the bundled path. Without a volume mount or environment
-override, the server will not find the bundled config and will fall back to
-programmatic defaults.
+The bundled default config is installed at `/config/af-hub/config.toml`. It
+contains only the `[server]`, `[database]`, and `[logging]` sections; the
+`[workspace]` and `[[oauth.providers]]` sections are omitted and fall back to
+programmatic defaults. Because `XDG_CONFIG_HOME=/config`, the server looks for
+`/config/config.toml`, which does not match the bundled path. Without a volume
+mount or environment override, the server will not find the bundled config and
+will fall back to programmatic defaults.
 
 To use the bundled config, either mount your own config at
 `/config/config.toml` or override the environment variable:
@@ -163,6 +166,9 @@ The database path depends on whether a config file is found:
 
 - **Config file found** (with `path = "afhub.db"`): `/data/afhub.db`
 - **No config file found** (programmatic default): `/data/afhub.db`
+
+The container entrypoint is `/usr/local/bin/run`, a shell script that executes
+`/usr/bin/hub` with no flags.
 
 ### Volumes
 
@@ -191,11 +197,11 @@ The `deploy/` directory contains reference manifests:
 
 | File | Description |
 |------|-------------|
-| `deploy/configmap.yaml` | ConfigMap with `config.toml`. Omits the `[workspace]` section; omitted sections use programmatic defaults (`path` = `$XDG_DATA_HOME/workspaces`, `workers` = 4). |
+| `deploy/configmap.yaml` | ConfigMap with `config.toml`. Includes `[server]`, `[database]`, `[logging]`, and `[[oauth.providers]]` sections. Omits the `[workspace]` section; omitted sections use programmatic defaults (`path` = `$XDG_DATA_HOME/workspaces`, `workers` = 4). |
 | `deploy/deployment.yaml` | Deployment spec with volume mounts, health probes, and resource limits. |
-| `deploy/pvc.yaml` | PersistentVolumeClaims for config and data. |
+| `deploy/pvc.yaml` | PersistentVolumeClaims for config (1Gi) and data (10Gi). |
 | `deploy/service.yaml` | ClusterIP Service on port 8080. |
-| `deploy/route.yaml` | OpenShift Route (if applicable). |
+| `deploy/route.yaml` | OpenShift Route with TLS edge termination. |
 | `deploy/secrets.yaml.example` | Secret template for `admin-email`, `github-client-id`, `github-client-secret`. |
 
 ### Health Endpoints

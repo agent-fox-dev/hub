@@ -3,7 +3,7 @@
 Instructions for coding agents (Cursor, Claude Code, Codex, etc.) working on
 this repository. Treat this file as mandatory policy for every coding session.
 
-## Project Context (MANDATORY — Read First)
+## Project Context (MANDATORY -- Read First)
 
 This repository is a **carry-patch fork** managed by af-hub. It is NOT a
 standalone project. The repository maintains a set of patch branches on top of
@@ -22,7 +22,7 @@ Key concepts:
   sequentially during rebuild.
 - **Integration branch:** `<integration-branch>` (typically `deploy`). This
   branch is the primary consumable artifact. It is rebuilt automatically by the
-  hub — never commit to it directly.
+  hub -- never commit to it directly.
 - **Hub git server:** The hub exposes the fork at
   `<hub-url>/git/<org-slug>/<workspace-slug>.git`. Clone from here, push here.
   Never push directly to the upstream remote.
@@ -86,7 +86,7 @@ Before making any changes, orient yourself:
    customized. Run `git branch -r` to see all remote patch branches.
 6. **Read project-specific docs** in `docs/` if they exist.
 
-**Important:** Read all documents and code in depth — do not skim.
+**Important:** Read all documents and code in depth -- do not skim.
 
 Do not implement anything before completing these steps.
 
@@ -153,10 +153,14 @@ afc patch add <workspace-slug> \
 
 Optional flags:
 
-- `--position <int>` — Insert at a specific position in the patch order
+- `--position <int>` -- Insert at a specific position in the patch order
   (1-based). If omitted, the patch is appended at the end.
-- `--upstream-pr <url>` — Link to an upstream pull request if this patch is
+- `--upstream-pr <url>` -- Link to an upstream pull request if this patch is
   intended to be upstreamed eventually.
+- `--skip-branch-check` -- Skip branch existence validation. Useful when
+  registering a patch before the branch has been pushed.
+- `--if-not-exists` -- Return the existing patch instead of an error if the
+  branch is already registered. Idempotent registration for automation.
 
 **Important:** The branch name must not match the integration branch name.
 
@@ -168,6 +172,20 @@ afc rebuild submit <workspace-slug>
 
 This tells the hub to reconstruct the integration branch by replaying all
 active patches (in position order) on top of the current upstream HEAD.
+
+Optional flags:
+
+- `--strategy <rebase|merge>` -- Override the workspace-level rebuild strategy
+  for this specific rebuild.
+- `--fail-mode <fail_fast|continue>` -- Control conflict handling. `fail_fast`
+  (default) stops at the first conflict. `continue` skips conflicting patches
+  and processes the rest.
+- `--wait` -- Block until the rebuild reaches a terminal state (completed,
+  failed, dead_letter, or cancelled).
+- `--timeout <duration>` -- Maximum time to wait (default: 5m). Only effective
+  with `--wait`.
+- `--poll-interval <duration>` -- Interval between status polls (default: 5s).
+  Only effective with `--wait`.
 
 ### Step 7: Monitor Rebuild Status
 
@@ -184,7 +202,22 @@ afc workspace patch-status <workspace-slug>
 The rebuild is complete when the job status is `completed`. If it is `failed`,
 see the Conflict Resolution section below.
 
-### Step 8: Verify the Integration Branch
+For running rebuilds, the status response includes intermediate `patch_results`
+showing which patches have been processed so far.
+
+### Step 8: Preview Before Rebuilding (Optional)
+
+Before committing to a rebuild, you can preview which patches would conflict:
+
+```
+afc rebuild preview <workspace-slug>
+```
+
+This performs a read-only conflict prediction for each active patch without
+modifying any git refs or patch statuses. Each patch is reported as
+`would_succeed` or `would_conflict` (with the list of conflicting files).
+
+### Step 9: Verify the Integration Branch
 
 After a successful rebuild, verify the integration branch builds and tests
 pass:
@@ -196,7 +229,7 @@ git pull origin <integration-branch>
 ```
 
 Run the project's test suite against the integration branch. The integration
-branch is the artifact that gets deployed — it must always be in a working
+branch is the artifact that gets deployed -- it must always be in a working
 state.
 
 ## Upstream Sync
@@ -206,6 +239,14 @@ The hub periodically syncs with upstream, or you can trigger a sync manually:
 ```
 afc workspace sync <workspace-slug>
 ```
+
+Optional flags:
+
+- `--wait` -- Block until any auto-triggered rebuild completes.
+- `--timeout <duration>` -- Maximum time to wait (default: 5m). Only effective
+  with `--wait`.
+- `--poll-interval <duration>` -- Interval between status polls (default: 5s).
+  Only effective with `--wait`.
 
 ### What Happens During Sync
 
@@ -226,8 +267,10 @@ Check the dashboard:
 afc workspace patch-status <workspace-slug>
 ```
 
-- Patches marked `merged_upstream` will be skipped and then deleted on the
-  next successful rebuild. This is permanent — there is no undo.
+- Patches marked `merged_upstream` will be skipped during rebuild and then
+  **soft-deleted** on the next successful rebuild. Soft-deleted patches are
+  hidden from the patch-status dashboard but retained in the database.
+- To restore a soft-deleted patch: `afc patch restore <workspace-slug> <patch-id>`.
 - If the sync introduced upstream changes that conflict with existing patches,
   the auto-rebuild will fail and the conflicting patch will be marked
   `conflict`. See Conflict Resolution below.
@@ -244,8 +287,13 @@ This force-resets the local tracking of upstream HEAD. Follow with a rebuild.
 
 ## Conflict Resolution
 
-Rebuilds stop at the **first** patch that produces an unresolved conflict. All
-subsequent patches are not attempted.
+By default (fail mode `fail_fast`), rebuilds stop at the **first** patch that
+produces an unresolved conflict. All subsequent patches are not attempted.
+
+With fail mode `continue`, the rebuild skips conflicting patches and continues
+processing the remaining patches. The conflicting patches are marked with
+status `conflict` but the rebuild still completes (with those patches missing
+from the integration branch).
 
 ### Step 1: Identify the Conflict
 
@@ -262,7 +310,8 @@ For detailed conflict information from a specific rebuild:
 afc rebuild status <workspace-slug> <rebuild-id>
 ```
 
-The `patch_results` array shows per-patch outcomes.
+The `patch_results` array shows per-patch outcomes including `conflict_files`
+for any patches that conflicted.
 
 ### Step 2: Fix the Patch Branch
 
@@ -316,6 +365,20 @@ afc rerere forget <workspace-slug> <pathspec>
 After forgetting a resolution, the next rebuild will stop at that conflict
 again, allowing you to resolve it correctly.
 
+## Rollback
+
+If a rebuild produced a bad integration branch, you can roll back to the
+previous state:
+
+```
+afc rebuild rollback <workspace-slug> <rebuild-id>
+```
+
+This resets the integration branch to the HEAD SHA it had before the specified
+rebuild. Rollback is not available for the very first rebuild (there is no
+previous state). After rolling back, fix the problematic patch and trigger a
+new rebuild.
+
 ## Patch Management
 
 ### Listing Patches
@@ -347,17 +410,30 @@ afc patch update <workspace-slug> <patch-id> \
   --upstream-pr "https://github.com/upstream/repo/pull/42"
 ```
 
-You can also change status manually:
+You can also change status or position:
 
 ```
 afc patch update <workspace-slug> <patch-id> --status disabled
+afc patch update <workspace-slug> <patch-id> --position 3
 ```
 
 Valid statuses: `active`, `merged_upstream`, `conflict`, `disabled`.
 
 - `disabled` patches are skipped during rebuild but retained in the database.
-- `merged_upstream` patches are skipped during rebuild and permanently deleted
-  after a successful rebuild.
+- `merged_upstream` patches are skipped during rebuild and soft-deleted after a
+  successful rebuild.
+
+### Restoring a Soft-Deleted Patch
+
+Patches that were soft-deleted (e.g., after being merged upstream) can be
+restored:
+
+```
+afc patch restore <workspace-slug> <patch-id>
+```
+
+This transitions the patch back to `active` status. Trigger a rebuild after
+restoring.
 
 ### Removing a Patch
 
@@ -366,7 +442,7 @@ afc patch remove <workspace-slug> <patch-id>
 ```
 
 This deletes the patch registration. Remaining patch positions are compacted
-automatically. The patch branch itself is not deleted from git — only the
+automatically. The patch branch itself is not deleted from git -- only the
 hub's tracking record is removed. Trigger a rebuild after removal.
 
 ## Conventions
@@ -376,17 +452,17 @@ hub's tracking record is removed. Trigger a rebuild after removal.
 - Patch branches: `patch/<descriptive-name>` (e.g., `patch/custom-auth-middleware`,
   `patch/increase-rate-limits`, `patch/fix-logging-format`).
 - Never use branch names that match the integration branch.
-- Never create branches with the prefix `_rebuild_temp` — this is reserved by
+- Never create branches with the prefix `_rebuild_temp` -- this is reserved by
   the hub's rebuild mechanism.
 
 ### Commit Messages
 
 Use conventional commits: `<type>: <description>`.
 
-- `feat:` — new functionality added by the patch
-- `fix:` — bug fix within a patch
-- `refactor:` — restructuring patch code without changing behavior
-- `chore:` — maintenance (dependency updates, config changes)
+- `feat:` -- new functionality added by the patch
+- `fix:` -- bug fix within a patch
+- `refactor:` -- restructuring patch code without changing behavior
+- `chore:` -- maintenance (dependency updates, config changes)
 
 ### Patch Descriptions
 
@@ -415,7 +491,21 @@ workspace variable:
 | `rebase` (default) | Cherry-picks individual commits from each patch branch onto upstream HEAD | Produces a linear history on the integration branch; preferred for most workflows |
 | `merge` | Merges each patch branch with `--no-ff` | Preserves patch branch merge boundaries; useful when patches have complex internal history |
 
-The strategy is set at the workspace level. There is no per-rebuild override.
+The strategy is set at the workspace level and can be overridden per-rebuild
+with `afc rebuild submit --strategy <rebase|merge>`.
+
+## Rebuild Fail Mode
+
+The hub supports two fail modes for handling conflicts during rebuild,
+controlled by the `REBUILD_FAIL_MODE` workspace variable:
+
+| Fail Mode | Behavior | When to use |
+|-----------|----------|-------------|
+| `fail_fast` (default) | Stops at the first conflict; no integration branch update | When all patches must apply cleanly |
+| `continue` | Skips conflicting patches and continues; updates the integration branch with only the successful patches | When partial integration is acceptable while conflicts are being resolved |
+
+The fail mode is set at the workspace level and can be overridden per-rebuild
+with `afc rebuild submit --fail-mode <fail_fast|continue>`.
 
 ## Commands Reference
 
@@ -425,13 +515,18 @@ The strategy is set at the workspace level. There is no per-rebuild override.
 | Check patch stack | `afc patch list <workspace-slug>` |
 | Check integration health | `afc workspace patch-status <workspace-slug>` |
 | Add a new patch | `afc patch add <workspace-slug> --branch <name> --description "<text>"` |
-| Update patch metadata | `afc patch update <workspace-slug> <patch-id> [--status <s>] [--description <text>]` |
+| Update patch metadata | `afc patch update <workspace-slug> <patch-id> [--status <s>] [--description <text>] [--position <n>]` |
 | Remove a patch | `afc patch remove <workspace-slug> <patch-id>` |
+| Restore a soft-deleted patch | `afc patch restore <workspace-slug> <patch-id>` |
 | Reorder all patches | `afc patch reorder <workspace-slug> <id1> <id2> ...` |
-| Trigger rebuild | `afc rebuild submit <workspace-slug>` |
+| Trigger rebuild | `afc rebuild submit <workspace-slug> [--strategy <s>] [--fail-mode <m>] [--wait]` |
+| Preview rebuild conflicts | `afc rebuild preview <workspace-slug>` |
 | Check rebuild status | `afc rebuild status <workspace-slug> <rebuild-id>` |
 | List recent rebuilds | `afc rebuild list <workspace-slug>` |
-| Sync with upstream | `afc workspace sync <workspace-slug>` |
+| Cancel a queued rebuild | `afc rebuild cancel <workspace-slug> <rebuild-id>` |
+| Requeue a dead-lettered rebuild | `afc rebuild requeue <workspace-slug> <rebuild-id>` |
+| Roll back a rebuild | `afc rebuild rollback <workspace-slug> <rebuild-id>` |
+| Sync with upstream | `afc workspace sync <workspace-slug> [--wait]` |
 | Reset to upstream (recovery) | `afc workspace sync <workspace-slug> --reset-to-upstream` |
 | List rerere resolutions | `afc rerere list <workspace-slug>` |
 | Forget a rerere resolution | `afc rerere forget <workspace-slug> <pathspec>` |
@@ -462,7 +557,8 @@ A session is not complete until all of the following are true:
 - **Never modify the `_rebuild_temp` branch.** It is a transient branch used
   during rebuild.
 - **Never run `afc rebuild submit` if a rebuild is already running.** The hub
-  returns 409 Conflict in this case. Wait for the current rebuild to finish.
+  returns 409 Conflict in this case. Wait for the current rebuild to finish,
+  or cancel it first with `afc rebuild cancel`.
 
 ## Scope Discipline
 

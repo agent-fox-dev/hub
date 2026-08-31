@@ -35,11 +35,11 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
 | `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches |
-| `patches:write` | Add, remove, update, and reorder patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/reorder |
-| `rebuilds:read` | View rebuild job status and history | GET /api/v1/workspaces/:slug/rebuilds, GET /api/v1/workspaces/:slug/rebuilds/:id |
-| `rebuilds:write` | Submit rebuild jobs for carry-patch workspaces | POST /api/v1/workspaces/:slug/rebuild |
+| `patches:write` | Add, remove, update, restore, and reorder patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/:id/restore, POST /api/v1/workspaces/:slug/patches/reorder |
+| `rebuilds:read` | View rebuild job status, history, and preview | GET /api/v1/workspaces/:slug/rebuilds, GET /api/v1/workspaces/:slug/rebuilds/:id, GET /api/v1/workspaces/:slug/rebuild-preview |
+| `rebuilds:write` | Submit, cancel, requeue, and rollback rebuild jobs for carry-patch workspaces | POST /api/v1/workspaces/:slug/rebuild, DELETE /api/v1/workspaces/:slug/rebuilds/:id, POST /api/v1/workspaces/:slug/rebuilds/:id/requeue, POST /api/v1/workspaces/:slug/rebuilds/:id/rollback |
 | `merges:read` | List and view merge job status | GET /api/v1/workspaces/:slug/merges, GET /api/v1/workspaces/:slug/merges/:id |
-| `merges:write` | Submit and cancel merge jobs; trigger batch rebase | POST /api/v1/workspaces/:slug/merges, DELETE /api/v1/workspaces/:slug/merges/:id, POST /api/v1/workspaces/:slug/rebase |
+| `merges:write` | Submit, cancel, and requeue merge jobs; trigger batch rebase | POST /api/v1/workspaces/:slug/merges, DELETE /api/v1/workspaces/:slug/merges/:id, POST /api/v1/workspaces/:slug/merges/:id/requeue, POST /api/v1/workspaces/:slug/rebase |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
 | `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
 | `secrets:manage` | Full CRUD access to secrets; implies `secrets:list`, `secrets:write`, and `secrets:delete` | POST, GET, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets |
@@ -75,6 +75,44 @@ they can access. The following scopes are available for workspace operations:
 When a PAT lacks the required scope for an endpoint, or the requested
 workspace is not owned by the PAT's user, the API returns HTTP 404 (not 403)
 to avoid disclosing the existence of resources.
+
+---
+
+## Error Response Schema
+
+Error responses use the apikit error envelope format:
+
+```json
+{
+  "error": {
+    "code": 400,
+    "message": "description of the error"
+  }
+}
+```
+
+Some endpoints include a machine-readable `error_type` field for programmatic
+error classification. When present, the error envelope includes the additional
+field:
+
+```json
+{
+  "error": {
+    "code": 409,
+    "message": "a rebuild job is already queued or running for this workspace",
+    "error_type": "concurrent_rebuild"
+  }
+}
+```
+
+The `error_type` field is omitted when not applicable. Known error types:
+
+| Error Type | Endpoint | Description |
+|------------|----------|-------------|
+| `duplicate_merge` | POST /api/v1/workspaces/:slug/merges | A merge job for this source and target branch is already queued or running |
+| `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild | Workspace is not in `carry_patch` mode |
+| `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
+| `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
 
 ---
 
@@ -134,19 +172,6 @@ schema:
 | `integration_branch` | string or null | Name of the mechanically rebuilt branch that combines the upstream base with all carried patches. Defaults to `"deploy"` for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
 | `created_at` | string (RFC 3339) | Timestamp of workspace creation; immutable |
 | `updated_at` | string (RFC 3339) | Timestamp of last modification |
-
-### Error Response Schema
-
-Error responses use the apikit error envelope format:
-
-```json
-{
-  "error": {
-    "code": 400,
-    "message": "description of the error"
-  }
-}
-```
 
 ---
 
@@ -438,9 +463,9 @@ includes updated `sync_status`, `head_sha`, `upstream_head_sha`, and
 
 The `sync_status` field follows a strict state machine:
 
-- `idle` → `syncing` → `idle` (successful sync)
-- `idle` → `syncing` → `error` (failed sync)
-- `error` → `syncing` → `idle` (recovery after operator resolution)
+- `idle` -> `syncing` -> `idle` (successful sync)
+- `idle` -> `syncing` -> `error` (failed sync)
+- `error` -> `syncing` -> `idle` (recovery after operator resolution)
 
 The handler guarantees that `sync_status` never remains stuck in `"syncing"`:
 a deferred cleanup function transitions to `"error"` on context cancellation
@@ -461,41 +486,56 @@ or unexpected failures.
 #### Carry-Patch Sync Extension
 
 When the workspace is in `carry_patch` mode, the sync endpoint extends the
-standard behavior with upstream merge detection and automatic rebuild
-triggering. The response includes additional fields:
+standard behavior with upstream merge detection, squash merge detection,
+upstream force-push detection, and automatic rebuild triggering. The response
+includes additional fields:
 
 ```json
 {
   "patches_merged": ["feature/already-merged"],
   "rebuild_triggered": true,
-  "rebuild_job_id": "d3b07384-d113-4ec5-8a4e-a12345678901"
+  "rebuild_job_id": "d3b07384-d113-4ec5-8a4e-a12345678901",
+  "force_push_detected": false
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `patches_merged` | string[] | Branch names of patches detected as merged upstream via ancestry check |
+| `patches_merged` | string[] | Branch names of patches detected as merged upstream (via ancestry check, content-based `git cherry` detection, or PR-number scanning) |
 | `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
 | `rebuild_job_id` | string or null | ID of the enqueued rebuild job (present only when `rebuild_triggered` is `true`) |
+| `force_push_detected` | boolean | Whether the upstream HEAD is not a descendant of the previously stored upstream SHA, indicating a history rewrite. Informational only -- sync still proceeds. |
 
 **Carry-Patch Sync Flow:**
 
 1. Resolve upstream credentials via `resolveUpstreamAuth`.
 2. Fetch from the `upstream` remote (not `origin`).
 3. Compare the new upstream HEAD against the stored `upstream_head_sha`.
-4. If unchanged, return immediately with `patches_merged=[]` and
-   `rebuild_triggered=false`.
-5. For each active patch, check if its branch HEAD is an ancestor of the new
-   upstream HEAD using `IsAncestor`. If true, transition the patch status to
-   `merged_upstream`.
-6. If `AUTO_REBUILD_AFTER_SYNC` is `true` (default) and the upstream ref
-   advanced or patches were merged, enqueue a rebuild job. If a rebuild job
-   is already queued or running, silently ignore the duplicate
+4. If unchanged, return immediately with `patches_merged=[]`,
+   `rebuild_triggered=false`, and `force_push_detected=false`.
+5. If the stored SHA is non-empty, check ancestry between the stored SHA and
+   the new upstream HEAD. If the stored SHA is not an ancestor of the new HEAD,
+   set `force_push_detected=true` (informational; sync continues).
+6. For each active patch, detect upstream merge using a multi-strategy approach
+   controlled by the `SQUASH_MERGE_DETECTION` workspace variable:
+   - **Ancestry check** (`git merge-base --is-ancestor`): detects standard merges
+   - **Content-based detection** (`git cherry`): detects squash merges by comparing
+     commit content (no pending commits = merged)
+   - **PR-number scanning**: if `upstream_pr_url` is set, extracts the PR number
+     and searches recent upstream commit messages for the GitHub squash-merge
+     format `"Title (#NNN)"`
+   - The `SQUASH_MERGE_DETECTION` variable accepts: `"ancestry_only"`,
+     `"content_based"`, or `"both"` (default). Either ancestry or content-based
+     signal is sufficient to mark a patch as `merged_upstream`.
+7. Transition matched patches to `merged_upstream` status.
+8. If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` (default is true) and the
+   upstream ref advanced, enqueue a rebuild job. If a rebuild job is already
+   queued or running, silently ignore the duplicate
    (`rebuild_triggered=false`).
 
 **Standard Workspace Behavior:** When the workspace is in `standard` mode, the
-carry-patch-specific fields (`patches_merged`, `rebuild_triggered`) are omitted
-from the response.
+carry-patch-specific fields (`patches_merged`, `rebuild_triggered`,
+`rebuild_job_id`, `force_push_detected`) are omitted from the response.
 
 ---
 
@@ -532,7 +572,7 @@ workspace ownership.
    clear `sync_error` and `upstream_head_sha`. Workspace `status` remains
    `'active'`.
 4. Enqueue a clone job via the in-memory job queue. The clone lifecycle
-   transitions `clone_status` from `'pending'` → `'cloning'` → `'ready'`.
+   transitions `clone_status` from `'pending'` -> `'cloning'` -> `'ready'`.
 
 **Response (success):** HTTP 200 OK with workspace JSON:
 
@@ -606,8 +646,10 @@ All patch endpoints that return patch data use the following JSON schema:
   "branch_name": "feature/auth-headers",
   "position": 1,
   "status": "active",
+  "conflict_files": ["src/config.go"],
   "upstream_pr_url": "https://github.com/upstream/repo/pull/42",
   "description": null,
+  "deleted_at": null,
   "added_at": "2024-01-01T00:00:00Z",
   "updated_at": "2024-01-01T00:00:00Z"
 }
@@ -619,9 +661,11 @@ All patch endpoints that return patch data use the following JSON schema:
 | `workspace_slug` | string | Slug of the workspace this patch belongs to |
 | `branch_name` | string | Name of the git branch associated with this patch |
 | `position` | integer | 1-based application order; lower values are applied first |
-| `status` | string | Patch status: `"active"`, `"merged_upstream"`, `"conflict"`, or `"disabled"` |
+| `status` | string | Patch status: `"active"`, `"merged_upstream"`, `"conflict"`, `"disabled"`, or `"deleted"` |
+| `conflict_files` | string[] or absent | List of conflicting file paths; present only when the patch has unresolved conflicts |
 | `upstream_pr_url` | string or null | URL of the corresponding upstream pull request |
 | `description` | string or null | Free-form description of the patch |
+| `deleted_at` | string (RFC 3339) or null | Timestamp of soft-deletion; null for non-deleted patches |
 | `added_at` | string (RFC 3339) | Timestamp of when the patch was added |
 | `updated_at` | string (RFC 3339) | Timestamp of when the patch was last modified |
 
@@ -629,7 +673,8 @@ All patch endpoints that return patch data use the following JSON schema:
 
 ### POST /api/v1/workspaces/:slug/patches
 
-Add a patch branch to a carry-patch workspace's patch list.
+Add one or more patch branches to a carry-patch workspace's patch list.
+Supports both single-object and batch (JSON array) request bodies.
 
 **Authentication:** API Key, or PAT with `patches:write` scope.
 
@@ -639,14 +684,16 @@ Add a patch branch to a carry-patch workspace's patch list.
 |-----------|-------------|
 | `:slug` | The workspace slug to add the patch to |
 
-**Request Body:**
+#### Single Patch Request
 
 ```json
 {
   "branch_name": "feature/auth-headers",
   "position": 2,
   "upstream_pr_url": "https://github.com/upstream/repo/pull/42",
-  "description": "Add authentication headers to API"
+  "description": "Add authentication headers to API",
+  "skip_branch_check": false,
+  "if_not_exists": false
 }
 ```
 
@@ -656,8 +703,29 @@ Add a patch branch to a carry-patch workspace's patch list.
 | `position` | no | integer | 1-based insertion position; must be >= 1; values > (max position + 1) are clamped to append; when omitted, appends at the end |
 | `upstream_pr_url` | no | string | URL of the upstream pull request |
 | `description` | no | string | Free-form description |
+| `skip_branch_check` | no | boolean | When `true`, skips validation that the branch exists in the git repository. Default `false`. |
+| `if_not_exists` | no | boolean | When `true` and the branch already exists in the patch list, returns HTTP 200 with the existing record instead of HTTP 409. Default `false`. |
 
-**Response:** HTTP 201 Created with patch JSON.
+**Response:** HTTP 201 Created with patch JSON. When `if_not_exists` is `true`
+and the branch already exists, returns HTTP 200 with the existing patch record.
+
+#### Batch Patch Request
+
+Send a JSON array of patch objects to insert multiple patches atomically:
+
+```json
+[
+  {"branch_name": "feature/a", "position": 1},
+  {"branch_name": "feature/b"},
+  {"branch_name": "feature/c", "upstream_pr_url": "https://github.com/upstream/repo/pull/99"}
+]
+```
+
+All patches in the batch are validated and inserted within a single database
+transaction. If any patch fails validation, the entire batch is rejected and
+no patches are inserted.
+
+**Response:** HTTP 201 Created with a JSON array of patch objects.
 
 **Behavior:**
 
@@ -665,9 +733,11 @@ Add a patch branch to a carry-patch workspace's patch list.
   position + 1).
 - When `position` is specified, existing patches at that position or higher are
   shifted down by one to make room.
-- Branch existence in the git repository is NOT validated at add time — that
-  validation occurs at rebuild time.
+- By default, branch existence in the git repository is validated at
+  registration time. Set `skip_branch_check` to `true` to bypass this check.
 - The patch is assigned a UUID, status `"active"`, and RFC 3339 timestamps.
+- In batch mode, duplicate `branch_name` values within the batch are rejected
+  with HTTP 409.
 
 **Error Codes:**
 
@@ -678,15 +748,17 @@ Add a patch branch to a carry-patch workspace's patch list.
 | 400 | Workspace is in `standard` mode (not `carry_patch`) |
 | 400 | Workspace does not exist or is not active |
 | 400 | `position` is less than 1 |
+| 400 | Branch does not exist in repository (when `skip_branch_check` is `false`) |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:write` scope |
-| 409 | `branch_name` already exists in the patch list for this workspace |
+| 409 | `branch_name` already exists in the patch list for this workspace (unless `if_not_exists` is `true`) |
+| 409 | Duplicate `branch_name` within a batch request |
 
 ---
 
 ### GET /api/v1/workspaces/:slug/patches
 
-List all patches for a workspace, ordered by position ascending.
+List all non-deleted patches for a workspace, ordered by position ascending.
 
 **Authentication:** API Key, or PAT with `patches:read` or `patches:write`
 scope.
@@ -698,11 +770,12 @@ scope.
 | `:slug` | The workspace slug to list patches for |
 
 **Response:** HTTP 200 OK with a JSON array of patch objects ordered by
-position. Returns an empty array `[]` if no patches exist.
+position. Returns an empty array `[]` if no patches exist. Soft-deleted
+patches (status `"deleted"`) are excluded from the listing.
 
 **Behavior:**
 
-- Returns all patches in position order for carry-patch workspaces.
+- Returns all non-deleted patches in position order for carry-patch workspaces.
 - Returns an empty array `[]` if the workspace has no patches.
 
 **Error Codes:**
@@ -752,7 +825,7 @@ Update a patch's position, status, description, or upstream PR URL.
 **Behavior:**
 
 - Only the provided fields are updated; omitted fields remain unchanged.
-- `branch_name` is immutable after creation — if included in the request body,
+- `branch_name` is immutable after creation -- if included in the request body,
   it is silently ignored.
 - When `position` changes, other patches in the workspace are shifted to
   maintain a contiguous 1-based sequence with no gaps or duplicates.
@@ -789,7 +862,7 @@ Remove a patch from the workspace's patch list.
 **Behavior:**
 
 - Deletes the patch row from the patches table.
-- Compacts positions for remaining patches so there are no gaps — positions are
+- Compacts positions for remaining patches so there are no gaps -- positions are
   reassigned as a contiguous 1-based sequence.
 - The delete and position compaction are performed atomically within a single
   database transaction.
@@ -802,6 +875,40 @@ Remove a patch from the workspace's patch list.
 | 403 | PAT lacks `patches:write` scope |
 | 404 | Patch ID does not exist for the given workspace |
 | 500 | Database transaction failure during delete and compaction (no partial state persisted) |
+
+---
+
+### POST /api/v1/workspaces/:slug/patches/:id/restore
+
+Restore a soft-deleted patch back to active status.
+
+**Authentication:** API Key, or PAT with `patches:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The patch UUID to restore |
+
+**Response:** HTTP 200 OK with the restored patch JSON object.
+
+**Behavior:**
+
+- Transitions the patch from `"deleted"` status back to `"active"`.
+- Clears the `deleted_at` timestamp.
+- Assigns the patch a new position at the end of the list (max position + 1).
+- `updated_at` is set to the current RFC 3339 timestamp.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Workspace does not exist or is not active; workspace is not in `carry_patch` mode; patch is not in `"deleted"` status |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:write` scope |
+| 404 | Patch ID does not exist for the given workspace |
+| 500 | Internal server error |
 
 ---
 
@@ -827,7 +934,7 @@ Reorder the entire patch list by providing a complete ordered list of patch IDs.
 
 | Field | Required | Type | Constraints |
 |-------|----------|------|-------------|
-| `patch_ids` | yes | string[] | Must contain exactly all patch IDs for the workspace — no missing, no extra, no duplicates |
+| `patch_ids` | yes | string[] | Must contain exactly all patch IDs for the workspace -- no missing, no extra, no duplicates |
 
 **Response:** HTTP 200 OK with a JSON array of all patch objects in the new
 position order.
@@ -937,14 +1044,75 @@ Forget a specific recorded rerere resolution by executing `git rerere forget <pa
 
 ## Rebuild Endpoints
 
-Rebuild endpoints allow operators to submit, list, and inspect rebuild jobs
-for carry-patch workspaces. A rebuild reconstructs the integration branch
-from upstream HEAD plus all active patches.
+Rebuild endpoints allow operators to submit, list, inspect, cancel, requeue,
+rollback, and preview rebuild jobs for carry-patch workspaces. A rebuild
+reconstructs the integration branch from upstream HEAD plus all active patches.
 
 **Note:** Rebuild endpoints do not enforce workspace ownership. Any
 authenticated user with an API key, or a PAT with the appropriate scope
 (`rebuilds:read` or `rebuilds:write`), can view or submit rebuild jobs for
 any workspace.
+
+### Rebuild Job Response Schema
+
+```json
+{
+  "id": "<uuid>",
+  "status": "completed",
+  "strategy": "rebase",
+  "error": "",
+  "created_at": "<rfc3339>",
+  "completed_at": "<rfc3339>",
+  "patch_results": [
+    {
+      "patch_id": "<uuid>",
+      "branch_name": "feature/foo",
+      "position": 1,
+      "status": "success",
+      "new_head_sha": "<sha>"
+    }
+  ],
+  "integration_head_sha": "<sha>",
+  "previous_integration_head_sha": "<sha>"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string (UUID) | Unique job identifier |
+| `status` | string | Job status: `"queued"`, `"running"`, `"completed"`, `"failed"`, `"dead_letter"`, or `"cancelled"` |
+| `strategy` | string | Rebuild strategy: `"rebase"` or `"merge"` (omitted when empty) |
+| `error` | string | Error details for failed jobs (omitted when empty) |
+| `created_at` | string (RFC 3339) | Timestamp of job creation |
+| `completed_at` | string (RFC 3339) or null | Timestamp of job completion; null for non-terminal states |
+| `patch_results` | array or absent | Per-patch rebuild outcomes; present for completed jobs and for running jobs with intermediate progress |
+| `integration_head_sha` | string | SHA of the integration branch HEAD after rebuild; empty for non-completed jobs |
+| `previous_integration_head_sha` | string | SHA of the integration branch HEAD before rebuild; empty for first-ever rebuild or non-completed jobs |
+
+Fields with `omitempty` tags (`strategy`, `error`, `patch_results`,
+`integration_head_sha`, `previous_integration_head_sha`) are omitted from the
+response when empty rather than included as null.
+
+#### Patch Result Schema
+
+Each entry in the `patch_results` array:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `patch_id` | string (UUID) | The patch ID |
+| `branch_name` | string | The git branch name |
+| `position` | integer | Position in the patch stack |
+| `status` | string | Outcome: `"success"`, `"conflict"`, or `"skipped"` |
+| `skipped_reason` | string | Reason for skipping: `"merged_upstream"`, `"disabled"`, `"deleted"`, or `"branch_not_found"` (omitted when not skipped) |
+| `new_head_sha` | string or null | New HEAD SHA after successful application; null on conflict or skip |
+| `conflict_files` | string[] | List of conflicting file paths (omitted when not conflicted) |
+
+#### Rebuild Progress Tracking
+
+For running rebuild jobs, the `patch_results` field exposes intermediate
+progress as each patch completes. This allows clients to poll the job status
+endpoint to see which patches have been processed so far without waiting for
+the entire rebuild to finish.
 
 ### POST /api/v1/workspaces/:slug/rebuild
 
@@ -959,6 +1127,24 @@ Submit a new rebuild job for the workspace.
 - At least one patch must have status `active` or `conflict`
 - No existing rebuild job may be queued or running for this workspace
 
+**Request Body (optional):**
+
+```json
+{
+  "strategy": "rebase",
+  "fail_mode": "fail_fast"
+}
+```
+
+| Field | Required | Type | Constraints |
+|-------|----------|------|-------------|
+| `strategy` | no | string | `"rebase"` (default) or `"merge"`. Overrides the `REBUILD_STRATEGY` workspace variable when provided. |
+| `fail_mode` | no | string | `"fail_fast"` (default) or `"continue"`. When `"continue"`, the rebuild skips conflicting patches and continues processing remaining patches instead of aborting. Overrides the `REBUILD_FAIL_MODE` workspace variable when provided. |
+
+When the request body is omitted, `strategy` defaults to the `REBUILD_STRATEGY`
+workspace variable (or `"rebase"` if unset), and `fail_mode` defaults to the
+`REBUILD_FAIL_MODE` workspace variable (or `"fail_fast"` if unset).
+
 **Response (202 Accepted):**
 
 ```json
@@ -970,20 +1156,53 @@ Submit a new rebuild job for the workspace.
   "group_key": "<workspace-slug>:<integration-branch>",
   "payload": {
     "workspace_slug": "<slug>",
-    "strategy": "rebase"
+    "strategy": "rebase",
+    "fail_mode": "fail_fast"
   }
 }
 ```
 
+**Error Codes:**
+
 | Status | Condition |
 |--------|-----------|
 | 202 | Job enqueued successfully |
-| 400 | Workspace not in carry_patch mode, not active, clone not ready, or no active patches |
+| 400 | Workspace not in carry_patch mode (`error_type: workspace_mode_mismatch`), not active, clone not ready, or no active patches (`error_type: no_active_patches`); invalid `strategy` or `fail_mode` value |
 | 401 | Unauthenticated request |
 | 403 | Missing required scope `rebuilds:write` |
 | 404 | Workspace not found |
-| 409 | A rebuild job is already queued or running for this workspace |
+| 409 | A rebuild job is already queued or running for this workspace (`error_type: concurrent_rebuild`) |
 | 500 | Internal server error (database error, payload marshal failure, or job enqueue failure) |
+
+#### Rebuild Algorithm
+
+The rebuild executor processes patches in position order:
+
+1. Fetch from the upstream remote.
+2. Create a temporary branch at the upstream HEAD.
+3. Enable git rerere for conflict resolution replay.
+4. For each patch in position order:
+   - **Skip** patches with status `merged_upstream`, `disabled`, or `deleted`.
+   - **Skip** patches whose branch does not exist in the repository.
+   - **Apply** using the configured strategy (`rebase` = cherry-pick each
+     unique commit; `merge` = `git merge --no-ff`).
+   - On conflict, attempt rerere auto-resolution. If unresolved conflicts
+     remain:
+     - **fail_fast mode**: abort the rebuild immediately.
+     - **continue mode**: mark the patch as `conflict`, reset to the
+       pre-patch state, record the conflict, and continue with the next patch.
+5. Force-update the integration branch ref to the rebuilt HEAD.
+6. Soft-delete patches that were in `merged_upstream` status (sets status to
+   `"deleted"` with a `deleted_at` timestamp rather than permanently removing
+   the row).
+7. Compact remaining patch positions.
+
+#### Auto-Trigger on Push
+
+When a git push updates a branch that is a registered patch in a carry-patch
+workspace, a rebuild is automatically enqueued (unless the
+`AUTO_REBUILD_AFTER_PUSH` workspace variable is set to `"false"`). The push
+response is not affected -- the rebuild runs asynchronously.
 
 ### GET /api/v1/workspaces/:slug/rebuilds
 
@@ -1001,14 +1220,14 @@ List rebuild jobs for a workspace, ordered by creation time descending.
       "status": "completed",
       "strategy": "rebase",
       "created_at": "<rfc3339>",
-      "completed_at": "<rfc3339>"
+      "completed_at": "<rfc3339>",
+      "patch_results": [...],
+      "integration_head_sha": "<sha>",
+      "previous_integration_head_sha": "<sha>"
     }
   ]
 }
 ```
-
-Fields with `omitempty` tags (`strategy`, `error`, `patch_results`) are
-omitted from the response when empty rather than included as null.
 
 **Error Codes:**
 
@@ -1020,35 +1239,13 @@ omitted from the response when empty rather than included as null.
 
 ### GET /api/v1/workspaces/:slug/rebuilds/:id
 
-Get a single rebuild job by ID, including `patch_results` for completed jobs.
+Get a single rebuild job by ID, including `patch_results` for completed jobs
+and intermediate progress for running jobs.
 
 **Required scope:** `rebuilds:read`
 
-**Response (200 OK):**
-
-```json
-{
-  "id": "<uuid>",
-  "status": "completed",
-  "strategy": "rebase",
-  "created_at": "<rfc3339>",
-  "completed_at": "<rfc3339>",
-  "patch_results": [
-    {
-      "patch_id": "<uuid>",
-      "branch_name": "feature/foo",
-      "position": 1,
-      "status": "success",
-      "new_head_sha": "<sha>"
-    }
-  ]
-}
-```
-
-Fields with `omitempty` tags (`strategy`, `error`, `patch_results`) are
-omitted from the response when empty rather than included as null. For
-example, `error` only appears when non-empty; `patch_results` only appears
-for completed jobs with results.
+**Response (200 OK):** Single rebuild job record (see Rebuild Job Response
+Schema above).
 
 | Status | Condition |
 |--------|-----------|
@@ -1056,6 +1253,125 @@ for completed jobs with results.
 | 401 | Unauthenticated request |
 | 403 | Missing required scope `rebuilds:read` |
 | 404 | Job not found or does not belong to this workspace |
+
+### DELETE /api/v1/workspaces/:slug/rebuilds/:id
+
+Cancel a queued rebuild job.
+
+**Required scope:** `rebuilds:write`
+
+**Response:** HTTP 200 OK with `{"status": "cancelled"}`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | Missing required scope `rebuilds:write` |
+| 404 | Job not found or does not belong to this workspace |
+| 409 | Job cannot be cancelled (not in `queued` status) |
+
+### POST /api/v1/workspaces/:slug/rebuilds/:id/requeue
+
+Requeue a dead-lettered rebuild job.
+
+**Required scope:** `rebuilds:write`
+
+**Response:** HTTP 200 OK with the updated rebuild job record.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | Missing required scope `rebuilds:write` |
+| 404 | Job not found or does not belong to this workspace |
+| 409 | Job is not in `dead_letter` status, or an active rebuild job already exists for this workspace |
+
+### POST /api/v1/workspaces/:slug/rebuilds/:id/rollback
+
+Roll back the integration branch to the state before a completed rebuild by
+resetting it to the `previous_integration_head_sha` stored in the rebuild
+result.
+
+**Required scope:** `rebuilds:write`
+
+**Response (200 OK):**
+
+```json
+{
+  "rolled_back_to": "<sha>"
+}
+```
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | Missing required scope `rebuilds:write` |
+| 404 | Job not found or does not belong to this workspace |
+| 409 | No previous integration head SHA available to roll back to (e.g. first-ever rebuild, or job has no result) |
+| 500 | Failed to initialize git runner or failed to reset integration branch |
+
+### GET /api/v1/workspaces/:slug/rebuild-preview
+
+Perform a read-only conflict prediction for each active patch in position
+order using `git merge-tree --write-tree`. This endpoint does not modify any
+git refs, branches, or patch statuses.
+
+**Required scope:** `rebuilds:read`
+
+**Response (200 OK):**
+
+```json
+{
+  "patch_results": [
+    {
+      "patch_id": "<uuid>",
+      "branch_name": "feature/foo",
+      "position": 1,
+      "status": "would_succeed",
+      "tree_sha": "<sha>",
+      "conflict_files": []
+    },
+    {
+      "patch_id": "<uuid>",
+      "branch_name": "feature/bar",
+      "position": 2,
+      "status": "would_conflict",
+      "conflict_files": ["src/main.go"]
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `patch_results[].patch_id` | string (UUID) | The patch ID |
+| `patch_results[].branch_name` | string | The git branch name |
+| `patch_results[].position` | integer | Position in the patch stack |
+| `patch_results[].status` | string | Predicted outcome: `"would_succeed"` or `"would_conflict"` |
+| `patch_results[].tree_sha` | string | The resulting tree SHA on success (omitted on conflict) |
+| `patch_results[].conflict_files` | string[] | List of conflicting file paths; empty array on success |
+
+**Behavior:**
+
+- Patches with status `disabled` or `merged_upstream` are skipped.
+- The preview is cumulative: each successfully predicted patch contributes to
+  the base used for the next patch, simulating the actual rebuild order.
+- A conflict on one patch does not prevent prediction of subsequent patches --
+  they are tested against the last successfully merged base.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Workspace is not in `carry_patch` mode |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `rebuilds:read` scope |
+| 404 | Workspace not found |
+| 500 | Internal server error (failed to resolve upstream HEAD, list patches, or initialize git runner) |
 
 ---
 
@@ -1149,7 +1465,7 @@ Return a full status dashboard for the carry-patch stack.
 | `last_rebuild` | object or null | Most recent rebuild job record; null if no rebuild has been attempted |
 | `last_rebuild.id` | string | Rebuild job ID |
 | `last_rebuild.status` | string | Rebuild job status (`queued`, `running`, `completed`, `failed`) |
-| `patches` | array | All patches ordered by position |
+| `patches` | array | All non-deleted patches ordered by position |
 | `patches[].id` | string | Patch ID |
 | `patches[].branch_name` | string | Git branch name for the patch |
 | `patches[].position` | integer | 1-based position in the patch stack |
@@ -1157,7 +1473,7 @@ Return a full status dashboard for the carry-patch stack.
 | `patches[].last_rebuild_result` | string or null | Per-patch result from most recent rebuild (`success`, `conflict`, `skipped`); null if no rebuild has been attempted |
 | `patches[].conflict_files` | array of strings | File paths with unresolved conflicts (present only when `last_rebuild_result` is `conflict`) |
 | `summary` | object | Aggregate counts derived from the patches array |
-| `summary.total_patches` | integer | Total number of patches (equals length of `patches` array) |
+| `summary.total_patches` | integer | Total number of non-deleted patches (equals length of `patches` array) |
 | `summary.active` | integer | Count of patches with status `active` |
 | `summary.merged_upstream` | integer | Count of patches with status `merged_upstream` |
 | `summary.conflict` | integer | Count of patches with status `conflict` |
@@ -1177,12 +1493,7 @@ equals `summary.total_patches`.
   at zero.
 - If the `rr-cache` directory is inaccessible, `summary.total_rerere_resolutions`
   is set to 0 rather than failing the request.
-
-**Known schema issue:** The code queries `conflict_files` from the patches
-table, but this column does not exist in the current production schema
-(`workspace/schema.go`). Until the corresponding `ALTER TABLE` migration is
-applied, this endpoint will return HTTP 500 for carry_patch workspaces that
-have patches.
+- Soft-deleted patches (status `"deleted"`) are excluded from the dashboard.
 
 **Error Codes:**
 
@@ -1192,7 +1503,7 @@ have patches.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:read` scope |
 | 404 | Workspace not found |
-| 500 | Database error (including missing schema columns; see note above) |
+| 500 | Database error |
 
 ---
 
@@ -1280,7 +1591,7 @@ Submit a merge request to integrate a source branch into a target branch.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `merges:write` scope |
 | 404 | Workspace not found |
-| 409 | A merge job for this source and target branch is already queued or running |
+| 409 | A merge job for this source and target branch is already queued or running (`error_type: duplicate_merge`) |
 
 ---
 
@@ -1359,6 +1670,33 @@ Cancel a queued merge job.
 | 403 | PAT lacks `merges:write` scope |
 | 404 | Job not found, or job belongs to a different workspace |
 | 409 | Job cannot be cancelled (already running, completed, failed, or cancelled) |
+
+---
+
+### POST /api/v1/workspaces/:slug/merges/:id/requeue
+
+Requeue a dead-lettered merge job. Returns the updated merge job record on
+success.
+
+**Authentication:** API Key, or PAT with `merges:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The merge job UUID |
+
+**Response:** HTTP 200 OK with the updated merge job record.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `merges:write` scope |
+| 404 | Job not found, or job belongs to a different workspace |
+| 409 | Job is not in `dead_letter` status, or an active merge job already exists for this source and target |
 
 ---
 
@@ -1458,6 +1796,17 @@ Admin tokens and API keys have implicit full access to all git operations.
 
 The `.git` suffix is required. Requests without it receive HTTP 404.
 
+### Post-Push Hooks
+
+After a successful push, the git server:
+
+1. Updates `head_sha` in the database.
+2. Resets the working tree to match the new HEAD.
+3. If a post-push hook is registered (carry-patch auto-rebuild), checks whether
+   any pushed branch is a registered patch in a carry-patch workspace and, if
+   `AUTO_REBUILD_AFTER_PUSH` is not `"false"`, enqueues a rebuild job. The push
+   response is not affected -- the hook runs asynchronously.
+
 ---
 
 ### GET /git/:org/:slug.git/info/refs
@@ -1505,7 +1854,9 @@ Git fetch/clone data transfer.
 ### POST /git/:org/:slug.git/git-receive-pack
 
 Git push data transfer. After a successful push, updates `head_sha` in the
-database and resets the working tree to match the new HEAD.
+database and resets the working tree to match the new HEAD. If the pushed
+branch matches a registered patch in a carry-patch workspace, a rebuild may be
+auto-triggered (see Post-Push Hooks above).
 
 **Authentication:** HTTP Basic. PATs require `git:write` scope.
 
@@ -2269,6 +2620,23 @@ The `origin` field indicates which tier the value came from: `"user"`,
 | 403 | PAT lacks required scope |
 | 404 | Workspace not found or not owned by the authenticated user |
 | 500 | Internal server error |
+
+---
+
+## Workspace Variables Reference
+
+The following workspace variables control carry-patch rebuild and sync
+behavior. They can be set via the
+`POST /api/v1/workspaces/:slug/vars` endpoint.
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `REBUILD_STRATEGY` | `"rebase"`, `"merge"` | `"rebase"` | Strategy used to apply patches during rebuild. Can be overridden per-rebuild via the `strategy` field in the POST /rebuild request body. |
+| `REBUILD_FAIL_MODE` | `"fail_fast"`, `"continue"` | `"fail_fast"` | Controls whether rebuild aborts on first conflict or skips conflicting patches and continues. Can be overridden per-rebuild via the `fail_mode` field in the POST /rebuild request body. |
+| `AUTO_REBUILD_AFTER_SYNC` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a carry-patch sync that detects upstream advancement automatically enqueues a rebuild job. |
+| `AUTO_REBUILD_AFTER_PUSH` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a git push to a registered patch branch automatically enqueues a rebuild job. |
+| `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
+| `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
 
 ---
 

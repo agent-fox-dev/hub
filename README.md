@@ -16,15 +16,15 @@ The project produces two binaries:
 
 | Binary | Purpose |
 |--------|---------|
-| `hub` | API server -- owns user identity, OAuth, workspaces, and access control |
+| `hub` | API server -- owns user identity, OAuth, workspaces, git hosting, merge queue, carry-patch workflows, secrets, and access control |
 | `afc` | CLI client -- authenticates with the hub and manages resources |
 
 Data is stored in an embedded SQLite database (pure Go, no CGo). Authentication
 supports three credential types: admin tokens, user API keys, and
 workspace-scoped tokens.
 
-The hub binary also includes a built-in git smart HTTP server that exposes
-workspace repositories at /git/<org>/<slug>.git for clone, fetch, and push
+The hub binary includes a built-in git smart HTTP server that exposes
+workspace repositories at `/git/<org>/<slug>.git` for clone, fetch, and push
 operations.
 
 ## Getting Started
@@ -50,6 +50,7 @@ control the config file location):
 ```toml
 [server]
 port = 8080
+external_url = "http://localhost:8080"
 
 [database]
 path = "afhub.db"
@@ -57,30 +58,40 @@ path = "afhub.db"
 [logging]
 level = "info"
 
-[workspace]
-path = "./data/workspaces"
-workers = 2
-
 [[oauth.providers]]
 name = "github"
-client_id = "your-github-client-id"
-client_secret = "your-github-client-secret"
+client_id = "${GITHUB_CLIENT_ID}"
+client_secret = "${GITHUB_CLIENT_SECRET}"
 ```
 
-### Start the server
+OAuth credentials support `${VAR}` env-var substitution. See
+[Server Configuration](docs/configuration.md) for the full reference.
+
+### First boot
+
+The server can start without any flags:
 
 ```sh
 bin/hub
 ```
 
-On first boot the server generates an admin token and writes the plaintext to
-`admin_token` (next to the config file). Save this value and export it for
-subsequent starts:
+To bootstrap an admin account, pass `--admin-email` on first boot. The server
+generates an admin token, writes the plaintext to `admin_token` in the config
+directory, and exits immediately:
 
 ```sh
-export ADMIN_TOKEN=$(cat admin_token)  # convenience variable for curl commands; not read by the server
+bin/hub --admin-email=admin@example.com
+```
+
+Save the token, then restart without the flag:
+
+```sh
+export ADMIN_TOKEN=$(cat admin_token)
 bin/hub
 ```
+
+To rotate the admin token later, use `--reset-admin-token` (same
+generate-and-exit behaviour).
 
 ### Authenticate with the CLI
 
@@ -89,8 +100,8 @@ bin/afc login
 ```
 
 This opens a browser for GitHub OAuth, exchanges the code, and saves
-credentials to `~/.af/config.toml`. From here you can create workspaces, manage
-API keys, and issue workspace tokens.
+credentials to `~/.af/config.toml`. From here you can create workspaces,
+manage API keys, and issue workspace tokens.
 
 ### Verify the server is running
 
@@ -118,7 +129,7 @@ curl http://localhost:8080/readyz
 make check            # lint + tests
 make test             # tests only
 make lint             # go vet
-make buildc           # build container image via podman
+make build-container  # build container image via podman
 make hub-reset        # reset data and first-boot
 make hub-run          # run the server locally
 make hub-runc         # run the af-hub container

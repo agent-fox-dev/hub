@@ -10,6 +10,9 @@ API.
   key or personal access token (PAT), configured through `afc login`.
 - On success, most commands print a JSON response to stdout and exit with
   code 0.
+- Destructive commands that receive an HTTP 204 No Content response emit a
+  synthetic JSON status object to stdout (e.g. `{"status":"deleted","slug":"x"}`)
+  in addition to any human-readable confirmation on stderr.
 - On error, commands print an error message to stderr and exit with code 1.
 - Network timeouts and connection failures result in exit code 1 with a
   descriptive error message on stderr.
@@ -285,7 +288,9 @@ afc workspace delete <slug> --confirm
 **Behavior:**
 
 - Sends `DELETE /api/v1/workspaces/<slug>`.
-- On success, prints a confirmation message to stderr.
+- On success, emits a synthetic JSON status object to stdout
+  (`{"status":"deleted","slug":"<slug>"}`) and prints a confirmation message
+  to stderr.
 
 **Exit Codes:**
 
@@ -513,9 +518,10 @@ stores a `UPSTREAM_GIT_PAT` workspace secret. The `--upstream-git-username` and
 - Upstream credentials use the same storage, encryption, and access control
   mechanisms as existing workspace credentials (spec 09).
 - The `resolveUpstreamAuth` function resolves credentials in priority order:
-  `UPSTREAM_GIT_PAT` → `UPSTREAM_GIT_USERNAME`+`UPSTREAM_GIT_PASSWORD` →
+  `UPSTREAM_GIT_PAT` -> `UPSTREAM_GIT_USERNAME`+`UPSTREAM_GIT_PASSWORD` ->
   falls back to origin credentials via `resolveCloneAuth`.
-- On success, prints a confirmation message to stdout.
+- On success, prints the API response JSON to stdout and a human-readable
+  confirmation message to stderr.
 
 **Exit Codes:**
 
@@ -1060,7 +1066,9 @@ afc merge cancel <workspace-slug> <merge-id>
 **Behavior:**
 
 - Sends `DELETE /api/v1/workspaces/<slug>/merges/<merge-id>`.
-- On success, prints a confirmation message to stderr.
+- On success, emits a synthetic JSON status object to stdout
+  (`{"status":"cancelled","merge_id":"<id>"}`) and prints a confirmation
+  message to stderr.
 - Only queued jobs can be cancelled; attempting to cancel a running,
   completed, or already-cancelled job returns an error.
 - Requires `merges:write` permission scope for PATs.
@@ -1071,6 +1079,40 @@ afc merge cancel <workspace-slug> <merge-id>
 |------|-----------|
 | 0 | Merge job cancelled successfully |
 | 1 | Merge job not cancellable (wrong status), not found, API error, network error, or timeout |
+
+---
+
+### afc merge requeue
+
+Requeue a dead-lettered merge job, transitioning it back to `queued` status
+for reprocessing.
+
+**Usage:**
+
+```
+afc merge requeue <workspace-slug> <merge-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<merge-id>` | The merge job ID to requeue |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/merges/<merge-id>/requeue`.
+- Prints the requeued merge job JSON to stdout.
+- Only dead-lettered jobs can be requeued.
+- Requires `merges:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Merge job requeued successfully |
+| 1 | Merge job not in dead_letter status, not found, API error, network error, or timeout |
 
 ---
 
@@ -1134,7 +1176,7 @@ Submit a rebuild job for a carry-patch workspace.
 **Usage:**
 
 ```
-afc rebuild submit <workspace-slug> [--wait] [--timeout <duration>] [--poll-interval <duration>]
+afc rebuild submit <workspace-slug> [--strategy <strategy>] [--fail-mode <mode>] [--wait] [--timeout <duration>] [--poll-interval <duration>]
 ```
 
 **Arguments:**
@@ -1147,13 +1189,16 @@ afc rebuild submit <workspace-slug> [--wait] [--timeout <duration>] [--poll-inte
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--strategy` | (server default) | Rebuild strategy override: `rebase` or `merge` |
+| `--fail-mode` | (server default) | Conflict handling mode: `fail_fast` or `continue` |
 | `--wait` | `false` | Block until the rebuild job reaches a terminal state |
 | `--timeout` | `5m0s` | Maximum time to wait for completion (only effective with `--wait`) |
 | `--poll-interval` | `5s` | Interval between status polls (only effective with `--wait`) |
 
 **Behavior:**
 
-- Sends `POST /api/v1/workspaces/<slug>/rebuild`.
+- Sends `POST /api/v1/workspaces/<slug>/rebuild`. When `--strategy` or
+  `--fail-mode` is provided, includes them in the request body.
 - Prints the returned job record (JSON) to stdout, including job `id` and
   `status` (`queued`).
 - Exits with code 0 on success.
@@ -1236,6 +1281,137 @@ afc rebuild status <workspace-slug> <rebuild-id>
 
 ---
 
+### afc rebuild preview
+
+Preview rebuild conflicts without executing a rebuild. Performs a dry-run
+analysis of the current patch list against the upstream base.
+
+**Usage:**
+
+```
+afc rebuild preview <workspace-slug>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug to preview |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/rebuild-preview`.
+- Prints the per-patch conflict prediction JSON to stdout.
+- Exits with code 0 on success.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Preview retrieved successfully |
+| 1 | Missing workspace slug, workspace not in carry_patch mode, API error, or network error |
+
+---
+
+### afc rebuild cancel
+
+Cancel a queued rebuild job.
+
+**Usage:**
+
+```
+afc rebuild cancel <workspace-slug> <rebuild-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<rebuild-id>` | The rebuild job ID to cancel |
+
+**Behavior:**
+
+- Sends `DELETE /api/v1/workspaces/<slug>/rebuilds/<rebuild-id>`.
+- On success, emits a synthetic JSON status object to stdout
+  (`{"status":"cancelled","rebuild_id":"<id>"}`) and prints a confirmation
+  message to stderr.
+- Only queued jobs can be cancelled; attempting to cancel a running,
+  completed, or already-cancelled job returns an error.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Rebuild job cancelled successfully |
+| 1 | Rebuild job not cancellable (wrong status), not found, API error, network error, or timeout |
+
+---
+
+### afc rebuild requeue
+
+Requeue a dead-lettered rebuild job, transitioning it back to `queued` status
+for reprocessing.
+
+**Usage:**
+
+```
+afc rebuild requeue <workspace-slug> <rebuild-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<rebuild-id>` | The rebuild job ID to requeue |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/rebuilds/<rebuild-id>/requeue`.
+- Prints the requeued rebuild job JSON to stdout.
+- Only dead-lettered jobs can be requeued.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Rebuild job requeued successfully |
+| 1 | Rebuild job not in dead_letter status, not found, API error, network error, or timeout |
+
+---
+
+### afc rebuild rollback
+
+Roll back the integration branch to its state before a specific rebuild.
+
+**Usage:**
+
+```
+afc rebuild rollback <workspace-slug> <rebuild-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<rebuild-id>` | The rebuild job ID to roll back |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/rebuilds/<rebuild-id>/rollback`.
+- Prints the rollback result JSON to stdout on success.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Rollback completed successfully |
+| 1 | Rebuild not found, rollback not possible, API error, network error, or timeout |
+
+---
+
 ## Rerere Commands
 
 All rerere commands are subcommands of `afc rerere`. They manage recorded
@@ -1295,9 +1471,10 @@ afc rerere forget <workspace-slug> <pathspec>
 - Sends `DELETE /api/v1/workspaces/<slug>/rerere/<pathspec>`.
 - The pathspec is appended as a path segment without additional URL encoding
   of slashes, relying on the server's wildcard route.
-- Prints confirmation to stdout on success.
-- Prints error to stderr and exits non-zero if the pathspec has no recorded
-  resolution (HTTP 404).
+- On success, emits a synthetic JSON status object to stdout
+  (`{"status":"forgotten","pathspec":"<path>"}`) and prints a confirmation
+  message to stderr.
+- Returns an error if the pathspec has no recorded resolution (HTTP 404).
 
 **Exit Codes:**
 
@@ -1338,20 +1515,28 @@ afc patch add <workspace-slug> --branch <name> [flags]
 | `--position` | no | int | Position in the patch list (appended if omitted) |
 | `--upstream-pr` | no | string | URL of the corresponding upstream pull request |
 | `--description` | no | string | Patch description |
+| `--skip-branch-check` | no | boolean | Skip branch existence validation on the server |
+| `--if-not-exists` | no | boolean | Return the existing patch instead of an error if the branch is already registered |
 
 **Behavior:**
 
 - Sends `POST /api/v1/workspaces/<slug>/patches` with `branch_name` and
-  optional `position`, `upstream_pr_url`, and `description` in the request body.
-- Prints the created patch JSON to stdout, including `id`, `branch_name`,
-  `position`, and `status` (initially `active`).
+  optional `position`, `upstream_pr_url`, `description`, `skip_branch_check`,
+  and `if_not_exists` in the request body.
+- When `--skip-branch-check` is set, the server skips validation that the
+  branch exists in the repository. Useful for registering patches before the
+  branch has been pushed.
+- When `--if-not-exists` is set and a patch with the same branch name already
+  exists, the server returns the existing patch record instead of an error.
+- Prints the created (or existing) patch JSON to stdout, including `id`,
+  `branch_name`, `position`, and `status` (initially `active`).
 - Requires `patches:write` permission scope for PATs.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
-| 0 | Patch added successfully |
+| 0 | Patch added successfully (or existing patch returned with `--if-not-exists`) |
 | 1 | API error (4xx/5xx), network error, or timeout |
 | 2 | Missing `--branch` flag |
 
@@ -1408,7 +1593,9 @@ afc patch remove <workspace-slug> <patch-id>
 **Behavior:**
 
 - Sends `DELETE /api/v1/workspaces/<slug>/patches/<patch-id>`.
-- On success, prints a confirmation message to stderr.
+- On success, emits a synthetic JSON status object to stdout
+  (`{"status":"removed","patch_id":"<id>"}`) and prints a confirmation
+  message to stderr.
 - Remaining patches are automatically compacted to fill the gap.
 - Requires `patches:write` permission scope for PATs.
 
@@ -1495,6 +1682,38 @@ afc patch reorder <workspace-slug> <patch-id-1> [patch-id-2] ...
 |------|-----------|
 | 0 | Patches reordered successfully |
 | 1 | Incomplete or invalid patch ID list, API error, network error, or timeout |
+
+---
+
+### afc patch restore
+
+Restore a soft-deleted patch, transitioning it back to active status.
+
+**Usage:**
+
+```
+afc patch restore <workspace-slug> <patch-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | The workspace slug |
+| `<patch-id>` | The patch ID to restore |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/patches/<patch-id>/restore`.
+- Prints the restored patch JSON to stdout with status returned to `active`.
+- Requires `patches:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Patch restored successfully |
+| 1 | Patch not found, patch not in deleted state, API error, network error, or timeout |
 
 ---
 

@@ -375,8 +375,8 @@ at startup. They control access to the carry-patch patch list endpoints.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Add, remove, update, and reorder patches for a workspace |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/reorder` |
+| **Grants** | Add, remove, update, restore, and reorder patches for a workspace |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/:id/restore`, `POST /api/v1/workspaces/:slug/patches/reorder` |
 | **Implies** | `patches:read` |
 | **Ownership** | Not enforced. Patch handlers check workspace existence and status but do NOT verify ownership. Any authenticated user with the required scope can manage patches for any workspace slug. |
 
@@ -402,8 +402,8 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Submit merge requests, cancel queued merge jobs, and trigger batch rebase operations |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/rebase` |
+| **Grants** | Submit merge requests, cancel queued merge jobs, requeue dead-lettered merge jobs, and trigger batch rebase operations |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/merges/:id/requeue`, `POST /api/v1/workspaces/:slug/rebase` |
 | **Ownership** | Not enforced. Merge handlers check workspace existence, active status, and ready clone status but do NOT verify `ws.OwnerID == auth.UserID`. Any authenticated user with the required scope can access these endpoints for any workspace slug. |
 
 ---
@@ -419,8 +419,8 @@ at startup via the `extraPerms` parameter.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List and view rebuild job status and history for carry-patch workspaces |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/rebuilds`, `GET /api/v1/workspaces/:slug/rebuilds/:id` |
+| **Grants** | List and view rebuild job status and history for carry-patch workspaces; preview rebuild conflict predictions |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/rebuilds`, `GET /api/v1/workspaces/:slug/rebuilds/:id`, `GET /api/v1/workspaces/:slug/rebuild-preview` |
 | **Ownership** | Not enforced. Any authenticated user with the required scope can list/view rebuild jobs for any workspace slug. |
 
 ### rebuilds:write
@@ -428,8 +428,8 @@ at startup via the `extraPerms` parameter.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Submit rebuild jobs for carry-patch workspaces |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/rebuild` |
+| **Grants** | Submit rebuild jobs, cancel queued rebuild jobs, requeue dead-lettered rebuild jobs, and roll back the integration branch to a previous rebuild state for carry-patch workspaces |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/rebuild`, `DELETE /api/v1/workspaces/:slug/rebuilds/:id`, `POST /api/v1/workspaces/:slug/rebuilds/:id/requeue`, `POST /api/v1/workspaces/:slug/rebuilds/:id/rollback` |
 | **Ownership** | Not enforced. Rebuild handlers check workspace mode, status, and clone status but do NOT verify ownership. Any authenticated user with the required scope can submit rebuilds for any workspace slug. |
 
 ---
@@ -673,8 +673,10 @@ secrets and variables handlers return 403 with `"insufficient permission scope"`
 merge handlers return 403 with `"PAT requires merges:write scope"` (or
 `merges:read`); rebuild handlers return 403 with `"missing required scope:
 rebuilds:write"` (or `rebuilds:read`); patch handlers return 403 with
-`"PAT requires patches:read scope"` (or `patches:write`); rerere and
-patch-status handlers return 403 for missing `workspaces:read` scope.
+`"PAT requires patches:read scope"` (or `patches:write`); rerere list
+handler returns 403 for missing `workspaces:read` scope; rerere forget
+handler returns 403 for missing `workspaces:write` scope; patch-status
+handler returns 403 for missing `workspaces:read` scope.
 
 ## Extending the Permission Registry
 
