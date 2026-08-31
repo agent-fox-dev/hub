@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // ===========================================================================
@@ -371,5 +372,309 @@ func TestSubmitRebuild_InvalidBodyStrategy_Returns400(t *testing.T) {
 	resp := parseErrorEnvelope(t, rec)
 	if resp.Error.Message == "" {
 		t.Error("expected non-empty error message for invalid strategy")
+	}
+}
+
+// ===========================================================================
+// TS-NS-1: GET /workspaces/:slug/rebuilds/:id returns
+// previous_integration_head_sha and integration_head_sha when the rebuild
+// result contains them.
+//
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestGetRebuild_IncludesPreviousIntegrationHeadSHA(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-prev-sha"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-1", slug, "feature/foo", 1, PatchStatusActive)
+
+	// Insert a completed rebuild job with a result containing both SHAs.
+	result := RebuildResult{
+		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
+		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
+		PreviousIntegrationHeadSHA: "cccc000000000000000000000000000000000001",
+		Strategy:                   "rebase",
+		PatchesApplied:             1,
+		PatchResults:               []PatchResult{{PatchID: "patch-1", Status: "success"}},
+	}
+	resultJSON, _ := json.Marshal(result)
+	seedRebuildJobWithResult(t, env.db, "job-prev-sha", "completed", slug, "rebase",
+		time.Now(), resultJSON)
+
+	rec := env.doRequest(t, http.MethodGet,
+		"/api/v1/workspaces/"+slug+"/rebuilds/job-prev-sha", "",
+		rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /rebuilds/:id status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	prevSHA, ok := body["previous_integration_head_sha"].(string)
+	if !ok || prevSHA == "" {
+		t.Error("expected non-empty 'previous_integration_head_sha' in response")
+	}
+	if prevSHA != "cccc000000000000000000000000000000000001" {
+		t.Errorf("previous_integration_head_sha = %q, want %q",
+			prevSHA, "cccc000000000000000000000000000000000001")
+	}
+
+	intSHA, ok := body["integration_head_sha"].(string)
+	if !ok || intSHA == "" {
+		t.Error("expected non-empty 'integration_head_sha' in response")
+	}
+	if intSHA != "bbbb000000000000000000000000000000000001" {
+		t.Errorf("integration_head_sha = %q, want %q",
+			intSHA, "bbbb000000000000000000000000000000000001")
+	}
+
+	// The two SHAs must differ.
+	if prevSHA == intSHA {
+		t.Error("previous_integration_head_sha and integration_head_sha should differ")
+	}
+}
+
+// ===========================================================================
+// TS-NS-2: Rollback via POST /workspaces/:slug/rebuilds/:id/rollback
+// resets the integration branch to the previous HEAD.
+//
+// Requirement: NS-REQ-2
+// ===========================================================================
+
+func TestRollbackRebuild_Success_Returns200(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-rollback"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-rb1", slug, "feature/foo", 1, PatchStatusActive)
+
+	previousSHA := "prev000000000000000000000000000000000001"
+	result := RebuildResult{
+		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
+		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
+		PreviousIntegrationHeadSHA: previousSHA,
+		Strategy:                   "rebase",
+		PatchesApplied:             1,
+		PatchResults:               []PatchResult{{PatchID: "patch-rb1", Status: "success"}},
+	}
+	resultJSON, _ := json.Marshal(result)
+	seedRebuildJobWithResult(t, env.db, "job-rb1", "completed", slug, "rebase",
+		time.Now(), resultJSON)
+
+	rec := env.doRequest(t, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/rebuilds/job-rb1/rollback", "",
+		rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /rollback status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	rolledBackTo, ok := body["rolled_back_to"].(string)
+	if !ok || rolledBackTo == "" {
+		t.Error("expected non-empty 'rolled_back_to' in response")
+	}
+	if rolledBackTo != previousSHA {
+		t.Errorf("rolled_back_to = %q, want %q", rolledBackTo, previousSHA)
+	}
+
+	// Verify git branch -f was called with the previous SHA.
+	found := false
+	for _, call := range env.gitRunner.RunCalls {
+		if len(call.Args) >= 4 &&
+			call.Args[0] == "branch" &&
+			call.Args[1] == "-f" &&
+			call.Args[2] == "integration" &&
+			call.Args[3] == previousSHA {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'git branch -f integration <previousSHA>' call")
+	}
+}
+
+// ===========================================================================
+// TS-NS-3: Rollback is rejected when there is no previous SHA (first-ever
+// rebuild for the workspace).
+//
+// Requirement: NS-REQ-3
+// ===========================================================================
+
+func TestRollbackRebuild_NoPreviousSHA_Returns409(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-rollback-409"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-no-prev", slug, "feature/foo", 1, PatchStatusActive)
+
+	// Result with empty PreviousIntegrationHeadSHA (first rebuild).
+	result := RebuildResult{
+		UpstreamHeadSHA:    "aaaa000000000000000000000000000000000001",
+		IntegrationHeadSHA: "bbbb000000000000000000000000000000000001",
+		Strategy:           "rebase",
+		PatchesApplied:     1,
+		PatchResults:       []PatchResult{{PatchID: "patch-no-prev", Status: "success"}},
+	}
+	resultJSON, _ := json.Marshal(result)
+	seedRebuildJobWithResult(t, env.db, "job-no-prev", "completed", slug, "rebase",
+		time.Now(), resultJSON)
+
+	rec := env.doRequest(t, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/rebuilds/job-no-prev/rollback", "",
+		rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /rollback (no previous SHA) status = %d; want %d; body = %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	resp := parseErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for no previous SHA")
+	}
+}
+
+// Test: rollback rejected when job has no result (not yet completed).
+func TestRollbackRebuild_NoResult_Returns409(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-rollback-noresult"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-nr", slug, "feature/foo", 1, PatchStatusActive)
+
+	// Insert a queued job (no result).
+	seedRebuildJob(t, env.db, "job-nr", "queued", slug, "rebase", "operator")
+
+	rec := env.doRequest(t, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/rebuilds/job-nr/rollback", "",
+		rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /rollback (no result) status = %d; want %d; body = %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+// ===========================================================================
+// TS-NS-5: Rollback requires 'rebuilds:write' scope for PATs and is gated
+// to the owning workspace.
+//
+// Requirement: NS-REQ-5
+// ===========================================================================
+
+func TestRollbackRebuild_PATReadOnly_Returns403(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-rollback-auth"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-auth", slug, "feature/foo", 1, PatchStatusActive)
+
+	previousSHA := "prev000000000000000000000000000000000001"
+	result := RebuildResult{
+		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
+		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
+		PreviousIntegrationHeadSHA: previousSHA,
+		Strategy:                   "rebase",
+		PatchesApplied:             1,
+		PatchResults:               []PatchResult{{PatchID: "patch-auth", Status: "success"}},
+	}
+	resultJSON, _ := json.Marshal(result)
+	seedRebuildJobWithResult(t, env.db, "job-auth", "completed", slug, "rebase",
+		time.Now(), resultJSON)
+
+	// PAT with only rebuilds:read should be rejected.
+	rec := env.doRequest(t, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/rebuilds/job-auth/rollback", "",
+		rebuildPATAuth("alice", "rebuilds:read"))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /rollback (read-only PAT) status = %d; want %d; body = %s",
+			rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestRollbackRebuild_PATWriteScope_Returns200(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-rollback-write"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-write", slug, "feature/foo", 1, PatchStatusActive)
+
+	previousSHA := "prev000000000000000000000000000000000001"
+	result := RebuildResult{
+		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
+		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
+		PreviousIntegrationHeadSHA: previousSHA,
+		Strategy:                   "rebase",
+		PatchesApplied:             1,
+		PatchResults:               []PatchResult{{PatchID: "patch-write", Status: "success"}},
+	}
+	resultJSON, _ := json.Marshal(result)
+	seedRebuildJobWithResult(t, env.db, "job-write", "completed", slug, "rebase",
+		time.Now(), resultJSON)
+
+	// PAT with rebuilds:write should succeed.
+	rec := env.doRequest(t, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/rebuilds/job-write/rollback", "",
+		rebuildPATAuth("alice", "rebuilds:write"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /rollback (write PAT) status = %d; want %d; body = %s",
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestRollbackRebuild_CrossWorkspace_Returns404(t *testing.T) {
+	env := newFullTestEnv(t)
+
+	slug := "ws-rollback-cross"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-cross", slug, "feature/foo", 1, PatchStatusActive)
+
+	previousSHA := "prev000000000000000000000000000000000001"
+	result := RebuildResult{
+		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
+		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
+		PreviousIntegrationHeadSHA: previousSHA,
+		Strategy:                   "rebase",
+		PatchesApplied:             1,
+		PatchResults:               []PatchResult{{PatchID: "patch-cross", Status: "success"}},
+	}
+	resultJSON, _ := json.Marshal(result)
+	seedRebuildJobWithResult(t, env.db, "job-cross", "completed", slug, "rebase",
+		time.Now(), resultJSON)
+
+	// Create a second workspace and try to access the job from it.
+	seedWorkspaceCarryPatch(t, env.db, "ws-other", "bob",
+		"https://github.com/example/other", "other-sha", "integration", "")
+
+	rec := env.doRequest(t, http.MethodPost,
+		"/api/v1/workspaces/ws-other/rebuilds/job-cross/rollback", "",
+		rebuildUserAuth("bob"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /rollback (cross-workspace) status = %d; want %d; body = %s",
+			rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }

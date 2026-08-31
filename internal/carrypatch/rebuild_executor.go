@@ -215,6 +215,15 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	if integrationBranch == "" {
 		integrationBranch = "integration"
 	}
+
+	// Capture the previous integration branch HEAD before force-updating.
+	// If the branch does not exist yet (first rebuild), previousHead will be
+	// empty and PreviousIntegrationHeadSHA stays at its zero value.
+	previousHead, _ := git.Run(ctx, "rev-parse", "--verify", integrationBranch)
+	if previousHead != "" {
+		result.PreviousIntegrationHeadSHA = previousHead
+	}
+
 	if _, err := git.Run(ctx, "branch", "-f", integrationBranch, "HEAD"); err != nil {
 		cleanupTempBranch()
 		return nil, true, &TransientError{Err: err}

@@ -58,7 +58,13 @@ func rebuildCLIMockServer(t *testing.T, failPaths map[string]int) (*httptest.Ser
 		switch r.Method {
 		case http.MethodPost:
 			w.Header().Set("Content-Type", "application/json")
-			if strings.HasSuffix(r.URL.Path, "/requeue") {
+			if strings.HasSuffix(r.URL.Path, "/rollback") {
+				// POST /api/v1/workspaces/:slug/rebuilds/:id/rollback — rollback rebuild.
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+					"rolled_back_to": "prev000000000000000000000000000000000001",
+				})
+			} else if strings.HasSuffix(r.URL.Path, "/requeue") {
 				// POST /api/v1/workspaces/:slug/rebuilds/:id/requeue — requeue rebuild job.
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
@@ -838,6 +844,97 @@ func TestRebuildCLI_Requeue_MissingArgs(t *testing.T) {
 
 	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
 		"requeue", "my-workspace")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit when rebuild-id is missing; got nil error")
+	}
+}
+
+// =========================================================================
+// TS-NS-4: 'afc rebuild rollback <workspace-slug> <rebuild-id>' sends POST
+// /api/v1/workspaces/:slug/rebuilds/:id/rollback, prints the JSON response
+// to stdout, and exits with code 0.
+// Requirement: NS-REQ-4
+// =========================================================================
+
+func TestRebuildCmd_HasRollbackSubcommand(t *testing.T) {
+	cmd := RebuildCmd()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if strings.HasPrefix(sub.Use, "rollback") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("RebuildCmd() should have a 'rollback' subcommand")
+	}
+}
+
+func TestRebuildCLI_Rollback_Success(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"rollback", "my-workspace", "job-uuid-1")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr; got: %s", stderr)
+	}
+
+	// Verify the correct API call was made.
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.Method != "POST" {
+		t.Errorf("method = %q; want POST", req.Method)
+	}
+	if req.Path != "/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1/rollback" {
+		t.Errorf("path = %q; want /api/v1/workspaces/my-workspace/rebuilds/job-uuid-1/rollback", req.Path)
+	}
+
+	// Verify stdout contains the rolled_back_to SHA.
+	if !strings.Contains(stdout, "rolled_back_to") {
+		t.Errorf("stdout should contain 'rolled_back_to'; got: %s", stdout)
+	}
+
+	// Verify stdout is valid JSON.
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+	if _, ok := result["rolled_back_to"]; !ok {
+		t.Error("response JSON missing 'rolled_back_to' field")
+	}
+}
+
+func TestRebuildCLI_Rollback_APIError(t *testing.T) {
+	failPaths := map[string]int{
+		"/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1/rollback": http.StatusConflict,
+	}
+	server, _ := rebuildCLIMockServer(t, failPaths)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"rollback", "my-workspace", "job-uuid-1")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit on API error; got nil error")
+	}
+}
+
+func TestRebuildCLI_Rollback_MissingArgs(t *testing.T) {
+	server, _ := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"rollback", "my-workspace")
 
 	if err == nil {
 		t.Fatal("expected non-zero exit when rebuild-id is missing; got nil error")

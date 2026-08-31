@@ -694,6 +694,16 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	}
 	RegisterPatchStatusRoutes(api, patchStatusCfg)
 
+	rollbackCfg := RebuildRollbackAPIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+	}
+	RegisterRebuildRollbackRoutes(api, rollbackCfg)
+
 	return &fullTestEnv{
 		echo:          e,
 		db:            db,

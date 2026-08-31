@@ -46,13 +46,20 @@ type RebuildListResponse struct {
 
 // RebuildJobRecord is a single rebuild job in list and detail responses.
 type RebuildJobRecord struct {
-	ID           string          `json:"id"`
-	Status       string          `json:"status"`
-	Strategy     string          `json:"strategy,omitempty"`
-	Error        string          `json:"error,omitempty"`
-	CreatedAt    string          `json:"created_at"`
-	CompletedAt  *string         `json:"completed_at"`
-	PatchResults json.RawMessage `json:"patch_results,omitempty"`
+	ID                          string          `json:"id"`
+	Status                      string          `json:"status"`
+	Strategy                    string          `json:"strategy,omitempty"`
+	Error                       string          `json:"error,omitempty"`
+	CreatedAt                   string          `json:"created_at"`
+	CompletedAt                 *string         `json:"completed_at"`
+	PatchResults                json.RawMessage `json:"patch_results,omitempty"`
+	IntegrationHeadSHA          string          `json:"integration_head_sha,omitempty"`
+	PreviousIntegrationHeadSHA  string          `json:"previous_integration_head_sha,omitempty"`
+}
+
+// RollbackResponse is the JSON response for POST /rebuilds/:id/rollback.
+type RollbackResponse struct {
+	RolledBackTo string `json:"rolled_back_to"`
 }
 
 // RebuildPreviewAPIConfig holds dependencies for the rebuild-preview endpoint.
@@ -192,6 +199,14 @@ func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 // Rebuild route registration
 // ===========================================================================
 
+// RebuildRollbackAPIConfig holds dependencies for the rebuild rollback endpoint.
+type RebuildRollbackAPIConfig struct {
+	DB            *sql.DB
+	Queue         *jobqueue.Queue
+	WorkspaceRoot string
+	NewGitRunner  func(repoPath string) (GitRunner, error)
+}
+
 // RegisterRebuildRoutes mounts rebuild endpoints on the API group.
 func RegisterRebuildRoutes(api *echo.Group, cfg RebuildAPIConfig) {
 	api.POST("/workspaces/:slug/rebuild", handleSubmitRebuild(cfg))
@@ -199,6 +214,11 @@ func RegisterRebuildRoutes(api *echo.Group, cfg RebuildAPIConfig) {
 	api.GET("/workspaces/:slug/rebuilds/:id", handleGetRebuild(cfg))
 	api.DELETE("/workspaces/:slug/rebuilds/:id", handleCancelRebuild(cfg))
 	api.POST("/workspaces/:slug/rebuilds/:id/requeue", handleRequeueRebuild(cfg))
+}
+
+// RegisterRebuildRollbackRoutes mounts the rebuild rollback endpoint on the API group.
+func RegisterRebuildRollbackRoutes(api *echo.Group, cfg RebuildRollbackAPIConfig) {
+	api.POST("/workspaces/:slug/rebuilds/:id/rollback", handleRollbackRebuild(cfg))
 }
 
 // RegisterRebuildPreviewRoutes mounts the rebuild-preview endpoint on the API group.
@@ -652,6 +672,82 @@ func handleRequeueRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 }
 
 // ===========================================================================
+// POST /workspaces/:slug/rebuilds/:id/rollback
+// ===========================================================================
+
+// handleRollbackRebuild handles POST /api/v1/workspaces/:slug/rebuilds/:id/rollback.
+// It rolls back the integration branch to the previous HEAD SHA stored in the
+// rebuild result. Returns 200 on success, 409 if no previous SHA is available
+// (first-ever rebuild), 404 if the job does not exist or belongs to a different
+// workspace.
+func handleRollbackRebuild(cfg RebuildRollbackAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// Auth check.
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
+			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
+		}
+
+		slug := c.Param("slug")
+		jobID := c.Param("id")
+
+		// Look up the job to verify it exists and belongs to this workspace.
+		j, err := cfg.Queue.GetByID(jobID)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+
+		// Anti-enumeration: cross-workspace lookup returns 404.
+		if j.Key != slug {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+		if j.Type != "rebuild" {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+
+		// Extract the previous integration head SHA from the job result.
+		if j.Result == nil {
+			return apikit.WriteAPIError(c, http.StatusConflict, "no previous integration head to roll back to")
+		}
+		var result RebuildResult
+		if err := json.Unmarshal(j.Result, &result); err != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to parse rebuild result")
+		}
+		if result.PreviousIntegrationHeadSHA == "" {
+			return apikit.WriteAPIError(c, http.StatusConflict, "no previous integration head to roll back to")
+		}
+
+		// Determine the integration branch name from the payload.
+		var payload RebuildPayload
+		if j.Payload != nil {
+			_ = json.Unmarshal(j.Payload, &payload)
+		}
+		integrationBranch := payload.IntegrationBranch
+		if integrationBranch == "" {
+			integrationBranch = "integration"
+		}
+
+		// Reset the integration branch to the previous HEAD.
+		repoPath := filepath.Join(cfg.WorkspaceRoot, slug, "trunk")
+		git, gitErr := cfg.NewGitRunner(repoPath)
+		if gitErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to initialize git runner")
+		}
+
+		if _, err := git.Run(c.Request().Context(), "branch", "-f", integrationBranch, result.PreviousIntegrationHeadSHA); err != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to roll back integration branch")
+		}
+
+		return c.JSON(http.StatusOK, RollbackResponse{
+			RolledBackTo: result.PreviousIntegrationHeadSHA,
+		})
+	}
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
@@ -682,14 +778,18 @@ func jobToRebuildRecord(j *jobqueue.Job) RebuildJobRecord {
 		rec.CompletedAt = &ts
 	}
 
-	// Extract patch_results from result for completed jobs.
+	// Extract fields from result for completed jobs.
 	if j.Result != nil {
 		var result RebuildResult
-		if err := json.Unmarshal(j.Result, &result); err == nil && len(result.PatchResults) > 0 {
-			patchResultsJSON, err := json.Marshal(result.PatchResults)
-			if err == nil {
-				rec.PatchResults = patchResultsJSON
+		if err := json.Unmarshal(j.Result, &result); err == nil {
+			if len(result.PatchResults) > 0 {
+				patchResultsJSON, err := json.Marshal(result.PatchResults)
+				if err == nil {
+					rec.PatchResults = patchResultsJSON
+				}
 			}
+			rec.IntegrationHeadSHA = result.IntegrationHeadSHA
+			rec.PreviousIntegrationHeadSHA = result.PreviousIntegrationHeadSHA
 		}
 	}
 

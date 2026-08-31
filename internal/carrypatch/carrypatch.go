@@ -102,13 +102,14 @@ type PatchResult struct {
 
 // RebuildResult is the structured result returned by a successful rebuild job.
 type RebuildResult struct {
-	UpstreamHeadSHA    string        `json:"upstream_head_sha"`
-	IntegrationHeadSHA string        `json:"integration_head_sha"`
-	Strategy           string        `json:"strategy"`
-	PatchesApplied     int           `json:"patches_applied"`
-	PatchesSkipped     int           `json:"patches_skipped"`
-	PatchesRemoved     int           `json:"patches_removed"`
-	PatchResults       []PatchResult `json:"patch_results"`
+	UpstreamHeadSHA             string        `json:"upstream_head_sha"`
+	IntegrationHeadSHA          string        `json:"integration_head_sha"`
+	PreviousIntegrationHeadSHA  string        `json:"previous_integration_head_sha,omitempty"`
+	Strategy                    string        `json:"strategy"`
+	PatchesApplied              int           `json:"patches_applied"`
+	PatchesSkipped              int           `json:"patches_skipped"`
+	PatchesRemoved              int           `json:"patches_removed"`
+	PatchResults                []PatchResult `json:"patch_results"`
 }
 
 // ===========================================================================

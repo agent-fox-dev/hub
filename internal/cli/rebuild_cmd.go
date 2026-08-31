@@ -29,6 +29,7 @@ func RebuildCmd() *cobra.Command {
 		newRebuildPreviewCmd(),
 		newRebuildCancelCmd(),
 		newRebuildRequeueCmd(),
+		newRebuildRollbackCmd(),
 	)
 
 	return cmd
@@ -221,6 +222,34 @@ func newRebuildRequeueCmd() *cobra.Command {
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
 				"/workspaces/"+args[0]+"/rebuilds/"+args[1]+"/requeue", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+}
+
+// newRebuildRollbackCmd returns the 'rebuild rollback' subcommand.
+// It sends POST /api/v1/workspaces/:slug/rebuilds/:id/rollback and prints
+// the JSON response to stdout on success, or an error to stderr on failure.
+// Requirements: NS-REQ-4
+func newRebuildRollbackCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "rollback <workspace-slug> <rebuild-id>",
+		Short:         "Roll back the integration branch to its previous state",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
+				"/workspaces/"+args[0]+"/rebuilds/"+args[1]+"/rollback", nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

@@ -1091,6 +1091,175 @@ func TestRebuildExecutor_FetchHeadUnavailable_ReturnsTransientError(t *testing.T
 }
 
 // ===========================================================================
+// TS-NS-1: A completed rebuild result includes the previous integration
+// branch HEAD SHA.
+//
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestRebuildExecutor_PreviousIntegrationHeadSHA_Set(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
+	})
+
+	fetchHeadSHA := "aaaa000000000000000000000000000000000001"
+	previousIntegrationSHA := "prev000000000000000000000000000000000001"
+	commitSHA := "bbbb000000000000000000000000000000000001"
+	finalSHA := "cccc000000000000000000000000000000000001"
+
+	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" {
+			if args[1] == "FETCH_HEAD" {
+				return fetchHeadSHA, nil
+			}
+			// rev-parse --verify integration (to capture previous HEAD)
+			if len(args) >= 3 && args[1] == "--verify" && args[2] == "integration" {
+				return previousIntegrationSHA, nil
+			}
+			// rev-parse HEAD (for final integration head and per-patch head)
+			return finalSHA, nil
+		}
+		for _, arg := range args {
+			if arg == "--reverse" {
+				return commitSHA, nil
+			}
+		}
+		return fetchHeadSHA, nil
+	}
+	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
+
+	h := &RebuildHandler{
+		PatchStore:   patches,
+		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
+		Fetch:        func(_ context.Context, _ string) error { return nil },
+		ResolveAuth:  func(_ string) error { return nil },
+	}
+
+	payload := RebuildPayload{
+		WorkspaceSlug: "ws1",
+		Strategy:      StrategyRebase,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+	if err != nil {
+		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	}
+
+	rebuildResult, ok := result.(*RebuildResult)
+	if !ok {
+		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+	}
+
+	// Verify PreviousIntegrationHeadSHA is set.
+	if rebuildResult.PreviousIntegrationHeadSHA != previousIntegrationSHA {
+		t.Errorf("PreviousIntegrationHeadSHA = %q, want %q",
+			rebuildResult.PreviousIntegrationHeadSHA, previousIntegrationSHA)
+	}
+
+	// Verify IntegrationHeadSHA is set to a different value.
+	if rebuildResult.IntegrationHeadSHA == "" {
+		t.Error("IntegrationHeadSHA should not be empty")
+	}
+	if rebuildResult.IntegrationHeadSHA == rebuildResult.PreviousIntegrationHeadSHA {
+		t.Error("IntegrationHeadSHA and PreviousIntegrationHeadSHA should differ")
+	}
+
+	// Verify the field is present in JSON.
+	data, err := json.Marshal(rebuildResult)
+	if err != nil {
+		t.Fatalf("failed to marshal result: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+	if _, ok := raw["previous_integration_head_sha"]; !ok {
+		t.Error("missing 'previous_integration_head_sha' in JSON result")
+	}
+}
+
+// Test: PreviousIntegrationHeadSHA is empty when integration branch does not
+// exist yet (first-ever rebuild).
+func TestRebuildExecutor_PreviousIntegrationHeadSHA_EmptyOnFirstRebuild(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
+	})
+
+	fetchHeadSHA := "aaaa000000000000000000000000000000000001"
+	commitSHA := "bbbb000000000000000000000000000000000001"
+	finalSHA := "cccc000000000000000000000000000000000001"
+
+	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" {
+			if args[1] == "FETCH_HEAD" {
+				return fetchHeadSHA, nil
+			}
+			// rev-parse --verify integration fails (branch doesn't exist)
+			if len(args) >= 3 && args[1] == "--verify" && args[2] == "integration" {
+				return "", fmt.Errorf("fatal: Needed a single revision")
+			}
+			return finalSHA, nil
+		}
+		for _, arg := range args {
+			if arg == "--reverse" {
+				return commitSHA, nil
+			}
+		}
+		return fetchHeadSHA, nil
+	}
+	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
+
+	h := &RebuildHandler{
+		PatchStore:   patches,
+		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
+		Fetch:        func(_ context.Context, _ string) error { return nil },
+		ResolveAuth:  func(_ string) error { return nil },
+	}
+
+	payload := RebuildPayload{
+		WorkspaceSlug: "ws1",
+		Strategy:      StrategyRebase,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+	if err != nil {
+		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	}
+
+	rebuildResult, ok := result.(*RebuildResult)
+	if !ok {
+		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+	}
+
+	// PreviousIntegrationHeadSHA should be empty on first rebuild.
+	if rebuildResult.PreviousIntegrationHeadSHA != "" {
+		t.Errorf("PreviousIntegrationHeadSHA = %q, want empty string (first rebuild)",
+			rebuildResult.PreviousIntegrationHeadSHA)
+	}
+
+	// Verify the field is omitted from JSON when empty.
+	data, err := json.Marshal(rebuildResult)
+	if err != nil {
+		t.Fatalf("failed to marshal result: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+	if _, ok := raw["previous_integration_head_sha"]; ok {
+		t.Error("'previous_integration_head_sha' should be omitted from JSON when empty")
+	}
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
