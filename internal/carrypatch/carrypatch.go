@@ -72,12 +72,13 @@ func (e *TransientError) Unwrap() error {
 
 // Patch represents a carry-patch record from the patches table.
 type Patch struct {
-	ID            string   `json:"id"`
-	WorkspaceID   string   `json:"workspace_id"`
-	BranchName    string   `json:"branch_name"`
-	Position      int      `json:"position"`
-	Status        string   `json:"status"`
-	ConflictFiles []string `json:"conflict_files,omitempty"`
+	ID             string   `json:"id"`
+	WorkspaceID    string   `json:"workspace_id"`
+	BranchName     string   `json:"branch_name"`
+	Position       int      `json:"position"`
+	Status         string   `json:"status"`
+	ConflictFiles  []string `json:"conflict_files,omitempty"`
+	UpstreamPRURL  *string  `json:"upstream_pr_url,omitempty"`
 }
 
 // RebuildPayload is the JSON payload stored in the job queue for rebuild jobs.
@@ -119,6 +120,7 @@ type GitRunner interface {
 	CherryPick(ctx context.Context, commitSHA string) error
 	MergeNoFF(ctx context.Context, branch string) error
 	IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
+	Cherry(ctx context.Context, upstream, head string) (applied []string, pending []string, err error)
 	HardReset(ctx context.Context, ref string) error
 }
 

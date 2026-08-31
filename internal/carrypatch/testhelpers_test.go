@@ -209,6 +209,7 @@ type mockGitRunner struct {
 	MergeNoFFCalls  []mergeNoFFCall
 	MergeNoFFFunc   func(ctx context.Context, branch string) error
 	IsAncestorFunc  func(ctx context.Context, ancestor, descendant string) (bool, error)
+	CherryFunc      func(ctx context.Context, upstream, head string) ([]string, []string, error)
 	HardResetFunc   func(ctx context.Context, ref string) error
 }
 
@@ -225,6 +226,9 @@ func newMockGitRunner() *mockGitRunner {
 		},
 		IsAncestorFunc: func(_ context.Context, _, _ string) (bool, error) {
 			return false, nil
+		},
+		CherryFunc: func(_ context.Context, _, _ string) ([]string, []string, error) {
+			return nil, nil, nil
 		},
 		HardResetFunc: func(_ context.Context, _ string) error {
 			return nil
@@ -255,6 +259,10 @@ func (m *mockGitRunner) MergeNoFF(ctx context.Context, branch string) error {
 
 func (m *mockGitRunner) IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
 	return m.IsAncestorFunc(ctx, ancestor, descendant)
+}
+
+func (m *mockGitRunner) Cherry(ctx context.Context, upstream, head string) ([]string, []string, error) {
+	return m.CherryFunc(ctx, upstream, head)
 }
 
 func (m *mockGitRunner) HardReset(ctx context.Context, ref string) error {

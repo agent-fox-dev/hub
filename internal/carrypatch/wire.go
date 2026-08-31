@@ -73,6 +73,11 @@ func (a *GitRunnerAdapter) IsAncestor(ctx context.Context, ancestor, descendant 
 	return a.runner.IsAncestor(ctx, ancestor, descendant)
 }
 
+// Cherry delegates to the underlying gitcmd.GitRunner.Cherry.
+func (a *GitRunnerAdapter) Cherry(ctx context.Context, upstream, head string) ([]string, []string, error) {
+	return a.runner.Cherry(ctx, upstream, head)
+}
+
 // HardReset runs 'git reset --hard <ref>'.
 func (a *GitRunnerAdapter) HardReset(ctx context.Context, ref string) error {
 	_, err := a.runner.Run(ctx, "reset", "--hard", ref)
@@ -108,7 +113,7 @@ func NewSQLPatchStore(db *sql.DB) *SQLPatchStore {
 // ListPatches returns all patches for a workspace ordered by position.
 func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]Patch, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, workspace_slug, branch_name, position, status, conflict_files
+		`SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url
 		 FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
 		workspaceSlug,
 	)
@@ -121,7 +126,7 @@ func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]
 	for rows.Next() {
 		var p Patch
 		var conflictFilesJSON string
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON, &p.UpstreamPRURL); err != nil {
 			return nil, err
 		}
 		if conflictFilesJSON != "" {

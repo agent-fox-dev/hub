@@ -1,10 +1,13 @@
 package carrypatch
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -149,6 +152,16 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
 		}
 
+		// Determine squash merge detection mode from workspace variable.
+		// Values: "ancestry_only", "content_based", "both" (default).
+		squashDetectionMode := "both"
+		if cfg.GetVariable != nil {
+			val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
+			if val == "ancestry_only" || val == "content_based" || val == "both" {
+				squashDetectionMode = val
+			}
+		}
+
 		for _, patch := range patches {
 			// Only check active patches.
 			// 16-PROP-6: merged_upstream is monotonic — never revert.
@@ -156,13 +169,24 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 				continue
 			}
 
-			// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
-			// new upstream HEAD.
-			merged, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
-			if ancestorErr != nil {
-				// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
-				// does not exist locally). Leave status unchanged.
-				continue
+			merged := false
+
+			// Step 1: ancestry check (unless mode is content_based only).
+			if squashDetectionMode != "content_based" {
+				// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
+				// new upstream HEAD.
+				ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
+				if ancestorErr != nil {
+					// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
+					// does not exist locally). Leave status unchanged.
+					continue
+				}
+				merged = ancestorResult
+			}
+
+			// Step 2: squash merge fallback (content-based + PR-number scanning).
+			if !merged && squashDetectionMode != "ancestry_only" {
+				merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
 			}
 
 			if merged {
@@ -226,4 +250,112 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 
 		return c.JSON(http.StatusOK, resp)
 	}
+}
+
+// ===========================================================================
+// Squash merge detection helpers
+// ===========================================================================
+
+// detectSquashMerge uses content-based and PR-number heuristics to determine
+// whether a patch has been squash-merged upstream. Returns true if the patch
+// is detected as merged.
+//
+// Strategy:
+//  1. Content-based: use `git cherry` to compare patch commits against the
+//     upstream range. If all patch commits have content-equivalent matches
+//     upstream (no pending commits), the patch is effectively merged.
+//  2. PR-number scanning: if the patch has an upstream_pr_url, extract the PR
+//     number and scan recent upstream commit messages for GitHub's squash-merge
+//     format "Title (#NNN)".
+//
+// Either signal is sufficient to declare the patch merged.
+func detectSquashMerge(ctx context.Context, git GitRunner, patch Patch, oldUpstreamHead, newUpstreamHead string) bool {
+	// Try content-based detection via git cherry.
+	if detectSquashMergeByContent(ctx, git, patch.BranchName, newUpstreamHead) {
+		return true
+	}
+
+	// Try PR-number scanning if upstream_pr_url is set.
+	if patch.UpstreamPRURL != nil && *patch.UpstreamPRURL != "" {
+		prNumber := extractPRNumber(*patch.UpstreamPRURL)
+		if prNumber != "" {
+			return detectSquashMergeByPRNumber(ctx, git, prNumber, oldUpstreamHead, newUpstreamHead)
+		}
+	}
+
+	return false
+}
+
+// detectSquashMergeByContent uses git cherry to check whether ALL commits on
+// the patch branch have content-equivalent matches in the upstream. Returns
+// true only if there are zero pending commits (all applied).
+func detectSquashMergeByContent(ctx context.Context, git GitRunner, patchBranch, upstreamHead string) bool {
+	applied, pending, err := git.Cherry(ctx, upstreamHead, patchBranch)
+	if err != nil {
+		return false
+	}
+	// Cherry returns applied and pending. If there are no pending commits,
+	// all patch content exists upstream.
+	// Guard: if cherry returned nothing at all (no commits to compare),
+	// don't falsely detect as merged.
+	if len(applied) == 0 && len(pending) == 0 {
+		return false
+	}
+	return len(pending) == 0
+}
+
+// extractPRNumber extracts the PR number from a GitHub PR URL.
+// Example: "https://github.com/org/repo/pull/42" -> "42"
+func extractPRNumber(url string) string {
+	// Match the /pull/<number> suffix.
+	idx := strings.LastIndex(url, "/pull/")
+	if idx < 0 {
+		return ""
+	}
+	num := url[idx+len("/pull/"):]
+	// Strip any trailing path segments or query strings.
+	if slashIdx := strings.IndexByte(num, '/'); slashIdx >= 0 {
+		num = num[:slashIdx]
+	}
+	if qIdx := strings.IndexByte(num, '?'); qIdx >= 0 {
+		num = num[:qIdx]
+	}
+	// Validate it's numeric.
+	for _, c := range num {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	if num == "" {
+		return ""
+	}
+	return num
+}
+
+// detectSquashMergeByPRNumber scans recent upstream commits for a GitHub
+// squash-merge commit message containing "(#NNN)" where NNN matches the
+// given PR number. Only searches commits between oldUpstreamHead and
+// newUpstreamHead to avoid false matches on old history.
+func detectSquashMergeByPRNumber(ctx context.Context, git GitRunner, prNumber, oldUpstreamHead, newUpstreamHead string) bool {
+	// Build the git log range. If we have the old upstream head, scope to
+	// only new commits. Otherwise scan the last 50 commits.
+	var logOutput string
+	var err error
+	if oldUpstreamHead != "" {
+		logOutput, err = git.Run(ctx, "log", "--oneline", "--format=%s", fmt.Sprintf("%s..%s", oldUpstreamHead, newUpstreamHead))
+	} else {
+		logOutput, err = git.Run(ctx, "log", "--oneline", "--format=%s", "-50", newUpstreamHead)
+	}
+	if err != nil {
+		return false
+	}
+
+	// Scan each commit message for the PR number pattern.
+	target := fmt.Sprintf("(#%s)", prNumber)
+	for _, line := range strings.Split(logOutput, "\n") {
+		if strings.Contains(line, target) {
+			return true
+		}
+	}
+	return false
 }
