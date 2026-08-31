@@ -352,8 +352,8 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to enqueue merge job")
 		}
 		if duplicate {
-			return apikit.WriteAPIError(c, http.StatusConflict,
-				"a merge job for this source and target branch is already queued or running")
+			return apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+				"a merge job for this source and target branch is already queued or running", "duplicate_merge")
 		}
 
 		// Retrieve the created job to return the full response.

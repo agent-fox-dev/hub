@@ -207,8 +207,9 @@ type mergeJobResponse struct {
 // mergeErrorEnvelope represents the JSON error response envelope.
 type mergeErrorEnvelope struct {
 	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code      int    `json:"code"`
+		Message   string `json:"message"`
+		ErrorType string `json:"error_type,omitempty"`
 	} `json:"error"`
 }
 
@@ -317,6 +318,9 @@ func TestSubmitMerge_Duplicate_Returns409(t *testing.T) {
 	resp := parseMergeErrorEnvelope(t, rec2)
 	if resp.Error.Message == "" {
 		t.Error("expected non-empty error message for duplicate merge submission")
+	}
+	if resp.Error.ErrorType != "duplicate_merge" {
+		t.Errorf("error_type = %q; want 'duplicate_merge'", resp.Error.ErrorType)
 	}
 }
 

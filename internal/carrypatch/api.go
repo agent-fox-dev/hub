@@ -394,7 +394,7 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		// 16-REQ-1.E1: workspace must be carry_patch mode.
 		if mode != "carry_patch" {
-			return apikit.WriteAPIError(c, http.StatusBadRequest, "rebuild is only supported for carry_patch workspaces")
+			return apikit.WriteAPIErrorWithType(c, http.StatusBadRequest, "rebuild is only supported for carry_patch workspaces", "workspace_mode_mismatch")
 		}
 
 		// 16-REQ-1.E2: workspace must be active with ready clone.
@@ -416,7 +416,7 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
 		}
 		if patchCount == 0 {
-			return apikit.WriteAPIError(c, http.StatusBadRequest, "no patches with status active or conflict")
+			return apikit.WriteAPIErrorWithType(c, http.StatusBadRequest, "no patches with status active or conflict", "no_active_patches")
 		}
 
 		// Parse optional strategy and fail_mode overrides from request body.
@@ -502,7 +502,7 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		// 16-REQ-1.E4: duplicate queued/running job.
 		if duplicate {
-			return apikit.WriteAPIError(c, http.StatusConflict, "a rebuild job is already queued or running for this workspace")
+			return apikit.WriteAPIErrorWithType(c, http.StatusConflict, "a rebuild job is already queued or running for this workspace", "concurrent_rebuild")
 		}
 
 		// Return the job record.

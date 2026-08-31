@@ -557,8 +557,9 @@ type rebuildJobResponse struct {
 // errorEnvelope represents the JSON error response envelope.
 type errorEnvelope struct {
 	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code      int    `json:"code"`
+		Message   string `json:"message"`
+		ErrorType string `json:"error_type,omitempty"`
 	} `json:"error"`
 }
 

@@ -835,3 +835,88 @@ func TestSubmitRebuild_BodyFailModeOverridesVariable(t *testing.T) {
 		t.Errorf("expected payload.fail_mode='fail_fast' (body override), got %q", payload.FailMode)
 	}
 }
+
+// ===========================================================================
+// TS-NS-2: POST /rebuild on a 'standard' mode workspace returns error_type
+// 'workspace_mode_mismatch' in the JSON error envelope.
+//
+// Requirement: NS-REQ-2 (issue #22)
+// ===========================================================================
+
+func TestSubmitRebuild_StandardMode_ErrorType(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-errtype-std", "alice", "active", "ready", "standard", "")
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-std/rebuild", "", rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /rebuild (standard mode) status = %d; want %d; body = %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	resp := parseErrorEnvelope(t, rec)
+	if resp.Error.ErrorType != "workspace_mode_mismatch" {
+		t.Errorf("error_type = %q; want 'workspace_mode_mismatch'", resp.Error.ErrorType)
+	}
+}
+
+// ===========================================================================
+// TS-NS-4: POST /rebuild with no active/conflict patches returns error_type
+// 'no_active_patches' in the JSON error envelope.
+//
+// Requirement: NS-REQ-4 (issue #22)
+// ===========================================================================
+
+func TestSubmitRebuild_NoActivePatches_ErrorType(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-errtype-nopatch", "alice", "active", "ready", "carry_patch", "integration")
+	// Seed only disabled patches — no active or conflict.
+	seedPatch(t, env.db, "patch-et-d1", "ws-errtype-nopatch", "feature/disabled", 1, PatchStatusDisabled)
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-nopatch/rebuild", "", rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /rebuild (no active patches) status = %d; want %d; body = %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	resp := parseErrorEnvelope(t, rec)
+	if resp.Error.ErrorType != "no_active_patches" {
+		t.Errorf("error_type = %q; want 'no_active_patches'", resp.Error.ErrorType)
+	}
+}
+
+// ===========================================================================
+// TS-NS-3: POST /rebuild when a rebuild is already queued returns error_type
+// 'concurrent_rebuild' in the JSON error envelope.
+//
+// Requirement: NS-REQ-3 (issue #22)
+// ===========================================================================
+
+func TestSubmitRebuild_DuplicateJob_ErrorType(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-errtype-dup", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-et-dup1", "ws-errtype-dup", "feature/foo", 1, PatchStatusActive)
+
+	// First submission should succeed.
+	rec1 := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-dup/rebuild", "", rebuildUserAuth("alice"))
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("first POST /rebuild status = %d; want %d; body = %s",
+			rec1.Code, http.StatusAccepted, rec1.Body.String())
+	}
+
+	// Second submission should return 409 with error_type.
+	rec2 := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-dup/rebuild", "", rebuildUserAuth("alice"))
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("duplicate POST /rebuild status = %d; want %d; body = %s",
+			rec2.Code, http.StatusConflict, rec2.Body.String())
+	}
+
+	resp := parseErrorEnvelope(t, rec2)
+	if resp.Error.ErrorType != "concurrent_rebuild" {
+		t.Errorf("error_type = %q; want 'concurrent_rebuild'", resp.Error.ErrorType)
+	}
+}
