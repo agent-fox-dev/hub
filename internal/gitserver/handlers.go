@@ -12,12 +12,29 @@ import (
 	"strings"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 )
+
+// PostPushHookFunc is called after a successful git push with the workspace
+// slug and the list of branch names that were updated by the push. The hook
+// runs asynchronously — errors are logged but do not affect the push response.
+type PostPushHookFunc func(db *sql.DB, slug string, branches []string)
+
+// postPushHook is the registered post-push hook. When non-nil, it is called
+// after every successful receive-pack with the updated branch names.
+var postPushHook PostPushHookFunc
+
+// RegisterPostPushHook registers a function to be called after a successful
+// git push. Called from main.go during server initialization. The hook
+// receives the workspace slug and the list of branch names that were pushed.
+func RegisterPostPushHook(fn PostPushHookFunc) {
+	postPushHook = fn
+}
 
 // MountGitHandlers registers git smart HTTP routes and the git auth middleware
 // on the Echo instance.
@@ -265,6 +282,15 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 		// Errors are logged but do not fail the push response.
 		updateHeadSHA(db, slug, wsRoot)
 
+		// Post-push hook: extract pushed branch names and invoke the
+		// registered hook for carry-patch auto-rebuild (issue #14).
+		if postPushHook != nil {
+			branches := extractPushedBranches(req.Commands)
+			if len(branches) > 0 {
+				go postPushHook(db, slug, branches)
+			}
+		}
+
 		return nil
 	}
 }
@@ -401,6 +427,24 @@ func hasGitScope(permissions []string, required string) bool {
 		}
 	}
 	return false
+}
+
+// extractPushedBranches extracts branch names from the git push reference
+// update commands. It strips the "refs/heads/" prefix and ignores deletes
+// (where New is the zero hash) since there's nothing to rebuild.
+func extractPushedBranches(commands []*packp.Command) []string {
+	var branches []string
+	for _, cmd := range commands {
+		// Skip deletes — no new content to rebuild.
+		if cmd.New == plumbing.ZeroHash {
+			continue
+		}
+		refName := string(cmd.Name)
+		if branch, ok := strings.CutPrefix(refName, "refs/heads/"); ok {
+			branches = append(branches, branch)
+		}
+	}
+	return branches
 }
 
 // encodePktLine encodes a string as a git pkt-line: a 4-hex-digit length

@@ -249,6 +249,14 @@ func main() {
 		},
 	))
 
+	// Register the post-push hook for auto-rebuild on patch branch push (issue #14).
+	// When a push targets a branch registered as a patch in a carry_patch workspace,
+	// and AUTO_REBUILD_AFTER_PUSH is not "false", enqueue a rebuild job.
+	gitserver.RegisterPostPushHook(carrypatch.NewPostPushRebuildHook(
+		mergeQueue,
+		store.GetVariableValue,
+	))
+
 	// Mount git smart HTTP handlers on the Echo instance. The git server
 	// registers routes at /git/:org/:slug.git/* outside the API group,
 	// with its own HTTP Basic auth middleware.
