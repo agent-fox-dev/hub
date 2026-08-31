@@ -68,6 +68,9 @@ func main() {
 	if err := jobqueue.MigrateGroupKey(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
+	if err := jobqueue.MigrateProgress(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
 
 	// Create the durable job queue for merge operations.
 	mergeQueue, err := jobqueue.New(database.SqlDB, slog.Default())

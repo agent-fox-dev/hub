@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
 // ===========================================================================
@@ -131,6 +133,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	var mergedPatchIDs []string
 
+	// Extract the job ID from context for progress updates.
+	jobID := jobqueue.JobIDFromContext(ctx)
+
 	for _, patch := range patches {
 		pr := PatchResult{
 			PatchID:    patch.ID,
@@ -147,6 +152,8 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			if patch.Status == PatchStatusMergedUpstream {
 				mergedPatchIDs = append(mergedPatchIDs, patch.ID)
 			}
+			// Write progress after each patch completes (NS-REQ-4).
+			h.writeProgress(jobID, result.PatchResults)
 			continue
 		}
 
@@ -170,6 +177,8 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 				pr.SkippedReason = "branch_not_found"
 				result.PatchResults = append(result.PatchResults, pr)
 				result.PatchesSkipped++
+				// Write progress after each patch completes (NS-REQ-4).
+				h.writeProgress(jobID, result.PatchResults)
 				continue
 			}
 
@@ -198,6 +207,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		pr.NewHeadSHA = &newHead
 		result.PatchResults = append(result.PatchResults, pr)
 		result.PatchesApplied++
+
+		// Write progress after each patch completes (NS-REQ-4).
+		h.writeProgress(jobID, result.PatchResults)
 	}
 
 	// === Success path (16-REQ-1.2) ===
@@ -242,6 +254,15 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	_ = h.PatchStore.CompactPositions(ctx, payload.WorkspaceSlug)
 
 	return result, false, nil
+}
+
+// writeProgress writes the current patch results to the job's progress column.
+// It is a best-effort operation: errors are logged but do not fail the rebuild.
+func (h *RebuildHandler) writeProgress(jobID string, patchResults []PatchResult) {
+	if h.Queue == nil || jobID == "" {
+		return
+	}
+	_ = h.Queue.UpdateProgress(jobID, patchResults)
 }
 
 // ===========================================================================

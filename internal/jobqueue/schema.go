@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 	payload      TEXT    NOT NULL DEFAULT '{}',
 	result       TEXT,
 	error        TEXT,
+	progress     TEXT,
 	retry_count  INTEGER NOT NULL DEFAULT 0,
 	available_at TEXT    NOT NULL,
 	submitted_by TEXT    NOT NULL,

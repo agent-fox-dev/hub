@@ -59,6 +59,9 @@ func newTestQueue(t *testing.T) (*jobqueue.Queue, *sql.DB) {
 	if err := jobqueue.MigrateGroupKey(db); err != nil {
 		t.Fatalf("MigrateGroupKey() returned error: %v", err)
 	}
+	if err := jobqueue.MigrateProgress(db); err != nil {
+		t.Fatalf("MigrateProgress() returned error: %v", err)
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	q, err := jobqueue.New(db, logger)
 	if err != nil {
@@ -367,6 +370,9 @@ func newRebuildTestEnv(t *testing.T) *rebuildTestEnv {
 	if err := jobqueue.MigrateGroupKey(db); err != nil {
 		t.Fatalf("MigrateGroupKey() returned error: %v", err)
 	}
+	if err := jobqueue.MigrateProgress(db); err != nil {
+		t.Fatalf("MigrateProgress() returned error: %v", err)
+	}
 
 	logger := nopLogger()
 	q, err := jobqueue.New(db, logger)
@@ -415,6 +421,9 @@ func newRebuildTestEnvWithStrategy(t *testing.T, strategy string) *rebuildTestEn
 	}
 	if err := jobqueue.MigrateGroupKey(db); err != nil {
 		t.Fatalf("MigrateGroupKey() returned error: %v", err)
+	}
+	if err := jobqueue.MigrateProgress(db); err != nil {
+		t.Fatalf("MigrateProgress() returned error: %v", err)
 	}
 
 	logger := nopLogger()
@@ -620,6 +629,9 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	if err := jobqueue.MigrateGroupKey(db); err != nil {
 		t.Fatalf("MigrateGroupKey() returned error: %v", err)
 	}
+	if err := jobqueue.MigrateProgress(db); err != nil {
+		t.Fatalf("MigrateProgress() returned error: %v", err)
+	}
 
 	logger := nopLogger()
 	q, err := jobqueue.New(db, logger)
@@ -729,6 +741,9 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	}
 	if err := jobqueue.MigrateGroupKey(db); err != nil {
 		t.Fatalf("MigrateGroupKey() returned error: %v", err)
+	}
+	if err := jobqueue.MigrateProgress(db); err != nil {
+		t.Fatalf("MigrateProgress() returned error: %v", err)
 	}
 
 	logger := nopLogger()

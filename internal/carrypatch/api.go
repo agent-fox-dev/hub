@@ -794,6 +794,11 @@ func jobToRebuildRecord(j *jobqueue.Job) RebuildJobRecord {
 		}
 	}
 
+	// For running jobs, expose intermediate progress as patch_results (NS-REQ-5).
+	if j.Status == jobqueue.StatusRunning && j.Progress != nil && rec.PatchResults == nil {
+		rec.PatchResults = j.Progress
+	}
+
 	return rec
 }
 

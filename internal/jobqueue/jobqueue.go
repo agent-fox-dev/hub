@@ -36,6 +36,22 @@ var ErrNotCancellable = errors.New("job is not in a cancellable status")
 // job whose handler had already partially executed.
 type HandlerFunc func(ctx context.Context, payload json.RawMessage) (result any, retryable bool, err error)
 
+// jobIDContextKey is a package-private key for storing the job ID in context.
+type jobIDContextKey struct{}
+
+// JobIDFromContext extracts the job ID from a context injected by the worker
+// during handler dispatch. Returns an empty string if no job ID is present.
+func JobIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(jobIDContextKey{}).(string)
+	return id
+}
+
+// ContextWithJobID returns a new context with the given job ID set. This is
+// primarily useful for testing handlers outside of the queue worker loop.
+func ContextWithJobID(ctx context.Context, jobID string) context.Context {
+	return context.WithValue(ctx, jobIDContextKey{}, jobID)
+}
+
 // RetryPolicy configures exponential backoff for a job type.
 // Zero-value fields are replaced with defaults: Base 2s, Multiplier 2,
 // Cap 2h, MaxRetries 20.
@@ -110,6 +126,7 @@ type Job struct {
 	Payload     json.RawMessage
 	Result      json.RawMessage
 	Error       string
+	Progress    json.RawMessage // Intermediate progress data written during execution.
 	RetryCount  int
 	AvailableAt time.Time
 	SubmittedBy string
@@ -629,6 +646,7 @@ func (q *Queue) claimAndExecute(workerID int) bool {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, jobIDContextKey{}, id)
 
 	// Track inflight handler for graceful shutdown context cancellation.
 	q.inflightMu.Lock()
@@ -905,15 +923,15 @@ func (q *Queue) CancelJob(jobID string) error {
 // GetByID returns a single job record by its UUID.
 func (q *Queue) GetByID(jobID string) (*Job, error) {
 	var j Job
-	var payload, result, errStr sql.NullString
+	var payload, result, errStr, progress sql.NullString
 	var availableAt, createdAt, updatedAt string
 
 	err := q.db.QueryRow(
 		`SELECT id, type, key, group_key, nonce, status, payload, result, error,
-		  retry_count, available_at, submitted_by, created_at, updated_at
+		  progress, retry_count, available_at, submitted_by, created_at, updated_at
 		 FROM jobs WHERE id = ?`, jobID,
 	).Scan(&j.ID, &j.Type, &j.Key, &j.GroupKey, &j.Nonce, &j.Status, &payload,
-		&result, &errStr, &j.RetryCount, &availableAt, &j.SubmittedBy,
+		&result, &errStr, &progress, &j.RetryCount, &availableAt, &j.SubmittedBy,
 		&createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("jobqueue: job %q not found", jobID)
@@ -931,6 +949,9 @@ func (q *Queue) GetByID(jobID string) (*Job, error) {
 	if errStr.Valid {
 		j.Error = errStr.String
 	}
+	if progress.Valid {
+		j.Progress = json.RawMessage(progress.String)
+	}
 
 	j.AvailableAt, _ = time.Parse(time.RFC3339, availableAt)
 	j.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -944,7 +965,7 @@ func (q *Queue) GetByID(jobID string) (*Job, error) {
 // applied via offset and limit. Returns an empty slice (not nil) when no
 // jobs match.
 func (q *Queue) ListByType(typeName string, opts ListOpts) ([]*Job, error) {
-	query := "SELECT id, type, key, group_key, nonce, status, payload, result, error, retry_count, available_at, submitted_by, created_at, updated_at FROM jobs WHERE type = ?"
+	query := "SELECT id, type, key, group_key, nonce, status, payload, result, error, progress, retry_count, available_at, submitted_by, created_at, updated_at FROM jobs WHERE type = ?"
 	args := []any{typeName}
 
 	if opts.Status != "" {
@@ -980,7 +1001,7 @@ func (q *Queue) ListByType(typeName string, opts ListOpts) ([]*Job, error) {
 func (q *Queue) ListByKey(typeName string, key string) ([]*Job, error) {
 	return q.queryJobs(
 		`SELECT id, type, key, group_key, nonce, status, payload, result, error,
-		  retry_count, available_at, submitted_by, created_at, updated_at
+		  progress, retry_count, available_at, submitted_by, created_at, updated_at
 		 FROM jobs WHERE type = ? AND key = ? ORDER BY created_at DESC`,
 		typeName, key,
 	)
@@ -1080,6 +1101,27 @@ func (q *Queue) RequeueDeadLetter(jobID string) (string, error) {
 	return jobID, nil
 }
 
+// UpdateProgress persists serialized progress JSON to the progress column
+// for a running job. The data parameter is marshalled to JSON before writing.
+// This is intended to be called during handler execution to record intermediate
+// progress (e.g., per-patch rebuild results).
+func (q *Queue) UpdateProgress(jobID string, data any) error {
+	progressJSON, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("jobqueue: marshal progress: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = q.db.Exec(
+		"UPDATE jobs SET progress = ?, updated_at = ? WHERE id = ?",
+		string(progressJSON), now, jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("jobqueue: update progress: %w", err)
+	}
+	return nil
+}
+
 // queryJobs is a helper that runs a query and scans results into Job slices.
 func (q *Queue) queryJobs(query string, args ...any) ([]*Job, error) {
 	rows, err := q.db.Query(query, args...)
@@ -1091,11 +1133,11 @@ func (q *Queue) queryJobs(query string, args ...any) ([]*Job, error) {
 	jobs := make([]*Job, 0)
 	for rows.Next() {
 		var j Job
-		var payload, result, errStr sql.NullString
+		var payload, result, errStr, progress sql.NullString
 		var availableAt, createdAt, updatedAt string
 
 		if err := rows.Scan(&j.ID, &j.Type, &j.Key, &j.GroupKey, &j.Nonce, &j.Status,
-			&payload, &result, &errStr, &j.RetryCount, &availableAt,
+			&payload, &result, &errStr, &progress, &j.RetryCount, &availableAt,
 			&j.SubmittedBy, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("jobqueue: scan: %w", err)
 		}
@@ -1108,6 +1150,9 @@ func (q *Queue) queryJobs(query string, args ...any) ([]*Job, error) {
 		}
 		if errStr.Valid {
 			j.Error = errStr.String
+		}
+		if progress.Valid {
+			j.Progress = json.RawMessage(progress.String)
 		}
 
 		j.AvailableAt, _ = time.Parse(time.RFC3339, availableAt)
