@@ -83,8 +83,12 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 6. Resolve upstream HEAD (16-REQ-1.2).
-	upstreamHead, err := git.Run(ctx, "rev-parse", "HEAD")
+	// 6. Resolve upstream HEAD via FETCH_HEAD (16-REQ-1.2).
+	// FETCH_HEAD points to the tip of the most recently fetched branch,
+	// which is the correct upstream reference after the fetch in step 4.
+	// Using HEAD here would resolve to whatever branch is checked out,
+	// which may differ from the fetched upstream tip.
+	upstreamHead, err := git.Run(ctx, "rev-parse", "FETCH_HEAD")
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}

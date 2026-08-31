@@ -872,6 +872,225 @@ func TestRebuildExecutor_ConflictStatusIncluded(t *testing.T) {
 }
 
 // ===========================================================================
+// TS-NS-1: The rebuild executor resolves the upstream HEAD using FETCH_HEAD,
+// not HEAD, immediately after the fetch step.
+//
+// Requirement: NS-REQ-1
+// ===========================================================================
+
+func TestRebuildExecutor_UsesFetchHeadNotHead(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
+	})
+
+	fetchHeadSHA := "fetch000000000000000000000000000000000001"
+	localHeadSHA := "local000000000000000000000000000000000001"
+	commitSHA := "bbbb000000000000000000000000000000000001"
+
+	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" {
+			if args[1] == "FETCH_HEAD" {
+				return fetchHeadSHA, nil
+			}
+			// Any other rev-parse (including HEAD) returns a different SHA.
+			return localHeadSHA, nil
+		}
+		for _, arg := range args {
+			if arg == "--reverse" {
+				return commitSHA, nil
+			}
+		}
+		return localHeadSHA, nil
+	}
+	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
+
+	h := &RebuildHandler{
+		PatchStore:   patches,
+		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
+		Fetch:        func(_ context.Context, _ string) error { return nil },
+		ResolveAuth:  func(_ string) error { return nil },
+	}
+
+	payload := RebuildPayload{
+		WorkspaceSlug: "ws1",
+		Strategy:      StrategyRebase,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	_, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+	if err != nil {
+		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	}
+
+	// Verify that rev-parse FETCH_HEAD was called and rev-parse HEAD was NOT
+	// called for upstream resolution (before checkout -b).
+	foundFetchHead := false
+	for _, call := range mock.RunCalls {
+		if len(call.Args) >= 2 && call.Args[0] == "rev-parse" && call.Args[1] == "FETCH_HEAD" {
+			foundFetchHead = true
+			break
+		}
+	}
+	if !foundFetchHead {
+		t.Error("expected a 'rev-parse FETCH_HEAD' call, but none was recorded")
+	}
+
+	// Verify checkout -b was called with the FETCH_HEAD SHA.
+	foundCheckout := false
+	for _, call := range mock.RunCalls {
+		if len(call.Args) >= 3 && call.Args[0] == "checkout" && call.Args[1] == "-b" {
+			if call.Args[3] == fetchHeadSHA {
+				foundCheckout = true
+			} else if call.Args[3] == localHeadSHA {
+				t.Error("checkout -b used local HEAD SHA instead of FETCH_HEAD SHA")
+			}
+			break
+		}
+	}
+	if !foundCheckout {
+		t.Error("expected checkout -b with FETCH_HEAD SHA as start point")
+	}
+}
+
+// ===========================================================================
+// TS-NS-2: The UpstreamHeadSHA field in RebuildResult reflects the fetched
+// upstream tip, not the local HEAD.
+//
+// Requirement: NS-REQ-2
+// ===========================================================================
+
+func TestRebuildExecutor_UpstreamHeadSHA_ReflectsFetchHead(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
+	})
+
+	fetchHeadSHA := "fetch000000000000000000000000000000000001"
+	localHeadSHA := "local000000000000000000000000000000000001"
+	commitSHA := "bbbb000000000000000000000000000000000001"
+
+	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" {
+			if args[1] == "FETCH_HEAD" {
+				return fetchHeadSHA, nil
+			}
+			// HEAD and other rev-parse calls return localHeadSHA.
+			return localHeadSHA, nil
+		}
+		for _, arg := range args {
+			if arg == "--reverse" {
+				return commitSHA, nil
+			}
+		}
+		return localHeadSHA, nil
+	}
+	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
+
+	h := &RebuildHandler{
+		PatchStore:   patches,
+		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
+		Fetch:        func(_ context.Context, _ string) error { return nil },
+		ResolveAuth:  func(_ string) error { return nil },
+	}
+
+	payload := RebuildPayload{
+		WorkspaceSlug: "ws1",
+		Strategy:      StrategyRebase,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+	if err != nil {
+		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	}
+
+	rebuildResult, ok := result.(*RebuildResult)
+	if !ok {
+		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+	}
+
+	// The UpstreamHeadSHA must equal FETCH_HEAD, not local HEAD.
+	if rebuildResult.UpstreamHeadSHA != fetchHeadSHA {
+		t.Errorf("UpstreamHeadSHA = %q, want %q (FETCH_HEAD)", rebuildResult.UpstreamHeadSHA, fetchHeadSHA)
+	}
+	if rebuildResult.UpstreamHeadSHA == localHeadSHA {
+		t.Error("UpstreamHeadSHA incorrectly reflects local HEAD instead of FETCH_HEAD")
+	}
+}
+
+// ===========================================================================
+// TS-NS-4: When FETCH_HEAD is unavailable (e.g., no fetch has been performed),
+// the executor returns a retryable transient error rather than silently using
+// HEAD.
+//
+// Requirement: NS-REQ-4
+// ===========================================================================
+
+func TestRebuildExecutor_FetchHeadUnavailable_ReturnsTransientError(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
+	})
+
+	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "FETCH_HEAD" {
+			return "", fmt.Errorf("fatal: FETCH_HEAD does not exist")
+		}
+		return "aaaa000000000000000000000000000000000001", nil
+	}
+
+	h := &RebuildHandler{
+		PatchStore:   patches,
+		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
+		Fetch:        func(_ context.Context, _ string) error { return nil },
+		ResolveAuth:  func(_ string) error { return nil },
+	}
+
+	payload := RebuildPayload{
+		WorkspaceSlug: "ws1",
+		Strategy:      StrategyRebase,
+		SubmittedBy:   "operator",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	result, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+
+	// Should return an error.
+	if err == nil {
+		t.Fatal("expected error when FETCH_HEAD is unavailable, got nil")
+	}
+
+	// Should be retryable (transient).
+	if !retryable {
+		t.Error("expected retryable=true for unavailable FETCH_HEAD")
+	}
+
+	// Should be a TransientError.
+	var te *TransientError
+	if !errors.As(err, &te) {
+		t.Errorf("expected *TransientError, got %T: %v", err, err)
+	}
+
+	// Should not return a result.
+	if result != nil {
+		t.Error("expected nil result when FETCH_HEAD is unavailable")
+	}
+
+	// Should NOT have attempted checkout -b (no temp branch created).
+	for _, call := range mock.RunCalls {
+		if len(call.Args) >= 2 && call.Args[0] == "checkout" && call.Args[1] == "-b" {
+			t.Error("should not create temp branch when FETCH_HEAD resolution fails")
+		}
+	}
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
