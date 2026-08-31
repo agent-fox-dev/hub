@@ -124,10 +124,17 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return patches[i].Position < patches[j].Position
 	})
 
-	// 11. Build the result and process each patch.
+	// 11. Determine fail mode.
+	failMode := payload.FailMode
+	if failMode == "" {
+		failMode = FailModeFailFast
+	}
+
+	// 12. Build the result and process each patch.
 	result := &RebuildResult{
 		UpstreamHeadSHA: upstreamHead,
 		Strategy:        payload.Strategy,
+		FailMode:        failMode,
 		PatchResults:    make([]PatchResult, 0, len(patches)),
 	}
 
@@ -157,6 +164,13 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			continue
 		}
 
+		// Capture the pre-patch HEAD for continue-mode rollback.
+		prePatchHead, headErr := git.Run(ctx, "rev-parse", "HEAD")
+		if headErr != nil {
+			cleanupTempBranch()
+			return nil, true, &TransientError{Err: headErr}
+		}
+
 		// Apply the patch using the configured strategy.
 		strategy := payload.Strategy
 		if strategy == "" {
@@ -182,10 +196,32 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 				continue
 			}
 
-			// 16-REQ-1.5: unresolved conflict -> fail-fast.
+			// 16-REQ-1.5 / NS-REQ-1: unresolved conflict handling.
 			var ce *rebuildConflictError
 			if errors.As(applyErr, &ce) {
 				_ = h.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusConflict, ce.files)
+
+				if failMode == FailModeContinue {
+					// Continue mode: record the conflict, reset temp branch
+					// to pre-patch state, and continue with next patch.
+					pr.Status = "conflict"
+					pr.ConflictFiles = ce.files
+					result.PatchResults = append(result.PatchResults, pr)
+					result.PatchesConflicted++
+
+					// Reset temp branch to pre-patch HEAD so subsequent
+					// patches apply cleanly against the last good state.
+					if err := git.HardReset(ctx, prePatchHead); err != nil {
+						cleanupTempBranch()
+						return result, true, &TransientError{Err: err}
+					}
+
+					// Write progress after each patch completes (NS-REQ-4).
+					h.writeProgress(jobID, result.PatchResults)
+					continue
+				}
+
+				// Default fail_fast: abort immediately.
 				cleanupTempBranch()
 				return nil, false, fmt.Errorf("conflict in patch %q: %s",
 					patch.BranchName, strings.Join(ce.files, ", "))

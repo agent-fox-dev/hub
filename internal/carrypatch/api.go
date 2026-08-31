@@ -419,11 +419,13 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "no patches with status active or conflict")
 		}
 
-		// Parse optional strategy override from request body.
+		// Parse optional strategy and fail_mode overrides from request body.
 		var bodyStrategy string
+		var bodyFailMode string
 		if c.Request().ContentLength > 0 {
 			var body struct {
 				Strategy string `json:"strategy"`
+				FailMode string `json:"fail_mode"`
 			}
 			if err := c.Bind(&body); err != nil {
 				return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid request body")
@@ -433,6 +435,12 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 					return apikit.WriteAPIError(c, http.StatusBadRequest, "strategy must be 'rebase' or 'merge'")
 				}
 				bodyStrategy = body.Strategy
+			}
+			if body.FailMode != "" {
+				if body.FailMode != FailModeFailFast && body.FailMode != FailModeContinue {
+					return apikit.WriteAPIError(c, http.StatusBadRequest, "fail_mode must be 'fail_fast' or 'continue'")
+				}
+				bodyFailMode = body.FailMode
 			}
 		}
 
@@ -449,6 +457,19 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			}
 		}
 
+		// NS-REQ-4: capture REBUILD_FAIL_MODE at enqueue time.
+		// Body fail_mode overrides the workspace variable.
+		failMode := bodyFailMode
+		if failMode == "" {
+			if cfg.GetVariable != nil {
+				val, varErr := cfg.GetVariable("workspace", slug, "REBUILD_FAIL_MODE")
+				if varErr == nil && (val == FailModeFailFast || val == FailModeContinue) {
+					failMode = val
+				}
+			}
+			// Default is empty string; executor defaults to fail_fast.
+		}
+
 		// Build payload. 16-PROP-3: capture strategy at enqueue time.
 		ib := nullStr(integrationBranch)
 		payload := RebuildPayload{
@@ -456,6 +477,7 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			Strategy:          strategy,
 			SubmittedBy:       auth.UserID,
 			IntegrationBranch: ib,
+			FailMode:          failMode,
 		}
 		payloadJSON, err := json.Marshal(payload)
 		if err != nil {

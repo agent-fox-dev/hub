@@ -43,6 +43,7 @@ func RebuildCmd() *cobra.Command {
 func newRebuildSubmitCmd() *cobra.Command {
 	var wf waitFlags
 	var strategy string
+	var failMode string
 
 	cmd := &cobra.Command{
 		Use:           "submit <workspace-slug>",
@@ -58,12 +59,17 @@ func newRebuildSubmitCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			// Build request body: nil when no flags, map with strategy when set.
+			// Build request body: nil when no flags, map with set fields.
 			var body any
+			bodyMap := map[string]any{}
 			if strategy != "" {
-				body = map[string]any{
-					"strategy": strategy,
-				}
+				bodyMap["strategy"] = strategy
+			}
+			if failMode != "" {
+				bodyMap["fail_mode"] = failMode
+			}
+			if len(bodyMap) > 0 {
+				body = bodyMap
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
@@ -93,6 +99,7 @@ func newRebuildSubmitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&strategy, "strategy", "", "rebuild strategy override (rebase|merge)")
+	cmd.Flags().StringVar(&failMode, "fail-mode", "", "conflict handling mode (fail_fast|continue)")
 	addWaitFlags(cmd, &wf)
 	return cmd
 }

@@ -949,3 +949,118 @@ func TestRebuildCLI_Rollback_MissingArgs(t *testing.T) {
 		t.Fatal("expected non-zero exit when rebuild-id is missing; got nil error")
 	}
 }
+
+// =========================================================================
+// TS-NS-5: 'afc rebuild submit <slug> --fail-mode continue' sends
+// {"fail_mode": "continue"} in the POST body.
+// Requirement: NS-REQ-5
+// =========================================================================
+
+func TestRebuildCLI_Submit_WithFailModeFlag(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace", "--fail-mode", "continue")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr; got: %s", stderr)
+	}
+
+	if !strings.Contains(stdout, "queued") {
+		t.Errorf("stdout should contain 'queued'; got: %s", stdout)
+	}
+
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("request body is not valid JSON: %v\nbody: %s", err, reqs[0].Body)
+	}
+	if body["fail_mode"] != "continue" {
+		t.Errorf("expected body fail_mode='continue'; got %v", body["fail_mode"])
+	}
+}
+
+func TestRebuildCLI_Submit_WithFailModeFlagFailFast(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace", "--fail-mode", "fail_fast")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("request body is not valid JSON: %v\nbody: %s", err, reqs[0].Body)
+	}
+	if body["fail_mode"] != "fail_fast" {
+		t.Errorf("expected body fail_mode='fail_fast'; got %v", body["fail_mode"])
+	}
+}
+
+// Without --fail-mode, the body should not contain fail_mode.
+func TestRebuildCLI_Submit_NoFailModeFlag_NothingInBody(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	// Body should be empty when neither --strategy nor --fail-mode are set.
+	if reqs[0].Body != "" {
+		t.Errorf("expected empty request body when no flags set; got: %s", reqs[0].Body)
+	}
+}
+
+// --fail-mode combined with --strategy sends both in body.
+func TestRebuildCLI_Submit_FailModeAndStrategy(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"submit", "my-workspace", "--strategy", "merge", "--fail-mode", "continue")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("request body is not valid JSON: %v\nbody: %s", err, reqs[0].Body)
+	}
+	if body["strategy"] != "merge" {
+		t.Errorf("expected body strategy='merge'; got %v", body["strategy"])
+	}
+	if body["fail_mode"] != "continue" {
+		t.Errorf("expected body fail_mode='continue'; got %v", body["fail_mode"])
+	}
+}

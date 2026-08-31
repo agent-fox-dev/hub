@@ -20,6 +20,14 @@ const (
 	StrategyMerge = "merge"
 )
 
+// Fail mode constants for rebuild conflict handling.
+const (
+	// FailModeFailFast aborts the rebuild on the first conflict (default).
+	FailModeFailFast = "fail_fast"
+	// FailModeContinue skips conflicting patches and continues processing.
+	FailModeContinue = "continue"
+)
+
 // Patch status constants.
 const (
 	PatchStatusActive         = "active"
@@ -87,6 +95,7 @@ type RebuildPayload struct {
 	Strategy          string `json:"strategy"`
 	SubmittedBy       string `json:"submitted_by"`
 	IntegrationBranch string `json:"integration_branch,omitempty"`
+	FailMode          string `json:"fail_mode,omitempty"`
 }
 
 // PatchResult is the per-patch outcome recorded in the rebuild result.
@@ -106,8 +115,10 @@ type RebuildResult struct {
 	IntegrationHeadSHA          string        `json:"integration_head_sha"`
 	PreviousIntegrationHeadSHA  string        `json:"previous_integration_head_sha,omitempty"`
 	Strategy                    string        `json:"strategy"`
+	FailMode                    string        `json:"fail_mode,omitempty"`
 	PatchesApplied              int           `json:"patches_applied"`
 	PatchesSkipped              int           `json:"patches_skipped"`
+	PatchesConflicted           int           `json:"patches_conflicted"`
 	PatchesRemoved              int           `json:"patches_removed"`
 	PatchResults                []PatchResult `json:"patch_results"`
 }

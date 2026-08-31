@@ -678,3 +678,160 @@ func TestRollbackRebuild_CrossWorkspace_Returns404(t *testing.T) {
 			rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
+
+// ===========================================================================
+// TS-NS-5: POST /rebuild with {"fail_mode":"continue"} passes fail_mode
+// to the payload.
+//
+// Requirement: NS-REQ-5
+// ===========================================================================
+
+func TestSubmitRebuild_FailModeContinue_InPayload(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-failmode", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-fm1", "ws-failmode", "feature/foo", 1, PatchStatusActive)
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-failmode/rebuild",
+		`{"fail_mode":"continue"}`, rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
+			rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	resp := parseRebuildJobResponse(t, rec)
+	var payload RebuildPayload
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.FailMode != "continue" {
+		t.Errorf("expected payload.fail_mode='continue', got %q", payload.FailMode)
+	}
+}
+
+// TS-NS-5: POST /rebuild with no fail_mode omits it from payload.
+func TestSubmitRebuild_NoFailMode_OmittedFromPayload(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-nofm", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-nofm", "ws-nofm", "feature/foo", 1, PatchStatusActive)
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-nofm/rebuild",
+		"", rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
+			rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	resp := parseRebuildJobResponse(t, rec)
+	var payload RebuildPayload
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	// FailMode should be empty (omitted) when not supplied.
+	if payload.FailMode != "" {
+		t.Errorf("expected empty fail_mode when not supplied, got %q", payload.FailMode)
+	}
+}
+
+// TS-NS-5: Invalid fail_mode value returns 400.
+func TestSubmitRebuild_InvalidFailMode_Returns400(t *testing.T) {
+	env := newRebuildTestEnv(t)
+
+	seedWorkspace(t, env.db, "ws-badfm", "alice", "active", "ready", "carry_patch", "integration")
+	seedPatch(t, env.db, "patch-badfm", "ws-badfm", "feature/foo", 1, PatchStatusActive)
+
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-badfm/rebuild",
+		`{"fail_mode":"invalid"}`, rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /rebuild (invalid fail_mode) status = %d; want %d; body = %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	resp := parseErrorEnvelope(t, rec)
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error message for invalid fail_mode")
+	}
+}
+
+// ===========================================================================
+// TS-NS-4: REBUILD_FAIL_MODE workspace variable sets the default when no
+// body override is given.
+//
+// Requirement: NS-REQ-4
+// ===========================================================================
+
+func TestSubmitRebuild_FailModeFromWorkspaceVariable(t *testing.T) {
+	// Create env where GetVariable returns 'continue' for REBUILD_FAIL_MODE.
+	env := newFullTestEnvWithGetVariable(t, func(scope, slug, key string) (string, error) {
+		if key == "REBUILD_FAIL_MODE" {
+			return "continue", nil
+		}
+		if key == "REBUILD_STRATEGY" {
+			return "rebase", nil
+		}
+		return "", nil
+	})
+
+	slug := "ws-fmvar"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-fmvar", slug, "feature/foo", 1, PatchStatusActive)
+
+	// Submit without body fail_mode.
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/rebuild",
+		"", rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
+			rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	resp := parseRebuildJobResponse(t, rec)
+	var payload RebuildPayload
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.FailMode != "continue" {
+		t.Errorf("expected payload.fail_mode='continue' (from variable), got %q", payload.FailMode)
+	}
+}
+
+// Body fail_mode overrides workspace variable.
+func TestSubmitRebuild_BodyFailModeOverridesVariable(t *testing.T) {
+	env := newFullTestEnvWithGetVariable(t, func(scope, slug, key string) (string, error) {
+		if key == "REBUILD_FAIL_MODE" {
+			return "continue", nil // variable says continue
+		}
+		if key == "REBUILD_STRATEGY" {
+			return "rebase", nil
+		}
+		return "", nil
+	})
+
+	slug := "ws-fmoverride"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream-sha", "integration", "")
+	seedPatch(t, env.db, "patch-fmo", slug, "feature/foo", 1, PatchStatusActive)
+
+	// Body says fail_fast, overriding variable.
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/rebuild",
+		`{"fail_mode":"fail_fast"}`, rebuildUserAuth("alice"))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
+			rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	resp := parseRebuildJobResponse(t, rec)
+	var payload RebuildPayload
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.FailMode != "fail_fast" {
+		t.Errorf("expected payload.fail_mode='fail_fast' (body override), got %q", payload.FailMode)
+	}
+}
