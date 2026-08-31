@@ -58,26 +58,42 @@ func mergeMockServer(t *testing.T, failPaths map[string]int) (*httptest.Server, 
 
 		switch r.Method {
 		case http.MethodPost:
-			// POST /api/v1/workspaces/:slug/merges — submit merge job.
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			var reqBody map[string]any
-			if err := json.Unmarshal(bodyBytes, &reqBody); err == nil {
-				resp := map[string]any{
+			if strings.HasSuffix(r.URL.Path, "/requeue") {
+				// POST /api/v1/workspaces/:slug/merges/:id/requeue — requeue merge job.
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 					"id":            "job-uuid-1",
 					"workspace_slug": "ws1",
-					"target_branch": reqBody["target_branch"],
-					"source_ref":    reqBody["source_ref"],
+					"target_branch": "main",
+					"source_ref":    "feature/a",
 					"status":        "queued",
 					"submitted_by":  "test-user",
 					"retry_count":   0,
 					"created_at":    "2025-01-01T00:00:00Z",
 					"updated_at":    "2025-01-01T00:00:00Z",
+				})
+			} else {
+				// POST /api/v1/workspaces/:slug/merges — submit merge job.
+				w.WriteHeader(http.StatusAccepted)
+				var reqBody map[string]any
+				if err := json.Unmarshal(bodyBytes, &reqBody); err == nil {
+					resp := map[string]any{
+						"id":            "job-uuid-1",
+						"workspace_slug": "ws1",
+						"target_branch": reqBody["target_branch"],
+						"source_ref":    reqBody["source_ref"],
+						"status":        "queued",
+						"submitted_by":  "test-user",
+						"retry_count":   0,
+						"created_at":    "2025-01-01T00:00:00Z",
+						"updated_at":    "2025-01-01T00:00:00Z",
+					}
+					json.NewEncoder(w).Encode(resp) //nolint:errcheck
+				} else {
+					json.NewEncoder(w).Encode(map[string]any{"id": "job-uuid-1", "status": "queued"}) //nolint:errcheck
 				}
-				json.NewEncoder(w).Encode(resp) //nolint:errcheck
-				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"id": "job-uuid-1", "status": "queued"}) //nolint:errcheck
 
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
@@ -591,6 +607,96 @@ func TestMergeCLI_Cancel_MissingArgs(t *testing.T) {
 
 	_, _, err := runMergeCmd(t, server.URL, "test-api-key",
 		"cancel", "ws1")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit when merge-id is missing; got nil error")
+	}
+}
+
+// =========================================================================
+// Verify MergeCmd() has a 'requeue' subcommand.
+// =========================================================================
+
+func TestMergeCmd_HasRequeueSubcommand(t *testing.T) {
+	cmd := MergeCmd()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if strings.HasPrefix(sub.Use, "requeue") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("MergeCmd() should have a 'requeue' subcommand")
+	}
+}
+
+// =========================================================================
+// 'afc merge requeue <workspace-slug> <merge-id>' sends POST
+// /api/v1/workspaces/:slug/merges/:id/requeue and prints the result.
+// =========================================================================
+
+func TestMergeCLI_Requeue_Success(t *testing.T) {
+	server, records := mergeMockServer(t, nil)
+	defer server.Close()
+
+	stdout, stderr, err := runMergeCmd(t, server.URL, "test-api-key",
+		"requeue", "ws1", "job-uuid-1")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr; got: %s", stderr)
+	}
+
+	// Verify the correct API call was made.
+	reqs := getMergeRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.Method != "POST" {
+		t.Errorf("method = %q; want POST", req.Method)
+	}
+	if req.Path != "/api/v1/workspaces/ws1/merges/job-uuid-1/requeue" {
+		t.Errorf("path = %q; want /api/v1/workspaces/ws1/merges/job-uuid-1/requeue", req.Path)
+	}
+
+	// Verify stdout contains the requeued job status.
+	if !strings.Contains(stdout, "queued") {
+		t.Errorf("stdout should contain 'queued'; got: %s", stdout)
+	}
+
+	// Verify the response is valid JSON.
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
+	}
+}
+
+func TestMergeCLI_Requeue_APIError(t *testing.T) {
+	failPaths := map[string]int{
+		"/api/v1/workspaces/ws1/merges/job-uuid-1/requeue": http.StatusConflict,
+	}
+	server, _ := mergeMockServer(t, failPaths)
+	defer server.Close()
+
+	_, _, err := runMergeCmd(t, server.URL, "test-api-key",
+		"requeue", "ws1", "job-uuid-1")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit on API error; got nil error")
+	}
+}
+
+func TestMergeCLI_Requeue_MissingArgs(t *testing.T) {
+	server, _ := mergeMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runMergeCmd(t, server.URL, "test-api-key",
+		"requeue", "ws1")
 
 	if err == nil {
 		t.Fatal("expected non-zero exit when merge-id is missing; got nil error")

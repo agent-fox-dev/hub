@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/spf13/cobra"
@@ -26,6 +27,8 @@ func RebuildCmd() *cobra.Command {
 		newRebuildListCmd(),
 		newRebuildStatusCmd(),
 		newRebuildPreviewCmd(),
+		newRebuildCancelCmd(),
+		newRebuildRequeueCmd(),
 	)
 
 	return cmd
@@ -164,6 +167,60 @@ func newRebuildPreviewCmd() *cobra.Command {
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
 				"/workspaces/"+args[0]+"/rebuild-preview", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+}
+
+// newRebuildCancelCmd returns the 'rebuild cancel' subcommand.
+// It sends DELETE /api/v1/workspaces/:slug/rebuilds/:id and prints confirmation.
+func newRebuildCancelCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "cancel <workspace-slug> <rebuild-id>",
+		Short:         "Cancel a rebuild job",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete,
+				"/workspaces/"+args[0]+"/rebuilds/"+args[1], nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			fmt.Fprintf(cmd.ErrOrStderr(), "Rebuild job '%s' has been cancelled.\n", args[1])
+			return nil
+		},
+	}
+}
+
+// newRebuildRequeueCmd returns the 'rebuild requeue' subcommand.
+// It sends POST /api/v1/workspaces/:slug/rebuilds/:id/requeue and prints
+// the requeued job record.
+func newRebuildRequeueCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "requeue <workspace-slug> <rebuild-id>",
+		Short:         "Requeue a dead-lettered rebuild job",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
+				"/workspaces/"+args[0]+"/rebuilds/"+args[1]+"/requeue", nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

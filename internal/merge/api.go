@@ -190,6 +190,7 @@ func RegisterMergeRoutes(api *echo.Group, cfg MergeAPIConfig) {
 	api.GET("/workspaces/:slug/merges", handleListMerges(cfg))
 	api.GET("/workspaces/:slug/merges/:id", handleGetMerge(cfg))
 	api.DELETE("/workspaces/:slug/merges/:id", handleCancelMerge(cfg))
+	api.POST("/workspaces/:slug/merges/:id/requeue", handleRequeueMerge(cfg))
 	api.POST("/workspaces/:slug/rebase", handleBatchRebase(cfg))
 }
 
@@ -501,6 +502,61 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		return c.JSON(http.StatusOK, map[string]string{"status": "cancelled"})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handler: POST /api/v1/workspaces/:slug/merges/:id/requeue
+// ---------------------------------------------------------------------------
+
+// handleRequeueMerge handles POST /api/v1/workspaces/:slug/merges/:id/requeue.
+// It requeues a dead-lettered merge job. Returns 200 with the merge job record
+// on success, 409 if the job is not in dead_letter status or an active job
+// already exists, 404 if the job does not exist or belongs to a different
+// workspace.
+func handleRequeueMerge(cfg MergeAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
+			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if err := requireMergeWriteScope(c, auth); err != nil {
+			return nil // Response already written.
+		}
+
+		slug := c.Param("slug")
+		jobID := c.Param("id")
+
+		// Look up the job to verify it exists and belongs to this workspace.
+		job, err := cfg.Queue.GetByID(jobID)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "merge job not found")
+		}
+
+		// Verify the job belongs to this workspace.
+		if !strings.HasPrefix(job.Key, slug+":") {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "merge job not found")
+		}
+
+		// Verify the job is a merge job.
+		if job.Type != MergeJobType {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "merge job not found")
+		}
+
+		// Attempt to requeue the dead-lettered job.
+		_, requeueErr := cfg.Queue.RequeueDeadLetter(jobID)
+		if requeueErr != nil {
+			return apikit.WriteAPIError(c, http.StatusConflict, requeueErr.Error())
+		}
+
+		// Retrieve the updated job to return in the response.
+		updated, getErr := cfg.Queue.GetByID(jobID)
+		if getErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to retrieve requeued job")
+		}
+
+		resp := ProjectMergeJobResponse(updated)
+		return c.JSON(http.StatusOK, resp)
 	}
 }
 

@@ -27,6 +27,7 @@ func MergeCmd() *cobra.Command {
 		newMergeListCmd(),
 		newMergeStatusCmd(),
 		newMergeCancelCmd(),
+		newMergeRequeueCmd(),
 	)
 
 	return cmd
@@ -173,6 +174,33 @@ func newMergeCancelCmd() *cobra.Command {
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "Merge job '%s' has been cancelled.\n", args[1])
 			return nil
+		},
+	}
+}
+
+// newMergeRequeueCmd returns the 'merge requeue' subcommand.
+// It sends POST /api/v1/workspaces/:slug/merges/:id/requeue and prints
+// the requeued job record.
+func newMergeRequeueCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "requeue <workspace-slug> <merge-id>",
+		Short:         "Requeue a dead-lettered merge job",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
+				"/workspaces/"+args[0]+"/merges/"+args[1]+"/requeue", nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
 }

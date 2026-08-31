@@ -197,6 +197,8 @@ func RegisterRebuildRoutes(api *echo.Group, cfg RebuildAPIConfig) {
 	api.POST("/workspaces/:slug/rebuild", handleSubmitRebuild(cfg))
 	api.GET("/workspaces/:slug/rebuilds", handleListRebuilds(cfg))
 	api.GET("/workspaces/:slug/rebuilds/:id", handleGetRebuild(cfg))
+	api.DELETE("/workspaces/:slug/rebuilds/:id", handleCancelRebuild(cfg))
+	api.POST("/workspaces/:slug/rebuilds/:id/requeue", handleRequeueRebuild(cfg))
 }
 
 // RegisterRebuildPreviewRoutes mounts the rebuild-preview endpoint on the API group.
@@ -537,6 +539,114 @@ func handleGetRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		rec := jobToRebuildRecord(j)
+		return c.JSON(http.StatusOK, rec)
+	}
+}
+
+// ===========================================================================
+// DELETE /workspaces/:slug/rebuilds/:id
+// ===========================================================================
+
+// handleCancelRebuild handles DELETE /api/v1/workspaces/:slug/rebuilds/:id.
+// It cancels a queued rebuild job. Returns 200 on success, 409 if the job is
+// not in a cancellable state, 404 if the job does not exist or belongs to a
+// different workspace.
+func handleCancelRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// Auth check.
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
+			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
+		}
+
+		slug := c.Param("slug")
+		jobID := c.Param("id")
+
+		// Look up the job to verify it exists and belongs to this workspace.
+		j, err := cfg.Queue.GetByID(jobID)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+
+		// Verify the job belongs to this workspace and is a rebuild job.
+		if j.Key != slug {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+		if j.Type != "rebuild" {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+
+		// Only queued jobs can be cancelled.
+		if j.Status != jobqueue.StatusQueued {
+			return apikit.WriteAPIError(c, http.StatusConflict,
+				"job cannot be cancelled in its current state")
+		}
+
+		// Attempt to cancel the job.
+		if err := cfg.Queue.CancelJob(jobID); err != nil {
+			if errors.Is(err, jobqueue.ErrNotCancellable) {
+				return apikit.WriteAPIError(c, http.StatusConflict,
+					"job cannot be cancelled in its current state")
+			}
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to cancel job")
+		}
+
+		return c.JSON(http.StatusOK, map[string]string{"status": "cancelled"})
+	}
+}
+
+// ===========================================================================
+// POST /workspaces/:slug/rebuilds/:id/requeue
+// ===========================================================================
+
+// handleRequeueRebuild handles POST /api/v1/workspaces/:slug/rebuilds/:id/requeue.
+// It requeues a dead-lettered rebuild job. Returns 200 with the job record on
+// success, 409 if the job is not in dead_letter status or an active job already
+// exists, 404 if the job does not exist or belongs to a different workspace.
+func handleRequeueRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// Auth check.
+		auth := apikit.GetAuthInfo(c)
+		if auth == nil {
+			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+		}
+		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
+		}
+
+		slug := c.Param("slug")
+		jobID := c.Param("id")
+
+		// Look up the job to verify it exists and belongs to this workspace.
+		j, err := cfg.Queue.GetByID(jobID)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+
+		// Verify the job belongs to this workspace and is a rebuild job.
+		if j.Key != slug {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+		if j.Type != "rebuild" {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
+		}
+
+		// Attempt to requeue the dead-lettered job.
+		_, requeueErr := cfg.Queue.RequeueDeadLetter(jobID)
+		if requeueErr != nil {
+			return apikit.WriteAPIError(c, http.StatusConflict, requeueErr.Error())
+		}
+
+		// Retrieve the updated job to return in the response.
+		updated, getErr := cfg.Queue.GetByID(jobID)
+		if getErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to retrieve requeued job")
+		}
+
+		rec := jobToRebuildRecord(updated)
 		return c.JSON(http.StatusOK, rec)
 	}
 }

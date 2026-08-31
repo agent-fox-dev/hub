@@ -57,16 +57,27 @@ func rebuildCLIMockServer(t *testing.T, failPaths map[string]int) (*httptest.Ser
 
 		switch r.Method {
 		case http.MethodPost:
-			// POST /api/v1/workspaces/:slug/rebuild -- submit rebuild job.
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"id":        "job-uuid-1",
-				"type":      "rebuild",
-				"key":       "my-workspace",
-				"group_key": "my-workspace:integration",
-				"status":    "queued",
-			})
+			if strings.HasSuffix(r.URL.Path, "/requeue") {
+				// POST /api/v1/workspaces/:slug/rebuilds/:id/requeue — requeue rebuild job.
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+					"id":         "job-uuid-1",
+					"status":     "queued",
+					"strategy":   "rebase",
+					"created_at": "2025-01-01T00:00:00Z",
+				})
+			} else {
+				// POST /api/v1/workspaces/:slug/rebuild -- submit rebuild job.
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+					"id":        "job-uuid-1",
+					"type":      "rebuild",
+					"key":       "my-workspace",
+					"group_key": "my-workspace:integration",
+					"status":    "queued",
+				})
+			}
 
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
@@ -134,6 +145,12 @@ func rebuildCLIMockServer(t *testing.T, failPaths map[string]int) (*httptest.Ser
 					"created_at": "2025-01-01T00:00:00Z",
 				})
 			}
+
+		case http.MethodDelete:
+			// DELETE /api/v1/workspaces/:slug/rebuilds/:id — cancel rebuild job.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{"status": "cancelled"}) //nolint:errcheck
 
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -663,5 +680,166 @@ func TestRebuildCmd_HasPreviewSubcommand(t *testing.T) {
 	}
 	if !found {
 		t.Error("RebuildCmd() should have a 'preview' subcommand")
+	}
+}
+
+// =========================================================================
+// Verify RebuildCmd() has 'cancel' and 'requeue' subcommands.
+// =========================================================================
+
+func TestRebuildCmd_HasCancelSubcommand(t *testing.T) {
+	cmd := RebuildCmd()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if strings.HasPrefix(sub.Use, "cancel") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("RebuildCmd() should have a 'cancel' subcommand")
+	}
+}
+
+func TestRebuildCmd_HasRequeueSubcommand(t *testing.T) {
+	cmd := RebuildCmd()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if strings.HasPrefix(sub.Use, "requeue") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("RebuildCmd() should have a 'requeue' subcommand")
+	}
+}
+
+// =========================================================================
+// 'afc rebuild cancel <workspace-slug> <rebuild-id>' sends DELETE
+// /api/v1/workspaces/:slug/rebuilds/:id and prints confirmation.
+// =========================================================================
+
+func TestRebuildCLI_Cancel_Success(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"cancel", "my-workspace", "job-uuid-1")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+
+	// Verify the correct API call was made.
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.Method != "DELETE" {
+		t.Errorf("method = %q; want DELETE", req.Method)
+	}
+	if req.Path != "/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1" {
+		t.Errorf("path = %q; want /api/v1/workspaces/my-workspace/rebuilds/job-uuid-1", req.Path)
+	}
+
+	// Verify confirmation is printed.
+	if !strings.Contains(stderr, "job-uuid-1") {
+		t.Errorf("confirmation should mention rebuild ID 'job-uuid-1'; stderr: %s", stderr)
+	}
+}
+
+func TestRebuildCLI_Cancel_APIError(t *testing.T) {
+	failPaths := map[string]int{
+		"/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1": http.StatusConflict,
+	}
+	server, _ := rebuildCLIMockServer(t, failPaths)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"cancel", "my-workspace", "job-uuid-1")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit on API error; got nil error")
+	}
+}
+
+func TestRebuildCLI_Cancel_MissingArgs(t *testing.T) {
+	server, _ := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"cancel", "my-workspace")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit when rebuild-id is missing; got nil error")
+	}
+}
+
+// =========================================================================
+// 'afc rebuild requeue <workspace-slug> <rebuild-id>' sends POST
+// /api/v1/workspaces/:slug/rebuilds/:id/requeue and prints the result.
+// =========================================================================
+
+func TestRebuildCLI_Requeue_Success(t *testing.T) {
+	server, records := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"requeue", "my-workspace", "job-uuid-1")
+
+	if err != nil {
+		t.Fatalf("expected exit 0; got error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr; got: %s", stderr)
+	}
+
+	// Verify the correct API call was made.
+	reqs := getRebuildCLIRecords(records)
+	if len(reqs) != 1 {
+		t.Fatalf("expected exactly 1 request; got %d", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.Method != "POST" {
+		t.Errorf("method = %q; want POST", req.Method)
+	}
+	if req.Path != "/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1/requeue" {
+		t.Errorf("path = %q; want /api/v1/workspaces/my-workspace/rebuilds/job-uuid-1/requeue", req.Path)
+	}
+
+	// Verify stdout contains the requeued job status.
+	if !strings.Contains(stdout, "queued") {
+		t.Errorf("stdout should contain 'queued'; got: %s", stdout)
+	}
+}
+
+func TestRebuildCLI_Requeue_APIError(t *testing.T) {
+	failPaths := map[string]int{
+		"/api/v1/workspaces/my-workspace/rebuilds/job-uuid-1/requeue": http.StatusConflict,
+	}
+	server, _ := rebuildCLIMockServer(t, failPaths)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"requeue", "my-workspace", "job-uuid-1")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit on API error; got nil error")
+	}
+}
+
+func TestRebuildCLI_Requeue_MissingArgs(t *testing.T) {
+	server, _ := rebuildCLIMockServer(t, nil)
+	defer server.Close()
+
+	_, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+		"requeue", "my-workspace")
+
+	if err == nil {
+		t.Fatal("expected non-zero exit when rebuild-id is missing; got nil error")
 	}
 }
