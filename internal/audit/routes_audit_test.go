@@ -183,7 +183,7 @@ type auditQueryTestEnv struct {
 	apiGroup *echo.Group
 }
 
-// mockSSEManager satisfies SSEManager for route registration tests.
+// mockSSEManager satisfies SSEBroadcaster for route registration tests.
 type mockSSEManager struct{}
 
 // newAuditQueryTestEnv creates a test environment with audit query routes
