@@ -358,6 +358,21 @@ var validRunStatuses = map[string]bool{
 	"session_limit": true,
 }
 
+// WriteTimeoutError indicates a DuckDB write operation timed out under
+// sustained write contention. Handlers should check for this error and
+// respond with HTTP 503 + Retry-After: 5.
+type WriteTimeoutError struct {
+	Err error
+}
+
+func (e *WriteTimeoutError) Error() string {
+	return "audit: write timeout: " + e.Err.Error()
+}
+
+func (e *WriteTimeoutError) Unwrap() error {
+	return e.Err
+}
+
 // ErrSessionNotActive is returned when attempting to complete or report usage
 // on a session that is not in the active state.
 var ErrSessionNotActive = errors.New("session is not active")

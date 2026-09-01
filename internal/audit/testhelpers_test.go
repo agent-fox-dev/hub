@@ -44,8 +44,9 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	// Apply test auth middleware.
 	api.Use(testAuthMiddleware())
 
-	// Register session routes.
-	RegisterSessionRoutes(api, store, nil)
+	// Register session routes (nil metrics — metric-specific tests use
+	// newAuditTestEnvWithMetrics).
+	RegisterSessionRoutes(api, store, nil, nil)
 
 	// Register ingestion and query routes.
 	RegisterRoutes(api, store, &nopEmitter{})
@@ -73,7 +74,7 @@ func newAuditTestEnvWithSQLite(t *testing.T) *auditTestEnv {
 
 	api.Use(testAuthMiddleware())
 
-	RegisterSessionRoutes(api, store, sqliteDB)
+	RegisterSessionRoutes(api, store, sqliteDB, nil)
 	RegisterRoutes(api, store, &nopEmitter{})
 
 	return &auditTestEnv{
@@ -683,6 +684,31 @@ func parseCostJSON(t *testing.T, rec *httptest.ResponseRecorder) CostResponse {
 	return resp
 }
 
+// newAuditTestEnvWithMetrics creates an environment that wires a *Metrics
+// instance into the session handlers, allowing metrics instrumentation tests
+// to verify gauge/counter changes via the returned *Metrics.
+func newAuditTestEnvWithMetrics(t *testing.T, m *Metrics) *auditTestEnv {
+	t.Helper()
+	duckDB := openTestAuditDB(t)
+	initHandlerTestSchema(t, duckDB)
+	store := NewStore(duckDB)
+
+	e := echo.New()
+	e.HTTPErrorHandler = apikit.HTTPErrorHandler
+	api := e.Group("/api/v1")
+
+	api.Use(testAuthMiddleware())
+
+	RegisterSessionRoutes(api, store, nil, m)
+	RegisterRoutes(api, store, &nopEmitter{})
+
+	return &auditTestEnv{
+		echo:  e,
+		db:    duckDB,
+		store: store,
+	}
+}
+
 // newAuditTestEnvWithEmitter creates an environment that includes an Emitter
 // for recording emitted hub audit events during force-close tests.
 func newAuditTestEnvWithEmitter(t *testing.T) (*auditTestEnv, *testEmitter) {
@@ -699,7 +725,7 @@ func newAuditTestEnvWithEmitter(t *testing.T) (*auditTestEnv, *testEmitter) {
 
 	api.Use(testAuthMiddleware())
 
-	RegisterSessionRoutes(api, store, sqliteDB)
+	RegisterSessionRoutes(api, store, sqliteDB, nil)
 
 	return &auditTestEnv{
 		echo:     e,

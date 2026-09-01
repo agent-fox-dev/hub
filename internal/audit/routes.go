@@ -8,7 +8,9 @@ import (
 
 // RegisterSessionRoutes mounts session, token usage, and cost API handlers
 // on the given echo group. The sqliteDB parameter is used for workspace
-// access checks (resolving workspace ownership).
+// access checks (resolving workspace ownership). The metrics parameter is
+// used for Prometheus gauge/counter instrumentation; if nil, metric
+// operations are skipped.
 //
 // Routes:
 //
@@ -19,10 +21,10 @@ import (
 //	GET    /sessions/:id          - Fetch a single session
 //	GET    /sessions/:id/usage    - Query token usage records (paginated)
 //	GET    /workspaces/:slug/cost - Workspace cost summary
-func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB) {
-	api.POST("/sessions", handleCreateSession(store))
-	api.POST("/sessions/:id/complete", handleCompleteSession(store))
-	api.POST("/sessions/:id/usage", handleReportUsage(store))
+func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB, metrics *Metrics) {
+	api.POST("/sessions", handleCreateSession(store, metrics))
+	api.POST("/sessions/:id/complete", handleCompleteSession(store, metrics))
+	api.POST("/sessions/:id/usage", handleReportUsage(store, metrics))
 	api.GET("/sessions", handleListSessions(store, sqliteDB))
 	api.GET("/sessions/:id", handleGetSession(store, sqliteDB))
 	api.GET("/sessions/:id/usage", handleListSessionUsage(store, sqliteDB))

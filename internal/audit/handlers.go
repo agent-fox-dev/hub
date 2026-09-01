@@ -15,7 +15,7 @@ import (
 
 // handleCreateSession handles POST /api/v1/sessions.
 // Creates a new agent session or returns existing if id is duplicate.
-func handleCreateSession(store Store) echo.HandlerFunc {
+func handleCreateSession(store Store, metrics *Metrics) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
@@ -60,6 +60,10 @@ func handleCreateSession(store Store) echo.HandlerFunc {
 		}
 
 		if isNew {
+			// Increment active sessions gauge only for genuinely new sessions.
+			if metrics != nil {
+				metrics.AgentSessionsActive.WithLabelValues(req.WorkspaceSlug).Inc()
+			}
 			return c.JSON(http.StatusCreated, created)
 		}
 		return c.JSON(http.StatusOK, created)
@@ -68,7 +72,7 @@ func handleCreateSession(store Store) echo.HandlerFunc {
 
 // handleCompleteSession handles POST /api/v1/sessions/:id/complete.
 // Transitions an active session to a terminal state.
-func handleCompleteSession(store Store) echo.HandlerFunc {
+func handleCompleteSession(store Store, metrics *Metrics) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
@@ -109,7 +113,7 @@ func handleCompleteSession(store Store) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
 		}
 
-		// If session is already terminal, return idempotently.
+		// If session is already terminal, return idempotently (no gauge decrement).
 		if isTerminalStatus(sess.Status) {
 			return c.JSON(http.StatusOK, sess)
 		}
@@ -130,13 +134,18 @@ func handleCompleteSession(store Store) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
 
+		// Decrement active sessions gauge only on successful transition from active.
+		if metrics != nil {
+			metrics.AgentSessionsActive.WithLabelValues(sess.WorkspaceSlug).Dec()
+		}
+
 		return c.JSON(http.StatusOK, updated)
 	}
 }
 
 // handleReportUsage handles POST /api/v1/sessions/:id/usage.
 // Records incremental token usage for an active session.
-func handleReportUsage(store Store) echo.HandlerFunc {
+func handleReportUsage(store Store, metrics *Metrics) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
@@ -202,6 +211,21 @@ func handleReportUsage(store Store) echo.HandlerFunc {
 		created, err := store.InsertTokenUsage(c.Request().Context(), usage)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		}
+
+		// Increment token usage counters by direction.
+		if metrics != nil {
+			ws := sess.WorkspaceSlug
+			model := req.Model
+			if req.InputTokens > 0 {
+				metrics.AgentTokensTotal.WithLabelValues(ws, model, "input").Add(float64(req.InputTokens))
+			}
+			if req.OutputTokens > 0 {
+				metrics.AgentTokensTotal.WithLabelValues(ws, model, "output").Add(float64(req.OutputTokens))
+			}
+			if req.CacheReadTokens > 0 {
+				metrics.AgentTokensTotal.WithLabelValues(ws, model, "cache_read").Add(float64(req.CacheReadTokens))
+			}
 		}
 
 		return c.JSON(http.StatusCreated, created)

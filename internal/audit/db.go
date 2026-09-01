@@ -22,5 +22,15 @@ func OpenDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	return sql.Open("duckdb", path)
+	db, err := sql.Open("duckdb", path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return db, nil
 }

@@ -51,11 +51,11 @@ func getPlainGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 // Requirement: 19-REQ-11.2
 func TestMetrics_SessionOpenIncrementsActiveGauge(t *testing.T) {
 	m := NewMetrics()
-	env := newAuditTestEnv(t)
+	env := newAuditTestEnvWithMetrics(t, m)
 
 	gaugeBefore := getGaugeValue(t, m.AgentSessionsActive, prometheus.Labels{"workspace": "ws-new"})
 
-	// Create a session — when the handler is implemented, it should call
+	// Create a session — the handler calls
 	// m.AgentSessionsActive.WithLabelValues("ws-new").Inc().
 	env.doJSON(t, "POST", "/api/v1/sessions",
 		`{"workspace_slug":"ws-new"}`, apiKeyAuth())
@@ -73,7 +73,7 @@ func TestMetrics_SessionOpenIncrementsActiveGauge(t *testing.T) {
 // Requirement: 19-REQ-11.1
 func TestMetrics_SessionCompleteDecrementsActiveGauge(t *testing.T) {
 	m := NewMetrics()
-	env := newAuditTestEnv(t)
+	env := newAuditTestEnvWithMetrics(t, m)
 
 	// Seed an active session.
 	env.seedSession(t, &Session{
@@ -108,7 +108,7 @@ func TestMetrics_SessionCompleteDecrementsActiveGauge(t *testing.T) {
 // Requirement: 19-REQ-11.3
 func TestMetrics_UsageReportIncrementsTokenCounter(t *testing.T) {
 	m := NewMetrics()
-	env := newAuditTestEnv(t)
+	env := newAuditTestEnvWithMetrics(t, m)
 
 	// Seed an active session.
 	env.seedSession(t, &Session{
@@ -181,7 +181,7 @@ func TestMetrics_AuditEventIncrementsCounter(t *testing.T) {
 // 19-REQ-11.E1: Duplicate session open should not double-increment the gauge.
 func TestMetrics_DuplicateSessionOpenNoDoubleIncrement(t *testing.T) {
 	m := NewMetrics()
-	env := newAuditTestEnv(t)
+	env := newAuditTestEnvWithMetrics(t, m)
 
 	// First session create.
 	env.doJSON(t, "POST", "/api/v1/sessions",
@@ -204,7 +204,7 @@ func TestMetrics_DuplicateSessionOpenNoDoubleIncrement(t *testing.T) {
 // 19-REQ-11.E2: Idempotent close should not double-decrement the gauge.
 func TestMetrics_IdempotentCloseNoDoubleDecrement(t *testing.T) {
 	m := NewMetrics()
-	env := newAuditTestEnv(t)
+	env := newAuditTestEnvWithMetrics(t, m)
 
 	// Seed an active session.
 	env.seedSession(t, &Session{
