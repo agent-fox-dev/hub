@@ -724,6 +724,50 @@ handler returns 403 for missing `workspaces:read` scope; rerere forget
 handler returns 403 for missing `workspaces:write` scope; patch-status
 handler returns 403 for missing `workspaces:read` scope.
 
+## Hub Audit Permissions
+
+These 4 permissions are registered by `Permissions()` in
+`hub/internal/audit/permissions.go` and passed to `apikit.Server.MountHandlers()`
+at startup via the `extraPerms` parameter.
+
+### audit:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Query unified audit events, reconstruct conversation transcripts, and connect to the real-time SSE event stream |
+| **Endpoints** | `GET /api/v1/audit`, `GET /api/v1/workspaces/:slug/runs/:run_id/transcript`, `GET /api/v1/events` |
+| **Ownership** | Not enforced. Any authenticated user with the required scope can query audit events for any workspace. |
+
+### audit:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Ingest agent audit events, session outcomes, tool calls, tool errors, traces, and postmortem reports |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/runs/:run_id/events`, `POST /api/v1/workspaces/:slug/runs/:run_id/events/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/postmortem` |
+| **Ownership** | Workspace-scoped PATs must match the URL workspace slug. Generic PATs and API keys are checked against workspace ownership via SQLite. Admin tokens bypass all workspace checks. |
+
+### sessions:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List and view agent sessions, query token usage records, and view workspace cost summaries |
+| **Endpoints** | `GET /api/v1/sessions`, `GET /api/v1/sessions/:id`, `GET /api/v1/sessions/:id/usage`, `GET /api/v1/workspaces/:slug/cost` |
+| **Ownership** | Non-admin users are restricted to sessions for workspaces they own (checked via SQLite). |
+
+### sessions:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Open agent sessions, complete sessions, and report incremental token usage |
+| **Endpoints** | `POST /api/v1/sessions`, `POST /api/v1/sessions/:id/complete`, `POST /api/v1/sessions/:id/usage` |
+| **Ownership** | Session completion and usage reporting require the caller to be the session owner or an admin. |
+
+---
+
 ## Extending the Permission Registry
 
 To add custom permissions from a new hub module:

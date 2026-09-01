@@ -52,8 +52,8 @@ they can access. The following scopes are available for workspace operations:
 | `vars:delete` | Delete variables | DELETE /api/v1/user/vars/:key, DELETE /api/v1/orgs/:slug/vars/:key, DELETE /api/v1/workspaces/:slug/vars/:key |
 | `sessions:read` | Read agent session records, token usage, and workspace cost summaries | GET /api/v1/sessions, GET /api/v1/sessions/:id, GET /api/v1/sessions/:id/usage, GET /api/v1/workspaces/:slug/cost |
 | `sessions:write` | Open, close, and report token usage on agent sessions | POST /api/v1/sessions, POST /api/v1/sessions/:id/complete, POST /api/v1/sessions/:id/usage |
-| `audit:read` | Query audit events, traces, and session outcomes | GET /api/v1/workspaces/:slug/runs/:run_id/events, GET /api/v1/workspaces/:slug/runs/:run_id/traces |
-| `audit:write` | Ingest audit events and traces | POST /api/v1/workspaces/:slug/runs/:run_id/events, POST /api/v1/workspaces/:slug/runs/:run_id/traces |
+| `audit:read` | Query audit events, view transcripts, and connect to SSE stream | GET /api/v1/audit, GET /api/v1/workspaces/:slug/runs/:run_id/transcript, GET /api/v1/events |
+| `audit:write` | Ingest agent audit events, traces, and session outcomes | POST endpoints under /api/v1/workspaces/:slug/runs/:run_id/ |
 
 ### Implied Permissions
 
@@ -3245,3 +3245,226 @@ Delete a user account (admin only).
 | 401 | Unauthenticated request |
 | 403 | Non-admin credential |
 | 404 | User not found |
+
+---
+
+## Audit Query Endpoints
+
+The audit subsystem provides a unified query API that merges hub-internal and
+agent-submitted audit events, a conversation transcript reconstruction
+endpoint, and a real-time SSE streaming endpoint.
+
+All audit query endpoints require the `audit:read` permission scope. Admin
+tokens and API keys have implicit access; PATs require an explicit
+`audit:read` grant.
+
+### GET /api/v1/audit
+
+Unified audit event query that merges events from `hub_audit_events` and
+`agent_audit_events` into a single chronological result set using UNION ALL.
+
+**Authentication:** API Key, or PAT with `audit:read` scope.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source` | string | (all) | Filter by event source: `"hub"` or `"agent"` |
+| `workspace` | string | (all) | Filter by workspace slug |
+| `event_type` | string | (all) | Filter by exact event type |
+| `event_type_prefix` | string | (all) | Filter by event type prefix (e.g., `"hub.workspace"` matches all workspace events) |
+| `severity` | string | (all) | Filter by severity level |
+| `actor_id` | string | (all) | Filter by actor ID (hub events only; excludes agent events) |
+| `actor_type` | string | (all) | Filter by actor type (hub events only; excludes agent events) |
+| `resource_type` | string | (all) | Filter by resource type (hub events only; excludes agent events) |
+| `action` | string | (all) | Filter by action (hub events only; excludes agent events) |
+| `run_id` | string | (all) | Filter by agent run ID (agent events only; excludes hub events) |
+| `since` | string (RFC 3339) | (none) | Inclusive lower bound on event timestamp |
+| `until` | string (RFC 3339) | (none) | Exclusive upper bound on event timestamp |
+| `limit` | integer | 100 | Maximum number of events to return (clamped to 1000) |
+| `cursor` | string | (none) | Opaque pagination cursor from a previous response |
+
+**Response:** HTTP 200 OK
+
+```json
+{
+  "events": [
+    {
+      "id": "uuid-string",
+      "event_type": "hub.workspace.create",
+      "source": "hub",
+      "timestamp": "2026-09-01T12:00:00Z",
+      "severity": "info",
+      "workspace": "my-workspace",
+      "actor_id": "user-uuid",
+      "actor_type": "api_key",
+      "resource_type": "workspace",
+      "resource_id": "my-workspace",
+      "action": "create",
+      "run_id": null,
+      "node_id": null,
+      "session_id": null,
+      "archetype": null
+    }
+  ],
+  "next_cursor": "base64-encoded-cursor-or-null",
+  "has_more": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `events` | array | Unified audit events ordered by timestamp descending |
+| `events[].id` | string | Unique event identifier |
+| `events[].event_type` | string | Dot-notation event type (e.g., `hub.workspace.create`) |
+| `events[].source` | string | Event source: `"hub"` or `"agent"` |
+| `events[].timestamp` | string (RFC 3339) | Event timestamp |
+| `events[].severity` | string | Severity level |
+| `events[].workspace` | string | Workspace slug |
+| `events[].actor_id` | string or null | Actor who performed the action (hub events only) |
+| `events[].actor_type` | string or null | Credential type of the actor (hub events only) |
+| `events[].resource_type` | string or null | Category of affected resource (hub events only) |
+| `events[].resource_id` | string or null | Identifier of affected resource (hub events only) |
+| `events[].action` | string or null | Action performed (hub events only) |
+| `events[].run_id` | string or null | Agent run identifier (agent events only) |
+| `events[].node_id` | string or null | Agent node identifier (agent events only) |
+| `events[].session_id` | string or null | Agent session identifier (agent events only) |
+| `events[].archetype` | string or null | Agent archetype (agent events only) |
+| `next_cursor` | string or null | Opaque cursor for fetching the next page |
+| `has_more` | boolean | Whether more results exist beyond this page |
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Invalid cursor, invalid since/until timestamp, or since >= until |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `audit:read` scope |
+| 500 | Internal server error |
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/transcript
+
+Reconstruct a conversation transcript from agent trace data for a specific
+run and node. Maps agent trace event types to conversation roles.
+
+**Authentication:** API Key, or PAT with `audit:read` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:run_id` | The agent run identifier |
+
+**Query Parameters:**
+
+| Parameter | Required | Type | Description |
+|-----------|----------|------|-------------|
+| `node_id` | yes | string | The node identifier within the run |
+
+**Response:** HTTP 200 OK
+
+```json
+{
+  "run_id": "run-uuid",
+  "node_id": "node-uuid",
+  "messages": [
+    {
+      "role": "system",
+      "content": "System initialization message",
+      "tool_name": null,
+      "timestamp": "2026-09-01T12:00:00Z"
+    },
+    {
+      "role": "assistant",
+      "content": "Assistant response",
+      "tool_name": null,
+      "timestamp": "2026-09-01T12:00:01Z"
+    },
+    {
+      "role": "tool_use",
+      "content": "Tool output",
+      "tool_name": "bash",
+      "timestamp": "2026-09-01T12:00:02Z"
+    }
+  ]
+}
+```
+
+**Role Mapping:**
+
+| Trace Event Type | Transcript Role |
+|-----------------|----------------|
+| `session.init` | `system` |
+| `assistant.message` | `assistant` |
+| `tool.use` | `tool_use` |
+| `tool.error` | `tool_error` |
+
+Unrecognized trace event types are silently skipped.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing required `node_id` query parameter |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `audit:read` scope |
+| 500 | Internal server error |
+
+---
+
+### GET /api/v1/events
+
+Server-Sent Events (SSE) streaming endpoint delivering real-time audit events
+to connected clients. Uses the `text/event-stream` content type.
+
+**Authentication:** API Key, or PAT with `audit:read` scope.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workspace` | string | Filter events by workspace slug |
+| `run_id` | string | Filter events by agent run ID |
+| `category` | string | Filter events by category |
+
+**Response:** HTTP 200 OK with `Content-Type: text/event-stream`
+
+The endpoint streams SSE frames in the following formats:
+
+**Heartbeat frame** (sent every 30 seconds):
+```
+event: heartbeat
+data: {"timestamp":"2026-09-01T12:00:00Z"}
+```
+
+**Audit event frame:**
+```
+event: audit_event
+data: {"id":"uuid","event_type":"hub.workspace.create","timestamp":"...","workspace":"..."}
+```
+
+**Connection Limits:**
+
+The maximum number of concurrent SSE connections is controlled by the
+`AF_SSE_MAX_CONNECTIONS` environment variable (default: 100). When the limit
+is reached, new connections receive HTTP 503 with an error message.
+
+**Connection Lifecycle:**
+
+- An initial heartbeat frame is sent immediately to confirm the connection.
+- Heartbeat frames are sent every 30 seconds to prevent stale connection
+  detection.
+- Connections with no reads for 60 seconds are automatically closed.
+- Per-client event buffers hold up to 256 events; when full, the oldest event
+  is drained before inserting a new one.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `audit:read` scope |
+| 503 | Maximum SSE connection limit reached |
