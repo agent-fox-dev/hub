@@ -8,13 +8,23 @@ import (
 )
 
 // Package-level audit dependencies for force-close. Set by
-// RegisterRoutesWithConfig; nil when not configured (force-close
-// is silently skipped).
+// RegisterRoutesWithConfig or SetAuditDependencies; nil when not
+// configured (force-close is silently skipped).
 var (
 	defaultAuditStore   audit.Store
 	defaultAuditEmitter audit.Emitter
 	defaultAuditMetrics *audit.Metrics
 )
+
+// SetAuditDependencies configures the audit store, emitter, and metrics
+// used by the force-close logic in workspace archive and delete handlers.
+// Call this after MountWorkspaceHandlers when audit dependencies are
+// initialised separately from workspace route registration.
+func SetAuditDependencies(store audit.Store, emitter audit.Emitter, m *audit.Metrics) {
+	defaultAuditStore = store
+	defaultAuditEmitter = emitter
+	defaultAuditMetrics = m
+}
 
 // forceCloseWorkspaceSessions force-closes all active sessions for the
 // given workspace. It updates session status to terminated in DuckDB,

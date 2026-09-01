@@ -5,8 +5,8 @@ import (
 	"flag"
 	"log"
 	"log/slog"
+	"os"
 	"path/filepath"
-
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/labstack/echo/v4"
@@ -149,6 +149,35 @@ func main() {
 
 	metrics := audit.NewMetrics()
 
+	// ---------------------------------------------------------------------------
+	// Audit DuckDB database (specs 17-19)
+	// ---------------------------------------------------------------------------
+
+	// Resolve audit DuckDB path: AF_AUDIT_DB_PATH env or default to
+	// <data_dir>/audit.duckdb alongside the SQLite database.
+	auditDBPath := os.Getenv("AF_AUDIT_DB_PATH")
+	if auditDBPath == "" {
+		auditDBPath = filepath.Join(filepath.Dir(cfg.Database.Path), "audit.duckdb")
+	}
+
+	auditDB, err := audit.OpenDB(auditDBPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer auditDB.Close()
+
+	if err := audit.InitSchema(auditDB); err != nil {
+		log.Fatal(err)
+	}
+
+	auditStore := audit.NewStore(auditDB)
+
+	// Create SSE connection manager and audit emitter for hub event
+	// broadcasting (spec 18) and session force-close audit events (spec 19).
+	sseMgr := audit.NewSSEManager(100)
+	go sseMgr.Run(ctx.Done())
+	auditEmitter := audit.NewEmitterWithBroadcast(auditStore, sseMgr)
+
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 
 	// Register the personal org hook before MountWorkspaceHandlers so that
@@ -162,6 +191,7 @@ func main() {
 	extraPerms = append(extraPerms, secrets.Permissions()...)
 	extraPerms = append(extraPerms, merge.MergePermissions()...)
 	extraPerms = append(extraPerms, carrypatch.CarryPatchPermissions()...)
+	extraPerms = append(extraPerms, audit.Permissions()...)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace, git, secrets, variables, and
@@ -169,6 +199,28 @@ func main() {
 	if err := workspace.MountWorkspaceHandlers(server, database, extraPerms...); err != nil {
 		log.Fatal(err)
 	}
+
+	// Wire audit dependencies into workspace package for force-close on
+	// archive/delete (19-REQ-8, 19-REQ-9).
+	workspace.SetAuditDependencies(auditStore, auditEmitter, metrics)
+
+	// ---------------------------------------------------------------------------
+	// Audit routes (specs 17-19)
+	// ---------------------------------------------------------------------------
+
+	// Register session lifecycle, token usage, and cost routes (spec 19).
+	auditAPI := server.APIGroup()
+	audit.RegisterSessionRoutes(auditAPI, auditStore, database.SqlDB, metrics)
+
+	// Register audit ingestion and per-run query routes (spec 17).
+	audit.RegisterRoutes(auditAPI, auditStore, auditEmitter, database.SqlDB)
+
+	// Register unified audit query, transcript, and SSE streaming routes (spec 18).
+	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr)
+
+	// Start the retention worker goroutine. Runs an immediate retention
+	// pass then repeats hourly (19-REQ-12.1). Exits cleanly on ctx cancel.
+	go audit.StartRetentionWorker(ctx, auditStore, database.SqlDB, metrics)
 
 	// Reconcile any workspaces stuck in 'syncing' state from a previous
 	// unclean shutdown. Must run after schema init and before the HTTP server
