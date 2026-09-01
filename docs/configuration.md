@@ -95,6 +95,13 @@ provider.
 | `ADMIN_EMAIL` | Kubernetes deployment convenience variable. Not read by the server binary; the `deployment.yaml` init script passes its value as the `--admin-email` flag argument. Sourced from the `af-hub-secrets` Secret. |
 | `GITHUB_CLIENT_ID` | GitHub OAuth app client ID (referenced in `config.toml` via `${GITHUB_CLIENT_ID}`). |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (referenced in `config.toml` via `${GITHUB_CLIENT_SECRET}`). |
+| `AF_AUDIT_MAX_AGE_DAYS` | Maximum age in days for retained agent and hub audit event records. Default: `90`. |
+| `AF_AUDIT_MAX_RUNS` | Maximum number of distinct run_ids to retain in agent_audit_events. Oldest runs (by MIN(timestamp)) are pruned first. Default: `50`. |
+| `AF_TRACE_MAX_AGE_DAYS` | Maximum age in days for retained agent trace records. Default: `30`. |
+| `AF_SESSION_MAX_AGE_DAYS` | Maximum age in days for retained completed session records. Default: `90`. |
+| `AF_SESSION_MAX_ACTIVE_AGE_DAYS` | Maximum age in days for active (orphaned) sessions before the retention worker force-closes them with status `timeout`. Default: `7`. |
+| `AF_POSTMORTEM_MAX_AGE_DAYS` | Maximum age in days for retained postmortem records. Default: `180`. |
+| `AF_AUDIT_ORPHAN_RETENTION_DAYS` | Grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted. Default: `30`. |
 
 ## First Boot
 
