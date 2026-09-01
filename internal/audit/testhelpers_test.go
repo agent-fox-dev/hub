@@ -108,6 +108,110 @@ func openTestAuditDBWithSchema(t *testing.T) *sql.DB {
 	return openTestAuditDB(t)
 }
 
+// openTestAuditDBWithAllTables opens a DuckDB database, initializes the
+// session/token_usage schema via InitSchema, then adds the remaining audit
+// tables needed for retention tests. Returns *sql.DB for direct queries.
+func openTestAuditDBWithAllTables(t *testing.T) *sql.DB {
+	t.Helper()
+	db := openTestAuditDB(t) // creates agent_sessions + token_usage
+
+	// Add the remaining tables from spec 17 that retention steps operate on.
+	extraDDL := []string{
+		`CREATE TABLE IF NOT EXISTS agent_audit_events (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			event_type VARCHAR NOT NULL,
+			severity VARCHAR NOT NULL DEFAULT 'info',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			payload VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS hub_audit_events (
+			id VARCHAR PRIMARY KEY,
+			event_type VARCHAR NOT NULL,
+			actor_id VARCHAR NOT NULL DEFAULT '',
+			actor_type VARCHAR NOT NULL DEFAULT '',
+			resource_type VARCHAR NOT NULL DEFAULT '',
+			resource_id VARCHAR NOT NULL DEFAULT '',
+			action VARCHAR NOT NULL DEFAULT '',
+			workspace VARCHAR NOT NULL DEFAULT '',
+			metadata VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS session_outcomes (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			status VARCHAR NOT NULL DEFAULT '',
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			token_usage VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS tool_calls (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			tool_name VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			input VARCHAR NOT NULL DEFAULT '{}',
+			output VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS tool_errors (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			tool_name VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			error_code VARCHAR NOT NULL DEFAULT '',
+			error_msg VARCHAR NOT NULL DEFAULT '',
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_traces (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			event_type VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			sequence INTEGER NOT NULL DEFAULT 0,
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			data VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS postmortems (
+			run_id VARCHAR PRIMARY KEY,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			schema_version INTEGER NOT NULL DEFAULT 1,
+			run_status VARCHAR NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			completed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			task_summary VARCHAR NOT NULL DEFAULT '{}',
+			cost_summary VARCHAR NOT NULL DEFAULT '{}',
+			blocked_tasks VARCHAR NOT NULL DEFAULT '[]',
+			session_history VARCHAR NOT NULL DEFAULT '[]',
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+	}
+	for _, stmt := range extraDDL {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("openTestAuditDBWithAllTables: %v\nSQL: %s", err, stmt)
+		}
+	}
+	return db
+}
+
 // tableExists checks whether a table exists in the DuckDB database.
 func tableExists(t *testing.T, db *sql.DB, tableName string) bool {
 	t.Helper()
@@ -584,6 +688,7 @@ func parseCostJSON(t *testing.T, rec *httptest.ResponseRecorder) CostResponse {
 func newAuditTestEnvWithEmitter(t *testing.T) (*auditTestEnv, *testEmitter) {
 	t.Helper()
 	duckDB := openTestAuditDB(t)
+	initHandlerTestSchema(t, duckDB)
 	sqliteDB := openTestSQLiteDB(t)
 	store := NewStore(duckDB)
 	emitter := &testEmitter{}
