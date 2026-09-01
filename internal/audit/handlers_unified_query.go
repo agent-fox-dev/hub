@@ -608,8 +608,9 @@ func handleSSEStream(store Store, mgr *SSEManager) echo.HandlerFunc {
 			}
 		}
 
-		// Fallback: no SSEManager wired. Still respond with SSE content type
-		// for route registration tests.
+		// Fallback: no SSEManager wired. Write SSE headers and initial
+		// frames, then return. This path is used by route registration
+		// tests where a mock broadcaster is provided.
 		c.Response().Header().Set("Content-Type", "text/event-stream")
 		c.Response().Header().Set("Cache-Control", "no-cache")
 		c.Response().Header().Set("Connection", "keep-alive")
@@ -621,9 +622,6 @@ func handleSSEStream(store Store, mgr *SSEManager) echo.HandlerFunc {
 		hbData, _ := json.Marshal(map[string]string{"timestamp": hb.Timestamp})
 		_, _ = fmt.Fprintf(c.Response(), "event: heartbeat\ndata: %s\n\n", hbData)
 		c.Response().Flush()
-
-		// Wait for client disconnect.
-		<-c.Request().Context().Done()
 		return nil
 	}
 }
