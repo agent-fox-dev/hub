@@ -187,6 +187,177 @@ type ForceCloseResult struct {
 	SessionID string
 }
 
+// ---------------------------------------------------------------------------
+// Audit ingestion request/response types (spec 17)
+// ---------------------------------------------------------------------------
+
+// PostEventRequest is the JSON body for POST /workspaces/:slug/runs/:run_id/events.
+type PostEventRequest struct {
+	ID        string         `json:"id,omitempty"`
+	RunID     string         `json:"run_id,omitempty"`
+	EventType string         `json:"event_type"`
+	Severity  string         `json:"severity,omitempty"`
+	NodeID    string         `json:"node_id,omitempty"`
+	SessionID string         `json:"session_id,omitempty"`
+	Timestamp string         `json:"timestamp,omitempty"`
+	Payload   any            `json:"payload,omitempty"`
+}
+
+// PostEventResponse is the JSON body returned from POST /workspaces/:slug/runs/:run_id/events.
+type PostEventResponse struct {
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	EventType string `json:"event_type"`
+	Severity  string `json:"severity"`
+	CreatedAt string `json:"created_at"`
+}
+
+// PostSessionOutcomeRequest is the JSON body for POST .../sessions/outcomes.
+type PostSessionOutcomeRequest struct {
+	ID         string `json:"id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	SessionID  string `json:"session_id"`
+	NodeID     string `json:"node_id,omitempty"`
+	Status     string `json:"status"`
+	Timestamp  string `json:"timestamp,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	TokenUsage any    `json:"token_usage,omitempty"`
+}
+
+// PostSessionOutcomeResponse is the JSON body returned from POST .../sessions/outcomes.
+type PostSessionOutcomeResponse struct {
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	NodeID    string `json:"node_id"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+}
+
+// PostToolCallRequest is the JSON body for POST .../tools/calls.
+type PostToolCallRequest struct {
+	ID         string `json:"id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	ToolName   string `json:"tool_name"`
+	NodeID     string `json:"node_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Input      any    `json:"input,omitempty"`
+	Output     any    `json:"output,omitempty"`
+}
+
+// PostToolCallResponse is the JSON body returned from POST .../tools/calls.
+type PostToolCallResponse struct {
+	ID       string `json:"id"`
+	RunID    string `json:"run_id"`
+	ToolName string `json:"tool_name"`
+	CalledAt string `json:"called_at"`
+}
+
+// PostToolErrorRequest is the JSON body for POST .../tools/errors.
+type PostToolErrorRequest struct {
+	ID        string `json:"id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	ToolName  string `json:"tool_name"`
+	NodeID    string `json:"node_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	ErrorMsg  string `json:"error_msg"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// PostToolErrorResponse is the JSON body returned from POST .../tools/errors.
+type PostToolErrorResponse struct {
+	ID       string `json:"id"`
+	RunID    string `json:"run_id"`
+	ToolName string `json:"tool_name"`
+	FailedAt string `json:"failed_at"`
+}
+
+// PostTraceRequest is the JSON body for POST .../traces.
+type PostTraceRequest struct {
+	ID        string `json:"id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	EventType string `json:"event_type"`
+	NodeID    string `json:"node_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Sequence  int    `json:"sequence,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Data      any    `json:"data,omitempty"`
+}
+
+// PostTraceResponse is the JSON body returned from POST .../traces.
+type PostTraceResponse struct {
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	EventType string `json:"event_type"`
+	Timestamp string `json:"timestamp"`
+}
+
+// PostPostmortemRequest is the JSON body for POST .../postmortem.
+type PostPostmortemRequest struct {
+	SchemaVersion  *int   `json:"schema_version,omitempty"`
+	RunStatus      string `json:"run_status"`
+	StartedAt      string `json:"started_at"`
+	CompletedAt    string `json:"completed_at"`
+	TaskSummary    any    `json:"task_summary"`
+	CostSummary    any    `json:"cost_summary"`
+	BlockedTasks   any    `json:"blocked_tasks,omitempty"`
+	SessionHistory any    `json:"session_history,omitempty"`
+}
+
+// PostPostmortemResponse is the JSON body returned from POST .../postmortem.
+type PostPostmortemResponse struct {
+	RunID     string `json:"run_id"`
+	RunStatus string `json:"run_status"`
+	CreatedAt string `json:"created_at"`
+}
+
+// BatchIngestResponse is the JSON response body for batch ingestion endpoints.
+type BatchIngestResponse struct {
+	Accepted   int              `json:"accepted"`
+	Duplicates int              `json:"duplicates"`
+	Errors     []BatchItemError `json:"errors"`
+}
+
+// BatchItemError describes a single invalid item in a batch ingestion request.
+type BatchItemError struct {
+	Index   int    `json:"index"`
+	ID      string `json:"id,omitempty"`
+	Message string `json:"message"`
+}
+
+// QueryParams is used by all Store query methods. Each query method uses only
+// the relevant subset of fields.
+type QueryParams struct {
+	Since     string
+	Until     string
+	Order     string
+	Cursor    string
+	Limit     int
+	EventType string
+	Severity  string
+	NodeID    string
+	SessionID string
+	ToolName  string
+	Status    string
+}
+
+// PaginatedCursor is the internal representation of cursor state for
+// base64url-encoded pagination tokens.
+type PaginatedCursor struct {
+	Ts string `json:"ts"`
+	ID string `json:"id"`
+}
+
+// validRunStatuses is the set of accepted run_status values for postmortems.
+var validRunStatuses = map[string]bool{
+	"stalled":       true,
+	"block_limit":   true,
+	"cost_limit":    true,
+	"session_limit": true,
+}
+
 // ErrSessionNotActive is returned when attempting to complete or report usage
 // on a session that is not in the active state.
 var ErrSessionNotActive = errors.New("session is not active")
