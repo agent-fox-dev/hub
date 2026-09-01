@@ -13,5 +13,10 @@ var (
 // Permissions returns the four PAT permission scopes for audit and session
 // operations. These are registered with the auth system at hub startup.
 func Permissions() []apikit.Permission {
-	panic("not implemented")
+	return []apikit.Permission{
+		AuditReadScope,
+		AuditWriteScope,
+		SessionsReadScope,
+		SessionsWriteScope,
+	}
 }

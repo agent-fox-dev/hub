@@ -26,6 +26,34 @@ func (f *failingStore) InsertHubEvent(_ context.Context, _ HubEventRow) error {
 	return fmt.Errorf("simulated database error")
 }
 
+func (f *failingStore) CreateSession(_ context.Context, _ *Session) (*Session, bool, error) {
+	return nil, false, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) GetSession(_ context.Context, _ string) (*Session, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) CompleteSession(_ context.Context, _ string, _ *CompleteSessionRequest) (*Session, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) InsertTokenUsage(_ context.Context, _ *TokenUsage) (*TokenUsage, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) ListSessions(_ context.Context, _ SessionListParams, _ []string) (*SessionListResponse, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) GetSessionWithSummary(_ context.Context, _ string) (*Session, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) ListTokenUsage(_ context.Context, _ string, _ UsageListParams) (*UsageListResponse, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
 // TS-17-10: Emitter interface and HubEvent struct are exported from the
 // internal/audit package with the correct fields.
 func TestEmitterInterface(t *testing.T) {
