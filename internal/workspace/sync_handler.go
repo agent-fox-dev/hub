@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
@@ -246,6 +247,15 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil || updated == nil {
 				return respondError(c, http.StatusInternalServerError, "failed to read workspace after sync")
 			}
+			// 18-REQ-1.5: Emit hub.workspace.sync audit event.
+			emitHubAudit(c, audit.HubEvent{
+				EventType:    "hub.workspace.sync",
+				ResourceType: "workspace",
+				ResourceID:   slug,
+				Action:       "sync",
+				Workspace:    slug,
+				Metadata:     map[string]any{"result": "up_to_date"},
+			})
 			return respondWorkspace(c, http.StatusOK, updated, db)
 
 		case "fast_forward":
@@ -271,6 +281,15 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil || updated == nil {
 				return respondError(c, http.StatusInternalServerError, "failed to read workspace after sync")
 			}
+			// 18-REQ-1.5: Emit hub.workspace.sync audit event.
+			emitHubAudit(c, audit.HubEvent{
+				EventType:    "hub.workspace.sync",
+				ResourceType: "workspace",
+				ResourceID:   slug,
+				Action:       "sync",
+				Workspace:    slug,
+				Metadata:     map[string]any{"result": "fast_forward"},
+			})
 			return respondWorkspace(c, http.StatusOK, updated, db)
 
 		case "diverged":
@@ -363,6 +382,15 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 		return respondError(c, http.StatusInternalServerError,
 			"failed to read workspace after reset-to-upstream")
 	}
+	// 18-REQ-1.5: Emit hub.workspace.sync audit event for reset-to-upstream.
+	emitHubAudit(c, audit.HubEvent{
+		EventType:    "hub.workspace.sync",
+		ResourceType: "workspace",
+		ResourceID:   slug,
+		Action:       "sync",
+		Workspace:    slug,
+		Metadata:     map[string]any{"result": "reset_to_upstream"},
+	})
 	return respondWorkspace(c, http.StatusOK, updated, db)
 }
 

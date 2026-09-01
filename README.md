@@ -32,6 +32,7 @@ operations.
 ### Prerequisites
 
 - Go 1.26+
+- CGO enabled (`CGO_ENABLED=1`) — required by the DuckDB audit storage driver
 - A GitHub OAuth application (for user login)
 
 ### Build

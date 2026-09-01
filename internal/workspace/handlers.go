@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
@@ -518,6 +519,23 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			})
 		}
 
+		// 18-REQ-1.4: Emit hub.workspace.create audit event with git_url and branch.
+		branch := ""
+		if ws.Branch != nil {
+			branch = *ws.Branch
+		}
+		emitHubAudit(c, audit.HubEvent{
+			EventType:    "hub.workspace.create",
+			ResourceType: "workspace",
+			ResourceID:   ws.Slug,
+			Action:       "create",
+			Workspace:    ws.Slug,
+			Metadata: map[string]any{
+				"git_url": ws.GitURL,
+				"branch":  branch,
+			},
+		})
+
 		return respondWorkspace(c, http.StatusCreated, ws, db)
 	}
 }
@@ -759,6 +777,31 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
 		}
 
+		// 18-REQ-1.1: Emit hub.workspace.update audit event.
+		var updatedFields []string
+		if fields.SetDisplayName {
+			updatedFields = append(updatedFields, "display_name")
+		}
+		if fields.SetDescription {
+			updatedFields = append(updatedFields, "description")
+		}
+		if fields.SetOrgID {
+			updatedFields = append(updatedFields, "org_id")
+		}
+		if fields.SetSyncMode {
+			updatedFields = append(updatedFields, "sync_mode")
+		}
+		emitHubAudit(c, audit.HubEvent{
+			EventType:    "hub.workspace.update",
+			ResourceType: "workspace",
+			ResourceID:   slug,
+			Action:       "update",
+			Workspace:    slug,
+			Metadata: map[string]any{
+				"fields": updatedFields,
+			},
+		})
+
 		return respondWorkspace(c, http.StatusOK, updated, db)
 	}
 }
@@ -910,6 +953,20 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 				"workspace", slug, "error", fcErr)
 		}
 
+		// 18-REQ-1.1: Emit hub.workspace.archive audit event.
+		archiveMetadata := map[string]any{}
+		if updated.HeadSHA != nil {
+			archiveMetadata["head_sha"] = *updated.HeadSHA
+		}
+		emitHubAudit(c, audit.HubEvent{
+			EventType:    "hub.workspace.archive",
+			ResourceType: "workspace",
+			ResourceID:   slug,
+			Action:       "archive",
+			Workspace:    slug,
+			Metadata:     archiveMetadata,
+		})
+
 		return respondWorkspace(c, http.StatusOK, updated, db)
 	}
 }
@@ -953,6 +1010,16 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 				Branch: ws.Branch,
 			})
 		}
+
+		// 18-REQ-1.1: Emit hub.workspace.reactivate audit event.
+		emitHubAudit(c, audit.HubEvent{
+			EventType:    "hub.workspace.reactivate",
+			ResourceType: "workspace",
+			ResourceID:   slug,
+			Action:       "reactivate",
+			Workspace:    slug,
+			Metadata:     map[string]any{},
+		})
 
 		return respondWorkspace(c, http.StatusOK, updated, db)
 	}
@@ -1008,6 +1075,16 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			// safely terminated in DuckDB regardless.
 			return respondError(c, http.StatusInternalServerError, "failed to delete workspace")
 		}
+
+		// 18-REQ-1.1: Emit hub.workspace.delete audit event.
+		emitHubAudit(c, audit.HubEvent{
+			EventType:    "hub.workspace.delete",
+			ResourceType: "workspace",
+			ResourceID:   slug,
+			Action:       "delete",
+			Workspace:    slug,
+			Metadata:     map[string]any{},
+		})
 
 		return c.NoContent(http.StatusNoContent)
 	}

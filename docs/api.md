@@ -3248,6 +3248,301 @@ Delete a user account (admin only).
 
 ---
 
+## Audit Ingestion Endpoints
+
+The audit ingestion subsystem provides DuckDB-backed storage and REST API
+endpoints for ingesting structured telemetry produced by nightshift agents.
+All ingestion endpoints live under `/api/v1/workspaces/:slug/runs/:run_id/`.
+
+POST endpoints require the `audit:write` permission scope. GET endpoints
+require `audit:read`. Admin tokens and API keys have implicit access; PATs
+require explicit scope grants.
+
+All POST endpoints enforce workspace access control: workspace-scoped PATs
+must match the URL `:slug`, generic tokens must own the workspace, and
+archived workspaces return `409`. All use `INSERT OR IGNORE` for idempotent
+ingestion — duplicates return `200` instead of `201`.
+
+The `run_id` URL parameter must match the format `YYYYMMDD_HHMMSS_6hexchars`
+(e.g. `20260704_143022_a1b2c3`).
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/events
+
+Ingest a single audit event.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:**
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID; generated if omitted |
+| `event_type` | yes | string | Event type identifier |
+| `severity` | no | string | One of: `info`, `warning`, `error`, `critical`; defaults via `defaultSeverityFor` |
+| `node_id` | no | string | Task graph node identifier |
+| `session_id` | no | string | Session identifier |
+| `timestamp` | no | string | RFC 3339 timestamp; defaults to current UTC |
+| `payload` | no | object | Arbitrary JSON object |
+
+**Response:** `201 Created` with `{id, run_id, event_type, severity, created_at}`.
+`200 OK` if duplicate by `id`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `event_type`, invalid `run_id`, or `run_id` mismatch between URL and body |
+| 403 | Insufficient scope (`workspace_mismatch`, `workspace_access_denied`) |
+| 409 | Workspace archived (`workspace_archived`) |
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/events
+
+Query audit events for a run with cursor-based pagination.
+
+**Authentication:** API Key, or PAT with `audit:read` scope.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `event_type` | string | (all) | Filter by event type |
+| `severity` | string | (all) | Filter by severity |
+| `node_id` | string | (all) | Filter by node ID |
+| `session_id` | string | (all) | Filter by session ID |
+| `since` | string | — | RFC 3339 lower bound (inclusive) |
+| `until` | string | — | RFC 3339 upper bound (exclusive) |
+| `order` | string | `desc` | Sort order: `asc` or `desc` |
+| `limit` | int | 50 | Page size (max 500) |
+| `cursor` | string | — | Opaque base64url pagination token |
+
+**Response:** `200 OK`
+
+```json
+{
+  "events": [...],
+  "next_cursor": "string or null",
+  "has_more": true
+}
+```
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/events/batch
+
+Bulk-ingest up to 1000 audit events in a single request.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:** JSON array of event objects (same schema as single POST).
+
+**Constraints:** Array must have 1–1000 items. Items exceeding 1000 return
+`413`. Empty arrays return `400`.
+
+**Response:** `200 OK`
+
+```json
+{
+  "accepted": 95,
+  "duplicates": 3,
+  "errors": [
+    {"index": 7, "id": "...", "message": "missing event_type"}
+  ]
+}
+```
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes
+
+Ingest a single session outcome record.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:**
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID; generated if omitted |
+| `session_id` | yes | string | Session identifier |
+| `node_id` | no | string | Task graph node identifier |
+| `status` | yes | string | Outcome status |
+| `timestamp` | no | string | RFC 3339 timestamp |
+| `duration_ms` | no | int | Duration in milliseconds (non-negative) |
+| `token_usage` | no | object | Arbitrary JSON object |
+
+**Response:** `201 Created` with `{id, run_id, node_id, status, created_at}`.
+`200 OK` if duplicate.
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes
+
+Query session outcomes for a run. Supports the same pagination parameters as
+GET events (`session_id`, `status`, `node_id`, `since`, `until`, `order`,
+`limit`, `cursor`).
+
+**Response:** `200 OK` with `{outcomes: [...], next_cursor, has_more}`.
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls
+
+Ingest a single tool call record.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:**
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID |
+| `tool_name` | yes | string | Name of the tool invoked |
+| `node_id` | no | string | Task graph node identifier |
+| `session_id` | no | string | Session identifier |
+| `timestamp` | no | string | RFC 3339 timestamp |
+| `duration_ms` | no | int | Call duration in milliseconds |
+| `input` | no | object | Tool input payload |
+| `output` | no | object | Tool output payload |
+
+**Response:** `201 Created` with `{id, run_id, tool_name, called_at}`.
+`200 OK` if duplicate.
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls
+
+Query tool calls for a run. Supports `tool_name`, `session_id`, `node_id`,
+`since`, `until`, `order`, `limit`, `cursor`.
+
+**Response:** `200 OK` with `{calls: [...], next_cursor, has_more}`.
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors
+
+Ingest a single tool error record.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:**
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID |
+| `tool_name` | yes | string | Name of the tool that errored |
+| `node_id` | no | string | Task graph node identifier |
+| `session_id` | no | string | Session identifier |
+| `error_code` | no | string | Machine-readable error code |
+| `error_msg` | yes | string | Human-readable error message |
+| `timestamp` | no | string | RFC 3339 timestamp |
+
+**Response:** `201 Created` with `{id, run_id, tool_name, failed_at}`.
+`200 OK` if duplicate.
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors
+
+Query tool errors for a run. Supports `tool_name`, `session_id`, `node_id`,
+`since`, `until`, `order`, `limit`, `cursor`.
+
+**Response:** `200 OK` with `{errors: [...], next_cursor, has_more}`.
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/traces
+
+Ingest a single trace event.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:**
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID |
+| `event_type` | yes | string | One of: `session.init`, `assistant.message`, `tool.use`, `tool.error`, `session.result` |
+| `node_id` | no | string | Task graph node identifier |
+| `session_id` | no | string | Session identifier |
+| `sequence` | no | int | Event sequence number |
+| `timestamp` | no | string | RFC 3339 timestamp |
+| `data` | no | object | Arbitrary JSON object |
+
+**Response:** `201 Created` with `{id, run_id, event_type, timestamp}`.
+`200 OK` if duplicate.
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/traces
+
+Query trace events for a run. Supports `event_type`, `session_id`, `node_id`,
+`since`, `until`, `order`, `limit`, `cursor`.
+
+**Response:** `200 OK` with `{traces: [...], next_cursor, has_more}`.
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch
+
+Bulk-ingest up to 1000 trace events. Same constraints and response format as
+`POST events/batch`.
+
+**Response:** `200 OK` with `{accepted, duplicates, errors}`.
+
+---
+
+### POST /api/v1/workspaces/:slug/runs/:run_id/postmortem
+
+Submit a postmortem report for a run. Only one postmortem per `run_id`.
+
+**Authentication:** API Key, or PAT with `audit:write` scope.
+
+**Request Body:**
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `schema_version` | no | int | Must be `1` if provided (422 otherwise) |
+| `run_status` | yes | string | One of: `stalled`, `block_limit`, `cost_limit`, `session_limit` |
+| `started_at` | yes | string | RFC 3339 timestamp |
+| `completed_at` | yes | string | RFC 3339 timestamp |
+| `task_summary` | yes | object | Must contain a `total` field |
+| `cost_summary` | yes | object | Aggregated token and cost totals |
+| `blocked_tasks` | no | array | Objects with `node_id` and `reason` |
+| `session_history` | no | array | Opaque JSON array stored as-is |
+
+**Response:** `201 Created` with `{run_id, run_status, created_at}`.
+`200 OK` if duplicate.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing required fields or invalid `run_status` |
+| 422 | Unsupported `schema_version` (`unknown_schema_version`) |
+
+---
+
+### GET /api/v1/workspaces/:slug/runs/:run_id/postmortem
+
+Retrieve the postmortem report for a run.
+
+**Authentication:** API Key, or PAT with `audit:read` scope.
+
+**Response:** `200 OK` with full postmortem record including `run_id`,
+`workspace`, `schema_version`, `run_status`, `started_at`, `completed_at`,
+`task_summary`, `cost_summary`, `blocked_tasks`, `session_history`, and
+`ingested_at`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 404 | No postmortem exists for this `run_id` (`postmortem_not_found`) |
+
+---
+
 ## Audit Query Endpoints
 
 The audit subsystem provides a unified query API that merges hub-internal and

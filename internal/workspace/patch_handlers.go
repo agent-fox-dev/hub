@@ -10,6 +10,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // validPatchStatuses defines the accepted patch status values (15-REQ-10.3).
@@ -169,6 +171,19 @@ func handleAddPatchSingle(c echo.Context, db *sql.DB, slug string, ws *Workspace
 	if err != nil {
 		return respondError(c, http.StatusInternalServerError, "failed to add patch: "+err.Error())
 	}
+
+	// 18-REQ-3.1: Emit hub.patch.create audit event.
+	emitHubAudit(c, audit.HubEvent{
+		EventType:    "hub.patch.create",
+		ResourceType: "patch",
+		ResourceID:   p.BranchName,
+		Action:       "create",
+		Workspace:    slug,
+		Metadata: map[string]any{
+			"branch_name": p.BranchName,
+			"position":    p.Position,
+		},
+	})
 
 	return c.JSON(http.StatusCreated, patchResponse(p))
 }
@@ -387,6 +402,9 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 		patchID := c.Param("id")
 
+		// Look up patch before deletion for audit metadata (18-REQ-3.2).
+		patchInfo, _ := getPatch(db, slug, patchID)
+
 		// 15-REQ-11.1, 15-REQ-11.2: Delete and compact.
 		if err := deletePatchAndCompact(db, slug, patchID); err != nil {
 			// Check if the error indicates not found.
@@ -394,6 +412,20 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 				return respondError(c, http.StatusNotFound, "patch not found")
 			}
 			return respondError(c, http.StatusInternalServerError, "failed to delete patch")
+		}
+
+		// 18-REQ-3.2: Emit hub.patch.delete audit event.
+		if patchInfo != nil {
+			emitHubAudit(c, audit.HubEvent{
+				EventType:    "hub.patch.delete",
+				ResourceType: "patch",
+				ResourceID:   patchInfo.BranchName,
+				Action:       "delete",
+				Workspace:    slug,
+				Metadata: map[string]any{
+					"branch_name": patchInfo.BranchName,
+				},
+			})
 		}
 
 		return c.NoContent(http.StatusNoContent)
