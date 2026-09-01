@@ -1,20 +1,22 @@
 // Package audit provides DuckDB-backed audit event storage, session lifecycle
-// tracking, and token usage reporting.
+// tracking, and token usage reporting. The Emitter interface and HubEvent
+// struct are used for mutation audit emission.
 package audit
 
 import "errors"
 
-
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {
-	EventType    string
-	ActorID      string
-	ActorType    string // one of: admin_token, api_key, pat, system
-	ResourceType string
-	ResourceID   string
-	Action       string
-	Workspace    string
-	Metadata     map[string]any
+	ID           string         `json:"id"`
+	EventType    string         `json:"event_type"`
+	ActorID      string         `json:"actor_id"`
+	ActorType    string         `json:"actor_type"` // one of: admin_token, api_key, pat, system
+	ResourceType string         `json:"resource_type"`
+	ResourceID   string         `json:"resource_id"`
+	Action       string         `json:"action"`
+	Workspace    string         `json:"workspace"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	Timestamp    string         `json:"timestamp"`
 }
 
 // HubEventRow represents a fully-prepared row ready for insertion into
@@ -34,21 +36,21 @@ type HubEventRow struct {
 
 // Session represents an agent session record in the agent_sessions table.
 type Session struct {
-	ID                       string  `json:"id"`
-	WorkspaceSlug            string  `json:"workspace_slug"`
-	RunID                    string  `json:"run_id,omitempty"`
-	NodeID                   string  `json:"node_id,omitempty"`
-	Archetype                string  `json:"archetype,omitempty"`
-	Model                    string  `json:"model,omitempty"`
-	Status                   string  `json:"status"`
-	CredentialID             string  `json:"credential_id"`
-	CredentialType           string  `json:"credential_type"`
-	ErrorMessage             string  `json:"error_message,omitempty"`
-	StartedAt                string  `json:"started_at"`
-	EndedAt                  *string `json:"ended_at,omitempty"`
-	DurationMs               *int64  `json:"duration_ms,omitempty"`
-	CacheCreationInputTokens int64   `json:"cache_creation_input_tokens,omitempty"`
-	Metadata                 any     `json:"metadata,omitempty"`
+	ID                       string        `json:"id"`
+	WorkspaceSlug            string        `json:"workspace_slug"`
+	RunID                    string        `json:"run_id,omitempty"`
+	NodeID                   string        `json:"node_id,omitempty"`
+	Archetype                string        `json:"archetype,omitempty"`
+	Model                    string        `json:"model,omitempty"`
+	Status                   string        `json:"status"`
+	CredentialID             string        `json:"credential_id"`
+	CredentialType           string        `json:"credential_type"`
+	ErrorMessage             string        `json:"error_message,omitempty"`
+	StartedAt                string        `json:"started_at"`
+	EndedAt                  *string       `json:"ended_at,omitempty"`
+	DurationMs               *int64        `json:"duration_ms,omitempty"`
+	CacheCreationInputTokens int64         `json:"cache_creation_input_tokens,omitempty"`
+	Metadata                 any           `json:"metadata,omitempty"`
 	TokenSummary             *TokenSummary `json:"token_summary,omitempty"`
 }
 

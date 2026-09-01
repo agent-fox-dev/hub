@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
@@ -27,6 +28,11 @@ type RebuildAPIConfig struct {
 	DB          *sql.DB
 	Queue       *jobqueue.Queue
 	GetVariable GetVariableFunc
+
+	// Audit is the optional audit event emitter. When non-nil, rebuild
+	// handlers emit structured audit events on mutation. When nil,
+	// audit emission is silently skipped.
+	Audit audit.Emitter
 }
 
 // RebuildJobResponse is the JSON response body for a rebuild job.
@@ -206,6 +212,9 @@ type RebuildRollbackAPIConfig struct {
 	Queue         *jobqueue.Queue
 	WorkspaceRoot string
 	NewGitRunner  func(repoPath string) (GitRunner, error)
+
+	// Audit is the optional audit event emitter.
+	Audit audit.Emitter
 }
 
 // RegisterRebuildRoutes mounts rebuild endpoints on the API group.

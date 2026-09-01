@@ -41,7 +41,7 @@
           "requirement_refs": [
             "18-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -60,7 +60,7 @@
           "requirement_refs": [
             "18-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -83,7 +83,7 @@
           "requirement_refs": [
             "18-REQ-2"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -102,7 +102,7 @@
           "requirement_refs": [
             "18-REQ-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -124,7 +124,7 @@
           "requirement_refs": [
             "18-REQ-3"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
@@ -324,7 +324,7 @@
             "In internal/audit/transcript_handler_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance seeded with agent_traces rows",
             "Test that missing node_id query parameter returns HTTP 400 with message 'node_id is required'",
             "Test that unknown run_id returns HTTP 200 with empty messages array",
-            "Test that known run_id+node_id returns messages ordered by timestamp with correct role mapping: session.init\u2192system, assistant.message\u2192assistant, tool.use\u2192tool_use, tool.error\u2192tool_error",
+            "Test that known run_id+node_id returns messages ordered by timestamp with correct role mapping: session.init→system, assistant.message→assistant, tool.use→tool_use, tool.error→tool_error",
             "Test that tool_name is populated for tool_use and tool_error roles and null for others"
           ],
           "test_spec_refs": [
@@ -424,7 +424,7 @@
             "Define SSEManager struct with: broadcast chan interface{}, connections map[connID]*sseConn, mu sync.Mutex, maxConns int (from AF_SSE_MAX_CONNECTIONS, default 100), tickerFactory func(d time.Duration) *time.Ticker",
             "Define SSEOption as a functional option type and provide WithTickerFactory(fn func(d time.Duration) *time.Ticker) SSEOption for test-time clock injection; the default tickerFactory uses time.NewTicker",
             "Define sseConn struct with: ch chan interface{} (buffered 256), filters (workspace, run_id, category), lastRead time.Time",
-            "Implement Register(*sseConn) error \u2014 returns error if len(connections) >= maxConns",
+            "Implement Register(*sseConn) error — returns error if len(connections) >= maxConns",
             "Implement Unregister(connID) to remove connection and close its channel",
             "Implement NewSSEManager(maxConns int, opts ...SSEOption) *SSEManager; in tests inject a fake ticker via WithTickerFactory that fires immediately to avoid 30-second real waits"
           ],
@@ -501,7 +501,7 @@
             "Add SSEManager *SSEManager field to the default Emitter implementation struct",
             "After successfully writing a HubEvent to DuckDB, call SSEManager.Broadcast(event) if SSEManager is not nil",
             "Ensure the broadcast is non-blocking and does not affect the Emit return value",
-            "Agent-submitted events ingested via spec 17 endpoints must also trigger SSE broadcast \u2014 wire SSEManager into the ingestion path"
+            "Agent-submitted events ingested via spec 17 endpoints must also trigger SSE broadcast — wire SSEManager into the ingestion path"
           ],
           "test_spec_refs": [
             "TS-18-40",
@@ -519,7 +519,7 @@
           "title": "Implement GET /api/v1/audit unified query handler in internal/audit/handlers.go",
           "details": [
             "Parse all query parameters: source, run_id, actor_id, actor_type, resource_type, action, event_type, event_type_prefix, severity, workspace, since, until, limit (default 100, max 1000), cursor",
-            "Decode cursor from URL-safe base64 (RFC 4648 \u00a75) JSON {ts, id}; return 400 with apikit.WriteAPIError('invalid cursor') on decode failure",
+            "Decode cursor from URL-safe base64 (RFC 4648 §5) JSON {ts, id}; return 400 with apikit.WriteAPIError('invalid cursor') on decode failure",
             "Build UNION ALL SQL query over hub_audit_events and agent_audit_events with WHERE clauses for each active filter, ordered by timestamp DESC then id DESC (most recent first; id provides a stable tiebreaker for identical timestamps)",
             "Apply keyset pagination using cursor {ts, id} as WHERE (timestamp, id) > (cursor.ts, cursor.id)"
           ],
@@ -577,7 +577,7 @@
           "details": [
             "Parse node_id query parameter; return HTTP 400 with apikit.WriteAPIError('node_id is required') if missing",
             "Query agent_traces WHERE workspace_slug = :workspace_slug AND run_id = :run_id AND node_id = :node_id ORDER BY created_at ASC",
-            "Map agent_traces rows to transcript messages using DDL columns: role \u2192 role, content \u2192 content (string), tool_calls \u2192 tool_calls (JSON array or null); a run_id that exists in a different workspace returns empty messages (not 404 or 403)",
+            "Map agent_traces rows to transcript messages using DDL columns: role → role, content → content (string), tool_calls → tool_calls (JSON array or null); a run_id that exists in a different workspace returns empty messages (not 404 or 403)",
             "Return HTTP 200 with {run_id, node_id, messages: []} when no traces found (do not return 404)",
             "Return HTTP 500 with apikit.WriteAPIError on DuckDB query failure"
           ],

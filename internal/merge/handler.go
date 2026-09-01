@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 )
 
@@ -91,6 +92,11 @@ type Handler struct {
 	// Rollback reverts the source branch to a previous SHA after a failed
 	// check command or other post-rebase failure.
 	Rollback RollbackFunc
+
+	// Audit is the optional audit event emitter. When non-nil, merge
+	// complete and fail events are emitted. When nil, audit emission
+	// is silently skipped.
+	Audit audit.Emitter
 }
 
 // TrunkDir returns the workspace trunk directory path for the given slug.

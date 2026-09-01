@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
@@ -40,6 +41,11 @@ type MergeAPIConfig struct {
 	// BatchRebase executes batch rebase operations for the POST /rebase
 	// endpoint. If nil, the endpoint returns 500 "not configured".
 	BatchRebase BatchRebaseFunc
+
+	// Audit is the optional audit event emitter. When non-nil, merge
+	// handlers emit structured audit events on mutation. When nil,
+	// audit emission is silently skipped.
+	Audit audit.Emitter
 }
 
 // MergeJobResponse is the JSON response body for merge job records.

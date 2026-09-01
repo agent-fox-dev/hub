@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
@@ -175,6 +176,11 @@ type RebuildHandler struct {
 	ResolveAuth   ResolveAuthFunc
 	GetVariable   GetVariableFunc
 	PatchStore    PatchStore
+
+	// Audit is the optional audit event emitter. When non-nil, rebuild
+	// complete and fail events are emitted. When nil, audit emission
+	// is silently skipped.
+	Audit audit.Emitter
 }
 
 // RegisterRebuildJob registers the 'rebuild' job type in the job queue.
