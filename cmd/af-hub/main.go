@@ -9,8 +9,10 @@ import (
 
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
@@ -141,6 +143,12 @@ func main() {
 	// HTTP server
 	// ---------------------------------------------------------------------------
 
+	// ---------------------------------------------------------------------------
+	// Prometheus metrics (spec 19)
+	// ---------------------------------------------------------------------------
+
+	metrics := audit.NewMetrics()
+
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 
 	// Register the personal org hook before MountWorkspaceHandlers so that
@@ -266,6 +274,11 @@ func main() {
 	if err := gitserver.MountGitHandlers(server.Echo(), database.SqlDB, cfg.Workspace.Path); err != nil {
 		log.Fatal(err)
 	}
+
+	// Mount Prometheus middleware on the Echo instance for HTTP request
+	// metrics and expose GET /metrics outside the API auth group (19-REQ-10).
+	server.Echo().Use(metrics.PrometheusMiddleware())
+	server.Echo().GET("/metrics", echo.WrapHandler(metrics.MetricsHandler()))
 
 	if err := server.Start(); err != nil {
 		log.Fatal(err)

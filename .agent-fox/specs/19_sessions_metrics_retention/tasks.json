@@ -771,7 +771,7 @@
             "19-REQ-10",
             "19-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -791,7 +791,7 @@
             "19-REQ-10",
             "19-REQ-11"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -810,7 +810,7 @@
           "requirement_refs": [
             "19-REQ-10"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],

@@ -2,6 +2,8 @@ package audit
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
@@ -40,8 +42,8 @@ type Metrics struct {
 }
 
 // NewMetrics creates a new Metrics instance with a custom Prometheus registry
-// and registers all afhub_* metrics. Stub: creates unregistered metric
-// collectors; the full implementation will register them with the custom registry.
+// and registers all afhub_* metrics. Vec metrics are pre-initialized with
+// placeholder labels so they appear in /metrics output immediately (19-REQ-10.E2).
 func NewMetrics() *Metrics {
 	reg := prometheus.NewRegistry()
 
@@ -100,8 +102,30 @@ func NewMetrics() *Metrics {
 		}, []string{"table"}),
 	}
 
-	// TODO(spec-19): Register all metrics with the custom registry.
-	// The full implementation will call reg.MustRegister(...) for each metric.
+	reg.MustRegister(
+		m.HTTPRequestsTotal,
+		m.HTTPRequestDuration,
+		m.AgentSessionsActive,
+		m.AgentTokensTotal,
+		m.AuditEventsTotal,
+		m.SSEConnections,
+		m.JobQueueDepth,
+		m.RetentionErrorsTotal,
+		m.RetentionLastRunTimestamp,
+		m.AuditTableRows,
+	)
+
+	// Pre-initialize all Vec metrics with placeholder label values so they
+	// appear in /metrics output immediately after startup (19-REQ-10.E2).
+	// afhub_jobqueue_depth is excluded — its label combinations are
+	// initialized by the durable_job_queue subsystem.
+	m.HTTPRequestsTotal.WithLabelValues("", "", "")
+	m.HTTPRequestDuration.WithLabelValues("", "")
+	m.AgentSessionsActive.WithLabelValues("")
+	m.AgentTokensTotal.WithLabelValues("", "", "")
+	m.AuditEventsTotal.WithLabelValues("", "")
+	m.RetentionErrorsTotal.WithLabelValues("")
+	m.AuditTableRows.WithLabelValues("")
 
 	return m
 }
@@ -109,23 +133,29 @@ func NewMetrics() *Metrics {
 // MetricsHandler returns an http.Handler that serves Prometheus metrics
 // from the custom registry in Prometheus text exposition format.
 func (m *Metrics) MetricsHandler() http.Handler {
-	// TODO(spec-19): Use promhttp.HandlerFor with the custom registry.
-	_ = promhttp.HandlerFor
-	// Stub: returns an empty handler — tests will fail on content assertions.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-	})
+	return promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{})
 }
 
 // PrometheusMiddleware returns Echo middleware that records HTTP request
 // metrics (afhub_http_requests_total and afhub_http_request_duration_seconds).
 // Uses c.Path() as the path label to prevent cardinality explosion.
 func (m *Metrics) PrometheusMiddleware() echo.MiddlewareFunc {
-	// TODO(spec-19): Implement middleware that observes HTTP metrics.
-	// Stub: pass-through middleware — tests will fail on metric assertions.
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			return next(c)
+			start := time.Now()
+
+			err := next(c)
+
+			// Use c.Path() for the route template (e.g. /api/v1/sessions/:id)
+			// instead of the resolved URI to prevent label cardinality explosion.
+			path := c.Path()
+			method := c.Request().Method
+			status := strconv.Itoa(c.Response().Status)
+
+			m.HTTPRequestsTotal.WithLabelValues(method, path, status).Inc()
+			m.HTTPRequestDuration.WithLabelValues(method, path).Observe(time.Since(start).Seconds())
+
+			return err
 		}
 	}
 }

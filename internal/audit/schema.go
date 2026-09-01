@@ -129,10 +129,11 @@ var allTableDDL = []string{
 }
 
 // migrationDDL contains ALTER TABLE statements for non-destructive schema
-// migrations. DuckDB ALTER TABLE ADD COLUMN does not support NOT NULL
-// constraints; the NOT NULL + DEFAULT is already in the CREATE TABLE DDL above.
+// migrations. New columns added in future releases are appended here.
 var migrationDDL = []string{
 	// Spec 18: unified audit query requires severity and timestamp on hub events.
+	// DuckDB ALTER TABLE ADD COLUMN does not support NOT NULL constraints;
+	// the NOT NULL + DEFAULT is already in the CREATE TABLE DDL above.
 	`ALTER TABLE hub_audit_events ADD COLUMN IF NOT EXISTS severity VARCHAR DEFAULT 'info'`,
 	`ALTER TABLE hub_audit_events ADD COLUMN IF NOT EXISTS timestamp VARCHAR DEFAULT ''`,
 	// Spec 18: unified audit query returns archetype for agent events.
