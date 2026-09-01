@@ -32,25 +32,26 @@ func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB, metri
 }
 
 // RegisterRoutes registers all audit ingestion and query HTTP routes
-// on the provided Echo route group.
-func RegisterRoutes(api *echo.Group, store Store, emitter Emitter) {
+// on the provided Echo route group. The sqliteDB parameter is used for
+// workspace access checks (resolving workspace ownership and archived status).
+func RegisterRoutes(api *echo.Group, store Store, emitter Emitter, sqliteDB *sql.DB) {
 	runs := api.Group("/workspaces/:slug/runs/:run_id")
 
 	// Agent ingestion endpoints.
-	runs.POST("/events", handlePostEvent(store))
+	runs.POST("/events", handlePostEvent(store, sqliteDB))
 	runs.GET("/events", handleGetEvents(store))
-	runs.POST("/events/batch", handlePostEventsBatch(store))
-	runs.POST("/sessions/outcomes", handlePostSessionOutcome(store))
+	runs.POST("/events/batch", handlePostEventsBatch(store, sqliteDB))
+	runs.POST("/sessions/outcomes", handlePostSessionOutcome(store, sqliteDB))
 	runs.GET("/sessions/outcomes", handleGetSessionOutcomes(store))
-	runs.POST("/tools/calls", handlePostToolCall(store))
+	runs.POST("/tools/calls", handlePostToolCall(store, sqliteDB))
 	runs.GET("/tools/calls", handleGetToolCalls(store))
-	runs.POST("/tools/errors", handlePostToolError(store))
+	runs.POST("/tools/errors", handlePostToolError(store, sqliteDB))
 	runs.GET("/tools/errors", handleGetToolErrors(store))
-	runs.POST("/traces", handlePostTrace(store))
+	runs.POST("/traces", handlePostTrace(store, sqliteDB))
 	runs.GET("/traces", handleGetTraces(store))
-	runs.POST("/traces/batch", handlePostTracesBatch(store))
+	runs.POST("/traces/batch", handlePostTracesBatch(store, sqliteDB))
 
 	// Postmortem endpoints.
-	runs.POST("/postmortem", handlePostPostmortem(store))
+	runs.POST("/postmortem", handlePostPostmortem(store, sqliteDB))
 	runs.GET("/postmortem", handleGetPostmortem(store))
 }

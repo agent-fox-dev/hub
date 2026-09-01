@@ -434,6 +434,48 @@ at startup via the `extraPerms` parameter.
 
 ---
 
+## Hub Audit and Session Permissions
+
+These 4 permissions are registered by `Permissions()` in
+`hub/internal/audit/permissions.go` and passed to `apikit.Server.MountHandlers()`
+at startup via the `extraPerms` parameter.
+
+### sessions:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Read agent session records, token usage records, and workspace cost summaries |
+| **Endpoints** | `GET /api/v1/sessions`, `GET /api/v1/sessions/:id`, `GET /api/v1/sessions/:id/usage`, `GET /api/v1/workspaces/:slug/cost` |
+| **Ownership** | Non-admin callers see only sessions in workspaces they own. Admin tokens see all workspaces. |
+
+### sessions:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Open, close, and report token usage on agent sessions |
+| **Endpoints** | `POST /api/v1/sessions`, `POST /api/v1/sessions/:id/complete`, `POST /api/v1/sessions/:id/usage` |
+| **Ownership** | Session mutation endpoints (complete, usage) enforce that the caller is the session owner or an admin token. |
+
+### audit:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Query audit events, traces, session outcomes, tool calls, and tool errors |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/runs/:run_id/events`, `GET /api/v1/workspaces/:slug/runs/:run_id/traces`, `GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors` |
+
+### audit:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Ingest audit events, traces, session outcomes, tool calls, tool errors, and postmortems |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/runs/:run_id/events`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces`, `POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `POST /api/v1/workspaces/:slug/runs/:run_id/postmortem` |
+
+---
+
 ## Hub Git Permissions
 
 These 2 permissions are registered by `GitPermissions()` in
@@ -578,37 +620,41 @@ endpoint checks for the literal `workspaces:write` scope string.
 
 ## Complete Permission List
 
-All 27 registered permission scopes, sorted alphabetically:
+All 31 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
-| 1 | `git:read` | hub | git | read |
-| 2 | `git:write` | hub | git | write |
-| 3 | `keys:manage` | apikit | keys | manage |
-| 4 | `keys:read` | apikit | keys | read |
-| 5 | `merges:read` | hub | merges | read |
-| 6 | `merges:write` | hub | merges | write |
-| 7 | `orgs:read` | apikit | orgs | read |
-| 8 | `patches:read` | hub | patches | read |
-| 9 | `patches:write` | hub | patches | write |
-| 10 | `rebuilds:read` | hub | rebuilds | read |
-| 11 | `rebuilds:write` | hub | rebuilds | write |
-| 12 | `secrets:delete` | hub | secrets | delete |
-| 13 | `secrets:list` | hub | secrets | list |
-| 14 | `secrets:manage` | hub | secrets | manage |
-| 15 | `secrets:write` | hub | secrets | write |
-| 16 | `tokens:manage` | apikit | tokens | manage |
-| 17 | `tokens:read` | apikit | tokens | read |
-| 18 | `users:read` | apikit | users | read |
-| 19 | `vars:delete` | hub | vars | delete |
-| 20 | `vars:manage` | hub | vars | manage |
-| 21 | `vars:read` | hub | vars | read |
-| 22 | `vars:write` | hub | vars | write |
-| 23 | `workspaces:create` | hub | workspaces | create |
-| 24 | `workspaces:delete` | hub | workspaces | delete |
-| 25 | `workspaces:read` | hub | workspaces | read |
-| 26 | `workspaces:sync` | hub | workspaces | sync |
-| 27 | `workspaces:write` | hub | workspaces | write |
+| 1 | `audit:read` | hub | audit | read |
+| 2 | `audit:write` | hub | audit | write |
+| 3 | `git:read` | hub | git | read |
+| 4 | `git:write` | hub | git | write |
+| 5 | `keys:manage` | apikit | keys | manage |
+| 6 | `keys:read` | apikit | keys | read |
+| 7 | `merges:read` | hub | merges | read |
+| 8 | `merges:write` | hub | merges | write |
+| 9 | `orgs:read` | apikit | orgs | read |
+| 10 | `patches:read` | hub | patches | read |
+| 11 | `patches:write` | hub | patches | write |
+| 12 | `rebuilds:read` | hub | rebuilds | read |
+| 13 | `rebuilds:write` | hub | rebuilds | write |
+| 14 | `secrets:delete` | hub | secrets | delete |
+| 15 | `secrets:list` | hub | secrets | list |
+| 16 | `secrets:manage` | hub | secrets | manage |
+| 17 | `secrets:write` | hub | secrets | write |
+| 18 | `sessions:read` | hub | sessions | read |
+| 19 | `sessions:write` | hub | sessions | write |
+| 20 | `tokens:manage` | apikit | tokens | manage |
+| 21 | `tokens:read` | apikit | tokens | read |
+| 22 | `users:read` | apikit | users | read |
+| 23 | `vars:delete` | hub | vars | delete |
+| 24 | `vars:manage` | hub | vars | manage |
+| 25 | `vars:read` | hub | vars | read |
+| 26 | `vars:write` | hub | vars | write |
+| 27 | `workspaces:create` | hub | workspaces | create |
+| 28 | `workspaces:delete` | hub | workspaces | delete |
+| 29 | `workspaces:read` | hub | workspaces | read |
+| 30 | `workspaces:sync` | hub | workspaces | sync |
+| 31 | `workspaces:write` | hub | workspaces | write |
 
 ---
 

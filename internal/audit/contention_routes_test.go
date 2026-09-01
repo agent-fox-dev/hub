@@ -185,7 +185,13 @@ func TestHubStartup_AllEndpointsReachable(t *testing.T) {
 		rec := env.doRequest(t, ep.method, ep.path, body, apiKeyAuth())
 
 		if rec.Code == http.StatusNotFound {
-			t.Errorf("%s %s returned 404 — route not registered", ep.method, ep.path)
+			// Distinguish between Echo-level 404 (no route matched) and
+			// application-level 404 (resource not found, e.g., postmortem_not_found).
+			// Application-level 404 means the route IS registered.
+			body := rec.Body.String()
+			if !strings.Contains(body, "postmortem_not_found") {
+				t.Errorf("%s %s returned 404 — route not registered", ep.method, ep.path)
+			}
 		}
 		if rec.Code == http.StatusMethodNotAllowed {
 			t.Errorf("%s %s returned 405 — wrong HTTP method", ep.method, ep.path)
@@ -225,7 +231,7 @@ func TestSmokeTest_E2E(t *testing.T) {
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 
-	RegisterRoutes(api, store, &nopEmitter{})
+	RegisterRoutes(api, store, &nopEmitter{}, nil)
 
 	// POST one event.
 	postBody := `{"event_type":"session.start","payload":{}}`

@@ -525,38 +525,38 @@ func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string,
 
 // handlePostEvent handles POST /workspaces/:slug/runs/:run_id/events.
 // Ingests a single audit event into agent_audit_events.
-func handlePostEvent(store Store) echo.HandlerFunc {
-	return handlePostEventImpl(store)
+func handlePostEvent(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostEventImpl(store, sqliteDB)
 }
 
 // handlePostSessionOutcome handles POST /workspaces/:slug/runs/:run_id/sessions/outcomes.
 // Ingests a session outcome into session_outcomes.
-func handlePostSessionOutcome(store Store) echo.HandlerFunc {
-	return handlePostSessionOutcomeImpl(store)
+func handlePostSessionOutcome(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostSessionOutcomeImpl(store, sqliteDB)
 }
 
 // handlePostToolCall handles POST /workspaces/:slug/runs/:run_id/tools/calls.
 // Ingests a tool call record into tool_calls.
-func handlePostToolCall(store Store) echo.HandlerFunc {
-	return handlePostToolCallImpl(store)
+func handlePostToolCall(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostToolCallImpl(store, sqliteDB)
 }
 
 // handlePostToolError handles POST /workspaces/:slug/runs/:run_id/tools/errors.
 // Ingests a tool error record into tool_errors.
-func handlePostToolError(store Store) echo.HandlerFunc {
-	return handlePostToolErrorImpl(store)
+func handlePostToolError(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostToolErrorImpl(store, sqliteDB)
 }
 
 // handlePostTrace handles POST /workspaces/:slug/runs/:run_id/traces.
 // Ingests a single trace event into agent_traces.
-func handlePostTrace(store Store) echo.HandlerFunc {
-	return handlePostTraceImpl(store)
+func handlePostTrace(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostTraceImpl(store, sqliteDB)
 }
 
 // handlePostPostmortem handles POST /workspaces/:slug/runs/:run_id/postmortem.
 // Ingests a postmortem report into postmortems.
-func handlePostPostmortem(store Store) echo.HandlerFunc {
-	return handlePostPostmortemImpl(store)
+func handlePostPostmortem(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostPostmortemImpl(store, sqliteDB)
 }
 
 // handleGetPostmortem handles GET /workspaces/:slug/runs/:run_id/postmortem.
@@ -567,8 +567,8 @@ func handleGetPostmortem(store Store) echo.HandlerFunc {
 
 // handlePostEventsBatch handles POST /workspaces/:slug/runs/:run_id/events/batch.
 // Ingests a batch of audit events into agent_audit_events.
-func handlePostEventsBatch(store Store) echo.HandlerFunc {
-	return handlePostEventsBatchImpl(store)
+func handlePostEventsBatch(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostEventsBatchImpl(store, sqliteDB)
 }
 
 // handleGetEvents handles GET /workspaces/:slug/runs/:run_id/events.
@@ -597,8 +597,8 @@ func handleGetToolErrors(store Store) echo.HandlerFunc {
 
 // handlePostTracesBatch handles POST /workspaces/:slug/runs/:run_id/traces/batch.
 // Ingests a batch of trace events into agent_traces.
-func handlePostTracesBatch(store Store) echo.HandlerFunc {
-	return handlePostTracesBatchImpl(store)
+func handlePostTracesBatch(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handlePostTracesBatchImpl(store, sqliteDB)
 }
 
 // handleGetTraces handles GET /workspaces/:slug/runs/:run_id/traces.

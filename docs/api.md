@@ -50,6 +50,10 @@ they can access. The following scopes are available for workspace operations:
 | `vars:read` | Read and list variable values | GET /api/v1/user/vars, GET /api/v1/orgs/:slug/vars, GET /api/v1/workspaces/:slug/vars, GET /api/v1/workspaces/:slug/vars/resolved |
 | `vars:write` | Update existing variable values; implies `vars:read` | PATCH + all `vars:read` endpoints |
 | `vars:delete` | Delete variables | DELETE /api/v1/user/vars/:key, DELETE /api/v1/orgs/:slug/vars/:key, DELETE /api/v1/workspaces/:slug/vars/:key |
+| `sessions:read` | Read agent session records, token usage, and workspace cost summaries | GET /api/v1/sessions, GET /api/v1/sessions/:id, GET /api/v1/sessions/:id/usage, GET /api/v1/workspaces/:slug/cost |
+| `sessions:write` | Open, close, and report token usage on agent sessions | POST /api/v1/sessions, POST /api/v1/sessions/:id/complete, POST /api/v1/sessions/:id/usage |
+| `audit:read` | Query audit events, traces, and session outcomes | GET /api/v1/workspaces/:slug/runs/:run_id/events, GET /api/v1/workspaces/:slug/runs/:run_id/traces |
+| `audit:write` | Ingest audit events and traces | POST /api/v1/workspaces/:slug/runs/:run_id/events, POST /api/v1/workspaces/:slug/runs/:run_id/traces |
 
 ### Implied Permissions
 
@@ -621,6 +625,308 @@ tokens can delete any workspace.
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:delete` scope; workspace not owned by the authenticated user (anti-enumeration) |
 | 409 | Workspace is not archived (must archive before deleting) |
+
+---
+
+## Prometheus Metrics Endpoint
+
+### GET /metrics
+
+Scrape operational metrics in Prometheus text exposition format.
+
+**Authentication:** None. This endpoint is mounted outside the API auth
+middleware group and does not require any Authorization header.
+
+**Response:** HTTP 200 OK with `Content-Type: text/plain; version=0.0.4`.
+
+The response includes all `afhub_*` metrics from the custom Prometheus registry:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `afhub_http_requests_total` | Counter | method, path, status | Total HTTP requests |
+| `afhub_http_request_duration_seconds` | Histogram | method, path | HTTP request latency (buckets: 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0) |
+| `afhub_agent_sessions_active` | Gauge | workspace | Currently active sessions |
+| `afhub_agent_tokens_total` | Counter | workspace, model, direction | Token usage |
+| `afhub_audit_events_total` | Counter | source, event_type | Audit events ingested |
+| `afhub_audit_table_rows` | Gauge | table | Row count per audit table (sampled hourly) |
+| `afhub_retention_errors_total` | Counter | step | Retention step failures |
+| `afhub_retention_last_run_timestamp_seconds` | Gauge | — | Unix timestamp of last successful retention run |
+| `afhub_sse_connections` | Gauge | — | Active SSE connections |
+| `afhub_jobqueue_depth` | Gauge | type, status | Job queue depth (initialized by durable_job_queue) |
+
+The `path` label uses the Echo route template (e.g. `/api/v1/sessions/:id`)
+rather than the resolved URI to prevent cardinality explosion.
+
+---
+
+## Agent Session Endpoints
+
+Agent session endpoints manage the lifecycle of agent sessions: opening,
+closing, and reporting incremental token usage. Sessions track which
+credentials and workspaces are active and accumulate token consumption for
+cost analysis.
+
+### POST /api/v1/sessions
+
+Open a new agent session.
+
+**Authentication:** API Key, PAT with `sessions:write` scope, or Admin Token.
+
+**Request Body:**
+
+```json
+{
+  "workspace_slug": "my-workspace",
+  "run_id": "run-1",
+  "node_id": "node-1",
+  "archetype": "coder",
+  "model": "claude-3-5-sonnet",
+  "metadata": {"key": "value"}
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID; generated if omitted |
+| `workspace_slug` | yes | string | Target workspace |
+| `run_id` | no | string | Run identifier for grouping |
+| `node_id` | no | string | Task graph node identifier |
+| `archetype` | no | string | Agent archetype label |
+| `model` | no | string | Model name |
+| `metadata` | no | object | Arbitrary JSON metadata |
+
+**Response:** HTTP 201 Created with session JSON. HTTP 200 if `id` already
+exists (idempotent).
+
+```json
+{
+  "id": "uuid",
+  "workspace_slug": "my-workspace",
+  "credential_id": "cred-abc",
+  "credential_type": "api_key",
+  "status": "active",
+  "started_at": "2026-09-01T00:00:00Z"
+}
+```
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `workspace_slug` is missing or empty |
+| 403 | Caller lacks `sessions:write` scope |
+
+---
+
+### POST /api/v1/sessions/:id/complete
+
+Close an active session with a terminal status.
+
+**Authentication:** Session owner or Admin Token. Requires `sessions:write`.
+
+**Request Body:**
+
+```json
+{
+  "status": "completed",
+  "error_message": "",
+  "duration_ms": 3000,
+  "cache_creation_input_tokens": 100
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `status` | yes | string | Terminal status: `completed`, `failed`, or `timeout` |
+| `error_message` | no | string | Error details (for `failed` status) |
+| `duration_ms` | no | integer | Session duration in milliseconds |
+| `cache_creation_input_tokens` | no | integer | Cache creation tokens |
+
+**Response:** HTTP 200 with updated session JSON. Idempotent on already-terminal sessions.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `status` is `terminated` (internal-only) or invalid |
+| 403 | Caller is not the session owner and not admin |
+| 404 | Session not found |
+| 409 | Concurrent close attempt (session already transitioning) |
+
+---
+
+### POST /api/v1/sessions/:id/usage
+
+Report incremental token usage for an active session.
+
+**Authentication:** Session owner or Admin Token. Requires `sessions:write`.
+
+**Request Body:**
+
+```json
+{
+  "model": "claude-3-5-sonnet",
+  "input_tokens": 200,
+  "output_tokens": 80,
+  "cache_read_tokens": 10
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | no | string | Client-provided UUID; generated if omitted |
+| `model` | yes | string | Model name |
+| `input_tokens` | no | integer | Input tokens consumed (must be >= 0) |
+| `output_tokens` | no | integer | Output tokens consumed (must be >= 0) |
+| `cache_read_tokens` | no | integer | Cache read tokens consumed (must be >= 0) |
+
+**Response:** HTTP 201 Created with token_usage record JSON.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `model` is missing or empty |
+| 403 | Caller is not the session owner and not admin |
+| 404 | Session not found |
+| 409 | Session is not active |
+| 422 | Any token count is negative |
+
+---
+
+### GET /api/v1/sessions
+
+List agent sessions with filtering and cursor pagination.
+
+**Authentication:** API Key, PAT with `sessions:read` scope, or Admin Token.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `workspace_slug` | string | — | Filter by workspace |
+| `run_id` | string | — | Filter by run |
+| `status` | string | — | Filter by status (active, completed, failed, timeout, terminated) |
+| `credential_type` | string | — | Filter by credential type |
+| `since` | string (RFC 3339) | — | Filter sessions started after this time |
+| `order` | string | `desc` | Sort order: `asc` or `desc` |
+| `limit` | integer | `50` | Page size (max 500) |
+| `cursor` | string | — | Keyset pagination cursor |
+
+**Response:** HTTP 200 with paginated sessions including `token_summary`.
+
+```json
+{
+  "sessions": [...],
+  "next_cursor": "string|null",
+  "has_more": true
+}
+```
+
+Non-admin callers see only sessions in workspaces they own. Admin tokens see
+all workspaces.
+
+---
+
+### GET /api/v1/sessions/:id
+
+Fetch a single session by ID with token summary.
+
+**Authentication:** API Key, PAT with `sessions:read` scope, or Admin Token.
+
+**Response:** HTTP 200 with full session JSON including `token_summary`.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 403 | Non-admin caller cannot access the session's workspace |
+| 404 | Session not found |
+
+---
+
+### GET /api/v1/sessions/:id/usage
+
+Query paginated token usage records for a session.
+
+**Authentication:** API Key, PAT with `sessions:read` scope, or Admin Token.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `order` | string | `desc` | Sort order: `asc` or `desc` |
+| `limit` | integer | `100` | Page size (max 1000) |
+| `cursor` | string | — | Keyset pagination cursor |
+
+**Response:** HTTP 200 with paginated records and unbounded totals.
+
+```json
+{
+  "session_id": "sess-1",
+  "records": [...],
+  "totals": {
+    "total_input_tokens": 500,
+    "total_output_tokens": 200,
+    "total_cache_read_tokens": 30,
+    "models_used": ["claude-3-5-sonnet"]
+  },
+  "next_cursor": "string|null",
+  "has_more": false
+}
+```
+
+The `totals` field always reflects the aggregate of all token_usage records
+for the session, independent of the current page.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Invalid cursor |
+| 403 | Non-admin caller cannot access the session's workspace |
+| 404 | Session not found |
+
+---
+
+### GET /api/v1/workspaces/:slug/cost
+
+Retrieve aggregated token usage for a workspace over a time period.
+
+**Authentication:** API Key, PAT with `sessions:read` scope, or Admin Token.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `group_by` | string | `day` | Breakdown dimension: `day`, `session`, or `model` |
+| `since` | string (RFC 3339) | 24h ago | Start of time window |
+| `until` | string (RFC 3339) | now | End of time window |
+
+**Response:** HTTP 200 with aggregated cost data.
+
+```json
+{
+  "workspace": "my-workspace",
+  "period": {"since": "...", "until": "..."},
+  "totals": {
+    "input_tokens": 1000,
+    "output_tokens": 500,
+    "cache_read_tokens": 100,
+    "sessions": 3
+  },
+  "breakdown": [
+    {"date": "2026-09-01", "input_tokens": 1000, "output_tokens": 500, "cache_read_tokens": 100, "sessions": 3}
+  ]
+}
+```
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `since >= until`; invalid `group_by` value |
+| 403 | Non-admin caller cannot access the workspace |
 
 ---
 

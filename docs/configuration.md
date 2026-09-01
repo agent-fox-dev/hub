@@ -102,6 +102,7 @@ provider.
 | `AF_SESSION_MAX_ACTIVE_AGE_DAYS` | Maximum age in days for active (orphaned) sessions before the retention worker force-closes them with status `timeout`. Default: `7`. |
 | `AF_POSTMORTEM_MAX_AGE_DAYS` | Maximum age in days for retained postmortem records. Default: `180`. |
 | `AF_AUDIT_ORPHAN_RETENTION_DAYS` | Grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted. Default: `30`. |
+| `AF_AUDIT_DB_PATH` | Path to the DuckDB audit database file. Default: `<dir of SQLite database>/audit.duckdb`. |
 
 ## First Boot
 

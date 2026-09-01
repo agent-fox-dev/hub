@@ -49,7 +49,7 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	RegisterSessionRoutes(api, store, nil, nil)
 
 	// Register ingestion and query routes.
-	RegisterRoutes(api, store, &nopEmitter{})
+	RegisterRoutes(api, store, &nopEmitter{}, nil)
 
 	return &auditTestEnv{
 		echo: e,
@@ -75,7 +75,7 @@ func newAuditTestEnvWithSQLite(t *testing.T) *auditTestEnv {
 	api.Use(testAuthMiddleware())
 
 	RegisterSessionRoutes(api, store, sqliteDB, nil)
-	RegisterRoutes(api, store, &nopEmitter{})
+	RegisterRoutes(api, store, &nopEmitter{}, sqliteDB)
 
 	return &auditTestEnv{
 		echo:     e,
@@ -700,7 +700,7 @@ func newAuditTestEnvWithMetrics(t *testing.T, m *Metrics) *auditTestEnv {
 	api.Use(testAuthMiddleware())
 
 	RegisterSessionRoutes(api, store, nil, m)
-	RegisterRoutes(api, store, &nopEmitter{})
+	RegisterRoutes(api, store, &nopEmitter{}, nil)
 
 	return &auditTestEnv{
 		echo:  e,

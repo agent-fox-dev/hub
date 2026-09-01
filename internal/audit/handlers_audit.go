@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,7 +15,7 @@ import (
 )
 
 // handlePostEventImpl handles POST /workspaces/:slug/runs/:run_id/events.
-func handlePostEventImpl(store Store) echo.HandlerFunc {
+func handlePostEventImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
@@ -22,7 +23,7 @@ func handlePostEventImpl(store Store) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 
@@ -81,14 +82,14 @@ func handlePostEventImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostSessionOutcomeImpl handles POST /workspaces/:slug/runs/:run_id/sessions/outcomes.
-func handlePostSessionOutcomeImpl(store Store) echo.HandlerFunc {
+func handlePostSessionOutcomeImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
@@ -123,14 +124,14 @@ func handlePostSessionOutcomeImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostToolCallImpl handles POST /workspaces/:slug/runs/:run_id/tools/calls.
-func handlePostToolCallImpl(store Store) echo.HandlerFunc {
+func handlePostToolCallImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
@@ -162,14 +163,14 @@ func handlePostToolCallImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostToolErrorImpl handles POST /workspaces/:slug/runs/:run_id/tools/errors.
-func handlePostToolErrorImpl(store Store) echo.HandlerFunc {
+func handlePostToolErrorImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
@@ -204,14 +205,14 @@ func handlePostToolErrorImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostTraceImpl handles POST /workspaces/:slug/runs/:run_id/traces.
-func handlePostTraceImpl(store Store) echo.HandlerFunc {
+func handlePostTraceImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
@@ -246,14 +247,14 @@ func handlePostTraceImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostPostmortemImpl handles POST /workspaces/:slug/runs/:run_id/postmortem.
-func handlePostPostmortemImpl(store Store) echo.HandlerFunc {
+func handlePostPostmortemImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
@@ -330,14 +331,14 @@ func handleGetPostmortemImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostEventsBatchImpl handles POST /workspaces/:slug/runs/:run_id/events/batch.
-func handlePostEventsBatchImpl(store Store) echo.HandlerFunc {
+func handlePostEventsBatchImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
@@ -394,14 +395,14 @@ func handlePostEventsBatchImpl(store Store) echo.HandlerFunc {
 }
 
 // handlePostTracesBatchImpl handles POST /workspaces/:slug/runs/:run_id/traces/batch.
-func handlePostTracesBatchImpl(store Store) echo.HandlerFunc {
+func handlePostTracesBatchImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditWrite(c)
 		if auth == nil {
 			return nil
 		}
 		slug := c.Param("slug")
-		if err := checkWorkspaceAccess(c, auth, slug, nil); err != nil {
+		if err := checkWorkspaceAccess(c, auth, slug, sqliteDB); err != nil {
 			return nil
 		}
 		runID := c.Param("run_id")
