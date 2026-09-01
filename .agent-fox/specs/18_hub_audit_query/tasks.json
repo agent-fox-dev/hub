@@ -511,7 +511,7 @@
             "18-REQ-9",
             "18-REQ-8"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -532,7 +532,7 @@
           "requirement_refs": [
             "18-REQ-6"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -551,7 +551,7 @@
           "requirement_refs": [
             "18-REQ-6"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
