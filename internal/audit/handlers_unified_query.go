@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -430,8 +431,14 @@ func handleTranscript(store Store) echo.HandlerFunc {
 			return nil
 		}
 
+		slug := c.Param("slug")
 		runID := c.Param("run_id")
 		nodeID := c.QueryParam("node_id")
+
+		// 18-REQ-7.E1: node_id is required.
+		if nodeID == "" {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "node_id is required")
+		}
 
 		// Query agent_traces for the given run and node.
 		ds, ok := store.(*duckDBStore)
@@ -439,7 +446,7 @@ func handleTranscript(store Store) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
 
-		messages, err := queryTranscriptMessages(ds.db, runID, nodeID)
+		messages, err := queryTranscriptMessages(ds.db, slug, runID, nodeID)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
@@ -468,18 +475,22 @@ var traceEventTypeToRole = map[string]string{
 	"tool.error":        "tool_error",
 }
 
-// queryTranscriptMessages queries agent_traces and maps them to transcript messages.
-func queryTranscriptMessages(db *sql.DB, runID, nodeID string) ([]transcriptMsg, error) {
+// queryTranscriptMessages queries agent_traces and maps them to transcript
+// messages. Filters by workspace, run_id, and node_id. Unrecognized event
+// types are skipped (18-REQ-7.E5).
+func queryTranscriptMessages(db *sql.DB, workspace, runID, nodeID string) ([]transcriptMsg, error) {
 	var conditions []string
 	var args []any
+
+	// 18-REQ-7.1: Filter by workspace to ensure cross-workspace isolation.
+	conditions = append(conditions, "workspace = ?")
+	args = append(args, workspace)
 
 	conditions = append(conditions, "run_id = ?")
 	args = append(args, runID)
 
-	if nodeID != "" {
-		conditions = append(conditions, "node_id = ?")
-		args = append(args, nodeID)
-	}
+	conditions = append(conditions, "node_id = ?")
+	args = append(args, nodeID)
 
 	where := "WHERE " + strings.Join(conditions, " AND ")
 	query := fmt.Sprintf(
@@ -499,9 +510,10 @@ func queryTranscriptMessages(db *sql.DB, runID, nodeID string) ([]transcriptMsg,
 			return nil, fmt.Errorf("transcript scan: %w", err)
 		}
 
+		// 18-REQ-7.E5: Skip unrecognized event types.
 		role, ok := traceEventTypeToRole[eventType]
 		if !ok {
-			role = eventType
+			continue
 		}
 
 		msg := transcriptMsg{
@@ -566,14 +578,15 @@ func handleSSEStream(store Store, mgr *SSEManager) echo.HandlerFunc {
 			c.Response().Header().Set("Connection", "keep-alive")
 			c.Response().WriteHeader(http.StatusOK)
 
-			// Send initial keep-alive comment (18-REQ-8.8).
-			_, _ = fmt.Fprintf(c.Response(), ": keep-alive\n\n")
-			c.Response().Flush()
-
-			// Send initial heartbeat event.
+			// Send initial heartbeat event to confirm the connection is live
+			// (18-REQ-8.8).
 			hb := heartbeatEvent()
 			hbData, _ := json.Marshal(map[string]string{"timestamp": hb.Timestamp})
-			_, _ = fmt.Fprintf(c.Response(), "event: heartbeat\ndata: %s\n\n", hbData)
+			if _, writeErr := fmt.Fprintf(c.Response(), "event: heartbeat\ndata: %s\n\n", hbData); writeErr != nil {
+				slog.Debug("sse: initial write failed", "conn_id", conn.id, "error", writeErr)
+				mgr.Unregister(conn.id)
+				return nil
+			}
 			c.Response().Flush()
 
 			// Stream events from the per-client channel.
@@ -590,18 +603,21 @@ func handleSSEStream(store Store, mgr *SSEManager) echo.HandlerFunc {
 
 					mgr.TouchLastRead(conn.id)
 
+					var writeErr error
 					if event.EventType == "heartbeat" {
-						hbData, _ := json.Marshal(map[string]string{"timestamp": event.Timestamp})
-						if _, err := fmt.Fprintf(c.Response(), "event: heartbeat\ndata: %s\n\n", hbData); err != nil {
-							mgr.Unregister(conn.id)
-							return nil
-						}
+						hbJSON, _ := json.Marshal(map[string]string{"timestamp": event.Timestamp})
+						_, writeErr = fmt.Fprintf(c.Response(), "event: heartbeat\ndata: %s\n\n", hbJSON)
 					} else {
 						eventData, _ := json.Marshal(event)
-						if _, err := fmt.Fprintf(c.Response(), "event: audit_event\ndata: %s\n\n", eventData); err != nil {
-							mgr.Unregister(conn.id)
-							return nil
-						}
+						_, writeErr = fmt.Fprintf(c.Response(), "event: audit_event\ndata: %s\n\n", eventData)
+					}
+
+					// 18-REQ-8.E7: Treat write errors as client disconnect.
+					if writeErr != nil {
+						slog.Debug("sse: write failed, treating as disconnect",
+							"conn_id", conn.id, "error", writeErr)
+						mgr.Unregister(conn.id)
+						return nil
 					}
 					c.Response().Flush()
 				}

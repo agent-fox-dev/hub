@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,19 +30,33 @@ type sseFrame struct {
 	data  string
 }
 
-// newSSEHandlerTestEnv creates a test environment with the SSE route
-// registered via RegisterAuditQueryRoutes.
+// newSSEHandlerTestEnv creates a test environment with a real SSEManager
+// and the SSE route registered via RegisterAuditQueryRoutes. The SSEManager
+// reads AF_SSE_MAX_CONNECTIONS from the environment (use t.Setenv to override).
 func newSSEHandlerTestEnv(t *testing.T) *auditTestEnv {
 	t.Helper()
 	duckDB := openTestAuditDB(t)
 	initHandlerTestSchema(t, duckDB)
 	store := NewStore(duckDB)
 
+	// Parse AF_SSE_MAX_CONNECTIONS (default 100).
+	maxConns := DefaultMaxConnections
+	if s := os.Getenv("AF_SSE_MAX_CONNECTIONS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+
+	mgr := NewSSEManager(maxConns)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go mgr.Run(done)
+
 	e := echo.New()
 	e.HTTPErrorHandler = apikit.HTTPErrorHandler
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
-	RegisterAuditQueryRoutes(api, store, &mockSSEManager{})
+	RegisterAuditQueryRoutes(api, store, mgr)
 
 	return &auditTestEnv{
 		echo:  e,
