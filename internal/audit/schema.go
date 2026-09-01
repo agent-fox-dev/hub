@@ -16,6 +16,7 @@ var allTableDDL = []string{
 		severity VARCHAR NOT NULL DEFAULT 'info',
 		node_id VARCHAR NOT NULL DEFAULT '',
 		session_id VARCHAR NOT NULL DEFAULT '',
+		archetype VARCHAR NOT NULL DEFAULT '',
 		timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		payload VARCHAR NOT NULL DEFAULT '{}',
 		ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -29,6 +30,8 @@ var allTableDDL = []string{
 		resource_id VARCHAR NOT NULL DEFAULT '',
 		action VARCHAR NOT NULL DEFAULT '',
 		workspace VARCHAR NOT NULL DEFAULT '',
+		severity VARCHAR NOT NULL DEFAULT 'info',
+		timestamp VARCHAR NOT NULL DEFAULT '',
 		metadata VARCHAR NOT NULL DEFAULT '{}',
 		ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
@@ -126,8 +129,15 @@ var allTableDDL = []string{
 }
 
 // migrationDDL contains ALTER TABLE statements for non-destructive schema
-// migrations. New columns added in future releases are appended here.
-var migrationDDL []string // currently empty; pattern established for future use
+// migrations. DuckDB ALTER TABLE ADD COLUMN does not support NOT NULL
+// constraints; the NOT NULL + DEFAULT is already in the CREATE TABLE DDL above.
+var migrationDDL = []string{
+	// Spec 18: unified audit query requires severity and timestamp on hub events.
+	`ALTER TABLE hub_audit_events ADD COLUMN IF NOT EXISTS severity VARCHAR DEFAULT 'info'`,
+	`ALTER TABLE hub_audit_events ADD COLUMN IF NOT EXISTS timestamp VARCHAR DEFAULT ''`,
+	// Spec 18: unified audit query returns archetype for agent events.
+	`ALTER TABLE agent_audit_events ADD COLUMN IF NOT EXISTS archetype VARCHAR DEFAULT ''`,
+}
 
 // InitSchema creates all nine audit tables and runs column migrations in a
 // single transaction. Returns nil on success. If any statement fails, the

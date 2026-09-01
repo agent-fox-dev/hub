@@ -525,112 +525,84 @@ func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string,
 
 // handlePostEvent handles POST /workspaces/:slug/runs/:run_id/events.
 // Ingests a single audit event into agent_audit_events.
-func handlePostEvent(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostEvent(store Store) echo.HandlerFunc {
+	return handlePostEventImpl(store)
 }
 
 // handlePostSessionOutcome handles POST /workspaces/:slug/runs/:run_id/sessions/outcomes.
 // Ingests a session outcome into session_outcomes.
-func handlePostSessionOutcome(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostSessionOutcome(store Store) echo.HandlerFunc {
+	return handlePostSessionOutcomeImpl(store)
 }
 
 // handlePostToolCall handles POST /workspaces/:slug/runs/:run_id/tools/calls.
 // Ingests a tool call record into tool_calls.
-func handlePostToolCall(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostToolCall(store Store) echo.HandlerFunc {
+	return handlePostToolCallImpl(store)
 }
 
 // handlePostToolError handles POST /workspaces/:slug/runs/:run_id/tools/errors.
 // Ingests a tool error record into tool_errors.
-func handlePostToolError(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostToolError(store Store) echo.HandlerFunc {
+	return handlePostToolErrorImpl(store)
 }
 
 // handlePostTrace handles POST /workspaces/:slug/runs/:run_id/traces.
 // Ingests a single trace event into agent_traces.
-func handlePostTrace(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostTrace(store Store) echo.HandlerFunc {
+	return handlePostTraceImpl(store)
 }
 
 // handlePostPostmortem handles POST /workspaces/:slug/runs/:run_id/postmortem.
 // Ingests a postmortem report into postmortems.
-func handlePostPostmortem(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostPostmortem(store Store) echo.HandlerFunc {
+	return handlePostPostmortemImpl(store)
 }
 
 // handleGetPostmortem handles GET /workspaces/:slug/runs/:run_id/postmortem.
 // Retrieves a postmortem report by run_id.
-func handleGetPostmortem(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handleGetPostmortem(store Store) echo.HandlerFunc {
+	return handleGetPostmortemImpl(store)
 }
 
 // handlePostEventsBatch handles POST /workspaces/:slug/runs/:run_id/events/batch.
 // Ingests a batch of audit events into agent_audit_events.
-func handlePostEventsBatch(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostEventsBatch(store Store) echo.HandlerFunc {
+	return handlePostEventsBatchImpl(store)
 }
 
 // handleGetEvents handles GET /workspaces/:slug/runs/:run_id/events.
 // Queries audit events with filters and cursor-based pagination.
-func handleGetEvents(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handleGetEvents(store Store) echo.HandlerFunc {
+	return handleGetEventsImpl(store)
 }
 
 // handleGetSessionOutcomes handles GET /workspaces/:slug/runs/:run_id/sessions/outcomes.
 // Queries session outcomes with filters and cursor-based pagination.
-func handleGetSessionOutcomes(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handleGetSessionOutcomes(store Store) echo.HandlerFunc {
+	return handleGetSessionOutcomesImpl(store)
 }
 
 // handleGetToolCalls handles GET /workspaces/:slug/runs/:run_id/tools/calls.
 // Queries tool calls with filters and cursor-based pagination.
-func handleGetToolCalls(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handleGetToolCalls(store Store) echo.HandlerFunc {
+	return handleGetToolCallsImpl(store)
 }
 
 // handleGetToolErrors handles GET /workspaces/:slug/runs/:run_id/tools/errors.
 // Queries tool errors with filters and cursor-based pagination.
-func handleGetToolErrors(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handleGetToolErrors(store Store) echo.HandlerFunc {
+	return handleGetToolErrorsImpl(store)
 }
 
 // handlePostTracesBatch handles POST /workspaces/:slug/runs/:run_id/traces/batch.
 // Ingests a batch of trace events into agent_traces.
-func handlePostTracesBatch(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handlePostTracesBatch(store Store) echo.HandlerFunc {
+	return handlePostTracesBatchImpl(store)
 }
 
 // handleGetTraces handles GET /workspaces/:slug/runs/:run_id/traces.
 // Queries trace events with filters and cursor-based pagination.
-func handleGetTraces(_ Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
-	}
+func handleGetTraces(store Store) echo.HandlerFunc {
+	return handleGetTracesImpl(store)
 }

@@ -33,8 +33,14 @@ const auditQueryPath = "/api/v1/audit"
 // timestamp on hub events and archetype on agent events.
 func initUnifiedQuerySchema(t *testing.T, db *sql.DB) {
 	t.Helper()
+	// DROP + CREATE instead of CREATE IF NOT EXISTS because openTestAuditDB →
+	// InitSchema already creates these tables without the extra columns
+	// (severity, timestamp on hub; archetype on agent). The IF NOT EXISTS
+	// variant would be a no-op, leaving the wrong schema in place.
 	ddl := []string{
-		`CREATE TABLE IF NOT EXISTS hub_audit_events (
+		`DROP TABLE IF EXISTS hub_audit_events`,
+		`DROP TABLE IF EXISTS agent_audit_events`,
+		`CREATE TABLE hub_audit_events (
 			id            VARCHAR PRIMARY KEY,
 			event_type    VARCHAR NOT NULL,
 			actor_id      VARCHAR NOT NULL DEFAULT '',
@@ -48,7 +54,7 @@ func initUnifiedQuerySchema(t *testing.T, db *sql.DB) {
 			metadata      VARCHAR NOT NULL DEFAULT '{}',
 			ingested_at   VARCHAR NOT NULL DEFAULT ''
 		)`,
-		`CREATE TABLE IF NOT EXISTS agent_audit_events (
+		`CREATE TABLE agent_audit_events (
 			id          VARCHAR PRIMARY KEY,
 			run_id      VARCHAR NOT NULL,
 			workspace   VARCHAR NOT NULL DEFAULT '',
