@@ -33,20 +33,12 @@ lint:
 
 # Build all packages
 build:
-	go build $(LDFLAGS) -o bin/afc ./cmd/afc
+	go install $(LDFLAGS) ./cmd/afc
 	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
-	cp bin/afc ${DEVEL}/tools/afc
 
-<<<<<<< Updated upstream
-# Build the af-hub container locally 
-buildc: build
-	-cd ../apikit && git push origin main
-	-git push origin main
-=======
 # Build the af-hub container locally.
 # Uses sibling ../apikit via additional build context (go.mod replace).
 build-container: build
->>>>>>> Stashed changes
 	podman build \
 		--build-context apikit=../apikit \
 		--build-arg VERSION=$(VERSION) \
