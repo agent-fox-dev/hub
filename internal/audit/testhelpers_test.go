@@ -565,6 +565,92 @@ func queryTableCount(t *testing.T, db *sql.DB, table string) int {
 	return count
 }
 
+// parseCostJSON parses the response body as a CostResponse.
+func parseCostJSON(t *testing.T, rec *httptest.ResponseRecorder) CostResponse {
+	t.Helper()
+	var resp CostResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode cost response: %v\nbody: %s", err, rec.Body.String())
+	}
+	return resp
+}
+
+// newAuditTestEnvWithEmitter creates an environment that includes an Emitter
+// for recording emitted hub audit events during force-close tests.
+func newAuditTestEnvWithEmitter(t *testing.T) (*auditTestEnv, *testEmitter) {
+	t.Helper()
+	duckDB := openTestAuditDB(t)
+	sqliteDB := openTestSQLiteDB(t)
+	store := NewStore(duckDB)
+	emitter := &testEmitter{}
+
+	e := echo.New()
+	e.HTTPErrorHandler = apikit.HTTPErrorHandler
+	api := e.Group("/api/v1")
+
+	api.Use(testAuthMiddleware())
+
+	RegisterSessionRoutes(api, store, sqliteDB)
+
+	return &auditTestEnv{
+		echo:     e,
+		db:       duckDB,
+		sqliteDB: sqliteDB,
+		store:    store,
+	}, emitter
+}
+
+// testEmitter records emitted HubEvents for test assertions.
+type testEmitter struct {
+	events []HubEvent
+}
+
+func (te *testEmitter) Emit(_ context.Context, event HubEvent) error {
+	te.events = append(te.events, event)
+	return nil
+}
+
+// seedWorkspaceWithStatus inserts a workspace with a specific status.
+func (env *auditTestEnv) seedWorkspaceWithStatus(t *testing.T, slug, ownerID, status string) {
+	t.Helper()
+	if env.sqliteDB == nil {
+		t.Fatal("seedWorkspaceWithStatus requires SQLite DB; use newAuditTestEnvWithSQLite")
+	}
+	_, err := env.sqliteDB.Exec(
+		`INSERT INTO workspaces (slug, owner_id, status) VALUES (?, ?, ?)`,
+		slug, ownerID, status,
+	)
+	if err != nil {
+		t.Fatalf("seedWorkspaceWithStatus(%q): %v", slug, err)
+	}
+}
+
+// getSessionField returns a single string column value for a session.
+func (env *auditTestEnv) getSessionField(t *testing.T, id, column string) string {
+	t.Helper()
+	var val sql.NullString
+	err := env.db.QueryRow(
+		fmt.Sprintf("SELECT %s FROM agent_sessions WHERE id = ?", column), id,
+	).Scan(&val)
+	if err != nil {
+		t.Fatalf("getSessionField(%q, %q): %v", id, column, err)
+	}
+	return val.String
+}
+
+// countTokenUsageRows returns the number of token_usage rows for a workspace.
+func (env *auditTestEnv) countTokenUsageRows(t *testing.T, workspaceSlug string) int {
+	t.Helper()
+	var count int
+	err := env.db.QueryRow(
+		"SELECT COUNT(*) FROM token_usage WHERE workspace_slug = ?", workspaceSlug,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("countTokenUsageRows(%q): %v", workspaceSlug, err)
+	}
+	return count
+}
+
 // uuidRegex matches standard UUID format (8-4-4-4-12 hex digits with dashes).
 var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -584,3 +670,32 @@ const (
 	tracesPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces"
 	pmPath       = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem"
 )
+
+// countSessionRows returns the number of sessions for a workspace.
+func (env *auditTestEnv) countSessionRows(t *testing.T, workspaceSlug string) int {
+	t.Helper()
+	var count int
+	err := env.db.QueryRow(
+		"SELECT COUNT(*) FROM agent_sessions WHERE workspace_slug = ?", workspaceSlug,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("countSessionRows(%q): %v", workspaceSlug, err)
+	}
+	return count
+}
+
+// workspaceExistsInSQLite checks if a workspace exists in SQLite.
+func (env *auditTestEnv) workspaceExistsInSQLite(t *testing.T, slug string) bool {
+	t.Helper()
+	if env.sqliteDB == nil {
+		t.Fatal("workspaceExistsInSQLite requires SQLite DB")
+	}
+	var count int
+	err := env.sqliteDB.QueryRow(
+		"SELECT COUNT(*) FROM workspaces WHERE slug = ?", slug,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("workspaceExistsInSQLite(%q): %v", slug, err)
+	}
+	return count > 0
+}

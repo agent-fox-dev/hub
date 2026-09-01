@@ -6,9 +6,9 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// RegisterSessionRoutes mounts session and token usage API handlers on the
-// given echo group. The sqliteDB parameter is used for workspace access
-// checks (resolving workspace ownership).
+// RegisterSessionRoutes mounts session, token usage, and cost API handlers
+// on the given echo group. The sqliteDB parameter is used for workspace
+// access checks (resolving workspace ownership).
 //
 // Routes:
 //
@@ -18,6 +18,7 @@ import (
 //	GET    /sessions              - List sessions (paginated)
 //	GET    /sessions/:id          - Fetch a single session
 //	GET    /sessions/:id/usage    - Query token usage records (paginated)
+//	GET    /workspaces/:slug/cost - Workspace cost summary
 func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB) {
 	api.POST("/sessions", handleCreateSession(store))
 	api.POST("/sessions/:id/complete", handleCompleteSession(store))
@@ -25,6 +26,7 @@ func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB) {
 	api.GET("/sessions", handleListSessions(store, sqliteDB))
 	api.GET("/sessions/:id", handleGetSession(store, sqliteDB))
 	api.GET("/sessions/:id/usage", handleListSessionUsage(store, sqliteDB))
+	api.GET("/workspaces/:slug/cost", handleWorkspaceCost(store, sqliteDB))
 }
 
 // RegisterRoutes registers all audit ingestion and query HTTP routes

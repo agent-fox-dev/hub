@@ -54,6 +54,14 @@ func (f *failingStore) ListTokenUsage(_ context.Context, _ string, _ UsageListPa
 	return nil, fmt.Errorf("simulated database error")
 }
 
+func (f *failingStore) GetWorkspaceCost(_ context.Context, _ CostParams) (*CostResponse, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
+func (f *failingStore) ForceCloseSessions(_ context.Context, _ string, _ string, _ string) ([]ForceCloseResult, error) {
+	return nil, fmt.Errorf("simulated database error")
+}
+
 // TS-17-10: Emitter interface and HubEvent struct are exported from the
 // internal/audit package with the correct fields.
 func TestEmitterInterface(t *testing.T) {

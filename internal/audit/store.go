@@ -42,6 +42,14 @@ type Store interface {
 	// ListTokenUsage returns a paginated list of token_usage records for
 	// a session, plus unbounded totals across all records.
 	ListTokenUsage(ctx context.Context, sessionID string, params UsageListParams) (*UsageListResponse, error)
+
+	// GetWorkspaceCost aggregates token_usage records within a time window,
+	// grouped by the specified dimension.
+	GetWorkspaceCost(ctx context.Context, params CostParams) (*CostResponse, error)
+
+	// ForceCloseSessions sets all active sessions for a workspace to
+	// terminated status. Returns the list of session IDs that were closed.
+	ForceCloseSessions(ctx context.Context, workspaceSlug string, reason string, timestamp string) ([]ForceCloseResult, error)
 }
 
 // NewStore creates a Store backed by the given DuckDB connection.
@@ -82,5 +90,13 @@ func (s *duckDBStore) GetSessionWithSummary(_ context.Context, _ string) (*Sessi
 }
 
 func (s *duckDBStore) ListTokenUsage(_ context.Context, _ string, _ UsageListParams) (*UsageListResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *duckDBStore) GetWorkspaceCost(_ context.Context, _ CostParams) (*CostResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *duckDBStore) ForceCloseSessions(_ context.Context, _ string, _ string, _ string) ([]ForceCloseResult, error) {
 	return nil, errors.New("not implemented")
 }

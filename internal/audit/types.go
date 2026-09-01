@@ -140,6 +140,53 @@ type UsageListParams struct {
 	Cursor string
 }
 
+// CostResponse is the JSON body for GET /api/v1/workspaces/:slug/cost.
+type CostResponse struct {
+	Workspace string         `json:"workspace"`
+	Period    CostPeriod     `json:"period"`
+	Totals   CostTotals     `json:"totals"`
+	Breakdown []CostBreakdownEntry `json:"breakdown"`
+}
+
+// CostPeriod describes the time window of a cost query.
+type CostPeriod struct {
+	Since string `json:"since"`
+	Until string `json:"until"`
+}
+
+// CostTotals contains aggregate token usage across all matching records.
+type CostTotals struct {
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	CacheReadTokens int64 `json:"cache_read_tokens"`
+	Sessions        int64 `json:"sessions"`
+}
+
+// CostBreakdownEntry contains per-dimension token usage aggregates.
+// Exactly one of Date, SessionID, or Model will be set, depending on group_by.
+type CostBreakdownEntry struct {
+	Date            string `json:"date,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	CacheReadTokens int64  `json:"cache_read_tokens"`
+	Sessions        int64  `json:"sessions"`
+}
+
+// CostParams holds parsed parameters for a cost query.
+type CostParams struct {
+	WorkspaceSlug string
+	GroupBy       string // "day", "session", or "model"
+	Since         string // RFC3339
+	Until         string // RFC3339
+}
+
+// ForceCloseResult holds information about a single force-closed session.
+type ForceCloseResult struct {
+	SessionID string
+}
+
 // ErrSessionNotActive is returned when attempting to complete or report usage
 // on a session that is not in the active state.
 var ErrSessionNotActive = errors.New("session is not active")

@@ -111,3 +111,11 @@ func handleGetPostmortem(_ Store) echo.HandlerFunc {
 		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 	}
 }
+
+// handleWorkspaceCost handles GET /api/v1/workspaces/:slug/cost.
+// Returns aggregated token usage grouped by day, session, or model.
+func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return apikit.WriteAPIError(c, http.StatusNotImplemented, "not implemented")
+	}
+}
