@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -847,6 +848,8 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "workspace is already archived")
 		}
 
+		var updated *Workspace
+
 		switch ws.CloneStatus {
 		case "cloning":
 			// 05-REQ-6.3: Reject archive while clone is in progress.
@@ -873,31 +876,41 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 
 			// Update DB: status='archived', clone_status='archived', head_sha recorded.
-			updated, err := archiveWorkspaceDB(db, slug, &headSHA)
+			u, err := archiveWorkspaceDB(db, slug, &headSHA)
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
-			return respondWorkspace(c, http.StatusOK, updated, db)
+			updated = u
 
 		case "pending", "failed":
 			// 05-REQ-6.2: No git push; just clean up and archive.
 			wsDir := filepath.Join(defaultWorkspaceRoot, slug)
 			_ = os.RemoveAll(wsDir) // Ignore not-exist errors.
 
-			updated, err := archiveWorkspaceDB(db, slug, nil)
+			u, err := archiveWorkspaceDB(db, slug, nil)
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
-			return respondWorkspace(c, http.StatusOK, updated, db)
+			updated = u
 
 		default:
 			// Safety net for unexpected clone_status values.
-			updated, err := archiveWorkspaceDB(db, slug, nil)
+			u, err := archiveWorkspaceDB(db, slug, nil)
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
-			return respondWorkspace(c, http.StatusOK, updated, db)
+			updated = u
 		}
+
+		// 19-REQ-8.1: Force-close all active sessions for the archived workspace.
+		archiveTime := apikit.NowUTC()
+		if fcErr := forceCloseWorkspaceSessions(c.Request().Context(), slug, "workspace archived", archiveTime); fcErr != nil {
+			// 19-REQ-8.E1: Log warning and proceed with the archive response.
+			slog.Warn("force-close sessions failed during archive",
+				"workspace", slug, "error", fcErr)
+		}
+
+		return respondWorkspace(c, http.StatusOK, updated, db)
 	}
 }
 
@@ -968,6 +981,15 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusConflict, "workspace must be archived before deletion")
 		}
 
+		// 19-REQ-9.1: Force-close all active sessions BEFORE workspace
+		// row deletion so session records are cleanly terminated.
+		deleteTime := apikit.NowUTC()
+		if fcErr := forceCloseWorkspaceSessions(c.Request().Context(), slug, "workspace deleted", deleteTime); fcErr != nil {
+			// 19-REQ-9.E1: Log warning and proceed with deletion.
+			slog.Warn("force-close sessions failed during delete",
+				"workspace", slug, "error", fcErr)
+		}
+
 		// 05-REQ-8.1: Check whether workspace directory exists and remove it.
 		wsDir := filepath.Join(defaultWorkspaceRoot, slug)
 		if _, statErr := os.Stat(wsDir); statErr == nil {
@@ -977,7 +999,13 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		// 19-REQ-9.2: Audit data (agent_sessions, token_usage) is retained
+		// in DuckDB; only the SQLite workspace row is deleted. Orphaned
+		// audit data is cleaned up by the retention worker after
+		// orphan_retention_days.
 		if err := deleteWorkspace(db, slug); err != nil {
+			// 19-REQ-9.E2: SQLite failure after DuckDB close — sessions remain
+			// safely terminated in DuckDB regardless.
 			return respondError(c, http.StatusInternalServerError, "failed to delete workspace")
 		}
 
