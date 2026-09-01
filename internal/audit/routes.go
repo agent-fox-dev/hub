@@ -36,10 +36,17 @@ func RegisterRoutes(api *echo.Group, store Store, emitter Emitter) {
 
 	// Agent ingestion endpoints.
 	runs.POST("/events", handlePostEvent(store))
+	runs.GET("/events", handleGetEvents(store))
+	runs.POST("/events/batch", handlePostEventsBatch(store))
 	runs.POST("/sessions/outcomes", handlePostSessionOutcome(store))
+	runs.GET("/sessions/outcomes", handleGetSessionOutcomes(store))
 	runs.POST("/tools/calls", handlePostToolCall(store))
+	runs.GET("/tools/calls", handleGetToolCalls(store))
 	runs.POST("/tools/errors", handlePostToolError(store))
+	runs.GET("/tools/errors", handleGetToolErrors(store))
 	runs.POST("/traces", handlePostTrace(store))
+	runs.GET("/traces", handleGetTraces(store))
+	runs.POST("/traces/batch", handlePostTracesBatch(store))
 
 	// Postmortem endpoints.
 	runs.POST("/postmortem", handlePostPostmortem(store))

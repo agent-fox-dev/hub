@@ -204,9 +204,9 @@ func newAuditQueryTestEnv(t *testing.T) *auditQueryTestEnv {
 
 	return &auditQueryTestEnv{
 		auditTestEnv: &auditTestEnv{
-			echo:   e,
-			duckDB: duckDB,
-			store:  store,
+			echo:  e,
+			db:    duckDB,
+			store: store,
 		},
 		apiGroup: api,
 	}
@@ -227,9 +227,9 @@ func newAuditQueryTestEnvRaw(t *testing.T) *auditQueryTestEnv {
 
 	return &auditQueryTestEnv{
 		auditTestEnv: &auditTestEnv{
-			echo:   e,
-			duckDB: duckDB,
-			store:  store,
+			echo:  e,
+			db:    duckDB,
+			store: store,
 		},
 		apiGroup: api,
 	}

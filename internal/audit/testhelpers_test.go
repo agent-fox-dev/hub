@@ -33,6 +33,8 @@ type auditTestEnv struct {
 func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	t.Helper()
 	duckDB := openTestAuditDB(t)
+	// Ensure all audit tables exist for seeding and querying in handler tests.
+	initHandlerTestSchema(t, duckDB)
 	store := NewStore(duckDB)
 
 	e := echo.New()
@@ -60,6 +62,8 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 func newAuditTestEnvWithSQLite(t *testing.T) *auditTestEnv {
 	t.Helper()
 	duckDB := openTestAuditDB(t)
+	// Ensure all audit tables exist for seeding and querying in handler tests.
+	initHandlerTestSchema(t, duckDB)
 	sqliteDB := openTestSQLiteDB(t)
 	store := NewStore(duckDB)
 
@@ -667,8 +671,10 @@ const (
 	outcomesPath = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes"
 	callsPath    = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls"
 	errorsPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors"
-	tracesPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces"
-	pmPath       = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem"
+	tracesPath       = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces"
+	tracesBatchPath  = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces/batch"
+	eventsBatchPath  = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events/batch"
+	pmPath           = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem"
 )
 
 // countSessionRows returns the number of sessions for a workspace.
@@ -698,4 +704,115 @@ func (env *auditTestEnv) workspaceExistsInSQLite(t *testing.T, slug string) bool
 		t.Fatalf("workspaceExistsInSQLite(%q): %v", slug, err)
 	}
 	return count > 0
+}
+
+// queryTableCountWhere returns the number of rows in the given table matching
+// a WHERE clause with the given args.
+func queryTableCountWhere(t *testing.T, db *sql.DB, table, where string, args ...any) int {
+	t.Helper()
+	var count int
+	q := "SELECT COUNT(*) FROM " + table
+	if where != "" {
+		q += " WHERE " + where
+	}
+	err := db.QueryRow(q, args...).Scan(&count)
+	if err != nil {
+		t.Fatalf("queryTableCountWhere(%s, %s): %v", table, where, err)
+	}
+	return count
+}
+
+// seedAuditEvent inserts an audit event directly into DuckDB for test setup.
+func (env *auditTestEnv) seedAuditEvent(t *testing.T, id, runID, workspace, eventType, timestamp string) {
+	t.Helper()
+	if timestamp == "" {
+		timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO agent_audit_events (id, run_id, workspace, event_type, severity, timestamp, ingested_at)
+		 VALUES (?, ?, ?, ?, 'info', ?, ?)`,
+		id, runID, workspace, eventType, timestamp, now,
+	)
+	if err != nil {
+		t.Fatalf("seedAuditEvent(%q): %v", id, err)
+	}
+}
+
+// seedSessionOutcome inserts a session outcome directly into DuckDB for test setup.
+func (env *auditTestEnv) seedSessionOutcome(t *testing.T, id, runID, workspace, status, timestamp string) {
+	t.Helper()
+	if timestamp == "" {
+		timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO session_outcomes (id, run_id, workspace, session_id, status, timestamp, ingested_at)
+		 VALUES (?, ?, ?, 'sess-1', ?, ?, ?)`,
+		id, runID, workspace, status, timestamp, now,
+	)
+	if err != nil {
+		t.Fatalf("seedSessionOutcome(%q): %v", id, err)
+	}
+}
+
+// seedToolCall inserts a tool call record directly into DuckDB for test setup.
+func (env *auditTestEnv) seedToolCall(t *testing.T, id, runID, workspace, toolName, timestamp string) {
+	t.Helper()
+	if timestamp == "" {
+		timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO tool_calls (id, run_id, workspace, tool_name, timestamp, ingested_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, runID, workspace, toolName, timestamp, now,
+	)
+	if err != nil {
+		t.Fatalf("seedToolCall(%q): %v", id, err)
+	}
+}
+
+// seedToolError inserts a tool error record directly into DuckDB for test setup.
+func (env *auditTestEnv) seedToolError(t *testing.T, id, runID, workspace, toolName, timestamp string) {
+	t.Helper()
+	if timestamp == "" {
+		timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO tool_errors (id, run_id, workspace, tool_name, error_msg, timestamp, ingested_at)
+		 VALUES (?, ?, ?, ?, 'test error', ?, ?)`,
+		id, runID, workspace, toolName, timestamp, now,
+	)
+	if err != nil {
+		t.Fatalf("seedToolError(%q): %v", id, err)
+	}
+}
+
+// seedTrace inserts a trace event directly into DuckDB for test setup.
+func (env *auditTestEnv) seedTrace(t *testing.T, id, runID, workspace, eventType, timestamp string) {
+	t.Helper()
+	if timestamp == "" {
+		timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := env.db.Exec(
+		`INSERT INTO agent_traces (id, run_id, workspace, event_type, timestamp, ingested_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, runID, workspace, eventType, timestamp, now,
+	)
+	if err != nil {
+		t.Fatalf("seedTrace(%q): %v", id, err)
+	}
+}
+
+// workspacePatAuth returns an apikit.AuthInfo for a workspace-scoped PAT.
+func workspacePatAuth(userID, workspaceSlug string, permissions ...string) *apikit.AuthInfo {
+	return &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         userID,
+		KeyID:          workspaceSlug, // KeyID stores workspace scope for workspace-scoped PATs
+		Permissions:    permissions,
+	}
 }
