@@ -79,8 +79,8 @@ REST endpoints that accept the exact JSON shapes produced by afaudit.
 ## Tech Stack
 
 - Go 1.26+
-- DuckDB via `github.com/marcboeker/go-duckdb` (CGo required, `database/sql`
-  compatible driver)
+- DuckDB via `github.com/duckdb/duckdb-go` (official DuckDB-maintained Go driver,
+  CGo required, `database/sql` compatible driver)
 - Echo v4 (existing HTTP framework)
 - apikit (auth, error responses, timestamps)
 - **Test tooling:** Standard `testing` package only (no third-party assertion
@@ -119,7 +119,7 @@ passes it to the `internal/audit` package. Schema is initialized via
 
 #### DuckDB Driver Usage and Constraints
 
-The hub uses `github.com/marcboeker/go-duckdb` as a `database/sql`-compatible
+The hub uses `github.com/duckdb/duckdb-go` as a `database/sql`-compatible
 driver. The DSN is a plain file path (e.g., `/data/audit.duckdb`). An
 in-memory DSN (`:memory:`) is used in tests via `t.TempDir()`-based temp
 files to keep test isolation without pure in-memory state sharing.
@@ -141,7 +141,7 @@ responds with HTTP 503 and a `Retry-After: 5` header.
 | Write timeout under contention | Store returns error; handler returns HTTP 503 with `Retry-After: 5` |
 | Missing parent directory | `os.MkdirAll` called before `OpenDB`; startup aborts if directory creation fails |
 
-**CGo build requirement:** The `go-duckdb` driver requires CGo. The hub binary
+**CGo build requirement:** The `duckdb-go` driver requires CGo. The hub binary
 must be built with `CGO_ENABLED=1`. Cross-compilation without a matching C
 toolchain is not supported for this package. All CI jobs that build or test
 the `internal/audit` package must run on a host with CGo available.
@@ -953,7 +953,7 @@ parameters.
 | Dependency | Relationship |
 |------------|--------------|
 | apikit | Auth middleware, `WriteAPIError`, `NowUTC`/`FormatUTC`, `GetAuthInfo` |
-| `github.com/marcboeker/go-duckdb` | New: DuckDB Go driver (CGo, `database/sql` compatible driver). DSN is a plain file path. Requires `CGO_ENABLED=1` at build time. |
+| `github.com/duckdb/duckdb-go` | New: DuckDB Go driver (official DuckDB-maintained, CGo, `database/sql` compatible driver). DSN is a plain file path. Requires `CGO_ENABLED=1` at build time. |
 | `github.com/google/uuid` | Existing: UUID generation for default IDs |
 
 **Downstream dependents** (specs that build on this spec's tables and interfaces):

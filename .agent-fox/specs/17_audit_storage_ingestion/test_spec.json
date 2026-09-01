@@ -12,7 +12,7 @@
       "preconditions": [
         "A temporary directory is available via t.TempDir()",
         "CGO_ENABLED=1 is set in the build environment",
-        "go-duckdb driver is imported"
+        "duckdb-go driver is imported"
       ],
       "input": "path = filepath.Join(t.TempDir(), 'subdir', 'audit.duckdb')",
       "expected": "audit.OpenDB(path) returns (*sql.DB, nil); the parent directory 'subdir' is created; db.Ping() returns nil",
@@ -1726,7 +1726,7 @@
         "Echo HTTP framework with auth middleware",
         "audit events handler (internal/audit/handlers.go)",
         "Store (internal/audit/store.go)",
-        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "DuckDB via duckdb-go driver (temp-file database in t.TempDir())",
         "defaultSeverityFor (internal/audit/severity.go)",
         "validateRunID (internal/audit/validate.go)"
       ],
@@ -1745,7 +1745,7 @@
         "Echo HTTP framework with auth middleware",
         "batch events handler (internal/audit/handlers.go)",
         "Store (internal/audit/store.go)",
-        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "DuckDB via duckdb-go driver (temp-file database in t.TempDir())",
         "validateRunID (internal/audit/validate.go)"
       ],
       "mockable": [],
@@ -1764,7 +1764,7 @@
         "Echo HTTP framework with auth middleware",
         "postmortem handler (internal/audit/handlers.go)",
         "Store (internal/audit/store.go)",
-        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "DuckDB via duckdb-go driver (temp-file database in t.TempDir())",
         "validateRunID (internal/audit/validate.go)"
       ],
       "mockable": [],
@@ -1782,7 +1782,7 @@
         "Echo HTTP framework with auth middleware",
         "events query handler (internal/audit/handlers.go)",
         "Store (internal/audit/store.go)",
-        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "DuckDB via duckdb-go driver (temp-file database in t.TempDir())",
         "validateRunID (internal/audit/validate.go)"
       ],
       "mockable": [],
@@ -1805,7 +1805,7 @@
         "audit.NewEmitter (internal/audit/emitter.go)",
         "audit.RegisterRoutes (internal/audit/routes.go)",
         "audit.Permissions (internal/audit/permissions.go)",
-        "DuckDB via go-duckdb driver",
+        "DuckDB via duckdb-go driver",
         "Echo HTTP framework"
       ],
       "mockable": [

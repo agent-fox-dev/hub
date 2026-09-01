@@ -7,7 +7,7 @@
   "glossary": {
     "AF_AUDIT_DB_PATH": "Environment variable that overrides the default DuckDB audit database file path; defaults to `<data_dir>/audit.duckdb` derived from the hub's SQLite database directory.",
     "ActorType": "Field on HubEvent indicating the credential type of the actor; one of: admin_token, api_key, pat, system.",
-    "CGO_ENABLED": "Go build environment variable that must be set to 1 to enable CGo, required for the go-duckdb driver.",
+    "CGO_ENABLED": "Go build environment variable that must be set to 1 to enable CGo, required for the duckdb-go driver.",
     "Emitter": "Go interface in the internal/audit package with a single Emit method for writing hub-internal audit events.",
     "HubEvent": "Go struct representing a hub-internal audit event passed to the Emitter interface.",
     "INSERT OR IGNORE": "DuckDB SQL statement variant that silently skips insertion when a record with the same primary key already exists, used for idempotent ingestion.",
@@ -35,7 +35,7 @@
     "defaultSeverityFor": "Go function in internal/audit/severity.go that maps an event_type string to its default severity value.",
     "event_to_json": "afaudit serializer function that produces the JSON shape accepted by the hub's audit ingestion endpoints.",
     "extraPerms": "Slice of apikit.Permission values collected in cmd/af-hub/main.go and registered with the auth system.",
-    "go-duckdb": "The github.com/marcboeker/go-duckdb package providing a CGo-based database/sql-compatible DuckDB driver.",
+    "duckdb-go": "The github.com/duckdb/duckdb-go package providing an official DuckDB-maintained, CGo-based database/sql-compatible DuckDB driver.",
     "has_more": "Boolean field in paginated GET response envelopes indicating whether additional records exist beyond the current page.",
     "hub_audit_events": "DuckDB table storing hub-internal audit events; schema defined in this spec, populated by spec 18.",
     "ingested_at": "Timestamp column present in all audit tables recording when the hub received and stored the record.",
@@ -73,7 +73,7 @@
           "id": "17-REQ-1.1",
           "ears_pattern": "event_driven",
           "system": "audit.OpenDB",
-          "action": "call os.MkdirAll on the parent directory of path, then open a DuckDB connection using the go-duckdb driver with path as the DSN",
+          "action": "call os.MkdirAll on the parent directory of path, then open a DuckDB connection using the duckdb-go driver with path as the DSN",
           "return_contract": "returns (*sql.DB, nil) on success",
           "trigger": "the hub calls audit.OpenDB(path) at startup"
         },
@@ -1591,7 +1591,7 @@
         },
         {
           "actor": "audit.OpenDB",
-          "action": "calls os.MkdirAll on the parent directory of the resolved path, then opens the DuckDB connection via the go-duckdb driver"
+          "action": "calls os.MkdirAll on the parent directory of the resolved path, then opens the DuckDB connection via the duckdb-go driver"
         },
         {
           "actor": "audit.InitSchema",
@@ -1778,12 +1778,12 @@
   ],
   "external_apis": [
     {
-      "package": "github.com/marcboeker/go-duckdb",
+      "package": "github.com/duckdb/duckdb-go",
       "version": "latest compatible with Go 1.26+",
       "symbols": [
         {
           "name": "Driver",
-          "import_path": "github.com/marcboeker/go-duckdb",
+          "import_path": "github.com/duckdb/duckdb-go",
           "signature": "database/sql-compatible driver registered under the name \"duckdb\"",
           "notes": "Requires CGO_ENABLED=1 at build time. DSN is a plain file path (e.g., /data/audit.duckdb). Use sql.Open(\"duckdb\", path) to open a connection. In-memory DSN (:memory:) is supported but tests use temp-file DuckDB instances via t.TempDir() for isolation."
         }

@@ -548,8 +548,8 @@
           "details": [
             "Create internal/audit/db.go with func OpenDB(path string) (*sql.DB, error).",
             "Call os.MkdirAll(filepath.Dir(path), 0755) before sql.Open; return error if MkdirAll fails.",
-            "Use sql.Open(\"duckdb\", path) with the go-duckdb driver; call db.Ping() to verify connectivity.",
-            "Import _ \"github.com/marcboeker/go-duckdb\" for driver registration.",
+            "Use sql.Open(\"duckdb\", path) with the duckdb-go driver; call db.Ping() to verify connectivity.",
+            "Import _ \"github.com/duckdb/duckdb-go\" for driver registration.",
             "Return (*sql.DB, error) — never panic on failure."
           ],
           "test_spec_refs": [
@@ -890,9 +890,9 @@
         },
         {
           "id": "7.3",
-          "title": "Add CGo build constraint and go-duckdb dependency",
+          "title": "Add CGo build constraint and duckdb-go dependency",
           "details": [
-            "Add github.com/marcboeker/go-duckdb to go.mod via go get.",
+            "Add github.com/duckdb/duckdb-go to go.mod via go get.",
             "Add a build tag comment // go:build cgo or document in Makefile that CGO_ENABLED=1 is required for building the audit package.",
             "Update CI configuration to ensure jobs building or testing internal/audit run on a host with CGo available.",
             "Verify the binary builds successfully with CGO_ENABLED=1 go build ./cmd/af-hub/..."
