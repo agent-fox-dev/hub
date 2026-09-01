@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -20,14 +22,14 @@ import (
 // database for integration tests.
 type auditTestEnv struct {
 	echo     *echo.Echo
-	duckDB   *sql.DB
+	db       *sql.DB
 	sqliteDB *sql.DB
 	store    Store
 }
 
-// newAuditTestEnv creates an Echo server with session routes mounted for
-// testing. Uses a real DuckDB database in t.TempDir() initialized with
-// the agent_sessions and token_usage schema.
+// newAuditTestEnv creates an Echo server with session and ingestion routes
+// mounted for testing. Uses a real DuckDB database in t.TempDir() initialized
+// with the agent_sessions and token_usage schema.
 func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	t.Helper()
 	duckDB := openTestAuditDB(t)
@@ -43,10 +45,13 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	// Register session routes.
 	RegisterSessionRoutes(api, store, nil)
 
+	// Register ingestion and query routes.
+	RegisterRoutes(api, store, &nopEmitter{})
+
 	return &auditTestEnv{
-		echo:   e,
-		duckDB: duckDB,
-		store:  store,
+		echo: e,
+		db:   duckDB,
+		store: store,
 	}
 }
 
@@ -65,10 +70,11 @@ func newAuditTestEnvWithSQLite(t *testing.T) *auditTestEnv {
 	api.Use(testAuthMiddleware())
 
 	RegisterSessionRoutes(api, store, sqliteDB)
+	RegisterRoutes(api, store, &nopEmitter{})
 
 	return &auditTestEnv{
 		echo:     e,
-		duckDB:   duckDB,
+		db:       duckDB,
 		sqliteDB: sqliteDB,
 		store:    store,
 	}
@@ -150,6 +156,143 @@ func openTestSQLiteDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// ---------------------------------------------------------------------------
+// HTTP handler test infrastructure
+// ---------------------------------------------------------------------------
+
+// nopStore implements Store with no-op methods. Used when handler stubs
+// don't call Store methods.
+type nopStore struct{}
+
+func (s *nopStore) InsertHubEvent(_ context.Context, _ HubEventRow) error {
+	return nil
+}
+
+// nopEmitter implements Emitter with no-op methods.
+type nopEmitter struct{}
+
+func (e *nopEmitter) Emit(_ context.Context, _ HubEvent) error {
+	return nil
+}
+
+// initHandlerTestSchema creates the DuckDB tables needed for handler tests.
+// This is a test-only function separate from InitSchema so that handler
+// tests do not depend on InitSchema being implemented.
+func initHandlerTestSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS agent_audit_events (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			event_type VARCHAR NOT NULL,
+			severity VARCHAR NOT NULL DEFAULT 'info',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			timestamp VARCHAR NOT NULL DEFAULT '',
+			payload VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS hub_audit_events (
+			id VARCHAR PRIMARY KEY,
+			event_type VARCHAR NOT NULL,
+			actor_id VARCHAR NOT NULL DEFAULT '',
+			actor_type VARCHAR NOT NULL DEFAULT '',
+			resource_type VARCHAR NOT NULL DEFAULT '',
+			resource_id VARCHAR NOT NULL DEFAULT '',
+			action VARCHAR NOT NULL DEFAULT '',
+			workspace VARCHAR NOT NULL DEFAULT '',
+			metadata VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS session_outcomes (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			status VARCHAR NOT NULL DEFAULT '',
+			timestamp VARCHAR NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			token_usage VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS tool_calls (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			tool_name VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			timestamp VARCHAR NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			input VARCHAR NOT NULL DEFAULT '{}',
+			output VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS tool_errors (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			tool_name VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			error_code VARCHAR NOT NULL DEFAULT '',
+			error_msg VARCHAR NOT NULL DEFAULT '',
+			timestamp VARCHAR NOT NULL DEFAULT '',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_traces (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			event_type VARCHAR NOT NULL DEFAULT '',
+			node_id VARCHAR NOT NULL DEFAULT '',
+			session_id VARCHAR NOT NULL DEFAULT '',
+			sequence INTEGER NOT NULL DEFAULT 0,
+			timestamp VARCHAR NOT NULL DEFAULT '',
+			data VARCHAR NOT NULL DEFAULT '{}',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS postmortems (
+			run_id VARCHAR PRIMARY KEY,
+			workspace VARCHAR NOT NULL DEFAULT '',
+			schema_version INTEGER NOT NULL DEFAULT 1,
+			run_status VARCHAR NOT NULL DEFAULT '',
+			started_at VARCHAR NOT NULL DEFAULT '',
+			completed_at VARCHAR NOT NULL DEFAULT '',
+			task_summary VARCHAR NOT NULL DEFAULT '{}',
+			cost_summary VARCHAR NOT NULL DEFAULT '{}',
+			blocked_tasks VARCHAR NOT NULL DEFAULT '[]',
+			session_history VARCHAR NOT NULL DEFAULT '[]',
+			ingested_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_sessions (
+			id VARCHAR PRIMARY KEY,
+			run_id VARCHAR NOT NULL DEFAULT '',
+			workspace VARCHAR NOT NULL DEFAULT '',
+			status VARCHAR NOT NULL DEFAULT '',
+			created_at VARCHAR NOT NULL DEFAULT '',
+			updated_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS token_usage (
+			id VARCHAR PRIMARY KEY,
+			session_id VARCHAR NOT NULL DEFAULT '',
+			run_id VARCHAR NOT NULL DEFAULT '',
+			workspace VARCHAR NOT NULL DEFAULT '',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_cost_usd DOUBLE NOT NULL DEFAULT 0.0,
+			recorded_at VARCHAR NOT NULL DEFAULT ''
+		)`,
+	}
+	for _, stmt := range ddl {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("initHandlerTestSchema: %v\nSQL: %s", err, stmt)
+		}
+	}
+}
+
 // testAuthMiddleware returns middleware that reads apikit.AuthInfo from the
 // X-Test-Auth JSON header and injects it via apikit.SetAuthInfo.
 func testAuthMiddleware() echo.MiddlewareFunc {
@@ -191,6 +334,12 @@ func (env *auditTestEnv) doRequest(t *testing.T, method, path, body string, auth
 	return rec
 }
 
+// doJSON performs an HTTP request against the test server with a JSON body
+// and optional auth. Returns the response recorder.
+func (env *auditTestEnv) doJSON(t *testing.T, method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
+	return env.doRequest(t, method, path, body, auth)
+}
+
 // adminAuth returns an apikit.AuthInfo representing an admin token.
 func adminAuth() *apikit.AuthInfo {
 	return &apikit.AuthInfo{
@@ -200,11 +349,16 @@ func adminAuth() *apikit.AuthInfo {
 }
 
 // apiKeyAuth returns an apikit.AuthInfo representing an API key credential.
-// The userID parameter maps to credential_id in session records.
-func apiKeyAuth(userID string) *apikit.AuthInfo {
+// The optional userID parameter maps to credential_id in session records.
+// If omitted, defaults to "test-user-id".
+func apiKeyAuth(userID ...string) *apikit.AuthInfo {
+	uid := "test-user-id"
+	if len(userID) > 0 {
+		uid = userID[0]
+	}
 	return &apikit.AuthInfo{
 		CredentialType: "api_key",
-		UserID:         userID,
+		UserID:         uid,
 	}
 }
 
@@ -224,7 +378,7 @@ func (env *auditTestEnv) seedSession(t *testing.T, s *Session) {
 		s.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := env.duckDB.Exec(
+	_, err := env.db.Exec(
 		`INSERT INTO agent_sessions (id, run_id, workspace_slug, node_id, archetype,
 			status, started_at, model, credential_id, credential_type, error_message,
 			ended_at, duration_ms, cache_creation_input_tokens, metadata, ingested_at)
@@ -246,7 +400,7 @@ func (env *auditTestEnv) seedTokenUsage(t *testing.T, u *TokenUsage) {
 		u.ReportedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := env.duckDB.Exec(
+	_, err := env.db.Exec(
 		`INSERT INTO token_usage (id, session_id, workspace_slug, model,
 			input_tokens, output_tokens, cache_read_tokens, reported_at, ingested_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -278,7 +432,7 @@ func (env *auditTestEnv) seedWorkspace(t *testing.T, slug, ownerID string) {
 func (env *auditTestEnv) countSessions(t *testing.T, id string) int {
 	t.Helper()
 	var count int
-	err := env.duckDB.QueryRow(
+	err := env.db.QueryRow(
 		"SELECT COUNT(*) FROM agent_sessions WHERE id = ?", id,
 	).Scan(&count)
 	if err != nil {
@@ -291,7 +445,7 @@ func (env *auditTestEnv) countSessions(t *testing.T, id string) int {
 func (env *auditTestEnv) getSessionStatus(t *testing.T, id string) string {
 	t.Helper()
 	var status string
-	err := env.duckDB.QueryRow(
+	err := env.db.QueryRow(
 		"SELECT status FROM agent_sessions WHERE id = ?", id,
 	).Scan(&status)
 	if err != nil {
@@ -374,3 +528,59 @@ func sessionID(n int) string {
 func usageID(n int) string {
 	return fmt.Sprintf("usage-%03d", n)
 }
+
+// apiErrorEnvelope represents the apikit JSON error response envelope.
+type apiErrorEnvelope struct {
+	Error struct {
+		Code      int    `json:"code"`
+		Message   string `json:"message"`
+		ErrorType string `json:"error_type,omitempty"`
+	} `json:"error"`
+}
+
+// parseJSON decodes the response body into the target struct.
+func parseJSON(t *testing.T, rec *httptest.ResponseRecorder, target any) {
+	t.Helper()
+	if err := json.NewDecoder(rec.Body).Decode(target); err != nil {
+		t.Fatalf("failed to decode JSON response: %v\nbody: %s", err, rec.Body.String())
+	}
+}
+
+// parseJSONMap decodes the response body into a map[string]any.
+func parseJSONMap(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	parseJSON(t, rec, &m)
+	return m
+}
+
+// queryTableCount returns the number of rows in the given table.
+func queryTableCount(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count)
+	if err != nil {
+		t.Fatalf("queryTableCount(%s): %v", table, err)
+	}
+	return count
+}
+
+// uuidRegex matches standard UUID format (8-4-4-4-12 hex digits with dashes).
+var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// isValidUUID checks whether s matches the standard UUID format.
+func isValidUUID(s string) bool {
+	return uuidRegex.MatchString(s)
+}
+
+// Test constants for handler tests.
+const (
+	testRunID    = "20260704_143022_a1b2c3"
+	testSlug     = "ws1"
+	eventsPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events"
+	outcomesPath = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes"
+	callsPath    = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls"
+	errorsPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors"
+	tracesPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces"
+	pmPath       = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem"
+)

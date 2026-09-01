@@ -26,3 +26,20 @@ func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB) {
 	api.GET("/sessions/:id", handleGetSession(store, sqliteDB))
 	api.GET("/sessions/:id/usage", handleListSessionUsage(store, sqliteDB))
 }
+
+// RegisterRoutes registers all audit ingestion and query HTTP routes
+// on the provided Echo route group.
+func RegisterRoutes(api *echo.Group, store Store, emitter Emitter) {
+	runs := api.Group("/workspaces/:slug/runs/:run_id")
+
+	// Agent ingestion endpoints.
+	runs.POST("/events", handlePostEvent(store))
+	runs.POST("/sessions/outcomes", handlePostSessionOutcome(store))
+	runs.POST("/tools/calls", handlePostToolCall(store))
+	runs.POST("/tools/errors", handlePostToolError(store))
+	runs.POST("/traces", handlePostTrace(store))
+
+	// Postmortem endpoints.
+	runs.POST("/postmortem", handlePostPostmortem(store))
+	runs.GET("/postmortem", handleGetPostmortem(store))
+}
