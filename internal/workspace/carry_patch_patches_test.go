@@ -1011,9 +1011,9 @@ func TestCarryPatch_ListPatches_WorkspaceNotFound(t *testing.T) {
 }
 
 // 15-REQ-9.E2: GET /api/v1/workspaces/:slug/patches on a standard workspace
-// returns HTTP 200 with an empty array.
+// returns HTTP 200 with an empty array (standard workspaces simply have no patches).
 // Requirement: 15-REQ-9.E2
-func TestCarryPatch_ListPatches_StandardWorkspaceReturns400(t *testing.T) {
+func TestCarryPatch_ListPatches_StandardWorkspaceReturnsEmptyArray(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("user-1")
 
@@ -1026,9 +1026,18 @@ func TestCarryPatch_ListPatches_StandardWorkspaceReturns400(t *testing.T) {
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/std-list-ws/patches", "", auth)
 
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d; want %d; body: %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
+			rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	// Verify the response is an empty JSON array.
+	var patches []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &patches); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(patches) != 0 {
+		t.Errorf("got %d patches; want 0 (empty array for standard workspace)", len(patches))
 	}
 }
 

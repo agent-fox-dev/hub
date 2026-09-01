@@ -1011,3 +1011,147 @@ func assertPositionsUnchanged(t *testing.T, before, after []patchPosition) {
 		}
 	}
 }
+
+// seedSoftDeletedPatch inserts a patch row with status='deleted' and deleted_at set.
+func seedSoftDeletedPatch(t *testing.T, db *sql.DB, id, workspaceSlug, branchName string, position int) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(
+		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, deleted_at, added_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'deleted', ?, ?, ?)`,
+		id, workspaceSlug, branchName, position, now, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seedSoftDeletedPatch(%q, %q, %q, %d) failed: %v", id, workspaceSlug, branchName, position, err)
+	}
+}
+
+// ========================================================================
+// Soft-deleted patch edge case tests (reviewer findings)
+// These verify that patchCount, reorderPatches, and updatePatchPosition
+// correctly exclude soft-deleted patches (status='deleted') so that
+// position contiguity (15-PROP-1) is maintained for visible patches.
+// ========================================================================
+
+// patchCount should exclude soft-deleted patches so position validation
+// matches what the user sees via listPatches.
+func TestCarryPatch_PatchCount_ExcludesSoftDeleted(t *testing.T) {
+	db := openTestDB(t)
+	ensureCarryPatchColumns(t, db)
+	slug := "cp-count-softdel"
+
+	seedCarryPatchWorkspaceRaw(t, db, slug,
+		"https://github.com/fork/repo.git",
+		"https://github.com/upstream/repo.git",
+		"deploy")
+
+	// Seed 3 active patches and 1 soft-deleted.
+	seedPatchRaw(t, db, "cnt-1", slug, "feature/a", 1)
+	seedPatchRaw(t, db, "cnt-2", slug, "feature/b", 2)
+	seedPatchRaw(t, db, "cnt-3", slug, "feature/c", 3)
+	seedSoftDeletedPatch(t, db, "cnt-del", slug, "feature/deleted", 4)
+
+	count, err := patchCount(db, slug)
+	if err != nil {
+		t.Fatalf("patchCount() returned error: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("patchCount() = %d; want 3 (should exclude soft-deleted)", count)
+	}
+}
+
+// reorderPatches should only require IDs for non-deleted patches.
+// A workspace with 3 active + 1 soft-deleted should accept reorder of just
+// the 3 active IDs.
+func TestCarryPatch_ReorderPatches_ExcludesSoftDeleted(t *testing.T) {
+	db := openTestDB(t)
+	ensureCarryPatchColumns(t, db)
+	slug := "cp-reorder-softdel"
+
+	seedCarryPatchWorkspaceRaw(t, db, slug,
+		"https://github.com/fork/repo.git",
+		"https://github.com/upstream/repo.git",
+		"deploy")
+
+	seedPatchRaw(t, db, "ro-1", slug, "feature/a", 1)
+	seedPatchRaw(t, db, "ro-2", slug, "feature/b", 2)
+	seedPatchRaw(t, db, "ro-3", slug, "feature/c", 3)
+	seedSoftDeletedPatch(t, db, "ro-del", slug, "feature/deleted", 4)
+
+	// Reorder only the 3 active patches — should succeed.
+	patches, err := reorderPatches(db, slug, []string{"ro-3", "ro-1", "ro-2"})
+	if err != nil {
+		t.Fatalf("reorderPatches() returned error: %v", err)
+	}
+	if len(patches) != 3 {
+		t.Fatalf("reorderPatches() returned %d patches; want 3", len(patches))
+	}
+
+	// Verify new positions.
+	expected := []struct {
+		id       string
+		position int
+	}{
+		{"ro-3", 1},
+		{"ro-1", 2},
+		{"ro-2", 3},
+	}
+	for i, exp := range expected {
+		if patches[i].ID != exp.id {
+			t.Errorf("patches[%d].ID = %q; want %q", i, patches[i].ID, exp.id)
+		}
+		if patches[i].Position != exp.position {
+			t.Errorf("patches[%d].Position = %d; want %d", i, patches[i].Position, exp.position)
+		}
+	}
+}
+
+// updatePatchPosition should only consider non-deleted patches when
+// computing the new ordering.
+func TestCarryPatch_UpdatePatchPosition_ExcludesSoftDeleted(t *testing.T) {
+	db := openTestDB(t)
+	ensureCarryPatchColumns(t, db)
+	slug := "cp-movepos-softdel"
+
+	seedCarryPatchWorkspaceRaw(t, db, slug,
+		"https://github.com/fork/repo.git",
+		"https://github.com/upstream/repo.git",
+		"deploy")
+
+	seedPatchRaw(t, db, "mv-1", slug, "feature/a", 1)
+	seedPatchRaw(t, db, "mv-2", slug, "feature/b", 2)
+	seedPatchRaw(t, db, "mv-3", slug, "feature/c", 3)
+	seedSoftDeletedPatch(t, db, "mv-del", slug, "feature/deleted", 4)
+
+	// Move mv-1 to position 3 (among visible patches only).
+	err := updatePatchPosition(db, slug, "mv-1", 3)
+	if err != nil {
+		t.Fatalf("updatePatchPosition() returned error: %v", err)
+	}
+
+	// Verify resulting positions of active patches: mv-2=1, mv-3=2, mv-1=3.
+	patches, err := listPatches(db, slug)
+	if err != nil {
+		t.Fatalf("listPatches() returned error: %v", err)
+	}
+	if len(patches) != 3 {
+		t.Fatalf("listPatches() returned %d patches; want 3", len(patches))
+	}
+
+	expected := []struct {
+		id       string
+		position int
+	}{
+		{"mv-2", 1},
+		{"mv-3", 2},
+		{"mv-1", 3},
+	}
+	for i, exp := range expected {
+		if patches[i].ID != exp.id {
+			t.Errorf("patches[%d].ID = %q; want %q", i, patches[i].ID, exp.id)
+		}
+		if patches[i].Position != exp.position {
+			t.Errorf("patches[%d].Position = %d; want %d", i, patches[i].Position, exp.position)
+		}
+	}
+}

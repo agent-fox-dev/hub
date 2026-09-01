@@ -290,11 +290,13 @@ func updatePatch(db *sql.DB, p *Patch) (*Patch, error) {
 	return p, nil
 }
 
-// patchCount returns the number of patches for a workspace.
+// patchCount returns the number of non-deleted patches for a workspace.
+// Soft-deleted patches (status='deleted') are excluded so position validation
+// matches the visible patch set returned by listPatches (15-PROP-1).
 func patchCount(db *sql.DB, workspaceSlug string) (int, error) {
 	var count int
 	err := db.QueryRow(
-		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ?`,
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL)`,
 		workspaceSlug,
 	).Scan(&count)
 	if err != nil {
@@ -477,9 +479,11 @@ func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*P
 	}
 	defer tx.Rollback()
 
-	// Get existing patches for the workspace.
+	// Get existing non-deleted patches for the workspace. Soft-deleted patches
+	// (status='deleted') are excluded so the reorder only considers the visible
+	// set returned by listPatches (15-PROP-1, 15-PROP-7).
 	rows, err := tx.Query(
-		`SELECT id FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		`SELECT id FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {
@@ -587,9 +591,11 @@ func updatePatchPosition(db *sql.DB, workspaceSlug, patchID string, newPosition 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Collect all patches for this workspace in current position order.
+	// Collect all non-deleted patches for this workspace in current position
+	// order. Soft-deleted patches are excluded to maintain position contiguity
+	// among the visible set (15-PROP-1).
 	rows, err := tx.Query(
-		`SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		`SELECT id, position FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {

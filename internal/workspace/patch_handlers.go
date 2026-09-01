@@ -274,8 +274,9 @@ func handleListPatches(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
+		// 15-REQ-9.E2: Standard workspaces return an empty array (they have no patches).
 		if ws.WorkspaceMode != "carry_patch" {
-			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
+			return c.JSON(http.StatusOK, []map[string]any{})
 		}
 
 		patches, err := listPatches(db, slug)
