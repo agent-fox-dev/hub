@@ -277,7 +277,7 @@
           "requirement_refs": [
             "17-REQ-7"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -297,7 +297,7 @@
           "requirement_refs": [
             "17-REQ-12"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -321,7 +321,7 @@
             "17-REQ-14",
             "17-REQ-21"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -347,7 +347,7 @@
             "17-REQ-18",
             "17-REQ-21"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -370,7 +370,7 @@
           "requirement_refs": [
             "17-REQ-20"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -391,7 +391,7 @@
             "17-REQ-22",
             "17-REQ-24"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
