@@ -623,6 +623,7 @@
           "id": "5.4",
           "title": "Implement store.go — query methods with filters, cursor pagination, and sort order",
           "details": [
+            "Define a shared QueryParams struct in internal/audit/types.go: type QueryParams struct { Since *time.Time; Until *time.Time; Order string; Cursor string; Limit int; EventType string; Severity string; NodeID string; SessionID string; ToolName string; Status string }. Each query method uses only the relevant subset of fields (e.g., QueryToolCalls uses NodeID, SessionID, ToolName, Since, Until, Order, Cursor, Limit but not EventType, Severity, or Status); unused fields are ignored.",
             "Implement QueryAuditEvents(ctx, runID string, params QueryParams) ([]AuditEvent, *Cursor, error) with dynamic WHERE clause building for event_type, severity, node_id, since, until filters.",
             "Implement QuerySessionOutcomes, QueryToolCalls, QueryToolErrors, QueryAgentTraces with their respective filter parameters.",
             "Implement GetPostmortem(ctx, runID string) (*Postmortem, error) returning nil if not found.",

@@ -105,8 +105,13 @@ hub event uses the `HubEvent` struct defined in spec 17 and is stored in the
 | secrets | Create variable | `hub.variable.create` | `{"scope": "...", "key": "..."}` |
 | secrets | Update variable | `hub.variable.update` | `{"scope": "...", "key": "..."}` |
 | secrets | Delete variable | `hub.variable.delete` | `{"scope": "...", "key": "..."}` |
-| gitserver | Push | `hub.git.push` | `{"head_sha": "...", "refs_updated": [...]}` |
-| audit | Force-close session | `hub.session.force_closed` | `{"session_id": "...", "reason": "..."}` |
+| gitserver | Push | `hub.git.push` | `{"head_sha": "...", "refs_updated": [...]}` | resource_type=`workspace` (git pushes are workspace-scoped operations) |
+
+> **Note:** `hub.session.force_closed` (emitted when a session is force-closed due
+> to workspace archive or delete) is **deferred to spec 19
+> (sessions_metrics_retention)**. Spec 19 defines the full emission specification
+> including `resource_type`, `resource_id`, the emitting package
+> (`internal/sessions`), the corresponding REQ, task, and test case.
 
 #### Emitter Injection Pattern
 
@@ -234,11 +239,12 @@ Query parameters:
 |---|---|---|---|
 | `node_id` | string | **Yes** | Node to reconstruct |
 
-Response maps trace event types to conversation roles:
-- `session.init` → `system` (content from `payload.system_prompt`)
-- `assistant.message` → `assistant`
-- `tool.use` → `tool_use` (includes `tool_name`)
-- `tool.error` → `tool_error` (includes `tool_name`)
+Response maps `agent_traces` rows to transcript messages using the actual DDL columns:
+- `role` column → message role field
+- `content` column → content (string)
+- `tool_calls` column → tool_calls (JSON array or null)
+
+Messages are ordered by `created_at ASC`. All rows matching the given `workspace_slug`, `run_id`, and `node_id` are included.
 
 ##### Response Schema
 

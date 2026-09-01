@@ -91,12 +91,11 @@
       "kind": "unit",
       "description": "audit.InitSchema executes all DDL within a single transaction so partial initialization is never committed",
       "preconditions": [
-        "Fresh DuckDB database",
-        "Ability to simulate a DDL failure mid-transaction (e.g., by injecting a bad SQL statement)"
+        "A *sql.DB whose underlying connection succeeds for the first N DDL statements then returns an error (simulated via a test-only sql.Driver mock registered with database/sql, or by opening a real DuckDB on a t.TempDir() path, manually executing the first five CREATE TABLE statements to produce a partial schema, closing the connection, overwriting the file with garbage bytes to corrupt it, then reopening via audit.OpenDB)"
       ],
-      "input": "InitSchema with a simulated failure after the 5th CREATE TABLE statement",
-      "expected": "Either all nine tables are created or none are; no partial set of tables is committed",
-      "assertion_pseudocode": "// Use a wrapper that fails mid-transaction; err = audit.InitSchemaWithDB(faultyDB); assert err != nil; for table in allNineTables: assert tableExists(db, table) == false"
+      "input": "audit.InitSchema(db) where db is a *sql.DB that will fail mid-transaction after some DDL statements succeed",
+      "expected": "InitSchema returns a non-nil error; none of the nine tables exist in the database (transaction was rolled back)",
+      "assertion_pseudocode": "db = newMidTransactionFailingDB(); err = audit.InitSchema(db); assert err != nil; for table in ['agent_audit_events','hub_audit_events','session_outcomes','tool_calls','tool_errors','agent_traces','postmortems','agent_sessions','token_usage']: assert tableExists(db, table) == false"
     },
     {
       "id": "TS-17-8",

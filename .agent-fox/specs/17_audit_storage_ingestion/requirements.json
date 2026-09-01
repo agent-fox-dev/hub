@@ -13,7 +13,7 @@
     "INSERT OR IGNORE": "DuckDB SQL statement variant that silently skips insertion when a record with the same primary key already exists, used for idempotent ingestion.",
     "JSONL": "JSON Lines format \u2014 newline-delimited JSON records used by afaudit for local telemetry file storage.",
     "Retry-After": "HTTP response header returned with 503 responses indicating the number of seconds the client should wait before retrying.",
-    "Store": "Go struct in the internal/audit package that wraps *sql.DB and provides CRUD methods for all audit tables.",
+    "Store": "The audit.Store interface in internal/audit/store.go, defining Insert(ctx, HubEvent) error and query methods. The concrete implementation is audit.store (unexported struct). Spec 18 accepts an audit.Store interface, not the concrete type.",
     "afaudit": "The agent-side audit library that produces structured telemetry (audit events, session outcomes, tool calls, tool errors, trace events) serialized as JSONL files.",
     "agent_audit_events": "DuckDB table storing afaudit AuditEvent records submitted by agents.",
     "agent_sessions": "DuckDB table storing hub-managed agent session lifecycle records; schema defined in this spec, populated by spec 19.",
@@ -30,7 +30,7 @@
     "blocked_tasks": "Optional JSON array in a postmortem request body containing objects with node_id and reason fields.",
     "config.toml": "Hub configuration file containing the database.path field used to resolve the data directory.",
     "cost_summary": "Required sub-object in a postmortem request body containing aggregated token and cost totals.",
-    "cursor": "Opaque base64-encoded pagination token encoding a JSON object with ts and id fields, used to retrieve the next page of results.",
+    "cursor": "Opaque base64url-encoded (RFC 4648 §5, no padding) pagination token encoding a JSON object with ts (RFC3339Nano timestamp) and id (UUID) fields, used to retrieve the next page of results.",
     "data_dir": "The directory containing the hub's SQLite database file, resolved from the `database.path` field in config.toml.",
     "defaultSeverityFor": "Go function in internal/audit/severity.go that maps an event_type string to its default severity value.",
     "event_to_json": "afaudit serializer function that produces the JSON shape accepted by the hub's audit ingestion endpoints.",
@@ -57,7 +57,8 @@
     "workspace_access_denied": "Error condition returned as HTTP 403 when a generic token's owner does not have write access to the target workspace.",
     "workspace_archived": "Error condition returned as HTTP 409 when an agent attempts to ingest data into a workspace that has been archived.",
     "workspace_mismatch": "Error condition returned as HTTP 403 when a workspace-scoped token's workspace does not match the URL :slug parameter.",
-    "^\\d{8}_\\d{6}_[0-9a-f]{6}$": "Regular expression pattern for validating run_id format: YYYYMMDD_HHMMSS_6hexchars (e.g. 20260704_143022_a1b2c3)"
+    "^\\d{8}_\\d{6}_[0-9a-f]{6}$": "Regular expression pattern for validating run_id format: YYYYMMDD_HHMMSS_6hexchars (e.g. 20260704_143022_a1b2c3)",
+    "QueryParams": "Go struct defined in internal/audit/types.go used by all Store query methods: type QueryParams struct { Since *time.Time; Until *time.Time; Order string; Cursor string; Limit int; EventType string; Severity string; NodeID string; SessionID string; ToolName string; Status string }. Each query method uses only the relevant subset of fields."
   },
   "requirements": [
     {
@@ -100,6 +101,22 @@
           "action": "register a deferred close of the DuckDB connection to execute on hub shutdown",
           "return_contract": "DuckDB connection is closed cleanly when the hub process exits",
           "trigger": "the hub successfully opens the DuckDB connection"
+        },
+        {
+          "id": "17-REQ-1.5",
+          "ears_pattern": "event_driven",
+          "system": "hub startup sequence in cmd/af-hub/main.go",
+          "action": "log the error via slog at error level and abort startup via os.Exit(1) or equivalent — do not continue with a nil audit Store",
+          "return_contract": "hub process exits with a non-zero exit code; the error message is logged",
+          "trigger": "audit.OpenDB returns an error"
+        },
+        {
+          "id": "17-REQ-1.6",
+          "ears_pattern": "event_driven",
+          "system": "hub shutdown sequence",
+          "action": "call the audit emitter Shutdown() method, blocking until the internal event channel is drained or a 5-second timeout elapses, before the hub process exits",
+          "return_contract": "in-flight audit events are flushed before exit; no events are silently dropped on graceful shutdown",
+          "trigger": "the hub receives SIGTERM or SIGINT"
         }
       ],
       "edge_cases": [
@@ -278,8 +295,8 @@
           "id": "17-REQ-4.E1",
           "ears_pattern": "unwanted",
           "system": "default Emitter implementation",
-          "action": "propagate the nil context to the Store insert; if the insert panics or errors, log and swallow per the emission error policy",
-          "return_contract": "returns nil; does not panic the handler goroutine",
+          "action": "replace the nil context with context.Background() and log a warning via slog — do NOT return an error; callers must not observe a nil-context as a failure",
+          "return_contract": "returns nil; the event is emitted using context.Background(); no error is returned to the caller",
           "error_condition": "Emit is called with a nil context"
         },
         {
@@ -867,7 +884,7 @@
           "id": "17-REQ-14.2",
           "ears_pattern": "event_driven",
           "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
-          "action": "decode the base64 cursor to extract ts and id, apply the appropriate tuple comparison (timestamp, id) > (cursor.ts, cursor.id) for asc or < for desc, and return the next page",
+          "action": "decode the base64url cursor to extract ts and id, apply the appropriate tuple comparison (timestamp, id) > (cursor.ts, cursor.id) for asc or < for desc, and return the next page",
           "return_contract": "returns HTTP 200 with the next page of events and updated next_cursor",
           "trigger": "a cursor parameter is provided from a previous response"
         }
@@ -1112,8 +1129,8 @@
           "id": "17-REQ-20.1",
           "ears_pattern": "ubiquitous",
           "system": "all audit ingestion endpoints",
-          "action": "store the workspace slug from the URL :slug parameter alongside every agent record in the workspace column",
-          "return_contract": "all stored records have a non-empty workspace column matching the URL :slug"
+          "action": "store the workspace slug from the URL :slug parameter alongside every agent record in the workspace_slug column",
+          "return_contract": "all stored records have a non-empty workspace_slug column matching the URL :slug"
         },
         {
           "id": "17-REQ-20.2",
@@ -1146,6 +1163,13 @@
           "action": "reject the request",
           "return_contract": "returns HTTP 404 with apikit error body",
           "error_condition": "the workspace identified by :slug does not exist"
+        },
+        {
+          "id": "17-REQ-20.6",
+          "ears_pattern": "ubiquitous",
+          "system": "all five GET query endpoints under /workspaces/:slug/runs/:run_id/",
+          "action": "include WHERE workspace_slug = :workspace_slug in their DuckDB queries, enforced regardless of caller credentials",
+          "return_contract": "query results are always filtered to the workspace identified by :slug; cross-workspace data leakage cannot occur"
         }
       ],
       "edge_cases": [
@@ -1180,8 +1204,8 @@
           "id": "17-REQ-21.1",
           "ears_pattern": "ubiquitous",
           "system": "all paginated GET endpoints",
-          "action": "encode the cursor as a base64-encoded JSON object with fields ts (ISO 8601 timestamp of the last returned record) and id (UUID of the last returned record); include next_cursor as null and has_more as false when no further records exist",
-          "return_contract": "next_cursor is a non-null base64 string when has_more is true; null when has_more is false"
+          "action": "encode the cursor as a base64url-encoded (RFC 4648 §5, no padding) JSON object with fields ts (RFC3339Nano timestamp of the last returned record) and id (UUID of the last returned record); include next_cursor as null and has_more as false when no further records exist",
+          "return_contract": "next_cursor is a non-null base64url string when has_more is true; null when has_more is false"
         },
         {
           "id": "17-REQ-21.2",
@@ -1240,6 +1264,14 @@
           "system": "Store write methods",
           "action": "not add an application-level mutex; rely on DuckDB's internal write serialization to queue concurrent writers",
           "return_contract": "concurrent write requests are serialized by DuckDB without application-level locking"
+        },
+        {
+          "id": "17-REQ-22.3",
+          "ears_pattern": "event_driven",
+          "system": "Store write methods",
+          "action": "wrap each INSERT in a context with a 2-second deadline (configurable via AF_AUDIT_WRITE_TIMEOUT_MS, default 2000); if the INSERT exceeds the deadline, log a warning via slog with the elapsed time and drop the event — do not block the caller",
+          "return_contract": "returns a timeout error to the handler, which responds with HTTP 503 and Retry-After: 5",
+          "trigger": "a DuckDB INSERT is in progress and the configured write timeout is exceeded"
         }
       ],
       "edge_cases": [
@@ -1383,7 +1415,7 @@
       "id": "17-PROP-4",
       "title": "Workspace attribution completeness",
       "for_any": "record stored in any audit table via an ingestion endpoint",
-      "invariant": "the workspace column equals the :slug URL path parameter of the request that created the record",
+      "invariant": "the workspace_slug column equals the :slug URL path parameter of the request that created the record",
       "validates": [
         "17-REQ-20.1"
       ]
@@ -1747,7 +1779,7 @@
     },
     {
       "id": "17-ERR-20",
-      "condition": "cursor query parameter is not valid base64 or does not decode to a JSON object with ts and id fields",
+      "condition": "cursor query parameter is not valid base64url or does not decode to a JSON object with ts and id fields",
       "behavior": "handler returns HTTP 400 with apikit error body",
       "requirement_id": "17-REQ-14.E2"
     },
@@ -1774,6 +1806,12 @@
       "condition": "audit.InitSchema transaction fails (e.g., corrupted DuckDB file)",
       "behavior": "transaction is rolled back; audit.InitSchema returns a non-nil error; hub startup aborts",
       "requirement_id": "17-REQ-2.E1"
+    },
+    {
+      "id": "17-ERR-25",
+      "condition": "audit.OpenDB returns an error during hub startup",
+      "behavior": "hub logs the error via slog at error level and aborts startup via os.Exit(1) or equivalent; does not continue with a nil audit Store",
+      "requirement_id": "17-REQ-1.5"
     }
   ],
   "external_apis": [
@@ -1785,7 +1823,7 @@
           "name": "Driver",
           "import_path": "github.com/duckdb/duckdb-go",
           "signature": "database/sql-compatible driver registered under the name \"duckdb\"",
-          "notes": "Requires CGO_ENABLED=1 at build time. DSN is a plain file path (e.g., /data/audit.duckdb). Use sql.Open(\"duckdb\", path) to open a connection. In-memory DSN (:memory:) is supported but tests use temp-file DuckDB instances via t.TempDir() for isolation."
+          "notes": "Requires CGO_ENABLED=1 at build time. DSN is always a file path (e.g., /data/audit.duckdb). Use sql.Open(\"duckdb\", path) to open a connection. Tests must use t.TempDir() for isolation — :memory: is NOT used because it does not exercise the file-locking and MkdirAll paths."
         }
       ]
     }

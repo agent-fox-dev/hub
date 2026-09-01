@@ -1158,6 +1158,32 @@
         "route_registered": true
       },
       "assertion_pseudocode": "router := setupEchoWithAuditRoutes(store, sseManager); resp := httptest.NewRecorder(); router.ServeHTTP(resp, newRequest('GET', '/api/v1/events', validToken)); assert resp.Code == 200; assert resp.Header().Get('Content-Type') contains 'text/event-stream'"
+    },
+    {
+      "id": "TS-18-51",
+      "requirement_id": "18-REQ-7.1",
+      "kind": "unit",
+      "description": "Transcript endpoint enforces workspace_slug isolation: a run_id that exists in workspace-A returns an empty messages array when queried via workspace-B's URL.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with agent_traces rows for run_id=run-uuid associated with workspace_slug=workspace-a",
+        "An authenticated Echo context with audit:read scope is set up"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/workspace-b/runs/run-uuid/transcript",
+        "query_params": {
+          "node_id": "node-uuid"
+        }
+      },
+      "expected": {
+        "http_status": 200,
+        "body": {
+          "run_id": "run-uuid",
+          "node_id": "node-uuid",
+          "messages": []
+        }
+      },
+      "assertion_pseudocode": "seed agent_traces with rows where workspace_slug='workspace-a' and run_id='run-uuid'; GET /api/v1/workspaces/workspace-b/runs/run-uuid/transcript?node_id=node-uuid; assert resp.Code == 200; assert len(body.messages) == 0"
     }
   ],
   "property_tests": [
@@ -1851,6 +1877,27 @@
         "panic_message_descriptive": true
       },
       "assertion_pseudocode": "assert panics with descriptive message when RegisterAuditRoutes(router, nil, sseManager) is called; assert panics with descriptive message when RegisterAuditRoutes(router, store, nil) is called"
+    },
+    {
+      "id": "TS-18-E30",
+      "requirement_id": "18-REQ-8.E7",
+      "kind": "unit",
+      "description": "When writing an SSE frame to the HTTP response writer returns a non-nil error, the per-connection goroutine unregisters the client, logs the error at debug level, and exits without waiting for context cancellation or stale-connection timeout.",
+      "preconditions": [
+        "SSE connection manager is initialised with at least one registered client",
+        "The per-connection goroutine is running and the client's response writer is configured to return an error on the next Write or Flush call"
+      ],
+      "input": {
+        "action": "SSE frame write fails (broken pipe / client reset)",
+        "writer_error": "write tcp: broken pipe"
+      },
+      "expected": {
+        "client_deregistered": true,
+        "debug_log_contains_error": true,
+        "goroutine_exits": true,
+        "no_wait_for_context_cancellation": true
+      },
+      "assertion_pseudocode": "conn := connectSSEWithFailingWriter(errWriter); wait(10ms); assert sseManager.activeConnections == 0; assert debugLog contains write error message; assert goroutine exited within 50ms of the write failure (not 60s stale timeout)"
     }
   ],
   "smoke_tests": [

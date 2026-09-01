@@ -9,9 +9,10 @@
     "AF_AUDIT_MAX_RUNS": "Environment variable controlling the maximum number of distinct run_ids to retain (default 50).",
     "AF_AUDIT_ORPHAN_RETENTION_DAYS": "Environment variable controlling the grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted (default 30).",
     "AF_POSTMORTEM_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained postmortem records (default 180).",
+    "AF_SESSION_MAX_ACTIVE_AGE_DAYS": "Environment variable controlling the maximum age in days for active (orphaned) sessions before the retention worker force-closes them with status 'timeout' (default 7).",
     "AF_SESSION_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained completed session records (default 90).",
     "AF_TRACE_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained trace records (default 30).",
-    "Emitter": "Interface defined in spec 18 for emitting HubEvent records into the audit subsystem.",
+    "Emitter": "The audit.Emitter interface defined in spec 17 (internal/audit/emitter.go). Spec 19 receives an audit.Emitter dependency injected at startup — it does not create its own.",
     "HubEvent": "Go struct defined in spec 17 representing a hub-internal audit event, with fields EventType, ActorType, ActorID, ResourceType, ResourceID, Action, Workspace, and Metadata.",
     "StartRetentionWorker": "Go function in the audit package that starts the background retention worker goroutine.",
     "Store": "Go interface defined in spec 17 providing DuckDB-backed persistence for all audit tables.",
@@ -109,6 +110,14 @@
           "action": "reject the request using apikit.WriteAPIError with status 400 and message 'workspace_slug is required'",
           "return_contract": "returns HTTP 400 with JSON body {error: 'workspace_slug is required', status: 400}",
           "error_condition": "workspace_slug is missing or empty in the POST /api/v1/sessions request body"
+        },
+        {
+          "id": "19-REQ-1.4",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 403 Forbidden; for PAT credentials, the handler must verify that auth.Permissions contains workspace_slug+':agent:write' (or an equivalent workspace-scoped write permission) before creating the session; admin_token credentials bypass this check",
+          "return_contract": "returns HTTP 403 when the PAT caller does not hold the required workspace-scoped permission for the target workspace_slug",
+          "error_condition": "the caller's credential_type is 'pat' and auth.Permissions does not contain the workspace-scoped agent:write permission for the requested workspace_slug"
         }
       ],
       "edge_cases": [
@@ -186,6 +195,14 @@
           "action": "return 404 Not Found",
           "return_contract": "returns HTTP 404",
           "error_condition": "no session with the given id exists in agent_sessions when a caller sends POST /api/v1/sessions/:id/complete"
+        },
+        {
+          "id": "19-REQ-2.5",
+          "ears_pattern": "ubiquitous",
+          "system": "sessions handler",
+          "action": "use a conditional DuckDB UPDATE: UPDATE agent_sessions SET status=?, ended_at=? WHERE session_id=? AND status='active'; if 0 rows are affected, return a sentinel error ErrSessionNotActive and the handler returns 409 Conflict to the caller",
+          "return_contract": "the UPDATE is atomic and conditional; concurrent PATCH requests for the same session cannot both decrement the afhub_agent_sessions_active gauge — only the request that successfully transitions the session from active wins; the second request receives 409 Conflict",
+          "note": "This prevents the double-decrement bug where two concurrent requests both observe status='active' and both decrement the gauge"
         }
       ],
       "edge_cases": [
@@ -271,6 +288,14 @@
           "action": "reject the request with 400 Bad Request",
           "return_contract": "returns HTTP 400 with a JSON error body",
           "error_condition": "the model field is missing or empty in the POST /api/v1/sessions/:id/usage request body"
+        },
+        {
+          "id": "19-REQ-3.6",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 422 Unprocessable Entity using apikit.WriteAPIError with message 'token counts must be non-negative'; this validation MUST occur before any DuckDB write",
+          "return_contract": "returns HTTP 422 with JSON body {error: 'token counts must be non-negative'}",
+          "error_condition": "any of input_tokens, output_tokens, or cache_read_tokens in the POST /api/v1/sessions/:id/usage request body is a negative integer"
         }
       ],
       "edge_cases": [
@@ -321,7 +346,7 @@
           "id": "19-REQ-4.1",
           "ears_pattern": "event_driven",
           "system": "sessions handler",
-          "action": "return a paginated list of sessions visible to the caller, with token_summary aggregated from token_usage rows for each session, applying any provided filters (workspace_slug, run_id, status, credential_type, since, order, limit, cursor)",
+          "action": "return a paginated list of sessions visible to the caller, with token_summary aggregated from token_usage rows for each session, applying any provided filters (workspace_slug, run_id, status, credential_type, since, order, limit, cursor). When a workspace_slug filter is provided, the DuckDB query MUST include WHERE workspace_slug = :workspace_slug to guarantee isolation between workspaces.",
           "return_contract": "returns HTTP 200 with JSON body {sessions: [...], next_cursor: string|null, has_more: bool}",
           "trigger": "a caller with sessions:read permission sends GET /api/v1/sessions"
         },
@@ -406,7 +431,7 @@
           "id": "19-REQ-5.1",
           "ears_pattern": "event_driven",
           "system": "sessions handler",
-          "action": "return the session record with token_summary aggregated from all token_usage rows for that session",
+          "action": "return the session record with token_summary aggregated from all token_usage rows for that session. The DuckDB query MUST scope results to the caller's accessible workspaces; a session_id belonging to a workspace the caller cannot access returns 404 (not the session record).",
           "return_contract": "returns HTTP 200 with the full session JSON object including token_summary",
           "trigger": "a caller with sessions:read permission sends GET /api/v1/sessions/:id for a session in an accessible workspace"
         },
@@ -459,7 +484,7 @@
           "id": "19-REQ-6.1",
           "ears_pattern": "event_driven",
           "system": "sessions handler",
-          "action": "return a paginated page of token_usage records for the session and the unbounded totals aggregated across all token_usage records ever recorded for the session",
+          "action": "return a paginated page of token_usage records for the session and the unbounded totals aggregated across all token_usage records ever recorded for the session. The handler first loads the session record; if the session's workspace_slug is not accessible to the caller, return 404. This ensures a session_id belonging to a different workspace cannot be probed via this endpoint.",
           "return_contract": "returns HTTP 200 with JSON body {session_id: string, records: [...], totals: {total_input_tokens, total_output_tokens, total_cache_read_tokens, models_used}, next_cursor: string|null, has_more: bool}",
           "trigger": "a caller with sessions:read permission sends GET /api/v1/sessions/:id/usage for an accessible session"
         },
@@ -961,7 +986,7 @@
           "ears_pattern": "event_driven",
           "system": "retention worker",
           "action": "update afhub_audit_table_rows gauge with COUNT(*) per audit table; recalibrate afhub_agent_sessions_active gauge via COUNT(*) WHERE status='active' GROUP BY workspace_slug",
-          "return_contract": "gauge values reflect current row counts after the step completes",
+          "return_contract": "Before applying query results, call GaugeVec.Reset() to clear all label combinations. Then set each (workspace_slug, status) pair from the query. This guarantees no stale label combinations persist across recalibration intervals, at the cost of a brief gap during reset. Gauge values reflect current row counts after the step completes.",
           "trigger": "a retention run executes step 9"
         },
         {
@@ -970,7 +995,15 @@
           "system": "retention worker",
           "action": "set afhub_retention_last_run_timestamp_seconds to the current Unix timestamp and log rows deleted per table via slog",
           "return_contract": "afhub_retention_last_run_timestamp_seconds reflects the completion time of the successful run",
-          "trigger": "a retention run completes all 10 steps without context cancellation"
+          "trigger": "a retention run completes all steps without context cancellation"
+        },
+        {
+          "id": "19-REQ-13.11",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "before deleting old closed sessions (step 4), force-close sessions WHERE status='active' AND started_at < NOW() - INTERVAL AF_SESSION_MAX_ACTIVE_AGE_DAYS DAYS, setting status='timeout' and ended_at=NOW()",
+          "return_contract": "active sessions older than AF_SESSION_MAX_ACTIVE_AGE_DAYS days are transitioned to status='timeout' with ended_at set to the current time; no active session older than the configured threshold remains in the agent_sessions table after this pre-step",
+          "trigger": "a retention run executes the pre-step before step 4"
         }
       ],
       "edge_cases": [
@@ -1466,6 +1499,12 @@
       "condition": "POST /api/v1/sessions/:id/usage is called with a missing or empty model field",
       "behavior": "handler returns HTTP 400 with a JSON error body",
       "requirement_id": "19-REQ-3.5"
+    },
+    {
+      "id": "19-ERR-15",
+      "condition": "POST /api/v1/sessions/:id/usage is called with any of input_tokens, output_tokens, or cache_read_tokens set to a negative integer",
+      "behavior": "handler validates token counts before any DuckDB write and returns HTTP 422 with apikit.WriteAPIError message 'token counts must be non-negative'",
+      "requirement_id": "19-REQ-3.6"
     }
   ],
   "external_apis": [

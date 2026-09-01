@@ -1291,6 +1291,99 @@
         "page2_has_3_sessions": true
       },
       "assertion_pseudocode": "page1 = GET('/api/v1/sessions', query={limit:3, order:'asc'}); page2 = GET('/api/v1/sessions', query={limit:3, order:'asc', cursor:page1.body.next_cursor}); ids1 = set(s.id for s in page1.body.sessions); ids2 = set(s.id for s in page2.body.sessions); assert ids1.intersection(ids2) == empty_set; assert len(ids1) + len(ids2) == 6; max_started_at_page1 = max(s.started_at for s in page1.body.sessions); min_started_at_page2 = min(s.started_at for s in page2.body.sessions); assert max_started_at_page1 < min_started_at_page2"
+    },
+    {
+      "id": "TS-19-55",
+      "requirement_id": "19-REQ-1.4",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions by a PAT caller without workspace-scoped agent:write permission for the target workspace returns HTTP 403 Forbidden.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:write permission with credential_type='pat' and credential_id='pat-cred'",
+        "auth.Permissions does NOT contain 'target-workspace:agent:write'"
+      ],
+      "input": {
+        "body": {
+          "workspace_slug": "target-workspace"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions', body={workspace_slug:'target-workspace'}, auth={credential_type:'pat', credential_id:'pat-cred', permissions:[]}); assert resp.status == 403; count = db.query('SELECT COUNT(*) FROM agent_sessions WHERE workspace_slug=?', 'target-workspace'); assert count == 0"
+    },
+    {
+      "id": "TS-19-56",
+      "requirement_id": "19-REQ-3.6",
+      "kind": "unit",
+      "description": "POST /api/v1/sessions/:id/usage with a negative input_tokens value returns HTTP 422 with error 'token counts must be non-negative' and no DuckDB write occurs.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', workspace_slug='ws-1', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "input_tokens": -5,
+          "model": "claude-3-5-sonnet",
+          "output_tokens": 50
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "body": {
+          "error": "token counts must be non-negative"
+        },
+        "status": 422
+      },
+      "assertion_pseudocode": "countBefore = db.query('SELECT COUNT(*) FROM token_usage WHERE session_id=?', 'sess-1'); resp = POST('/api/v1/sessions/sess-1/usage', body={model:'claude-3-5-sonnet', input_tokens:-5, output_tokens:50}, auth={credential_id:'cred-owner'}); assert resp.status == 422; assert resp.body.error == 'token counts must be non-negative'; countAfter = db.query('SELECT COUNT(*) FROM token_usage WHERE session_id=?', 'sess-1'); assert countAfter == countBefore"
+    },
+    {
+      "id": "TS-19-57",
+      "requirement_id": "19-REQ-2.5",
+      "kind": "integration",
+      "description": "Concurrent POST /api/v1/sessions/:id/complete requests for the same active session: exactly one succeeds with 200 and the other receives 409 Conflict, preventing double gauge decrement.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-concurrent', workspace_slug='ws-1', credential_id='cred-owner' exists in agent_sessions",
+        "afhub_agent_sessions_active gauge for 'ws-1' is set to 1",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-concurrent/complete"
+      },
+      "expected": {
+        "exactly_one_200": true,
+        "exactly_one_409": true,
+        "gauge_afhub_agent_sessions_active_ws1_after": 0
+      },
+      "assertion_pseudocode": "gaugeBefore = getGauge('afhub_agent_sessions_active', {workspace:'ws-1'}); results = concurrent_post(['/api/v1/sessions/sess-concurrent/complete', '/api/v1/sessions/sess-concurrent/complete'], body={status:'completed'}, auth={credential_id:'cred-owner'}); statuses = sorted([r.status for r in results]); assert statuses == [200, 409]; gaugeAfter = getGauge('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == gaugeBefore - 1"
+    },
+    {
+      "id": "TS-19-58",
+      "requirement_id": "19-REQ-5.1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id where the session_id belongs to a workspace the caller cannot access returns HTTP 404 (not the session record), enforcing workspace isolation at the DuckDB query level.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-other-ws', workspace_slug='other-workspace' exists in agent_sessions",
+        "Caller has sessions:read permission with credential_type='api_key' and access only to 'my-workspace', not 'other-workspace'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-other-ws"
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-other-ws', auth={credential_type:'api_key', credential_id:'cred-my-workspace'}); assert resp.status == 404"
     }
   ],
   "property_tests": [
@@ -2646,6 +2739,7 @@
       "19-REQ-1.1",
       "19-REQ-1.2",
       "19-REQ-1.3",
+      "19-REQ-1.4",
       "19-REQ-1.E1",
       "19-REQ-1.E2",
       "19-REQ-1.E3",
@@ -2654,6 +2748,7 @@
       "19-REQ-2.2",
       "19-REQ-2.3",
       "19-REQ-2.4",
+      "19-REQ-2.5",
       "19-REQ-2.E1",
       "19-REQ-2.E2",
       "19-REQ-2.E3",
@@ -2663,6 +2758,7 @@
       "19-REQ-3.3",
       "19-REQ-3.4",
       "19-REQ-3.5",
+      "19-REQ-3.6",
       "19-REQ-3.E1",
       "19-REQ-3.E2",
       "19-REQ-3.E3",
@@ -2735,6 +2831,7 @@
       "19-REQ-13.8",
       "19-REQ-13.9",
       "19-REQ-13.10",
+      "19-REQ-13.11",
       "19-REQ-13.E1",
       "19-REQ-13.E2",
       "19-REQ-13.E3",

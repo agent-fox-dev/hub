@@ -120,9 +120,15 @@ passes it to the `internal/audit` package. Schema is initialized via
 #### DuckDB Driver Usage and Constraints
 
 The hub uses `github.com/duckdb/duckdb-go` as a `database/sql`-compatible
-driver. The DSN is a plain file path (e.g., `/data/audit.duckdb`). An
-in-memory DSN (`:memory:`) is used in tests via `t.TempDir()`-based temp
-files to keep test isolation without pure in-memory state sharing.
+driver. The DSN is always a file path (e.g., `/data/audit.duckdb`). Tests
+must use `t.TempDir()` for isolation — `:memory:` is NOT used because it
+does not exercise the file-locking and MkdirAll paths.
+
+**Slow write detection:** The Store wraps each INSERT in a context with a
+2-second deadline (configurable via `AF_AUDIT_WRITE_TIMEOUT_MS`, default
+`2000`). If the INSERT exceeds the deadline, the Store logs a warning via
+slog with the elapsed time and drops the event — it does not block the
+caller.
 
 **Concurrency model:** DuckDB supports only one concurrent writer. Concurrent
 write requests from the `database/sql` connection pool queue internally rather
@@ -189,6 +195,7 @@ CREATE TABLE IF NOT EXISTS agent_audit_events (
 CREATE TABLE IF NOT EXISTS hub_audit_events (
     id            VARCHAR PRIMARY KEY,
     event_type    VARCHAR NOT NULL,
+    severity      VARCHAR NOT NULL DEFAULT 'info',   -- info | warn | error
     actor_id      VARCHAR NOT NULL,
     actor_type    VARCHAR NOT NULL,   -- admin_token | api_key | pat | system
     resource_type VARCHAR NOT NULL,
@@ -287,30 +294,36 @@ CREATE TABLE IF NOT EXISTS postmortems (
 );
 
 -- Hub-managed agent sessions (schema defined here, populated by spec 19: sessions_metrics_retention)
+-- Design Decision: "stalled" was renamed to "timed_out" for clarity; "terminated" is added for force-close from workspace deletion.
 CREATE TABLE IF NOT EXISTS agent_sessions (
-    id           VARCHAR PRIMARY KEY,
-    run_id       VARCHAR NOT NULL,
-    workspace    VARCHAR NOT NULL,
-    node_id      VARCHAR NOT NULL DEFAULT '',
-    archetype    VARCHAR NOT NULL DEFAULT '',
-    status       VARCHAR NOT NULL,   -- active | completed | failed | stalled
-    started_at   TIMESTAMPTZ NOT NULL,
-    closed_at    TIMESTAMPTZ,
-    metadata     JSON    NOT NULL DEFAULT '{}',
-    ingested_at  TIMESTAMPTZ NOT NULL
+    id              VARCHAR PRIMARY KEY,
+    run_id          VARCHAR NOT NULL,
+    workspace_slug  VARCHAR NOT NULL,
+    node_id         VARCHAR NOT NULL DEFAULT '',
+    archetype       VARCHAR NOT NULL DEFAULT '',
+    status          VARCHAR NOT NULL,   -- active | completed | failed | timed_out | terminated
+    started_at      TIMESTAMPTZ NOT NULL,
+    model           VARCHAR,
+    tool_count      INTEGER NOT NULL DEFAULT 0,
+    error_message   TEXT,
+    ended_at        TIMESTAMPTZ,
+    metadata        JSON    NOT NULL DEFAULT '{}',
+    ingested_at     TIMESTAMPTZ NOT NULL
 );
 
 -- Per-session token usage (schema defined here, populated by spec 19: sessions_metrics_retention)
+-- Note: created_at is set by the hub at ingestion time, not supplied by the agent.
 CREATE TABLE IF NOT EXISTS token_usage (
-    id           VARCHAR PRIMARY KEY,
-    session_id   VARCHAR NOT NULL,
-    run_id       VARCHAR NOT NULL,
-    workspace    VARCHAR NOT NULL,
-    model        VARCHAR NOT NULL DEFAULT '',
-    input_tokens  BIGINT NOT NULL DEFAULT 0,
-    output_tokens BIGINT NOT NULL DEFAULT 0,
-    timestamp    TIMESTAMPTZ NOT NULL,
-    ingested_at  TIMESTAMPTZ NOT NULL
+    id                VARCHAR PRIMARY KEY,
+    session_id        VARCHAR NOT NULL,
+    run_id            VARCHAR NOT NULL,
+    workspace_slug    VARCHAR NOT NULL,
+    model             VARCHAR NOT NULL DEFAULT '',
+    input_tokens      BIGINT NOT NULL DEFAULT 0,
+    output_tokens     BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+    timestamp         TIMESTAMPTZ NOT NULL,
+    ingested_at       TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -335,6 +348,10 @@ and idempotent upsert via `INSERT OR IGNORE`.
 ```go
 type Emitter interface {
     Emit(ctx context.Context, event HubEvent) error
+    // Shutdown blocks until the internal event channel is drained or a
+    // 5-second timeout elapses, then returns. Called by the hub on
+    // SIGTERM/SIGINT before process exit.
+    Shutdown() error
 }
 ```
 
@@ -748,22 +765,23 @@ endpoints generically.
 ### Cursor-Based Pagination
 
 All query endpoints (except `GET postmortem`) support cursor-based pagination.
-The cursor is a base64-encoded JSON object with the following structure:
+The cursor is a base64url-encoded (RFC 4648 §5, no padding) JSON object with
+the following structure:
 
 ```json
-{"ts": "<ISO 8601 timestamp>", "id": "<uuid>"}
+{"ts": "<RFC3339Nano timestamp>", "id": "<uuid>"}
 ```
 
 Example decoded cursor:
 ```json
-{"ts": "2026-09-01T14:30:22.123456Z", "id": "550e8400-e29b-41d4-a716-446655440000"}
+{"ts": "2026-09-01T14:30:22.123456789Z", "id": "550e8400-e29b-41d4-a716-446655440000"}
 ```
 
-The `ts` field is the `timestamp` column value of the last returned record; the
-`id` field is the `id` column value. The JSON object is serialized to UTF-8,
-then base64-encoded (standard encoding) to produce the opaque cursor string
-returned to clients. Clients must not construct or parse cursors — they are
-treated as opaque tokens.
+The `ts` field is the `timestamp` column value of the last returned record
+formatted as RFC3339Nano; the `id` field is the `id` column value. The JSON
+object is serialized to UTF-8, then base64url-encoded (RFC 4648 §5, no
+padding) to produce the opaque cursor string returned to clients. Clients
+must not construct or parse cursors — they are treated as opaque tokens.
 
 **Cursor comparison semantics:**
 
@@ -942,6 +960,7 @@ In `cmd/af-hub/main.go`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AF_AUDIT_DB_PATH` | `<data_dir>/audit.duckdb` | DuckDB database file path. `<data_dir>` is the directory containing the hub's SQLite database file, resolved from `database.path` in `config.toml`. If `AF_AUDIT_DB_PATH` is set, it overrides this default entirely. Missing parent directories are created automatically via `os.MkdirAll` before opening DuckDB; startup aborts if directory creation fails. |
+| `AF_AUDIT_WRITE_TIMEOUT_MS` | `2000` | Per-INSERT write deadline in milliseconds. Each Store INSERT is wrapped in a context with this deadline. If the INSERT exceeds the deadline, the event is dropped and a warning is logged via slog. |
 
 The DuckDB connection pool size and query timeout are not configurable in this
 spec. DuckDB's internal write serialization and the HTTP 503/`Retry-After: 5`
@@ -1025,10 +1044,11 @@ parameters.
     ingestion and server-assigned defaults without over-specifying the response
     contract.
 
-15. **Cursor encoding uses a JSON object wrapped in base64.** The cursor
-    encodes `{"ts":"<ISO8601>","id":"<uuid>"}` — human-readable when decoded,
-    self-documenting, and unambiguous across all endpoints. Base64 encoding
-    makes it opaque to clients. The composite `(ts, id)` key provides stable,
+15. **Cursor encoding uses a JSON object wrapped in base64url (RFC 4648 §5, no padding).**
+    The cursor encodes `{"ts":"<RFC3339Nano>","id":"<uuid>"}` — human-readable
+    when decoded, self-documenting, and unambiguous across all endpoints.
+    Base64url encoding (no padding) makes it opaque to clients and URL-safe
+    without percent-encoding. The composite `(ts, id)` key provides stable,
     tie-breaking pagination even when multiple records share the same timestamp.
     Tie-breaking uses lexicographic string comparison on the `id` VARCHAR column
     (standard DuckDB ordering), which is deterministic and sufficient for

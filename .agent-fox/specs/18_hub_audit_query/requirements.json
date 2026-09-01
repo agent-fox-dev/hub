@@ -14,7 +14,7 @@
     "MergeAPIConfig": "Configuration struct for the merge API handler package in internal/merge",
     "RebuildAPIConfig": "Configuration struct for the carry-patch rebuild API handler package in internal/carrypatch",
     "SSE": "Server-Sent Events \u2014 an HTTP-based protocol for server-to-client real-time event streaming",
-    "Store": "The audit.Store interface defined in spec 17 providing DuckDB query access",
+    "Store": "The audit.Store interface defined in internal/audit/store.go (spec 17), defining Insert(ctx, HubEvent) error and query methods. The concrete implementation is audit.store (unexported struct). Spec 18 accepts an audit.Store interface, not the concrete type.",
     "UNION ALL": "SQL construct used to merge rows from hub_audit_events and agent_audit_events into a single chronological result set",
     "actor_id": "The authenticated user or system identity that performed the audited action, sourced from apikit.GetAuthInfo",
     "actor_type": "The credential type of the actor: admin_token, api_key, pat, or system",
@@ -45,7 +45,7 @@
     "hub.secret.create": "Audit event_type emitted when a secret is created",
     "hub.secret.delete": "Audit event_type emitted when a secret is deleted",
     "hub.secret.update": "Audit event_type emitted when a secret is updated",
-    "hub.session.force_closed": "Audit event_type emitted when an agent session is force-closed",
+    "hub.session.force_closed": "Audit event_type emitted when an agent session is force-closed due to workspace archive or delete. Deferred to spec 19 (sessions_metrics_retention); not emitted by spec 18.",
     "hub.variable.create": "Audit event_type emitted when a variable is created",
     "hub.variable.delete": "Audit event_type emitted when a variable is deleted",
     "hub.variable.update": "Audit event_type emitted when a variable is updated",
@@ -61,15 +61,17 @@
     "internal/audit/routes.go": "File registering audit GET routes including the unified query, transcript, and SSE endpoints",
     "internal/audit/sse.go": "New file containing the SSE connection manager, broadcaster, and heartbeat goroutine",
     "node_id": "Identifier for a specific node within an agent run, used to reconstruct conversation transcripts",
-    "resource_type": "The category of resource affected by a hub audit event: workspace, merge, patch, secret, variable, or job",
+    "resource_type": "The category of resource affected by a hub audit event: workspace, merge, patch, secret, variable, or job. hub.git.push events use resource_type=workspace (git pushes are workspace-scoped operations).",
     "run_id": "Identifier for a specific agent execution run, used to correlate agent audit events and traces",
     "session.init": "Agent trace event type representing session initialization, mapped to the system role in transcripts",
     "session_id": "Identifier for an agent session, populated in agent audit events",
     "session_outcome": "SSE event type carrying agent session outcome data, schema defined in spec 17",
+    "since": "Query parameter for time-range filtering: inclusive lower bound (event_time >= since); value must be RFC 3339",
     "source": "Field in unified audit query results distinguishing hub-internal events (hub) from agent-submitted events (agent)",
     "stale-connection timeout": "60-second hardcoded threshold after which an SSE connection with no reads is closed",
     "tool.error": "Agent trace event type representing a tool error, mapped to the tool_error role in transcripts",
-    "tool.use": "Agent trace event type representing a tool invocation, mapped to the tool_use role in transcripts"
+    "tool.use": "Agent trace event type representing a tool invocation, mapped to the tool_use role in transcripts",
+    "until": "Query parameter for time-range filtering: exclusive upper bound (event_time < until); value must be RFC 3339"
   },
   "requirements": [
     {
@@ -376,7 +378,7 @@
           "id": "18-REQ-5.1",
           "ears_pattern": "event_driven",
           "system": "gitserver post-push hook",
-          "action": "emit a HubEvent with event_type hub.git.push and metadata containing head_sha and refs_updated",
+          "action": "emit a HubEvent with event_type hub.git.push, resource_type set to workspace, action set to push, and metadata containing head_sha and refs_updated",
           "return_contract": null,
           "trigger": "a git push is received and processed by the hub git server"
         },
@@ -421,7 +423,7 @@
           "id": "18-REQ-6.1",
           "ears_pattern": "event_driven",
           "system": "audit query handler",
-          "action": "query both hub_audit_events and agent_audit_events via UNION ALL ordered by timestamp, apply any provided filters, and return a paginated JSON response",
+          "action": "query both hub_audit_events and agent_audit_events via UNION ALL ordered by timestamp DESC, id DESC (where id is the auto-increment primary key providing a stable tiebreaker for events with identical timestamps; note that id is not globally unique across tables — for the UNION ALL case use a row-number or source_table discriminant if needed), apply any provided filters, and return a paginated JSON response",
           "return_contract": "returns HTTP 200 with JSON body {events: [...], next_cursor: string|null, has_more: bool}",
           "trigger": "an authenticated caller with audit:read permission sends GET /api/v1/audit"
         },
@@ -429,7 +431,7 @@
           "id": "18-REQ-6.2",
           "ears_pattern": "ubiquitous",
           "system": "audit query handler",
-          "action": "support filtering by source, run_id, actor_id, actor_type, resource_type, action, event_type, event_type_prefix, severity, workspace, since, and until query parameters; apply only the filters whose parameters are present in the request",
+          "action": "support filtering by source, run_id, actor_id, actor_type, resource_type, action, event_type, event_type_prefix, severity, workspace, since, and until query parameters; apply only the filters whose parameters are present in the request; the since parameter is inclusive (event_time >= since) and the until parameter is exclusive (event_time < until)",
           "return_contract": null
         },
         {
@@ -513,11 +515,19 @@
         },
         {
           "id": "18-REQ-6.E7",
-          "ears_pattern": "event_driven",
+          "ears_pattern": "unwanted",
           "system": "audit query handler",
-          "action": "return an empty events array rather than a DuckDB error",
-          "return_contract": "returns HTTP 200 with JSON body {events: [], next_cursor: null, has_more: false}",
-          "trigger": "a request is made with since and until parameters where since is after until"
+          "action": "reject the request with HTTP 400 using apikit.WriteAPIError with message since must be before until",
+          "return_contract": "returns HTTP 400 with JSON error body produced by apikit.WriteAPIError",
+          "error_condition": "the since query parameter is parseable but is later than the until parameter"
+        },
+        {
+          "id": "18-REQ-6.E8",
+          "ears_pattern": "unwanted",
+          "system": "audit query handler",
+          "action": "reject the request with HTTP 400 using apikit.WriteAPIError with message invalid query parameter: since/until must be RFC 3339",
+          "return_contract": "returns HTTP 400 with JSON error body produced by apikit.WriteAPIError",
+          "error_condition": "the since or until query parameter is present but cannot be parsed as an RFC 3339 timestamp"
         }
       ]
     },
@@ -534,7 +544,7 @@
           "id": "18-REQ-7.1",
           "ears_pattern": "event_driven",
           "system": "transcript handler",
-          "action": "query agent_traces for the given run_id and node_id ordered by timestamp, map trace event types to conversation roles, and return the messages array",
+          "action": "query agent_traces with WHERE workspace_slug = :workspace_slug AND run_id = :run_id AND node_id = :node_id, ordered by created_at ASC; map trace event types to conversation roles, and return the messages array. A run_id that exists in a different workspace returns an empty messages array (not 404 or 403).",
           "return_contract": "returns HTTP 200 with JSON body {run_id: string, node_id: string, messages: [{role, content, tool_name, timestamp}]}",
           "trigger": "an authenticated caller with audit:read permission sends GET /api/v1/workspaces/:slug/runs/:run_id/transcript with a node_id query parameter"
         },
@@ -542,7 +552,7 @@
           "id": "18-REQ-7.2",
           "ears_pattern": "ubiquitous",
           "system": "transcript handler",
-          "action": "map session.init trace events to role system with content from payload.system_prompt; map assistant.message to role assistant; map tool.use to role tool_use with tool_name populated; map tool.error to role tool_error with tool_name populated",
+          "action": "map agent_traces rows to transcript messages using the actual DDL columns: role → role (string), content → content (string), tool_calls → tool_calls (JSON array or null). Return messages ordered by created_at ASC. Include all rows for the given run_id and node_id matching the workspace_slug filter.",
           "return_contract": null
         },
         {
@@ -656,6 +666,21 @@
           "system": "SSE event format",
           "action": "format each SSE frame with an event field set to the event type name and a data field containing the JSON-encoded event payload, followed by a blank line",
           "return_contract": null
+        },
+        {
+          "id": "18-REQ-8.8",
+          "ears_pattern": "event_driven",
+          "system": "SSE handler",
+          "action": "send an SSE comment heartbeat (': keep-alive\\n\\n') immediately upon accepting a new SSE connection, before any event data, to confirm the connection is live; subsequent heartbeats are sent every 30 seconds of inactivity (no events dispatched); the heartbeat interval is configurable via AF_SSE_HEARTBEAT_INTERVAL_MS (default 30000)",
+          "return_contract": null,
+          "trigger": "a new SSE client connection is accepted and registered"
+        },
+        {
+          "id": "18-REQ-8.9",
+          "ears_pattern": "ubiquitous",
+          "system": "SSEManager constructor",
+          "action": "accept optional functional options via SSEOption to allow test-time clock injection; provide a WithTickerFactory(fn func(d time.Duration) *time.Ticker) option that replaces the default time.NewTicker used for heartbeat and stale-connection reaping; the constructor signature is NewSSEManager(maxConns int, opts ...SSEOption) *SSEManager",
+          "return_contract": null
         }
       ],
       "edge_cases": [
@@ -706,6 +731,14 @@
           "action": "close the stale connection, deregister the client from the broadcaster, and release associated resources",
           "return_contract": null,
           "state": "a connection has had no reads for 60 seconds"
+        },
+        {
+          "id": "18-REQ-8.E7",
+          "ears_pattern": "unwanted",
+          "system": "SSE per-connection goroutine",
+          "action": "treat the failure as a client disconnect: call SSEManager.Unregister, log the error at debug level, and exit the per-connection goroutine",
+          "return_contract": "The SSE connection is cleaned up immediately; the per-client goroutine exits without waiting for context cancellation or the stale-connection timeout",
+          "error_condition": "writing an SSE frame to the HTTP response writer (either Write or Flush) returns a non-nil error (broken pipe, client reset, network partition)"
         }
       ]
     },
@@ -745,6 +778,14 @@
           "system": "SSE connection manager",
           "action": "define the heartbeat interval as a hardcoded constant of 30 seconds and the stale-connection timeout as a hardcoded constant of 60 seconds; these values must not be read from environment variables",
           "return_contract": null
+        },
+        {
+          "id": "18-REQ-9.5",
+          "ears_pattern": "event_driven",
+          "system": "audit ingestion handler",
+          "action": "after persisting an agent-submitted event to DuckDB via POST /api/v1/agent/audit/events, call SSEManager.Broadcast with the HubEvent equivalent so that active SSE subscribers receive the event in real time",
+          "return_contract": null,
+          "trigger": "an agent-submitted audit event is successfully persisted via the ingestion endpoint (spec 17)"
         }
       ],
       "edge_cases": [
@@ -1160,6 +1201,24 @@
       "condition": "SSE broadcaster goroutine panics",
       "behavior": "recover from the panic, log the error, and restart the broadcaster goroutine",
       "requirement_id": "18-REQ-9.E3"
+    },
+    {
+      "id": "18-ERR-13",
+      "condition": "Write() or Flush() on the SSE HTTP response writer returns a non-nil error",
+      "behavior": "treat as client disconnect: unregister the client from the broadcaster via SSEManager.Unregister, log the error at debug level, and exit the per-connection goroutine immediately without waiting for context cancellation or the stale-connection timeout",
+      "requirement_id": "18-REQ-8.E7"
+    },
+    {
+      "id": "18-ERR-14",
+      "condition": "the since or until query parameter is present but cannot be parsed as an RFC 3339 timestamp",
+      "behavior": "return HTTP 400 with apikit.WriteAPIError body containing message invalid query parameter: since/until must be RFC 3339",
+      "requirement_id": "18-REQ-6.E8"
+    },
+    {
+      "id": "18-ERR-15",
+      "condition": "the since query parameter is present and parseable but is later than the until parameter",
+      "behavior": "return HTTP 400 with apikit.WriteAPIError body containing message since must be before until",
+      "requirement_id": "18-REQ-6.E7"
     }
   ],
   "external_apis": [
