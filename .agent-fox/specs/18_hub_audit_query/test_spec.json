@@ -1,0 +1,2067 @@
+{
+  "$schema": null,
+  "spec_id": "18",
+  "spec_name": "hub_audit_query",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-18-1",
+      "requirement_id": "18-REQ-1.1",
+      "kind": "unit",
+      "description": "Workspace create mutation emits a HubEvent with correct event_type, actor_id, actor_type, resource_type, resource_id, workspace, and metadata fields.",
+      "preconditions": [
+        "A workspace handler config is initialised with a non-nil mock Emitter that records emitted events",
+        "An authenticated Echo context is set up with a known actor_id and actor_type via apikit.GetAuthInfo",
+        "The DuckDB hub_audit_events table is initialised (temp-file instance)"
+      ],
+      "input": {
+        "body": {
+          "branch": "main",
+          "git_url": "https://github.com/example/repo.git",
+          "slug": "my-workspace"
+        },
+        "operation": "POST /api/v1/workspaces"
+      },
+      "expected": {
+        "emitted_event": {
+          "action": "create",
+          "event_type": "hub.workspace.create",
+          "metadata_keys": [
+            "git_url",
+            "branch"
+          ],
+          "resource_id": "my-workspace",
+          "resource_type": "workspace",
+          "workspace": "my-workspace"
+        },
+        "http_status": 201
+      },
+      "assertion_pseudocode": "mockEmitter.capturedEvents[0].event_type == 'hub.workspace.create'; mockEmitter.capturedEvents[0].resource_type == 'workspace'; mockEmitter.capturedEvents[0].resource_id == 'my-workspace'; mockEmitter.capturedEvents[0].workspace == 'my-workspace'; mockEmitter.capturedEvents[0].actor_id == expectedActorID; mockEmitter.capturedEvents[0].metadata contains 'git_url' and 'branch'; assert response.status == 201"
+    },
+    {
+      "id": "TS-18-2",
+      "requirement_id": "18-REQ-1.2",
+      "kind": "unit",
+      "description": "The workspace handler config struct exposes an Audit field of type audit.Emitter that is used by all workspace mutation handlers.",
+      "preconditions": [
+        "internal/workspace/handlers.go is compiled",
+        "audit.Emitter interface is defined in internal/audit"
+      ],
+      "input": {
+        "config_struct": "workspace handler config"
+      },
+      "expected": {
+        "field": "Audit",
+        "field_type": "audit.Emitter",
+        "used_by": [
+          "create",
+          "update",
+          "archive",
+          "reactivate",
+          "delete",
+          "sync"
+        ]
+      },
+      "assertion_pseudocode": "cfg := WorkspaceHandlerConfig{Audit: mockEmitter}; assert cfg.Audit != nil; assert typeof(cfg.Audit) implements audit.Emitter interface; for each mutation handler, verify it reads cfg.Audit before emitting"
+    },
+    {
+      "id": "TS-18-3",
+      "requirement_id": "18-REQ-1.3",
+      "kind": "unit",
+      "description": "When the Audit field on the workspace handler config is nil, a workspace mutation completes without panicking or returning an error.",
+      "preconditions": [
+        "A workspace handler config is initialised with Audit set to nil",
+        "DuckDB temp-file instance is available for workspace storage"
+      ],
+      "input": {
+        "audit_field": null,
+        "operation": "POST /api/v1/workspaces"
+      },
+      "expected": {
+        "error": null,
+        "http_status": 201,
+        "panic": false
+      },
+      "assertion_pseudocode": "cfg := WorkspaceHandlerConfig{Audit: nil}; response := invokeCreateWorkspace(cfg, validRequest); assert response.status == 201; assert no panic occurred; assert no error returned to caller"
+    },
+    {
+      "id": "TS-18-4",
+      "requirement_id": "18-REQ-1.4",
+      "kind": "unit",
+      "description": "Workspace create mutation emits a HubEvent with event_type hub.workspace.create and metadata containing git_url and branch fields.",
+      "preconditions": [
+        "A workspace handler config is initialised with a capturing mock Emitter",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "body": {
+          "branch": "feature-x",
+          "git_url": "https://github.com/example/repo.git",
+          "slug": "ws-1"
+        },
+        "operation": "POST /api/v1/workspaces"
+      },
+      "expected": {
+        "emitted_event_type": "hub.workspace.create",
+        "metadata": {
+          "branch": "feature-x",
+          "git_url": "https://github.com/example/repo.git"
+        }
+      },
+      "assertion_pseudocode": "invokeCreateWorkspace(cfg, req); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.workspace.create'; assert event.metadata['git_url'] == 'https://github.com/example/repo.git'; assert event.metadata['branch'] == 'feature-x'"
+    },
+    {
+      "id": "TS-18-5",
+      "requirement_id": "18-REQ-1.5",
+      "kind": "unit",
+      "description": "Workspace sync mutation emits a HubEvent with event_type hub.workspace.sync and metadata containing a result field.",
+      "preconditions": [
+        "A workspace handler config is initialised with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "Workspace 'ws-1' exists in the database"
+      ],
+      "input": {
+        "operation": "POST /api/v1/workspaces/ws-1/sync"
+      },
+      "expected": {
+        "emitted_event_type": "hub.workspace.sync",
+        "metadata_keys": [
+          "result"
+        ]
+      },
+      "assertion_pseudocode": "invokeSyncWorkspace(cfg, 'ws-1'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.workspace.sync'; assert 'result' in event.metadata"
+    },
+    {
+      "id": "TS-18-6",
+      "requirement_id": "18-REQ-2.1",
+      "kind": "unit",
+      "description": "Merge submit emits a HubEvent with event_type hub.merge.enqueue and metadata containing target_branch, source_ref, and job_id.",
+      "preconditions": [
+        "MergeAPIConfig is initialised with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "A workspace exists for the merge operation"
+      ],
+      "input": {
+        "body": {
+          "source_ref": "feature-x",
+          "target_branch": "main"
+        },
+        "operation": "POST /api/v1/workspaces/ws-1/merge"
+      },
+      "expected": {
+        "emitted_event_type": "hub.merge.enqueue",
+        "metadata_keys": [
+          "target_branch",
+          "source_ref",
+          "job_id"
+        ]
+      },
+      "assertion_pseudocode": "invokeSubmitMerge(cfg, req); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.merge.enqueue'; assert event.metadata['target_branch'] == 'main'; assert event.metadata['source_ref'] == 'feature-x'; assert 'job_id' in event.metadata"
+    },
+    {
+      "id": "TS-18-7",
+      "requirement_id": "18-REQ-2.2",
+      "kind": "unit",
+      "description": "Merge completion emits a HubEvent with event_type hub.merge.complete and metadata containing base_sha and merged_sha.",
+      "preconditions": [
+        "MergeAPIConfig is initialised with a capturing mock Emitter",
+        "A merge job exists in a running state"
+      ],
+      "input": {
+        "base_sha": "abc123",
+        "merged_sha": "def456",
+        "operation": "merge completion callback"
+      },
+      "expected": {
+        "emitted_event_type": "hub.merge.complete",
+        "metadata": {
+          "base_sha": "abc123",
+          "merged_sha": "def456"
+        }
+      },
+      "assertion_pseudocode": "invokeMergeComplete(cfg, 'abc123', 'def456'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.merge.complete'; assert event.metadata['base_sha'] == 'abc123'; assert event.metadata['merged_sha'] == 'def456'"
+    },
+    {
+      "id": "TS-18-8",
+      "requirement_id": "18-REQ-2.3",
+      "kind": "unit",
+      "description": "Merge failure emits a HubEvent with event_type hub.merge.fail and metadata containing a reason field.",
+      "preconditions": [
+        "MergeAPIConfig is initialised with a capturing mock Emitter",
+        "A merge job exists in a running state"
+      ],
+      "input": {
+        "operation": "merge failure callback",
+        "reason": "conflict detected"
+      },
+      "expected": {
+        "emitted_event_type": "hub.merge.fail",
+        "metadata": {
+          "reason": "conflict detected"
+        }
+      },
+      "assertion_pseudocode": "invokeMergeFail(cfg, 'conflict detected'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.merge.fail'; assert event.metadata['reason'] == 'conflict detected'"
+    },
+    {
+      "id": "TS-18-9",
+      "requirement_id": "18-REQ-2.4",
+      "kind": "unit",
+      "description": "MergeAPIConfig exposes an Audit field of type audit.Emitter used by merge submit and completion/failure handlers.",
+      "preconditions": [
+        "internal/merge/api.go is compiled",
+        "audit.Emitter interface is defined in internal/audit"
+      ],
+      "input": {
+        "config_struct": "MergeAPIConfig"
+      },
+      "expected": {
+        "field": "Audit",
+        "field_type": "audit.Emitter"
+      },
+      "assertion_pseudocode": "cfg := MergeAPIConfig{Audit: mockEmitter}; assert cfg.Audit != nil; assert typeof(cfg.Audit) implements audit.Emitter"
+    },
+    {
+      "id": "TS-18-10",
+      "requirement_id": "18-REQ-2.5",
+      "kind": "unit",
+      "description": "When MergeAPIConfig.Audit is nil, merge mutations complete without panicking or returning an error.",
+      "preconditions": [
+        "MergeAPIConfig is initialised with Audit set to nil"
+      ],
+      "input": {
+        "audit_field": null,
+        "operation": "POST /api/v1/workspaces/ws-1/merge"
+      },
+      "expected": {
+        "error": null,
+        "http_status": 202,
+        "panic": false
+      },
+      "assertion_pseudocode": "cfg := MergeAPIConfig{Audit: nil}; response := invokeSubmitMerge(cfg, validRequest); assert response.status == 202; assert no panic occurred"
+    },
+    {
+      "id": "TS-18-11",
+      "requirement_id": "18-REQ-3.1",
+      "kind": "unit",
+      "description": "Adding a patch emits a HubEvent with event_type hub.patch.create and metadata containing branch_name and position.",
+      "preconditions": [
+        "Carrypatch config is initialised with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "A carry-patch workspace exists"
+      ],
+      "input": {
+        "body": {
+          "branch_name": "feature-patch",
+          "position": 2
+        },
+        "operation": "POST /api/v1/workspaces/ws-1/patches"
+      },
+      "expected": {
+        "emitted_event_type": "hub.patch.create",
+        "metadata": {
+          "branch_name": "feature-patch",
+          "position": 2
+        }
+      },
+      "assertion_pseudocode": "invokeAddPatch(cfg, 'feature-patch', 2); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.patch.create'; assert event.metadata['branch_name'] == 'feature-patch'; assert event.metadata['position'] == 2"
+    },
+    {
+      "id": "TS-18-12",
+      "requirement_id": "18-REQ-3.2",
+      "kind": "unit",
+      "description": "Removing a patch emits a HubEvent with event_type hub.patch.delete and metadata containing branch_name.",
+      "preconditions": [
+        "Carrypatch config is initialised with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "A carry-patch workspace with an existing patch exists"
+      ],
+      "input": {
+        "operation": "DELETE /api/v1/workspaces/ws-1/patches/feature-patch"
+      },
+      "expected": {
+        "emitted_event_type": "hub.patch.delete",
+        "metadata": {
+          "branch_name": "feature-patch"
+        }
+      },
+      "assertion_pseudocode": "invokeRemovePatch(cfg, 'feature-patch'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.patch.delete'; assert event.metadata['branch_name'] == 'feature-patch'"
+    },
+    {
+      "id": "TS-18-13",
+      "requirement_id": "18-REQ-3.3",
+      "kind": "unit",
+      "description": "Rebuild enqueue emits a HubEvent with event_type hub.rebuild.enqueue and metadata containing job_id and patch_count.",
+      "preconditions": [
+        "Carrypatch config is initialised with a capturing mock Emitter",
+        "A carry-patch workspace with patches exists"
+      ],
+      "input": {
+        "operation": "POST /api/v1/workspaces/ws-1/rebuild"
+      },
+      "expected": {
+        "emitted_event_type": "hub.rebuild.enqueue",
+        "metadata_keys": [
+          "job_id",
+          "patch_count"
+        ]
+      },
+      "assertion_pseudocode": "invokeRebuildEnqueue(cfg, workspace); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.rebuild.enqueue'; assert 'job_id' in event.metadata; assert 'patch_count' in event.metadata"
+    },
+    {
+      "id": "TS-18-14",
+      "requirement_id": "18-REQ-3.4",
+      "kind": "unit",
+      "description": "Rebuild completion emits a HubEvent with event_type hub.rebuild.complete and metadata containing patches_applied.",
+      "preconditions": [
+        "Carrypatch config is initialised with a capturing mock Emitter",
+        "A rebuild job is in a running state"
+      ],
+      "input": {
+        "operation": "rebuild completion callback",
+        "patches_applied": 3
+      },
+      "expected": {
+        "emitted_event_type": "hub.rebuild.complete",
+        "metadata": {
+          "patches_applied": 3
+        }
+      },
+      "assertion_pseudocode": "invokeRebuildComplete(cfg, 3); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.rebuild.complete'; assert event.metadata['patches_applied'] == 3"
+    },
+    {
+      "id": "TS-18-15",
+      "requirement_id": "18-REQ-3.5",
+      "kind": "unit",
+      "description": "Rebuild failure emits a HubEvent with event_type hub.rebuild.fail and metadata containing a reason field.",
+      "preconditions": [
+        "Carrypatch config is initialised with a capturing mock Emitter",
+        "A rebuild job is in a running state"
+      ],
+      "input": {
+        "operation": "rebuild failure callback",
+        "reason": "cherry-pick conflict"
+      },
+      "expected": {
+        "emitted_event_type": "hub.rebuild.fail",
+        "metadata": {
+          "reason": "cherry-pick conflict"
+        }
+      },
+      "assertion_pseudocode": "invokeRebuildFail(cfg, 'cherry-pick conflict'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.rebuild.fail'; assert event.metadata['reason'] == 'cherry-pick conflict'"
+    },
+    {
+      "id": "TS-18-16",
+      "requirement_id": "18-REQ-3.6",
+      "kind": "unit",
+      "description": "All carrypatch config structs including RebuildAPIConfig expose an Audit field of type audit.Emitter.",
+      "preconditions": [
+        "internal/carrypatch/*.go is compiled",
+        "audit.Emitter interface is defined in internal/audit"
+      ],
+      "input": {
+        "config_structs": [
+          "RebuildAPIConfig",
+          "carrypatch handler config"
+        ]
+      },
+      "expected": {
+        "field": "Audit",
+        "field_type": "audit.Emitter",
+        "present_in_all_configs": true
+      },
+      "assertion_pseudocode": "cfg := RebuildAPIConfig{Audit: mockEmitter}; assert cfg.Audit != nil; assert typeof(cfg.Audit) implements audit.Emitter; repeat for all carrypatch config structs"
+    },
+    {
+      "id": "TS-18-17",
+      "requirement_id": "18-REQ-3.7",
+      "kind": "unit",
+      "description": "When the Audit field on a carrypatch config is nil, patch and rebuild mutations complete without panicking or returning an error.",
+      "preconditions": [
+        "Carrypatch config is initialised with Audit set to nil"
+      ],
+      "input": {
+        "audit_field": null,
+        "operation": "POST /api/v1/workspaces/ws-1/patches"
+      },
+      "expected": {
+        "error": null,
+        "panic": false
+      },
+      "assertion_pseudocode": "cfg := RebuildAPIConfig{Audit: nil}; response := invokeAddPatch(cfg, validRequest); assert no panic occurred; assert response.status in [200, 201, 202]"
+    },
+    {
+      "id": "TS-18-18",
+      "requirement_id": "18-REQ-4.1",
+      "kind": "unit",
+      "description": "Secret create emits a HubEvent with event_type hub.secret.create and metadata containing scope and key.",
+      "preconditions": [
+        "Secrets route registration is called with a capturing mock Emitter",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "body": {
+          "key": "MY_TOKEN",
+          "scope": "user",
+          "value": "secret-value"
+        },
+        "operation": "POST /api/v1/user/secrets"
+      },
+      "expected": {
+        "emitted_event_type": "hub.secret.create",
+        "metadata": {
+          "key": "MY_TOKEN",
+          "scope": "user"
+        }
+      },
+      "assertion_pseudocode": "invokeCreateSecret(cfg, 'user', 'MY_TOKEN'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.secret.create'; assert event.metadata['scope'] == 'user'; assert event.metadata['key'] == 'MY_TOKEN'"
+    },
+    {
+      "id": "TS-18-19",
+      "requirement_id": "18-REQ-4.2",
+      "kind": "unit",
+      "description": "Secret update emits a HubEvent with event_type hub.secret.update and metadata containing scope and key.",
+      "preconditions": [
+        "Secrets route registration is called with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "Secret 'MY_TOKEN' exists in scope 'user'"
+      ],
+      "input": {
+        "body": {
+          "value": "new-secret-value"
+        },
+        "operation": "PUT /api/v1/user/secrets/MY_TOKEN"
+      },
+      "expected": {
+        "emitted_event_type": "hub.secret.update",
+        "metadata": {
+          "key": "MY_TOKEN",
+          "scope": "user"
+        }
+      },
+      "assertion_pseudocode": "invokeUpdateSecret(cfg, 'user', 'MY_TOKEN'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.secret.update'; assert event.metadata['scope'] == 'user'; assert event.metadata['key'] == 'MY_TOKEN'"
+    },
+    {
+      "id": "TS-18-20",
+      "requirement_id": "18-REQ-4.3",
+      "kind": "unit",
+      "description": "Secret delete emits a HubEvent with event_type hub.secret.delete and metadata containing scope and key.",
+      "preconditions": [
+        "Secrets route registration is called with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "Secret 'MY_TOKEN' exists in scope 'user'"
+      ],
+      "input": {
+        "operation": "DELETE /api/v1/user/secrets/MY_TOKEN"
+      },
+      "expected": {
+        "emitted_event_type": "hub.secret.delete",
+        "metadata": {
+          "key": "MY_TOKEN",
+          "scope": "user"
+        }
+      },
+      "assertion_pseudocode": "invokeDeleteSecret(cfg, 'user', 'MY_TOKEN'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.secret.delete'; assert event.metadata['scope'] == 'user'; assert event.metadata['key'] == 'MY_TOKEN'"
+    },
+    {
+      "id": "TS-18-21",
+      "requirement_id": "18-REQ-4.4",
+      "kind": "unit",
+      "description": "Variable create emits a HubEvent with event_type hub.variable.create and metadata containing scope and key.",
+      "preconditions": [
+        "Secrets route registration is called with a capturing mock Emitter",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "body": {
+          "key": "MY_VAR",
+          "scope": "user",
+          "value": "var-value"
+        },
+        "operation": "POST /api/v1/user/vars"
+      },
+      "expected": {
+        "emitted_event_type": "hub.variable.create",
+        "metadata": {
+          "key": "MY_VAR",
+          "scope": "user"
+        }
+      },
+      "assertion_pseudocode": "invokeCreateVariable(cfg, 'user', 'MY_VAR'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.variable.create'; assert event.metadata['scope'] == 'user'; assert event.metadata['key'] == 'MY_VAR'"
+    },
+    {
+      "id": "TS-18-22",
+      "requirement_id": "18-REQ-4.5",
+      "kind": "unit",
+      "description": "Variable update emits a HubEvent with event_type hub.variable.update and metadata containing scope and key.",
+      "preconditions": [
+        "Secrets route registration is called with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "Variable 'MY_VAR' exists in scope 'user'"
+      ],
+      "input": {
+        "body": {
+          "value": "new-var-value"
+        },
+        "operation": "PUT /api/v1/user/vars/MY_VAR"
+      },
+      "expected": {
+        "emitted_event_type": "hub.variable.update",
+        "metadata": {
+          "key": "MY_VAR",
+          "scope": "user"
+        }
+      },
+      "assertion_pseudocode": "invokeUpdateVariable(cfg, 'user', 'MY_VAR'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.variable.update'; assert event.metadata['scope'] == 'user'; assert event.metadata['key'] == 'MY_VAR'"
+    },
+    {
+      "id": "TS-18-23",
+      "requirement_id": "18-REQ-4.6",
+      "kind": "unit",
+      "description": "Variable delete emits a HubEvent with event_type hub.variable.delete and metadata containing scope and key.",
+      "preconditions": [
+        "Secrets route registration is called with a capturing mock Emitter",
+        "An authenticated Echo context is available",
+        "Variable 'MY_VAR' exists in scope 'user'"
+      ],
+      "input": {
+        "operation": "DELETE /api/v1/user/vars/MY_VAR"
+      },
+      "expected": {
+        "emitted_event_type": "hub.variable.delete",
+        "metadata": {
+          "key": "MY_VAR",
+          "scope": "user"
+        }
+      },
+      "assertion_pseudocode": "invokeDeleteVariable(cfg, 'user', 'MY_VAR'); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.variable.delete'; assert event.metadata['scope'] == 'user'; assert event.metadata['key'] == 'MY_VAR'"
+    },
+    {
+      "id": "TS-18-24",
+      "requirement_id": "18-REQ-4.7",
+      "kind": "unit",
+      "description": "Secrets route registration accepts an audit.Emitter parameter and passes it to all secret and variable CRUD handlers.",
+      "preconditions": [
+        "internal/secrets/*.go is compiled",
+        "audit.Emitter interface is defined in internal/audit"
+      ],
+      "input": {
+        "emitter": "mockEmitter"
+      },
+      "expected": {
+        "all_crud_handlers_receive_emitter": true
+      },
+      "assertion_pseudocode": "RegisterSecretsRoutes(router, store, mockEmitter); for each CRUD operation (create/update/delete secret/variable), invoke the handler and assert mockEmitter.capturedEvents has length 1"
+    },
+    {
+      "id": "TS-18-25",
+      "requirement_id": "18-REQ-5.1",
+      "kind": "unit",
+      "description": "Git push to the hub git server emits a HubEvent with event_type hub.git.push and metadata containing head_sha and refs_updated.",
+      "preconditions": [
+        "Gitserver config is initialised with a capturing mock Emitter",
+        "A workspace git repository exists"
+      ],
+      "input": {
+        "head_sha": "abc123",
+        "operation": "git push to hub git server",
+        "refs_updated": [
+          "refs/heads/main"
+        ]
+      },
+      "expected": {
+        "emitted_event_type": "hub.git.push",
+        "metadata": {
+          "head_sha": "abc123",
+          "refs_updated": [
+            "refs/heads/main"
+          ]
+        }
+      },
+      "assertion_pseudocode": "invokePostPushHook(cfg, 'abc123', ['refs/heads/main']); event := mockEmitter.capturedEvents[0]; assert event.event_type == 'hub.git.push'; assert event.metadata['head_sha'] == 'abc123'; assert event.metadata['refs_updated'] == ['refs/heads/main']"
+    },
+    {
+      "id": "TS-18-26",
+      "requirement_id": "18-REQ-5.2",
+      "kind": "unit",
+      "description": "The gitserver config struct exposes an Audit field of type audit.Emitter used by the post-push hook handler.",
+      "preconditions": [
+        "internal/gitserver/*.go is compiled",
+        "audit.Emitter interface is defined in internal/audit"
+      ],
+      "input": {
+        "config_struct": "gitserver config"
+      },
+      "expected": {
+        "field": "Audit",
+        "field_type": "audit.Emitter"
+      },
+      "assertion_pseudocode": "cfg := GitServerConfig{Audit: mockEmitter}; assert cfg.Audit != nil; assert typeof(cfg.Audit) implements audit.Emitter"
+    },
+    {
+      "id": "TS-18-27",
+      "requirement_id": "18-REQ-5.3",
+      "kind": "unit",
+      "description": "When the Audit field on the gitserver config is nil, a git push is processed without panicking or returning an error.",
+      "preconditions": [
+        "Gitserver config is initialised with Audit set to nil",
+        "A workspace git repository exists"
+      ],
+      "input": {
+        "audit_field": null,
+        "operation": "git push to hub git server"
+      },
+      "expected": {
+        "panic": false,
+        "push_rejected": false
+      },
+      "assertion_pseudocode": "cfg := GitServerConfig{Audit: nil}; result := invokePostPushHook(cfg, 'abc123', ['refs/heads/main']); assert no panic occurred; assert result.error == nil"
+    },
+    {
+      "id": "TS-18-28",
+      "requirement_id": "18-REQ-6.1",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with audit:read permission returns HTTP 200 with a JSON body containing events from both hub_audit_events and agent_audit_events ordered by timestamp.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub_audit_events and agent_audit_events tables",
+        "hub_audit_events contains 2 events at timestamps T1 and T3",
+        "agent_audit_events contains 1 event at timestamp T2 (between T1 and T3)",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "body": {
+          "events_count": 3,
+          "has_more": false,
+          "next_cursor": null,
+          "ordered_by_timestamp": true
+        },
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit', headers); assert resp.status == 200; body := parseJSON(resp.body); assert len(body.events) == 3; assert body.events[0].timestamp <= body.events[1].timestamp <= body.events[2].timestamp; assert body.has_more == false"
+    },
+    {
+      "id": "TS-18-29",
+      "requirement_id": "18-REQ-6.2",
+      "kind": "integration",
+      "description": "GET /api/v1/audit applies provided filters (source, workspace, actor_id, event_type_prefix) and returns only matching events.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub_audit_events and agent_audit_events tables",
+        "hub_audit_events contains events for workspace 'ws-1' and 'ws-2'",
+        "agent_audit_events contains events for workspace 'ws-1'",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit?source=hub&workspace=ws-1"
+      },
+      "expected": {
+        "all_events_source": "hub",
+        "all_events_workspace": "ws-1",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit?source=hub&workspace=ws-1', headers); body := parseJSON(resp.body); for each event in body.events: assert event.source == 'hub'; assert event.workspace == 'ws-1'"
+    },
+    {
+      "id": "TS-18-30",
+      "requirement_id": "18-REQ-6.3",
+      "kind": "integration",
+      "description": "GET /api/v1/audit implements cursor-based pagination with default page size 100 and maximum 1000, returning a valid next_cursor when has_more is true.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub_audit_events containing 150 events",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit?limit=100"
+      },
+      "expected": {
+        "events_count": 100,
+        "has_more": true,
+        "http_status": 200,
+        "next_cursor_decodable": true,
+        "next_cursor_format": "URL-safe base64 of JSON {ts, id}"
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit?limit=100', headers); body := parseJSON(resp.body); assert len(body.events) == 100; assert body.has_more == true; assert body.next_cursor != null; decoded := base64URLDecode(body.next_cursor); obj := parseJSON(decoded); assert 'ts' in obj; assert 'id' in obj"
+    },
+    {
+      "id": "TS-18-31",
+      "requirement_id": "18-REQ-6.4",
+      "kind": "integration",
+      "description": "Hub events in the unified query response have non-null hub-specific fields and null agent-specific fields; agent events have the inverse.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with one hub event and one agent event",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "agent_event": {
+          "action": null,
+          "actor_id": null,
+          "actor_type": null,
+          "node_id": "non-null",
+          "resource_id": null,
+          "resource_type": null,
+          "run_id": "non-null",
+          "session_id": "non-null"
+        },
+        "hub_event": {
+          "action": "non-null",
+          "actor_id": "non-null",
+          "actor_type": "non-null",
+          "archetype": null,
+          "node_id": null,
+          "resource_id": "non-null",
+          "resource_type": "non-null",
+          "run_id": null,
+          "session_id": null
+        }
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit', headers); body := parseJSON(resp.body); hubEvent := first event where source=='hub'; assert hubEvent.actor_id != null; assert hubEvent.run_id == null; agentEvent := first event where source=='agent'; assert agentEvent.run_id != null; assert agentEvent.actor_id == null"
+    },
+    {
+      "id": "TS-18-32",
+      "requirement_id": "18-REQ-6.5",
+      "kind": "integration",
+      "description": "Every event in the unified query response has the source field set to 'hub' for hub_audit_events rows and 'agent' for agent_audit_events rows.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with events in both hub_audit_events and agent_audit_events",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "all_agent_events_source": "agent",
+        "all_hub_events_source": "hub"
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit', headers); body := parseJSON(resp.body); for each event in body.events: assert event.source in ['hub', 'agent']; hubEvents := filter(body.events, e => e.actor_id != null); for each e in hubEvents: assert e.source == 'hub'"
+    },
+    {
+      "id": "TS-18-33",
+      "requirement_id": "18-REQ-6.6",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with event_type_prefix=hub.workspace returns only events whose event_type starts with 'hub.workspace'.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub events of types hub.workspace.create, hub.workspace.sync, hub.merge.enqueue",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit?event_type_prefix=hub.workspace"
+      },
+      "expected": {
+        "all_events_event_type_prefix": "hub.workspace",
+        "excluded_event_types": [
+          "hub.merge.enqueue"
+        ],
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit?event_type_prefix=hub.workspace', headers); body := parseJSON(resp.body); for each event in body.events: assert event.event_type.startsWith('hub.workspace'); assert no event has event_type == 'hub.merge.enqueue'"
+    },
+    {
+      "id": "TS-18-34",
+      "requirement_id": "18-REQ-7.1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/runs/:run_id/transcript with node_id returns HTTP 200 with messages ordered by timestamp.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with agent_traces table",
+        "agent_traces contains 3 trace events for run_id='run-uuid' and node_id='node-uuid' at timestamps T1, T2, T3",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid"
+      },
+      "expected": {
+        "body": {
+          "messages_count": 3,
+          "node_id": "node-uuid",
+          "ordered_by_timestamp": true,
+          "run_id": "run-uuid"
+        },
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', headers); assert resp.status == 200; body := parseJSON(resp.body); assert body.run_id == 'run-uuid'; assert body.node_id == 'node-uuid'; assert len(body.messages) == 3; assert body.messages[0].timestamp <= body.messages[1].timestamp <= body.messages[2].timestamp"
+    },
+    {
+      "id": "TS-18-35",
+      "requirement_id": "18-REQ-7.2",
+      "kind": "integration",
+      "description": "Transcript handler maps session.init to role 'system', assistant.message to 'assistant', tool.use to 'tool_use' with tool_name, and tool.error to 'tool_error' with tool_name.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with agent_traces containing one event of each type: session.init, assistant.message, tool.use, tool.error",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid"
+      },
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "tool_name": null
+          },
+          {
+            "role": "assistant",
+            "tool_name": null
+          },
+          {
+            "role": "tool_use",
+            "tool_name": "non-null"
+          },
+          {
+            "role": "tool_error",
+            "tool_name": "non-null"
+          }
+        ]
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', headers); body := parseJSON(resp.body); systemMsg := first(body.messages, m => m.role == 'system'); assert systemMsg.content == expectedSystemPrompt; toolUseMsg := first(body.messages, m => m.role == 'tool_use'); assert toolUseMsg.tool_name != null; toolErrMsg := first(body.messages, m => m.role == 'tool_error'); assert toolErrMsg.tool_name != null"
+    },
+    {
+      "id": "TS-18-36",
+      "requirement_id": "18-REQ-7.3",
+      "kind": "integration",
+      "description": "Transcript handler returns HTTP 200 with an empty messages array when no traces exist for the given run_id and node_id.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with an empty agent_traces table",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/nonexistent-run/transcript?node_id=nonexistent-node"
+      },
+      "expected": {
+        "body": {
+          "messages": [],
+          "node_id": "nonexistent-node",
+          "run_id": "nonexistent-run"
+        },
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/nonexistent-run/transcript?node_id=nonexistent-node', headers); assert resp.status == 200; body := parseJSON(resp.body); assert body.run_id == 'nonexistent-run'; assert body.node_id == 'nonexistent-node'; assert len(body.messages) == 0"
+    },
+    {
+      "id": "TS-18-37",
+      "requirement_id": "18-REQ-8.1",
+      "kind": "integration",
+      "description": "GET /api/v1/events with audit:read permission returns HTTP 200 with Content-Type text/event-stream and begins streaming SSE frames.",
+      "preconditions": [
+        "SSE connection manager is initialised with AF_SSE_MAX_CONNECTIONS=100",
+        "An authenticated caller with audit:read permission is available",
+        "The Emitter is wired to the SSE broadcaster"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/events"
+      },
+      "expected": {
+        "content_type": "text/event-stream",
+        "first_frame_type": "heartbeat",
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/events', headers, stream=true); assert resp.status == 200; assert resp.headers['Content-Type'] contains 'text/event-stream'; firstFrame := readNextSSEFrame(resp); assert firstFrame.event == 'heartbeat'; assert parseJSON(firstFrame.data).timestamp != null"
+    },
+    {
+      "id": "TS-18-38",
+      "requirement_id": "18-REQ-8.2",
+      "kind": "integration",
+      "description": "SSE handler applies workspace, run_id, and category filters, delivering only matching events to the connected client.",
+      "preconditions": [
+        "SSE connection manager is initialised",
+        "An authenticated caller with audit:read permission is available",
+        "The Emitter is wired to the SSE broadcaster"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/events?workspace=ws-1&category=hub"
+      },
+      "expected": {
+        "only_ws1_hub_events_delivered": true
+      },
+      "assertion_pseudocode": "connect to SSE with workspace=ws-1&category=hub; emit hub event for ws-1; emit hub event for ws-2; emit agent event for ws-1; frame := readNextSSEFrame(resp); assert parseJSON(frame.data).workspace == 'ws-1'; assert parseJSON(frame.data).source == 'hub'; assert no frame received for ws-2 or agent events"
+    },
+    {
+      "id": "TS-18-39",
+      "requirement_id": "18-REQ-8.3",
+      "kind": "integration",
+      "description": "SSE broadcaster sends a heartbeat frame to all connected clients every 30 seconds.",
+      "preconditions": [
+        "SSE connection manager is initialised with heartbeat interval constant of 30 seconds",
+        "An authenticated caller with audit:read permission is connected to GET /api/v1/events"
+      ],
+      "input": {
+        "wait_duration": "31 seconds"
+      },
+      "expected": {
+        "heartbeat_data_has_timestamp": true,
+        "heartbeat_event_type": "heartbeat",
+        "heartbeat_received": true
+      },
+      "assertion_pseudocode": "connect to SSE; skipHeartbeats until 30s elapsed; frame := readNextSSEFrame(resp, timeout=35s); assert frame.event == 'heartbeat'; assert parseJSON(frame.data).timestamp != null"
+    },
+    {
+      "id": "TS-18-40",
+      "requirement_id": "18-REQ-8.4",
+      "kind": "integration",
+      "description": "SSE connection manager closes a connection that has had no reads for 60 seconds.",
+      "preconditions": [
+        "SSE connection manager is initialised with stale-connection timeout constant of 60 seconds",
+        "An authenticated caller is connected to GET /api/v1/events but stops reading"
+      ],
+      "input": {
+        "wait_duration": "61 seconds without reading"
+      },
+      "expected": {
+        "client_deregistered": true,
+        "connection_closed": true
+      },
+      "assertion_pseudocode": "connect to SSE; stop reading frames; wait 61 seconds; assert connection is closed by server; assert active connection count decremented by 1"
+    },
+    {
+      "id": "TS-18-41",
+      "requirement_id": "18-REQ-8.5",
+      "kind": "unit",
+      "description": "SSE broadcaster uses a fan-out channel pattern with a 256-event per-client buffer; when the buffer is full, the oldest event is dropped and logged at debug level.",
+      "preconditions": [
+        "SSE connection manager is initialised",
+        "One SSE client is connected with a per-client channel of capacity 256",
+        "The client is not reading from the channel"
+      ],
+      "input": {
+        "events_emitted": 257
+      },
+      "expected": {
+        "channel_not_blocked": true,
+        "drop_logged_at_debug": true,
+        "dropped_events": 1,
+        "events_in_channel": 256
+      },
+      "assertion_pseudocode": "connect SSE client but do not read; emit 257 events via Emitter; assert broadcaster did not block; assert per-client channel length == 256; assert debug log contains 'dropped' or equivalent; assert Emitter.Emit returned without blocking"
+    },
+    {
+      "id": "TS-18-42",
+      "requirement_id": "18-REQ-8.6",
+      "kind": "integration",
+      "description": "When the Emitter emits a new event, it is broadcast to all registered SSE subscribers as an audit_event SSE frame.",
+      "preconditions": [
+        "SSE connection manager is initialised and wired to the Emitter",
+        "Two authenticated SSE clients are connected to GET /api/v1/events"
+      ],
+      "input": {
+        "emitted_event": {
+          "event_type": "hub.workspace.create",
+          "workspace": "ws-1"
+        }
+      },
+      "expected": {
+        "both_clients_receive_frame": true,
+        "frame_data_matches_event": true,
+        "frame_event_type": "audit_event"
+      },
+      "assertion_pseudocode": "connect client1 and client2 to SSE; emit HubEvent via cfg.Audit.Emit; frame1 := readNextSSEFrame(client1); frame2 := readNextSSEFrame(client2); assert frame1.event == 'audit_event'; assert frame2.event == 'audit_event'; assert parseJSON(frame1.data).event_type == 'hub.workspace.create'"
+    },
+    {
+      "id": "TS-18-43",
+      "requirement_id": "18-REQ-8.7",
+      "kind": "unit",
+      "description": "Each SSE frame is formatted with 'event: <type>\\ndata: <JSON>\\n\\n' structure.",
+      "preconditions": [
+        "SSE connection manager is initialised",
+        "An authenticated SSE client is connected"
+      ],
+      "input": {
+        "emitted_event": {
+          "event_type": "hub.workspace.create"
+        }
+      },
+      "expected": {
+        "frame_format": "event: audit_event\\ndata: {JSON}\\n\\n"
+      },
+      "assertion_pseudocode": "connect SSE client; emit event; rawFrame := readRawSSEBytes(client); assert rawFrame contains 'event: audit_event\\n'; assert rawFrame contains 'data: {'; assert rawFrame ends with '\\n\\n'"
+    },
+    {
+      "id": "TS-18-44",
+      "requirement_id": "18-REQ-9.1",
+      "kind": "unit",
+      "description": "The SSE connection manager is implemented in internal/audit/sse.go with a broadcaster goroutine, per-connection goroutines, a heartbeat goroutine, and a mutex-protected connection registry.",
+      "preconditions": [
+        "internal/audit/sse.go exists and compiles"
+      ],
+      "input": {
+        "file": "internal/audit/sse.go"
+      },
+      "expected": {
+        "broadcaster_goroutine": true,
+        "connection_registry_mutex_protected": true,
+        "heartbeat_goroutine": true,
+        "per_connection_goroutines": true
+      },
+      "assertion_pseudocode": "manager := NewSSEManager(); assert manager has broadcaster channel; assert manager has sync.Mutex or equivalent for registry; start manager; assert heartbeat goroutine is running; connect client; assert per-connection goroutine is started"
+    },
+    {
+      "id": "TS-18-45",
+      "requirement_id": "18-REQ-9.2",
+      "kind": "unit",
+      "description": "Every successful Emitter.Emit call also publishes the event to the SSE broadcast channel.",
+      "preconditions": [
+        "internal/audit/emitter.go is compiled with SSE broadcast integration",
+        "SSE connection manager is initialised and wired to the Emitter",
+        "DuckDB temp-file instance is available"
+      ],
+      "input": {
+        "event": {
+          "event_type": "hub.workspace.create"
+        }
+      },
+      "expected": {
+        "event_in_broadcast_channel": true,
+        "event_in_duckdb": true
+      },
+      "assertion_pseudocode": "emitter := NewDefaultEmitter(store, sseManager); emitter.Emit(ctx, hubEvent); assert sseManager.broadcastChannel received hubEvent; assert store.QueryHubEvents() returns hubEvent"
+    },
+    {
+      "id": "TS-18-46",
+      "requirement_id": "18-REQ-9.3",
+      "kind": "unit",
+      "description": "SSE connection manager reads AF_SSE_MAX_CONNECTIONS at startup and defaults to 100 when the variable is absent.",
+      "preconditions": [
+        "AF_SSE_MAX_CONNECTIONS environment variable is not set"
+      ],
+      "input": {
+        "env": {}
+      },
+      "expected": {
+        "max_connections": 100
+      },
+      "assertion_pseudocode": "unsetEnv('AF_SSE_MAX_CONNECTIONS'); manager := NewSSEManager(); assert manager.maxConnections == 100"
+    },
+    {
+      "id": "TS-18-47",
+      "requirement_id": "18-REQ-9.4",
+      "kind": "unit",
+      "description": "Heartbeat interval is a hardcoded constant of 30 seconds and stale-connection timeout is a hardcoded constant of 60 seconds, not read from environment variables.",
+      "preconditions": [
+        "internal/audit/sse.go is compiled"
+      ],
+      "input": {},
+      "expected": {
+        "heartbeat_interval_constant": "30s",
+        "not_from_env": true,
+        "stale_timeout_constant": "60s"
+      },
+      "assertion_pseudocode": "assert HeartbeatInterval constant == 30 * time.Second; assert StaleConnectionTimeout constant == 60 * time.Second; assert neither constant is read from os.Getenv"
+    },
+    {
+      "id": "TS-18-48",
+      "requirement_id": "18-REQ-10.1",
+      "kind": "integration",
+      "description": "GET /api/v1/audit is registered on the Echo router with audit:read permission middleware and the unified query handler.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "DuckDB temp-file instance is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "http_status": 200,
+        "route_registered": true
+      },
+      "assertion_pseudocode": "router := setupEchoWithAuditRoutes(store, sseManager); resp := httptest.NewRecorder(); router.ServeHTTP(resp, newRequest('GET', '/api/v1/audit', validToken)); assert resp.Code == 200"
+    },
+    {
+      "id": "TS-18-49",
+      "requirement_id": "18-REQ-10.2",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/runs/:run_id/transcript is registered on the Echo router with audit:read permission middleware and the transcript handler.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "DuckDB temp-file instance is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid"
+      },
+      "expected": {
+        "http_status": 200,
+        "route_registered": true
+      },
+      "assertion_pseudocode": "router := setupEchoWithAuditRoutes(store, sseManager); resp := httptest.NewRecorder(); router.ServeHTTP(resp, newRequest('GET', '/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', validToken)); assert resp.Code == 200"
+    },
+    {
+      "id": "TS-18-50",
+      "requirement_id": "18-REQ-10.3",
+      "kind": "integration",
+      "description": "GET /api/v1/events is registered on the Echo router with audit:read permission middleware and the SSE handler.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "SSE connection manager is initialised"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/events"
+      },
+      "expected": {
+        "content_type": "text/event-stream",
+        "http_status": 200,
+        "route_registered": true
+      },
+      "assertion_pseudocode": "router := setupEchoWithAuditRoutes(store, sseManager); resp := httptest.NewRecorder(); router.ServeHTTP(resp, newRequest('GET', '/api/v1/events', validToken)); assert resp.Code == 200; assert resp.Header().Get('Content-Type') contains 'text/event-stream'"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-18-P1",
+      "property_id": "18-PROP-1",
+      "validates": [],
+      "description": "For any hub mutation handler with a non-nil Emitter, the HTTP response status and body are identical whether Emit succeeds, fails, or the Audit field is nil.",
+      "for_any_strategy": "For each mutation type (workspace create/update/archive/delete/sync, merge submit/complete/fail, patch create/delete, rebuild enqueue/complete/fail, secret/variable CRUD, git push): sample 10 valid requests; for each request, run the handler with (a) a succeeding Emitter, (b) a failing Emitter, (c) a nil Audit field",
+      "invariant_check": "assert response.status is identical across all three configurations; assert response.body is identical across all three configurations; assert no panic occurs in any configuration"
+    },
+    {
+      "id": "TS-18-P2",
+      "property_id": "18-PROP-2",
+      "validates": [],
+      "description": "For any valid audit query response with has_more=true, decoding next_cursor yields a valid {ts, id} JSON object, and using it in a subsequent request returns the next page without duplicates or gaps.",
+      "for_any_strategy": "Insert N events (N sampled from [101, 200, 500, 1000]) into hub_audit_events with distinct timestamps; issue GET /api/v1/audit?limit=100 repeatedly following next_cursor until has_more=false; collect all returned event IDs",
+      "invariant_check": "assert total events collected == N; assert no event ID appears more than once; assert events are in monotonically non-decreasing timestamp order across all pages; assert each next_cursor decodes to valid base64url JSON with 'ts' and 'id' fields"
+    },
+    {
+      "id": "TS-18-P3",
+      "property_id": "18-PROP-3",
+      "validates": [],
+      "description": "For any event returned by GET /api/v1/audit, hub events have source='hub' with non-null hub-specific fields and null agent-specific fields; agent events have the inverse.",
+      "for_any_strategy": "Insert M hub events and N agent events (M, N sampled from [1, 10, 50]); query GET /api/v1/audit with no filters; iterate all returned events",
+      "invariant_check": "for each event where source=='hub': assert actor_id != null AND actor_type != null AND resource_type != null AND resource_id != null AND action != null AND run_id == null AND node_id == null AND session_id == null AND archetype == null; for each event where source=='agent': assert run_id != null AND actor_id == null AND actor_type == null AND resource_type == null AND resource_id == null AND action == null"
+    },
+    {
+      "id": "TS-18-P4",
+      "property_id": "18-PROP-4",
+      "validates": [],
+      "description": "For any active SSE connection, at least one heartbeat frame is delivered within every 30-second window, ensuring the 60-second stale timeout is never triggered by the heartbeat interval alone.",
+      "for_any_strategy": "Connect an SSE client; observe heartbeat frames over a 90-second window; record timestamps of all heartbeat frames received",
+      "invariant_check": "assert for every 30-second interval within the observation window, at least one heartbeat frame was received; assert the maximum gap between consecutive heartbeat frames is less than 60 seconds; assert heartbeat frame event type == 'heartbeat' and data.timestamp is a valid ISO 8601 UTC string"
+    },
+    {
+      "id": "TS-18-P5",
+      "property_id": "18-PROP-5",
+      "validates": [],
+      "description": "For any sequence of SSE connection attempts, the number of concurrently active connections never exceeds AF_SSE_MAX_CONNECTIONS, and any connection attempt that would exceed the cap receives HTTP 503.",
+      "for_any_strategy": "Set AF_SSE_MAX_CONNECTIONS to K (sampled from [1, 2, 5, 10]); concurrently attempt K+5 SSE connections with valid auth; record HTTP status codes for each connection attempt",
+      "invariant_check": "assert exactly K connections receive HTTP 200 with Content-Type text/event-stream; assert at least 5 connections receive HTTP 503 with body {error: 'too many SSE connections'}; assert sseManager.activeConnections never exceeds K at any point"
+    },
+    {
+      "id": "TS-18-P6",
+      "property_id": "18-PROP-6",
+      "validates": [],
+      "description": "For any transcript response for a given run_id and node_id, messages are ordered strictly by ascending timestamp with no reordering or deduplication.",
+      "for_any_strategy": "Insert N trace events (N sampled from [1, 5, 20, 100]) for a fixed run_id and node_id with randomly ordered timestamps; query GET /api/v1/workspaces/:slug/runs/:run_id/transcript?node_id=:node_id",
+      "invariant_check": "assert len(body.messages) == N (no deduplication); assert for all i in [0, N-2]: body.messages[i].timestamp <= body.messages[i+1].timestamp (ascending order)"
+    },
+    {
+      "id": "TS-18-P7",
+      "property_id": "18-PROP-7",
+      "validates": [],
+      "description": "For any handler package with an Audit field set to nil, no nil pointer dereference or panic occurs and the handler behaves identically to a handler with no Audit field configured.",
+      "for_any_strategy": "For each handler package (workspace, merge, carrypatch, secrets, gitserver): sample 5 valid mutation requests; run each request with Audit=nil",
+      "invariant_check": "assert no panic occurs for any request; assert response.status matches the expected success status for each mutation type; assert response.body matches the expected success body"
+    },
+    {
+      "id": "TS-18-P8",
+      "property_id": "18-PROP-8",
+      "validates": [],
+      "description": "For any event emitted when one or more per-client SSE channels are full, the Emitter.Emit call returns without blocking regardless of per-client channel state.",
+      "for_any_strategy": "Connect K SSE clients (K sampled from [1, 5, 10]); fill each client's per-client channel to capacity (256 events); emit M additional events (M sampled from [1, 10, 50]) via Emitter.Emit; measure elapsed time for each Emit call",
+      "invariant_check": "assert each Emitter.Emit call completes in less than 10 milliseconds; assert no Emit call blocks for more than 10 milliseconds; assert total elapsed time for M Emit calls is less than M * 10ms"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-18-E1",
+      "requirement_id": "18-REQ-1.E1",
+      "kind": "unit",
+      "description": "When Emitter.Emit returns an error during a workspace mutation, the mutation HTTP response is unaffected and the error is logged but not propagated.",
+      "preconditions": [
+        "A workspace handler config is initialised with a mock Emitter that always returns an error",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "emitter_error": "simulated DuckDB write failure",
+        "operation": "POST /api/v1/workspaces"
+      },
+      "expected": {
+        "error_logged": true,
+        "error_returned_to_caller": false,
+        "http_status": 201
+      },
+      "assertion_pseudocode": "mockEmitter.returnError = errors.New('simulated failure'); response := invokeCreateWorkspace(cfg, validRequest); assert response.status == 201; assert response.body does not contain 'error'; assert logOutput contains 'simulated failure'"
+    },
+    {
+      "id": "TS-18-E2",
+      "requirement_id": "18-REQ-1.E2",
+      "kind": "unit",
+      "description": "When apikit.GetAuthInfo returns no authenticated user, the workspace handler emits a HubEvent with empty actor_id and actor_type set to 'system' without panicking.",
+      "preconditions": [
+        "A workspace handler config is initialised with a capturing mock Emitter",
+        "An unauthenticated Echo context is set up (no auth info)"
+      ],
+      "input": {
+        "operation": "workspace mutation with unauthenticated context"
+      },
+      "expected": {
+        "emitted_event": {
+          "actor_id": "",
+          "actor_type": "system"
+        },
+        "panic": false
+      },
+      "assertion_pseudocode": "ctx := unauthenticatedEchoContext(); invokeCreateWorkspace(cfg, ctx); event := mockEmitter.capturedEvents[0]; assert event.actor_id == ''; assert event.actor_type == 'system'; assert no panic occurred"
+    },
+    {
+      "id": "TS-18-E3",
+      "requirement_id": "18-REQ-2.E1",
+      "kind": "unit",
+      "description": "When Emitter.Emit returns an error during merge event emission, the merge HTTP response is unaffected and the error is logged but not propagated.",
+      "preconditions": [
+        "MergeAPIConfig is initialised with a mock Emitter that always returns an error",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "emitter_error": "simulated DuckDB write failure",
+        "operation": "POST /api/v1/workspaces/ws-1/merge"
+      },
+      "expected": {
+        "error_logged": true,
+        "error_returned_to_caller": false,
+        "http_status": 202
+      },
+      "assertion_pseudocode": "mockEmitter.returnError = errors.New('simulated failure'); response := invokeSubmitMerge(cfg, validRequest); assert response.status == 202; assert response.body does not contain 'error'; assert logOutput contains 'simulated failure'"
+    },
+    {
+      "id": "TS-18-E4",
+      "requirement_id": "18-REQ-3.E1",
+      "kind": "unit",
+      "description": "When Emitter.Emit returns an error during patch or rebuild event emission, the carrypatch HTTP response is unaffected and the error is logged but not propagated.",
+      "preconditions": [
+        "Carrypatch config is initialised with a mock Emitter that always returns an error",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "emitter_error": "simulated DuckDB write failure",
+        "operation": "POST /api/v1/workspaces/ws-1/patches"
+      },
+      "expected": {
+        "error_logged": true,
+        "error_returned_to_caller": false,
+        "http_status_in": [
+          200,
+          201,
+          202
+        ]
+      },
+      "assertion_pseudocode": "mockEmitter.returnError = errors.New('simulated failure'); response := invokeAddPatch(cfg, validRequest); assert response.status in [200, 201, 202]; assert response.body does not contain 'error'; assert logOutput contains 'simulated failure'"
+    },
+    {
+      "id": "TS-18-E5",
+      "requirement_id": "18-REQ-4.E1",
+      "kind": "unit",
+      "description": "When Emitter.Emit returns an error during secret or variable CRUD event emission, the CRUD HTTP response is unaffected and the error is logged but not propagated.",
+      "preconditions": [
+        "Secrets route registration is called with a mock Emitter that always returns an error",
+        "An authenticated Echo context is available"
+      ],
+      "input": {
+        "emitter_error": "simulated DuckDB write failure",
+        "operation": "POST /api/v1/user/secrets"
+      },
+      "expected": {
+        "error_logged": true,
+        "error_returned_to_caller": false,
+        "http_status": 201
+      },
+      "assertion_pseudocode": "mockEmitter.returnError = errors.New('simulated failure'); response := invokeCreateSecret(cfg, validRequest); assert response.status == 201; assert response.body does not contain 'error'; assert logOutput contains 'simulated failure'"
+    },
+    {
+      "id": "TS-18-E6",
+      "requirement_id": "18-REQ-4.E2",
+      "kind": "unit",
+      "description": "When the Audit emitter is nil at route registration time, all secret and variable CRUD handlers skip emission silently without panicking.",
+      "preconditions": [
+        "Secrets route registration is called with a nil Emitter"
+      ],
+      "input": {
+        "emitter": null,
+        "operation": "POST /api/v1/user/secrets"
+      },
+      "expected": {
+        "http_status": 201,
+        "panic": false
+      },
+      "assertion_pseudocode": "RegisterSecretsRoutes(router, store, nil); response := invokeCreateSecret(nilAuditCfg, validRequest); assert no panic occurred; assert response.status == 201"
+    },
+    {
+      "id": "TS-18-E7",
+      "requirement_id": "18-REQ-5.E1",
+      "kind": "unit",
+      "description": "When Emitter.Emit returns an error during push event emission, the git push is not rejected and the error is logged but not propagated.",
+      "preconditions": [
+        "Gitserver config is initialised with a mock Emitter that always returns an error",
+        "A workspace git repository exists"
+      ],
+      "input": {
+        "emitter_error": "simulated DuckDB write failure",
+        "operation": "git push to hub git server"
+      },
+      "expected": {
+        "error_logged": true,
+        "hook_failed": false,
+        "push_rejected": false
+      },
+      "assertion_pseudocode": "mockEmitter.returnError = errors.New('simulated failure'); result := invokePostPushHook(cfg, 'abc123', ['refs/heads/main']); assert result.error == nil; assert logOutput contains 'simulated failure'"
+    },
+    {
+      "id": "TS-18-E8",
+      "requirement_id": "18-REQ-6.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with an invalid cursor returns HTTP 400 with apikit.WriteAPIError body containing message 'invalid cursor'.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit?cursor=!!!invalid-base64!!!"
+      },
+      "expected": {
+        "body_message": "invalid cursor",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit?cursor=!!!invalid-base64!!!', headers); assert resp.status == 400; body := parseJSON(resp.body); assert body.message == 'invalid cursor' OR body.error == 'invalid cursor'"
+    },
+    {
+      "id": "TS-18-E9",
+      "requirement_id": "18-REQ-6.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/audit returns HTTP 500 with apikit.WriteAPIError body when the DuckDB query fails.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "The Store is configured to return an error on query",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit",
+        "store_error": "simulated DuckDB failure"
+      },
+      "expected": {
+        "body_has_error_message": true,
+        "http_status": 500
+      },
+      "assertion_pseudocode": "mockStore.queryError = errors.New('simulated DuckDB failure'); resp := GET('/api/v1/audit', headers); assert resp.status == 500; body := parseJSON(resp.body); assert body.message != null OR body.error != null"
+    },
+    {
+      "id": "TS-18-E10",
+      "requirement_id": "18-REQ-6.E3",
+      "kind": "integration",
+      "description": "GET /api/v1/audit without authentication returns HTTP 401 before executing any query.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "No authentication token is provided"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "http_status": 401,
+        "query_not_executed": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit', noAuthHeaders); assert resp.status == 401; assert mockStore.queryCalled == false"
+    },
+    {
+      "id": "TS-18-E11",
+      "requirement_id": "18-REQ-6.E4",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with a valid token lacking audit:read scope returns HTTP 403 before executing any query.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "An authenticated caller without audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-token-no-audit-read"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "http_status": 403,
+        "query_not_executed": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit', insufficientScopeHeaders); assert resp.status == 403; assert mockStore.queryCalled == false"
+    },
+    {
+      "id": "TS-18-E12",
+      "requirement_id": "18-REQ-6.E5",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with limit exceeding 1000 clamps the effective limit to 1000 and returns HTTP 200 with at most 1000 events.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub_audit_events containing 1500 events",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit?limit=9999"
+      },
+      "expected": {
+        "events_count_max": 1000,
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit?limit=9999', headers); assert resp.status == 200; body := parseJSON(resp.body); assert len(body.events) <= 1000"
+    },
+    {
+      "id": "TS-18-E13",
+      "requirement_id": "18-REQ-6.E6",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with no filters and no cursor returns the most recent 100 events ordered by timestamp descending.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub_audit_events containing 150 events at distinct timestamps",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit"
+      },
+      "expected": {
+        "events_count": 100,
+        "http_status": 200,
+        "ordered_by_timestamp_descending": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit', headers); body := parseJSON(resp.body); assert len(body.events) == 100; for i in range(len(body.events)-1): assert body.events[i].timestamp >= body.events[i+1].timestamp"
+    },
+    {
+      "id": "TS-18-E14",
+      "requirement_id": "18-REQ-6.E7",
+      "kind": "integration",
+      "description": "GET /api/v1/audit with since after until returns HTTP 200 with an empty events array rather than a DuckDB error.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with hub_audit_events containing events",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/audit?since=2026-09-02T00:00:00Z&until=2026-09-01T00:00:00Z"
+      },
+      "expected": {
+        "body": {
+          "events": [],
+          "has_more": false,
+          "next_cursor": null
+        },
+        "http_status": 200
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/audit?since=2026-09-02T00:00:00Z&until=2026-09-01T00:00:00Z', headers); assert resp.status == 200; body := parseJSON(resp.body); assert len(body.events) == 0; assert body.next_cursor == null; assert body.has_more == false"
+    },
+    {
+      "id": "TS-18-E15",
+      "requirement_id": "18-REQ-7.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/runs/:run_id/transcript without node_id returns HTTP 400 with apikit.WriteAPIError body containing message 'node_id is required'.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript"
+      },
+      "expected": {
+        "body_message": "node_id is required",
+        "http_status": 400
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript', headers); assert resp.status == 400; body := parseJSON(resp.body); assert body.message == 'node_id is required' OR body.error == 'node_id is required'"
+    },
+    {
+      "id": "TS-18-E16",
+      "requirement_id": "18-REQ-7.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/runs/:run_id/transcript returns HTTP 500 with apikit.WriteAPIError body when the DuckDB query against agent_traces fails.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "The Store is configured to return an error on agent_traces query",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid",
+        "store_error": "simulated DuckDB failure"
+      },
+      "expected": {
+        "body_has_error_message": true,
+        "http_status": 500
+      },
+      "assertion_pseudocode": "mockStore.tracesQueryError = errors.New('simulated DuckDB failure'); resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', headers); assert resp.status == 500; body := parseJSON(resp.body); assert body.message != null OR body.error != null"
+    },
+    {
+      "id": "TS-18-E17",
+      "requirement_id": "18-REQ-7.E3",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/runs/:run_id/transcript without authentication returns HTTP 401 before executing any query.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "No authentication token is provided"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid"
+      },
+      "expected": {
+        "http_status": 401,
+        "query_not_executed": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', noAuthHeaders); assert resp.status == 401; assert mockStore.tracesQueryCalled == false"
+    },
+    {
+      "id": "TS-18-E18",
+      "requirement_id": "18-REQ-7.E4",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/runs/:run_id/transcript with a valid token lacking audit:read scope returns HTTP 403 before executing any query.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "An authenticated caller without audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-token-no-audit-read"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid"
+      },
+      "expected": {
+        "http_status": 403,
+        "query_not_executed": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', insufficientScopeHeaders); assert resp.status == 403; assert mockStore.tracesQueryCalled == false"
+    },
+    {
+      "id": "TS-18-E19",
+      "requirement_id": "18-REQ-7.E5",
+      "kind": "integration",
+      "description": "Transcript handler skips unrecognized trace event types and continues building the transcript from remaining events.",
+      "preconditions": [
+        "DuckDB temp-file instance is initialised with agent_traces containing events of types: session.init, unknown.type, assistant.message",
+        "An authenticated caller with audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid"
+      },
+      "expected": {
+        "http_status": 200,
+        "messages_count": 2,
+        "roles_present": [
+          "system",
+          "assistant"
+        ],
+        "unknown_type_skipped": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/workspaces/ws-1/runs/run-uuid/transcript?node_id=node-uuid', headers); body := parseJSON(resp.body); assert len(body.messages) == 2; roles := map(body.messages, m => m.role); assert 'system' in roles; assert 'assistant' in roles; assert no message with role == 'unknown.type'"
+    },
+    {
+      "id": "TS-18-E20",
+      "requirement_id": "18-REQ-8.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/events when the SSE connection limit is reached returns HTTP 503 with JSON body {\"error\": \"too many SSE connections\"}.",
+      "preconditions": [
+        "SSE connection manager is initialised with AF_SSE_MAX_CONNECTIONS=2",
+        "Two SSE clients are already connected",
+        "An authenticated caller with audit:read permission attempts a third connection"
+      ],
+      "input": {
+        "active_connections": 2,
+        "headers": {
+          "Authorization": "Bearer valid-audit-read-token"
+        },
+        "max_connections": 2,
+        "method": "GET",
+        "path": "/api/v1/events"
+      },
+      "expected": {
+        "body": {
+          "error": "too many SSE connections"
+        },
+        "http_status": 503
+      },
+      "assertion_pseudocode": "setEnv('AF_SSE_MAX_CONNECTIONS', '2'); connectSSE(client1); connectSSE(client2); resp := GET('/api/v1/events', headers); assert resp.status == 503; body := parseJSON(resp.body); assert body.error == 'too many SSE connections'"
+    },
+    {
+      "id": "TS-18-E21",
+      "requirement_id": "18-REQ-8.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/events without authentication returns HTTP 401 before upgrading to SSE.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "No authentication token is provided"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/events"
+      },
+      "expected": {
+        "http_status": 401,
+        "sse_not_upgraded": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/events', noAuthHeaders); assert resp.status == 401; assert resp.headers['Content-Type'] does not contain 'text/event-stream'"
+    },
+    {
+      "id": "TS-18-E22",
+      "requirement_id": "18-REQ-8.E3",
+      "kind": "integration",
+      "description": "GET /api/v1/events with a valid token lacking audit:read scope returns HTTP 403 before upgrading to SSE.",
+      "preconditions": [
+        "Echo router is initialised with audit routes registered",
+        "An authenticated caller without audit:read permission is available"
+      ],
+      "input": {
+        "headers": {
+          "Authorization": "Bearer valid-token-no-audit-read"
+        },
+        "method": "GET",
+        "path": "/api/v1/events"
+      },
+      "expected": {
+        "http_status": 403,
+        "sse_not_upgraded": true
+      },
+      "assertion_pseudocode": "resp := GET('/api/v1/events', insufficientScopeHeaders); assert resp.status == 403; assert resp.headers['Content-Type'] does not contain 'text/event-stream'"
+    },
+    {
+      "id": "TS-18-E23",
+      "requirement_id": "18-REQ-8.E4",
+      "kind": "unit",
+      "description": "When a per-client SSE channel of 256 events is full, the oldest event is dropped, the new event is enqueued, and the drop is logged at debug level.",
+      "preconditions": [
+        "SSE connection manager is initialised",
+        "One SSE client is connected with a per-client channel at capacity (256 events buffered)",
+        "The client is not reading"
+      ],
+      "input": {
+        "channel_state": "full (256 events)",
+        "new_event": {
+          "event_type": "hub.workspace.create"
+        }
+      },
+      "expected": {
+        "broadcaster_not_blocked": true,
+        "debug_log_contains_drop": true,
+        "new_event_enqueued": true,
+        "oldest_event_dropped": true
+      },
+      "assertion_pseudocode": "fillClientChannel(client, 256); emit newEvent; assert client.channel length == 256; assert client.channel does not contain originalOldestEvent; assert client.channel contains newEvent; assert debugLog contains 'dropped'"
+    },
+    {
+      "id": "TS-18-E24",
+      "requirement_id": "18-REQ-8.E5",
+      "kind": "integration",
+      "description": "When an SSE client disconnects, the connection manager detects context cancellation, deregisters the client, and releases the per-client goroutine and channel.",
+      "preconditions": [
+        "SSE connection manager is initialised",
+        "An authenticated SSE client is connected to GET /api/v1/events"
+      ],
+      "input": {
+        "action": "client disconnects (closes connection)"
+      },
+      "expected": {
+        "active_connection_count_decremented": true,
+        "client_deregistered": true,
+        "goroutine_released": true
+      },
+      "assertion_pseudocode": "initialCount := sseManager.activeConnections; connectSSE(client); assert sseManager.activeConnections == initialCount + 1; client.disconnect(); waitForCleanup(100ms); assert sseManager.activeConnections == initialCount"
+    },
+    {
+      "id": "TS-18-E25",
+      "requirement_id": "18-REQ-8.E6",
+      "kind": "integration",
+      "description": "When an SSE connection has had no reads for 60 seconds, the connection manager closes it, deregisters the client, and releases associated resources.",
+      "preconditions": [
+        "SSE connection manager is initialised with stale-connection timeout of 60 seconds",
+        "An authenticated SSE client is connected but stops reading"
+      ],
+      "input": {
+        "wait_duration": "61 seconds without reads"
+      },
+      "expected": {
+        "client_deregistered": true,
+        "connection_closed": true,
+        "resources_released": true
+      },
+      "assertion_pseudocode": "connectSSE(client); stopReading(client); wait(61 * time.Second); assert sseManager.activeConnections == 0; assert client.connection is closed"
+    },
+    {
+      "id": "TS-18-E26",
+      "requirement_id": "18-REQ-9.E1",
+      "kind": "unit",
+      "description": "When the SSE broadcast channel is full, the Emitter drops the event and logs at debug level rather than blocking.",
+      "preconditions": [
+        "SSE connection manager is initialised with a full broadcast channel",
+        "The Emitter is wired to the SSE broadcaster"
+      ],
+      "input": {
+        "broadcast_channel_state": "full",
+        "event": {
+          "event_type": "hub.workspace.create"
+        }
+      },
+      "expected": {
+        "debug_log_contains_drop": true,
+        "emitter_not_blocked": true,
+        "event_dropped": true
+      },
+      "assertion_pseudocode": "fillBroadcastChannel(sseManager); start := time.Now(); emitter.Emit(ctx, hubEvent); elapsed := time.Since(start); assert elapsed < 10ms; assert debugLog contains 'dropped'"
+    },
+    {
+      "id": "TS-18-E27",
+      "requirement_id": "18-REQ-9.E2",
+      "kind": "unit",
+      "description": "When AF_SSE_MAX_CONNECTIONS is set to a non-integer or negative value, the SSE connection manager falls back to the default limit of 100 and logs a warning.",
+      "preconditions": [
+        "AF_SSE_MAX_CONNECTIONS is set to 'not-a-number'"
+      ],
+      "input": {
+        "env": {
+          "AF_SSE_MAX_CONNECTIONS": "not-a-number"
+        }
+      },
+      "expected": {
+        "max_connections": 100,
+        "warning_logged": true
+      },
+      "assertion_pseudocode": "setEnv('AF_SSE_MAX_CONNECTIONS', 'not-a-number'); manager := NewSSEManager(); assert manager.maxConnections == 100; assert warnLog contains 'AF_SSE_MAX_CONNECTIONS' or 'invalid'"
+    },
+    {
+      "id": "TS-18-E28",
+      "requirement_id": "18-REQ-9.E3",
+      "kind": "unit",
+      "description": "When the SSE broadcaster goroutine panics, the connection manager recovers, logs the error, and restarts the broadcaster goroutine.",
+      "preconditions": [
+        "SSE connection manager is initialised and running",
+        "The broadcaster goroutine is configured to panic on the next event"
+      ],
+      "input": {
+        "action": "trigger broadcaster panic"
+      },
+      "expected": {
+        "broadcaster_restarted": true,
+        "error_logged": true,
+        "panic_recovered": true,
+        "sse_subsystem_functional": true
+      },
+      "assertion_pseudocode": "sseManager.injectPanic = true; emit event; wait(100ms); assert sseManager.broadcasterRunning == true; assert errorLog contains 'panic' or 'recovered'; emit anotherEvent; assert SSE clients receive anotherEvent"
+    },
+    {
+      "id": "TS-18-E29",
+      "requirement_id": "18-REQ-10.E1",
+      "kind": "unit",
+      "description": "When the Store or SSE connection manager is nil at route registration time, the process panics at startup with a descriptive message.",
+      "preconditions": [
+        "Echo router is initialised",
+        "Store is nil"
+      ],
+      "input": {
+        "sse_manager": "valid",
+        "store": null
+      },
+      "expected": {
+        "panic": true,
+        "panic_message_descriptive": true
+      },
+      "assertion_pseudocode": "assert panics with descriptive message when RegisterAuditRoutes(router, nil, sseManager) is called; assert panics with descriptive message when RegisterAuditRoutes(router, store, nil) is called"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-18-SMOKE-1",
+      "execution_path_id": "18-PATH-1",
+      "description": "End-to-end smoke test: workspace create mutation emits a hub.workspace.create audit event that is stored in DuckDB and broadcast to connected SSE clients.",
+      "trigger": "POST /api/v1/workspaces with valid workspace creation parameters and a valid API key; an SSE client is connected to GET /api/v1/events",
+      "real_components": [
+        "workspace handler (internal/workspace/handlers.go)",
+        "Emitter (internal/audit/emitter.go)",
+        "DuckDB store (internal/audit, temp-file instance)",
+        "SSE broadcaster (internal/audit/sse.go)",
+        "SSE per-connection goroutine",
+        "Echo router with audit and workspace routes registered"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "POST /api/v1/workspaces returns HTTP 201",
+        "hub_audit_events table contains one row with event_type='hub.workspace.create', resource_type='workspace', metadata containing git_url and branch",
+        "SSE client receives an 'audit_event' SSE frame with data matching the emitted HubEvent within 1 second of the mutation"
+      ]
+    },
+    {
+      "id": "TS-18-SMOKE-2",
+      "execution_path_id": "18-PATH-2",
+      "description": "End-to-end smoke test: unified audit query with source and workspace filters returns paginated results with a valid next_cursor.",
+      "trigger": "GET /api/v1/audit?source=hub&workspace=my-workspace&limit=50 with a valid bearer token having audit:read scope, after inserting 75 hub events for workspace 'my-workspace' into hub_audit_events",
+      "real_components": [
+        "audit query handler (internal/audit/handlers.go)",
+        "DuckDB store (internal/audit, temp-file instance)",
+        "Echo router with audit routes registered",
+        "apikit authentication and permission middleware"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "GET /api/v1/audit returns HTTP 200",
+        "Response body contains exactly 50 events all with source='hub' and workspace='my-workspace'",
+        "has_more is true",
+        "next_cursor is a non-empty URL-safe base64 string that decodes to a JSON object with 'ts' and 'id' fields",
+        "Using next_cursor in a subsequent request returns the remaining 25 events with has_more=false"
+      ]
+    },
+    {
+      "id": "TS-18-SMOKE-3",
+      "execution_path_id": "18-PATH-3",
+      "description": "End-to-end smoke test: conversation transcript reconstruction returns messages in chronological order with correct role mappings.",
+      "trigger": "GET /api/v1/workspaces/my-workspace/runs/run-uuid/transcript?node_id=node-uuid with a valid bearer token having audit:read scope, after inserting session.init, assistant.message, tool.use, and tool.error trace events into agent_traces",
+      "real_components": [
+        "transcript handler (internal/audit/handlers.go)",
+        "DuckDB store (internal/audit, temp-file instance)",
+        "Echo router with audit routes registered",
+        "apikit authentication and permission middleware"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "GET /api/v1/workspaces/my-workspace/runs/run-uuid/transcript returns HTTP 200",
+        "Response body contains run_id='run-uuid' and node_id='node-uuid'",
+        "messages array contains 4 entries in ascending timestamp order",
+        "First message has role='system' with content from payload.system_prompt",
+        "Second message has role='assistant'",
+        "Third message has role='tool_use' with non-null tool_name",
+        "Fourth message has role='tool_error' with non-null tool_name"
+      ]
+    },
+    {
+      "id": "TS-18-SMOKE-4",
+      "execution_path_id": "18-PATH-4",
+      "description": "End-to-end smoke test: SSE client receives real-time audit_event frame when a workspace mutation is triggered, filtered by workspace.",
+      "trigger": "Dashboard client connects to GET /api/v1/events?workspace=my-workspace using fetch() with Authorization: Bearer header; hub operator triggers POST /api/v1/workspaces/my-workspace/archive",
+      "real_components": [
+        "SSE handler (internal/audit/handlers.go)",
+        "SSE connection manager and broadcaster (internal/audit/sse.go)",
+        "workspace handler (internal/workspace/handlers.go)",
+        "Emitter (internal/audit/emitter.go)",
+        "DuckDB store (internal/audit, temp-file instance)",
+        "Echo router with all routes registered",
+        "apikit authentication and permission middleware"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "GET /api/v1/events returns HTTP 200 with Content-Type: text/event-stream",
+        "An initial heartbeat SSE frame is received",
+        "POST /api/v1/workspaces/my-workspace/archive returns HTTP 200",
+        "SSE client receives an 'audit_event' frame with data.event_type='hub.workspace.archive' and data.workspace='my-workspace' within 1 second",
+        "No SSE frame is received for events from other workspaces"
+      ]
+    },
+    {
+      "id": "TS-18-SMOKE-5",
+      "execution_path_id": "18-PATH-5",
+      "description": "End-to-end smoke test: agent events ingested via spec 17 endpoint and hub events emitted via workspace sync both appear in the unified GET /api/v1/audit response with correct source fields.",
+      "trigger": "Agent submits JSONL audit events via POST /api/v1/audit/ingest (spec 17); hub operator triggers POST /api/v1/workspaces/ws-1/sync; caller queries GET /api/v1/audit?since=2026-09-01T00:00:00Z with audit:read scope",
+      "real_components": [
+        "audit ingestion handler (spec 17, internal/audit/handlers.go)",
+        "workspace handler (internal/workspace/handlers.go)",
+        "Emitter (internal/audit/emitter.go)",
+        "audit query handler (internal/audit/handlers.go)",
+        "DuckDB store (internal/audit, temp-file instance)",
+        "Echo router with all routes registered",
+        "apikit authentication and permission middleware"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "GET /api/v1/audit returns HTTP 200",
+        "Response events array contains both agent events (source='agent') and hub events (source='hub')",
+        "Hub event has event_type='hub.workspace.sync' with non-null actor_id, resource_type, action and null run_id, node_id",
+        "Agent events have non-null run_id, session_id and null actor_id, resource_type, action",
+        "All events are ordered by timestamp ascending"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [
+      "18-REQ-1.1",
+      "18-REQ-1.2",
+      "18-REQ-1.3",
+      "18-REQ-1.4",
+      "18-REQ-1.5",
+      "18-REQ-1.E1",
+      "18-REQ-1.E2",
+      "18-REQ-2.1",
+      "18-REQ-2.2",
+      "18-REQ-2.3",
+      "18-REQ-2.4",
+      "18-REQ-2.5",
+      "18-REQ-2.E1",
+      "18-REQ-3.1",
+      "18-REQ-3.2",
+      "18-REQ-3.3",
+      "18-REQ-3.4",
+      "18-REQ-3.5",
+      "18-REQ-3.6",
+      "18-REQ-3.7",
+      "18-REQ-3.E1",
+      "18-REQ-4.1",
+      "18-REQ-4.2",
+      "18-REQ-4.3",
+      "18-REQ-4.4",
+      "18-REQ-4.5",
+      "18-REQ-4.6",
+      "18-REQ-4.7",
+      "18-REQ-4.E1",
+      "18-REQ-4.E2",
+      "18-REQ-5.1",
+      "18-REQ-5.2",
+      "18-REQ-5.3",
+      "18-REQ-5.E1",
+      "18-REQ-6.1",
+      "18-REQ-6.2",
+      "18-REQ-6.3",
+      "18-REQ-6.4",
+      "18-REQ-6.5",
+      "18-REQ-6.6",
+      "18-REQ-6.E1",
+      "18-REQ-6.E2",
+      "18-REQ-6.E3",
+      "18-REQ-6.E4",
+      "18-REQ-6.E5",
+      "18-REQ-6.E6",
+      "18-REQ-6.E7",
+      "18-REQ-7.1",
+      "18-REQ-7.2",
+      "18-REQ-7.3",
+      "18-REQ-7.E1",
+      "18-REQ-7.E2",
+      "18-REQ-7.E3",
+      "18-REQ-7.E4",
+      "18-REQ-7.E5",
+      "18-REQ-8.1",
+      "18-REQ-8.2",
+      "18-REQ-8.3",
+      "18-REQ-8.4",
+      "18-REQ-8.5",
+      "18-REQ-8.6",
+      "18-REQ-8.7",
+      "18-REQ-8.E1",
+      "18-REQ-8.E2",
+      "18-REQ-8.E3",
+      "18-REQ-8.E4",
+      "18-REQ-8.E5",
+      "18-REQ-8.E6",
+      "18-REQ-9.1",
+      "18-REQ-9.2",
+      "18-REQ-9.3",
+      "18-REQ-9.4",
+      "18-REQ-9.E1",
+      "18-REQ-9.E2",
+      "18-REQ-9.E3",
+      "18-REQ-10.1",
+      "18-REQ-10.2",
+      "18-REQ-10.3",
+      "18-REQ-10.E1"
+    ],
+    "properties_covered": [
+      "18-PROP-1",
+      "18-PROP-2",
+      "18-PROP-3",
+      "18-PROP-4",
+      "18-PROP-5",
+      "18-PROP-6",
+      "18-PROP-7",
+      "18-PROP-8"
+    ],
+    "paths_covered": [
+      "18-PATH-1",
+      "18-PATH-2",
+      "18-PATH-3",
+      "18-PATH-4",
+      "18-PATH-5"
+    ],
+    "gaps": []
+  }
+}

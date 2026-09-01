@@ -1,0 +1,1606 @@
+{
+  "$schema": null,
+  "spec_id": "19",
+  "spec_name": "sessions_metrics_retention",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/audit/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "17",
+      "from_group": 4,
+      "to_group": 1,
+      "relationship": "DuckDB connection, schema (agent_sessions, token_usage DDL), Store interface, permissions, HubEvent type",
+      "sentinel": false
+    },
+    {
+      "depends_on_spec": "18",
+      "from_group": 6,
+      "to_group": 1,
+      "relationship": "Emitter interface for session force-close audit events; SSE gauge metric",
+      "sentinel": false
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write Tests: Session Open, Complete, and Ownership (REQ-1, REQ-2)",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for POST /api/v1/sessions (open session)",
+          "details": [
+            "Test successful session open returns 201 with id, workspace_slug, credential_id, credential_type, status=active, started_at",
+            "Test missing/empty workspace_slug returns 400 with {\"error\": \"workspace_slug is required\", \"status\": 400}",
+            "Test duplicate id returns 200 with existing record (idempotency scenario (a))",
+            "Use real DuckDB in t.TempDir(); no testify"
+          ],
+          "test_spec_refs": [
+            "TS-19-1",
+            "TS-19-2",
+            "TS-19-3"
+          ],
+          "requirement_refs": [
+            "19-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for POST /api/v1/sessions/:id/complete (close session)",
+          "details": [
+            "Test successful close with valid status (completed/failed/timeout) returns 200 with updated session",
+            "Test idempotency: calling complete on already-terminal session (completed, failed, timeout, terminated) returns 200 with actual status",
+            "Test that 'terminated' cannot be submitted as status via this endpoint",
+            "Test ownership enforcement: non-owner non-admin returns 403; owner returns 200; admin_token returns 200"
+          ],
+          "test_spec_refs": [
+            "TS-19-4",
+            "TS-19-5",
+            "TS-19-6",
+            "TS-19-7"
+          ],
+          "requirement_refs": [
+            "19-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for POST /api/v1/sessions/:id/usage (incremental usage)",
+          "details": [
+            "Test successful usage report on active session returns 201 with full token_usage record",
+            "Test 404 when session not found",
+            "Test 403 when caller is non-owner non-admin",
+            "Test 409 when session is not active (completed/failed/timeout/terminated)",
+            "Test multiple usage calls create separate token_usage records"
+          ],
+          "test_spec_refs": [
+            "TS-19-8",
+            "TS-19-9",
+            "TS-19-10",
+            "TS-19-11",
+            "TS-19-12"
+          ],
+          "requirement_refs": [
+            "19-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write ownership enforcement tests for complete and usage endpoints (scenario f)",
+          "details": [
+            "Test complete endpoint: credential_id mismatch + non-admin returns 403",
+            "Test complete endpoint: credential_id match returns 200",
+            "Test complete endpoint: credential_type == admin_token returns 200 regardless of credential_id",
+            "Test usage endpoint: same three cases as above",
+            "Verify admin check uses credential_type == \"admin_token\" string comparison"
+          ],
+          "test_spec_refs": [
+            "TS-19-6",
+            "TS-19-7",
+            "TS-19-10",
+            "TS-19-11"
+          ],
+          "requirement_refs": [
+            "19-REQ-2",
+            "19-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write tests for GET /api/v1/sessions (list) and GET /api/v1/sessions/:id (single fetch)",
+          "details": [
+            "Test list returns sessions with token_summary aggregated from usage rows",
+            "Test list with workspace_slug filter for inaccessible workspace returns 403 (scenario g)",
+            "Test list without workspace_slug filter silently excludes inaccessible workspaces",
+            "Test single fetch returns correct session with token_summary; 404 for unknown id; 403 for inaccessible workspace (scenario i)"
+          ],
+          "test_spec_refs": [
+            "TS-19-13",
+            "TS-19-14",
+            "TS-19-15",
+            "TS-19-16",
+            "TS-19-17",
+            "TS-19-18",
+            "TS-19-19"
+          ],
+          "requirement_refs": [
+            "19-REQ-4",
+            "19-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.6",
+          "title": "Write cursor pagination tests for sessions and usage (scenario c)",
+          "details": [
+            "Test GET /api/v1/sessions cursor pagination: insert N sessions, page through with limit, verify no skips or duplicates across pages for both asc and desc order",
+            "Test GET /api/v1/sessions/:id/usage cursor pagination: insert M usage records, page through, verify no skips or duplicates",
+            "Test cursor encodes (started_at, id) for sessions and (reported_at, id) for usage; URL-safe base64 RFC 4648 §5 no padding",
+            "Test concurrent inserts do not corrupt cursor results"
+          ],
+          "test_spec_refs": [
+            "TS-19-52",
+            "TS-19-53",
+            "TS-19-54"
+          ],
+          "requirement_refs": [
+            "19-REQ-4",
+            "19-REQ-6",
+            "19-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files compile without errors: go build ./internal/audit/...",
+          "Test stubs exist for all session open/complete/usage/list/fetch scenarios (TS-19-1 through TS-19-19, TS-19-52 through TS-19-54)",
+          "No testify imports present; only standard testing package used",
+          "go vet ./internal/audit/... reports no issues"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write Tests: Usage Query, Cost Summary, Force-Close, and Workspace Scoping (REQ-6, REQ-7, REQ-8, REQ-9)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for GET /api/v1/sessions/:id/usage (usage query endpoint)",
+          "details": [
+            "Test paginated usage records returned correctly with next_cursor and has_more",
+            "Test totals reflect ALL usage records regardless of page (scenario l): insert records at varied timestamps, verify totals consistent across pages",
+            "Test 403 for sessions in inaccessible workspaces (scenario g)",
+            "Test 404 for unknown session id"
+          ],
+          "test_spec_refs": [
+            "TS-19-20",
+            "TS-19-21",
+            "TS-19-22",
+            "TS-19-23"
+          ],
+          "requirement_refs": [
+            "19-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for GET /api/v1/workspaces/:slug/cost (cost summary)",
+          "details": [
+            "Test cost endpoint returns correct aggregated token counts grouped by day/session/model",
+            "Test since >= until returns 400 with {\"error\": \"since must be before until\"} (scenario h)",
+            "Test 403 for inaccessible workspace slug (scenario g)",
+            "Test sessions count = distinct session IDs with at least one token_usage record in period",
+            "Test default since (24h ago) and until (now) applied when not provided"
+          ],
+          "test_spec_refs": [
+            "TS-19-24",
+            "TS-19-25",
+            "TS-19-26",
+            "TS-19-27"
+          ],
+          "requirement_refs": [
+            "19-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for force-close on workspace archive (scenario b)",
+          "details": [
+            "Test force-close sets status=terminated, ended_at, error_message=\"workspace archived\" for all active sessions",
+            "Test sessions in non-active states are NOT modified by force-close",
+            "Test afhub_agent_sessions_active gauge is decremented for each force-closed session",
+            "Test emitted HubEvent has EventType=\"hub.session.force_closed\", ActorType=\"system\", ActorID=\"\", ResourceType=\"session\", Action=\"terminate\", Metadata with session_id and reason"
+          ],
+          "test_spec_refs": [
+            "TS-19-28",
+            "TS-19-29"
+          ],
+          "requirement_refs": [
+            "19-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write tests for force-close on workspace delete (scenario b)",
+          "details": [
+            "Test force-close on delete sets status=terminated, ended_at, error_message=\"workspace deleted\" for all active sessions",
+            "Test sessions in non-active states are NOT modified",
+            "Test afhub_agent_sessions_active gauge decremented for each force-closed session",
+            "Test emitted HubEvent Metadata reason=\"workspace deleted\""
+          ],
+          "test_spec_refs": [
+            "TS-19-30",
+            "TS-19-31"
+          ],
+          "requirement_refs": [
+            "19-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write workspace access scoping tests across all read endpoints (scenario g)",
+          "details": [
+            "Test GET /api/v1/sessions with explicit workspace_slug for inaccessible workspace returns 403",
+            "Test GET /api/v1/sessions/:id returns 403 for session in inaccessible workspace",
+            "Test GET /api/v1/sessions/:id/usage returns 403 for session in inaccessible workspace",
+            "Test GET /api/v1/workspaces/:slug/cost returns 403 for inaccessible workspace",
+            "Test admin_token credential sees all workspaces in all above endpoints"
+          ],
+          "test_spec_refs": [
+            "TS-19-14",
+            "TS-19-18",
+            "TS-19-22",
+            "TS-19-26"
+          ],
+          "requirement_refs": [
+            "19-REQ-4",
+            "19-REQ-5",
+            "19-REQ-6",
+            "19-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All test files compile: go build ./internal/audit/...",
+          "Test stubs exist for TS-19-20 through TS-19-31 covering usage query, cost, and force-close scenarios",
+          "go vet ./internal/audit/... reports no issues",
+          "No testify imports; standard testing package only"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write Tests: Prometheus Metrics and Retention Worker (REQ-10, REQ-11, REQ-12, REQ-13)",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for Prometheus metrics endpoint (REQ-10)",
+          "details": [
+            "Test GET /metrics returns 200 with Content-Type text/plain; version=0.0.4",
+            "Test endpoint is unauthenticated (no auth header required)",
+            "Test custom registry is used (not global default prometheus registry)",
+            "Test HTTP path label uses c.Path() route template not raw URI"
+          ],
+          "test_spec_refs": [
+            "TS-19-32",
+            "TS-19-33",
+            "TS-19-34",
+            "TS-19-35"
+          ],
+          "requirement_refs": [
+            "19-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for Prometheus metric instrumentation values (scenario e)",
+          "details": [
+            "Test afhub_agent_sessions_active incremented on session open, decremented on complete/force-close",
+            "Test afhub_agent_tokens_total incremented on usage report with correct workspace/model/direction labels",
+            "Test afhub_audit_events_total incremented on audit event ingestion",
+            "Test afhub_retention_last_run_timestamp_seconds set after successful retention run",
+            "Test afhub_retention_errors_total incremented with correct step label on step failure"
+          ],
+          "test_spec_refs": [
+            "TS-19-36",
+            "TS-19-37",
+            "TS-19-38",
+            "TS-19-39"
+          ],
+          "requirement_refs": [
+            "19-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for retention worker lifecycle and startup (scenario j, REQ-12)",
+          "details": [
+            "Test retention worker executes an immediate run on startup before first ticker fires (scenario j)",
+            "Test worker exits cleanly on context cancellation (ctx.Done())",
+            "Test step-boundary shutdown: current DuckDB operation completes, remaining steps skipped after cancel",
+            "Test afhub_retention_last_run_timestamp_seconds updated only after all steps complete"
+          ],
+          "test_spec_refs": [
+            "TS-19-40",
+            "TS-19-41"
+          ],
+          "requirement_refs": [
+            "19-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write tests for retention steps 1-5 (scenario d, REQ-13)",
+          "details": [
+            "Test step 1: agent records older than max_age_days deleted; newer records retained",
+            "Test step 2: run-count enforcement deletes oldest runs by MIN(timestamp) until at/below max_runs",
+            "Test step 3: hub_audit_events older than max_age_days deleted; newer retained",
+            "Test step 4: completed agent_sessions older than session_max_age_days deleted; active sessions retained",
+            "Test step 5: orphaned token_usage rows (session_id not in agent_sessions) deleted"
+          ],
+          "test_spec_refs": [
+            "TS-19-42",
+            "TS-19-43",
+            "TS-19-44",
+            "TS-19-45",
+            "TS-19-46"
+          ],
+          "requirement_refs": [
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests for retention steps 6-10 and step failure isolation (scenario d, REQ-13)",
+          "details": [
+            "Test step 6: agent_traces older than trace_max_age_days deleted; newer retained",
+            "Test step 7: postmortems older than postmortem_max_age_days deleted; newer retained",
+            "Test step 8: orphaned audit data (workspace not in SQLite workspaces) older than orphan_retention_days deleted",
+            "Test step 9: afhub_audit_table_rows gauge updated with COUNT(*) per table; afhub_agent_sessions_active recalibrated",
+            "Test step 10: afhub_retention_last_run_timestamp_seconds set after all steps complete",
+            "Test step failure (simulated DuckDB error) does not prevent subsequent steps; afhub_retention_errors_total incremented with step label"
+          ],
+          "test_spec_refs": [
+            "TS-19-47",
+            "TS-19-48",
+            "TS-19-49",
+            "TS-19-50",
+            "TS-19-51"
+          ],
+          "requirement_refs": [
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile: go build ./internal/audit/...",
+          "Test stubs exist for TS-19-32 through TS-19-51 covering metrics and retention scenarios",
+          "go vet ./internal/audit/... reports no issues",
+          "No testify imports; standard testing package only"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement Store Methods: Session CRUD and Token Usage (REQ-1, REQ-2, REQ-3)",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Add session CRUD methods to internal/audit/store.go",
+          "details": [
+            "Add CreateSession(ctx, session) (*Session, error) — INSERT OR IGNORE for idempotency; return existing record on duplicate id",
+            "Add GetSession(ctx, id) (*Session, error) — return nil, ErrNotFound if missing",
+            "Add UpdateSessionStatus(ctx, id, status, endedAt, errorMsg, durationMs) error — for complete and force-close",
+            "Add ListSessions(ctx, filter, cursor, limit, order) ([]*Session, string, bool, error) — keyset pagination on (started_at, id)",
+            "Add ForceCloseSessions(ctx, workspaceSlug, status, endedAt, errorMsg) ([]*Session, error) — returns affected sessions for gauge decrement and event emission"
+          ],
+          "test_spec_refs": [
+            "TS-19-1",
+            "TS-19-2",
+            "TS-19-3",
+            "TS-19-4",
+            "TS-19-5",
+            "TS-19-13"
+          ],
+          "requirement_refs": [
+            "19-REQ-1",
+            "19-REQ-2",
+            "19-REQ-4",
+            "19-REQ-5",
+            "19-REQ-8",
+            "19-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Add token usage store methods to internal/audit/store.go",
+          "details": [
+            "Add CreateTokenUsage(ctx, usage) (*TokenUsage, error) — INSERT OR IGNORE for idempotency on usage id",
+            "Add ListTokenUsage(ctx, sessionID, cursor, limit, order) ([]*TokenUsage, string, bool, error) — keyset pagination on (reported_at, id)",
+            "Add GetTokenUsageTotals(ctx, sessionID) (*TokenSummary, error) — aggregate ALL records for session regardless of time range",
+            "Add GetTokenSummaryForSessions(ctx, sessionIDs) (map[string]*TokenSummary, error) — batch aggregation for list endpoint"
+          ],
+          "test_spec_refs": [
+            "TS-19-8",
+            "TS-19-9",
+            "TS-19-20",
+            "TS-19-21",
+            "TS-19-52",
+            "TS-19-53"
+          ],
+          "requirement_refs": [
+            "19-REQ-3",
+            "19-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Add cost aggregation store methods to internal/audit/store.go",
+          "details": [
+            "Add GetWorkspaceCost(ctx, workspaceSlug, since, until, groupBy) (*CostSummary, error)",
+            "Implement group_by=day: aggregate token_usage by date(reported_at), discriminator field 'date'",
+            "Implement group_by=session: aggregate by session_id, discriminator field 'session_id'",
+            "Implement group_by=model: aggregate by model, discriminator field 'model'",
+            "sessions count = COUNT(DISTINCT session_id) WHERE reported_at IN [since, until)"
+          ],
+          "test_spec_refs": [
+            "TS-19-24",
+            "TS-19-25",
+            "TS-19-26",
+            "TS-19-27"
+          ],
+          "requirement_refs": [
+            "19-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Implement keyset cursor encoding/decoding utilities",
+          "details": [
+            "Implement encodeCursor(fields ...string) string — URL-safe base64 RFC 4648 §5 no padding",
+            "Implement decodeCursor(cursor string) ([]string, error)",
+            "Session cursor encodes (started_at, id) tuple",
+            "Usage cursor encodes (reported_at, id) tuple",
+            "Validate cursor format; return error on malformed input"
+          ],
+          "test_spec_refs": [
+            "TS-19-52",
+            "TS-19-53",
+            "TS-19-54"
+          ],
+          "requirement_refs": [
+            "19-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "Store method tests pass: go test ./internal/audit/... -count=1 -run TestStore",
+          "go vet ./internal/audit/... reports no issues",
+          "19-REQ-1, 19-REQ-2, 19-REQ-3, 19-REQ-6, 19-REQ-7, 19-REQ-14 store-layer acceptance criteria met",
+          "No panic(\"not implemented\") stubs remain in store.go"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement Session HTTP Handlers (REQ-1, REQ-2, REQ-3, REQ-4, REQ-5, REQ-6)",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement POST /api/v1/sessions handler in internal/audit/handlers.go",
+          "details": [
+            "Validate workspace_slug present and non-empty; return 400 via apikit.WriteAPIError on failure",
+            "Extract credential_id and credential_type from apikit.AuthInfo (not from request body)",
+            "Generate UUID if id not provided; call store.CreateSession",
+            "Return 201 on create, 200 on duplicate id with existing record",
+            "Increment afhub_agent_sessions_active gauge for workspace on new session creation"
+          ],
+          "test_spec_refs": [
+            "TS-19-1",
+            "TS-19-2",
+            "TS-19-3"
+          ],
+          "requirement_refs": [
+            "19-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement POST /api/v1/sessions/:id/complete handler",
+          "details": [
+            "Load session; return 404 if not found",
+            "Check ownership: compare credential_id from AuthInfo vs session; allow if credential_type==\"admin_token\"; return 403 otherwise",
+            "If session already terminal (completed/failed/timeout/terminated), return 200 with existing record (idempotent)",
+            "Reject 'terminated' as client-submitted status; only accept completed/failed/timeout",
+            "Call store.UpdateSessionStatus; decrement afhub_agent_sessions_active gauge"
+          ],
+          "test_spec_refs": [
+            "TS-19-4",
+            "TS-19-5",
+            "TS-19-6",
+            "TS-19-7"
+          ],
+          "requirement_refs": [
+            "19-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement POST /api/v1/sessions/:id/usage handler",
+          "details": [
+            "Load session; return 404 if not found",
+            "Check ownership: same admin_token / credential_id logic as complete; return 403 on mismatch",
+            "If session not active, return 409 with {\"error\": \"session is not active\"}",
+            "Generate UUID if id not provided; call store.CreateTokenUsage",
+            "Increment afhub_agent_tokens_total counter with workspace/model/direction labels for input, output, cache_read"
+          ],
+          "test_spec_refs": [
+            "TS-19-8",
+            "TS-19-9",
+            "TS-19-10",
+            "TS-19-11",
+            "TS-19-12"
+          ],
+          "requirement_refs": [
+            "19-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement GET /api/v1/sessions (list) and GET /api/v1/sessions/:id (single fetch) handlers",
+          "details": [
+            "List: enforce workspace access scoping; explicit workspace_slug filter for inaccessible workspace returns 403",
+            "List: apply query filters (workspace_slug, run_id, status, credential_type, since, order, limit, cursor); default limit=50 max=500",
+            "List: attach token_summary to each session via batch aggregation",
+            "Single fetch: load session; check workspace access; return 403 if inaccessible; 404 if not found; attach token_summary"
+          ],
+          "test_spec_refs": [
+            "TS-19-13",
+            "TS-19-14",
+            "TS-19-15",
+            "TS-19-16",
+            "TS-19-17",
+            "TS-19-18",
+            "TS-19-19"
+          ],
+          "requirement_refs": [
+            "19-REQ-4",
+            "19-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.5",
+          "title": "Implement GET /api/v1/sessions/:id/usage and GET /api/v1/workspaces/:slug/cost handlers",
+          "details": [
+            "Usage query: load session; check workspace access; return 403 if inaccessible; paginate via (reported_at, id) cursor; default limit=100 max=1000",
+            "Usage query: totals always aggregate ALL records for session (unbounded, no time filter)",
+            "Cost: validate since < until; return 400 if since >= until",
+            "Cost: check workspace access; return 403 if inaccessible; call store.GetWorkspaceCost with group_by; default since=24h ago, until=now"
+          ],
+          "test_spec_refs": [
+            "TS-19-20",
+            "TS-19-21",
+            "TS-19-22",
+            "TS-19-23",
+            "TS-19-24",
+            "TS-19-25",
+            "TS-19-26",
+            "TS-19-27"
+          ],
+          "requirement_refs": [
+            "19-REQ-6",
+            "19-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "Handler tests pass: go test ./internal/audit/... -count=1 -run TestHandler",
+          "go vet ./internal/audit/... reports no issues",
+          "19-REQ-1 through 19-REQ-7 handler-layer acceptance criteria met",
+          "No panic(\"not implemented\") stubs remain in handlers.go"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement Force-Close and Workspace Lifecycle Integration (REQ-8, REQ-9)",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement ForceCloseSessions logic in internal/audit/store.go",
+          "details": [
+            "ForceCloseSessions(ctx, workspaceSlug, status, endedAt, errorMsg) sets status, ended_at, error_message for all active sessions in workspace",
+            "Only sessions with status='active' are modified; terminal sessions untouched",
+            "Returns list of affected session IDs for gauge decrement and event emission",
+            "Use DuckDB UPDATE WHERE status='active' AND workspace_slug=?"
+          ],
+          "test_spec_refs": [
+            "TS-19-28",
+            "TS-19-29",
+            "TS-19-30",
+            "TS-19-31"
+          ],
+          "requirement_refs": [
+            "19-REQ-8",
+            "19-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Integrate force-close into workspace archive handler (internal/workspace/handlers.go)",
+          "details": [
+            "After workspace status update to archived, call audit.ForceCloseSessions with status='terminated', error_message='workspace archived'",
+            "Decrement afhub_agent_sessions_active gauge for each affected session",
+            "Emit HubEvent per affected session: EventType='hub.session.force_closed', ActorType='system', ActorID='', ResourceType='session', Action='terminate', Metadata={session_id, reason='workspace archived'}",
+            "If DuckDB force-close fails, log warning via slog and proceed with archive response"
+          ],
+          "test_spec_refs": [
+            "TS-19-28",
+            "TS-19-29"
+          ],
+          "requirement_refs": [
+            "19-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Integrate force-close into workspace delete handler (internal/workspace/handlers.go)",
+          "details": [
+            "Before workspace row deletion in SQLite, call audit.ForceCloseSessions with status='terminated', error_message='workspace deleted'",
+            "Decrement afhub_agent_sessions_active gauge for each affected session",
+            "Emit HubEvent per affected session: Metadata reason='workspace deleted'",
+            "If DuckDB force-close fails, log warning via slog and proceed with workspace deletion",
+            "Audit data is retained (not cascade-deleted); orphan cleanup handled by retention worker"
+          ],
+          "test_spec_refs": [
+            "TS-19-30",
+            "TS-19-31"
+          ],
+          "requirement_refs": [
+            "19-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "Force-close tests pass: go test ./internal/audit/... -count=1 -run TestForceClose",
+          "Workspace handler tests pass: go test ./internal/workspace/... -count=1",
+          "go vet ./internal/workspace/... reports no issues",
+          "19-REQ-8 and 19-REQ-9 acceptance criteria met: terminated status, ended_at, error_message, gauge decrement, HubEvent emission verified"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement Prometheus Metrics (REQ-10, REQ-11)",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Create internal/audit/metrics.go with custom registry and metric definitions",
+          "details": [
+            "Create custom prometheus.Registry (not global default) to avoid conflicts",
+            "Define all 10 metrics: afhub_http_requests_total (Counter, labels: method/path/status), afhub_http_request_duration_seconds (Histogram, labels: method/path, buckets: 0.005,0.01,0.025,0.05,0.1,0.25,0.5,1.0,2.5,5.0,10.0), afhub_audit_events_total (Counter, labels: source/event_type)",
+            "Define afhub_agent_sessions_active (Gauge, label: workspace), afhub_agent_tokens_total (Counter, labels: workspace/model/direction), afhub_jobqueue_depth (Gauge, labels: type/status)",
+            "Define afhub_sse_connections (Gauge, no labels), afhub_audit_table_rows (Gauge, label: table), afhub_retention_last_run_timestamp_seconds (Gauge, no labels), afhub_retention_errors_total (Counter, label: step)",
+            "Register all metrics with custom registry; export registry and metric vars for use by other packages"
+          ],
+          "test_spec_refs": [
+            "TS-19-32",
+            "TS-19-33",
+            "TS-19-36",
+            "TS-19-37",
+            "TS-19-38",
+            "TS-19-39"
+          ],
+          "requirement_refs": [
+            "19-REQ-10",
+            "19-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement Echo middleware factory for HTTP metrics in internal/audit/metrics.go",
+          "details": [
+            "Create NewPrometheusMiddleware() echo.MiddlewareFunc that records afhub_http_requests_total and afhub_http_request_duration_seconds",
+            "Use c.Path() (Echo route template) as path label value to prevent cardinality explosion from path params",
+            "Record method, path, and status code labels",
+            "Middleware wraps handler, measures duration, increments counter and observes histogram after response"
+          ],
+          "test_spec_refs": [
+            "TS-19-34",
+            "TS-19-35"
+          ],
+          "requirement_refs": [
+            "19-REQ-10",
+            "19-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Register GET /metrics route and wire Prometheus middleware in routes.go and main.go",
+          "details": [
+            "Mount GET /metrics on raw Echo instance outside API group using promhttp.HandlerFor(customRegistry, promhttp.HandlerOpts{})",
+            "No auth middleware on /metrics route (permanently unauthenticated)",
+            "Register Prometheus middleware on Echo instance in cmd/af-hub/main.go",
+            "Follow same pattern as internal/gitserver for mounting outside auth group"
+          ],
+          "test_spec_refs": [
+            "TS-19-32",
+            "TS-19-33"
+          ],
+          "requirement_refs": [
+            "19-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "Metrics tests pass: go test ./internal/audit/... -count=1 -run TestMetrics",
+          "go vet ./internal/audit/... reports no issues",
+          "19-REQ-10 and 19-REQ-11 acceptance criteria met: all 10 metrics defined, custom registry used, c.Path() label, unauthenticated endpoint",
+          "No panic(\"not implemented\") stubs remain in metrics.go"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Implement Retention Worker (REQ-12, REQ-13)",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Create internal/audit/retention.go with RetentionConfig and worker entry point",
+          "details": [
+            "Define RetentionConfig struct with fields: MaxAgeDays, MaxRuns, TraceMaxAgeDays, SessionMaxAgeDays, PostmortemMaxAgeDays, OrphanRetentionDays",
+            "Load config from env vars: AF_AUDIT_MAX_AGE_DAYS (90), AF_AUDIT_MAX_RUNS (50), AF_TRACE_MAX_AGE_DAYS (30), AF_SESSION_MAX_AGE_DAYS (90), AF_POSTMORTEM_MAX_AGE_DAYS (180), AF_AUDIT_ORPHAN_RETENTION_DAYS (30)",
+            "Implement StartRetentionWorker(ctx context.Context, store Store, sqliteDB *sql.DB) — starts goroutine, runs immediately, then ticks every hour",
+            "Use time.Ticker for hourly interval; select on ctx.Done() between ticks for clean shutdown"
+          ],
+          "test_spec_refs": [
+            "TS-19-40",
+            "TS-19-41"
+          ],
+          "requirement_refs": [
+            "19-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Implement retention steps 1-5 in internal/audit/retention.go",
+          "details": [
+            "Step 1: DELETE agent records (agent_audit_events, agent_records tables) WHERE timestamp < now()-max_age_days",
+            "Step 2: Count distinct run_ids; if > max_runs, delete oldest runs by MIN(timestamp) from agent_audit_events until at/below limit",
+            "Step 3: DELETE hub_audit_events WHERE timestamp < now()-max_age_days",
+            "Step 4: DELETE agent_sessions WHERE status IN (completed,failed,timeout,terminated) AND ended_at < now()-session_max_age_days",
+            "Step 5: DELETE token_usage WHERE session_id NOT IN (SELECT id FROM agent_sessions)",
+            "Check ctx.Err() before each step; on DuckDB error log via slog, increment afhub_retention_errors_total with step label, continue"
+          ],
+          "test_spec_refs": [
+            "TS-19-42",
+            "TS-19-43",
+            "TS-19-44",
+            "TS-19-45",
+            "TS-19-46"
+          ],
+          "requirement_refs": [
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Implement retention steps 6-10 in internal/audit/retention.go",
+          "details": [
+            "Step 6: DELETE agent_traces WHERE timestamp < now()-trace_max_age_days",
+            "Step 7: DELETE postmortems WHERE timestamp < now()-postmortem_max_age_days",
+            "Step 8: Query workspace slugs from SQLite; DELETE DuckDB records WHERE workspace NOT IN (slug list) AND ingestion_timestamp < now()-orphan_retention_days (application-level join, no sqlite_scanner)",
+            "Step 9: UPDATE afhub_audit_table_rows gauge via COUNT(*) per audit table; recalibrate afhub_agent_sessions_active via COUNT(*) WHERE status='active' GROUP BY workspace_slug",
+            "Step 10: Set afhub_retention_last_run_timestamp_seconds to current Unix timestamp; log rows deleted per table via slog"
+          ],
+          "test_spec_refs": [
+            "TS-19-47",
+            "TS-19-48",
+            "TS-19-49",
+            "TS-19-50",
+            "TS-19-51"
+          ],
+          "requirement_refs": [
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "Retention tests pass: go test ./internal/audit/... -count=1 -run TestRetention",
+          "go vet ./internal/audit/... reports no issues",
+          "19-REQ-12 and 19-REQ-13 acceptance criteria met: all 10 steps implemented, step failure isolation verified, startup run verified",
+          "No panic(\"not implemented\") stubs remain in retention.go"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Register Routes and Wire main.go (REQ-10, REQ-12)",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Register all session, usage, and cost routes in internal/audit/routes.go",
+          "details": [
+            "Register POST /api/v1/sessions with sessions:write permission",
+            "Register POST /api/v1/sessions/:id/complete with sessions:write permission",
+            "Register POST /api/v1/sessions/:id/usage with sessions:write permission",
+            "Register GET /api/v1/sessions with sessions:read permission",
+            "Register GET /api/v1/sessions/:id with sessions:read permission",
+            "Register GET /api/v1/sessions/:id/usage with sessions:read permission",
+            "Register GET /api/v1/workspaces/:slug/cost with sessions:read permission"
+          ],
+          "test_spec_refs": [
+            "TS-19-1",
+            "TS-19-4",
+            "TS-19-8",
+            "TS-19-13",
+            "TS-19-17",
+            "TS-19-20",
+            "TS-19-24"
+          ],
+          "requirement_refs": [
+            "19-REQ-1",
+            "19-REQ-2",
+            "19-REQ-3",
+            "19-REQ-4",
+            "19-REQ-5",
+            "19-REQ-6",
+            "19-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Wire retention worker startup in cmd/af-hub/main.go",
+          "details": [
+            "Call go audit.StartRetentionWorker(ctx, store, sqliteDB) in main.go after store initialization",
+            "Ensure retention worker goroutine is started with the application context for graceful shutdown"
+          ],
+          "test_spec_refs": [
+            "TS-19-40"
+          ],
+          "requirement_refs": [
+            "19-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Wire Prometheus middleware and /metrics endpoint in cmd/af-hub/main.go",
+          "details": [
+            "Add github.com/prometheus/client_golang to go.mod dependencies",
+            "Register Prometheus Echo middleware on the Echo instance",
+            "Mount GET /metrics on raw Echo instance outside API auth group using promhttp.HandlerFor(customRegistry, promhttp.HandlerOpts{})"
+          ],
+          "test_spec_refs": [
+            "TS-19-32"
+          ],
+          "requirement_refs": [
+            "19-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "go build ./cmd/af-hub/... succeeds with no errors",
+          "go vet ./... reports no issues",
+          "All routes registered: verify route table includes all 7 session/usage/cost routes plus GET /metrics",
+          "StartRetentionWorker called in main.go; Prometheus middleware registered"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "checkpoint",
+      "title": "Checkpoint: All Spec Tests Pass",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Run full spec test suite and verify all 54 test cases pass",
+          "details": [
+            "Execute: go test ./internal/audit/... -count=1 -v",
+            "Verify TS-19-1 through TS-19-54 all pass",
+            "Confirm no test uses testify; all use standard testing package",
+            "Confirm real DuckDB instance used in t.TempDir() for all store/handler tests"
+          ],
+          "test_spec_refs": [
+            "TS-19-1",
+            "TS-19-2",
+            "TS-19-3",
+            "TS-19-4",
+            "TS-19-5",
+            "TS-19-6",
+            "TS-19-7",
+            "TS-19-8",
+            "TS-19-9",
+            "TS-19-10",
+            "TS-19-11",
+            "TS-19-12",
+            "TS-19-13",
+            "TS-19-14",
+            "TS-19-15"
+          ],
+          "requirement_refs": [
+            "19-REQ-1",
+            "19-REQ-2",
+            "19-REQ-3",
+            "19-REQ-4",
+            "19-REQ-5",
+            "19-REQ-6",
+            "19-REQ-7",
+            "19-REQ-8",
+            "19-REQ-9",
+            "19-REQ-10",
+            "19-REQ-11",
+            "19-REQ-12",
+            "19-REQ-13",
+            "19-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Run remaining spec tests and verify workspace/retention/metrics tests pass",
+          "details": [
+            "Verify TS-19-16 through TS-19-54 all pass",
+            "Confirm scenario (a) idempotency, (b) force-close, (c) pagination, (d) retention steps, (e) metrics values, (f) ownership, (g) workspace scoping, (h) cost validation, (i) single fetch, (j) startup run, (k) session validation, (l) unbounded totals all covered",
+            "Execute: go test ./internal/workspace/... -count=1 -v to verify force-close integration"
+          ],
+          "test_spec_refs": [
+            "TS-19-16",
+            "TS-19-17",
+            "TS-19-18",
+            "TS-19-19",
+            "TS-19-20",
+            "TS-19-21",
+            "TS-19-22",
+            "TS-19-23",
+            "TS-19-24",
+            "TS-19-25",
+            "TS-19-26",
+            "TS-19-27",
+            "TS-19-28",
+            "TS-19-29",
+            "TS-19-30"
+          ],
+          "requirement_refs": [
+            "19-REQ-8",
+            "19-REQ-9",
+            "19-REQ-10",
+            "19-REQ-11",
+            "19-REQ-12",
+            "19-REQ-13",
+            "19-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Run full test suite and linter to confirm no regressions",
+          "details": [
+            "Execute: go test ./... -count=1 to confirm no regressions in other packages",
+            "Execute: go vet ./... to confirm no vet issues",
+            "Confirm github.com/prometheus/client_golang added to go.mod and go.sum"
+          ],
+          "test_spec_refs": [
+            "TS-19-31",
+            "TS-19-32",
+            "TS-19-33",
+            "TS-19-34",
+            "TS-19-35",
+            "TS-19-36",
+            "TS-19-37",
+            "TS-19-38",
+            "TS-19-39",
+            "TS-19-40",
+            "TS-19-41",
+            "TS-19-42",
+            "TS-19-43",
+            "TS-19-44",
+            "TS-19-45"
+          ],
+          "requirement_refs": [
+            "19-REQ-10",
+            "19-REQ-11",
+            "19-REQ-12",
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "go test ./internal/audit/... -count=1 exits 0 with all 54 test cases passing",
+          "go test ./internal/workspace/... -count=1 exits 0",
+          "go test ./... -count=1 exits 0 (no regressions)",
+          "go vet ./... exits 0 with no issues"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "wiring_verification",
+      "title": "Wiring Verification: End-to-End Integration",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Trace execution paths from route registration to store calls",
+          "details": [
+            "Verify POST /api/v1/sessions route → OpenSessionHandler → store.CreateSession → DuckDB INSERT",
+            "Verify POST /api/v1/sessions/:id/complete route → CompleteSessionHandler → store.UpdateSessionStatus → DuckDB UPDATE",
+            "Verify POST /api/v1/sessions/:id/usage route → ReportUsageHandler → store.CreateTokenUsage → DuckDB INSERT",
+            "Verify GET /api/v1/workspaces/:slug/cost route → CostHandler → store.GetWorkspaceCost → DuckDB aggregate query",
+            "Verify GET /metrics route → promhttp.HandlerFor(customRegistry) with no auth middleware in chain"
+          ],
+          "test_spec_refs": [
+            "TS-19-1",
+            "TS-19-4",
+            "TS-19-8",
+            "TS-19-24",
+            "TS-19-32"
+          ],
+          "requirement_refs": [
+            "19-REQ-1",
+            "19-REQ-2",
+            "19-REQ-3",
+            "19-REQ-7",
+            "19-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Verify return value propagation and no dead-code stubs remain",
+          "details": [
+            "Search for panic(\"not implemented\") in internal/audit/ and internal/workspace/ — must return zero results",
+            "Search for bare 'return nil' in non-trivial store methods — verify all return actual data or typed errors",
+            "Verify store.ForceCloseSessions return value (affected sessions) is consumed by workspace handlers for gauge decrement and event emission",
+            "Verify store.GetTokenUsageTotals return value consumed by usage query handler for totals field",
+            "Verify afhub_retention_last_run_timestamp_seconds.Set() called only after all 10 retention steps complete"
+          ],
+          "test_spec_refs": [
+            "TS-19-28",
+            "TS-19-30",
+            "TS-19-38",
+            "TS-19-50",
+            "TS-19-51"
+          ],
+          "requirement_refs": [
+            "19-REQ-8",
+            "19-REQ-9",
+            "19-REQ-11",
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Verify cross-spec entry points are called from production code",
+          "details": [
+            "Confirm audit.StartRetentionWorker called in cmd/af-hub/main.go (not just defined and tested)",
+            "Confirm Prometheus middleware registered on Echo instance in main.go",
+            "Confirm workspace archive handler in internal/workspace/handlers.go calls audit.ForceCloseSessions",
+            "Confirm workspace delete handler in internal/workspace/handlers.go calls audit.ForceCloseSessions",
+            "Confirm Emitter.Emit called for each force-closed session in workspace handlers"
+          ],
+          "test_spec_refs": [
+            "TS-19-29",
+            "TS-19-31",
+            "TS-19-33",
+            "TS-19-40"
+          ],
+          "requirement_refs": [
+            "19-REQ-8",
+            "19-REQ-9",
+            "19-REQ-10",
+            "19-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.4",
+          "title": "Stub and dead-code audit across all new and modified files",
+          "details": [
+            "grep -r 'panic(\"not implemented\")' internal/audit/ internal/workspace/ cmd/af-hub/ — must return no results",
+            "grep -r '// TODO' internal/audit/metrics.go internal/audit/retention.go — must return no results",
+            "Verify all 10 Prometheus metrics are registered with the custom registry (not global)",
+            "Verify afhub_jobqueue_depth is defined in custom registry but not initialized with label combinations (deferred to durable_job_queue spec — document this known gap)"
+          ],
+          "test_spec_refs": [
+            "TS-19-34",
+            "TS-19-35",
+            "TS-19-36",
+            "TS-19-39"
+          ],
+          "requirement_refs": [
+            "19-REQ-10",
+            "19-REQ-11",
+            "19-REQ-12",
+            "19-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.5",
+          "title": "Run smoke tests and full regression suite",
+          "details": [
+            "Execute: go test ./... -count=1 — all tests pass including specs 17 and 18 regression",
+            "Execute: go vet ./... — no issues",
+            "Execute: go build ./cmd/af-hub/... — binary builds successfully",
+            "Manually verify GET /metrics returns all 10 metric families in Prometheus text format",
+            "Verify cursor pagination returns consistent results across pages with no duplicates or skips"
+          ],
+          "test_spec_refs": [
+            "TS-19-46",
+            "TS-19-47",
+            "TS-19-48",
+            "TS-19-49",
+            "TS-19-52",
+            "TS-19-53",
+            "TS-19-54",
+            "TS-19-SMOKE-1",
+            "TS-19-SMOKE-2",
+            "TS-19-SMOKE-3",
+            "TS-19-SMOKE-4",
+            "TS-19-SMOKE-5"
+          ],
+          "requirement_refs": [
+            "19-REQ-10",
+            "19-REQ-11",
+            "19-REQ-12",
+            "19-REQ-13",
+            "19-REQ-14"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "go test ./... -count=1 exits 0 — all tests pass including cross-spec regression",
+          "go vet ./... exits 0 — no vet issues",
+          "go build ./cmd/af-hub/... exits 0 — binary builds successfully",
+          "grep -r 'panic(\"not implemented\")' internal/audit/ internal/workspace/ returns no results",
+          "All 10 Prometheus metrics present in GET /metrics output",
+          "StartRetentionWorker confirmed called in main.go via code inspection",
+          "ForceCloseSessions confirmed called in both archive and delete workspace handlers",
+          "19-REQ-1 through 19-REQ-14 all acceptance criteria verified end-to-end"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "19-REQ-1",
+      "test_spec_id": "TS-19-1",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-1",
+      "test_spec_id": "TS-19-2",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-1",
+      "test_spec_id": "TS-19-3",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-2",
+      "test_spec_id": "TS-19-4",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-2",
+      "test_spec_id": "TS-19-5",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-2",
+      "test_spec_id": "TS-19-6",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-2",
+      "test_spec_id": "TS-19-7",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-3",
+      "test_spec_id": "TS-19-8",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-3",
+      "test_spec_id": "TS-19-9",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-3",
+      "test_spec_id": "TS-19-10",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-3",
+      "test_spec_id": "TS-19-11",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-3",
+      "test_spec_id": "TS-19-12",
+      "task_id": "5.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-4",
+      "test_spec_id": "TS-19-13",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-4",
+      "test_spec_id": "TS-19-14",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-4",
+      "test_spec_id": "TS-19-15",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-4",
+      "test_spec_id": "TS-19-16",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-5",
+      "test_spec_id": "TS-19-17",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-5",
+      "test_spec_id": "TS-19-18",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-5",
+      "test_spec_id": "TS-19-19",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-6",
+      "test_spec_id": "TS-19-20",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-6",
+      "test_spec_id": "TS-19-21",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-6",
+      "test_spec_id": "TS-19-22",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-6",
+      "test_spec_id": "TS-19-23",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-7",
+      "test_spec_id": "TS-19-24",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-7",
+      "test_spec_id": "TS-19-25",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-7",
+      "test_spec_id": "TS-19-26",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-7",
+      "test_spec_id": "TS-19-27",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-8",
+      "test_spec_id": "TS-19-28",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-8",
+      "test_spec_id": "TS-19-29",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-9",
+      "test_spec_id": "TS-19-30",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-9",
+      "test_spec_id": "TS-19-31",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-10",
+      "test_spec_id": "TS-19-32",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-10",
+      "test_spec_id": "TS-19-33",
+      "task_id": "7.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-10",
+      "test_spec_id": "TS-19-34",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-10",
+      "test_spec_id": "TS-19-35",
+      "task_id": "7.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-11",
+      "test_spec_id": "TS-19-36",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-11",
+      "test_spec_id": "TS-19-37",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-11",
+      "test_spec_id": "TS-19-38",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-11",
+      "test_spec_id": "TS-19-39",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-12",
+      "test_spec_id": "TS-19-40",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-12",
+      "test_spec_id": "TS-19-41",
+      "task_id": "8.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-42",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-43",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-44",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-45",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-46",
+      "task_id": "8.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-47",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-48",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-49",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-50",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-13",
+      "test_spec_id": "TS-19-51",
+      "task_id": "8.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-14",
+      "test_spec_id": "TS-19-52",
+      "task_id": "4.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-14",
+      "test_spec_id": "TS-19-53",
+      "task_id": "4.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "19-REQ-14",
+      "test_spec_id": "TS-19-54",
+      "task_id": "4.4",
+      "test_path": null
+    }
+  ]
+}

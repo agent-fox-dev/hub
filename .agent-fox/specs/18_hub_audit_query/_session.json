@@ -1,0 +1,122 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "needs_refinement",
+      "summary": "The hub_audit_query PRD (spec 18) is well-structured and detailed in most areas. It clearly states its intent, goals, non-goals, tech stack, functional requirements, and design decisions. Dependencies on spec 17 (audit_storage_ingestion) are explicitly declared. However, several gaps prevent it from being \"ready\": the External API Surface for the query/SSE endpoints lacks documented error/failure modes and response shapes; the spec references `sessions_metrics_retention` as spec 3 in Non-Goals but the landscape shows it appears to be a later spec (identified in the landscape without a numeric ID but clearly separate from spec 17); there is a potential overlap with `sessions_metrics_retention` whose intent mentions \"hub emission/query (spec 18)\" \u2014 suggesting that spec directly depends on or extends this one and the relationship needs clarification; test tooling is not specified; and the `GET /api/v1/audit` response schema is not defined.",
+      "gaps": [
+        "Response schemas are not defined for GET /api/v1/audit, GET /api/v1/workspaces/:slug/runs/:run_id/transcript, or GET /api/v1/events. The shape of returned JSON (field names, types, envelope structure, pagination envelope with next cursor) is unspecified.",
+        "Failure modes and error responses for all three new endpoints (GET /api/v1/audit, transcript, SSE) are not documented \u2014 e.g., what HTTP status and body is returned for invalid cursor, unknown run_id, unauthorized access, or DuckDB query failure.",
+        "Test tooling is not specified in the Tech Stack section. Go test tooling (e.g., standard `testing` package, testify, go-sqlmock, httptest) should be named to ensure correct test artifact generation.",
+        "The Non-Goals reference 'spec 3: sessions_metrics_retention' but the Existing Spec Landscape does not assign a numeric ID to sessions_metrics_retention. The reference is ambiguous and may cause confusion during implementation. The sessions_metrics_retention spec's own intent explicitly states it builds on 'hub emission/query (spec 18)', implying a tight dependency relationship that is not formally captured in this PRD's Dependencies table.",
+        "The `audit:read` permission scope is referenced but not defined in this PRD or traced to the spec where it is declared (likely apikit or workspaces). It is unclear whether this permission already exists or needs to be created.",
+        "Cursor-based pagination is mentioned for GET /api/v1/audit but the cursor encoding/decoding strategy (e.g., base64-encoded timestamp+id, keyset pagination) is not described, which could lead to inconsistent implementation.",
+        "The SSE endpoint authentication note states 'Browsers use fetch() with ReadableStream (not EventSource) to pass auth headers' but does not specify how the backend enforces this or what happens when a standard EventSource connection (without auth header) is attempted.",
+        "The maximum stale-connection timeout (60 seconds) and SSE heartbeat interval (30 seconds) are stated as constants but are not exposed as configuration variables \u2014 it is unclear whether these are intentionally hardcoded or should be configurable like AF_SSE_MAX_CONNECTIONS.",
+        "Overlap with sessions_metrics_retention: that spec's intent explicitly names 'hub emission/query (spec 18)' as a prerequisite. The relationship (sessions_metrics_retention depends on hub_audit_query) is implied but not formally declared in either spec's Dependencies table."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What are the response schemas for the three new endpoints? Please define the JSON envelope for: (a) GET /api/v1/audit (unified event list + pagination cursor), (b) GET /api/v1/workspaces/:slug/runs/:run_id/transcript (transcript entry list), and (c) the GET /api/v1/events SSE event payload.",
+          "context": "Without defined response shapes, generated handler code may produce inconsistent or incorrect JSON that downstream consumers (CLI, web scaffold) cannot parse reliably.",
+          "options": [],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What error responses should the new endpoints return for failure conditions? For example: invalid/expired cursor in GET /api/v1/audit, unknown run_id or node_id in the transcript endpoint, DuckDB query failure, and SSE connection limit exceeded (503 is mentioned \u2014 what is the response body?).",
+          "context": "Failure modes are a required part of the External API Surface. Without them, error handling will be inconsistent across the codebase.",
+          "options": [],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What test tooling should be used for this spec? Please confirm or specify the Go test framework and any mocking/assertion libraries (e.g., standard testing + httptest + testify, go-sqlmock for DuckDB interactions).",
+          "context": "The Tech Stack section omits test tooling. Specifying it prevents the wrong test patterns from being generated and aligns with other specs in the project.",
+          "options": [
+            "Standard library testing + httptest + testify/assert",
+            "Standard library testing + httptest (no external assertion library)",
+            "Standard library testing + httptest + testify + go-sqlmock for DuckDB",
+            "Other (please specify)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "The Non-Goals reference 'spec 3: sessions_metrics_retention', but the Existing Spec Landscape does not assign it a number 3 \u2014 it appears to be a later spec. Meanwhile, sessions_metrics_retention's own intent states it builds on 'hub emission/query (spec 18)'. Should sessions_metrics_retention be formally listed as a downstream dependent in this PRD, and should the Non-Goals reference be corrected to use the spec name rather than a number?",
+          "context": "The ambiguous spec number reference could cause implementation confusion, and the undeclared downstream dependency relationship is important for understanding sequencing and change impact.",
+          "options": [
+            "Yes \u2014 correct the Non-Goals reference to use the spec name and add sessions_metrics_retention as a downstream dependent",
+            "No \u2014 the reference is intentional shorthand and no changes are needed",
+            "Partially \u2014 correct the number reference but do not list downstream dependents in this PRD"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Where is the `audit:read` permission scope defined, and does it already exist in the system (e.g., declared in apikit or the workspaces spec) or does it need to be introduced by this spec?",
+          "context": "If audit:read is a new permission, this spec needs to document its declaration and how it is granted. If it already exists, a reference to the defining spec should be added to avoid implementation ambiguity.",
+          "options": [
+            "It already exists \u2014 defined in apikit (no changes needed)",
+            "It already exists \u2014 defined in the workspaces spec (no changes needed)",
+            "It is new and must be introduced by this spec",
+            "It is new and will be introduced by sessions_metrics_retention (spec dependency ordering needs adjustment)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "What is the cursor encoding strategy for the paginated GET /api/v1/audit endpoint? For example: base64-encoded (timestamp, id) tuple for keyset pagination, an opaque server-side token stored in DuckDB, or offset-based?",
+          "context": "Cursor-based pagination is mentioned but the encoding is described only as 'opaque'. Without specifying the strategy, the implementation may be inconsistent with other paginated endpoints in the hub and difficult to test.",
+          "options": [
+            "Base64-encoded (timestamp + UUID) keyset cursor",
+            "Opaque server-side token (stored in memory or DB)",
+            "Offset-based integer (simpler but less stable under concurrent writes)",
+            "Follow the same cursor strategy used in other hub endpoints (please specify which)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "Should the SSE heartbeat interval (30s) and stale-connection timeout (60s) be configurable via environment variables, or are they intentionally hardcoded constants?",
+          "context": "AF_SSE_MAX_CONNECTIONS is already exposed as a config variable. If operators need to tune the heartbeat and timeout in production, they should be added to the Configuration table. If they are intentional constants, the PRD should explicitly state they are not configurable.",
+          "options": [
+            "Expose both as environment variables (e.g., AF_SSE_HEARTBEAT_INTERVAL, AF_SSE_STALE_TIMEOUT)",
+            "Hardcode both \u2014 they are intentional constants and do not need to be configurable",
+            "Expose only the stale timeout as a variable; keep heartbeat hardcoded"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "The hub_audit_query PRD (spec 18) is now complete and ready. All previously identified gaps have been resolved: response schemas for all three endpoints are fully defined, error/failure modes are documented for every endpoint, test tooling is specified (standard library + httptest + real DuckDB), the Non-Goals spec number reference has been corrected from \"spec 3\" to \"spec 19: sessions_metrics_retention\", the audit:read permission is traced to its defining spec (17), cursor encoding strategy is documented (RFC 4648 \u00a75 base64 over JSON keyset), SSE authentication behaviour for EventSource is clarified, and the heartbeat/timeout constants are explicitly marked as intentionally non-configurable with rationale. The downstream dependency relationship with spec 19 is also noted.",
+      "gaps": [],
+      "questions": []
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Response schemas follow the patterns from the parent PRD (docs/prd/prd14.md) and spec 17: (a) GET /api/v1/audit: {events: [{id, timestamp, source ('hub'|'agent'), event_type, severity, actor_id, actor_type, resource_type, resource_id, action, workspace, metadata, trace_id}], next_cursor: string|null, has_more: bool}. Agent events include run_id, node_id, session_id, archetype in the object. Hub events include actor_id, actor_type, resource_type, resource_id, action. Fields not applicable to a source type are serialized as empty string or null. (b) GET transcript: {run_id, node_id, messages: [{role ('system'|'assistant'|'tool_use'|'tool_error'), content: string, tool_name: string|null, timestamp: string}]}. (c) SSE events: each 'data:' line is a JSON object matching the audit event or session outcome schema. Heartbeats: {timestamp: string}.",
+        "q2": "Error responses follow apikit.WriteAPIError conventions: (a) Invalid/expired cursor in GET /api/v1/audit returns 400 with message 'invalid cursor'. (b) Unknown run_id returns an empty result set (200 OK with empty events array), not 404 \u2014 the query endpoint doesn't distinguish 'no matching events' from 'run does not exist'. (c) Missing required node_id in transcript returns 400. (d) No traces found for run_id+node_id in transcript returns 200 with empty messages array. (e) DuckDB query failure returns 500 with generic error. (f) SSE connection limit exceeded returns 503 with body {error: 'too many SSE connections'}. (g) Unauthenticated/insufficient scope follows spec 17 patterns: 401/403.",
+        "q3": "Standard library testing + httptest (no external assertion library). This matches the codebase convention established in spec 17 and the existing codebase which explicitly avoids testify. Tests use a real temp-file DuckDB instance.",
+        "q4": "Partially \u2014 correct the number reference to use spec 19 (19_sessions_metrics_retention) but do not list downstream dependents in this PRD. The dependency direction flows from spec 19 to this spec, and spec 19 already declares that dependency in its own Dependencies section.",
+        "q5": "It is new and is introduced by spec 17 (17_audit_storage_ingestion). Spec 17 defines all four permission scopes (audit:read, audit:write, sessions:read, sessions:write) in its Permissions section and internal/audit/permissions.go. This spec (18) uses audit:read for its query endpoints \u2014 it does not need to declare the scope, only reference it.",
+        "q6": "Follow the same cursor strategy defined in spec 17: URL-safe base64 without padding (RFC 4648 \u00a75) encoding a JSON object {ts: ISO8601 timestamp, id: UUID}. All paginated endpoints across all audit specs use the same cursor format for consistency.",
+        "q7": "Hardcode both \u2014 they are intentional constants. The heartbeat interval (30s) is half the stale timeout (60s) by design, ensuring at least one heartbeat arrives before a connection is considered stale. Making them independently configurable risks operators breaking this invariant."
+      },
+      "timestamp": "2026-09-01T13:54:01.668052+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

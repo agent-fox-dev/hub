@@ -1,0 +1,658 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "ready",
+      "summary": "The `sessions_metrics_retention` PRD is well-structured and comprehensive. It clearly articulates intent, measurable goals, explicit non-goals, tech stack, and detailed functional requirements covering session lifecycle APIs, Prometheus metrics, retention policies, and workspace lifecycle integration. Dependencies on specs 17 and 18 are correctly declared. No external API surface documentation gaps exist (the only external library is the Prometheus Go client, which is a well-known SDK with no bespoke endpoint negotiation required). Cross-spec landscape checks reveal no blocking overlaps; the PRD correctly defers to and builds upon `audit_storage_ingestion` (spec 17) and `hub_audit_query` (spec 18). Minor gaps exist around schema definitions, test tooling, and a few behavioral edge cases, but none block artifact generation.",
+      "gaps": [
+        "No test tooling specified in the Tech Stack section (e.g., `testing`, `testify`, or integration test framework). Missing test tooling can lead to inconsistent test artifact generation.",
+        "Database schema for `agent_sessions` and `token_usage` tables is not defined in this spec. It is presumably part of spec 17 (`audit_storage_ingestion`), but this is not confirmed explicitly \u2014 if the schema was not included in spec 17's scope, it is a gap here.",
+        "The `sessions:read` and `sessions:write` permissions are introduced but not documented in terms of how they are registered with `apikit` (e.g., added to the permission set, token scopes, or PAT scope list).",
+        "The `/metrics` endpoint is described as unauthenticated, but there is no mention of network-level access controls or whether this is acceptable in the project's security posture (e.g., should it be restricted to internal/loopback only?).",
+        "The `afhub_agent_sessions_active` gauge is labeled by `workspace`, which could create high-cardinality issues at scale. No guidance is given on cardinality limits or whether this is an accepted trade-off.",
+        "Retention step 2 ('delete oldest runs until at or below max_runs limit') does not specify how 'oldest' is determined (by `started_at`, `ingested_at`, or run creation timestamp) or whether partial-run deletion is safe.",
+        "No rollback or compensation strategy is described for the retention worker if a deletion step fails mid-run (e.g., whether subsequent steps should still execute).",
+        "The `POST /api/v1/sessions/:id/complete` endpoint specifies that only the session owner or admin can complete a session, but the enforcement mechanism (middleware vs. handler-level check) is not described.",
+        "Background section / motivation context is absent \u2014 the PRD jumps straight to intent without explaining why agent sessions and metrics were not included in specs 17/18, or what operational pain point this addresses."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What test tooling should be used for this spec? Should unit and integration tests follow the same conventions as existing specs (e.g., `testing` + `testify`, or a custom harness)?",
+          "context": "The Tech Stack section does not mention test tooling. Specifying this ensures generated test artifacts use the correct framework and match project conventions.",
+          "options": [
+            "Go standard `testing` package only",
+            "`testing` + `testify/assert`",
+            "`testing` + `testify/require` + `testify/mock`",
+            "Same as existing audit specs \u2014 inherit from spec 17"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "Does spec 17 (`audit_storage_ingestion`) define the DuckDB schema for `agent_sessions` and `token_usage` tables, or should those schemas be defined in this spec?",
+          "context": "The PRD references these tables extensively but does not provide their DDL. If spec 17 does not include them, this spec must define the schema to enable correct artifact generation.",
+          "options": [
+            "Schema is fully defined in spec 17 \u2014 this spec only adds queries",
+            "Schema is partially in spec 17 \u2014 this spec needs to add the session/token tables",
+            "Schema must be fully defined here"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "How should the new `sessions:read` and `sessions:write` permissions be registered with `apikit`? Should they be added to the existing PAT scope list alongside `workspaces:read` / `workspaces:create`?",
+          "context": "The PRD introduces two new permission scopes but does not describe how they are declared in the `apikit` permission registry or what token types (PAT, admin key, agent key) can carry them.",
+          "options": [
+            "Add as PAT scopes alongside existing workspace scopes",
+            "Add as PAT scopes only \u2014 admin and agent keys get them implicitly",
+            "Define a separate sessions permission group",
+            "Follow whatever pattern spec 17 used for audit permissions"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should the `/metrics` endpoint be restricted to loopback or an internal network interface, or is unauthenticated exposure on the public port acceptable for this project?",
+          "context": "Prometheus scrape endpoints are conventionally unauthenticated, but exposing hub operational metrics (session counts, queue depths, row counts) to any unauthenticated caller may be a security concern depending on the deployment model.",
+          "options": [
+            "Unauthenticated on public port is acceptable",
+            "Restrict to loopback only (127.0.0.1)",
+            "Add optional bearer token auth via env var",
+            "No opinion \u2014 follow Prometheus convention"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Is the high-cardinality risk of labeling `afhub_agent_sessions_active` by `workspace` an accepted trade-off, or should workspace-level granularity be dropped in favor of a global gauge?",
+          "context": "At scale, one gauge series per workspace can create thousands of time series in a Prometheus instance. Some projects cap label cardinality or use a different aggregation strategy.",
+          "options": [
+            "Accepted \u2014 per-workspace granularity is required",
+            "Drop workspace label \u2014 expose a single global active-session gauge",
+            "Cap to top-N workspaces by activity",
+            "No opinion \u2014 implementer's discretion"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "For retention step 2 (run-count enforcement), how should 'oldest' runs be identified \u2014 by the earliest event timestamp within the run, the run's first ingestion timestamp, or another field?",
+          "context": "The retention spec says 'delete oldest runs until at or below limit' but does not define the sort key. The wrong choice could delete forensically important recent runs while keeping stale ones.",
+          "options": [
+            "Earliest event timestamp within the run",
+            "Run's first ingestion timestamp into DuckDB",
+            "Run's `started_at` from `agent_sessions`",
+            "Implementer's discretion"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD is detailed, well-structured, and covers the three major capability areas (agent sessions, Prometheus metrics, retention) with considerable depth. Intent, Non-Goals, Background, Tech Stack, and Design Decisions are all strong. The main gaps are around response shapes for several endpoints (usage report, list sessions, cost summary), missing error/edge-case behavior for some API calls, ambiguity in the session listing cursor pagination mechanism, unclear `afhub_audit_table_rows` sampling frequency and ownership, and the absence of any test coverage expectations beyond tooling selection.",
+      "gaps": [
+        "Response shape for POST /api/v1/sessions/:id/usage (201 body) is not specified \u2014 only the request body is described.",
+        "Response shape for GET /api/v1/sessions/:id/usage is described only in prose ('individual usage reports and a pre-aggregated total') without a concrete JSON structure.",
+        "Response shape for GET /api/v1/sessions (list) is partially described \u2014 'token_summary' is mentioned but the full envelope (fields, pagination wrapper, cursor format) is not defined.",
+        "Response shape for GET /api/v1/workspaces/:slug/cost is described in prose ('totals' and 'breakdown') but the exact JSON structure, field names, and breakdown array element shape are not shown.",
+        "The cursor-based pagination for GET /api/v1/sessions is described as 'opaque' but the encoding strategy (e.g., base64 of started_at + id, keyset, offset) is unspecified, which affects implementation decisions.",
+        "Error handling for POST /api/v1/sessions/:id/usage when the referenced session is already completed or does not exist is not defined (should this be 404, 409, or 422?).",
+        "The sampling frequency and ownership of `afhub_audit_table_rows` (which component triggers periodic DuckDB row-count queries) is not stated \u2014 could be the retention worker, a dedicated ticker, or the metrics middleware.",
+        "No test coverage expectations are stated beyond tooling selection (e.g., which endpoints/store methods require tests, or minimum scenario coverage for retention logic).",
+        "The `terminated` session status used during force-close is not listed among the valid terminal statuses in the complete endpoint spec (`completed`, `failed`, `timeout`), creating an inconsistency.",
+        "The `cache_creation_input_tokens` field appears in the complete-session request body but is absent from the usage-report request body and cost summary response, with no explanation for the asymmetry."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the full JSON response body for POST /api/v1/sessions/:id/usage (the incremental usage report call)?",
+          "context": "The request body is documented but the 201 response shape is missing. Implementers need to know exactly which fields are returned (e.g., id, session_id, workspace_slug, model, token counts, created_at).",
+          "options": [
+            "Return the full token_usage record: {id, session_id, workspace_slug, model, input_tokens, output_tokens, cache_read_tokens, created_at}",
+            "Return only the generated id: {id}",
+            "Return 204 No Content"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the exact JSON structure for the GET /api/v1/sessions list response, including the pagination envelope and the token_summary shape within each session object?",
+          "context": "The endpoint is specified but the response envelope (e.g., {sessions: [...], next_cursor, total}) and the token_summary sub-object fields are not defined, which will lead to inconsistent implementation.",
+          "options": [
+            "{ sessions: [ { ...session_fields, token_summary: { input_tokens, output_tokens, cache_read_tokens, total_calls } } ], next_cursor: string | null }",
+            "{ data: [...], pagination: { cursor, has_more } }",
+            "Define token_summary inline and omit a total count"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the exact JSON structure for the GET /api/v1/workspaces/:slug/cost response, specifically the shape of the 'breakdown' array elements for each group_by dimension (day, session, model)?",
+          "context": "The prose mentions 'totals' and 'breakdown' but does not define field names or how the breakdown array differs per group_by value. This is a public API surface that must be pinned.",
+          "options": [
+            "{ totals: { input_tokens, output_tokens, cache_read_tokens, sessions }, breakdown: [ { period/session_id/model, input_tokens, output_tokens, cache_read_tokens, sessions } ] }",
+            "Flat list with a 'group' discriminator field",
+            "Separate response schemas per group_by value"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What pagination strategy should be used for the GET /api/v1/sessions cursor, and what does the cursor encode?",
+          "context": "The cursor is described as 'opaque' but the encoding must be chosen during implementation. Keyset pagination (encoding started_at + id) is the most robust approach for time-ordered data, but offset-based is simpler. The choice affects correctness under concurrent inserts.",
+          "options": [
+            "Keyset: base64-encode (started_at, id) tuple; filter WHERE (started_at, id) < cursor values",
+            "Offset-based: encode integer offset as base64",
+            "Token-based: opaque server-side token stored in a cursor table"
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "What should happen when POST /api/v1/sessions/:id/usage is called for a session that is already completed, terminated, failed, or timed out?",
+          "context": "The complete and force-close flows change session status to a terminal state. It is unclear whether subsequent usage reports should be rejected (409 Conflict) or silently accepted. This affects idempotency and error contract.",
+          "options": [
+            "Return 409 Conflict with an error message indicating the session is no longer active",
+            "Return 422 Unprocessable Entity",
+            "Accept the usage report regardless of session status (append-only)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Should 'terminated' be added as a valid terminal status in the POST /api/v1/sessions/:id/complete request body, and should GET /api/v1/sessions accept 'terminated' as a status filter value?",
+          "context": "The force-close logic sets status to 'terminated' but the complete endpoint only lists completed/failed/timeout as valid statuses, and the list filter examples show the same three. This inconsistency needs resolution.",
+          "options": [
+            "Add 'terminated' as a valid status enum value everywhere it appears (complete body, list filter, session record)",
+            "Keep 'terminated' as an internal-only status not settable via the complete endpoint, but allow it as a list filter value",
+            "Rename force-closed status to 'failed' with a specific error_message convention"
+          ],
+          "required": true
+        },
+        {
+          "id": "q7",
+          "text": "Who owns the periodic sampling of afhub_audit_table_rows, and how frequently does it run?",
+          "context": "This gauge requires a DuckDB COUNT(*) per table on some schedule. It could be the retention worker (hourly), a dedicated ticker (e.g., every 5 minutes), or triggered at scrape time. The choice affects DuckDB load and metric freshness.",
+          "options": [
+            "Sampled by the retention worker on each hourly run (low frequency, low overhead)",
+            "Dedicated ticker every 5 minutes (fresher data, minor overhead)",
+            "Computed on-demand at each /metrics scrape (most accurate, potential DuckDB lock contention)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q8",
+          "text": "Is cache_creation_input_tokens intentionally absent from the POST /api/v1/sessions/:id/usage request body, and should it also appear in cost summary aggregations?",
+          "context": "The session-complete body includes cache_creation_input_tokens but the incremental usage report body does not. If cache creation tokens can only be reported at session close, that should be stated explicitly. If it was an omission, it should be added to the usage report.",
+          "options": [
+            "Intentional: cache_creation_input_tokens is a session-level summary field reported only at close, not per usage call",
+            "Omission: add cache_creation_input_tokens to the usage report body and cost summary aggregation",
+            "Track it in neither place \u2014 it was included in complete by mistake"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD that completes the audit subsystem. It is detailed, internally consistent, and clearly scoped. The intent is crisp, goals are concrete, non-goals are explicit, and the background provides sufficient context for an unfamiliar reader. The tech stack is fully specified. Functional requirements are thorough with precise API shapes, error conditions, permission scopes, and pagination strategy. Design decisions are well-documented with rationale. Only a few minor gaps remain around testing coverage expectations, the retention worker's startup/shutdown lifecycle, and one ambiguity in the cost summary endpoint's `sessions` count semantics.",
+      "gaps": [
+        "Retention worker startup and graceful shutdown lifecycle is not described \u2014 it is unclear whether the worker runs as a goroutine launched in main.go, how it is stopped (context cancellation, channel signal), and what happens to an in-progress retention run during shutdown.",
+        "No test coverage expectations are stated for the new functionality (session lifecycle, metrics middleware, retention worker). The tech stack names the tooling but does not indicate which scenarios must have test coverage (e.g., idempotency, force-close, cursor pagination, retention steps).",
+        "The `sessions` field in the cost summary `totals` and `breakdown` objects is ambiguous \u2014 it is unclear whether it counts distinct session IDs with at least one usage record, all sessions with any status, or only closed sessions in the period.",
+        "The `GET /api/v1/sessions/:id/usage` endpoint does not specify pagination, raising a question about behavior when a session has a very large number of incremental usage records.",
+        "The Prometheus middleware integration point is mentioned but not detailed \u2014 it is not stated whether the middleware wraps all routes or only the API group, and how path normalization (to avoid high-cardinality label values from path parameters like `:id`) is handled.",
+        "The `POST /api/v1/sessions/:id/usage` endpoint states permission `sessions:write` but does not specify whether ownership is enforced (i.e., can any `sessions:write` credential report usage on any session, or only the session owner?)."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "How is the retention worker goroutine started and stopped? Specifically: is it launched via a context passed from main.go, does it listen for context cancellation to exit cleanly, and what happens if a retention run is mid-flight when shutdown is requested?",
+          "context": "Without a defined lifecycle, implementers may make inconsistent choices about graceful shutdown, potentially causing data corruption or panics on process exit.",
+          "options": [
+            "Launched with a context; cancellation causes the current step to finish before exiting (step-boundary shutdown).",
+            "Launched with a context; cancellation causes immediate exit even if a step is in progress.",
+            "Uses a dedicated stop channel; waits for the current full run to complete before stopping.",
+            "No graceful shutdown \u2014 the goroutine is fire-and-forget; OS process exit is relied upon."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What does the `sessions` count in the cost summary response represent \u2014 all sessions that have token_usage records in the period, all sessions whose `started_at` falls in the period regardless of usage, or only closed/completed sessions?",
+          "context": "The `totals.sessions` and `breakdown[*].sessions` fields appear in the cost summary response but their counting semantics are not defined, which will lead to divergent implementations.",
+          "options": [
+            "Count of distinct session IDs that have at least one token_usage record in the period.",
+            "Count of distinct session IDs whose started_at falls within [since, until], regardless of usage.",
+            "Count of distinct session IDs in a terminal status (completed, failed, timeout, terminated) whose ended_at falls in the period.",
+            "Other \u2014 please specify."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Should `GET /api/v1/sessions/:id/usage` be paginated? If a session reports usage every few seconds over a long run, there could be thousands of records. Is a hard cap, pagination, or unbounded response acceptable?",
+          "context": "Without a cap or pagination strategy, a long-running session with many incremental reports could produce an unbounded response payload.",
+          "options": [
+            "Unbounded \u2014 return all records; usage records per session are expected to be small in practice.",
+            "Hard cap (e.g., max 1000 records) with a `truncated: true` flag in the response.",
+            "Full cursor-based pagination matching the strategy used in GET /api/v1/sessions.",
+            "Offset-based pagination (limit/offset query params)."
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "How does the Prometheus HTTP middleware handle path normalization to prevent high-cardinality label values? For example, does `GET /api/v1/sessions/some-uuid` get recorded as `/api/v1/sessions/:id` or as the raw path?",
+          "context": "Without path normalization, every unique session ID or workspace slug becomes a distinct label value, causing a cardinality explosion in the `afhub_http_requests_total` and `afhub_http_request_duration_seconds` metrics.",
+          "options": [
+            "Use Echo's route template (c.Path()) which already returns the parameterized pattern (e.g., /api/v1/sessions/:id).",
+            "Implement a custom normalization function that strips UUIDs and slugs from paths.",
+            "Record only the top-level path prefix (e.g., /api/v1/sessions) without sub-paths.",
+            "Cardinality is not a concern for this deployment scale; raw paths are acceptable."
+          ],
+          "required": true
+        },
+        {
+          "id": "q5",
+          "text": "Is session ownership enforced on `POST /api/v1/sessions/:id/usage`? Can any credential with `sessions:write` report usage on any active session, or only the session owner (same credential_id)?",
+          "context": "The complete endpoint explicitly enforces ownership, but the usage endpoint does not mention this, creating a potential inconsistency where a different agent could pollute another session's usage records.",
+          "options": [
+            "Ownership is enforced \u2014 only the session owner (same credential_id) or an admin can report usage.",
+            "No ownership check \u2014 any credential with sessions:write can report usage on any active session.",
+            "Ownership is enforced only for non-admin credentials; admin tokens can report on any session."
+          ],
+          "required": true
+        },
+        {
+          "id": "q6",
+          "text": "Which scenarios are required to have test coverage in this spec? Please indicate which of the following must be tested: (a) session open/close idempotency, (b) force-close on archive/delete, (c) cursor pagination correctness, (d) each retention step, (e) Prometheus metric values after operations, (f) ownership enforcement on complete/usage.",
+          "context": "The PRD names the test tooling but does not specify required coverage scenarios, leaving implementers to decide what to test. Explicit coverage requirements prevent under-testing of critical paths.",
+          "options": [
+            "All of the above (a\u2013f) are required.",
+            "a, b, d, and f are required; c and e are optional.",
+            "Only happy-path tests per endpoint are required; edge cases are optional.",
+            "Coverage requirements are left to the implementer's discretion."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, production-grade PRD. The intent is crisp and well-scoped. Goals are concrete and actionable. Non-goals explicitly exclude adjacent specs (17, 18) and known deferred features. Background provides excellent traceability to prior specs. The functional requirements are exhaustive: all API endpoints include request/response shapes, error codes, ownership rules, pagination strategy, and idempotency semantics. Prometheus metrics are fully enumerated with cardinality rationale. The retention worker lifecycle, failure handling, and shutdown semantics are precisely specified. Design decisions (15 of them) are thorough and self-consistent. Test coverage requirements are explicit and scenario-driven. Only minor gaps exist around a few edge cases and operational details.",
+      "gaps": [
+        "No explicit behavior defined when `POST /api/v1/sessions/:id/complete` is called on a `terminated` session (force-closed). The current text says 'completing an already-completed session returns 200 (idempotent)' but does not clarify whether `terminated` is treated equivalently or returns 409/403.",
+        "The `GET /api/v1/workspaces/:slug/cost` endpoint has no documented permission enforcement beyond the permission label (`sessions:read`). It is unclear whether a non-admin credential can query cost data for any workspace slug, or only for workspaces they have access to.",
+        "The `GET /api/v1/sessions` list endpoint does not document whether results are scoped to the caller's accessible workspaces or whether any authenticated credential with `sessions:read` can see all sessions across all workspaces.",
+        "The `afhub_agent_sessions_active` gauge \u2014 since it is labeled per workspace \u2014 needs a description of how and when it is decremented (e.g., on session close, force-close, or only on retention run). The update path for this gauge is not specified.",
+        "`AF_METRICS_SCRAPE_SECRET` or any mechanism for optional scrape authentication is not discussed, even to confirm it is intentionally out of scope for this spec.",
+        "No rate-limiting or abuse protection is mentioned for the high-frequency `POST /api/v1/sessions/:id/usage` endpoint, which could be called in a tight loop by a misbehaving agent.",
+        "The `afhub_jobqueue_depth` metric references a job queue but the job queue's relationship to this spec (vs. a pre-existing system) is not described, making it unclear which team owns the instrumentation hookup.",
+        "The new files table lists only two new files (`metrics.go`, `retention.go`) but `internal/audit/permissions.go` is listed as a modified file \u2014 it is unclear if this file already exists from spec 17 or is being created here for the first time."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the intended behavior when `POST /api/v1/sessions/:id/complete` is called on a session with `status = terminated` (force-closed by workspace archive/delete)? Should it return 200 (idempotent, treating terminated as a terminal state), 409 Conflict, or 403 Forbidden?",
+          "context": "The PRD specifies idempotency for already-completed sessions returning 200, but `terminated` is a distinct internal-only status. Leaving this ambiguous risks inconsistent implementation behavior.",
+          "options": [
+            "Return 200 (idempotent \u2014 treat `terminated` as any other terminal state)",
+            "Return 409 Conflict with body {\"error\": \"session is not active\"} \u2014 same as calling /usage on a non-active session",
+            "Return 403 Forbidden \u2014 the session was closed by the system, not the owner"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Is `GET /api/v1/sessions` (list) scoped to the caller's accessible workspaces, or can any credential with `sessions:read` see sessions across all workspaces? Similarly, can any `sessions:read` credential query cost data for any workspace slug via `GET /api/v1/workspaces/:slug/cost`?",
+          "context": "Without workspace-scoping on list and cost endpoints, a low-privilege agent API key with `sessions:read` could enumerate sessions and token usage for workspaces it doesn't own. This is a data-isolation concern.",
+          "options": [
+            "Workspace-scoped: non-admin credentials only see sessions/costs for workspaces they have access to",
+            "Global: any `sessions:read` credential sees all sessions and costs (operators only, no agent keys expected to have this scope)",
+            "Admin-only: both endpoints require an admin token; agent keys cannot hold `sessions:read`"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "How and when is the `afhub_agent_sessions_active` gauge decremented? Is it updated inline on session close/force-close, or only refreshed on the hourly retention run?",
+          "context": "The PRD specifies this gauge is labeled per workspace but does not describe the decrement path. If it's only updated hourly, the gauge will be stale between retention runs, which may mislead operators monitoring for stuck sessions.",
+          "options": [
+            "Decremented inline on every session status transition (complete, fail, timeout, terminate)",
+            "Refreshed only on the hourly retention worker run via COUNT(*) query",
+            "Decremented inline on close/force-close AND recalibrated on each retention run to correct for any drift"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Does `internal/audit/permissions.go` already exist from spec 17, or is it being created for the first time in this spec? The modified-files table lists it as a change, but spec 17's non-goals section says audit scopes are defined there.",
+          "context": "Clarifying file ownership across specs prevents a situation where both spec 17 and spec 19 implementers believe they are responsible for creating this file, leading to conflicts.",
+          "options": [
+            "It was created in spec 17; this spec only adds the two new session scopes to the existing file",
+            "It is a new file created in this spec; spec 17 defined permissions inline elsewhere"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Is optional scrape authentication for `/metrics` (e.g., a bearer token or basic auth) intentionally out of scope for this spec and all future specs, or is it deferred to a later hardening spec?",
+          "context": "The PRD documents the unauthenticated design decision and its rationale (infrastructure-level isolation). Confirming whether this is a permanent or deferred decision helps avoid scope creep debates during implementation review.",
+          "options": [
+            "Permanently unauthenticated by design \u2014 infrastructure handles network isolation",
+            "Deferred to a future hardening/security spec",
+            "Out of scope for this spec but should be noted as a known gap in the PRD"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, well-structured PRD for the final piece of the audit subsystem. It demonstrates exceptional completeness across all quality dimensions: intent is clear and contextually grounded, goals are concrete and actionable, non-goals are explicitly enumerated with rationale, and background provides sufficient context for an unfamiliar reader. The tech stack is fully specified including test tooling. The functional requirements are detailed with precise request/response shapes, error conditions, ownership semantics, idempotency rules, and pagination strategies. Design decisions are extensively documented with rationale. The only minor gaps are around operational observability of the retention worker itself and a few edge-case behaviors that could be made more explicit, but none of these block implementation.",
+      "gaps": [
+        "Retention worker has no explicit health/liveness signal \u2014 there is no mention of how operators detect a stalled or silently failing retention worker (e.g., a last-run timestamp metric, a log-based alert, or a watchdog). The hourly run is started-and-forgotten with only slog output.",
+        "The `GET /api/v1/sessions/:id` (single session fetch by ID) endpoint appears to be absent. The list endpoint and usage endpoint exist, but there is no defined route for fetching an individual session record \u2014 this may be intentional but is not called out as a non-goal.",
+        "Force-close audit event shape is not specified. The PRD states a `hub.session.force_closed` audit event is emitted via `Emitter` for each force-closed session, but the event payload/fields are not defined anywhere in this spec or referenced to a prior spec.",
+        "The `GET /api/v1/sessions/:id/usage` access scoping is not explicitly stated. The list endpoint and cost endpoint define non-admin scoping rules, but ownership or workspace-membership rules for the single-session usage query endpoint are omitted.",
+        "There is no explicit definition of what constitutes an 'admin token' for ownership enforcement purposes \u2014 the PRD references 'admin token' and 'apikit.AuthInfo' but does not specify how admin status is determined (e.g., a flag, a role, a specific credential type).",
+        "The `since`/`until` parameter behavior for the cost endpoint when the range exceeds available data, or when `since` is after `until`, is not specified (no validation error definition).",
+        "The behavior of the retention worker on first startup (i.e., before any tick fires) is not defined \u2014 does it run immediately on start or wait for the first tick?"
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should there be a GET /api/v1/sessions/:id endpoint to fetch a single session by ID? If not, is this an intentional non-goal that should be added to the Non-Goals section?",
+          "context": "The PRD defines list, usage, and complete endpoints for sessions but omits a single-record fetch. Implementers writing the complete/usage handlers will load the session record anyway; exposing it as a read endpoint is a natural complement and avoids callers having to filter the list endpoint.",
+          "options": [
+            "Add GET /api/v1/sessions/:id as a new endpoint with sessions:read permission",
+            "Explicitly add 'Single session fetch by ID' to Non-Goals \u2014 callers should use the list endpoint with a filter",
+            "Out of scope for this spec; add to a future spec"
+          ],
+          "required": false
+        },
+        {
+          "id": "q2",
+          "text": "What is the payload shape for the `hub.session.force_closed` audit event emitted during workspace archive/delete force-close? Specifically: which fields are included (session_id, workspace_slug, reason, ended_at, credential_id)?",
+          "context": "The PRD specifies the event is emitted but does not define its payload. The Emitter was introduced in spec 18; implementers need to know the event fields to construct the emission call correctly and to write test scenario (b).",
+          "options": [
+            "Define a minimal payload: {session_id, workspace_slug, status: 'terminated', ended_at, reason: 'workspace_archived'|'workspace_deleted'}",
+            "Reference the generic hub audit event schema from spec 18 and specify only the event_type and a metadata blob",
+            "Leave the exact shape to the implementer's discretion \u2014 only the event_type is normative"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Does GET /api/v1/sessions/:id/usage enforce the same workspace-membership access scoping as GET /api/v1/sessions (non-admin callers can only see usage for sessions in accessible workspaces)?",
+          "context": "The list endpoint and cost endpoint both have explicit access scoping rules, but the usage endpoint for a specific session omits this. Without clarity, implementers may apply inconsistent authorization \u2014 some may check session ownership, others workspace membership.",
+          "options": [
+            "Yes \u2014 apply the same workspace-membership scoping: non-admin callers cannot query usage for sessions in inaccessible workspaces (return 403)",
+            "Yes \u2014 but scope by session ownership (credential_id match) rather than workspace membership, consistent with the complete/usage-report endpoints",
+            "No additional scoping beyond sessions:read permission \u2014 the session ID is already a secret/opaque identifier"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "How is 'admin token' determined in the ownership enforcement logic for POST /sessions/:id/complete and POST /sessions/:id/usage? Is this a credential_type check, a flag on apikit.AuthInfo, or something else?",
+          "context": "The PRD references 'admin token' and 'apikit.AuthInfo' but does not specify how admin status is detected. Implementers need a concrete check (e.g., authInfo.IsAdmin, credential_type == 'admin', or a specific scope) to implement the ownership bypass correctly.",
+          "options": [
+            "authInfo.IsAdmin boolean field on apikit.AuthInfo (established in a prior spec)",
+            "credential_type == 'admin_token' string check",
+            "Presence of a specific permission scope (e.g., sessions:admin)",
+            "Defined in a prior spec \u2014 reference the relevant spec number"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Does the retention worker run immediately on startup (before the first tick), or does it wait for the first hourly tick? This affects how long stale data persists after a fresh deployment.",
+          "context": "The PRD specifies a time.Ticker for hourly intervals but does not state whether an initial run fires at t=0 or t=1h. For deployments with large backlogs, an immediate first run is preferable; for production stability, waiting for the first tick avoids a startup spike.",
+          "options": [
+            "Run immediately on startup, then every hour thereafter",
+            "Wait for the first hourly tick before running (standard time.Ticker behavior)",
+            "Configurable via an environment variable (e.g., AF_RETENTION_RUN_ON_START=true)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "Should the retention worker expose a Prometheus metric (e.g., afhub_retention_last_run_timestamp or afhub_retention_errors_total) to allow operators to detect a stalled or failing worker?",
+          "context": "Currently the only observability for the retention worker is slog output. Without a metric, a silently stalled worker (e.g., due to a long-running DuckDB query blocking the ticker) would be invisible to Prometheus-based alerting. A last-run gauge is a common pattern for background workers.",
+          "options": [
+            "Add afhub_retention_last_run_timestamp_seconds gauge (Unix timestamp of last successful complete run) to metrics.go",
+            "Add afhub_retention_errors_total counter (incremented per failed step) to metrics.go",
+            "Add both metrics",
+            "No metric needed \u2014 slog output is sufficient; operators can alert on log patterns"
+          ],
+          "required": false
+        },
+        {
+          "id": "q7",
+          "text": "What is the validation behavior for the cost endpoint when `since` is after `until`, or when the time range is invalid? Should it return 400 Bad Request with an error body?",
+          "context": "The PRD does not specify error handling for invalid time range parameters on GET /api/v1/workspaces/:slug/cost. Without this, implementers may return an empty result set, a database error, or an unspecified 400 \u2014 leading to inconsistent client-facing behavior.",
+          "options": [
+            "Return 400 Bad Request with body {\"error\": \"since must be before until\"} if since >= until",
+            "Silently swap since/until if inverted and return results",
+            "Return an empty breakdown with totals all zero if the range is empty or invalid"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-written PRD. It is the third part of a three-spec audit subsystem and demonstrates strong continuity with its predecessors (specs 17 and 18). All major quality dimensions are satisfied: intent is clear and scoped, goals are concrete and enumerable, non-goals are explicit and detailed, background provides sufficient context for an unfamiliar reader, the tech stack is fully named, and the external API surface is thoroughly documented with request/response shapes, error conditions, permission scopes, and pagination semantics. The 23 design decisions section is unusually thorough and preemptively resolves ambiguities that would typically surface during implementation. The required test coverage table maps cleanly to functional requirements. No significant gaps were identified.",
+      "gaps": [
+        "The retention worker configuration variables are listed in both the 'Retention Policies' section and the 'Configuration' section with identical values \u2014 minor duplication that could lead to drift if one table is updated without the other.",
+        "The `GET /api/v1/sessions` endpoint documents workspace-access scoping rules in prose but does not specify the HTTP response code (403 vs. empty list) when a non-admin caller supplies a `workspace_slug` filter for a workspace they cannot access. The single-session fetch and cost endpoints explicitly say 403, but the list endpoint is ambiguous.",
+        "The `afhub_jobqueue_depth` metric is defined here but updated by an external spec (`durable_job_queue`). There is no stated fallback or initialization value if the job queue subsystem is not yet running, which could cause the gauge to appear missing at scrape time.",
+        "The `POST /api/v1/sessions` endpoint does not specify the error response body shape for validation failures (e.g., missing `workspace_slug`), unlike `GET /api/v1/workspaces/:slug/cost` which explicitly documents `{\"error\": \"...\"}` for 400 responses.",
+        "The force-close audit event shape specifies `ActorType: \"system\"` but does not clarify whether an `ActorID` field is expected or left empty/omitted, which may matter depending on the `HubEvent` struct definition in spec 17.",
+        "There is no explicit statement about whether `GET /api/v1/sessions/:id/usage`'s `totals` field is computed over all historical records or only within a time-bounded window \u2014 the PRD says 'all usage records for the session' but no time-range filtering parameters are offered, which is fine but worth confirming as intentional."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "For `GET /api/v1/sessions` with a `workspace_slug` filter pointing to an inaccessible workspace: does the endpoint return 403 Forbidden (same as single-fetch and cost), or does it return 200 with an empty `sessions` array?",
+          "context": "The list endpoint's access scoping section describes the membership rules but does not explicitly state the HTTP status code when a non-admin caller filters by a workspace they cannot access. The single-fetch (`GET /api/v1/sessions/:id`) and cost (`GET /api/v1/workspaces/:slug/cost`) endpoints both explicitly return 403 for inaccessible resources. Consistency across endpoints reduces client-side surprise.",
+          "options": [
+            "Return 403 Forbidden (consistent with single-fetch and cost endpoints)",
+            "Return 200 with an empty sessions array (treats unauthorized workspace as 'no results')",
+            "Return 403 only when the workspace_slug filter is explicitly supplied; return empty results when the caller's access naturally excludes that workspace"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the error response body shape for `POST /api/v1/sessions` validation failures (e.g., missing required `workspace_slug`)?",
+          "context": "The cost endpoint documents `{\"error\": \"since must be before until\"}` for its 400 case, and the usage endpoint documents `{\"error\": \"session is not active\"}` for its 409 case. The session-open endpoint lists `workspace_slug` as required but does not specify the 400 response body format. Consistency with the established pattern matters for client implementers.",
+          "options": [
+            "{\"error\": \"<description>\"}  \u2014 consistent with other 4xx responses in this spec",
+            "Use apikit's default error envelope (whatever shape apikit generates for binding failures)",
+            "Other \u2014 please describe"
+          ],
+          "required": false
+        },
+        {
+          "id": "q3",
+          "text": "Does the `HubEvent` struct from spec 17 include an `ActorID` field, and if so, what value should the force-close logic set it to?",
+          "context": "The force-close event shape sets `ActorType: \"system\"` but the PRD does not mention `ActorID`. If `HubEvent` has an `ActorID` field (likely, given it tracks actor identity for audit purposes), leaving it unspecified could result in an empty string, `\"system\"`, or a sentinel value. Implementers need to know the expected value to produce a consistent audit record.",
+          "options": [
+            "Leave ActorID empty string (\"\")",
+            "Set ActorID to \"system\"",
+            "Set ActorID to the workspace slug",
+            "HubEvent does not have an ActorID field \u2014 ActorType alone is sufficient"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should `afhub_jobqueue_depth` be initialized to 0 in the custom Prometheus registry at hub startup, even before the durable job queue subsystem begins updating it?",
+          "context": "Prometheus gauges that have never been set do not appear in scrape output, which can cause alerting rules or dashboards to show 'no data' rather than 0. Explicitly initializing the gauge at startup (with a 0 value per known job type/status label combination) ensures it appears immediately. However, this requires this spec to know the label value set for `type` and `status`, which may not be fully defined until the `durable_job_queue` spec is implemented.",
+          "options": [
+            "Initialize to 0 at startup with known label combinations (requires coordination with durable_job_queue spec)",
+            "Do not initialize \u2014 let the gauge appear only after the job queue first sets it",
+            "Document this as a known gap and defer to the durable_job_queue spec to handle initialization"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Is the `totals` field in `GET /api/v1/sessions/:id/usage` intentionally unbounded (aggregating all token_usage records ever for the session), with no time-range filtering supported on that endpoint?",
+          "context": "The PRD states '`totals` reflects the aggregate across all usage records for the session (not just the current page)' and offers no `since`/`until` query parameters on this endpoint. This appears intentional \u2014 the per-session usage endpoint is for inspecting a single session's complete record, while time-bounded aggregation is the role of the cost endpoint. Confirming this is intentional prevents an implementer from adding unnecessary filtering parameters.",
+          "options": [
+            "Yes, intentionally unbounded \u2014 totals always reflect the complete session history",
+            "No, a future spec should add time-range filtering to this endpoint",
+            "Add since/until parameters to this endpoint now for consistency with the cost endpoint"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-crafted PRD. It is the third and final part of a three-spec audit subsystem, and it clearly scopes its additions against specs 17 and 18. All six quality dimensions are strongly satisfied: intent is a clear single paragraph, goals are concrete and actionable, non-goals are explicit and well-reasoned, background explains the deferral rationale, the external API surface is comprehensively documented with request/response shapes and all error conditions, and the tech stack is fully named with test tooling. The 26 design decisions provide outstanding traceability for implementation choices. The 12-scenario test coverage matrix is specific and verifiable. Only a small number of minor ambiguities remain.",
+      "gaps": [
+        "Rate limiting: no mention of whether any session or metrics endpoints are subject to rate limiting, or whether they inherit hub-wide rate limiting if any exists.",
+        "Concurrency safety on gauge updates: the PRD describes inline gauge decrements and hourly recalibration but does not specify whether concurrent session completions require a mutex or atomic operation on the Prometheus gauge (Prometheus client_golang gauges are goroutine-safe, but this is not stated).",
+        "Retention worker: the PRD does not specify what happens if the retention worker is already mid-run when the next hourly tick fires (i.e., whether runs can overlap or the tick is skipped).",
+        "Token usage idempotency: `POST /api/v1/sessions/:id/usage` accepts an optional `id` field as an idempotency key, but the PRD does not specify the behavior when a duplicate `id` is submitted (should it return 200 with the existing record, 409, or 201 silently?).",
+        "Maximum session duration or staleness: the PRD does not specify whether the hub enforces a maximum lifetime for `active` sessions (e.g., auto-terminating sessions open for more than N days), beyond what the retention worker cleans up post-hoc.",
+        "Missing test scenario for `POST /api/v1/sessions/:id/usage` idempotency key behavior \u2014 the test matrix covers ownership, pagination, and status conflicts but not duplicate usage record IDs."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the expected behavior when `POST /api/v1/sessions/:id/usage` is called with a duplicate `id` (idempotency key)? Should it return 200 with the existing record, 201 silently (treating it as a no-op), or 409 Conflict?",
+          "context": "The session open endpoint explicitly documents that a duplicate `id` returns 200 with the existing record. The usage endpoint also accepts an optional `id` field but does not define duplicate behavior. This gap could lead to inconsistent implementation and missing test coverage.",
+          "options": [
+            "Return 200 with the existing usage record (mirrors session open idempotency)",
+            "Return 201 silently (treat as no-op, return same record)",
+            "Return 409 Conflict (reject duplicates explicitly)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Can retention worker runs overlap? If the hourly tick fires while a previous run is still executing, should the new run be skipped (the tick is dropped) or should both run concurrently?",
+          "context": "The PRD describes a `time.Ticker` loop but does not address the case where a single retention run takes longer than one hour. Without specifying this, implementers may make different choices, potentially causing concurrent DuckDB deletions.",
+          "options": [
+            "Skip the tick if a run is already in progress (single-instance guarantee)",
+            "Allow concurrent runs (no coordination)",
+            "Use a trylock or similar mechanism to skip overlapping runs and log a warning"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Are there any hub-wide or per-endpoint rate limits that apply to the session lifecycle endpoints (`POST /sessions`, `POST /sessions/:id/complete`, `POST /sessions/:id/usage`)?",
+          "context": "High-frequency agents could call the usage endpoint many times per second. Without rate limiting, this could create DuckDB write pressure. If the hub has existing rate limiting middleware, it should be noted whether it applies here.",
+          "options": [
+            "No rate limiting; rely on DuckDB write throughput and infra-level controls",
+            "Inherit existing hub-wide rate limiting (if any)",
+            "Specify a per-credential rate limit for usage reporting"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "Should the hub auto-terminate `active` sessions that have been open beyond a configurable maximum duration (e.g., sessions open for more than 7 days)?",
+          "context": "The retention worker deletes *completed* sessions older than `AF_SESSION_MAX_AGE_DAYS`, but `active` sessions are not cleaned up until they are explicitly closed or a workspace is archived/deleted. A long-running or crashed agent could leave sessions in `active` state indefinitely, inflating the `afhub_agent_sessions_active` gauge and consuming storage.",
+          "options": [
+            "No auto-termination; rely on workspace archive/delete force-close and operator intervention",
+            "Add a new env var (e.g., `AF_SESSION_MAX_ACTIVE_DAYS`) and auto-terminate stale active sessions in the retention worker",
+            "Out of scope for this spec; address in a future spec"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "Go standard testing package only \u2014 same as spec 17 and 18. No testify. Tests use a real temp-file DuckDB instance created in t.TempDir().",
+        "q2": "Schema is fully defined in spec 17 \u2014 this spec only adds queries and business logic for the agent_sessions and token_usage tables. Spec 17 defines the DDL for all nine audit tables including agent_sessions and token_usage.",
+        "q3": "Follow whatever pattern spec 17 used for audit permissions. Spec 17 defines all four scopes (audit:read, audit:write, sessions:read, sessions:write) in internal/audit/permissions.go via Permissions() []apikit.Permission. Admin tokens and API keys get implicit full access. PATs require explicit scope grants.",
+        "q4": "Unauthenticated on public port is acceptable. The hub runs as a single-process internal service. Prometheus scrape endpoints are conventionally unauthenticated. Network isolation is handled at the deployment/infra level, not the application level.",
+        "q5": "Accepted \u2014 per-workspace granularity is required. The expected workspace count is low (tens to hundreds, not thousands). Per-workspace session gauges are essential for operational monitoring ('which workspace has stuck sessions?'). If cardinality becomes a problem in the future, it can be addressed by the operator via metric relabeling in Prometheus.",
+        "q6": "Earliest event timestamp within the run. This is consistent with how afaudit's enforce_file_retention works \u2014 it sorts audit files by the timestamp of the first event in each file. For DuckDB, this translates to MIN(timestamp) from agent_audit_events grouped by run_id."
+      },
+      "timestamp": "2026-09-01T13:56:33.871338+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Return the full token_usage record: {id, session_id, workspace_slug, model, input_tokens, output_tokens, cache_read_tokens, reported_at}. Consistent with other ingestion endpoints returning the stored record.",
+        "q2": "Follow the pattern from spec 17 and the parent PRD: {sessions: [{id, workspace_slug, run_id, node_id, credential_id, credential_type, archetype, model, status, started_at, ended_at, token_summary: {total_input_tokens, total_output_tokens, total_cache_read_tokens, models_used: [string]}, duration_ms, metadata}], next_cursor: string|null, has_more: bool}. No total count field.",
+        "q3": "Follow the parent PRD structure: {workspace: string, period: {since: string, until: string}, totals: {input_tokens: int, output_tokens: int, cache_read_tokens: int, sessions: int}, breakdown: [{date|session_id|model: string, input_tokens: int, output_tokens: int, cache_read_tokens: int, sessions: int}]}. The breakdown array element has a single discriminator field named after the group_by dimension (date, session_id, or model) plus the same token count fields as totals.",
+        "q4": "Keyset: URL-safe base64-encode (started_at, id) tuple, matching the cursor strategy used in spec 17 (RFC 4648 \u00a75, no padding). Filter uses WHERE (started_at, id) < cursor values for desc order, > for asc.",
+        "q5": "Return 409 Conflict with error message 'session is not active'. Usage reports can only be submitted for sessions in 'active' status. This prevents stale agents from accidentally reporting usage after a session has been closed or force-terminated.",
+        "q6": "Keep 'terminated' as an internal-only status not settable via the complete endpoint, but allow it as a list filter value. The complete endpoint accepts completed/failed/timeout as client-settable terminal statuses. The 'terminated' status is set exclusively by the force-close logic during workspace archive/delete. Clients can filter by status=terminated in GET /api/v1/sessions to find force-closed sessions.",
+        "q7": "Sampled by the retention worker on each hourly run (low frequency, low overhead). The row counts update once per hour, which is fresh enough for capacity planning dashboards. Running COUNT(*) at scrape time would add unpredictable DuckDB load on every Prometheus pull.",
+        "q8": "Intentional: cache_creation_input_tokens is a session-level summary field reported only at session close, not per incremental usage call. The incremental usage report captures per-call token consumption (input, output, cache reads). Cache creation tokens are best measured at the session level because cache creation spans multiple API calls and is most accurately known at session end."
+      },
+      "timestamp": "2026-09-01T13:59:10.622415+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "Launched with a context; cancellation causes the current step to finish before exiting (step-boundary shutdown). The retention worker is started in main.go via go audit.StartRetentionWorker(ctx, store, sqliteDB). It uses a time.Ticker for the hourly interval and selects on ctx.Done() between ticks. During a retention run, each step (delete agent records, delete hub events, etc.) checks ctx.Err() before starting. If the context is cancelled mid-step, the current step's DuckDB transaction completes (DuckDB doesn't support mid-transaction cancellation safely) and the worker exits without running remaining steps.",
+        "q2": "Count of distinct session IDs that have at least one token_usage record in the period. This counts sessions that actually consumed tokens during the specified time window, which is the most operationally useful metric for cost tracking. Sessions without usage records (e.g., sessions that opened but never reported tokens) are excluded.",
+        "q3": "Full cursor-based pagination matching the strategy used in GET /api/v1/sessions. Use (reported_at, id) as the keyset cursor, same encoding as other endpoints. Default limit 100, max 1000. This handles long-running sessions gracefully without imposing artificial caps.",
+        "q4": "Use Echo's route template (c.Path()) which already returns the parameterized pattern (e.g., /api/v1/sessions/:id). This is the standard Echo idiom for Prometheus middleware \u2014 Echo resolves the matched route pattern before the response is sent. No custom normalization needed.",
+        "q5": "Ownership is enforced \u2014 only the session owner (same credential_id) or an admin can report usage. This matches the ownership enforcement on the complete endpoint and prevents cross-session pollution. The handler loads the session record, compares credential_id, and returns 403 if neither matches and the caller is not an admin.",
+        "q6": "All of the above (a-f) are required. The audit subsystem is a correctness-critical component where bugs (e.g., incorrect idempotency, missed force-close, wrong retention deletion) have data integrity consequences. All listed scenarios represent distinct failure modes that need explicit coverage."
+      },
+      "timestamp": "2026-09-01T14:02:03.156840+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "Return 200 (idempotent \u2014 treat terminated as any other terminal state). The complete endpoint treats all terminal statuses as 'already done'. An agent that receives 200 knows the session is closed, regardless of who closed it. The response body includes the actual status ('terminated') so the caller can distinguish force-close from self-close if needed.",
+        "q2": "Workspace-scoped: non-admin credentials only see sessions/costs for workspaces they have access to. For API keys, the key owner must be a member of the org that owns the workspace. For PATs, the PAT must have been granted access to the workspace's org. Admin tokens see everything. This matches the workspace attribution auth model defined in spec 17.",
+        "q3": "Decremented inline on every session status transition (complete, fail, timeout, terminate) AND recalibrated on each retention run to correct for any drift. The inline decrement keeps the gauge near-real-time. The retention worker's periodic recalibration via COUNT(*) WHERE status='active' GROUP BY workspace_slug handles edge cases (crashed handlers that failed to decrement, restored sessions from backup, etc.).",
+        "q4": "It was created in spec 17. Spec 17 defines all four permission scopes (audit:read, audit:write, sessions:read, sessions:write) in internal/audit/permissions.go. This spec does not modify permissions.go \u2014 it only references the already-defined scopes.",
+        "q5": "Permanently unauthenticated by design \u2014 infrastructure handles network isolation. This matches the standard Prometheus convention and the existing gitserver pattern in the hub. If a deployment requires scrape auth, operators can add it via a reverse proxy."
+      },
+      "timestamp": "2026-09-01T14:05:22.359522+00:00"
+    },
+    {
+      "assessment_index": 4,
+      "answers": {
+        "q1": "Add GET /api/v1/sessions/:id as a new endpoint with sessions:read permission. Response is the same session object shape as in the list response. Returns 404 if session not found. Access scoping: non-admin callers can only see sessions in workspaces they have access to.",
+        "q2": "Reference the generic hub audit event schema from spec 18 and specify the event_type and metadata. The force-close emits HubEvent{EventType: 'hub.session.force_closed', ActorType: 'system', ResourceType: 'session', ResourceID: session_id, Action: 'terminate', Workspace: workspace_slug, Metadata: {session_id: string, reason: 'workspace archived'|'workspace deleted'}}. This follows the HubEvent struct defined in spec 17.",
+        "q3": "Yes \u2014 apply the same workspace-membership scoping: non-admin callers cannot query usage for sessions in inaccessible workspaces (return 403). Load the session, check workspace access, then return usage data. Consistent with the list and cost endpoints.",
+        "q4": "credential_type == 'admin_token' string check. This matches the existing auth pattern in internal/workspace/auth.go where isAdmin checks auth.CredentialType == 'admin_token'. The steering directives document three credential types: admin_token, api_key, and pat.",
+        "q5": "Run immediately on startup, then every hour thereafter. This ensures stale data from a previous hub instance is cleaned up promptly. The immediate run uses the same logic as hourly runs \u2014 no special-casing.",
+        "q6": "Add both metrics. afhub_retention_last_run_timestamp_seconds (gauge, Unix timestamp of last successful complete run) and afhub_retention_errors_total (counter, per failed step, labeled by step). These enable 'retention worker is stalled' and 'retention worker has errors' alerts. Cheap to implement, high operational value.",
+        "q7": "Return 400 Bad Request with body {error: 'since must be before until'} if since >= until. Invalid time ranges are a client error and should be surfaced explicitly rather than returning misleading empty results."
+      },
+      "timestamp": "2026-09-01T14:09:20.721906+00:00"
+    },
+    {
+      "assessment_index": 5,
+      "answers": {
+        "q1": "Return 403 Forbidden (consistent with single-fetch and cost endpoints). When a caller explicitly filters by a workspace_slug they cannot access, the hub returns 403 rather than silently returning empty results. This prevents callers from mistakenly believing a workspace has no sessions when they simply lack access.",
+        "q2": "Use apikit's default error envelope via apikit.WriteAPIError(c, 400, message). This is the established pattern across all hub handlers and produces {error: string, status: int} consistently.",
+        "q3": "Leave ActorID empty string. The HubEvent struct from spec 17 includes ActorID (string). For system-initiated actions like force-close, there is no user actor. Empty string is the conventional 'no actor' value, consistent with ActorType being 'system'.",
+        "q4": "Document this as a known gap and defer to the durable_job_queue spec to handle initialization. The jobqueue_depth metric is defined here for completeness of the metrics list, but the actual gauge update is owned by the job queue subsystem. The job queue should initialize its own label combinations when it starts.",
+        "q5": "Yes, intentionally unbounded \u2014 totals always reflect the complete session history. The per-session usage endpoint answers 'how much did this session cost total', not 'how much did this session cost in a time window'. Time-bounded aggregation is the cost endpoint's job."
+      },
+      "timestamp": "2026-09-01T14:13:45.610491+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

@@ -1,0 +1,2771 @@
+{
+  "$schema": null,
+  "spec_id": "19",
+  "spec_name": "sessions_metrics_retention",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-19-1",
+      "requirement_id": "19-REQ-1.1",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions with a valid workspace_slug creates a new active session and returns HTTP 201 with the session record including credential info extracted from AuthInfo.",
+      "preconditions": [
+        "DuckDB audit database is initialized with agent_sessions table (spec 17 schema) in t.TempDir()",
+        "Caller has sessions:write permission",
+        "apikit.AuthInfo is populated with credential_id='cred-abc' and credential_type='api_key'"
+      ],
+      "input": {
+        "body": {
+          "archetype": "coder",
+          "model": "claude-3-5-sonnet",
+          "run_id": "run-1",
+          "workspace_slug": "my-workspace"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "body": {
+          "credential_id": "cred-abc",
+          "credential_type": "api_key",
+          "status": "active",
+          "workspace_slug": "my-workspace"
+        },
+        "body_has_fields": [
+          "id",
+          "started_at"
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions', body={workspace_slug:'my-workspace', run_id:'run-1', archetype:'coder', model:'claude-3-5-sonnet'}, auth={credential_id:'cred-abc', credential_type:'api_key'}); assert resp.status == 201; assert resp.body.workspace_slug == 'my-workspace'; assert resp.body.credential_id == 'cred-abc'; assert resp.body.credential_type == 'api_key'; assert resp.body.status == 'active'; assert resp.body.id != ''; assert resp.body.started_at != ''; row = db.query('SELECT * FROM agent_sessions WHERE id = ?', resp.body.id); assert len(row) == 1"
+    },
+    {
+      "id": "TS-19-2",
+      "requirement_id": "19-REQ-1.2",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions with a duplicate id returns HTTP 200 with the existing session record without creating a duplicate row.",
+      "preconditions": [
+        "DuckDB audit database is initialized with agent_sessions table in t.TempDir()",
+        "A session with id='session-dup' already exists in agent_sessions with status='active'",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "id": "session-dup",
+          "workspace_slug": "my-workspace"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "body": {
+          "id": "session-dup",
+          "status": "active"
+        },
+        "db_row_count": 1,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions', body={id:'session-dup', workspace_slug:'my-workspace'}); assert resp.status == 200; assert resp.body.id == 'session-dup'; assert resp.body.status == 'active'; count = db.query('SELECT COUNT(*) FROM agent_sessions WHERE id = ?', 'session-dup'); assert count == 1"
+    },
+    {
+      "id": "TS-19-3",
+      "requirement_id": "19-REQ-1.3",
+      "kind": "unit",
+      "description": "POST /api/v1/sessions with a missing workspace_slug returns HTTP 400 with the standard error envelope.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {},
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "body": {
+          "error": "workspace_slug is required",
+          "status": 400
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions', body={}); assert resp.status == 400; assert resp.body.error == 'workspace_slug is required'; assert resp.body.status == 400"
+    },
+    {
+      "id": "TS-19-4",
+      "requirement_id": "19-REQ-2.1",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/complete on an active session by the session owner sets terminal status, records ended_at, and decrements afhub_agent_sessions_active gauge.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', workspace_slug='ws-1', credential_id='cred-owner' exists in agent_sessions",
+        "afhub_agent_sessions_active gauge for 'ws-1' is set to 1",
+        "Caller has sessions:write permission with credential_id='cred-owner', credential_type='api_key'"
+      ],
+      "input": {
+        "body": {
+          "duration_ms": 3000,
+          "input_tokens": 100,
+          "output_tokens": 50,
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/complete"
+      },
+      "expected": {
+        "body": {
+          "id": "sess-1",
+          "status": "completed"
+        },
+        "body_has_fields": [
+          "ended_at"
+        ],
+        "gauge_afhub_agent_sessions_active_ws1": 0,
+        "status": 200
+      },
+      "assertion_pseudocode": "gaugeBefore = getGauge('afhub_agent_sessions_active', {workspace:'ws-1'}); resp = POST('/api/v1/sessions/sess-1/complete', body={status:'completed', input_tokens:100, output_tokens:50, duration_ms:3000}, auth={credential_id:'cred-owner'}); assert resp.status == 200; assert resp.body.status == 'completed'; assert resp.body.ended_at != ''; gaugeAfter = getGauge('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == gaugeBefore - 1; row = db.query('SELECT status, ended_at FROM agent_sessions WHERE id=?', 'sess-1'); assert row.status == 'completed'; assert row.ended_at != null"
+    },
+    {
+      "id": "TS-19-5",
+      "requirement_id": "19-REQ-2.2",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/complete on an already-terminal session returns HTTP 200 with the existing record unchanged.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-done', status='completed', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "status": "failed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-done/complete"
+      },
+      "expected": {
+        "body": {
+          "id": "sess-done",
+          "status": "completed"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-done/complete', body={status:'failed'}, auth={credential_id:'cred-owner'}); assert resp.status == 200; assert resp.body.status == 'completed'; row = db.query('SELECT status FROM agent_sessions WHERE id=?', 'sess-done'); assert row.status == 'completed'"
+    },
+    {
+      "id": "TS-19-6",
+      "requirement_id": "19-REQ-2.3",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/complete by a non-owner non-admin credential returns HTTP 403 Forbidden.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-other', credential_type='api_key'"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/complete"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/complete', body={status:'completed'}, auth={credential_id:'cred-other', credential_type:'api_key'}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-7",
+      "requirement_id": "19-REQ-2.4",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/complete for a non-existent session returns HTTP 404.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "No session with id='nonexistent' exists in agent_sessions",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/nonexistent/complete"
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/nonexistent/complete', body={status:'completed'}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-19-8",
+      "requirement_id": "19-REQ-3.1",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/usage on an active session by the session owner creates a token_usage record and returns HTTP 201.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', workspace_slug='ws-1', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "cache_read_tokens": 10,
+          "input_tokens": 200,
+          "model": "claude-3-5-sonnet",
+          "output_tokens": 80
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "body": {
+          "cache_read_tokens": 10,
+          "input_tokens": 200,
+          "model": "claude-3-5-sonnet",
+          "output_tokens": 80,
+          "session_id": "sess-1",
+          "workspace_slug": "ws-1"
+        },
+        "body_has_fields": [
+          "id",
+          "reported_at"
+        ],
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/usage', body={model:'claude-3-5-sonnet', input_tokens:200, output_tokens:80, cache_read_tokens:10}, auth={credential_id:'cred-owner'}); assert resp.status == 201; assert resp.body.session_id == 'sess-1'; assert resp.body.workspace_slug == 'ws-1'; assert resp.body.model == 'claude-3-5-sonnet'; assert resp.body.input_tokens == 200; assert resp.body.output_tokens == 80; assert resp.body.cache_read_tokens == 10; assert resp.body.id != ''; assert resp.body.reported_at != ''"
+    },
+    {
+      "id": "TS-19-9",
+      "requirement_id": "19-REQ-3.2",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/usage for a non-existent session returns HTTP 404.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "No session with id='ghost' exists in agent_sessions",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "model": "gpt-4"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/ghost/usage"
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/ghost/usage', body={model:'gpt-4'}); assert resp.status == 404"
+    },
+    {
+      "id": "TS-19-10",
+      "requirement_id": "19-REQ-3.3",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/usage by a non-owner non-admin credential returns HTTP 403 Forbidden.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-other', credential_type='api_key'"
+      ],
+      "input": {
+        "body": {
+          "input_tokens": 50,
+          "model": "gpt-4"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/usage', body={model:'gpt-4', input_tokens:50}, auth={credential_id:'cred-other', credential_type:'api_key'}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-11",
+      "requirement_id": "19-REQ-3.4",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/usage on a non-active session returns HTTP 409 with error body 'session is not active'.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-done', status='completed', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "input_tokens": 10,
+          "model": "gpt-4"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-done/usage"
+      },
+      "expected": {
+        "body": {
+          "error": "session is not active"
+        },
+        "status": 409
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-done/usage', body={model:'gpt-4', input_tokens:10}, auth={credential_id:'cred-owner'}); assert resp.status == 409; assert resp.body.error == 'session is not active'"
+    },
+    {
+      "id": "TS-19-12",
+      "requirement_id": "19-REQ-3.5",
+      "kind": "unit",
+      "description": "POST /api/v1/sessions/:id/usage with a missing model field returns HTTP 400.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists in agent_sessions",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "input_tokens": 50
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/usage', body={input_tokens:50}, auth={credential_id:'cred-owner'}); assert resp.status == 400; assert resp.body.error != ''"
+    },
+    {
+      "id": "TS-19-13",
+      "requirement_id": "19-REQ-4.1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions returns a paginated list of sessions with token_summary aggregated from token_usage rows.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Three sessions exist in agent_sessions for workspace 'ws-1', each with token_usage rows",
+        "Caller has sessions:read permission with admin_token credential_type"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "10",
+          "workspace_slug": "ws-1"
+        }
+      },
+      "expected": {
+        "body_has_fields": [
+          "sessions",
+          "next_cursor",
+          "has_more"
+        ],
+        "each_session_has": [
+          "token_summary"
+        ],
+        "sessions_count": 3,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={workspace_slug:'ws-1', limit:10}, auth={credential_type:'admin_token'}); assert resp.status == 200; assert len(resp.body.sessions) == 3; for s in resp.body.sessions: assert 'token_summary' in s; assert 'total_input_tokens' in s.token_summary; assert 'models_used' in s.token_summary; assert 'next_cursor' in resp.body; assert 'has_more' in resp.body"
+    },
+    {
+      "id": "TS-19-14",
+      "requirement_id": "19-REQ-4.2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with an explicit workspace_slug filter for an inaccessible workspace returns HTTP 403 for non-admin callers.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Sessions exist for workspace 'restricted-ws'",
+        "Caller has sessions:read permission with credential_type='api_key' and no access to 'restricted-ws'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "workspace_slug": "restricted-ws"
+        }
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={workspace_slug:'restricted-ws'}, auth={credential_type:'api_key', credential_id:'cred-no-access'}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-15",
+      "requirement_id": "19-REQ-4.3",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with a cursor parameter applies keyset pagination and returns the correct next page.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Ten sessions exist in agent_sessions for workspace 'ws-1' with distinct started_at timestamps",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "5",
+          "order": "desc",
+          "workspace_slug": "ws-1"
+        }
+      },
+      "expected": {
+        "has_more": true,
+        "next_cursor_not_null": true,
+        "sessions_count": 5,
+        "status": 200
+      },
+      "assertion_pseudocode": "page1 = GET('/api/v1/sessions', query={workspace_slug:'ws-1', limit:5, order:'desc'}); assert page1.status == 200; assert len(page1.body.sessions) == 5; assert page1.body.has_more == true; assert page1.body.next_cursor != null; page2 = GET('/api/v1/sessions', query={workspace_slug:'ws-1', limit:5, order:'desc', cursor:page1.body.next_cursor}); assert page2.status == 200; assert len(page2.body.sessions) == 5; ids1 = set(s.id for s in page1.body.sessions); ids2 = set(s.id for s in page2.body.sessions); assert ids1.intersection(ids2) == empty_set"
+    },
+    {
+      "id": "TS-19-16",
+      "requirement_id": "19-REQ-4.4",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with an admin_token returns sessions across all workspaces without restriction.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Sessions exist for workspaces 'ws-a', 'ws-b', and 'ws-c'",
+        "Caller has sessions:read permission with credential_type='admin_token'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "sessions_include_all_workspaces": [
+          "ws-a",
+          "ws-b",
+          "ws-c"
+        ],
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', auth={credential_type:'admin_token'}); assert resp.status == 200; workspaces = set(s.workspace_slug for s in resp.body.sessions); assert 'ws-a' in workspaces; assert 'ws-b' in workspaces; assert 'ws-c' in workspaces"
+    },
+    {
+      "id": "TS-19-17",
+      "requirement_id": "19-REQ-5.1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id returns the full session record with token_summary aggregated from all token_usage rows.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1', workspace_slug='ws-1' exists in agent_sessions",
+        "Two token_usage rows exist for sess-1 with input_tokens=100 and input_tokens=200",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-1"
+      },
+      "expected": {
+        "body": {
+          "id": "sess-1",
+          "token_summary": {
+            "total_input_tokens": 300
+          },
+          "workspace_slug": "ws-1"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-1', auth={credential_type:'admin_token'}); assert resp.status == 200; assert resp.body.id == 'sess-1'; assert resp.body.workspace_slug == 'ws-1'; assert resp.body.token_summary.total_input_tokens == 300; assert 'models_used' in resp.body.token_summary"
+    },
+    {
+      "id": "TS-19-18",
+      "requirement_id": "19-REQ-5.2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id for a non-existent session returns HTTP 404.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "No session with id='missing' exists in agent_sessions",
+        "Caller has sessions:read permission"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/missing"
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/missing'); assert resp.status == 404"
+    },
+    {
+      "id": "TS-19-19",
+      "requirement_id": "19-REQ-5.3",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id for a session in an inaccessible workspace returns HTTP 403 for non-admin callers.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-restricted', workspace_slug='restricted-ws' exists in agent_sessions",
+        "Caller has sessions:read permission with credential_type='api_key' and no access to 'restricted-ws'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-restricted"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-restricted', auth={credential_type:'api_key', credential_id:'cred-no-access'}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-20",
+      "requirement_id": "19-REQ-6.1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id/usage returns paginated token_usage records and unbounded totals for the session.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1', workspace_slug='ws-1' exists in agent_sessions",
+        "Five token_usage rows exist for sess-1 with varying models and token counts",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-1/usage",
+        "query": {
+          "limit": "3"
+        }
+      },
+      "expected": {
+        "body_has_fields": [
+          "session_id",
+          "records",
+          "totals",
+          "next_cursor",
+          "has_more"
+        ],
+        "records_count": 3,
+        "status": 200,
+        "totals_reflects_all_5_records": true
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-1/usage', query={limit:3}, auth={credential_type:'admin_token'}); assert resp.status == 200; assert resp.body.session_id == 'sess-1'; assert len(resp.body.records) == 3; assert resp.body.has_more == true; assert resp.body.totals.total_input_tokens == sum_of_all_5_input_tokens; assert 'models_used' in resp.body.totals"
+    },
+    {
+      "id": "TS-19-21",
+      "requirement_id": "19-REQ-6.2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id/usage for a non-existent session returns HTTP 404.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "No session with id='ghost' exists in agent_sessions",
+        "Caller has sessions:read permission"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/ghost/usage"
+      },
+      "expected": {
+        "status": 404
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/ghost/usage'); assert resp.status == 404"
+    },
+    {
+      "id": "TS-19-22",
+      "requirement_id": "19-REQ-6.3",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id/usage for a session in an inaccessible workspace returns HTTP 403 for non-admin callers.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-restricted', workspace_slug='restricted-ws' exists in agent_sessions",
+        "Caller has sessions:read permission with credential_type='api_key' and no access to 'restricted-ws'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-restricted/usage"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-restricted/usage', auth={credential_type:'api_key', credential_id:'cred-no-access'}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-23",
+      "requirement_id": "19-REQ-6.4",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id/usage totals always reflect all token_usage records for the session regardless of pagination page.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1' exists in agent_sessions",
+        "Ten token_usage rows exist for sess-1 with total input_tokens=1000",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-1/usage",
+        "query": {
+          "limit": "3",
+          "order": "desc"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "totals_total_input_tokens": 1000
+      },
+      "assertion_pseudocode": "page1 = GET('/api/v1/sessions/sess-1/usage', query={limit:3, order:'desc'}); assert page1.body.totals.total_input_tokens == 1000; page2 = GET('/api/v1/sessions/sess-1/usage', query={limit:3, order:'desc', cursor:page1.body.next_cursor}); assert page2.body.totals.total_input_tokens == 1000"
+    },
+    {
+      "id": "TS-19-24",
+      "requirement_id": "19-REQ-7.1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost returns aggregated token usage grouped by the specified dimension with correct session counts.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Two sessions exist for workspace 'ws-1' with token_usage rows reported within the query period",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost",
+        "query": {
+          "group_by": "day",
+          "since": "2026-09-01T00:00:00Z",
+          "until": "2026-09-02T00:00:00Z"
+        }
+      },
+      "expected": {
+        "body": {
+          "period": {
+            "since": "2026-09-01T00:00:00Z",
+            "until": "2026-09-02T00:00:00Z"
+          },
+          "workspace": "ws-1"
+        },
+        "body_has_fields": [
+          "totals",
+          "breakdown"
+        ],
+        "status": 200,
+        "totals_has_fields": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "sessions"
+        ]
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-1/cost', query={since:'2026-09-01T00:00:00Z', until:'2026-09-02T00:00:00Z', group_by:'day'}); assert resp.status == 200; assert resp.body.workspace == 'ws-1'; assert resp.body.totals.sessions == 2; assert resp.body.totals.input_tokens >= 0; for entry in resp.body.breakdown: assert 'date' in entry"
+    },
+    {
+      "id": "TS-19-25",
+      "requirement_id": "19-REQ-7.2",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/cost with since >= until returns HTTP 400 with error 'since must be before until'.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost",
+        "query": {
+          "since": "2026-09-02T00:00:00Z",
+          "until": "2026-09-01T00:00:00Z"
+        }
+      },
+      "expected": {
+        "body": {
+          "error": "since must be before until"
+        },
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-1/cost', query={since:'2026-09-02T00:00:00Z', until:'2026-09-01T00:00:00Z'}); assert resp.status == 400; assert resp.body.error == 'since must be before until'"
+    },
+    {
+      "id": "TS-19-26",
+      "requirement_id": "19-REQ-7.3",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost for an inaccessible workspace returns HTTP 403 for non-admin callers.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:read permission with credential_type='api_key' and no access to 'restricted-ws'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/restricted-ws/cost"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/restricted-ws/cost', auth={credential_type:'api_key', credential_id:'cred-no-access'}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-27",
+      "requirement_id": "19-REQ-7.4",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost with no since/until parameters defaults to the last 24 hours.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Token_usage rows exist for 'ws-1' with reported_at within the last 24 hours",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost"
+      },
+      "expected": {
+        "period_since_is_approximately_24h_ago": true,
+        "period_until_is_approximately_now": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "now = current_time(); resp = GET('/api/v1/workspaces/ws-1/cost'); assert resp.status == 200; since = parse_time(resp.body.period.since); until = parse_time(resp.body.period.until); assert abs(until - now) < 5_seconds; assert abs((now - since) - 24_hours) < 5_seconds"
+    },
+    {
+      "id": "TS-19-28",
+      "requirement_id": "19-REQ-8.1",
+      "kind": "integration",
+      "description": "Workspace archive force-closes all active sessions with status=terminated, sets ended_at and error_message, decrements gauge, and emits hub.session.force_closed events.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite workspace database is initialized with workspace 'ws-1' in active state",
+        "Two active sessions exist for 'ws-1' in agent_sessions",
+        "afhub_agent_sessions_active gauge for 'ws-1' is set to 2",
+        "Emitter is configured (may be a test double that records emitted events)"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-1/archive"
+      },
+      "expected": {
+        "emitted_events_count": 2,
+        "event_type": "hub.session.force_closed",
+        "gauge_afhub_agent_sessions_active_ws1": 0,
+        "sessions_ended_at_set": true,
+        "sessions_error_message": "workspace archived",
+        "sessions_status": "terminated",
+        "status": 200
+      },
+      "assertion_pseudocode": "gaugeBefore = getGauge('afhub_agent_sessions_active', {workspace:'ws-1'}); emittedEvents = []; resp = POST('/api/v1/workspaces/ws-1/archive'); assert resp.status == 200; rows = db.query('SELECT status, ended_at, error_message FROM agent_sessions WHERE workspace_slug=?', 'ws-1'); for row in rows: assert row.status == 'terminated'; assert row.ended_at != null; assert row.error_message == 'workspace archived'; gaugeAfter = getGauge('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == 0; assert len(emittedEvents) == 2; for ev in emittedEvents: assert ev.EventType == 'hub.session.force_closed'; assert ev.ActorType == 'system'; assert ev.ActorID == ''; assert ev.ResourceType == 'session'; assert ev.Action == 'terminate'; assert ev.Metadata['reason'] == 'workspace archived'"
+    },
+    {
+      "id": "TS-19-29",
+      "requirement_id": "19-REQ-8.2",
+      "kind": "integration",
+      "description": "Workspace archive force-close does not modify sessions that are already in a terminal state.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite workspace database is initialized with workspace 'ws-1' in active state",
+        "One active session and one completed session exist for 'ws-1' in agent_sessions"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-1/archive"
+      },
+      "expected": {
+        "active_session_becomes_terminated": true,
+        "completed_session_remains_completed": true
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/ws-1/archive'); assert resp.status == 200; active_row = db.query('SELECT status FROM agent_sessions WHERE id=?', active_session_id); assert active_row.status == 'terminated'; completed_row = db.query('SELECT status FROM agent_sessions WHERE id=?', completed_session_id); assert completed_row.status == 'completed'"
+    },
+    {
+      "id": "TS-19-30",
+      "requirement_id": "19-REQ-9.1",
+      "kind": "integration",
+      "description": "Workspace delete force-closes all active sessions with status=terminated and error_message='workspace deleted' before the workspace row is deleted.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite workspace database is initialized with workspace 'ws-del' in active state",
+        "Two active sessions exist for 'ws-del' in agent_sessions",
+        "Emitter is configured as a test double"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-del"
+      },
+      "expected": {
+        "emitted_events_reason": "workspace deleted",
+        "sessions_error_message": "workspace deleted",
+        "sessions_status": "terminated",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/ws-del'); assert resp.status == 200; rows = db.query('SELECT status, error_message FROM agent_sessions WHERE workspace_slug=?', 'ws-del'); for row in rows: assert row.status == 'terminated'; assert row.error_message == 'workspace deleted'; for ev in emittedEvents: assert ev.Metadata['reason'] == 'workspace deleted'"
+    },
+    {
+      "id": "TS-19-31",
+      "requirement_id": "19-REQ-9.2",
+      "kind": "integration",
+      "description": "Workspace delete retains audit data (agent_sessions, token_usage) in DuckDB after the workspace row is removed from SQLite.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite workspace database is initialized with workspace 'ws-del'",
+        "Sessions and token_usage rows exist for 'ws-del' in DuckDB"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-del"
+      },
+      "expected": {
+        "sessions_still_in_duckdb": true,
+        "token_usage_still_in_duckdb": true,
+        "workspace_removed_from_sqlite": true
+      },
+      "assertion_pseudocode": "resp = DELETE('/api/v1/workspaces/ws-del'); assert resp.status == 200; sqlite_count = sqlite.query('SELECT COUNT(*) FROM workspaces WHERE slug=?', 'ws-del'); assert sqlite_count == 0; duck_sessions = db.query('SELECT COUNT(*) FROM agent_sessions WHERE workspace_slug=?', 'ws-del'); assert duck_sessions > 0; duck_usage = db.query('SELECT COUNT(*) FROM token_usage WHERE workspace_slug=?', 'ws-del'); assert duck_usage > 0"
+    },
+    {
+      "id": "TS-19-32",
+      "requirement_id": "19-REQ-10.1",
+      "kind": "integration",
+      "description": "GET /metrics returns HTTP 200 with Prometheus text exposition format containing all registered afhub_* metrics.",
+      "preconditions": [
+        "Hub is started with custom Prometheus registry initialized in internal/audit/metrics.go",
+        "At least one session has been opened to populate some metric values"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/metrics"
+      },
+      "expected": {
+        "body_contains": [
+          "afhub_http_requests_total",
+          "afhub_agent_sessions_active",
+          "afhub_audit_events_total"
+        ],
+        "content_type_contains": "text/plain",
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/metrics'); assert resp.status == 200; assert 'text/plain' in resp.headers['Content-Type']; assert 'afhub_http_requests_total' in resp.body; assert 'afhub_agent_sessions_active' in resp.body; assert 'afhub_http_request_duration_seconds' in resp.body"
+    },
+    {
+      "id": "TS-19-33",
+      "requirement_id": "19-REQ-10.2",
+      "kind": "integration",
+      "description": "GET /metrics returns HTTP 200 without requiring any Authorization header, confirming the endpoint is permanently unauthenticated.",
+      "preconditions": [
+        "Hub is started with /metrics mounted outside the API auth middleware group"
+      ],
+      "input": {
+        "headers": {},
+        "method": "GET",
+        "path": "/metrics"
+      },
+      "expected": {
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/metrics', headers={}); assert resp.status == 200"
+    },
+    {
+      "id": "TS-19-34",
+      "requirement_id": "19-REQ-10.3",
+      "kind": "integration",
+      "description": "Prometheus middleware uses c.Path() route template as the path label, preventing cardinality explosion from unique path parameter values.",
+      "preconditions": [
+        "Hub is started with Prometheus middleware registered on Echo",
+        "Custom Prometheus registry is initialized"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/some-unique-uuid-123"
+      },
+      "expected": {
+        "metric_path_label": "/api/v1/sessions/:id",
+        "not_raw_uri": "/api/v1/sessions/some-unique-uuid-123"
+      },
+      "assertion_pseudocode": "GET('/api/v1/sessions/some-unique-uuid-123'); metrics = GET('/metrics').body; assert 'path=\"/api/v1/sessions/:id\"' in metrics; assert 'path=\"/api/v1/sessions/some-unique-uuid-123\"' not in metrics"
+    },
+    {
+      "id": "TS-19-35",
+      "requirement_id": "19-REQ-10.4",
+      "kind": "integration",
+      "description": "The /metrics endpoint uses a custom Prometheus registry and does not include global default registry metrics.",
+      "preconditions": [
+        "Hub is started with custom Prometheus registry in internal/audit/metrics.go",
+        "Global default registry has some default Go runtime metrics registered"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/metrics"
+      },
+      "expected": {
+        "body_contains_afhub_metrics": true,
+        "body_does_not_contain_go_default_metrics": true
+      },
+      "assertion_pseudocode": "resp = GET('/metrics'); assert 'afhub_http_requests_total' in resp.body; assert 'go_goroutines' not in resp.body"
+    },
+    {
+      "id": "TS-19-36",
+      "requirement_id": "19-REQ-11.1",
+      "kind": "integration",
+      "description": "afhub_agent_sessions_active gauge is decremented when a session transitions from active to any terminal status.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', workspace_slug='ws-1', credential_id='cred-owner' exists",
+        "afhub_agent_sessions_active gauge for 'ws-1' is 1"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/complete"
+      },
+      "expected": {
+        "gauge_afhub_agent_sessions_active_ws1_after": 0
+      },
+      "assertion_pseudocode": "gaugeBefore = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); POST('/api/v1/sessions/sess-1/complete', body={status:'completed'}, auth={credential_id:'cred-owner'}); gaugeAfter = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == gaugeBefore - 1"
+    },
+    {
+      "id": "TS-19-37",
+      "requirement_id": "19-REQ-11.2",
+      "kind": "integration",
+      "description": "afhub_agent_sessions_active gauge is incremented when a new session is created via POST /api/v1/sessions.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "afhub_agent_sessions_active gauge for 'ws-new' is 0",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "workspace_slug": "ws-new"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "gauge_afhub_agent_sessions_active_ws_new_after": 1
+      },
+      "assertion_pseudocode": "gaugeBefore = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-new'}); POST('/api/v1/sessions', body={workspace_slug:'ws-new'}); gaugeAfter = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-new'}); assert gaugeAfter == gaugeBefore + 1"
+    },
+    {
+      "id": "TS-19-38",
+      "requirement_id": "19-REQ-11.3",
+      "kind": "integration",
+      "description": "afhub_agent_tokens_total counter is incremented with correct workspace, model, and direction labels when a token_usage record is created.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', workspace_slug='ws-1', credential_id='cred-owner' exists",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "cache_read_tokens": 20,
+          "input_tokens": 100,
+          "model": "claude-3-5-sonnet",
+          "output_tokens": 50
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "counter_afhub_agent_tokens_total_cache_read_increment": 20,
+        "counter_afhub_agent_tokens_total_input_increment": 100,
+        "counter_afhub_agent_tokens_total_output_increment": 50
+      },
+      "assertion_pseudocode": "inputBefore = getCounterValue('afhub_agent_tokens_total', {workspace:'ws-1', model:'claude-3-5-sonnet', direction:'input'}); outputBefore = getCounterValue('afhub_agent_tokens_total', {workspace:'ws-1', model:'claude-3-5-sonnet', direction:'output'}); POST('/api/v1/sessions/sess-1/usage', body={model:'claude-3-5-sonnet', input_tokens:100, output_tokens:50, cache_read_tokens:20}, auth={credential_id:'cred-owner'}); assert getCounterValue('afhub_agent_tokens_total', {workspace:'ws-1', model:'claude-3-5-sonnet', direction:'input'}) == inputBefore + 100; assert getCounterValue('afhub_agent_tokens_total', {workspace:'ws-1', model:'claude-3-5-sonnet', direction:'output'}) == outputBefore + 50; assert getCounterValue('afhub_agent_tokens_total', {workspace:'ws-1', model:'claude-3-5-sonnet', direction:'cache_read'}) == 20"
+    },
+    {
+      "id": "TS-19-39",
+      "requirement_id": "19-REQ-11.4",
+      "kind": "integration",
+      "description": "afhub_audit_events_total counter is incremented with source and event_type labels when an audit event is ingested.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Audit emitter is configured and connected to the custom Prometheus registry"
+      ],
+      "input": {
+        "event": {
+          "event_type": "hub.workspace.archived",
+          "source": "hub"
+        }
+      },
+      "expected": {
+        "counter_afhub_audit_events_total_increment": 1
+      },
+      "assertion_pseudocode": "before = getCounterValue('afhub_audit_events_total', {source:'hub', event_type:'hub.workspace.archived'}); emitter.Emit(HubEvent{EventType:'hub.workspace.archived', ...}); after = getCounterValue('afhub_audit_events_total', {source:'hub', event_type:'hub.workspace.archived'}); assert after == before + 1"
+    },
+    {
+      "id": "TS-19-40",
+      "requirement_id": "19-REQ-12.1",
+      "kind": "integration",
+      "description": "StartRetentionWorker executes an immediate retention run before the first ticker fires, then repeats every hour.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite database is initialized with workspace table",
+        "Retention configuration uses default values"
+      ],
+      "input": {
+        "args": [
+          "ctx",
+          "store",
+          "sqliteDB"
+        ],
+        "function": "StartRetentionWorker"
+      },
+      "expected": {
+        "afhub_retention_last_run_timestamp_seconds_set_after_startup": true,
+        "immediate_run_before_first_tick": true
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(); timestampBefore = getGaugeValue('afhub_retention_last_run_timestamp_seconds'); go StartRetentionWorker(ctx, store, sqliteDB); sleep(500ms); timestampAfter = getGaugeValue('afhub_retention_last_run_timestamp_seconds'); assert timestampAfter > timestampBefore; cancel()"
+    },
+    {
+      "id": "TS-19-41",
+      "requirement_id": "19-REQ-12.2",
+      "kind": "integration",
+      "description": "Cancelling the context passed to StartRetentionWorker causes the goroutine to exit cleanly after completing at most one more step.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite database is initialized",
+        "Retention worker is running"
+      ],
+      "input": {
+        "action": "cancel context while worker is between steps"
+      },
+      "expected": {
+        "goroutine_exits_cleanly": true,
+        "no_panic": true
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(); done = make(chan struct{}); go func() { StartRetentionWorker(ctx, store, sqliteDB); close(done) }(); sleep(100ms); cancel(); select { case <-done: // ok case <-time.After(2s): t.Fatal('goroutine did not exit') }"
+    },
+    {
+      "id": "TS-19-42",
+      "requirement_id": "19-REQ-13.1",
+      "kind": "unit",
+      "description": "Retention step 1 deletes agent records older than AF_AUDIT_MAX_AGE_DAYS and retains newer records.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "agent_audit_events table has one row with timestamp 100 days ago and one row with timestamp 10 days ago",
+        "AF_AUDIT_MAX_AGE_DAYS=90"
+      ],
+      "input": {
+        "config": {
+          "max_age_days": 90
+        },
+        "function": "runRetentionStep1"
+      },
+      "expected": {
+        "new_row_retained": true,
+        "old_row_deleted": true
+      },
+      "assertion_pseudocode": "insertAgentAuditEvent(timestamp=now()-100days); insertAgentAuditEvent(timestamp=now()-10days); runRetentionStep1(maxAgeDays=90); count = db.query('SELECT COUNT(*) FROM agent_audit_events'); assert count == 1; remaining = db.query('SELECT timestamp FROM agent_audit_events'); assert remaining[0].timestamp > now()-91days"
+    },
+    {
+      "id": "TS-19-43",
+      "requirement_id": "19-REQ-13.2",
+      "kind": "unit",
+      "description": "Retention step 2 deletes oldest runs when distinct run_id count exceeds AF_AUDIT_MAX_RUNS, determined by MIN(timestamp) per run_id.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "agent_audit_events has 52 distinct run_ids; the two oldest runs have run_id='old-run-1' and 'old-run-2'",
+        "AF_AUDIT_MAX_RUNS=50"
+      ],
+      "input": {
+        "config": {
+          "max_runs": 50
+        },
+        "function": "runRetentionStep2"
+      },
+      "expected": {
+        "distinct_run_id_count_after": 50,
+        "oldest_runs_deleted": [
+          "old-run-1",
+          "old-run-2"
+        ]
+      },
+      "assertion_pseudocode": "runRetentionStep2(maxRuns=50); count = db.query('SELECT COUNT(DISTINCT run_id) FROM agent_audit_events'); assert count == 50; remaining_runs = db.query('SELECT DISTINCT run_id FROM agent_audit_events'); assert 'old-run-1' not in remaining_runs; assert 'old-run-2' not in remaining_runs"
+    },
+    {
+      "id": "TS-19-44",
+      "requirement_id": "19-REQ-13.3",
+      "kind": "unit",
+      "description": "Retention step 3 deletes hub_audit_events older than AF_AUDIT_MAX_AGE_DAYS and retains newer records.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "hub_audit_events has one row with timestamp 100 days ago and one row with timestamp 10 days ago",
+        "AF_AUDIT_MAX_AGE_DAYS=90"
+      ],
+      "input": {
+        "config": {
+          "max_age_days": 90
+        },
+        "function": "runRetentionStep3"
+      },
+      "expected": {
+        "new_row_retained": true,
+        "old_row_deleted": true,
+        "remaining_count": 1
+      },
+      "assertion_pseudocode": "runRetentionStep3(maxAgeDays=90); count = db.query('SELECT COUNT(*) FROM hub_audit_events'); assert count == 1"
+    },
+    {
+      "id": "TS-19-45",
+      "requirement_id": "19-REQ-13.4",
+      "kind": "unit",
+      "description": "Retention step 4 deletes completed/failed/timeout/terminated sessions older than AF_SESSION_MAX_AGE_DAYS but never deletes active sessions.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "agent_sessions has one completed session 100 days old, one active session 100 days old, and one completed session 10 days old",
+        "AF_SESSION_MAX_AGE_DAYS=90"
+      ],
+      "input": {
+        "config": {
+          "session_max_age_days": 90
+        },
+        "function": "runRetentionStep4"
+      },
+      "expected": {
+        "active_session_retained": true,
+        "new_completed_session_retained": true,
+        "old_completed_session_deleted": true
+      },
+      "assertion_pseudocode": "runRetentionStep4(sessionMaxAgeDays=90); rows = db.query('SELECT id, status FROM agent_sessions'); assert len(rows) == 2; statuses = [r.status for r in rows]; assert 'active' in statuses; assert 'completed' in statuses"
+    },
+    {
+      "id": "TS-19-46",
+      "requirement_id": "19-REQ-13.5",
+      "kind": "unit",
+      "description": "Retention step 5 deletes orphaned token_usage rows whose session_id no longer exists in agent_sessions.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "token_usage has one row with session_id='deleted-sess' (no corresponding agent_sessions row) and one row with session_id='live-sess' (agent_sessions row exists)"
+      ],
+      "input": {
+        "function": "runRetentionStep5"
+      },
+      "expected": {
+        "linked_token_usage_retained": true,
+        "orphaned_token_usage_deleted": true
+      },
+      "assertion_pseudocode": "runRetentionStep5(); rows = db.query('SELECT session_id FROM token_usage'); assert len(rows) == 1; assert rows[0].session_id == 'live-sess'"
+    },
+    {
+      "id": "TS-19-47",
+      "requirement_id": "19-REQ-13.6",
+      "kind": "unit",
+      "description": "Retention step 6 deletes agent_traces older than AF_TRACE_MAX_AGE_DAYS and retains newer records.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "agent_traces has one row 40 days old and one row 10 days old",
+        "AF_TRACE_MAX_AGE_DAYS=30"
+      ],
+      "input": {
+        "config": {
+          "trace_max_age_days": 30
+        },
+        "function": "runRetentionStep6"
+      },
+      "expected": {
+        "new_trace_retained": true,
+        "old_trace_deleted": true,
+        "remaining_count": 1
+      },
+      "assertion_pseudocode": "runRetentionStep6(traceMaxAgeDays=30); count = db.query('SELECT COUNT(*) FROM agent_traces'); assert count == 1"
+    },
+    {
+      "id": "TS-19-48",
+      "requirement_id": "19-REQ-13.7",
+      "kind": "unit",
+      "description": "Retention step 7 deletes postmortems older than AF_POSTMORTEM_MAX_AGE_DAYS and retains newer records.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "postmortems has one row 200 days old and one row 10 days old",
+        "AF_POSTMORTEM_MAX_AGE_DAYS=180"
+      ],
+      "input": {
+        "config": {
+          "postmortem_max_age_days": 180
+        },
+        "function": "runRetentionStep7"
+      },
+      "expected": {
+        "new_postmortem_retained": true,
+        "old_postmortem_deleted": true,
+        "remaining_count": 1
+      },
+      "assertion_pseudocode": "runRetentionStep7(postmortemMaxAgeDays=180); count = db.query('SELECT COUNT(*) FROM postmortems'); assert count == 1"
+    },
+    {
+      "id": "TS-19-49",
+      "requirement_id": "19-REQ-13.8",
+      "kind": "unit",
+      "description": "Retention step 8 deletes orphaned audit data for workspaces not in SQLite that are older than AF_AUDIT_ORPHAN_RETENTION_DAYS.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite database has workspace 'live-ws' but not 'deleted-ws'",
+        "agent_audit_events has rows for 'deleted-ws' (40 days old) and 'live-ws' (40 days old)",
+        "AF_AUDIT_ORPHAN_RETENTION_DAYS=30"
+      ],
+      "input": {
+        "config": {
+          "orphan_retention_days": 30
+        },
+        "function": "runRetentionStep8"
+      },
+      "expected": {
+        "deleted_ws_rows_removed": true,
+        "live_ws_rows_retained": true
+      },
+      "assertion_pseudocode": "runRetentionStep8(orphanRetentionDays=30, sqliteDB=sqliteDB); deleted_ws_count = db.query('SELECT COUNT(*) FROM agent_audit_events WHERE workspace=?', 'deleted-ws'); assert deleted_ws_count == 0; live_ws_count = db.query('SELECT COUNT(*) FROM agent_audit_events WHERE workspace=?', 'live-ws'); assert live_ws_count > 0"
+    },
+    {
+      "id": "TS-19-50",
+      "requirement_id": "19-REQ-13.9",
+      "kind": "unit",
+      "description": "Retention step 9 updates afhub_audit_table_rows gauge with COUNT(*) per audit table and recalibrates afhub_agent_sessions_active gauge.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "agent_sessions has 3 active sessions for 'ws-1' and 2 active sessions for 'ws-2'",
+        "afhub_agent_sessions_active gauge for 'ws-1' is incorrectly set to 5 (simulating drift)"
+      ],
+      "input": {
+        "function": "runRetentionStep9"
+      },
+      "expected": {
+        "gauge_afhub_agent_sessions_active_ws1": 3,
+        "gauge_afhub_agent_sessions_active_ws2": 2,
+        "gauge_afhub_audit_table_rows_updated": true
+      },
+      "assertion_pseudocode": "runRetentionStep9(); assert getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}) == 3; assert getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-2'}) == 2; assert getGaugeValue('afhub_audit_table_rows', {table:'agent_sessions'}) >= 5"
+    },
+    {
+      "id": "TS-19-51",
+      "requirement_id": "19-REQ-13.10",
+      "kind": "unit",
+      "description": "Retention step 10 sets afhub_retention_last_run_timestamp_seconds to the current Unix timestamp after all steps complete successfully.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "All 9 prior retention steps complete without error",
+        "afhub_retention_last_run_timestamp_seconds is initially 0"
+      ],
+      "input": {
+        "function": "runFullRetentionRun"
+      },
+      "expected": {
+        "afhub_retention_last_run_timestamp_seconds_set_to_current_time": true
+      },
+      "assertion_pseudocode": "before = time.Now().Unix(); runFullRetentionRun(); ts = getGaugeValue('afhub_retention_last_run_timestamp_seconds'); after = time.Now().Unix(); assert ts >= before; assert ts <= after"
+    },
+    {
+      "id": "TS-19-52",
+      "requirement_id": "19-REQ-14.1",
+      "kind": "integration",
+      "description": "Pagination cursors for GET /api/v1/sessions encode (started_at, id) tuples as URL-safe base64 without padding, and cursors for GET /api/v1/sessions/:id/usage encode (reported_at, id) tuples.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Multiple sessions exist in agent_sessions",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "2"
+        }
+      },
+      "expected": {
+        "cursor_decodes_to_started_at_id_tuple": true,
+        "next_cursor_is_url_safe_base64_no_padding": true
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={limit:2}); cursor = resp.body.next_cursor; assert cursor != null; decoded = base64url_decode_no_padding(cursor); tuple = parse_cursor_tuple(decoded); assert tuple.started_at is valid RFC3339 timestamp; assert tuple.id is non-empty string; assert '=' not in cursor; assert '+' not in cursor; assert '/' not in cursor"
+    },
+    {
+      "id": "TS-19-53",
+      "requirement_id": "19-REQ-14.2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with a cursor and desc order filters results using (started_at, id) < (cursor_started_at, cursor_id) without duplicates.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Six sessions exist with distinct started_at timestamps",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "3",
+          "order": "desc"
+        }
+      },
+      "expected": {
+        "no_duplicates_across_pages": true,
+        "page1_has_3_sessions": true,
+        "page1_sessions_newer_than_page2": true,
+        "page2_has_3_sessions": true
+      },
+      "assertion_pseudocode": "page1 = GET('/api/v1/sessions', query={limit:3, order:'desc'}); page2 = GET('/api/v1/sessions', query={limit:3, order:'desc', cursor:page1.body.next_cursor}); ids1 = set(s.id for s in page1.body.sessions); ids2 = set(s.id for s in page2.body.sessions); assert ids1.intersection(ids2) == empty_set; assert len(ids1) + len(ids2) == 6; min_started_at_page1 = min(s.started_at for s in page1.body.sessions); max_started_at_page2 = max(s.started_at for s in page2.body.sessions); assert min_started_at_page1 > max_started_at_page2"
+    },
+    {
+      "id": "TS-19-54",
+      "requirement_id": "19-REQ-14.3",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with a cursor and asc order filters results using (started_at, id) > (cursor_started_at, cursor_id) without duplicates.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Six sessions exist with distinct started_at timestamps",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "3",
+          "order": "asc"
+        }
+      },
+      "expected": {
+        "no_duplicates_across_pages": true,
+        "page1_has_3_sessions": true,
+        "page1_sessions_older_than_page2": true,
+        "page2_has_3_sessions": true
+      },
+      "assertion_pseudocode": "page1 = GET('/api/v1/sessions', query={limit:3, order:'asc'}); page2 = GET('/api/v1/sessions', query={limit:3, order:'asc', cursor:page1.body.next_cursor}); ids1 = set(s.id for s in page1.body.sessions); ids2 = set(s.id for s in page2.body.sessions); assert ids1.intersection(ids2) == empty_set; assert len(ids1) + len(ids2) == 6; max_started_at_page1 = max(s.started_at for s in page1.body.sessions); min_started_at_page2 = min(s.started_at for s in page2.body.sessions); assert max_started_at_page1 < min_started_at_page2"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-19-P1",
+      "property_id": "19-PROP-1",
+      "validates": [
+        "19-REQ-1.1",
+        "19-REQ-1.2",
+        "19-REQ-1.E4"
+      ],
+      "description": "For any session id submitted to POST /api/v1/sessions any number of times, the agent_sessions table always contains exactly one row with that id.",
+      "for_any_strategy": "Generate random UUIDs as session ids; for each id, call POST /api/v1/sessions between 1 and 5 times with the same id and a valid workspace_slug; vary the number of concurrent callers between 1 and 3.",
+      "invariant_check": "After all calls complete, query agent_sessions WHERE id = <generated_id>; assert COUNT(*) == 1"
+    },
+    {
+      "id": "TS-19-P2",
+      "property_id": "19-PROP-2",
+      "validates": [
+        "19-REQ-2.2",
+        "19-REQ-2.E3"
+      ],
+      "description": "For any session in any terminal status, calling POST /api/v1/sessions/:id/complete always returns 200 with the existing status and never modifies the session record.",
+      "for_any_strategy": "Create sessions in each of the four terminal statuses (completed, failed, timeout, terminated); for each, call POST /api/v1/sessions/:id/complete with a different terminal status 1 to 3 times.",
+      "invariant_check": "After each call, assert resp.status == 200; assert resp.body.status == original_terminal_status; query agent_sessions WHERE id = <id>; assert row.status == original_terminal_status; assert row.ended_at unchanged"
+    },
+    {
+      "id": "TS-19-P3",
+      "property_id": "19-PROP-3",
+      "validates": [
+        "19-REQ-11.1",
+        "19-REQ-11.2",
+        "19-REQ-11.E1",
+        "19-REQ-11.E2",
+        "19-REQ-13.9"
+      ],
+      "description": "For any workspace_slug, the afhub_agent_sessions_active gauge always equals the COUNT(*) of agent_sessions rows with status=active for that workspace after any session open, close, or force-close operation.",
+      "for_any_strategy": "Generate sequences of 5 to 20 operations (open, close, force-close) on sessions for a randomly chosen workspace_slug; apply each operation and check the gauge after each step.",
+      "invariant_check": "After each operation, gaugeValue = getGaugeValue('afhub_agent_sessions_active', {workspace: ws}); dbCount = db.query('SELECT COUNT(*) FROM agent_sessions WHERE workspace_slug=? AND status=?', ws, 'active'); assert gaugeValue == dbCount"
+    },
+    {
+      "id": "TS-19-P4",
+      "property_id": "19-PROP-4",
+      "validates": [
+        "19-REQ-6.1",
+        "19-REQ-6.4"
+      ],
+      "description": "For any session with any number of token_usage records, the totals field in GET /api/v1/sessions/:id/usage always equals the SUM of all token_usage rows regardless of pagination page or time range.",
+      "for_any_strategy": "Create sessions with 1 to 50 token_usage records with random token counts and reported_at timestamps spread across a 30-day range; paginate through all pages with varying page sizes (1, 5, 10, 100).",
+      "invariant_check": "For each page, assert page.body.totals.total_input_tokens == db.query('SELECT SUM(input_tokens) FROM token_usage WHERE session_id=?', session_id); assert this holds on every page regardless of cursor position"
+    },
+    {
+      "id": "TS-19-P5",
+      "property_id": "19-PROP-5",
+      "validates": [
+        "19-REQ-14.1",
+        "19-REQ-14.2",
+        "19-REQ-14.3",
+        "19-REQ-4.E5",
+        "19-REQ-6.E4"
+      ],
+      "description": "For any sequence of paginated requests to GET /api/v1/sessions or GET /api/v1/sessions/:id/usage, the union of all pages equals the full result set with no duplicated or skipped records even under concurrent inserts.",
+      "for_any_strategy": "Create 10 to 100 sessions or usage records; paginate with random page sizes between 1 and 20; concurrently insert 0 to 5 new records during pagination; collect all returned IDs across all pages.",
+      "invariant_check": "allReturnedIDs = union of IDs from all pages; assert len(allReturnedIDs) == len(set(allReturnedIDs)) (no duplicates); assert all pre-existing IDs appear in allReturnedIDs (no skips for records that existed before pagination started)"
+    },
+    {
+      "id": "TS-19-P6",
+      "property_id": "19-PROP-6",
+      "validates": [
+        "19-REQ-8.1",
+        "19-REQ-8.2",
+        "19-REQ-9.1"
+      ],
+      "description": "For any workspace with a mix of active and terminal sessions, force-close sets status=terminated only on sessions with status=active and never modifies sessions in any terminal state.",
+      "for_any_strategy": "Create workspaces with 0 to 10 active sessions and 0 to 10 sessions in each terminal status (completed, failed, timeout, terminated); run force-close for each workspace.",
+      "invariant_check": "After force-close: for each originally-active session, assert status == 'terminated'; for each originally-terminal session, assert status == original_terminal_status and ended_at == original_ended_at"
+    },
+    {
+      "id": "TS-19-P7",
+      "property_id": "19-PROP-7",
+      "validates": [
+        "19-REQ-13.10",
+        "19-REQ-13.E1"
+      ],
+      "description": "For any retention run that fails any step, afhub_retention_last_run_timestamp_seconds is not updated; it is updated only after all 10 steps complete without error.",
+      "for_any_strategy": "Run retention with each of steps 1 through 9 individually configured to fail (9 test cases); also run with no failures (1 test case); record afhub_retention_last_run_timestamp_seconds before and after each run.",
+      "invariant_check": "If any step fails: assert afhub_retention_last_run_timestamp_seconds_after == afhub_retention_last_run_timestamp_seconds_before; if no step fails: assert afhub_retention_last_run_timestamp_seconds_after > afhub_retention_last_run_timestamp_seconds_before"
+    },
+    {
+      "id": "TS-19-P8",
+      "property_id": "19-PROP-8",
+      "validates": [
+        "19-REQ-2.3",
+        "19-REQ-3.3"
+      ],
+      "description": "For any credential that is not the session owner and not an admin_token, POST /api/v1/sessions/:id/complete and POST /api/v1/sessions/:id/usage always return 403 Forbidden.",
+      "for_any_strategy": "Generate random credential_id values (not matching the session owner) with credential_type in ['api_key', 'pat']; attempt complete and usage operations on sessions owned by a different credential_id.",
+      "invariant_check": "assert resp.status == 403 for every (non-owner, non-admin) credential attempting complete or usage on any session"
+    },
+    {
+      "id": "TS-19-P9",
+      "property_id": "19-PROP-9",
+      "validates": [
+        "19-REQ-7.2"
+      ],
+      "description": "For any since and until parameters where since >= until, GET /api/v1/workspaces/:slug/cost always returns 400 with error 'since must be before until'.",
+      "for_any_strategy": "Generate pairs of timestamps where since == until (equal), since > until by 1 second, since > until by 1 day, since > until by 1 year; test each combination.",
+      "invariant_check": "assert resp.status == 400; assert resp.body.error == 'since must be before until'"
+    },
+    {
+      "id": "TS-19-P10",
+      "property_id": "19-PROP-10",
+      "validates": [
+        "19-REQ-13.E1"
+      ],
+      "description": "For any retention step that fails with a DuckDB error, all subsequent steps still execute and the total number of steps attempted equals 10 minus the number of steps skipped due to context cancellation.",
+      "for_any_strategy": "For each step index i in 1..9, configure step i to fail; run a full retention pass; count how many steps were attempted.",
+      "invariant_check": "stepsAttempted = count of steps that were called (including the failing one); assert stepsAttempted == 10 (all steps attempted regardless of individual failures); assert afhub_retention_errors_total incremented exactly once with the correct step label"
+    },
+    {
+      "id": "TS-19-P11",
+      "property_id": "19-PROP-11",
+      "validates": [
+        "19-REQ-2.E1"
+      ],
+      "description": "For any request to POST /api/v1/sessions/:id/complete with status='terminated', the handler always returns 400 and the session status is never set to terminated via this endpoint.",
+      "for_any_strategy": "Create active sessions with varying credential owners; attempt to complete them with status='terminated' using both the session owner and admin_token callers.",
+      "invariant_check": "assert resp.status == 400 for every attempt; query agent_sessions WHERE id = <id>; assert row.status != 'terminated' (session remains active or in its prior state)"
+    },
+    {
+      "id": "TS-19-P12",
+      "property_id": "19-PROP-12",
+      "validates": [
+        "19-REQ-4.2",
+        "19-REQ-5.3",
+        "19-REQ-6.3",
+        "19-REQ-7.3"
+      ],
+      "description": "For any non-admin caller accessing sessions or cost data for an inaccessible workspace via an explicit filter or path parameter, the handler always returns 403 Forbidden.",
+      "for_any_strategy": "Generate non-admin credentials (api_key, pat) with no access to a set of workspace slugs; attempt GET /api/v1/sessions?workspace_slug=<inaccessible>, GET /api/v1/sessions/:id (session in inaccessible ws), GET /api/v1/sessions/:id/usage (session in inaccessible ws), GET /api/v1/workspaces/:slug/cost (inaccessible slug).",
+      "invariant_check": "assert resp.status == 403 for every request targeting an inaccessible workspace with a non-admin credential"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-19-E1",
+      "requirement_id": "19-REQ-1.E1",
+      "kind": "unit",
+      "description": "POST /api/v1/sessions without sessions:write permission is rejected by auth middleware with HTTP 403.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has only sessions:read permission (not sessions:write)"
+      ],
+      "input": {
+        "body": {
+          "workspace_slug": "ws-1"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "status": 403
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions', body={workspace_slug:'ws-1'}, auth={scopes:['sessions:read']}); assert resp.status == 403"
+    },
+    {
+      "id": "TS-19-E2",
+      "requirement_id": "19-REQ-1.E2",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions with all optional fields omitted creates a session with empty string defaults and null metadata.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "workspace_slug": "ws-1"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "body": {
+          "archetype": "",
+          "metadata": null,
+          "model": "",
+          "node_id": "",
+          "run_id": "",
+          "status": "active",
+          "workspace_slug": "ws-1"
+        },
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions', body={workspace_slug:'ws-1'}); assert resp.status == 201; assert resp.body.run_id == '' or resp.body.run_id == null; assert resp.body.metadata == null; assert resp.body.id != ''"
+    },
+    {
+      "id": "TS-19-E3",
+      "requirement_id": "19-REQ-1.E3",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions returns HTTP 500 when the DuckDB insert fails.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Store.CreateSession is configured to return an error (e.g., by closing the DuckDB connection)",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "workspace_slug": "ws-1"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "status": 500
+      },
+      "assertion_pseudocode": "closeDB(); resp = POST('/api/v1/sessions', body={workspace_slug:'ws-1'}); assert resp.status == 500"
+    },
+    {
+      "id": "TS-19-E4",
+      "requirement_id": "19-REQ-1.E4",
+      "kind": "integration",
+      "description": "Two concurrent POST /api/v1/sessions requests with the same id result in exactly one row in agent_sessions and both return 200 or 201.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "concurrent_requests": [
+          {
+            "body": {
+              "id": "dup-id",
+              "workspace_slug": "ws-1"
+            },
+            "method": "POST",
+            "path": "/api/v1/sessions"
+          },
+          {
+            "body": {
+              "id": "dup-id",
+              "workspace_slug": "ws-1"
+            },
+            "method": "POST",
+            "path": "/api/v1/sessions"
+          }
+        ]
+      },
+      "expected": {
+        "both_responses_200_or_201": true,
+        "db_row_count_for_dup_id": 1
+      },
+      "assertion_pseudocode": "ch = make(chan response, 2); go func() { ch <- POST('/api/v1/sessions', body={id:'dup-id', workspace_slug:'ws-1'}) }(); go func() { ch <- POST('/api/v1/sessions', body={id:'dup-id', workspace_slug:'ws-1'}) }(); r1 = <-ch; r2 = <-ch; assert r1.status in [200, 201]; assert r2.status in [200, 201]; count = db.query('SELECT COUNT(*) FROM agent_sessions WHERE id=?', 'dup-id'); assert count == 1"
+    },
+    {
+      "id": "TS-19-E5",
+      "requirement_id": "19-REQ-2.E1",
+      "kind": "unit",
+      "description": "POST /api/v1/sessions/:id/complete with status='terminated' returns HTTP 400 because terminated is not a valid client-settable status.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "status": "terminated"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/complete"
+      },
+      "expected": {
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/complete', body={status:'terminated'}, auth={credential_id:'cred-owner'}); assert resp.status == 400; assert resp.body.error != ''"
+    },
+    {
+      "id": "TS-19-E6",
+      "requirement_id": "19-REQ-2.E2",
+      "kind": "integration",
+      "description": "An admin_token caller can complete a session owned by a different credential_id and receives HTTP 200.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists",
+        "Caller has sessions:write permission with credential_type='admin_token', credential_id='admin-cred'"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/complete"
+      },
+      "expected": {
+        "body": {
+          "status": "completed"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/complete', body={status:'completed'}, auth={credential_type:'admin_token', credential_id:'admin-cred'}); assert resp.status == 200; assert resp.body.status == 'completed'"
+    },
+    {
+      "id": "TS-19-E7",
+      "requirement_id": "19-REQ-2.E3",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/complete on a terminated session returns HTTP 200 with status='terminated' (idempotent for all terminal states).",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-term', status='terminated', credential_id='cred-owner' exists",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-term/complete"
+      },
+      "expected": {
+        "body": {
+          "status": "terminated"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-term/complete', body={status:'completed'}, auth={credential_id:'cred-owner'}); assert resp.status == 200; assert resp.body.status == 'terminated'"
+    },
+    {
+      "id": "TS-19-E8",
+      "requirement_id": "19-REQ-2.E4",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/complete returns HTTP 500 when the DuckDB update fails, without modifying the afhub_agent_sessions_active gauge.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', workspace_slug='ws-1', credential_id='cred-owner' exists",
+        "afhub_agent_sessions_active gauge for 'ws-1' is 1",
+        "Store.CompleteSession is configured to return an error after the session is loaded"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/complete"
+      },
+      "expected": {
+        "gauge_afhub_agent_sessions_active_ws1_unchanged": 1,
+        "status": 500
+      },
+      "assertion_pseudocode": "gaugeBefore = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); injectStoreError(); resp = POST('/api/v1/sessions/sess-1/complete', body={status:'completed'}, auth={credential_id:'cred-owner'}); assert resp.status == 500; gaugeAfter = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == gaugeBefore"
+    },
+    {
+      "id": "TS-19-E9",
+      "requirement_id": "19-REQ-3.E1",
+      "kind": "integration",
+      "description": "Multiple POST /api/v1/sessions/:id/usage calls on the same active session each create a separate token_usage record with distinct IDs.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "calls": [
+          {
+            "input_tokens": 10,
+            "model": "gpt-4"
+          },
+          {
+            "input_tokens": 20,
+            "model": "gpt-4"
+          },
+          {
+            "input_tokens": 30,
+            "model": "gpt-4"
+          }
+        ]
+      },
+      "expected": {
+        "distinct_ids": true,
+        "each_call_returns_201": true,
+        "token_usage_row_count": 3
+      },
+      "assertion_pseudocode": "ids = []; for tokens in [10, 20, 30]: resp = POST('/api/v1/sessions/sess-1/usage', body={model:'gpt-4', input_tokens:tokens}, auth={credential_id:'cred-owner'}); assert resp.status == 201; ids.append(resp.body.id); assert len(set(ids)) == 3; count = db.query('SELECT COUNT(*) FROM token_usage WHERE session_id=?', 'sess-1'); assert count == 3"
+    },
+    {
+      "id": "TS-19-E10",
+      "requirement_id": "19-REQ-3.E2",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/usage with a duplicate id field returns HTTP 201 with the existing record without creating a duplicate row.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists",
+        "A token_usage row with id='usage-dup' already exists for sess-1",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "id": "usage-dup",
+          "input_tokens": 999,
+          "model": "gpt-4"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "body": {
+          "id": "usage-dup"
+        },
+        "db_row_count_for_usage_dup": 1,
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/usage', body={id:'usage-dup', model:'gpt-4', input_tokens:999}, auth={credential_id:'cred-owner'}); assert resp.status == 201; assert resp.body.id == 'usage-dup'; count = db.query('SELECT COUNT(*) FROM token_usage WHERE id=?', 'usage-dup'); assert count == 1"
+    },
+    {
+      "id": "TS-19-E11",
+      "requirement_id": "19-REQ-3.E3",
+      "kind": "integration",
+      "description": "POST /api/v1/sessions/:id/usage returns HTTP 500 when the DuckDB insert fails.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists",
+        "Store.CreateTokenUsage is configured to return an error",
+        "Caller has sessions:write permission with credential_id='cred-owner'"
+      ],
+      "input": {
+        "body": {
+          "input_tokens": 10,
+          "model": "gpt-4"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "status": 500
+      },
+      "assertion_pseudocode": "injectStoreError(); resp = POST('/api/v1/sessions/sess-1/usage', body={model:'gpt-4', input_tokens:10}, auth={credential_id:'cred-owner'}); assert resp.status == 500"
+    },
+    {
+      "id": "TS-19-E12",
+      "requirement_id": "19-REQ-3.E4",
+      "kind": "integration",
+      "description": "An admin_token caller can report usage on a session owned by a different credential_id and receives HTTP 201.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "An active session with id='sess-1', credential_id='cred-owner' exists",
+        "Caller has sessions:write permission with credential_type='admin_token', credential_id='admin-cred'"
+      ],
+      "input": {
+        "body": {
+          "input_tokens": 50,
+          "model": "gpt-4"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "status": 201
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/sessions/sess-1/usage', body={model:'gpt-4', input_tokens:50}, auth={credential_type:'admin_token', credential_id:'admin-cred'}); assert resp.status == 201"
+    },
+    {
+      "id": "TS-19-E13",
+      "requirement_id": "19-REQ-4.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with limit exceeding 500 caps the result at 500 sessions.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "600 sessions exist in agent_sessions",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "1000"
+        }
+      },
+      "expected": {
+        "sessions_count_max": 500,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={limit:1000}); assert resp.status == 200; assert len(resp.body.sessions) <= 500"
+    },
+    {
+      "id": "TS-19-E14",
+      "requirement_id": "19-REQ-4.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with no limit parameter uses the default page size of 50.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "100 sessions exist in agent_sessions",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "sessions_count_max": 50,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions'); assert resp.status == 200; assert len(resp.body.sessions) <= 50"
+    },
+    {
+      "id": "TS-19-E15",
+      "requirement_id": "19-REQ-4.E3",
+      "kind": "unit",
+      "description": "GET /api/v1/sessions with a malformed cursor returns HTTP 400.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "cursor": "not-valid-base64!!!"
+        }
+      },
+      "expected": {
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={cursor:'not-valid-base64!!!'}); assert resp.status == 400; assert resp.body.error != ''"
+    },
+    {
+      "id": "TS-19-E16",
+      "requirement_id": "19-REQ-4.E4",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions with status filter 'terminated' returns only sessions with terminated status.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Sessions exist with statuses: active, completed, terminated",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "status": "terminated"
+        }
+      },
+      "expected": {
+        "all_sessions_have_status_terminated": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={status:'terminated'}); assert resp.status == 200; for s in resp.body.sessions: assert s.status == 'terminated'"
+    },
+    {
+      "id": "TS-19-E17",
+      "requirement_id": "19-REQ-4.E5",
+      "kind": "integration",
+      "description": "Keyset cursor pagination for GET /api/v1/sessions does not skip or duplicate records when new sessions are inserted concurrently.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Ten sessions exist in agent_sessions with distinct started_at timestamps",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "concurrent_inserts_during_pagination": true,
+        "page_size": 5
+      },
+      "expected": {
+        "all_original_10_sessions_appear_exactly_once": true
+      },
+      "assertion_pseudocode": "originalIDs = set of 10 session IDs; page1 = GET('/api/v1/sessions', query={limit:5, order:'desc'}); go insertNewSession(); page2 = GET('/api/v1/sessions', query={limit:5, order:'desc', cursor:page1.body.next_cursor}); allIDs = set(s.id for s in page1.body.sessions + page2.body.sessions); assert originalIDs.issubset(allIDs); assert len([id for id in allIDs if id in originalIDs]) == 10"
+    },
+    {
+      "id": "TS-19-E18",
+      "requirement_id": "19-REQ-5.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id by an admin_token returns the session regardless of workspace access restrictions.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-any', workspace_slug='any-ws' exists in agent_sessions",
+        "Caller has sessions:read permission with credential_type='admin_token'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-any"
+      },
+      "expected": {
+        "body": {
+          "id": "sess-any"
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-any', auth={credential_type:'admin_token'}); assert resp.status == 200; assert resp.body.id == 'sess-any'"
+    },
+    {
+      "id": "TS-19-E19",
+      "requirement_id": "19-REQ-5.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id for a session with no token_usage records returns token_summary with all zero counts and empty models_used.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-no-usage' exists in agent_sessions with no token_usage rows",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-no-usage"
+      },
+      "expected": {
+        "body": {
+          "token_summary": {
+            "models_used": [],
+            "total_cache_read_tokens": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0
+          }
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-no-usage', auth={credential_type:'admin_token'}); assert resp.status == 200; assert resp.body.token_summary.total_input_tokens == 0; assert resp.body.token_summary.total_output_tokens == 0; assert resp.body.token_summary.total_cache_read_tokens == 0; assert resp.body.token_summary.models_used == []"
+    },
+    {
+      "id": "TS-19-E20",
+      "requirement_id": "19-REQ-6.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id/usage with limit exceeding 1000 caps the result at 1000 records.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1' exists with 1200 token_usage rows",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-1/usage",
+        "query": {
+          "limit": "2000"
+        }
+      },
+      "expected": {
+        "records_count_max": 1000,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-1/usage', query={limit:2000}); assert resp.status == 200; assert len(resp.body.records) <= 1000"
+    },
+    {
+      "id": "TS-19-E21",
+      "requirement_id": "19-REQ-6.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions/:id/usage with no limit parameter uses the default page size of 100.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1' exists with 200 token_usage rows",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-1/usage"
+      },
+      "expected": {
+        "records_count_max": 100,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-1/usage'); assert resp.status == 200; assert len(resp.body.records) <= 100"
+    },
+    {
+      "id": "TS-19-E22",
+      "requirement_id": "19-REQ-6.E3",
+      "kind": "unit",
+      "description": "GET /api/v1/sessions/:id/usage with a malformed cursor returns HTTP 400.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1' exists",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess-1/usage",
+        "query": {
+          "cursor": "!!!invalid!!!"
+        }
+      },
+      "expected": {
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions/sess-1/usage', query={cursor:'!!!invalid!!!'}); assert resp.status == 400; assert resp.body.error != ''"
+    },
+    {
+      "id": "TS-19-E23",
+      "requirement_id": "19-REQ-6.E4",
+      "kind": "integration",
+      "description": "Keyset cursor pagination for GET /api/v1/sessions/:id/usage does not skip or duplicate records when new usage records are inserted concurrently.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-1' exists with 10 token_usage rows",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "concurrent_inserts_during_pagination": true,
+        "page_size": 5
+      },
+      "expected": {
+        "all_original_10_records_appear_exactly_once": true
+      },
+      "assertion_pseudocode": "originalIDs = set of 10 usage record IDs; page1 = GET('/api/v1/sessions/sess-1/usage', query={limit:5, order:'desc'}); go insertNewUsageRecord(sess-1); page2 = GET('/api/v1/sessions/sess-1/usage', query={limit:5, order:'desc', cursor:page1.body.next_cursor}); allIDs = set(r.id for r in page1.body.records + page2.body.records); assert originalIDs.issubset(allIDs)"
+    },
+    {
+      "id": "TS-19-E24",
+      "requirement_id": "19-REQ-7.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost with group_by=day returns breakdown entries each containing a 'date' discriminator field.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Token_usage rows exist for 'ws-1' across two different days",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost",
+        "query": {
+          "group_by": "day",
+          "since": "2026-09-01T00:00:00Z",
+          "until": "2026-09-03T00:00:00Z"
+        }
+      },
+      "expected": {
+        "breakdown_entries_have_date_field": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-1/cost', query={since:'2026-09-01T00:00:00Z', until:'2026-09-03T00:00:00Z', group_by:'day'}); assert resp.status == 200; for entry in resp.body.breakdown: assert 'date' in entry; assert entry.date matches pattern 'YYYY-MM-DD'"
+    },
+    {
+      "id": "TS-19-E25",
+      "requirement_id": "19-REQ-7.E2",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost with group_by=session returns breakdown entries each containing a 'session_id' discriminator field.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Token_usage rows exist for 'ws-1' across two different sessions",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost",
+        "query": {
+          "group_by": "session",
+          "since": "2026-09-01T00:00:00Z",
+          "until": "2026-09-02T00:00:00Z"
+        }
+      },
+      "expected": {
+        "breakdown_entries_have_session_id_field": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-1/cost', query={since:'2026-09-01T00:00:00Z', until:'2026-09-02T00:00:00Z', group_by:'session'}); assert resp.status == 200; for entry in resp.body.breakdown: assert 'session_id' in entry"
+    },
+    {
+      "id": "TS-19-E26",
+      "requirement_id": "19-REQ-7.E3",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost with group_by=model returns breakdown entries each containing a 'model' discriminator field.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Token_usage rows exist for 'ws-1' with two distinct models",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost",
+        "query": {
+          "group_by": "model",
+          "since": "2026-09-01T00:00:00Z",
+          "until": "2026-09-02T00:00:00Z"
+        }
+      },
+      "expected": {
+        "breakdown_entries_have_model_field": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-1/cost', query={since:'2026-09-01T00:00:00Z', until:'2026-09-02T00:00:00Z', group_by:'model'}); assert resp.status == 200; for entry in resp.body.breakdown: assert 'model' in entry"
+    },
+    {
+      "id": "TS-19-E27",
+      "requirement_id": "19-REQ-7.E4",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost for a workspace with no token_usage records in the period returns zero totals and empty breakdown.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "No token_usage rows exist for 'ws-empty' in the queried period",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-empty/cost",
+        "query": {
+          "since": "2026-09-01T00:00:00Z",
+          "until": "2026-09-02T00:00:00Z"
+        }
+      },
+      "expected": {
+        "body": {
+          "breakdown": [],
+          "totals": {
+            "cache_read_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "sessions": 0
+          }
+        },
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-empty/cost', query={since:'2026-09-01T00:00:00Z', until:'2026-09-02T00:00:00Z'}); assert resp.status == 200; assert resp.body.totals.input_tokens == 0; assert resp.body.totals.sessions == 0; assert resp.body.breakdown == []"
+    },
+    {
+      "id": "TS-19-E28",
+      "requirement_id": "19-REQ-7.E5",
+      "kind": "integration",
+      "description": "GET /api/v1/workspaces/:slug/cost by an admin_token returns cost data for any workspace regardless of access restrictions.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Token_usage rows exist for 'any-ws'",
+        "Caller has sessions:read permission with credential_type='admin_token'"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/any-ws/cost"
+      },
+      "expected": {
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/any-ws/cost', auth={credential_type:'admin_token'}); assert resp.status == 200; assert resp.body.workspace == 'any-ws'"
+    },
+    {
+      "id": "TS-19-E29",
+      "requirement_id": "19-REQ-7.E6",
+      "kind": "unit",
+      "description": "GET /api/v1/workspaces/:slug/cost with an invalid group_by value returns HTTP 400.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/workspaces/ws-1/cost",
+        "query": {
+          "group_by": "invalid_dimension"
+        }
+      },
+      "expected": {
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/workspaces/ws-1/cost', query={group_by:'invalid_dimension'}); assert resp.status == 400; assert resp.body.error != ''"
+    },
+    {
+      "id": "TS-19-E30",
+      "requirement_id": "19-REQ-8.E1",
+      "kind": "integration",
+      "description": "When DuckDB force-close fails during workspace archive, the handler logs a warning and proceeds with the archive operation without aborting.",
+      "preconditions": [
+        "SQLite workspace database is initialized with workspace 'ws-1' in active state",
+        "DuckDB force-close operation is configured to return an error",
+        "Active sessions exist for 'ws-1'"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-1/archive"
+      },
+      "expected": {
+        "status": 200,
+        "warning_logged": true,
+        "workspace_archived_in_sqlite": true
+      },
+      "assertion_pseudocode": "injectDuckDBForceCloseError(); resp = POST('/api/v1/workspaces/ws-1/archive'); assert resp.status == 200; ws = sqlite.query('SELECT status FROM workspaces WHERE slug=?', 'ws-1'); assert ws.status == 'archived'"
+    },
+    {
+      "id": "TS-19-E31",
+      "requirement_id": "19-REQ-8.E2",
+      "kind": "integration",
+      "description": "Workspace archive force-close on a workspace with no active sessions completes without error and emits no HubEvents.",
+      "preconditions": [
+        "SQLite workspace database is initialized with workspace 'ws-empty' in active state",
+        "No active sessions exist for 'ws-empty' in agent_sessions",
+        "Emitter is configured as a test double"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-empty/archive"
+      },
+      "expected": {
+        "emitted_events_count": 0,
+        "status": 200
+      },
+      "assertion_pseudocode": "emittedEvents = []; resp = POST('/api/v1/workspaces/ws-empty/archive'); assert resp.status == 200; assert len(emittedEvents) == 0"
+    },
+    {
+      "id": "TS-19-E32",
+      "requirement_id": "19-REQ-8.E3",
+      "kind": "integration",
+      "description": "When the Emitter returns an error for one session during workspace archive force-close, the error is logged and force-close continues for remaining sessions.",
+      "preconditions": [
+        "SQLite workspace database is initialized with workspace 'ws-1' in active state",
+        "Two active sessions exist for 'ws-1'",
+        "Emitter is configured to fail on the first emit call and succeed on the second"
+      ],
+      "input": {
+        "method": "POST",
+        "path": "/api/v1/workspaces/ws-1/archive"
+      },
+      "expected": {
+        "both_sessions_terminated": true,
+        "emit_error_logged": true,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = POST('/api/v1/workspaces/ws-1/archive'); assert resp.status == 200; rows = db.query('SELECT status FROM agent_sessions WHERE workspace_slug=?', 'ws-1'); for row in rows: assert row.status == 'terminated'"
+    },
+    {
+      "id": "TS-19-E33",
+      "requirement_id": "19-REQ-9.E1",
+      "kind": "integration",
+      "description": "When DuckDB force-close fails during workspace delete, the handler logs a warning and proceeds with SQLite workspace deletion.",
+      "preconditions": [
+        "SQLite workspace database is initialized with workspace 'ws-del'",
+        "DuckDB force-close operation is configured to return an error",
+        "Active sessions exist for 'ws-del'"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-del"
+      },
+      "expected": {
+        "status": 200,
+        "warning_logged": true,
+        "workspace_deleted_from_sqlite": true
+      },
+      "assertion_pseudocode": "injectDuckDBForceCloseError(); resp = DELETE('/api/v1/workspaces/ws-del'); assert resp.status == 200; count = sqlite.query('SELECT COUNT(*) FROM workspaces WHERE slug=?', 'ws-del'); assert count == 0"
+    },
+    {
+      "id": "TS-19-E34",
+      "requirement_id": "19-REQ-9.E2",
+      "kind": "integration",
+      "description": "When SQLite workspace deletion fails after DuckDB sessions have been force-closed, the handler returns HTTP 500 and sessions remain terminated in DuckDB.",
+      "preconditions": [
+        "SQLite workspace database is initialized with workspace 'ws-del'",
+        "Active sessions exist for 'ws-del' in DuckDB",
+        "SQLite delete operation is configured to fail"
+      ],
+      "input": {
+        "method": "DELETE",
+        "path": "/api/v1/workspaces/ws-del"
+      },
+      "expected": {
+        "sessions_terminated_in_duckdb": true,
+        "status": 500
+      },
+      "assertion_pseudocode": "injectSQLiteDeleteError(); resp = DELETE('/api/v1/workspaces/ws-del'); assert resp.status == 500; rows = db.query('SELECT status FROM agent_sessions WHERE workspace_slug=?', 'ws-del'); for row in rows: assert row.status == 'terminated'"
+    },
+    {
+      "id": "TS-19-E35",
+      "requirement_id": "19-REQ-10.E1",
+      "kind": "integration",
+      "description": "Prometheus middleware increments afhub_http_requests_total and observes afhub_http_request_duration_seconds after each HTTP request.",
+      "preconditions": [
+        "Hub is started with Prometheus middleware registered on Echo",
+        "Custom Prometheus registry is initialized"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "afhub_http_request_duration_seconds_observed": true,
+        "afhub_http_requests_total_incremented": true,
+        "path_label": "/api/v1/sessions"
+      },
+      "assertion_pseudocode": "before = getCounterValue('afhub_http_requests_total', {method:'GET', path:'/api/v1/sessions', status:'200'}); GET('/api/v1/sessions'); after = getCounterValue('afhub_http_requests_total', {method:'GET', path:'/api/v1/sessions', status:'200'}); assert after == before + 1; histCount = getHistogramCount('afhub_http_request_duration_seconds', {method:'GET', path:'/api/v1/sessions'}); assert histCount > 0"
+    },
+    {
+      "id": "TS-19-E36",
+      "requirement_id": "19-REQ-10.E2",
+      "kind": "integration",
+      "description": "All afhub_* metrics except afhub_jobqueue_depth appear in /metrics output immediately after hub startup.",
+      "preconditions": [
+        "Hub is started with custom Prometheus registry initialized in internal/audit/metrics.go",
+        "durable_job_queue subsystem is not yet running"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/metrics"
+      },
+      "expected": {
+        "afhub_jobqueue_depth_may_be_absent": true,
+        "body_contains": [
+          "afhub_http_requests_total",
+          "afhub_agent_sessions_active",
+          "afhub_audit_events_total",
+          "afhub_retention_last_run_timestamp_seconds"
+        ]
+      },
+      "assertion_pseudocode": "resp = GET('/metrics'); assert 'afhub_http_requests_total' in resp.body; assert 'afhub_agent_sessions_active' in resp.body; assert 'afhub_audit_events_total' in resp.body; assert 'afhub_retention_last_run_timestamp_seconds' in resp.body; assert 'afhub_sse_connections' in resp.body"
+    },
+    {
+      "id": "TS-19-E37",
+      "requirement_id": "19-REQ-10.E3",
+      "kind": "integration",
+      "description": "afhub_http_request_duration_seconds histogram is registered with exactly the standard latency buckets: 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0 seconds.",
+      "preconditions": [
+        "Hub is started with custom Prometheus registry initialized"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/metrics"
+      },
+      "expected": {
+        "histogram_buckets": [
+          0.005,
+          0.01,
+          0.025,
+          0.05,
+          0.1,
+          0.25,
+          0.5,
+          1.0,
+          2.5,
+          5.0,
+          10.0
+        ]
+      },
+      "assertion_pseudocode": "resp = GET('/metrics'); expectedBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]; for b in expectedBuckets: assert 'afhub_http_request_duration_seconds_bucket{le=\"' + str(b) + '\"' in resp.body"
+    },
+    {
+      "id": "TS-19-E38",
+      "requirement_id": "19-REQ-11.E1",
+      "kind": "integration",
+      "description": "Idempotent POST /api/v1/sessions with a duplicate id does not increment afhub_agent_sessions_active again.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='dup-sess', workspace_slug='ws-1' already exists in agent_sessions",
+        "afhub_agent_sessions_active gauge for 'ws-1' is 1",
+        "Caller has sessions:write permission"
+      ],
+      "input": {
+        "body": {
+          "id": "dup-sess",
+          "workspace_slug": "ws-1"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions"
+      },
+      "expected": {
+        "gauge_afhub_agent_sessions_active_ws1_unchanged": 1,
+        "status": 200
+      },
+      "assertion_pseudocode": "gaugeBefore = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); resp = POST('/api/v1/sessions', body={id:'dup-sess', workspace_slug:'ws-1'}); assert resp.status == 200; gaugeAfter = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == gaugeBefore"
+    },
+    {
+      "id": "TS-19-E39",
+      "requirement_id": "19-REQ-11.E2",
+      "kind": "integration",
+      "description": "Idempotent POST /api/v1/sessions/:id/complete on an already-terminal session does not decrement afhub_agent_sessions_active again.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "A session with id='sess-done', status='completed', workspace_slug='ws-1', credential_id='cred-owner' exists",
+        "afhub_agent_sessions_active gauge for 'ws-1' is 0"
+      ],
+      "input": {
+        "body": {
+          "status": "completed"
+        },
+        "method": "POST",
+        "path": "/api/v1/sessions/sess-done/complete"
+      },
+      "expected": {
+        "gauge_afhub_agent_sessions_active_ws1_unchanged": 0,
+        "status": 200
+      },
+      "assertion_pseudocode": "gaugeBefore = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); resp = POST('/api/v1/sessions/sess-done/complete', body={status:'completed'}, auth={credential_id:'cred-owner'}); assert resp.status == 200; gaugeAfter = getGaugeValue('afhub_agent_sessions_active', {workspace:'ws-1'}); assert gaugeAfter == gaugeBefore"
+    },
+    {
+      "id": "TS-19-E40",
+      "requirement_id": "19-REQ-12.E1",
+      "kind": "unit",
+      "description": "Retention worker checks ctx.Err() before each step and exits immediately if the context is already cancelled between steps.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite database is initialized",
+        "Context is cancelled before the retention worker starts its second step"
+      ],
+      "input": {
+        "action": "cancel context between step 1 and step 2"
+      },
+      "expected": {
+        "goroutine_exits_cleanly": true,
+        "step_2_and_beyond_not_executed": true
+      },
+      "assertion_pseudocode": "ctx, cancel = context.WithCancel(); stepsExecuted = 0; go runRetentionWithStepCounter(ctx, &stepsExecuted); sleep(10ms); cancel(); sleep(100ms); assert stepsExecuted <= 1"
+    },
+    {
+      "id": "TS-19-E41",
+      "requirement_id": "19-REQ-12.E2",
+      "kind": "integration",
+      "description": "Retention worker executes an immediate startup run that cleans up stale data from a previous hub instance without waiting one hour.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir() with stale data older than retention limits",
+        "SQLite database is initialized",
+        "AF_AUDIT_MAX_AGE_DAYS=90; stale data is 100 days old"
+      ],
+      "input": {
+        "function": "StartRetentionWorker"
+      },
+      "expected": {
+        "stale_data_deleted_within_seconds_of_startup": true
+      },
+      "assertion_pseudocode": "insertStaleAuditEvent(timestamp=now()-100days); ctx, cancel = context.WithCancel(); go StartRetentionWorker(ctx, store, sqliteDB); sleep(2s); count = db.query('SELECT COUNT(*) FROM agent_audit_events WHERE timestamp < ?', now()-90days); assert count == 0; cancel()"
+    },
+    {
+      "id": "TS-19-E42",
+      "requirement_id": "19-REQ-13.E1",
+      "kind": "integration",
+      "description": "When a retention step fails with a DuckDB error, the error is logged, afhub_retention_errors_total is incremented with the step label, subsequent steps still execute, and afhub_retention_last_run_timestamp_seconds is not updated.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite database is initialized",
+        "Step 3 (hub_audit_events deletion) is configured to return an error"
+      ],
+      "input": {
+        "function": "runFullRetentionRun"
+      },
+      "expected": {
+        "afhub_retention_errors_total_incremented_for_step_hub_events": true,
+        "afhub_retention_last_run_timestamp_seconds_not_updated": true,
+        "subsequent_steps_4_through_10_still_execute": true
+      },
+      "assertion_pseudocode": "tsBefore = getGaugeValue('afhub_retention_last_run_timestamp_seconds'); errorsBefore = getCounterValue('afhub_retention_errors_total', {step:'hub_events'}); injectStep3Error(); runFullRetentionRun(); errorsAfter = getCounterValue('afhub_retention_errors_total', {step:'hub_events'}); assert errorsAfter == errorsBefore + 1; tsAfter = getGaugeValue('afhub_retention_last_run_timestamp_seconds'); assert tsAfter == tsBefore; assert step4WasExecuted == true; assert step9WasExecuted == true"
+    },
+    {
+      "id": "TS-19-E43",
+      "requirement_id": "19-REQ-13.E2",
+      "kind": "unit",
+      "description": "Retention step 2 skips deletion and proceeds to step 3 when the distinct run_id count is already at or below AF_AUDIT_MAX_RUNS.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "agent_audit_events has 30 distinct run_ids",
+        "AF_AUDIT_MAX_RUNS=50"
+      ],
+      "input": {
+        "config": {
+          "max_runs": 50
+        },
+        "function": "runRetentionStep2"
+      },
+      "expected": {
+        "no_rows_deleted": true,
+        "step_completes_without_error": true
+      },
+      "assertion_pseudocode": "countBefore = db.query('SELECT COUNT(DISTINCT run_id) FROM agent_audit_events'); runRetentionStep2(maxRuns=50); countAfter = db.query('SELECT COUNT(DISTINCT run_id) FROM agent_audit_events'); assert countAfter == countBefore; assert countAfter == 30"
+    },
+    {
+      "id": "TS-19-E44",
+      "requirement_id": "19-REQ-13.E3",
+      "kind": "unit",
+      "description": "Retention step 8 treats all DuckDB audit records as potentially orphaned when SQLite returns an empty workspace slug list, applying the grace period filter before deleting.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "SQLite database has no workspaces (empty workspaces table)",
+        "agent_audit_events has rows for 'ws-a' (40 days old) and 'ws-b' (10 days old)",
+        "AF_AUDIT_ORPHAN_RETENTION_DAYS=30"
+      ],
+      "input": {
+        "config": {
+          "orphan_retention_days": 30
+        },
+        "function": "runRetentionStep8"
+      },
+      "expected": {
+        "new_rows_retained": true,
+        "old_rows_deleted": true
+      },
+      "assertion_pseudocode": "runRetentionStep8(orphanRetentionDays=30, sqliteDB=emptyDB); old_count = db.query('SELECT COUNT(*) FROM agent_audit_events WHERE workspace=?', 'ws-a'); assert old_count == 0; new_count = db.query('SELECT COUNT(*) FROM agent_audit_events WHERE workspace=?', 'ws-b'); assert new_count > 0"
+    },
+    {
+      "id": "TS-19-E45",
+      "requirement_id": "19-REQ-13.E4",
+      "kind": "unit",
+      "description": "Retention worker uses default configuration values when environment variables are not set.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "No AF_AUDIT_MAX_AGE_DAYS, AF_AUDIT_MAX_RUNS, AF_TRACE_MAX_AGE_DAYS, AF_SESSION_MAX_AGE_DAYS, AF_POSTMORTEM_MAX_AGE_DAYS, or AF_AUDIT_ORPHAN_RETENTION_DAYS environment variables are set"
+      ],
+      "input": {
+        "function": "loadRetentionConfig"
+      },
+      "expected": {
+        "max_age_days": 90,
+        "max_runs": 50,
+        "orphan_retention_days": 30,
+        "postmortem_max_age_days": 180,
+        "session_max_age_days": 90,
+        "trace_max_age_days": 30
+      },
+      "assertion_pseudocode": "cfg = loadRetentionConfig(); assert cfg.MaxAgeDays == 90; assert cfg.MaxRuns == 50; assert cfg.TraceMaxAgeDays == 30; assert cfg.SessionMaxAgeDays == 90; assert cfg.PostmortemMaxAgeDays == 180; assert cfg.OrphanRetentionDays == 30"
+    },
+    {
+      "id": "TS-19-E46",
+      "requirement_id": "19-REQ-14.E1",
+      "kind": "integration",
+      "description": "GET /api/v1/sessions returns next_cursor=null and has_more=false when the last page of results is returned.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Three sessions exist in agent_sessions",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "limit": "10"
+        }
+      },
+      "expected": {
+        "has_more": false,
+        "next_cursor": null,
+        "status": 200
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={limit:10}); assert resp.status == 200; assert resp.body.next_cursor == null; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-19-E47",
+      "requirement_id": "19-REQ-14.E2",
+      "kind": "unit",
+      "description": "GET /api/v1/sessions with a cursor that is not valid URL-safe base64 returns HTTP 400.",
+      "preconditions": [
+        "DuckDB audit database is initialized in t.TempDir()",
+        "Caller has sessions:read permission with admin_token"
+      ],
+      "input": {
+        "method": "GET",
+        "path": "/api/v1/sessions",
+        "query": {
+          "cursor": "this is not base64 at all!!!"
+        }
+      },
+      "expected": {
+        "status": 400
+      },
+      "assertion_pseudocode": "resp = GET('/api/v1/sessions', query={cursor:'this is not base64 at all!!!'}); assert resp.status == 400; assert resp.body.error != ''"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-19-SMOKE-1",
+      "execution_path_id": "19-PATH-1",
+      "description": "End-to-end smoke test for the agent session open-to-close lifecycle with token usage reporting, verifying all handler, store, and metric interactions.",
+      "trigger": "Call POST /api/v1/sessions, then POST /api/v1/sessions/:id/usage, then POST /api/v1/sessions/:id/complete against a running hub with real DuckDB in t.TempDir()",
+      "real_components": [
+        "sessions handler (internal/audit/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB audit database",
+        "Prometheus metrics registry (internal/audit/metrics.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "POST /api/v1/sessions returns HTTP 201 with a session record containing status='active' and the caller's credential_id",
+        "afhub_agent_sessions_active gauge for the workspace increments to 1",
+        "POST /api/v1/sessions/:id/usage returns HTTP 201 with a token_usage record linked to the session",
+        "afhub_agent_tokens_total counter increments for the reported token counts",
+        "POST /api/v1/sessions/:id/complete returns HTTP 200 with status='completed' and ended_at set",
+        "afhub_agent_sessions_active gauge for the workspace decrements to 0",
+        "agent_sessions row in DuckDB has status='completed' and ended_at set",
+        "token_usage row in DuckDB exists and is linked to the session"
+      ]
+    },
+    {
+      "id": "TS-19-SMOKE-2",
+      "execution_path_id": "19-PATH-2",
+      "description": "End-to-end smoke test for workspace archive triggering session force-close, verifying DuckDB session updates, gauge decrements, and HubEvent emission.",
+      "trigger": "Create active sessions for a workspace, then call POST /api/v1/workspaces/:slug/archive against a running hub with real DuckDB and SQLite in t.TempDir()",
+      "real_components": [
+        "workspace archive handler (internal/workspace/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB audit database",
+        "SQLite workspace database",
+        "Prometheus metrics registry (internal/audit/metrics.go)"
+      ],
+      "mockable": [
+        "Emitter (spec 18) — replaced with a test double that records emitted HubEvents"
+      ],
+      "expected_effects": [
+        "POST /api/v1/workspaces/:slug/archive returns HTTP 200",
+        "All active sessions for the workspace have status='terminated', ended_at set, and error_message='workspace archived' in DuckDB",
+        "Sessions in non-active states are not modified",
+        "afhub_agent_sessions_active gauge for the workspace is decremented to 0",
+        "One hub.session.force_closed HubEvent is emitted per force-closed session with ActorType='system', ActorID='', ResourceType='session', Action='terminate', and Metadata containing session_id and reason='workspace archived'"
+      ]
+    },
+    {
+      "id": "TS-19-SMOKE-3",
+      "execution_path_id": "19-PATH-3",
+      "description": "End-to-end smoke test for the retention worker hourly run, verifying all 10 steps execute, metrics are updated, and the timestamp gauge is set.",
+      "trigger": "Call StartRetentionWorker with a context, real Store, and real SQLite DB; wait for the immediate startup run to complete",
+      "real_components": [
+        "retention worker (internal/audit/retention.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB audit database",
+        "SQLite workspace database",
+        "Prometheus metrics registry (internal/audit/metrics.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "Retention worker executes an immediate run before the first ticker fires",
+        "Stale records older than configured retention limits are deleted from all audit tables",
+        "afhub_audit_table_rows gauge is updated with current row counts per table",
+        "afhub_agent_sessions_active gauge is recalibrated to match actual active session counts",
+        "afhub_retention_last_run_timestamp_seconds is set to a Unix timestamp close to the current time",
+        "Rows deleted per table are logged via slog",
+        "Worker continues to run on hourly ticker until context is cancelled"
+      ]
+    },
+    {
+      "id": "TS-19-SMOKE-4",
+      "execution_path_id": "19-PATH-4",
+      "description": "End-to-end smoke test for the Prometheus /metrics scrape endpoint, verifying it returns valid Prometheus text format without authentication.",
+      "trigger": "Send GET /metrics to a running hub with the custom Prometheus registry initialized in internal/audit/metrics.go",
+      "real_components": [
+        "Echo router (cmd/af-hub/main.go)",
+        "promhttp handler (internal/audit/metrics.go)",
+        "Prometheus custom registry"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "GET /metrics returns HTTP 200 without requiring any Authorization header",
+        "Response Content-Type contains 'text/plain'",
+        "Response body contains all afhub_* metric definitions",
+        "Path labels in afhub_http_requests_total use route templates (e.g. /api/v1/sessions/:id) not raw URIs",
+        "Global default registry metrics (e.g. go_goroutines) are not present in the response"
+      ]
+    },
+    {
+      "id": "TS-19-SMOKE-5",
+      "execution_path_id": "19-PATH-5",
+      "description": "End-to-end smoke test for the full agent session lifecycle including token usage reporting and cost summary query, verifying all components interact correctly.",
+      "trigger": "Open a session, report usage three times with different models, close the session, then query GET /api/v1/workspaces/:slug/cost and GET /metrics against a running hub with real DuckDB in t.TempDir()",
+      "real_components": [
+        "sessions handler (internal/audit/handlers.go)",
+        "cost handler (internal/audit/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB audit database",
+        "Prometheus metrics registry (internal/audit/metrics.go)",
+        "Echo router"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "POST /api/v1/sessions returns HTTP 201 with status='active'",
+        "Three POST /api/v1/sessions/:id/usage calls each return HTTP 201 with distinct token_usage records",
+        "POST /api/v1/sessions/:id/complete returns HTTP 200 with status='completed'",
+        "GET /api/v1/workspaces/:slug/cost returns HTTP 200 with totals reflecting all three usage records and sessions=1",
+        "Cost breakdown by model contains one entry per distinct model used",
+        "GET /metrics shows updated afhub_agent_tokens_total counter values and afhub_agent_sessions_active=0 for the workspace"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [
+      "19-REQ-1.1",
+      "19-REQ-1.2",
+      "19-REQ-1.3",
+      "19-REQ-1.E1",
+      "19-REQ-1.E2",
+      "19-REQ-1.E3",
+      "19-REQ-1.E4",
+      "19-REQ-2.1",
+      "19-REQ-2.2",
+      "19-REQ-2.3",
+      "19-REQ-2.4",
+      "19-REQ-2.E1",
+      "19-REQ-2.E2",
+      "19-REQ-2.E3",
+      "19-REQ-2.E4",
+      "19-REQ-3.1",
+      "19-REQ-3.2",
+      "19-REQ-3.3",
+      "19-REQ-3.4",
+      "19-REQ-3.5",
+      "19-REQ-3.E1",
+      "19-REQ-3.E2",
+      "19-REQ-3.E3",
+      "19-REQ-3.E4",
+      "19-REQ-4.1",
+      "19-REQ-4.2",
+      "19-REQ-4.3",
+      "19-REQ-4.4",
+      "19-REQ-4.E1",
+      "19-REQ-4.E2",
+      "19-REQ-4.E3",
+      "19-REQ-4.E4",
+      "19-REQ-4.E5",
+      "19-REQ-5.1",
+      "19-REQ-5.2",
+      "19-REQ-5.3",
+      "19-REQ-5.E1",
+      "19-REQ-5.E2",
+      "19-REQ-6.1",
+      "19-REQ-6.2",
+      "19-REQ-6.3",
+      "19-REQ-6.4",
+      "19-REQ-6.E1",
+      "19-REQ-6.E2",
+      "19-REQ-6.E3",
+      "19-REQ-6.E4",
+      "19-REQ-7.1",
+      "19-REQ-7.2",
+      "19-REQ-7.3",
+      "19-REQ-7.4",
+      "19-REQ-7.E1",
+      "19-REQ-7.E2",
+      "19-REQ-7.E3",
+      "19-REQ-7.E4",
+      "19-REQ-7.E5",
+      "19-REQ-7.E6",
+      "19-REQ-8.1",
+      "19-REQ-8.2",
+      "19-REQ-8.E1",
+      "19-REQ-8.E2",
+      "19-REQ-8.E3",
+      "19-REQ-9.1",
+      "19-REQ-9.2",
+      "19-REQ-9.E1",
+      "19-REQ-9.E2",
+      "19-REQ-10.1",
+      "19-REQ-10.2",
+      "19-REQ-10.3",
+      "19-REQ-10.4",
+      "19-REQ-10.E1",
+      "19-REQ-10.E2",
+      "19-REQ-10.E3",
+      "19-REQ-11.1",
+      "19-REQ-11.2",
+      "19-REQ-11.3",
+      "19-REQ-11.4",
+      "19-REQ-11.E1",
+      "19-REQ-11.E2",
+      "19-REQ-12.1",
+      "19-REQ-12.2",
+      "19-REQ-12.E1",
+      "19-REQ-12.E2",
+      "19-REQ-13.1",
+      "19-REQ-13.2",
+      "19-REQ-13.3",
+      "19-REQ-13.4",
+      "19-REQ-13.5",
+      "19-REQ-13.6",
+      "19-REQ-13.7",
+      "19-REQ-13.8",
+      "19-REQ-13.9",
+      "19-REQ-13.10",
+      "19-REQ-13.E1",
+      "19-REQ-13.E2",
+      "19-REQ-13.E3",
+      "19-REQ-13.E4",
+      "19-REQ-14.1",
+      "19-REQ-14.2",
+      "19-REQ-14.3",
+      "19-REQ-14.E1",
+      "19-REQ-14.E2"
+    ],
+    "properties_covered": [
+      "19-PROP-1",
+      "19-PROP-2",
+      "19-PROP-3",
+      "19-PROP-4",
+      "19-PROP-5",
+      "19-PROP-6",
+      "19-PROP-7",
+      "19-PROP-8",
+      "19-PROP-9",
+      "19-PROP-10",
+      "19-PROP-11",
+      "19-PROP-12"
+    ],
+    "paths_covered": [
+      "19-PATH-1",
+      "19-PATH-2",
+      "19-PATH-3",
+      "19-PATH-4",
+      "19-PATH-5"
+    ],
+    "gaps": []
+  }
+}

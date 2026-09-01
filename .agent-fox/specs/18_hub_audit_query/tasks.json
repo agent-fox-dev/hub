@@ -1,0 +1,1506 @@
+{
+  "$schema": null,
+  "spec_id": "18",
+  "spec_name": "hub_audit_query",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/audit/... ./internal/workspace/... ./internal/merge/... ./internal/carrypatch/... ./internal/secrets/... ./internal/gitserver/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [
+    {
+      "depends_on_spec": "17",
+      "from_group": 1,
+      "to_group": 1,
+      "relationship": "Uses Emitter interface, HubEvent struct, Store, DuckDB schema, cursor encoding strategy, and audit:read permission scope",
+      "sentinel": true
+    }
+  ],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: workspace and merge audit emission",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for workspace mutation audit emission (create, update, archive)",
+          "details": [
+            "In internal/workspace/handlers_audit_test.go, write table-driven tests using net/http/httptest and a real temp-file DuckDB instance",
+            "Test that workspace create handler emits hub.workspace.create event with correct actor_id, actor_type, resource_type=workspace, action=create, and metadata {git_url, branch}",
+            "Test that workspace update handler emits hub.workspace.update with metadata {fields: [...]}",
+            "Test that workspace archive handler emits hub.workspace.archive with metadata {head_sha}",
+            "Verify nil Emitter does not panic (backward-compat nil-check pattern)"
+          ],
+          "test_spec_refs": [
+            "TS-18-1",
+            "TS-18-2",
+            "TS-18-3"
+          ],
+          "requirement_refs": [
+            "18-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for workspace mutation audit emission (reactivate, delete, sync)",
+          "details": [
+            "Test that workspace reactivate handler emits hub.workspace.reactivate with metadata {}",
+            "Test that workspace delete handler emits hub.workspace.delete with metadata {}",
+            "Test that workspace sync handler emits hub.workspace.sync with metadata {result: 'fast_forward'}",
+            "Assert event fields: id (UUID), timestamp (UTC ISO 8601), event_type, actor_id, actor_type, resource_type, resource_id (slug), workspace (slug)"
+          ],
+          "test_spec_refs": [
+            "TS-18-4",
+            "TS-18-5"
+          ],
+          "requirement_refs": [
+            "18-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for merge mutation audit emission",
+          "details": [
+            "In internal/merge/api_audit_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance",
+            "Test that merge submit handler emits hub.merge.enqueue with metadata {target_branch, source_ref, job_id}",
+            "Test that merge completion handler emits hub.merge.complete with metadata {base_sha, merged_sha}",
+            "Test that merge failure handler emits hub.merge.fail with metadata {reason}",
+            "Test that nil Emitter in MergeAPIConfig does not panic"
+          ],
+          "test_spec_refs": [
+            "TS-18-6",
+            "TS-18-7",
+            "TS-18-8",
+            "TS-18-9",
+            "TS-18-10"
+          ],
+          "requirement_refs": [
+            "18-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write tests for carry-patch mutation audit emission (patch create/delete)",
+          "details": [
+            "In internal/carrypatch/handlers_audit_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance",
+            "Test that patch add handler emits hub.patch.create with metadata {branch_name, position}",
+            "Test that patch remove handler emits hub.patch.delete with metadata {branch_name}",
+            "Verify nil Emitter in carrypatch config does not panic"
+          ],
+          "test_spec_refs": [
+            "TS-18-11",
+            "TS-18-12"
+          ],
+          "requirement_refs": [
+            "18-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write tests for carry-patch rebuild audit emission",
+          "details": [
+            "Test that rebuild enqueue emits hub.rebuild.enqueue with metadata {job_id, patch_count}",
+            "Test that rebuild complete emits hub.rebuild.complete with metadata {patches_applied}",
+            "Test that rebuild fail emits hub.rebuild.fail with metadata {reason}",
+            "Assert all emitted events have correct resource_type and action fields"
+          ],
+          "test_spec_refs": [
+            "TS-18-13",
+            "TS-18-14",
+            "TS-18-15",
+            "TS-18-16",
+            "TS-18-17"
+          ],
+          "requirement_refs": [
+            "18-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All subtasks 1.1 through 1.5 are marked done",
+          "go test ./internal/workspace/... ./internal/merge/... ./internal/carrypatch/... -count=1 -v passes with no failures",
+          "Table-driven tests cover create, update, archive, reactivate, delete, sync workspace events and enqueue, complete, fail merge events",
+          "Nil-Emitter tests exist in each test file and pass without panic"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: secrets, variables, git server, and route registration audit emission",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for secrets mutation audit emission",
+          "details": [
+            "In internal/secrets/handlers_audit_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance",
+            "Test that secret create handler emits hub.secret.create with metadata {scope, key}",
+            "Test that secret update handler emits hub.secret.update with metadata {scope, key}",
+            "Test that secret delete handler emits hub.secret.delete with metadata {scope, key}",
+            "Verify nil Emitter in secrets route registration does not panic"
+          ],
+          "test_spec_refs": [
+            "TS-18-18",
+            "TS-18-19",
+            "TS-18-20"
+          ],
+          "requirement_refs": [
+            "18-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for variables mutation audit emission",
+          "details": [
+            "Test that variable create handler emits hub.variable.create with metadata {scope, key}",
+            "Test that variable update handler emits hub.variable.update with metadata {scope, key}",
+            "Test that variable delete handler emits hub.variable.delete with metadata {scope, key}",
+            "Assert actor_id and actor_type are populated from apikit.GetAuthInfo in all variable events"
+          ],
+          "test_spec_refs": [
+            "TS-18-21",
+            "TS-18-22",
+            "TS-18-23",
+            "TS-18-24"
+          ],
+          "requirement_refs": [
+            "18-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for git server push audit emission",
+          "details": [
+            "In internal/gitserver/push_audit_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance",
+            "Test that post-push hook emits hub.git.push with metadata {head_sha, refs_updated: [...]}",
+            "Test that nil Emitter in gitserver config does not panic",
+            "Assert resource_type=job and action=push in emitted event"
+          ],
+          "test_spec_refs": [
+            "TS-18-25",
+            "TS-18-26",
+            "TS-18-27"
+          ],
+          "requirement_refs": [
+            "18-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write tests for audit route registration",
+          "details": [
+            "In internal/audit/routes_test.go, verify that GET /api/v1/audit, GET /api/v1/events, and GET /api/v1/workspaces/:slug/runs/:run_id/transcript are registered",
+            "Test that each route returns 401 when no auth header is provided",
+            "Test that each route returns 403 when auth is present but audit:read scope is missing",
+            "Verify routes are registered on the correct Echo group"
+          ],
+          "test_spec_refs": [
+            "TS-18-48",
+            "TS-18-49",
+            "TS-18-50"
+          ],
+          "requirement_refs": [
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All subtasks 2.1 through 2.4 are marked done",
+          "go test ./internal/secrets/... ./internal/gitserver/... ./internal/audit/... -count=1 -v passes with no failures",
+          "Tests for secret create, update, delete; variable create, update, delete; git push; and all three route registrations exist and pass",
+          "Nil-Emitter guard tests pass in secrets and gitserver packages"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: unified audit query API",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for GET /api/v1/audit basic query and filtering",
+          "details": [
+            "In internal/audit/query_handler_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance seeded with both hub and agent events",
+            "Test that GET /api/v1/audit returns events from both hub_audit_events and agent_audit_events via UNION ALL ordered by timestamp",
+            "Test source filter: ?source=hub returns only hub events, ?source=agent returns only agent events",
+            "Test actor_id, actor_type, resource_type, action, event_type exact-match filters",
+            "Test event_type_prefix filter (e.g., hub.workspace matches hub.workspace.create and hub.workspace.update)"
+          ],
+          "test_spec_refs": [
+            "TS-18-28",
+            "TS-18-29",
+            "TS-18-30"
+          ],
+          "requirement_refs": [
+            "18-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for GET /api/v1/audit pagination and time range filtering",
+          "details": [
+            "Test cursor-based pagination: first page returns next_cursor and has_more=true; second page using cursor returns next page of results",
+            "Test since and until ISO 8601 time range filters",
+            "Test limit parameter: default 100, max 1000, values exceeding max are clamped",
+            "Test workspace slug filter",
+            "Test run_id and severity filters"
+          ],
+          "test_spec_refs": [
+            "TS-18-31",
+            "TS-18-32"
+          ],
+          "requirement_refs": [
+            "18-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for GET /api/v1/audit response schema and error handling",
+          "details": [
+            "Test that hub events have actor_id, actor_type, resource_type, resource_id, action populated and run_id, node_id, session_id, archetype as null",
+            "Test that agent events have run_id, node_id, session_id, archetype populated and hub-specific fields as null",
+            "Test invalid cursor returns HTTP 400 with apikit.WriteAPIError message 'invalid cursor'",
+            "Test DuckDB query failure returns HTTP 500 with generic error message",
+            "Test unauthenticated request returns 401, insufficient scope returns 403"
+          ],
+          "test_spec_refs": [
+            "TS-18-33"
+          ],
+          "requirement_refs": [
+            "18-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All subtasks 3.1 through 3.3 are marked done",
+          "go test ./internal/audit/... -run TestQuery -count=1 -v passes with no failures",
+          "Tests cover UNION ALL ordering, all filter parameters, cursor pagination, limit clamping, and error responses (400, 401, 403, 500)",
+          "Hub and agent event null-field assertions are present and passing"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "tests",
+      "title": "Write tests: transcript endpoint and SSE streaming",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Write tests for GET /api/v1/workspaces/:slug/runs/:run_id/transcript",
+          "details": [
+            "In internal/audit/transcript_handler_test.go, write tests using net/http/httptest and a real temp-file DuckDB instance seeded with agent_traces rows",
+            "Test that missing node_id query parameter returns HTTP 400 with message 'node_id is required'",
+            "Test that unknown run_id returns HTTP 200 with empty messages array",
+            "Test that known run_id+node_id returns messages ordered by timestamp with correct role mapping: session.init\u2192system, assistant.message\u2192assistant, tool.use\u2192tool_use, tool.error\u2192tool_error",
+            "Test that tool_name is populated for tool_use and tool_error roles and null for others"
+          ],
+          "test_spec_refs": [
+            "TS-18-34",
+            "TS-18-35",
+            "TS-18-36"
+          ],
+          "requirement_refs": [
+            "18-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Write tests for SSE streaming endpoint authentication and connection limits",
+          "details": [
+            "In internal/audit/sse_handler_test.go, write tests using net/http/httptest",
+            "Test that unauthenticated SSE request returns 401",
+            "Test that SSE request without audit:read scope returns 403",
+            "Test that exceeding AF_SSE_MAX_CONNECTIONS (100) returns HTTP 503 with body {\"error\": \"too many SSE connections\"}",
+            "Test that authenticated request with audit:read receives Content-Type: text/event-stream response"
+          ],
+          "test_spec_refs": [
+            "TS-18-37",
+            "TS-18-38",
+            "TS-18-39"
+          ],
+          "requirement_refs": [
+            "18-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Write tests for SSE event delivery and heartbeat",
+          "details": [
+            "Test that emitting an audit event causes connected SSE clients to receive an 'event: audit_event' frame with correct JSON payload",
+            "Test that heartbeat frames are sent with 'event: heartbeat' and data {timestamp: ...} at the configured interval",
+            "Test workspace, run_id, and category filter parameters on SSE connections",
+            "Test that session_outcome SSE frames match the spec 17 session outcome schema"
+          ],
+          "test_spec_refs": [
+            "TS-18-40",
+            "TS-18-41",
+            "TS-18-42",
+            "TS-18-43"
+          ],
+          "requirement_refs": [
+            "18-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Write tests for SSE broadcaster and connection manager",
+          "details": [
+            "In internal/audit/sse_broadcaster_test.go, test fan-out channel pattern: single broadcast channel with per-connection goroutines",
+            "Test that per-client buffered channel (256 events) drops oldest events when full and logs at debug level",
+            "Test that stale connections (no reads for 60 seconds) are closed by the connection manager",
+            "Test that broadcaster correctly filters events by workspace, run_id, and category per connection"
+          ],
+          "test_spec_refs": [
+            "TS-18-44",
+            "TS-18-45",
+            "TS-18-46",
+            "TS-18-47"
+          ],
+          "requirement_refs": [
+            "18-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "All subtasks 4.1 through 4.4 are marked done",
+          "go test ./internal/audit/... -run 'TestTranscript|TestSSE|TestBroadcast' -count=1 -v passes with no failures",
+          "Transcript tests cover missing node_id (400), unknown run_id (200 empty), role mapping, and tool_name population",
+          "SSE tests cover 401, 403, 503 connection limit, Content-Type header, event delivery, heartbeat, and stale-connection reaping"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement SSE connection manager and broadcaster (internal/audit/sse.go)",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Create internal/audit/sse.go with SSEManager struct and connection registration",
+          "details": [
+            "Define SSEManager struct with: broadcast chan interface{}, connections map[connID]*sseConn, mu sync.Mutex, maxConns int (from AF_SSE_MAX_CONNECTIONS, default 100)",
+            "Define sseConn struct with: ch chan interface{} (buffered 256), filters (workspace, run_id, category), lastRead time.Time",
+            "Implement Register(*sseConn) error \u2014 returns error if len(connections) >= maxConns",
+            "Implement Unregister(connID) to remove connection and close its channel",
+            "Implement NewSSEManager(maxConns int) *SSEManager"
+          ],
+          "test_spec_refs": [
+            "TS-18-44",
+            "TS-18-45"
+          ],
+          "requirement_refs": [
+            "18-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement broadcaster goroutine and per-client fan-out with backpressure",
+          "details": [
+            "Implement Run(ctx context.Context) goroutine that reads from broadcast channel and fans out to all registered sseConn channels",
+            "When a per-client channel is full (len(ch) == 256), drop the oldest event by draining one item before sending; log dropped event at debug level using slog",
+            "Implement Broadcast(event interface{}) to send to the broadcast channel non-blocking",
+            "Apply workspace, run_id, and category filters per connection before forwarding"
+          ],
+          "test_spec_refs": [
+            "TS-18-44",
+            "TS-18-46",
+            "TS-18-47"
+          ],
+          "requirement_refs": [
+            "18-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement heartbeat goroutine and stale-connection reaper",
+          "details": [
+            "Define constants: HeartbeatInterval = 30 * time.Second, StaleTimeout = 60 * time.Second",
+            "Implement heartbeat goroutine that ticks every HeartbeatInterval and broadcasts a heartbeat event {timestamp: apikit.FormatUTC(apikit.NowUTC())}",
+            "Implement stale-connection reaper that checks lastRead on each connection every HeartbeatInterval and calls Unregister for connections where time.Since(lastRead) > StaleTimeout",
+            "Both goroutines respect ctx cancellation"
+          ],
+          "test_spec_refs": [
+            "TS-18-41",
+            "TS-18-46"
+          ],
+          "requirement_refs": [
+            "18-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "All subtasks 5.1 through 5.3 are marked done",
+          "go vet ./internal/audit/... reports no errors on sse.go",
+          "SSEManager compiles with correct field types: broadcast chan interface{}, connections map with sync.Mutex, maxConns int",
+          "HeartbeatInterval and StaleTimeout are defined as typed constants (not variables) in sse.go",
+          "go test ./internal/audit/... -run TestBroadcast -count=1 -v passes"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Extend emitter to broadcast to SSE and implement unified query handler",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Extend internal/audit/emitter.go to broadcast to SSE on emit",
+          "details": [
+            "Add SSEManager *SSEManager field to the default Emitter implementation struct",
+            "After successfully writing a HubEvent to DuckDB, call SSEManager.Broadcast(event) if SSEManager is not nil",
+            "Ensure the broadcast is non-blocking and does not affect the Emit return value",
+            "Agent-submitted events ingested via spec 17 endpoints must also trigger SSE broadcast \u2014 wire SSEManager into the ingestion path"
+          ],
+          "test_spec_refs": [
+            "TS-18-40",
+            "TS-18-44"
+          ],
+          "requirement_refs": [
+            "18-REQ-9",
+            "18-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement GET /api/v1/audit unified query handler in internal/audit/handlers.go",
+          "details": [
+            "Parse all query parameters: source, run_id, actor_id, actor_type, resource_type, action, event_type, event_type_prefix, severity, workspace, since, until, limit (default 100, max 1000), cursor",
+            "Decode cursor from URL-safe base64 (RFC 4648 \u00a75) JSON {ts, id}; return 400 with apikit.WriteAPIError('invalid cursor') on decode failure",
+            "Build UNION ALL SQL query over hub_audit_events and agent_audit_events with WHERE clauses for each active filter, ordered by timestamp ASC then id ASC",
+            "Apply keyset pagination using cursor {ts, id} as WHERE (timestamp, id) > (cursor.ts, cursor.id)"
+          ],
+          "test_spec_refs": [
+            "TS-18-28",
+            "TS-18-29",
+            "TS-18-30",
+            "TS-18-31"
+          ],
+          "requirement_refs": [
+            "18-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement unified query response serialization and error handling",
+          "details": [
+            "Map hub_audit_events rows to unified event struct with source='hub'; populate hub-specific fields, set agent-specific fields (run_id, node_id, session_id, archetype) to null",
+            "Map agent_audit_events rows to unified event struct with source='agent'; populate agent-specific fields, set hub-specific fields (actor_id, actor_type, resource_type, resource_id, action) to null",
+            "Encode next_cursor as URL-safe base64 JSON {ts, id} of the last event; set has_more=true if result count equals limit",
+            "Return HTTP 500 with apikit.WriteAPIError on DuckDB query failure"
+          ],
+          "test_spec_refs": [
+            "TS-18-32",
+            "TS-18-33"
+          ],
+          "requirement_refs": [
+            "18-REQ-6"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "All subtasks 6.1 through 6.3 are marked done",
+          "go vet ./internal/audit/... reports no errors on emitter.go and handlers.go",
+          "Emitter.Emit calls SSEManager.Broadcast only after a successful DuckDB write and only when SSEManager is non-nil",
+          "Query handler correctly builds UNION ALL SQL with keyset pagination and returns properly encoded next_cursor",
+          "go test ./internal/audit/... -run 'TestQuery|TestEmitter' -count=1 -v passes"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement transcript handler and SSE HTTP handler",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement GET /api/v1/workspaces/:slug/runs/:run_id/transcript handler",
+          "details": [
+            "Parse node_id query parameter; return HTTP 400 with apikit.WriteAPIError('node_id is required') if missing",
+            "Query agent_traces WHERE run_id = :run_id AND node_id = :node_id ORDER BY timestamp ASC",
+            "Map trace event types to roles: session.init\u2192system (content from payload.system_prompt), assistant.message\u2192assistant, tool.use\u2192tool_use (include tool_name), tool.error\u2192tool_error (include tool_name)",
+            "Return HTTP 200 with {run_id, node_id, messages: []} when no traces found (do not return 404)",
+            "Return HTTP 500 with apikit.WriteAPIError on DuckDB query failure"
+          ],
+          "test_spec_refs": [
+            "TS-18-34",
+            "TS-18-35",
+            "TS-18-36"
+          ],
+          "requirement_refs": [
+            "18-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Implement GET /api/v1/events SSE HTTP handler",
+          "details": [
+            "Verify audit:read permission via apikit.GetAuthInfo; return 401/403 as appropriate",
+            "Parse workspace, run_id, category query parameters and create sseConn with those filters",
+            "Call SSEManager.Register; return HTTP 503 with {\"error\": \"too many SSE connections\"} if registration fails",
+            "Set response headers: Content-Type: text/event-stream, Cache-Control: no-cache, Connection: keep-alive",
+            "Start per-connection goroutine reading from sseConn.ch and writing SSE frames: 'event: <type>\\ndata: <JSON>\\n\\n'"
+          ],
+          "test_spec_refs": [
+            "TS-18-37",
+            "TS-18-38",
+            "TS-18-39",
+            "TS-18-40"
+          ],
+          "requirement_refs": [
+            "18-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Implement SSE frame formatting and per-connection event loop",
+          "details": [
+            "Format audit_event frames: 'event: audit_event\\ndata: <unified audit event JSON>\\n\\n'",
+            "Format session_outcome frames: 'event: session_outcome\\ndata: <spec 17 session outcome JSON>\\n\\n'",
+            "Format heartbeat frames: 'event: heartbeat\\ndata: {\"timestamp\": \"...\"}\\n\\n'",
+            "Update sseConn.lastRead on each successful write to the HTTP response writer",
+            "Call SSEManager.Unregister on context cancellation or client disconnect"
+          ],
+          "test_spec_refs": [
+            "TS-18-41",
+            "TS-18-42",
+            "TS-18-43"
+          ],
+          "requirement_refs": [
+            "18-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "All subtasks 7.1 through 7.3 are marked done",
+          "go vet ./internal/audit/... reports no errors on transcript_handler.go and sse_handler.go",
+          "Transcript handler returns HTTP 200 with empty messages array (not 404) for unknown run_id",
+          "SSE handler sets Content-Type: text/event-stream and returns HTTP 503 when SSEManager.Register returns an error",
+          "go test ./internal/audit/... -run 'TestTranscript|TestSSEHandler' -count=1 -v passes"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "standard",
+      "title": "Register audit routes in internal/audit/routes.go",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Register GET /api/v1/audit unified query route",
+          "details": [
+            "In internal/audit/routes.go, add GET /api/v1/audit route wired to the unified query handler with audit:read permission middleware",
+            "Verify route group uses the correct Echo group (e.g., api.GET or v1.GET)"
+          ],
+          "test_spec_refs": [
+            "TS-18-48"
+          ],
+          "requirement_refs": [
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Register GET /api/v1/events SSE streaming route",
+          "details": [
+            "Add GET /api/v1/events route wired to the SSE handler with audit:read permission middleware",
+            "Ensure SSEManager is passed into the SSE handler via closure or handler struct"
+          ],
+          "test_spec_refs": [
+            "TS-18-49"
+          ],
+          "requirement_refs": [
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Register GET /api/v1/workspaces/:slug/runs/:run_id/transcript route",
+          "details": [
+            "Add GET /api/v1/workspaces/:slug/runs/:run_id/transcript route wired to the transcript handler with audit:read permission middleware",
+            "Ensure the route is registered on the workspace-scoped Echo group consistent with existing workspace routes",
+            "Verify all three new routes appear in the Echo route list during server startup"
+          ],
+          "test_spec_refs": [
+            "TS-18-50"
+          ],
+          "requirement_refs": [
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "All subtasks 8.1 and 8.2 are marked done",
+          "go vet ./internal/audit/... reports no errors on routes.go",
+          "All three routes (GET /api/v1/audit, GET /api/v1/events, GET /api/v1/workspaces/:slug/runs/:run_id/transcript) appear in the Echo route list at startup",
+          "Each route has audit:read permission middleware applied",
+          "go test ./internal/audit/... -run TestRoutes -count=1 -v passes with 401 and 403 assertions"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "standard",
+      "title": "Implement workspace mutation audit emission (internal/workspace)",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Add Audit field to workspace handler config and emit from create/update handlers",
+          "details": [
+            "Add Audit audit.Emitter field to the workspace handler config struct in internal/workspace/handlers.go",
+            "In workspace create handler, after successful creation, call: if cfg.Audit != nil { _ = cfg.Audit.Emit(ctx, audit.HubEvent{EventType: 'hub.workspace.create', ActorID: auth.UserID, ActorType: auth.CredentialType, ResourceType: 'workspace', ResourceID: slug, Action: 'create', Workspace: slug, Metadata: {git_url, branch}}) }",
+            "In workspace update handler, emit hub.workspace.update with metadata {fields: [list of updated field names]}",
+            "Use apikit.GetAuthInfo(c) to populate actor_id and actor_type; use apikit.FormatUTC(apikit.NowUTC()) for timestamp; generate UUID for id"
+          ],
+          "test_spec_refs": [
+            "TS-18-1",
+            "TS-18-2"
+          ],
+          "requirement_refs": [
+            "18-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Emit audit events from workspace archive and delete handlers",
+          "details": [
+            "In workspace archive handler, emit hub.workspace.archive with metadata {head_sha} after successful archive",
+            "In workspace delete handler, emit hub.workspace.delete with metadata {}",
+            "Apply nil-check pattern for both emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-3",
+            "TS-18-5"
+          ],
+          "requirement_refs": [
+            "18-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Emit audit events from workspace reactivate and sync handlers",
+          "details": [
+            "In workspace reactivate handler, emit hub.workspace.reactivate with metadata {}",
+            "In workspace sync handler, emit hub.workspace.sync with metadata {result: 'fast_forward'} (or actual sync result)",
+            "Apply nil-check pattern for both emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-4"
+          ],
+          "requirement_refs": [
+            "18-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "All subtasks 9.1 and 9.2 are marked done",
+          "go vet ./internal/workspace/... reports no errors",
+          "All six workspace mutation handlers (create, update, archive, reactivate, delete, sync) contain nil-guarded Emit calls",
+          "go test ./internal/workspace/... -count=1 -v passes with no failures or regressions"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "kind": "standard",
+      "title": "Implement merge and carry-patch mutation audit emission",
+      "subtasks": [
+        {
+          "id": "10.1",
+          "title": "Add Audit field to MergeAPIConfig and emit from merge submit handler",
+          "details": [
+            "Add Audit audit.Emitter field to MergeAPIConfig in internal/merge/api.go",
+            "In merge submit handler, after successful enqueue, emit hub.merge.enqueue with metadata {target_branch, source_ref, job_id}",
+            "Apply nil-check pattern: if cfg.Audit != nil { _ = cfg.Audit.Emit(...) }",
+            "Populate actor_id and actor_type from apikit.GetAuthInfo(c)"
+          ],
+          "test_spec_refs": [
+            "TS-18-6",
+            "TS-18-7"
+          ],
+          "requirement_refs": [
+            "18-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.2",
+          "title": "Emit audit events from merge completion and failure handlers",
+          "details": [
+            "In internal/merge/handler.go, emit hub.merge.complete with metadata {base_sha, merged_sha} on successful merge completion",
+            "Emit hub.merge.fail with metadata {reason} on merge failure",
+            "Ensure actor_type='system' when merge completion is triggered by background job (no user context)",
+            "Apply nil-check pattern for all emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-8",
+            "TS-18-9",
+            "TS-18-10"
+          ],
+          "requirement_refs": [
+            "18-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.3",
+          "title": "Add Audit field to carrypatch config and emit from patch create/delete handlers",
+          "details": [
+            "Add Audit audit.Emitter to carrypatch config structs in internal/carrypatch/*.go",
+            "In patch add handler, emit hub.patch.create with metadata {branch_name, position}",
+            "In patch remove handler, emit hub.patch.delete with metadata {branch_name}",
+            "Apply nil-check pattern for all emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-11",
+            "TS-18-12"
+          ],
+          "requirement_refs": [
+            "18-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "10.4",
+          "title": "Emit audit events from rebuild enqueue, complete, and fail handlers",
+          "details": [
+            "In rebuild enqueue handler, emit hub.rebuild.enqueue with metadata {job_id, patch_count}",
+            "In rebuild complete handler, emit hub.rebuild.complete with metadata {patches_applied}",
+            "In rebuild fail handler, emit hub.rebuild.fail with metadata {reason}",
+            "Apply nil-check pattern for all emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-13",
+            "TS-18-14",
+            "TS-18-15",
+            "TS-18-16",
+            "TS-18-17"
+          ],
+          "requirement_refs": [
+            "18-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "10.V",
+        "checks": [
+          "All subtasks 10.1 through 10.4 are marked done",
+          "go vet ./internal/merge/... ./internal/carrypatch/... reports no errors",
+          "MergeAPIConfig and carrypatch config structs each have an Audit audit.Emitter field",
+          "All seven merge and rebuild event types (enqueue, complete, fail for merge; create, delete for patch; enqueue, complete, fail for rebuild) have nil-guarded Emit calls",
+          "go test ./internal/merge/... ./internal/carrypatch/... -count=1 -v passes with no failures"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "kind": "standard",
+      "title": "Implement secrets, variables, and git server mutation audit emission",
+      "subtasks": [
+        {
+          "id": "11.1",
+          "title": "Add Audit field to secrets route registration and emit from secret CRUD handlers",
+          "details": [
+            "Add Audit audit.Emitter to secrets route registration config in internal/secrets/*.go",
+            "In secret create handler, emit hub.secret.create with metadata {scope, key} after successful creation",
+            "In secret update handler, emit hub.secret.update with metadata {scope, key}",
+            "In secret delete handler, emit hub.secret.delete with metadata {scope, key}",
+            "Apply nil-check pattern for all emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-18",
+            "TS-18-19",
+            "TS-18-20"
+          ],
+          "requirement_refs": [
+            "18-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.2",
+          "title": "Emit audit events from variable CRUD handlers",
+          "details": [
+            "In variable create handler, emit hub.variable.create with metadata {scope, key}",
+            "In variable update handler, emit hub.variable.update with metadata {scope, key}",
+            "In variable delete handler, emit hub.variable.delete with metadata {scope, key}",
+            "Populate actor_id and actor_type from apikit.GetAuthInfo(c) for all variable events",
+            "Apply nil-check pattern for all emission points"
+          ],
+          "test_spec_refs": [
+            "TS-18-21",
+            "TS-18-22",
+            "TS-18-23",
+            "TS-18-24"
+          ],
+          "requirement_refs": [
+            "18-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "11.3",
+          "title": "Add Audit field to gitserver config and emit from post-push hook",
+          "details": [
+            "Add Audit audit.Emitter to gitserver config struct in internal/gitserver/*.go",
+            "In post-push hook handler, emit hub.git.push with metadata {head_sha, refs_updated: [...]} after successful push",
+            "Set resource_type='job' and action='push' in the emitted HubEvent",
+            "Apply nil-check pattern: if cfg.Audit != nil { _ = cfg.Audit.Emit(...) }"
+          ],
+          "test_spec_refs": [
+            "TS-18-25",
+            "TS-18-26",
+            "TS-18-27"
+          ],
+          "requirement_refs": [
+            "18-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "11.V",
+        "checks": [
+          "All subtasks 11.1 through 11.3 are marked done",
+          "go vet ./internal/secrets/... ./internal/gitserver/... reports no errors",
+          "Secrets config, variables config, and gitserver config each have an Audit audit.Emitter field",
+          "All nine event types (secret create/update/delete, variable create/update/delete, git push) have nil-guarded Emit calls",
+          "go test ./internal/secrets/... ./internal/gitserver/... -count=1 -v passes with no failures"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "kind": "checkpoint",
+      "title": "Integration checkpoint: all emission and query tests passing",
+      "subtasks": [
+        {
+          "id": "12.1",
+          "title": "Run full test suite across all modified packages",
+          "details": [
+            "Run go test ./internal/audit/... ./internal/workspace/... ./internal/merge/... ./internal/carrypatch/... ./internal/secrets/... ./internal/gitserver/... -count=1 -v",
+            "Confirm all TS-18-1 through TS-18-50 test cases pass",
+            "Confirm no existing tests in any modified package have regressed"
+          ],
+          "test_spec_refs": [
+            "TS-18-1",
+            "TS-18-10",
+            "TS-18-20",
+            "TS-18-30",
+            "TS-18-40",
+            "TS-18-50"
+          ],
+          "requirement_refs": [
+            "18-REQ-1",
+            "18-REQ-2",
+            "18-REQ-3",
+            "18-REQ-4",
+            "18-REQ-5",
+            "18-REQ-6",
+            "18-REQ-7",
+            "18-REQ-8",
+            "18-REQ-9",
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.2",
+          "title": "Verify nil-check backward compatibility across all modified packages",
+          "details": [
+            "Confirm that all handler packages compile and existing tests pass when Audit field is nil (not set)",
+            "Search for any emission call sites missing the nil-check guard: grep -rn 'cfg.Audit.Emit' internal/ | grep -v 'cfg.Audit != nil'",
+            "Confirm no panic occurs in any handler when Emitter is not provided"
+          ],
+          "test_spec_refs": [
+            "TS-18-5",
+            "TS-18-10",
+            "TS-18-17",
+            "TS-18-24",
+            "TS-18-27"
+          ],
+          "requirement_refs": [
+            "18-REQ-1",
+            "18-REQ-2",
+            "18-REQ-3",
+            "18-REQ-4",
+            "18-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "12.3",
+          "title": "Verify build and vet pass across all packages",
+          "details": [
+            "Execute: go build ./cmd/af-hub/... — binary builds successfully with no errors",
+            "Execute: go vet ./... — no vet issues across the entire project",
+            "Execute: go test ./... -count=1 — full project test suite passes with no regressions"
+          ],
+          "test_spec_refs": [
+            "TS-18-48",
+            "TS-18-49",
+            "TS-18-50"
+          ],
+          "requirement_refs": [
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "12.V",
+        "checks": [
+          "All subtasks 12.1, 12.2, and 12.3 are marked done",
+          "go test ./internal/audit/... ./internal/workspace/... ./internal/merge/... ./internal/carrypatch/... ./internal/secrets/... ./internal/gitserver/... -count=1 exits with code 0",
+          "grep -rn 'cfg.Audit.Emit' internal/ | grep -v 'cfg.Audit != nil' returns no output",
+          "go build ./cmd/af-hub/... succeeds",
+          "No test failures or panics observed in any modified package"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration and stub audit",
+      "subtasks": [
+        {
+          "id": "13.1",
+          "title": "Trace execution paths from handler entry points through emission to DuckDB",
+          "details": [
+            "Verify that each mutation handler (workspace create, merge submit, patch add, secret create, git push) calls cfg.Audit.Emit with the correct HubEvent struct",
+            "Verify that the default Emitter.Emit implementation writes to DuckDB hub_audit_events table AND calls SSEManager.Broadcast",
+            "Verify that SSEManager.Broadcast fans out to all registered per-connection goroutines",
+            "Confirm no stubs remain: grep -rn 'panic(\"not implemented\")' internal/audit/ internal/workspace/ internal/merge/ internal/carrypatch/ internal/secrets/ internal/gitserver/"
+          ],
+          "test_spec_refs": [
+            "TS-18-1",
+            "TS-18-6",
+            "TS-18-11",
+            "TS-18-18",
+            "TS-18-25",
+            "TS-18-44"
+          ],
+          "requirement_refs": [
+            "18-REQ-1",
+            "18-REQ-2",
+            "18-REQ-3",
+            "18-REQ-4",
+            "18-REQ-5",
+            "18-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.2",
+          "title": "Verify return value propagation and error handling wiring",
+          "details": [
+            "Confirm that Emit errors are discarded with _ = (non-blocking, best-effort) at all call sites",
+            "Confirm that query handler propagates DuckDB errors to apikit.WriteAPIError with HTTP 500",
+            "Confirm that transcript handler returns HTTP 200 with empty messages (not 404) for unknown run_id",
+            "Confirm that SSE handler returns HTTP 503 when SSEManager.Register returns an error"
+          ],
+          "test_spec_refs": [
+            "TS-18-33",
+            "TS-18-35",
+            "TS-18-39"
+          ],
+          "requirement_refs": [
+            "18-REQ-6",
+            "18-REQ-7",
+            "18-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.3",
+          "title": "Verify route wiring and permission enforcement in production server",
+          "details": [
+            "Confirm GET /api/v1/audit, GET /api/v1/events, and GET /api/v1/workspaces/:slug/runs/:run_id/transcript are registered in the production Echo server (not just in tests)",
+            "Confirm audit:read permission middleware is applied to all three routes",
+            "Confirm SSEManager is initialized with AF_SSE_MAX_CONNECTIONS (default 100) and passed to the SSE handler",
+            "Confirm SSEManager.Run goroutine is started at server startup"
+          ],
+          "test_spec_refs": [
+            "TS-18-48",
+            "TS-18-49",
+            "TS-18-50"
+          ],
+          "requirement_refs": [
+            "18-REQ-10",
+            "18-REQ-8",
+            "18-REQ-9"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.4",
+          "title": "Stub and dead-code audit across all modified files",
+          "details": [
+            "Search for Go stub markers: grep -rn 'panic(\"not implemented\")\\|// TODO\\|// FIXME' internal/audit/ internal/workspace/ internal/merge/ internal/carrypatch/ internal/secrets/ internal/gitserver/",
+            "Search for bare return nil in non-trivial paths that should return data",
+            "Confirm HeartbeatInterval and StaleTimeout are defined as constants (not variables or env-var-driven)",
+            "Confirm AF_SSE_MAX_CONNECTIONS is read from environment at startup with default 100"
+          ],
+          "test_spec_refs": [
+            "TS-18-46",
+            "TS-18-47",
+            "TS-18-48"
+          ],
+          "requirement_refs": [
+            "18-REQ-9",
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "13.5",
+          "title": "Run full test suite and verify all spec tests pass",
+          "details": [
+            "Run all spec tests: go test ./internal/audit/... ./internal/workspace/... ./internal/merge/... ./internal/carrypatch/... ./internal/secrets/... ./internal/gitserver/... -count=1 -v",
+            "Run full project test suite: go test ./... -count=1",
+            "Confirm no regressions in any package",
+            "Verify cross-spec dependency: Emitter interface, HubEvent struct, Store, and cursor encoding from spec 17 are used correctly without redefinition"
+          ],
+          "test_spec_refs": [
+            "TS-18-1",
+            "TS-18-6",
+            "TS-18-11",
+            "TS-18-18",
+            "TS-18-25",
+            "TS-18-28",
+            "TS-18-34",
+            "TS-18-37",
+            "TS-18-44",
+            "TS-18-48",
+            "TS-18-SMOKE-1",
+            "TS-18-SMOKE-2"
+          ],
+          "requirement_refs": [
+            "18-REQ-1",
+            "18-REQ-2",
+            "18-REQ-3",
+            "18-REQ-4",
+            "18-REQ-5",
+            "18-REQ-6",
+            "18-REQ-7",
+            "18-REQ-8",
+            "18-REQ-9",
+            "18-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "13.V",
+        "checks": [
+          "All subtasks 13.1 through 13.5 are marked done",
+          "go test ./... -count=1 exits with code 0 and no test failures",
+          "grep -rn 'panic(\"not implemented\")' internal/audit/ internal/workspace/ internal/merge/ internal/carrypatch/ internal/secrets/ internal/gitserver/ returns no output",
+          "All three audit routes are present in the Echo route list printed at server startup",
+          "Emitter interface and HubEvent struct are imported from spec 17 package and not redefined in spec 18 files",
+          "go vet ./... reports no errors across the entire project"
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "18-REQ-1",
+      "test_spec_id": "TS-18-1",
+      "task_id": "9.1",
+      "test_path": "internal/workspace/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-1",
+      "test_spec_id": "TS-18-2",
+      "task_id": "9.1",
+      "test_path": "internal/workspace/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-1",
+      "test_spec_id": "TS-18-3",
+      "task_id": "9.2",
+      "test_path": "internal/workspace/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-1",
+      "test_spec_id": "TS-18-4",
+      "task_id": "9.3",
+      "test_path": "internal/workspace/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-1",
+      "test_spec_id": "TS-18-5",
+      "task_id": "9.2",
+      "test_path": "internal/workspace/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-2",
+      "test_spec_id": "TS-18-6",
+      "task_id": "10.1",
+      "test_path": "internal/merge/api_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-2",
+      "test_spec_id": "TS-18-7",
+      "task_id": "10.1",
+      "test_path": "internal/merge/api_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-2",
+      "test_spec_id": "TS-18-8",
+      "task_id": "10.2",
+      "test_path": "internal/merge/api_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-2",
+      "test_spec_id": "TS-18-9",
+      "task_id": "10.2",
+      "test_path": "internal/merge/api_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-2",
+      "test_spec_id": "TS-18-10",
+      "task_id": "10.2",
+      "test_path": "internal/merge/api_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-11",
+      "task_id": "10.3",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-12",
+      "task_id": "10.3",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-13",
+      "task_id": "10.4",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-14",
+      "task_id": "10.4",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-15",
+      "task_id": "10.4",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-16",
+      "task_id": "10.4",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-3",
+      "test_spec_id": "TS-18-17",
+      "task_id": "10.4",
+      "test_path": "internal/carrypatch/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-18",
+      "task_id": "11.1",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-19",
+      "task_id": "11.1",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-20",
+      "task_id": "11.1",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-21",
+      "task_id": "11.2",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-22",
+      "task_id": "11.2",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-23",
+      "task_id": "11.2",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-4",
+      "test_spec_id": "TS-18-24",
+      "task_id": "11.2",
+      "test_path": "internal/secrets/handlers_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-5",
+      "test_spec_id": "TS-18-25",
+      "task_id": "11.3",
+      "test_path": "internal/gitserver/push_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-5",
+      "test_spec_id": "TS-18-26",
+      "task_id": "11.3",
+      "test_path": "internal/gitserver/push_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-5",
+      "test_spec_id": "TS-18-27",
+      "task_id": "11.3",
+      "test_path": "internal/gitserver/push_audit_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-6",
+      "test_spec_id": "TS-18-28",
+      "task_id": "6.2",
+      "test_path": "internal/audit/query_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-6",
+      "test_spec_id": "TS-18-29",
+      "task_id": "6.2",
+      "test_path": "internal/audit/query_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-6",
+      "test_spec_id": "TS-18-30",
+      "task_id": "6.2",
+      "test_path": "internal/audit/query_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-6",
+      "test_spec_id": "TS-18-31",
+      "task_id": "6.2",
+      "test_path": "internal/audit/query_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-6",
+      "test_spec_id": "TS-18-32",
+      "task_id": "6.3",
+      "test_path": "internal/audit/query_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-6",
+      "test_spec_id": "TS-18-33",
+      "task_id": "6.3",
+      "test_path": "internal/audit/query_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-7",
+      "test_spec_id": "TS-18-34",
+      "task_id": "7.1",
+      "test_path": "internal/audit/transcript_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-7",
+      "test_spec_id": "TS-18-35",
+      "task_id": "7.1",
+      "test_path": "internal/audit/transcript_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-7",
+      "test_spec_id": "TS-18-36",
+      "task_id": "7.1",
+      "test_path": "internal/audit/transcript_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-37",
+      "task_id": "7.2",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-38",
+      "task_id": "7.2",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-39",
+      "task_id": "7.2",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-40",
+      "task_id": "7.2",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-41",
+      "task_id": "7.3",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-42",
+      "task_id": "7.3",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-8",
+      "test_spec_id": "TS-18-43",
+      "task_id": "7.3",
+      "test_path": "internal/audit/sse_handler_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-9",
+      "test_spec_id": "TS-18-44",
+      "task_id": "5.1",
+      "test_path": "internal/audit/sse_broadcaster_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-9",
+      "test_spec_id": "TS-18-45",
+      "task_id": "5.1",
+      "test_path": "internal/audit/sse_broadcaster_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-9",
+      "test_spec_id": "TS-18-46",
+      "task_id": "5.3",
+      "test_path": "internal/audit/sse_broadcaster_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-9",
+      "test_spec_id": "TS-18-47",
+      "task_id": "5.2",
+      "test_path": "internal/audit/sse_broadcaster_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-10",
+      "test_spec_id": "TS-18-48",
+      "task_id": "8.1",
+      "test_path": "internal/audit/routes_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-10",
+      "test_spec_id": "TS-18-49",
+      "task_id": "8.1",
+      "test_path": "internal/audit/routes_test.go"
+    },
+    {
+      "requirement_id": "18-REQ-10",
+      "test_spec_id": "TS-18-50",
+      "task_id": "8.3",
+      "test_path": "internal/audit/routes_test.go"
+    }
+  ]
+}

@@ -1,0 +1,531 @@
+{
+  "state": "generated",
+  "prd_path": "prd.md",
+  "assessment_history": [
+    {
+      "quality": "needs_refinement",
+      "summary": "The PRD for `audit_storage_ingestion` (spec 17) is well-structured and unusually detailed for a draft. Intent, Goals, Non-Goals, Tech Stack, Functional Requirements, Dependencies, and Design Decisions are all present and clearly articulated. The main gaps are: (1) the full DDL schema is deferred to the parent PRD (`docs/prd/prd14.md`) rather than included inline, leaving the spec self-incomplete; (2) the External API Surface for `github.com/marcboeker/go-duckdb` is not documented (failure modes, known limitations, CGo build constraints); (3) test tooling is absent from the Tech Stack; (4) two active downstream specs (`hub_audit_query`, `sessions_metrics_retention`) reference this spec by number and appear to overlap with schema tables defined here \u2014 the dependency direction should be made explicit; and (5) the `Emitter` interface's `HubEvent` struct lacks field documentation, especially for `ActorType` and `Metadata` constraints. These are refinement-level gaps \u2014 the spec is not fundamentally incomplete.",
+      "gaps": [
+        "Full DDL for all nine tables is deferred to the parent PRD (`docs/prd/prd14.md`) and not included in this spec. A self-contained spec should embed or fully enumerate the table schemas, since downstream implementers may not have access to the parent document.",
+        "Tech Stack is missing test tooling. No test framework, mock strategy, or integration-test approach for DuckDB is specified. This is required to generate correct test artifacts.",
+        "External API surface for `github.com/marcboeker/go-duckdb` is not documented: which driver functions/DSN options are used, expected behavior under concurrent writes (DuckDB is single-writer), failure modes (locked file, corrupted database), and CGo build tag requirements are all absent.",
+        "The `HubEvent` struct fields (`ActorType`, `Metadata`) lack enumerated allowed values or constraints. Downstream implementers (spec `hub_audit_query`) need a closed set of `ActorType` values and a defined `Metadata` schema to emit correct events.",
+        "Active spec `hub_audit_query` references this spec (spec 17) as a prerequisite and adds query/streaming on top of tables defined here (`hub_audit_events`, `agent_sessions`, `token_usage`). The dependency direction is implied but not formally declared in this spec's `## Dependencies` section.",
+        "Active spec `sessions_metrics_retention` references this spec (spec 17) as a prerequisite and populates `agent_sessions` and `token_usage` tables whose schemas are defined here. Again, this reverse dependency is undeclared.",
+        "The `postmortem` endpoint references an `unknown schema_version` returning HTTP 422, but the valid `schema_version` values and the postmortem request body schema are not defined in this spec \u2014 they are deferred to the parent PRD.",
+        "Batch transaction semantics under DuckDB's single-writer constraint are not addressed. If the hub processes concurrent batch requests, DuckDB write contention behavior (blocking vs. error) should be specified.",
+        "No owner is set (`owner: ''`). While not a functional gap, it is a process gap that should be resolved before the spec moves out of draft."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "The full DDL for all nine audit tables is deferred to `docs/prd/prd14.md`. Can you paste the complete DDL inline into this spec, or confirm that all implementers will always have access to the parent PRD alongside this spec?",
+          "context": "A spec should be self-contained. If the DDL lives only in the parent doc, implementers working from this spec alone cannot produce correct schema migrations or verify column types. This also affects automated artifact generation.",
+          "options": [
+            "I will embed the full DDL in this spec.",
+            "The parent PRD will always be co-located \u2014 a reference is sufficient.",
+            "I will add a separate `## Database Schema` section to this spec with the DDL."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What test tooling and strategy should be used for the `internal/audit` package? For example: Go's standard `testing` package with a real in-memory or temp-file DuckDB instance, testify assertions, mocks for the `Emitter` interface?",
+          "context": "The Tech Stack section omits test tooling entirely. Without this, generated test artifacts will either be omitted or use incorrect frameworks. DuckDB's CGo nature also constrains which test approaches work (e.g., no pure Go mock for the DB driver).",
+          "options": [
+            "Standard `testing` package + testify/assert + real temp-file DuckDB per test.",
+            "Standard `testing` package only, no third-party assertion libraries.",
+            "Integration tests only (no unit tests for storage layer).",
+            "Other \u2014 I will describe below."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "DuckDB supports only one concurrent writer. How should the hub handle concurrent batch ingestion requests \u2014 should they serialize on a mutex, use a connection pool of size 1, or rely on DuckDB's built-in write serialization (which returns an error on contention)?",
+          "context": "The spec does not address write concurrency. Under load, multiple agents submitting batches simultaneously will hit DuckDB's single-writer constraint. The chosen strategy affects both the Store implementation and error handling (e.g., whether a 503 retry response is needed).",
+          "options": [
+            "Use a single `*sql.DB` connection pool capped at 1 writer (SetMaxOpenConns(1)).",
+            "Serialize writes with an application-level mutex in the Store.",
+            "Rely on DuckDB's built-in serialization and surface contention errors as HTTP 503 with Retry-After.",
+            "Other \u2014 I will describe below."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What are the valid values for `HubEvent.ActorType`, and does `Metadata` have a defined schema or is it a fully free-form map?",
+          "context": "The `hub_audit_query` spec will emit `HubEvent` values for every hub mutation. Without a closed set of `ActorType` values (e.g., `user`, `pat`, `admin`, `system`) and known `Metadata` keys, downstream emitters will produce inconsistent data that breaks query filtering.",
+          "options": [
+            "ActorType is an open string \u2014 no enumeration needed.",
+            "ActorType values are: user, pat, admin_key, api_key, system.",
+            "I will add an ActorType enum and Metadata conventions to this spec.",
+            "Other \u2014 I will describe below."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should this spec formally declare `hub_audit_query` and `sessions_metrics_retention` as downstream dependents (i.e., specs that depend on this one), and should those specs be listed in a `## Downstream Dependents` section?",
+          "context": "Both active specs (`hub_audit_query` and `sessions_metrics_retention`) explicitly reference spec 17 as their foundation and write to tables whose schemas are defined here. Making this dependency graph explicit prevents those specs from being implemented before this one and clarifies schema ownership.",
+          "options": [
+            "Yes \u2014 add a Downstream Dependents section listing both specs.",
+            "No \u2014 the cross-spec references in the Non-Goals section are sufficient.",
+            "Partially \u2014 add a note in the Dependencies section of those specs instead."
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "What are the valid `schema_version` values for the postmortem endpoint, and can you provide the postmortem request body schema inline in this spec?",
+          "context": "The error table lists HTTP 422 for 'unknown postmortem schema_version', but the valid versions and the postmortem JSON structure are deferred to the parent PRD. Implementers need this to write the handler and validation logic.",
+          "options": [
+            "I will add the postmortem schema inline.",
+            "schema_version 1 is the only valid value currently; full schema is in the parent PRD.",
+            "Other \u2014 I will describe below."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is a high-quality, production-grade PRD with exceptional completeness. It clearly defines the audit storage foundation layer, including a full DDL schema, REST API surface, failure modes, idempotency semantics, batch processing rules, pagination strategy, permission scopes, and error handling table. The tech stack, dependencies, and design rationale are all well-documented. The spec also cleanly scopes downstream dependencies (specs 18 and 19) without over-specifying their behavior. Minor gaps exist around authentication token format details, observability/logging expectations, and test coverage expectations \u2014 but none are blockers for implementation.",
+      "gaps": [
+        "No explicit definition of what constitutes a valid UUID for client-generated idempotency keys (e.g., UUID v4 only, or any UUID version accepted?).",
+        "The `GET` query endpoints (events, traces, tool calls, etc.) lack documented request parameters beyond cursor/limit \u2014 no filtering by time range, event_type, session_id, node_id, or other fields is specified.",
+        "Response body shapes for `GET` query endpoints are not specified \u2014 field names, envelope structure, and pagination metadata format are absent.",
+        "Response body shapes for successful `POST` ingestion endpoints are not defined \u2014 it is unclear if the created record is echoed back or just a minimal acknowledgement is returned.",
+        "No definition of the `GET .../postmortem` response body shape.",
+        "The `Retry-After: 5` value (seconds) for HTTP 503 is hardcoded \u2014 no rationale or configurability discussion for this specific value.",
+        "Logging expectations (slog levels, structured fields) for ingestion events, unknown event types, and errors are mentioned only briefly; no consistent logging schema is defined.",
+        "No mention of request size limits beyond the batch count cap of 1000 \u2014 a single large JSON payload (e.g., a postmortem with massive session_history) could pose a risk.",
+        "The `session_history` array in postmortems references 'shape defined by afaudit' but does not inline the schema, creating an ambiguous dependency on an external spec.",
+        "No explicit test coverage targets or list of required test cases (e.g., idempotency, batch partial failure, workspace mismatch) are documented."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What fields can be used to filter GET query endpoints (e.g., events, traces, tool calls)? For example: time range (start/end), event_type, session_id, node_id, severity?",
+          "context": "The PRD defines cursor-based pagination but does not specify any filter parameters for the GET endpoints. Without this, implementers must guess what query parameters to support, leading to inconsistent or incomplete APIs.",
+          "options": [
+            "Time range only (start_time, end_time)",
+            "Time range + event_type + session_id",
+            "Time range + event_type + session_id + node_id + severity (full filter set)",
+            "No filtering \u2014 run_id scoping is sufficient"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the response body shape for successful POST ingestion endpoints? Does the hub echo back the full stored record, or return a minimal acknowledgement (e.g., just the `id` and `ingested_at`)?",
+          "context": "The PRD documents HTTP status codes (201 for new, 200 for duplicate) but not the response body. Clients need to know whether they receive the full record or just a confirmation, especially for the idempotency (HTTP 200) case.",
+          "options": [
+            "Full stored record echoed back",
+            "Minimal acknowledgement: { id, ingested_at }",
+            "Empty body with HTTP 201/200 status only",
+            "Different shapes for new (full record) vs duplicate (minimal)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the response envelope structure for GET query endpoints? Please describe the top-level JSON shape including the data array key name, pagination fields, and any metadata.",
+          "context": "The PRD specifies cursor-based pagination with next_cursor and has_more but does not define the full response envelope. Implementers need to know the exact JSON structure to keep the API consistent with other hub endpoints.",
+          "options": [
+            "{ data: [...], next_cursor: string|null, has_more: bool }",
+            "{ items: [...], next_cursor: string|null, has_more: bool, total: int }",
+            "Follow existing hub endpoint conventions (describe them)",
+            "Other \u2014 specify"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "What UUID versions are accepted as client-generated idempotency keys? Is UUID v4 the only accepted format, or are v1, v5, v7, etc. also valid?",
+          "context": "The PRD uses client-generated UUIDs as idempotency keys but does not specify which UUID versions are valid. If any string that matches the UUID format is accepted, that should be stated explicitly to avoid validation inconsistencies.",
+          "options": [
+            "Any valid UUID format (v1, v4, v5, v7, etc.)",
+            "UUID v4 only",
+            "Any string matching the UUID regex (no version enforcement)",
+            "No validation \u2014 any non-empty string is accepted as an ID"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Is there a maximum request body size limit for single-record POST endpoints and the postmortem endpoint? If so, what is the limit?",
+          "context": "The batch endpoint has a 1000-item cap, but a single postmortem with a large session_history array or a tool call with a large input/output JSON blob could still be very large. Without a size limit, the server is vulnerable to memory exhaustion from oversized payloads.",
+          "options": [
+            "No explicit limit \u2014 rely on OS/network limits",
+            "1 MB per request",
+            "4 MB per request",
+            "16 MB per request",
+            "Configurable via environment variable"
+          ],
+          "required": false
+        },
+        {
+          "id": "q6",
+          "text": "What is the exact schema for each object in the `session_history` array within a postmortem report? The PRD states 'shape defined by afaudit' \u2014 can you inline the fields here or reference a stable definition?",
+          "context": "Without an inlined or precisely referenced schema for session_history items, implementers must reverse-engineer the afaudit source to determine what fields to accept and store. This creates an implicit external dependency that could cause silent schema drift.",
+          "options": [
+            "Treat as opaque JSON \u2014 store as-is without field-level validation",
+            "Inline the field list here (provide fields)",
+            "Reference a specific afaudit source file or type name"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-structured and thorough PRD. It covers intent, goals, non-goals, tech stack, functional requirements, schema DDL, API surface, error handling, pagination, permissions, design decisions, and downstream dependencies with remarkable completeness. The document is implementation-ready in most areas. A handful of minor gaps remain: the cursor encoding mechanism (base64 of what exact format?), the authentication mechanism for agent submissions (how do nightshift agents authenticate \u2014 PAT, API key, or something else?), and whether there is a maximum body size override for batch endpoints specifically. These are refinements rather than blockers, and the PRD could proceed to implementation as-is.",
+      "gaps": [
+        "Cursor encoding: the PRD states cursors are a base64-encoded composite of (timestamp, id) but does not specify the exact serialization format (e.g., JSON array, delimited string, protobuf) that the base64 wraps. This is needed for consistent implementation across endpoints.",
+        "Agent authentication mechanism: the PRD defines PAT scopes (audit:write) and states admin tokens/API keys have implicit access, but does not explicitly state how nightshift agents authenticate when submitting telemetry (e.g., must they use a PAT with audit:write, or can they use an API key?). Given agents are automated processes, the credential type matters for operational setup.",
+        "Missing 'since'/'until' time-range filters on non-event GET endpoints: GET tools/calls, tools/errors, traces, and sessions/outcomes lack time-range filter parameters (since/until) that are present on GET events. It is unclear whether this is intentional or an oversight.",
+        "The `order` sort parameter is only defined for GET events but not for other GET endpoints \u2014 the default sort order (asc/desc by timestamp) for tools/calls, tools/errors, traces, and sessions/outcomes is unspecified.",
+        "No explicit description of how the hub handles a DuckDB schema migration if the audit.duckdb file already exists with an older schema (e.g., missing columns). CREATE TABLE IF NOT EXISTS prevents recreation but does not handle ALTER TABLE for new columns added in future specs.",
+        "The Config section mentions only AF_AUDIT_DB_PATH. It is unclear whether the DuckDB connection pool size or query timeout is configurable or fixed, which is relevant given the single-writer concurrency model and the 503/Retry-After behavior."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What is the exact serialization format inside the base64-encoded cursor? For example: a JSON array like [\"2026-09-01T13:16:15Z\", \"uuid-here\"], a pipe-delimited string like \"timestamp|id\", or something else?",
+          "context": "The cursor implementation must be consistent across all GET endpoints. Implementers need to know the exact byte representation before encoding to base64 to ensure interoperability and correct decoding.",
+          "options": [
+            "JSON array: [\"<timestamp>\", \"<id>\"]",
+            "Pipe-delimited string: \"<timestamp>|<id>\"",
+            "Colon-delimited string: \"<timestamp>:<id>\"",
+            "Protobuf or other binary format"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "How do nightshift agents authenticate when submitting telemetry to the ingestion endpoints? Must they use a PAT with the audit:write scope, or can they use an API key (which has implicit full access)?",
+          "context": "Agents are automated processes without human interaction. The credential type determines how operators must configure agent deployments. If PATs are required, agents need a provisioning flow; if API keys suffice, the existing API key mechanism covers them.",
+          "options": [
+            "PAT with audit:write scope (agents must be provisioned with a PAT)",
+            "API key (agents use an existing API key, which has implicit full access)",
+            "Either PAT (audit:write) or API key \u2014 both are valid",
+            "A dedicated agent credential type (not yet defined)"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Do the GET endpoints for tools/calls, tools/errors, traces, and sessions/outcomes intentionally omit time-range filters (since/until), or should they also support since/until filtering like GET events does?",
+          "context": "GET events supports since/until for time-range scans. The other GET endpoints do not list these parameters. For an analytical audit system, time-range filtering is commonly needed on all record types, but it may have been intentionally omitted to keep the initial scope minimal.",
+          "options": [
+            "Intentionally omitted \u2014 add time-range filters only if requested in a future spec",
+            "Add since/until to all GET endpoints for consistency",
+            "Add since/until only to GET traces and GET sessions/outcomes (not tool calls/errors)"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "What is the default and supported sort order for GET tools/calls, GET tools/errors, GET traces, and GET sessions/outcomes? Should an 'order' parameter (asc/desc) be added to these endpoints, or is the sort order fixed?",
+          "context": "GET events explicitly defines an 'order' parameter (default: asc). The other endpoints do not mention sort order. Without a defined default, implementers may choose inconsistently.",
+          "options": [
+            "Fixed ascending by timestamp \u2014 no 'order' parameter needed",
+            "Fixed descending by timestamp (newest first) \u2014 no 'order' parameter needed",
+            "Add an 'order' parameter (asc/desc, default asc) to all GET endpoints for consistency",
+            "Each endpoint has its own fixed order, to be defined per endpoint"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "How should the hub handle an existing audit.duckdb file that was created by an older schema version with missing columns (e.g., after a hub upgrade that adds a new column)? Is schema migration in scope for this spec, or is it deferred?",
+          "context": "CREATE TABLE IF NOT EXISTS silently skips table creation if the table exists, but won't add new columns. If a future spec adds columns to existing tables, the migration strategy needs to be established. Even for this spec, operators upgrading from a pre-audit hub will have no existing file, but the policy should be stated.",
+          "options": [
+            "Deferred entirely \u2014 migration strategy is out of scope for this spec",
+            "Drop and recreate all tables on startup if schema hash mismatches (data loss acceptable for audit data)",
+            "Run ALTER TABLE IF COLUMN NOT EXISTS migrations in InitSchema",
+            "Document that operators must delete audit.duckdb manually when upgrading"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-written PRD. It covers intent, goals, non-goals, background context, full database schema (DDL included), all REST endpoints with request/response shapes, pagination mechanics, auth/permission model, error handling table, DuckDB failure modes, migration strategy, file layout, hub integration steps, configuration, dependencies, and 19 numbered design decisions. The spec is implementation-ready with very few gaps. Minor clarifications around cursor pagination for the `postmortem` GET endpoint, batch transaction rollback semantics, and a couple of response-shape edge cases would push it from \"nearly complete\" to \"fully unambiguous.\"",
+      "gaps": [
+        "Cursor pagination for GET `postmortem` is ambiguous: the postmortem table uses `run_id` as the primary key (not a UUID `id`), and the postmortem is keyed per run \u2014 it is unclear whether GET `postmortem` is a single-record lookup or a paginated list, and if the latter, what the cursor `id` field encodes.",
+        "Batch transaction rollback semantics are underspecified: the PRD says batches are processed in a single DuckDB transaction and that valid items are inserted even when some fail validation, but DuckDB does not support savepoints for partial-commit within a single transaction \u2014 it is unclear whether validation failures are pre-filtered before the transaction begins, or whether the transaction is abandoned and re-attempted per-valid-item.",
+        "The `GET events` and `GET traces` both use `\"events\"` as the top-level array key in the response envelope \u2014 this collision is noted implicitly but not explicitly called out as intentional; a comment confirming the deliberate reuse (or correcting it to `\"traces\"`) would prevent implementer confusion.",
+        "The `Retry-After: 5` value (seconds) is stated as matching 'typical DuckDB write queue drain times' but no measurement or citation is provided \u2014 implementers cannot tune or validate this heuristic without additional context.",
+        "The `GET postmortem` response shape is defined (returning the full postmortem record) but it is not clear whether a missing postmortem returns HTTP 404 with an apikit error or an empty response \u2014 the error table does not include a 'postmortem not found' row.",
+        "The `AF_AUDIT_DB_PATH` default references `<data_dir>` but the PRD does not define how `data_dir` is resolved (env var, flag, or existing hub convention) \u2014 an unfamiliar reader cannot determine the actual default path without consulting other hub documentation."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Is GET `postmortem` a single-record lookup (returning one postmortem for the `:run_id` in the URL, or HTTP 404 if absent) rather than a paginated list? And when a postmortem is not found, should the handler return HTTP 404 with an apikit error body?",
+          "context": "The cursor pagination spec defines `id` as a UUID field, but postmortems use `run_id` as the uniqueness key. If GET `postmortem` is a single-record lookup (which seems implied by the URL structure), pagination and cursor fields do not apply, and the 404 behavior needs to be explicit in the error table.",
+          "options": [
+            "Yes \u2014 single-record lookup by run_id; returns HTTP 404 with apikit error if not found; no pagination.",
+            "No \u2014 it is a paginated list of postmortems across sessions; cursor uses (timestamp, run_id).",
+            "Single-record lookup, but return HTTP 200 with an empty/null body if not found (not 404)."
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "How are batch validation failures handled at the DuckDB transaction level? Are invalid items filtered out before the transaction starts (so the transaction only contains valid rows), or does the transaction attempt all items and roll back on any error?",
+          "context": "The PRD states batches are processed in a single DuckDB transaction and that valid items are inserted even when some fail validation. DuckDB does not support savepoints for partial rollback within a single transaction, so the implementation must pre-validate all items before opening the transaction, or use a per-item approach. Clarifying this prevents an implementer from choosing an approach that silently drops valid items.",
+          "options": [
+            "Pre-validate all items before the transaction; open a single transaction only for the valid subset; invalid items are collected into the errors array without touching the DB.",
+            "Attempt each item individually within the transaction using per-row error handling; roll back only failed rows (requires per-statement error checking, not a single atomic transaction).",
+            "Run the entire batch in one transaction; if any item fails, roll back all and return all failures in the errors array (fully atomic, all-or-nothing)."
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "Is the use of `\"events\"` as the top-level array key for both GET `events` (audit events) and GET `traces` (agent trace events) intentional, or should GET `traces` use `\"traces\"` as its key?",
+          "context": "The response envelope for GET `traces` shows `\"events\": [ /* array of agent_trace objects */ ]`, matching the key used by GET `events`. This could cause client-side confusion if a caller handles both response types generically. Confirming whether this is deliberate (e.g., to keep a uniform key name) or a copy-paste oversight will prevent an implementer from introducing an inconsistency.",
+          "options": [
+            "Intentional \u2014 both use `\"events\"` because both are event arrays; the endpoint URL distinguishes the resource type.",
+            "Oversight \u2014 GET `traces` should use `\"traces\"` as its top-level key for clarity and consistency with other endpoints (\"outcomes\", \"calls\", \"errors\")."
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "How is `<data_dir>` resolved for the `AF_AUDIT_DB_PATH` default? Is it an existing hub environment variable or flag (e.g., `AF_DATA_DIR`), a hard-coded path, or determined by another convention?",
+          "context": "The configuration table lists the default as `<data_dir>/audit.duckdb` but does not define how `data_dir` is obtained. An implementer unfamiliar with the broader hub codebase needs to know whether to read an existing env var, a CLI flag, or a fixed default like `/var/lib/af-hub`.",
+          "options": [
+            "It is the value of an existing hub env var (e.g., `AF_DATA_DIR`); please specify the variable name.",
+            "It is derived from an existing CLI flag (e.g., `--data-dir`); please specify the flag name.",
+            "It is a hard-coded path (e.g., `/var/lib/af-hub`); please specify the path.",
+            "It follows an existing hub convention already documented elsewhere; no change needed here."
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the `GET traces` response key be `\"traces\"` instead of `\"events\"` to avoid ambiguity with the audit events endpoint?",
+          "context": "This is a follow-up to q3 in case the answer there was 'oversight'. Confirming the correct key name here allows the PRD to be updated unambiguously.",
+          "options": [
+            "Yes, change to `\"traces\"`.",
+            "No, keep `\"events\"` \u2014 the endpoint path already disambiguates."
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-crafted PRD. It covers intent, goals, non-goals, background, tech stack, schema, API surface, error handling, design decisions, and cross-spec dependencies with remarkable thoroughness. The document is implementation-ready with minimal ambiguity. Only a few minor gaps remain: (1) the full JSON shape of each stored record returned in paginated GET arrays is not explicitly defined beyond \"all columns serialized to snake_case\"; (2) the cursor comparison semantics for `order=desc` are mentioned but the exact SQL idiom for descending cursor pagination deserves slight elaboration; (3) rate-limiting or authentication throttling behavior is absent; (4) the `session_outcomes` batch endpoint existence is implied by symmetry but not listed in the endpoint table. These are minor polish items \u2014 the PRD is fundamentally ready for implementation.",
+      "gaps": [
+        "Paginated GET array items are described only as 'all columns serialized to snake_case' \u2014 no explicit JSON field-level shape is given for each record type (e.g., agent_audit_event, tool_call, agent_trace). A concrete example or per-type field list would eliminate implementer guesswork.",
+        "Descending cursor pagination (`order=desc`) is mentioned but the SQL idiom `(timestamp, id) < (cursor.ts, cursor.id)` needs clarification on tie-breaking when timestamps are equal and IDs are compared lexicographically \u2014 the ordering semantics for UUIDs should be stated explicitly.",
+        "No batch endpoint is listed for `sessions/outcomes` or `tools/calls`/`tools/errors` \u2014 the endpoint table only has batch variants for `events` and `traces`. If batch ingestion for outcomes, tool calls, and tool errors is out of scope, the non-goals should state this explicitly.",
+        "Rate limiting and authentication throttling behavior is entirely absent. It is unclear whether the hub applies any per-client or per-workspace write-rate limits to ingestion endpoints.",
+        "The `GET sessions/outcomes` endpoint is listed in the endpoint table but there is no corresponding `session_outcomes` batch ingest (`POST sessions/outcomes/batch`) \u2014 if intentionally omitted, a design decision or non-goal should document this.",
+        "The `run_id` regexp pattern is referenced but never shown \u2014 the exact regex string (e.g., `^\\d{8}_\\d{6}_[0-9a-f]{6}$`) is not included in the PRD, leaving implementers to derive it from the prose description.",
+        "No mention of how the hub behaves if `AF_AUDIT_DB_PATH` points to a directory that does not exist \u2014 does it create the directory, or abort startup with an error?"
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "Should batch ingestion endpoints (`/batch`) be provided for `sessions/outcomes`, `tools/calls`, and `tools/errors` \u2014 or is batch ingestion intentionally limited to `events` and `traces` only?",
+          "context": "The endpoint table lists batch variants only for `events` and `traces`. Given the stated goal of bulk upload of existing JSONL files, agents may also need to batch-upload outcomes and tool records. If omitted intentionally, this should appear in Non-Goals.",
+          "options": [
+            "Add batch endpoints for sessions/outcomes, tools/calls, and tools/errors (same 1000-item limit and semantics as events/traces)",
+            "Keep batch ingestion limited to events and traces only \u2014 add explicit non-goal statement",
+            "Defer batch endpoints for outcomes/tools to a future spec"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "Can you provide the exact `run_id` validation regular expression that implementers should use?",
+          "context": "The PRD describes the format as `YYYYMMDD_HHMMSS_6hexchars` in prose, but does not include the actual regexp string. Including the canonical pattern (e.g., `^\\d{8}_\\d{6}_[0-9a-f]{6}$`) in the validate.go description eliminates ambiguity about case sensitivity and anchor placement.",
+          "options": [
+            "^\\d{8}_\\d{6}_[0-9a-f]{6}$ (lowercase hex only)",
+            "^\\d{8}_\\d{6}_[0-9a-fA-F]{6}$ (case-insensitive hex)",
+            "Provide a different pattern"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What should the hub do if `AF_AUDIT_DB_PATH` references a directory that does not yet exist \u2014 create it automatically or abort startup with an error?",
+          "context": "The configuration section documents the environment variable and its default, but does not specify behavior when the parent directory is missing. This affects operator onboarding and container deployments where the data directory may not pre-exist.",
+          "options": [
+            "Create missing parent directories automatically (os.MkdirAll) before opening DuckDB",
+            "Abort hub startup with a clear error message if the parent directory does not exist",
+            "Only create the directory when using the default path; require it to exist when AF_AUDIT_DB_PATH is explicitly set"
+          ],
+          "required": false
+        },
+        {
+          "id": "q4",
+          "text": "For descending cursor pagination (`order=desc`), when two records share the same `timestamp`, should UUID comparison be lexicographic (string order) or is a different tie-breaking strategy preferred?",
+          "context": "The PRD states `(timestamp, id) < (cursor.ts, cursor.id)` for desc order but does not clarify how UUID strings are compared. Since UUIDs contain hex segments, lexicographic string comparison gives a consistent but non-chronological secondary sort. Implementers need to know the intended behavior.",
+          "options": [
+            "Lexicographic string comparison on the UUID field (standard DuckDB VARCHAR ordering)",
+            "No secondary sort needed \u2014 timestamps are precise enough to be unique in practice",
+            "Use ingested_at as a secondary sort key instead of id"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the hub apply any per-client or per-workspace rate limits on audit ingestion endpoints, or is rate limiting handled entirely at a layer above (e.g., reverse proxy)?",
+          "context": "High-volume nightshift agents could potentially saturate the DuckDB write queue. The PRD covers contention via HTTP 503/Retry-After but does not address proactive rate limiting. If this is intentionally out of scope, a brief non-goal statement would prevent implementers from adding unintended rate-limiting logic.",
+          "options": [
+            "No application-level rate limiting \u2014 rely on DuckDB write serialization and HTTP 503/Retry-After",
+            "Add a non-goal statement explicitly deferring rate limiting to the reverse proxy / infra layer",
+            "Define a simple per-workspace write rate limit (e.g., N requests/second)"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "quality": "ready",
+      "summary": "This is an exceptionally well-written PRD. It is unusually thorough for a foundation-layer spec: intent is clear, goals are concrete and measurable, non-goals are explicit with forward-references to downstream specs, the schema is the canonical DDL (not a sketch), failure modes are tabulated, error codes are enumerated, cursor semantics are formally specified, and 27 numbered design decisions each justify a choice. The tech stack and test tooling are fully named. The document is implementation-ready with very few genuine gaps. Minor ambiguities remain around the exact JSON wire shapes of stored record arrays, the timeout value triggering the 503 response, and the cross-endpoint behaviour of workspace slug vs. PAT scope enforcement, but none of these block implementation.",
+      "gaps": [
+        "Full JSON field-level serialization of stored records returned in paginated GET arrays is not specified (the PRD says 'all columns present, snake_case' but does not show an example object for each type, leaving nullable-field handling \u2014 null vs omitted \u2014 ambiguous).",
+        "The DuckDB write timeout threshold (the duration after which a blocked write is considered 'timed out' and triggers HTTP 503) is not specified. The PRD describes the behaviour but not the configured or default timeout value.",
+        "The workspace existence check sequence relative to auth checks is not fully specified (e.g., does a 404 workspace return 404 before or after the 401/403 auth check? The error table lists both but not the precedence).",
+        "The cursor JSON is base64-encoded with 'standard encoding' but the PRD does not clarify whether padding characters are included or stripped \u2014 some clients/servers differ on this.",
+        "There is no explicit contract on how the 'ingested_at' field is set (server UTC at time of DB INSERT vs. time of HTTP request receipt) or whether it is exposed in POST acknowledgement responses.",
+        "The batch endpoint request body schema (field name of the top-level array key, e.g., {\"events\": [...]} vs a bare array) is not specified.",
+        "No mention of maximum field lengths for VARCHAR columns (e.g., workspace slug, node_id, tool_name) \u2014 DuckDB VARCHAR is unbounded but callers may need validation limits.",
+        "The route registration precedence for audit routes relative to existing hub routes (potential conflicts with existing /api/v1/workspaces/:slug paths) is not addressed."
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "text": "What are the full JSON shapes of individual records returned inside the paginated GET array for each endpoint? Specifically: (a) are nullable fields (e.g., trace_id, output, role, content) serialized as null or omitted entirely when absent? (b) Is ingested_at included in query responses?",
+          "context": "The PRD states 'all columns present, snake_case matching column names' but does not show an example object for any type. Nullable-field serialization behaviour (null vs. omitted key) must be unambiguous for client implementers.",
+          "options": [
+            "Nullable fields are always present, serialized as JSON null when absent; ingested_at is included in all GET responses",
+            "Nullable fields are omitted when absent (omitempty); ingested_at is included in all GET responses",
+            "Nullable fields are always present as JSON null; ingested_at is excluded from GET responses (internal field only)",
+            "Nullable fields are omitted when absent; ingested_at is excluded from GET responses"
+          ],
+          "required": true
+        },
+        {
+          "id": "q2",
+          "text": "What is the DuckDB write timeout duration that triggers the HTTP 503 / Retry-After: 5 response? Is this a database/sql context deadline set by the handler, or a DuckDB-level setting?",
+          "context": "The PRD describes the 503 behaviour but never specifies what timeout value causes a write to be considered 'timed out'. Implementers need a concrete duration (e.g., context.WithTimeout of 10s, 30s?) to wire up correctly.",
+          "options": [
+            "10-second context deadline on each Store write call",
+            "30-second context deadline on each Store write call",
+            "Uses database/sql's default connection wait timeout with no explicit deadline set by the handler",
+            "A configurable timeout defaulting to 30s via an environment variable"
+          ],
+          "required": true
+        },
+        {
+          "id": "q3",
+          "text": "What is the request body structure for batch endpoints \u2014 does the POST body contain a top-level JSON object with a named array key (e.g., {\"events\": [...]}) or a bare JSON array ([...])?",
+          "context": "The PRD specifies batch response shapes in detail but does not specify the batch request body schema. Implementers need to know whether to expect a wrapper object or a raw array.",
+          "options": [
+            "{\"events\": [...]} / {\"traces\": [...]} \u2014 named key matching the resource",
+            "A bare JSON array: [...]",
+            "Either accepted via Content-Type negotiation"
+          ],
+          "required": true
+        },
+        {
+          "id": "q4",
+          "text": "Does the auth/workspace-check middleware enforce a strict ordering for 401 \u2192 403 \u2192 404 (workspace not found) \u2192 409 (workspace archived)? Specifically, should a request with a valid token to a non-existent workspace return 404 or should the scope check fire first?",
+          "context": "The error table lists all these status codes but not their evaluation order. Consistent middleware ordering prevents information leakage (e.g., confirming workspace existence to unauthenticated callers) and is needed for test coverage.",
+          "options": [
+            "Auth (401/403) checked first, then workspace existence (404), then workspace status (409)",
+            "Workspace existence (404) checked first before any auth \u2014 consistent with REST convention",
+            "Scope check (403) fires after auth but workspace checks are deferred to the handler body"
+          ],
+          "required": false
+        },
+        {
+          "id": "q5",
+          "text": "Should the base64 encoding of cursor tokens use standard encoding with padding (RFC 4648 \u00a74) or URL-safe / no-padding encoding?",
+          "context": "The PRD says 'standard encoding' but base64 padding characters (=) can cause issues in URL query string values without percent-encoding. Clarifying this prevents client/server interoperability bugs.",
+          "options": [
+            "Standard base64 with padding (RFC 4648 \u00a74) \u2014 clients must percent-encode = in query strings",
+            "Standard base64 without padding (strip trailing =)",
+            "URL-safe base64 without padding (RFC 4648 \u00a75, no + or /)"
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "qa_exchanges": [
+    {
+      "assessment_index": 0,
+      "answers": {
+        "q1": "I will add a separate ## Database Schema section to this spec with the full DDL. The complete DDL from the parent PRD (docs/prd/prd14.md) should be embedded inline so the spec is self-contained.",
+        "q2": "Standard `testing` package only, no third-party assertion libraries. The existing codebase explicitly avoids testify. Tests use a real temp-file DuckDB instance per test (created in t.TempDir()). The Emitter interface can be tested with a mock implementation defined in test files.",
+        "q3": "Rely on DuckDB's built-in write serialization. DuckDB internally serializes writers \u2014 concurrent write requests queue rather than error. The `*sql.DB` connection pool from `database/sql` handles this naturally. No application-level mutex is needed. Under sustained contention, DuckDB's internal queuing provides backpressure. If a write times out due to sustained contention, surface it as HTTP 503 with a Retry-After header.",
+        "q4": "ActorType values are the credential types from apikit: `admin_token`, `api_key`, `pat`, `system`. These match apikit.AuthInfo.CredentialType. Metadata is a free-form map[string]any \u2014 the per-event-type metadata keys are documented in the emission points table (spec 18) but are not constrained by schema validation.",
+        "q5": "No \u2014 the cross-spec references in the Non-Goals section and the dependency declarations in the downstream specs (18 and 19) are sufficient. Adding a downstream dependents section to this spec creates a maintenance burden (this spec would need updating whenever a new downstream spec is added).",
+        "q6": "schema_version 1 is the only valid value currently. I will add the postmortem request body schema inline in this spec. The postmortem fields: schema_version (int, default 1, only 1 accepted), run_status (required, string: stalled|block_limit|cost_limit|session_limit), started_at (required, ISO 8601), completed_at (required, ISO 8601), task_summary (required, JSON: {total, completed, pending, blocked, failed, in_progress}), cost_summary (required, JSON: {total_cost_usd, total_input_tokens, total_output_tokens, total_sessions}), blocked_tasks (optional, default [], array of {node_id, reason}), session_history (optional, default [], array of session records)."
+      },
+      "timestamp": "2026-09-01T13:17:52.630667+00:00"
+    },
+    {
+      "assessment_index": 1,
+      "answers": {
+        "q1": "Time range + event_type + session_id + node_id + severity (full filter set). The parent PRD (docs/prd/prd14.md) defines these per endpoint: GET events supports event_type, severity, node_id, since, until, order; GET session outcomes supports node_id, status; GET tool calls/errors supports node_id, session_id, tool_name; GET traces supports event_type, node_id. All support cursor/limit pagination.",
+        "q2": "Minimal acknowledgement with key fields, as defined in the parent PRD. For single audit event: {id, run_id, event_type, severity, created_at}. For session outcome: {id, run_id, node_id, status, created_at}. For tool call/error: {id, run_id, tool_name, called_at/failed_at}. For trace: {id, run_id, event_type, timestamp}. For postmortem: {id, run_id, run_status, created_at}. For batch endpoints: {accepted: int, duplicates: int, errors: [{index, id, message}]}. Duplicate (200) returns the same minimal shape as the original 201.",
+        "q3": "Resource-named arrays matching the parent PRD convention. For events: {events: [...], next_cursor: string|null, has_more: bool}. For session outcomes: {outcomes: [...], ...}. For tool calls: {calls: [...], ...}. For tool errors: {errors: [...], ...}. For traces: {events: [...], ...}. No total count \u2014 cursor pagination does not support efficient total counts in append-only tables.",
+        "q4": "Any string matching the standard UUID format (8-4-4-4-12 hex with dashes). No UUID version enforcement. This matches the permissiveness of afaudit which uses uuid.uuid4() but the hub only validates the format string, not the version bits.",
+        "q5": "No explicit per-endpoint limit beyond batch count caps. Rely on Echo's default body size limit (which defaults to 4MB and is configurable). The postmortem endpoint in practice receives JSON payloads under 100KB even for large runs. If future runs produce oversized postmortems, the Echo body limit provides a safety net.",
+        "q6": "Treat session_history as opaque JSON \u2014 store the entire array as-is in the DuckDB JSON column without field-level validation. The hub is a data sink for precomputed postmortems, not a postmortem engine. Validating session_history fields would couple hub releases to afaudit schema changes, violating the decoupling goal. The parent PRD documents the expected fields (node_id, attempt, status, archetype, model, duration_ms, cost, error_message, timestamp, is_transport_error, is_budget_exhausted, is_non_retryable) for implementer reference, but the hub does not validate them."
+      },
+      "timestamp": "2026-09-01T13:20:52.097651+00:00"
+    },
+    {
+      "assessment_index": 2,
+      "answers": {
+        "q1": "JSON object: {\"ts\":\"<ISO8601 timestamp>\",\"id\":\"<uuid>\"}. This is human-readable when decoded and self-documenting. The base64 encoding makes it opaque to clients. Example decoded: {\"ts\":\"2026-09-01T14:30:22.123456Z\",\"id\":\"550e8400-e29b-41d4-a716-446655440000\"}.",
+        "q2": "Either PAT (audit:write) or API key \u2014 both are valid. The parent PRD states 'Admin tokens and API keys have implicit full access. PATs require explicit scope grants.' A nightshift agent can use a workspace-scoped PAT with audit:write + sessions:write (recommended for least-privilege), or an API key (for simpler setup). The workspace attribution section already defines the auth flow for both credential types.",
+        "q3": "Add since/until to all GET endpoints for consistency. Time-range filtering is fundamental to audit system queries \u2014 omitting it from some endpoints would force clients to fetch all records and filter client-side, defeating the purpose of a server-side query API.",
+        "q4": "Add an 'order' parameter (asc/desc, default asc) to all GET endpoints for consistency. This matches the events endpoint and gives clients control over sort direction without requiring separate endpoints.",
+        "q5": "Run ALTER TABLE ADD COLUMN IF NOT EXISTS migrations in InitSchema. DuckDB supports this natively (unlike SQLite where a workaround is needed). After CREATE TABLE IF NOT EXISTS, run any ALTER TABLE ADD COLUMN IF NOT EXISTS statements for columns added in newer schema versions. This handles upgrades transparently. The initial schema version has no migrations to run, but the pattern is established for future specs."
+      },
+      "timestamp": "2026-09-01T13:24:19.971041+00:00"
+    },
+    {
+      "assessment_index": 3,
+      "answers": {
+        "q1": "Yes \u2014 single-record lookup by run_id; returns HTTP 404 with apikit error if not found; no pagination. A run has at most one postmortem. The URL structure (POST/GET .../postmortem, not .../postmortems) reflects this singularity.",
+        "q2": "Pre-validate all items before the transaction. Parse and validate every item in the batch array first. Collect invalid items into the errors array with their index and reason. Then open a single DuckDB transaction containing only the valid subset. Duplicates (INSERT OR IGNORE) are counted separately. The transaction is atomic \u2014 if the DB write fails, all valid items are rolled back and the handler returns HTTP 500.",
+        "q3": "Oversight \u2014 GET traces should use 'traces' as its top-level key. Each endpoint uses its own resource-named array key: events, outcomes, calls, errors, traces. This matches the URL path segments and prevents client-side ambiguity.",
+        "q4": "It follows the existing hub convention. The hub resolves data_dir from the database.path in config.toml (the directory containing the SQLite database file). The audit.duckdb file is placed in the same directory. If AF_AUDIT_DB_PATH is explicitly set, it overrides this default. The implementer should read the existing hub config resolution in cmd/af-hub/main.go to find the data directory.",
+        "q5": "Yes, change to 'traces'. Consistent with the correction in q3."
+      },
+      "timestamp": "2026-09-01T13:28:19.766384+00:00"
+    },
+    {
+      "assessment_index": 4,
+      "answers": {
+        "q1": "Keep batch ingestion limited to events and traces only \u2014 add explicit non-goal statement. Session outcomes, tool calls, and tool errors are low-volume records (one per session/invocation). The afaudit JSONL files that need bulk upload contain events and traces. Batch endpoints for the other types can be added later if needed.",
+        "q2": "^\\d{8}_\\d{6}_[0-9a-f]{6}$ (lowercase hex only). This matches the afaudit convention where run_id is generated with lowercase hex characters from os.urandom(3).hex().",
+        "q3": "Create missing parent directories automatically (os.MkdirAll) before opening DuckDB. This aligns with the hub's existing behavior for the SQLite database path and simplifies container deployments where the data directory is a mounted volume.",
+        "q4": "Lexicographic string comparison on the UUID field (standard DuckDB VARCHAR ordering). This is deterministic and consistent. Since UUIDs are used as tie-breakers, the ordering semantics don't need to be chronological \u2014 they just need to be stable for pagination correctness.",
+        "q5": "Add a non-goal statement explicitly deferring rate limiting to the reverse proxy / infra layer. The hub relies on DuckDB's built-in write serialization with HTTP 503/Retry-After for contention. Application-level rate limiting is not in scope."
+      },
+      "timestamp": "2026-09-01T13:32:43.449967+00:00"
+    }
+  ],
+  "generated_artifacts": [
+    "requirements",
+    "test_spec",
+    "tasks"
+  ],
+  "mode": "interactive"
+}

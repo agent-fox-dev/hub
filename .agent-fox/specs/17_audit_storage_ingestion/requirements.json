@@ -1,0 +1,1793 @@
+{
+  "$schema": null,
+  "spec_id": "17",
+  "spec_name": "audit_storage_ingestion",
+  "schema_version": 1,
+  "introduction": "The audit storage ingestion subsystem provides a DuckDB-backed storage engine and REST API endpoints for ingesting structured telemetry produced by nightshift agents running afaudit. Note: requirements referencing afaudit APIs are based on PRD descriptions and should be cross-checked against the installed afaudit package before implementation.",
+  "glossary": {
+    "AF_AUDIT_DB_PATH": "Environment variable that overrides the default DuckDB audit database file path; defaults to `<data_dir>/audit.duckdb` derived from the hub's SQLite database directory.",
+    "ActorType": "Field on HubEvent indicating the credential type of the actor; one of: admin_token, api_key, pat, system.",
+    "CGO_ENABLED": "Go build environment variable that must be set to 1 to enable CGo, required for the go-duckdb driver.",
+    "Emitter": "Go interface in the internal/audit package with a single Emit method for writing hub-internal audit events.",
+    "HubEvent": "Go struct representing a hub-internal audit event passed to the Emitter interface.",
+    "INSERT OR IGNORE": "DuckDB SQL statement variant that silently skips insertion when a record with the same primary key already exists, used for idempotent ingestion.",
+    "JSONL": "JSON Lines format \u2014 newline-delimited JSON records used by afaudit for local telemetry file storage.",
+    "Retry-After": "HTTP response header returned with 503 responses indicating the number of seconds the client should wait before retrying.",
+    "Store": "Go struct in the internal/audit package that wraps *sql.DB and provides CRUD methods for all audit tables.",
+    "afaudit": "The agent-side audit library that produces structured telemetry (audit events, session outcomes, tool calls, tool errors, trace events) serialized as JSONL files.",
+    "agent_audit_events": "DuckDB table storing afaudit AuditEvent records submitted by agents.",
+    "agent_sessions": "DuckDB table storing hub-managed agent session lifecycle records; schema defined in this spec, populated by spec 19.",
+    "agent_traces": "DuckDB table storing AgentTraceSink trace event records submitted by agents.",
+    "apikit": "Internal library providing auth middleware, WriteAPIError, NowUTC, FormatUTC, and GetAuthInfo used across the hub.",
+    "audit.InitSchema": "Go function in the internal/audit package that creates all nine audit tables and runs column migrations in a single transaction.",
+    "audit.NewEmitter": "Go constructor that creates the default Emitter implementation backed by the Store.",
+    "audit.NewStore": "Go constructor that creates a Store wrapping a *sql.DB DuckDB connection.",
+    "audit.OpenDB": "Go function in the internal/audit package that calls os.MkdirAll on the parent directory and opens a DuckDB connection.",
+    "audit.RegisterRoutes": "Go function that registers all audit ingestion and query HTTP routes on an Echo route group.",
+    "audit.duckdb": "The DuckDB database file used by the audit subsystem, stored alongside the hub's SQLite database.",
+    "audit:read": "PAT permission scope granting read access to audit events, traces, postmortems, and tool call/error records.",
+    "audit:write": "PAT permission scope granting write access to submit audit events, traces, postmortems, and tool call/error records.",
+    "blocked_tasks": "Optional JSON array in a postmortem request body containing objects with node_id and reason fields.",
+    "config.toml": "Hub configuration file containing the database.path field used to resolve the data directory.",
+    "cost_summary": "Required sub-object in a postmortem request body containing aggregated token and cost totals.",
+    "cursor": "Opaque base64-encoded pagination token encoding a JSON object with ts and id fields, used to retrieve the next page of results.",
+    "data_dir": "The directory containing the hub's SQLite database file, resolved from the `database.path` field in config.toml.",
+    "defaultSeverityFor": "Go function in internal/audit/severity.go that maps an event_type string to its default severity value.",
+    "event_to_json": "afaudit serializer function that produces the JSON shape accepted by the hub's audit ingestion endpoints.",
+    "extraPerms": "Slice of apikit.Permission values collected in cmd/af-hub/main.go and registered with the auth system.",
+    "go-duckdb": "The github.com/marcboeker/go-duckdb package providing a CGo-based database/sql-compatible DuckDB driver.",
+    "has_more": "Boolean field in paginated GET response envelopes indicating whether additional records exist beyond the current page.",
+    "hub_audit_events": "DuckDB table storing hub-internal audit events; schema defined in this spec, populated by spec 18.",
+    "ingested_at": "Timestamp column present in all audit tables recording when the hub received and stored the record.",
+    "next_cursor": "JSON field in paginated GET response envelopes containing the opaque base64-encoded cursor for the next page, or null if no more pages exist.",
+    "postmortem_not_found": "apikit error type returned as HTTP 404 when no postmortem exists for the given run_id.",
+    "postmortems": "DuckDB table storing pre-computed postmortem reports keyed by run_id.",
+    "run_id": "Identifier for an agent run, formatted as YYYYMMDD_HHMMSS_6hexchars (e.g. 20260704_143022_a1b2c3), used as a URL path parameter and foreign key across all audit tables.",
+    "run_status": "Field on a postmortem record indicating the terminal state of the run; one of: stalled, block_limit, cost_limit, session_limit.",
+    "schema_version": "Integer field on postmortem records indicating the postmortem schema version; only value 1 is accepted.",
+    "session_history": "Optional opaque JSON array in a postmortem request body stored as-is without field-level validation.",
+    "session_outcomes": "DuckDB table storing afaudit SessionOutcome records submitted by agents.",
+    "sessions:read": "PAT permission scope granting read access to agent sessions, token usage, and cost summaries.",
+    "sessions:write": "PAT permission scope granting write access to create/close agent sessions and report token usage.",
+    "task_summary": "Required sub-object in a postmortem request body containing integer counts of tasks by status.",
+    "token_usage": "DuckDB table storing per-session token usage records; schema defined in this spec, populated by spec 19.",
+    "tool_calls": "DuckDB table storing afaudit ToolCall records submitted by agents.",
+    "tool_errors": "DuckDB table storing afaudit ToolError records submitted by agents.",
+    "unknown_schema_version": "apikit error type returned as HTTP 422 when a postmortem submission contains an unsupported schema_version value.",
+    "workspace_access_denied": "Error condition returned as HTTP 403 when a generic token's owner does not have write access to the target workspace.",
+    "workspace_archived": "Error condition returned as HTTP 409 when an agent attempts to ingest data into a workspace that has been archived.",
+    "workspace_mismatch": "Error condition returned as HTTP 403 when a workspace-scoped token's workspace does not match the URL :slug parameter.",
+    "^\\d{8}_\\d{6}_[0-9a-f]{6}$": "Regular expression pattern for validating run_id format: YYYYMMDD_HHMMSS_6hexchars (e.g. 20260704_143022_a1b2c3)"
+  },
+  "requirements": [
+    {
+      "id": "17-REQ-1",
+      "title": "DuckDB connection initialization",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have the hub open a DuckDB connection at startup with automatic parent directory creation",
+        "benefit": "audit data is persisted durably without manual directory setup"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "audit.OpenDB",
+          "action": "call os.MkdirAll on the parent directory of path, then open a DuckDB connection using the go-duckdb driver with path as the DSN",
+          "return_contract": "returns (*sql.DB, nil) on success",
+          "trigger": "the hub calls audit.OpenDB(path) at startup"
+        },
+        {
+          "id": "17-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "hub startup sequence in cmd/af-hub/main.go",
+          "action": "use the value of AF_AUDIT_DB_PATH as the DuckDB file path, ignoring the data_dir default",
+          "return_contract": "DuckDB connection opens against the explicitly configured path",
+          "trigger": "AF_AUDIT_DB_PATH is set in the environment"
+        },
+        {
+          "id": "17-REQ-1.3",
+          "ears_pattern": "event_driven",
+          "system": "hub startup sequence in cmd/af-hub/main.go",
+          "action": "resolve the DuckDB path as <data_dir>/audit.duckdb where data_dir is the directory containing the SQLite database file from database.path in config.toml",
+          "return_contract": "DuckDB connection opens against the resolved default path",
+          "trigger": "AF_AUDIT_DB_PATH is not set"
+        },
+        {
+          "id": "17-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "hub startup sequence",
+          "action": "register a deferred close of the DuckDB connection to execute on hub shutdown",
+          "return_contract": "DuckDB connection is closed cleanly when the hub process exits",
+          "trigger": "the hub successfully opens the DuckDB connection"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "audit.OpenDB",
+          "action": "return an error from audit.OpenDB without opening any DuckDB connection",
+          "return_contract": "returns (nil, error); hub startup aborts with the error logged",
+          "error_condition": "os.MkdirAll fails due to a permission error on the parent directory"
+        },
+        {
+          "id": "17-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "audit.OpenDB",
+          "action": "return the driver error from the open call without retrying",
+          "return_contract": "returns (nil, error); hub startup aborts with the error logged",
+          "error_condition": "the DuckDB file is locked by another process"
+        },
+        {
+          "id": "17-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "audit.OpenDB",
+          "action": "return an error indicating the path is invalid before calling os.MkdirAll",
+          "return_contract": "returns (nil, error) with a descriptive message",
+          "error_condition": "the resolved path is an empty string"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-2",
+      "title": "Schema initialization and migration",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have all audit tables created automatically on startup with non-destructive migrations",
+        "benefit": "upgrading the hub binary against an existing audit.duckdb requires no manual intervention"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "audit.InitSchema",
+          "action": "execute all nine CREATE TABLE IF NOT EXISTS statements in a single transaction: agent_audit_events, hub_audit_events, session_outcomes, tool_calls, tool_errors, agent_traces, postmortems, agent_sessions, token_usage",
+          "return_contract": "returns nil on success; all nine tables exist in the DuckDB file",
+          "trigger": "the hub calls audit.InitSchema(db) at startup"
+        },
+        {
+          "id": "17-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "audit.InitSchema",
+          "action": "execute ALTER TABLE ADD COLUMN IF NOT EXISTS statements for any columns added in schema versions newer than the initial release, then commit the transaction",
+          "return_contract": "returns nil; existing tables are not dropped or truncated; new columns are added non-destructively",
+          "trigger": "the DuckDB file already contains tables from a previous hub version"
+        },
+        {
+          "id": "17-REQ-2.3",
+          "ears_pattern": "ubiquitous",
+          "system": "audit.InitSchema",
+          "action": "run all CREATE TABLE and ALTER TABLE statements within a single database transaction so that partial schema initialization is never committed",
+          "return_contract": "either all DDL statements succeed and are committed, or none are committed and an error is returned"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "audit.InitSchema",
+          "action": "roll back the transaction and return the error",
+          "return_contract": "returns non-nil error; hub startup aborts",
+          "error_condition": "a CREATE TABLE statement fails due to a corrupted DuckDB file"
+        },
+        {
+          "id": "17-REQ-2.E2",
+          "ears_pattern": "unwanted",
+          "system": "audit.InitSchema",
+          "action": "return the error immediately without executing any DDL",
+          "return_contract": "returns non-nil error; hub startup aborts",
+          "error_condition": "the database transaction cannot be opened (e.g., disk full)"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-3",
+      "title": "PAT permission scope definitions",
+      "user_story": {
+        "role": "hub administrator",
+        "goal": "grant agents least-privilege access to audit ingestion endpoints via PAT scopes",
+        "benefit": "agents can submit telemetry without holding broad API key access"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-3.1",
+          "ears_pattern": "ubiquitous",
+          "system": "internal/audit/permissions.go",
+          "action": "define four PAT permission scopes: audit:read, audit:write, sessions:read, sessions:write, and return them from audit.Permissions() as a slice of apikit.Permission values",
+          "return_contract": "audit.Permissions() returns a slice of exactly four apikit.Permission entries"
+        },
+        {
+          "id": "17-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "hub startup sequence",
+          "action": "collect the result of audit.Permissions() into extraPerms so all four audit scopes are registered with the auth system",
+          "return_contract": "all four scopes are available for PAT grant assignment",
+          "trigger": "the hub initializes its permission registry"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "audit ingestion endpoint",
+          "action": "reject the request with an insufficient scope error",
+          "return_contract": "returns HTTP 403 with apikit error body",
+          "error_condition": "a PAT is presented that lacks the audit:write scope for a write endpoint"
+        },
+        {
+          "id": "17-REQ-3.E2",
+          "ears_pattern": "unwanted",
+          "system": "audit query endpoint",
+          "action": "reject the request with an insufficient scope error",
+          "return_contract": "returns HTTP 403 with apikit error body",
+          "error_condition": "a PAT is presented that lacks the audit:read scope for a read endpoint"
+        },
+        {
+          "id": "17-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "audit ingestion endpoint",
+          "action": "reject the request as unauthenticated",
+          "return_contract": "returns HTTP 401 with apikit error body",
+          "error_condition": "no authentication credential is presented"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-4",
+      "title": "Emitter interface and default implementation",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "emit hub-internal audit events through a stable interface without coupling to the storage layer",
+        "benefit": "downstream specs can emit events without depending on Store internals"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-4.1",
+          "ears_pattern": "ubiquitous",
+          "system": "internal/audit/emitter.go",
+          "action": "define the Emitter interface with a single method Emit(ctx context.Context, event HubEvent) error, and define the HubEvent struct with fields EventType, ActorID, ActorType, ResourceType, ResourceID, Action, Workspace, and Metadata map[string]any",
+          "return_contract": "Emitter and HubEvent are exported from the internal/audit package"
+        },
+        {
+          "id": "17-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "default Emitter implementation",
+          "action": "generate a UUID for the event id, set ingested_at to the current UTC time via apikit.NowUTC(), and insert the event into hub_audit_events via the Store",
+          "return_contract": "returns nil on successful insertion",
+          "trigger": "Emit is called with a HubEvent"
+        },
+        {
+          "id": "17-REQ-4.3",
+          "ears_pattern": "unwanted",
+          "system": "default Emitter implementation",
+          "action": "log the error via slog at error level and return nil to the caller \u2014 audit emission must never cause a handler to return an error to the client",
+          "return_contract": "returns nil regardless of storage failure; error is logged only",
+          "error_condition": "the Store insert into hub_audit_events fails"
+        },
+        {
+          "id": "17-REQ-4.4",
+          "ears_pattern": "ubiquitous",
+          "system": "HubEvent.ActorType",
+          "action": "accept only the values admin_token, api_key, pat, and system for ActorType; these correspond to apikit AuthInfo.CredentialType values and are enforced by convention at emission points, not at ingestion time",
+          "return_contract": "no runtime validation error is raised at ingestion; enforcement is at the emission call site"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "default Emitter implementation",
+          "action": "propagate the nil context to the Store insert; if the insert panics or errors, log and swallow per the emission error policy",
+          "return_contract": "returns nil; does not panic the handler goroutine",
+          "error_condition": "Emit is called with a nil context"
+        },
+        {
+          "id": "17-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "default Emitter implementation",
+          "action": "attempt JSON marshaling; if marshaling fails, log the error and store an empty JSON object in the metadata column",
+          "return_contract": "returns nil; the event row is stored with metadata set to {}",
+          "error_condition": "Metadata contains non-JSON-serializable values"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-5",
+      "title": "run_id format validation",
+      "user_story": {
+        "role": "agent developer",
+        "goal": "receive clear errors when submitting data with an incorrectly formatted run_id",
+        "benefit": "misconfigured agents are caught early rather than silently storing invalid data"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-5.1",
+          "ears_pattern": "ubiquitous",
+          "system": "internal/audit/validate.go",
+          "action": "validate run_id against the regexp `^\\d{8}_\\d{6}_[0-9a-f]{6}$` (eight decimal digits, underscore, six decimal digits, underscore, six lowercase hex characters); uppercase hex characters are not accepted",
+          "return_contract": "validation function returns true for valid run_id strings, false for invalid ones"
+        },
+        {
+          "id": "17-REQ-5.2",
+          "ears_pattern": "unwanted",
+          "system": "any audit ingestion endpoint",
+          "action": "reject the request before any body parsing",
+          "return_contract": "returns HTTP 400 with apikit error body describing the invalid run_id format",
+          "error_condition": "the run_id URL path parameter does not match the regexp `^\\d{8}_\\d{6}_[0-9a-f]{6}$`"
+        },
+        {
+          "id": "17-REQ-5.3",
+          "ears_pattern": "unwanted",
+          "system": "any audit ingestion endpoint",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body describing the run_id mismatch",
+          "error_condition": "the request body contains a run_id field that does not match the run_id in the URL path"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "run_id validation",
+          "action": "reject as invalid",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "run_id contains uppercase hex characters in the suffix (e.g. A1B2C3)"
+        },
+        {
+          "id": "17-REQ-5.E2",
+          "ears_pattern": "unwanted",
+          "system": "run_id validation",
+          "action": "reject as invalid",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "run_id is an empty string"
+        },
+        {
+          "id": "17-REQ-5.E3",
+          "ears_pattern": "unwanted",
+          "system": "run_id validation",
+          "action": "accept the request using the URL path run_id as the authoritative value",
+          "return_contract": "request proceeds normally; run_id from URL path is stored",
+          "error_condition": "run_id has the correct format but the body run_id field is absent"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-6",
+      "title": "Single audit event ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "submit a single audit event to the hub in the exact JSON format produced by afaudit",
+        "benefit": "agent telemetry is stored durably without requiring changes to the afaudit data model"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "validate run_id, apply field defaults (generate UUID for id if absent, set timestamp to apikit.NowUTC() if absent, apply defaultSeverityFor if severity absent), set ingested_at to apikit.NowUTC(), and insert the record into agent_audit_events via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, run_id: string, event_type: string, severity: string, created_at: string}",
+          "trigger": "an authenticated agent submits a POST request with a valid audit event JSON body"
+        },
+        {
+          "id": "17-REQ-6.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "skip the insert via INSERT OR IGNORE and return the same acknowledgement shape as the original 201 response",
+          "return_contract": "returns HTTP 200 with JSON body {id: string, run_id: string, event_type: string, severity: string, created_at: string}",
+          "trigger": "an agent submits an event with an id that already exists in agent_audit_events"
+        },
+        {
+          "id": "17-REQ-6.3",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "accept and store the event, log a warning via slog",
+          "return_contract": "returns HTTP 201 with the standard acknowledgement body",
+          "trigger": "an agent submits an event with an unknown event_type"
+        },
+        {
+          "id": "17-REQ-6.4",
+          "ears_pattern": "ubiquitous",
+          "system": "audit event severity validation",
+          "action": "accept only the values info, warning, error, and critical as severity; reject any other non-empty severity value",
+          "return_contract": "invalid severity returns HTTP 400 with apikit error body"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: event_type",
+          "error_condition": "event_type field is missing from the request body"
+        },
+        {
+          "id": "17-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing invalid payload",
+          "error_condition": "payload field is present but is not a JSON object"
+        },
+        {
+          "id": "17-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "return a 500 error; no partial data is committed",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB write fails (e.g., disk full)"
+        },
+        {
+          "id": "17-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "return a 503 error with a Retry-After header set to 5",
+          "return_contract": "returns HTTP 503 with Retry-After: 5 header and apikit error body",
+          "error_condition": "DuckDB write times out under sustained write contention"
+        },
+        {
+          "id": "17-REQ-6.E5",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "the id field is present but does not match the standard UUID format (8-4-4-4-12 hex digits with dashes)"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-7",
+      "title": "Batch audit event ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "upload existing JSONL audit event files in bulk to the hub",
+        "benefit": "historical telemetry from local files is ingested efficiently in a single request"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "pre-validate all items, collect invalid items into the errors array, then insert all valid items in a single DuckDB transaction using INSERT OR IGNORE; count duplicates separately",
+          "return_contract": "returns HTTP 200 with JSON body {accepted: integer, duplicates: integer, errors: [{index: integer, id: string, message: string}]}",
+          "trigger": "an authenticated agent submits a batch of up to 1000 audit events"
+        },
+        {
+          "id": "17-REQ-7.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "insert only the valid items; include invalid items in the errors array with their zero-based index and reason; do not abort the entire batch",
+          "return_contract": "returns HTTP 200 with accepted count reflecting only successfully inserted items, errors array non-empty",
+          "trigger": "the batch contains some invalid items and some valid items"
+        },
+        {
+          "id": "17-REQ-7.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "reject the entire request without processing any items",
+          "return_contract": "returns HTTP 413 with apikit error body",
+          "error_condition": "the batch array contains more than 1000 items"
+        },
+        {
+          "id": "17-REQ-7.4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "the batch array is empty"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "roll back the entire transaction; no valid items are partially committed",
+          "return_contract": "returns HTTP 500 with apikit error body; accepted count is 0",
+          "error_condition": "the DuckDB transaction fails after pre-validation (e.g., disk full during write)"
+        },
+        {
+          "id": "17-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "complete normally; duplicates count equals 1000, accepted equals 0",
+          "return_contract": "returns HTTP 200 with {accepted: 0, duplicates: 1000, errors: []}",
+          "error_condition": "all 1000 items in the batch are duplicates"
+        },
+        {
+          "id": "17-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "return errors for all items; no transaction is opened",
+          "return_contract": "returns HTTP 200 with {accepted: 0, duplicates: 0, errors: [all items listed]}",
+          "error_condition": "all items in the batch fail pre-validation"
+        },
+        {
+          "id": "17-REQ-7.E4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events/batch handler",
+          "action": "Echo rejects the request before the handler is invoked",
+          "return_contract": "returns HTTP 413 from Echo middleware before handler executes",
+          "error_condition": "the request body exceeds Echo's 4 MB body size limit"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-8",
+      "title": "Session outcome ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "record the outcome of an agent session including status, duration, and token usage",
+        "benefit": "session-level telemetry is available for analysis and postmortem generation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "validate run_id, generate UUID for id if absent, set ingested_at to apikit.NowUTC(), and insert the record into session_outcomes via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, run_id: string, node_id: string, status: string, created_at: string}",
+          "trigger": "an authenticated agent submits a session outcome with required fields run_id, session_id, status, and timestamp"
+        },
+        {
+          "id": "17-REQ-8.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "skip the insert via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 200 with the same acknowledgement shape as the original 201 response",
+          "trigger": "an agent submits a session outcome with an id that already exists in session_outcomes"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: session_id",
+          "error_condition": "session_id field is missing from the request body"
+        },
+        {
+          "id": "17-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: status",
+          "error_condition": "status field is missing from the request body"
+        },
+        {
+          "id": "17-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "return a storage error",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB write fails"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-9",
+      "title": "Tool call ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "record individual tool invocations including input, output, and duration",
+        "benefit": "tool-level telemetry enables analysis of agent behavior and performance"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "validate run_id, generate UUID for id if absent, set ingested_at to apikit.NowUTC(), and insert the record into tool_calls via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, run_id: string, tool_name: string, called_at: string}",
+          "trigger": "an authenticated agent submits a tool call record with required fields run_id, tool_name, and timestamp"
+        },
+        {
+          "id": "17-REQ-9.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "skip the insert via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 200 with the same acknowledgement shape as the original 201 response",
+          "trigger": "an agent submits a tool call with an id that already exists in tool_calls"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: tool_name",
+          "error_condition": "tool_name field is missing from the request body"
+        },
+        {
+          "id": "17-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "return a storage error",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB write fails"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-10",
+      "title": "Tool error ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "record tool invocation failures including error code and message",
+        "benefit": "tool failure telemetry enables debugging and reliability analysis"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "validate run_id, generate UUID for id if absent, set ingested_at to apikit.NowUTC(), and insert the record into tool_errors via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, run_id: string, tool_name: string, failed_at: string}",
+          "trigger": "an authenticated agent submits a tool error record with required fields run_id, tool_name, error_msg, and timestamp"
+        },
+        {
+          "id": "17-REQ-10.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "skip the insert via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 200 with the same acknowledgement shape as the original 201 response",
+          "trigger": "an agent submits a tool error with an id that already exists in tool_errors"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: error_msg",
+          "error_condition": "error_msg field is missing from the request body"
+        },
+        {
+          "id": "17-REQ-10.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "return a storage error",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB write fails"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-11",
+      "title": "Single trace event ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "submit individual agent trace events to the hub for structured conversation replay",
+        "benefit": "trace data enables transcript reconstruction and session analysis"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "validate run_id and event_type (must be one of: session.init, assistant.message, tool.use, tool.error, session.result), generate UUID for id if absent, set ingested_at to apikit.NowUTC(), and insert into agent_traces via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, run_id: string, event_type: string, timestamp: string}",
+          "trigger": "an authenticated agent submits a trace event with a valid event_type"
+        },
+        {
+          "id": "17-REQ-11.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing unknown trace event_type",
+          "error_condition": "event_type is not one of the five valid trace event types"
+        },
+        {
+          "id": "17-REQ-11.3",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "skip the insert via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 200 with the same acknowledgement shape as the original 201 response",
+          "trigger": "an agent submits a trace event with an id that already exists in agent_traces"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-11.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: event_type",
+          "error_condition": "event_type field is missing from the request body"
+        },
+        {
+          "id": "17-REQ-11.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "return a storage error",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB write fails"
+        },
+        {
+          "id": "17-REQ-11.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "return a 503 error with Retry-After header set to 5",
+          "return_contract": "returns HTTP 503 with Retry-After: 5 header and apikit error body",
+          "error_condition": "DuckDB write times out under sustained write contention"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-12",
+      "title": "Batch trace event ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "upload existing JSONL trace files in bulk to the hub",
+        "benefit": "historical trace data from local files is ingested efficiently in a single request"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch handler",
+          "action": "pre-validate all items (including event_type validation), collect invalid items into the errors array, then insert all valid items in a single DuckDB transaction using INSERT OR IGNORE; count duplicates separately",
+          "return_contract": "returns HTTP 200 with JSON body {accepted: integer, duplicates: integer, errors: [{index: integer, id: string, message: string}]}",
+          "trigger": "an authenticated agent submits a batch of up to 1000 trace events"
+        },
+        {
+          "id": "17-REQ-12.2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch handler",
+          "action": "reject the entire request without processing any items",
+          "return_contract": "returns HTTP 413 with apikit error body",
+          "error_condition": "the batch array contains more than 1000 items"
+        },
+        {
+          "id": "17-REQ-12.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "the batch array is empty"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-12.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch handler",
+          "action": "collect the item in the errors array during pre-validation; do not include it in the transaction",
+          "return_contract": "returns HTTP 200 with the item listed in errors array",
+          "error_condition": "a batch item has an invalid event_type (not one of the five valid trace event types)"
+        },
+        {
+          "id": "17-REQ-12.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch handler",
+          "action": "roll back the entire transaction; no valid items are partially committed",
+          "return_contract": "returns HTTP 500 with apikit error body; accepted count is 0",
+          "error_condition": "the DuckDB transaction fails after pre-validation"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-13",
+      "title": "Postmortem report ingestion",
+      "user_story": {
+        "role": "nightshift agent",
+        "goal": "submit a pre-computed postmortem report for a completed run",
+        "benefit": "run-level analysis data is stored durably and queryable via the hub API"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "validate run_id, validate run_status is one of stalled/block_limit/cost_limit/session_limit, validate task_summary and cost_summary sub-schemas, set ingested_at to apikit.NowUTC(), and insert into postmortems using run_id as the primary key via INSERT OR IGNORE",
+          "return_contract": "returns HTTP 201 with JSON body {run_id: string, run_status: string, created_at: string}",
+          "trigger": "an authenticated agent submits a postmortem with required fields run_status, started_at, completed_at, task_summary, and cost_summary"
+        },
+        {
+          "id": "17-REQ-13.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "skip the insert via INSERT OR IGNORE; do not modify the stored record",
+          "return_contract": "returns HTTP 200 with the same acknowledgement shape as the original 201 response",
+          "trigger": "a postmortem for the given run_id already exists in postmortems"
+        },
+        {
+          "id": "17-REQ-13.3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 422 with apikit error body of type unknown_schema_version",
+          "error_condition": "schema_version is present and is not 1"
+        },
+        {
+          "id": "17-REQ-13.4",
+          "ears_pattern": "ubiquitous",
+          "system": "postmortem session_history field",
+          "action": "store the session_history array as-is in the DuckDB JSON column without field-level validation; unknown or missing fields within the array are accepted",
+          "return_contract": "no validation error is raised for session_history content"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing missing required field: run_status",
+          "error_condition": "run_status is missing from the request body"
+        },
+        {
+          "id": "17-REQ-13.E2",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body citing the missing field",
+          "error_condition": "task_summary is missing a required integer field (e.g., total)"
+        },
+        {
+          "id": "17-REQ-13.E3",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "run_status value is not one of the four accepted values"
+        },
+        {
+          "id": "17-REQ-13.E4",
+          "ears_pattern": "unwanted",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "return a storage error",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB write fails"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-14",
+      "title": "Audit event query endpoint",
+      "user_story": {
+        "role": "operator or tooling",
+        "goal": "query audit events for a specific run with filtering and pagination",
+        "benefit": "targeted event retrieval without fetching the entire event log"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-14.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "query agent_audit_events filtered by run_id and any provided parameters (event_type, severity, node_id, since, until), apply cursor-based pagination with the given limit (default 100, max 1000), and sort by timestamp in the specified order (default asc)",
+          "return_contract": "returns HTTP 200 with JSON body {events: [...], next_cursor: string|null, has_more: boolean}",
+          "trigger": "an authenticated caller sends a GET request with optional filter parameters"
+        },
+        {
+          "id": "17-REQ-14.2",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "decode the base64 cursor to extract ts and id, apply the appropriate tuple comparison (timestamp, id) > (cursor.ts, cursor.id) for asc or < for desc, and return the next page",
+          "return_contract": "returns HTTP 200 with the next page of events and updated next_cursor",
+          "trigger": "a cursor parameter is provided from a previous response"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-14.E1",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "clamp the limit to 1000",
+          "return_contract": "returns HTTP 200 with at most 1000 records",
+          "error_condition": "limit parameter exceeds 1000"
+        },
+        {
+          "id": "17-REQ-14.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "cursor parameter is malformed (not valid base64 or not valid JSON after decoding)"
+        },
+        {
+          "id": "17-REQ-14.E3",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "since or until parameter is not a valid ISO 8601 timestamp"
+        },
+        {
+          "id": "17-REQ-14.E4",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "return an empty events array",
+          "return_contract": "returns HTTP 200 with {events: [], next_cursor: null, has_more: false}",
+          "trigger": "no events exist for the given run_id"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-15",
+      "title": "Session outcomes query endpoint",
+      "user_story": {
+        "role": "operator or tooling",
+        "goal": "query session outcomes for a specific run with filtering and pagination",
+        "benefit": "session-level analysis without fetching all outcome records"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-15.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "query session_outcomes filtered by run_id and any provided parameters (node_id, status, since, until), apply cursor-based pagination with the given limit (default 100, max 1000), and sort by timestamp in the specified order (default asc)",
+          "return_contract": "returns HTTP 200 with JSON body {outcomes: [...], next_cursor: string|null, has_more: boolean}",
+          "trigger": "an authenticated caller sends a GET request with optional filter parameters"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-15.E1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "return an empty outcomes array",
+          "return_contract": "returns HTTP 200 with {outcomes: [], next_cursor: null, has_more: false}",
+          "trigger": "no outcomes exist for the given run_id"
+        },
+        {
+          "id": "17-REQ-15.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "cursor parameter is malformed"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-16",
+      "title": "Tool calls query endpoint",
+      "user_story": {
+        "role": "operator or tooling",
+        "goal": "query tool call records for a specific run with filtering and pagination",
+        "benefit": "tool usage analysis without fetching all tool call records"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-16.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "query tool_calls filtered by run_id and any provided parameters (node_id, session_id, tool_name, since, until), apply cursor-based pagination with the given limit (default 100, max 1000), and sort by timestamp in the specified order (default asc)",
+          "return_contract": "returns HTTP 200 with JSON body {calls: [...], next_cursor: string|null, has_more: boolean}",
+          "trigger": "an authenticated caller sends a GET request with optional filter parameters"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-16.E1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "return an empty calls array",
+          "return_contract": "returns HTTP 200 with {calls: [], next_cursor: null, has_more: false}",
+          "trigger": "no tool calls exist for the given run_id"
+        },
+        {
+          "id": "17-REQ-16.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "cursor parameter is malformed"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-17",
+      "title": "Tool errors query endpoint",
+      "user_story": {
+        "role": "operator or tooling",
+        "goal": "query tool error records for a specific run with filtering and pagination",
+        "benefit": "tool failure analysis without fetching all error records"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-17.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "query tool_errors filtered by run_id and any provided parameters (node_id, session_id, tool_name, since, until), apply cursor-based pagination with the given limit (default 100, max 1000), and sort by timestamp in the specified order (default asc)",
+          "return_contract": "returns HTTP 200 with JSON body {errors: [...], next_cursor: string|null, has_more: boolean}",
+          "trigger": "an authenticated caller sends a GET request with optional filter parameters"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-17.E1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "return an empty errors array",
+          "return_contract": "returns HTTP 200 with {errors: [], next_cursor: null, has_more: false}",
+          "trigger": "no tool errors exist for the given run_id"
+        },
+        {
+          "id": "17-REQ-17.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "cursor parameter is malformed"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-18",
+      "title": "Trace events query endpoint",
+      "user_story": {
+        "role": "operator or tooling",
+        "goal": "query agent trace events for a specific run with filtering and pagination",
+        "benefit": "conversation trace analysis without fetching all trace records"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-18.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "query agent_traces filtered by run_id and any provided parameters (event_type, node_id, since, until), apply cursor-based pagination with the given limit (default 100, max 1000), and sort by timestamp in the specified order (default asc)",
+          "return_contract": "returns HTTP 200 with JSON body {traces: [...], next_cursor: string|null, has_more: boolean}",
+          "trigger": "an authenticated caller sends a GET request with optional filter parameters"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-18.E1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "return an empty traces array",
+          "return_contract": "returns HTTP 200 with {traces: [], next_cursor: null, has_more: false}",
+          "trigger": "no traces exist for the given run_id"
+        },
+        {
+          "id": "17-REQ-18.E2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/traces handler",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "cursor parameter is malformed"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-19",
+      "title": "Postmortem retrieval endpoint",
+      "user_story": {
+        "role": "operator or tooling",
+        "goal": "retrieve the postmortem report for a specific run",
+        "benefit": "run-level analysis data is accessible via a simple single-record lookup"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-19.1",
+          "ears_pattern": "event_driven",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "look up the postmortem record in postmortems by run_id and return the full record",
+          "return_contract": "returns HTTP 200 with JSON body containing all postmortem fields: run_id, workspace, schema_version, run_status, started_at, completed_at, task_summary, cost_summary, blocked_tasks, session_history, ingested_at",
+          "trigger": "an authenticated caller sends a GET request for a run that has a postmortem"
+        },
+        {
+          "id": "17-REQ-19.2",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "return a not-found error",
+          "return_contract": "returns HTTP 404 with apikit error body of type postmortem_not_found",
+          "error_condition": "no postmortem exists for the given run_id"
+        },
+        {
+          "id": "17-REQ-19.3",
+          "ears_pattern": "ubiquitous",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "not accept or apply cursor, limit, since, until, or order query parameters \u2014 this endpoint is a single-record lookup, not a paginated list",
+          "return_contract": "response contains no next_cursor or has_more fields"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-19.E1",
+          "ears_pattern": "unwanted",
+          "system": "GET /api/v1/workspaces/:slug/runs/:run_id/postmortem handler",
+          "action": "reject the request before querying the database",
+          "return_contract": "returns HTTP 400 with apikit error body",
+          "error_condition": "run_id in the URL path does not match the regexp `^\\d{8}_\\d{6}_[0-9a-f]{6}$`"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-20",
+      "title": "Workspace attribution and access control",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "ensure all agent-submitted data is correctly attributed to a workspace and access is enforced",
+        "benefit": "audit data is isolated per workspace and unauthorized submissions are rejected"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-20.1",
+          "ears_pattern": "ubiquitous",
+          "system": "all audit ingestion endpoints",
+          "action": "store the workspace slug from the URL :slug parameter alongside every agent record in the workspace column",
+          "return_contract": "all stored records have a non-empty workspace column matching the URL :slug"
+        },
+        {
+          "id": "17-REQ-20.2",
+          "ears_pattern": "unwanted",
+          "system": "all audit ingestion endpoints",
+          "action": "reject the request with a workspace mismatch error",
+          "return_contract": "returns HTTP 403 with apikit error body of type workspace_mismatch",
+          "error_condition": "a workspace-scoped PAT is presented and its workspace does not match the URL :slug"
+        },
+        {
+          "id": "17-REQ-20.3",
+          "ears_pattern": "unwanted",
+          "system": "all audit ingestion endpoints",
+          "action": "reject the request with an access denied error",
+          "return_contract": "returns HTTP 403 with apikit error body of type workspace_access_denied",
+          "error_condition": "a generic PAT or API key is presented and the token owner does not have write access to the workspace"
+        },
+        {
+          "id": "17-REQ-20.4",
+          "ears_pattern": "unwanted",
+          "system": "all audit ingestion endpoints",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 409 with apikit error body of type workspace_archived",
+          "error_condition": "the workspace identified by :slug has been archived"
+        },
+        {
+          "id": "17-REQ-20.5",
+          "ears_pattern": "unwanted",
+          "system": "all audit ingestion endpoints",
+          "action": "reject the request",
+          "return_contract": "returns HTTP 404 with apikit error body",
+          "error_condition": "the workspace identified by :slug does not exist"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-20.E1",
+          "ears_pattern": "event_driven",
+          "system": "all audit ingestion endpoints",
+          "action": "bypass workspace restriction checks and allow the request to proceed",
+          "return_contract": "request proceeds to handler logic; no workspace access error is raised",
+          "trigger": "an admin token is presented"
+        },
+        {
+          "id": "17-REQ-20.E2",
+          "ears_pattern": "event_driven",
+          "system": "all audit ingestion endpoints",
+          "action": "apply the same workspace access check as a generic PAT (token owner must have write access)",
+          "return_contract": "request proceeds if access is granted; HTTP 403 if not",
+          "trigger": "an API key is presented"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-21",
+      "title": "Cursor-based pagination mechanics",
+      "user_story": {
+        "role": "API client",
+        "goal": "paginate through large result sets without missing or duplicating records",
+        "benefit": "stable, deterministic pagination across all audit query endpoints"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-21.1",
+          "ears_pattern": "ubiquitous",
+          "system": "all paginated GET endpoints",
+          "action": "encode the cursor as a base64-encoded JSON object with fields ts (ISO 8601 timestamp of the last returned record) and id (UUID of the last returned record); include next_cursor as null and has_more as false when no further records exist",
+          "return_contract": "next_cursor is a non-null base64 string when has_more is true; null when has_more is false"
+        },
+        {
+          "id": "17-REQ-21.2",
+          "ears_pattern": "ubiquitous",
+          "system": "all paginated GET endpoints",
+          "action": "use tuple comparison (timestamp, id) > (cursor.ts, cursor.id) for ascending order and (timestamp, id) < (cursor.ts, cursor.id) for descending order, where id comparison is lexicographic string order on the VARCHAR column",
+          "return_contract": "pages are stable and non-overlapping across requests with the same filter parameters"
+        },
+        {
+          "id": "17-REQ-21.3",
+          "ears_pattern": "ubiquitous",
+          "system": "all paginated GET endpoints",
+          "action": "enforce a maximum limit of 1000 records per page; default to 100 when limit is not specified",
+          "return_contract": "response contains at most 1000 records regardless of the limit parameter value"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-21.E1",
+          "ears_pattern": "unwanted",
+          "system": "all paginated GET endpoints",
+          "action": "use the default limit of 100",
+          "return_contract": "returns HTTP 200 with up to 100 records",
+          "error_condition": "limit is set to 0 or a negative value"
+        },
+        {
+          "id": "17-REQ-21.E2",
+          "ears_pattern": "unwanted",
+          "system": "all paginated GET endpoints",
+          "action": "apply the cursor comparison semantics of the current request's order parameter; the cursor ts and id values are used with the new direction's comparison operator",
+          "return_contract": "returns HTTP 200 with records matching the new order direction from the cursor position",
+          "error_condition": "cursor was generated with order=asc but the current request uses order=desc"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-22",
+      "title": "DuckDB write contention handling",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have the hub handle concurrent write contention gracefully without data loss",
+        "benefit": "agents receive actionable retry guidance rather than opaque errors under load"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-22.1",
+          "ears_pattern": "state_driven",
+          "system": "Store write methods",
+          "action": "return an error from the Store method; the handler responds with HTTP 503 and sets the Retry-After header to 5",
+          "return_contract": "returns HTTP 503 with Retry-After: 5 header and apikit error body",
+          "state": "DuckDB is under sustained write contention causing a write operation to time out"
+        },
+        {
+          "id": "17-REQ-22.2",
+          "ears_pattern": "ubiquitous",
+          "system": "Store write methods",
+          "action": "not add an application-level mutex; rely on DuckDB's internal write serialization to queue concurrent writers",
+          "return_contract": "concurrent write requests are serialized by DuckDB without application-level locking"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-22.E1",
+          "ears_pattern": "unwanted",
+          "system": "Store write methods",
+          "action": "DuckDB returns an error; the Store method surfaces it; no partial commit occurs",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "disk is full during a DuckDB write"
+        },
+        {
+          "id": "17-REQ-22.E2",
+          "ears_pattern": "unwanted",
+          "system": "Store write methods",
+          "action": "log the error and surface it as a storage error",
+          "return_contract": "returns HTTP 500 with apikit error body",
+          "error_condition": "DuckDB file is corrupted and returns an error on the first query after startup"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-23",
+      "title": "Default severity mapping",
+      "user_story": {
+        "role": "agent developer",
+        "goal": "have the hub apply the correct default severity when none is provided in an audit event",
+        "benefit": "severity data is consistent with afaudit's own default_severity_for() mapping without requiring agents to always specify severity"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-23.1",
+          "ears_pattern": "ubiquitous",
+          "system": "defaultSeverityFor function in internal/audit/severity.go",
+          "action": "return error for event_type session.fail, warning for run.limit_reached, git.conflict, harvest.empty, and review.parse_failure, and info for all other event types",
+          "return_contract": "returns one of the four valid severity strings: info, warning, error, critical"
+        },
+        {
+          "id": "17-REQ-23.2",
+          "ears_pattern": "event_driven",
+          "system": "POST /api/v1/workspaces/:slug/runs/:run_id/events handler",
+          "action": "call defaultSeverityFor(event_type) and store the result as the severity value",
+          "return_contract": "stored record has a non-empty severity matching the defaultSeverityFor mapping",
+          "trigger": "an audit event is submitted without a severity field"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-23.E1",
+          "ears_pattern": "event_driven",
+          "system": "defaultSeverityFor function",
+          "action": "return info as the default severity",
+          "return_contract": "returns the string info",
+          "trigger": "event_type is an unknown string not in the mapping table"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-24",
+      "title": "Route registration and hub integration",
+      "user_story": {
+        "role": "hub developer",
+        "goal": "register all audit routes and initialize all audit subsystem components in the hub startup sequence",
+        "benefit": "the audit subsystem is fully operational when the hub starts without manual wiring"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "17-REQ-24.1",
+          "ears_pattern": "event_driven",
+          "system": "cmd/af-hub/main.go startup sequence",
+          "action": "call audit.OpenDB, audit.InitSchema, audit.NewStore, audit.NewEmitter, audit.RegisterRoutes, and collect audit.Permissions() into extraPerms in that order",
+          "return_contract": "all 14 audit endpoints are registered and reachable; all four PAT scopes are available",
+          "trigger": "the hub starts up"
+        },
+        {
+          "id": "17-REQ-24.2",
+          "ears_pattern": "ubiquitous",
+          "system": "audit.RegisterRoutes",
+          "action": "register all 14 audit endpoints under the path prefix /api/v1/workspaces/:slug/runs/:run_id/ on the provided Echo route group, wiring each handler to the Store and Emitter",
+          "return_contract": "all 14 routes are registered with correct HTTP methods and path suffixes as specified in the ingestion endpoints table"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "17-REQ-24.E1",
+          "ears_pattern": "unwanted",
+          "system": "cmd/af-hub/main.go startup sequence",
+          "action": "abort hub startup and log the error",
+          "return_contract": "hub process exits with a non-zero exit code and error message",
+          "error_condition": "audit.OpenDB returns an error"
+        },
+        {
+          "id": "17-REQ-24.E2",
+          "ears_pattern": "unwanted",
+          "system": "cmd/af-hub/main.go startup sequence",
+          "action": "abort hub startup and log the error",
+          "return_contract": "hub process exits with a non-zero exit code and error message",
+          "error_condition": "audit.InitSchema returns an error"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "17-PROP-1",
+      "title": "Idempotent ingestion via INSERT OR IGNORE",
+      "for_any": "audit record submitted with an id that already exists in the target table",
+      "invariant": "the stored record is unchanged and the response shape is identical to the original successful ingestion response",
+      "validates": [
+        "17-REQ-6.2",
+        "17-REQ-8.2",
+        "17-REQ-9.2",
+        "17-REQ-10.2",
+        "17-REQ-11.3",
+        "17-REQ-13.2"
+      ]
+    },
+    {
+      "id": "17-PROP-2",
+      "title": "run_id format invariant",
+      "for_any": "request to any audit ingestion or query endpoint",
+      "invariant": "the run_id URL path parameter is validated against the regexp `^\\d{8}_\\d{6}_[0-9a-f]{6}$` before any database operation is performed; requests with non-matching run_id values never reach the Store",
+      "validates": [
+        "17-REQ-5.1",
+        "17-REQ-5.2"
+      ]
+    },
+    {
+      "id": "17-PROP-3",
+      "title": "Batch atomicity",
+      "for_any": "batch ingestion request containing N valid items",
+      "invariant": "either all N valid items are committed to the database or none are; no partial commit occurs within the transaction",
+      "validates": [
+        "17-REQ-7.1",
+        "17-REQ-7.E1",
+        "17-REQ-12.1",
+        "17-REQ-12.E2"
+      ]
+    },
+    {
+      "id": "17-PROP-4",
+      "title": "Workspace attribution completeness",
+      "for_any": "record stored in any audit table via an ingestion endpoint",
+      "invariant": "the workspace column equals the :slug URL path parameter of the request that created the record",
+      "validates": [
+        "17-REQ-20.1"
+      ]
+    },
+    {
+      "id": "17-PROP-5",
+      "title": "Cursor pagination stability",
+      "for_any": "sequence of paginated GET requests with the same filter parameters and order",
+      "invariant": "the union of all returned records across pages equals the full result set with no duplicates and no omissions, regardless of concurrent inserts during pagination",
+      "validates": [
+        "17-REQ-21.1",
+        "17-REQ-21.2"
+      ]
+    },
+    {
+      "id": "17-PROP-6",
+      "title": "Emit never fails a handler",
+      "for_any": "call to the default Emitter.Emit method",
+      "invariant": "Emit always returns nil to the caller regardless of whether the underlying Store insert succeeds or fails; storage failures are logged but not propagated",
+      "validates": [
+        "17-REQ-4.3"
+      ]
+    },
+    {
+      "id": "17-PROP-7",
+      "title": "Schema initialization idempotency",
+      "for_any": "call to audit.InitSchema on a database that already contains all nine tables",
+      "invariant": "InitSchema completes without error and does not drop, truncate, or modify any existing data",
+      "validates": [
+        "17-REQ-2.1",
+        "17-REQ-2.2"
+      ]
+    },
+    {
+      "id": "17-PROP-8",
+      "title": "Batch pre-validation prevents silent data loss",
+      "for_any": "batch containing a mix of valid and invalid items",
+      "invariant": "every invalid item appears in the errors array with its zero-based index; no invalid item is silently dropped or inserted",
+      "validates": [
+        "17-REQ-7.2",
+        "17-REQ-12.1"
+      ]
+    },
+    {
+      "id": "17-PROP-9",
+      "title": "Default severity correctness",
+      "for_any": "audit event submitted without a severity field",
+      "invariant": "the stored severity equals the output of defaultSeverityFor(event_type) and is one of the four valid values: info, warning, error, critical",
+      "validates": [
+        "17-REQ-23.1",
+        "17-REQ-23.2"
+      ]
+    },
+    {
+      "id": "17-PROP-10",
+      "title": "Trace event_type closed set enforcement",
+      "for_any": "POST request to the traces ingestion endpoint",
+      "invariant": "only records with event_type in {session.init, assistant.message, tool.use, tool.error, session.result} are stored; all other event_type values are rejected before any database operation",
+      "validates": [
+        "17-REQ-11.1",
+        "17-REQ-11.2"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "17-PATH-1",
+      "title": "Agent submits single audit event",
+      "steps": [
+        {
+          "actor": "nightshift agent",
+          "action": "sends POST /api/v1/workspaces/:slug/runs/:run_id/events with a JSON body matching the afaudit event_to_json format"
+        },
+        {
+          "actor": "Echo HTTP framework",
+          "action": "routes the request to the audit events handler after applying auth middleware"
+        },
+        {
+          "actor": "audit auth middleware",
+          "action": "validates the credential (PAT with audit:write scope or API key) and resolves workspace access"
+        },
+        {
+          "actor": "audit events handler",
+          "action": "validates run_id format against the regexp, checks body/URL run_id consistency, applies field defaults (id, timestamp, severity via defaultSeverityFor), sets ingested_at"
+        },
+        {
+          "actor": "Store",
+          "action": "executes INSERT OR IGNORE into agent_audit_events with all field values"
+        },
+        {
+          "actor": "audit events handler",
+          "action": "returns HTTP 201 with acknowledgement body {id, run_id, event_type, severity, created_at} or HTTP 200 if duplicate"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-2",
+      "title": "Agent bulk-uploads JSONL event file via batch endpoint",
+      "steps": [
+        {
+          "actor": "nightshift agent",
+          "action": "sends POST /api/v1/workspaces/:slug/runs/:run_id/events/batch with a JSON array of up to 1000 audit events"
+        },
+        {
+          "actor": "Echo HTTP framework",
+          "action": "routes the request to the batch events handler after applying auth middleware"
+        },
+        {
+          "actor": "audit auth middleware",
+          "action": "validates the credential and resolves workspace access"
+        },
+        {
+          "actor": "batch events handler",
+          "action": "checks array length (rejects with HTTP 413 if > 1000, HTTP 400 if empty)"
+        },
+        {
+          "actor": "batch events handler",
+          "action": "pre-validates all items, collecting invalid items into the errors array; valid items proceed"
+        },
+        {
+          "actor": "Store",
+          "action": "opens a single DuckDB transaction and executes INSERT OR IGNORE for each valid item; counts duplicates; commits the transaction"
+        },
+        {
+          "actor": "batch events handler",
+          "action": "returns HTTP 200 with {accepted, duplicates, errors} summary"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-3",
+      "title": "Agent submits postmortem report",
+      "steps": [
+        {
+          "actor": "nightshift agent",
+          "action": "sends POST /api/v1/workspaces/:slug/runs/:run_id/postmortem with a JSON body containing run_status, started_at, completed_at, task_summary, cost_summary, and optional fields"
+        },
+        {
+          "actor": "Echo HTTP framework",
+          "action": "routes the request to the postmortem handler after applying auth middleware"
+        },
+        {
+          "actor": "audit auth middleware",
+          "action": "validates the credential and resolves workspace access"
+        },
+        {
+          "actor": "postmortem handler",
+          "action": "validates run_id, validates run_status against the four accepted values, validates task_summary and cost_summary sub-schemas, checks schema_version (rejects with HTTP 422 if not 1)"
+        },
+        {
+          "actor": "Store",
+          "action": "executes INSERT OR IGNORE into postmortems using run_id as the primary key"
+        },
+        {
+          "actor": "postmortem handler",
+          "action": "returns HTTP 201 with {run_id, run_status, created_at} or HTTP 200 if duplicate"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-4",
+      "title": "Operator queries audit events with pagination",
+      "steps": [
+        {
+          "actor": "operator tooling",
+          "action": "sends GET /api/v1/workspaces/:slug/runs/:run_id/events?limit=50&order=desc&since=2026-09-01T00:00:00Z"
+        },
+        {
+          "actor": "Echo HTTP framework",
+          "action": "routes the request to the events query handler after applying auth middleware"
+        },
+        {
+          "actor": "audit auth middleware",
+          "action": "validates the credential (PAT with audit:read scope or API key) and resolves workspace read access"
+        },
+        {
+          "actor": "events query handler",
+          "action": "validates run_id, parses filter parameters (since, until, event_type, severity, node_id, order, limit, cursor)"
+        },
+        {
+          "actor": "Store",
+          "action": "executes a SELECT query on agent_audit_events with WHERE clauses for run_id and filters, ORDER BY timestamp DESC, LIMIT 51 (limit+1 to detect has_more)"
+        },
+        {
+          "actor": "events query handler",
+          "action": "encodes the cursor from the last returned record's timestamp and id as base64 JSON, sets has_more based on whether limit+1 records were returned"
+        },
+        {
+          "actor": "events query handler",
+          "action": "returns HTTP 200 with {events: [...], next_cursor: string|null, has_more: boolean}"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-5",
+      "title": "Hub startup initializes audit subsystem",
+      "steps": [
+        {
+          "actor": "hub operator",
+          "action": "starts the af-hub binary"
+        },
+        {
+          "actor": "cmd/af-hub/main.go",
+          "action": "resolves the DuckDB path from AF_AUDIT_DB_PATH or derives it as <data_dir>/audit.duckdb from config.toml database.path"
+        },
+        {
+          "actor": "audit.OpenDB",
+          "action": "calls os.MkdirAll on the parent directory of the resolved path, then opens the DuckDB connection via the go-duckdb driver"
+        },
+        {
+          "actor": "audit.InitSchema",
+          "action": "executes all nine CREATE TABLE IF NOT EXISTS statements and any ALTER TABLE ADD COLUMN IF NOT EXISTS migrations in a single transaction"
+        },
+        {
+          "actor": "cmd/af-hub/main.go",
+          "action": "creates audit.NewStore(auditDB), audit.NewEmitter(store), calls audit.RegisterRoutes(api, store, emitter), and collects audit.Permissions() into extraPerms"
+        },
+        {
+          "actor": "hub",
+          "action": "begins serving HTTP requests on all registered routes including the 14 audit endpoints"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-6",
+      "title": "Workspace-scoped PAT rejected for mismatched workspace",
+      "steps": [
+        {
+          "actor": "nightshift agent",
+          "action": "sends POST /api/v1/workspaces/workspace-A/runs/20260901_120000_a1b2c3/events with a PAT scoped to workspace-B"
+        },
+        {
+          "actor": "Echo HTTP framework",
+          "action": "routes the request to the audit events handler"
+        },
+        {
+          "actor": "audit auth middleware",
+          "action": "detects that the PAT's workspace scope (workspace-B) does not match the URL :slug (workspace-A)"
+        },
+        {
+          "actor": "audit auth middleware",
+          "action": "returns HTTP 403 with apikit error body of type workspace_mismatch"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "17-ERR-1",
+      "condition": "run_id URL path parameter does not match the regexp `^\\d{8}_\\d{6}_[0-9a-f]{6}$`",
+      "behavior": "handler returns HTTP 400 with apikit error body before any body parsing or database access",
+      "requirement_id": "17-REQ-5.2"
+    },
+    {
+      "id": "17-ERR-2",
+      "condition": "request body run_id field does not match the URL path run_id",
+      "behavior": "handler returns HTTP 400 with apikit error body describing the mismatch",
+      "requirement_id": "17-REQ-5.3"
+    },
+    {
+      "id": "17-ERR-3",
+      "condition": "required field is missing from the request body",
+      "behavior": "handler returns HTTP 400 with apikit error body naming the missing field",
+      "requirement_id": "17-REQ-6.E1"
+    },
+    {
+      "id": "17-ERR-4",
+      "condition": "severity field contains a value other than info, warning, error, or critical",
+      "behavior": "handler returns HTTP 400 with apikit error body",
+      "requirement_id": "17-REQ-6.4"
+    },
+    {
+      "id": "17-ERR-5",
+      "condition": "payload field is present but is not a JSON object",
+      "behavior": "handler returns HTTP 400 with apikit error body",
+      "requirement_id": "17-REQ-6.E2"
+    },
+    {
+      "id": "17-ERR-6",
+      "condition": "batch array contains more than 1000 items",
+      "behavior": "handler returns HTTP 413 with apikit error body; no items are processed",
+      "requirement_id": "17-REQ-7.3"
+    },
+    {
+      "id": "17-ERR-7",
+      "condition": "batch array is empty",
+      "behavior": "handler returns HTTP 400 with apikit error body",
+      "requirement_id": "17-REQ-7.4"
+    },
+    {
+      "id": "17-ERR-8",
+      "condition": "trace event_type is not one of the five valid values",
+      "behavior": "handler returns HTTP 400 with apikit error body citing unknown trace event_type",
+      "requirement_id": "17-REQ-11.2"
+    },
+    {
+      "id": "17-ERR-9",
+      "condition": "postmortem schema_version is present and is not 1",
+      "behavior": "handler returns HTTP 422 with apikit error body of type unknown_schema_version",
+      "requirement_id": "17-REQ-13.3"
+    },
+    {
+      "id": "17-ERR-10",
+      "condition": "postmortem run_status is not one of stalled, block_limit, cost_limit, session_limit",
+      "behavior": "handler returns HTTP 400 with apikit error body",
+      "requirement_id": "17-REQ-13.E3"
+    },
+    {
+      "id": "17-ERR-11",
+      "condition": "no postmortem exists for the given run_id on GET postmortem",
+      "behavior": "handler returns HTTP 404 with apikit error body of type postmortem_not_found",
+      "requirement_id": "17-REQ-19.2"
+    },
+    {
+      "id": "17-ERR-12",
+      "condition": "DuckDB write operation fails due to disk full or other storage error",
+      "behavior": "handler returns HTTP 500 with apikit error body; no partial data is committed",
+      "requirement_id": "17-REQ-6.E3"
+    },
+    {
+      "id": "17-ERR-13",
+      "condition": "DuckDB write times out under sustained write contention",
+      "behavior": "handler returns HTTP 503 with Retry-After: 5 header and apikit error body",
+      "requirement_id": "17-REQ-22.1"
+    },
+    {
+      "id": "17-ERR-14",
+      "condition": "request is unauthenticated (no credential presented)",
+      "behavior": "auth middleware returns HTTP 401 with apikit error body before handler is invoked",
+      "requirement_id": "17-REQ-3.E3"
+    },
+    {
+      "id": "17-ERR-15",
+      "condition": "PAT lacks the required scope for the endpoint",
+      "behavior": "auth middleware returns HTTP 403 with apikit error body before handler is invoked",
+      "requirement_id": "17-REQ-3.E1"
+    },
+    {
+      "id": "17-ERR-16",
+      "condition": "workspace-scoped PAT workspace does not match URL :slug",
+      "behavior": "handler returns HTTP 403 with apikit error body of type workspace_mismatch",
+      "requirement_id": "17-REQ-20.2"
+    },
+    {
+      "id": "17-ERR-17",
+      "condition": "token owner lacks write access to the target workspace",
+      "behavior": "handler returns HTTP 403 with apikit error body of type workspace_access_denied",
+      "requirement_id": "17-REQ-20.3"
+    },
+    {
+      "id": "17-ERR-18",
+      "condition": "target workspace is archived",
+      "behavior": "handler returns HTTP 409 with apikit error body of type workspace_archived",
+      "requirement_id": "17-REQ-20.4"
+    },
+    {
+      "id": "17-ERR-19",
+      "condition": "target workspace does not exist",
+      "behavior": "handler returns HTTP 404 with apikit error body",
+      "requirement_id": "17-REQ-20.5"
+    },
+    {
+      "id": "17-ERR-20",
+      "condition": "cursor query parameter is not valid base64 or does not decode to a JSON object with ts and id fields",
+      "behavior": "handler returns HTTP 400 with apikit error body",
+      "requirement_id": "17-REQ-14.E2"
+    },
+    {
+      "id": "17-ERR-21",
+      "condition": "since or until query parameter is not a valid ISO 8601 timestamp",
+      "behavior": "handler returns HTTP 400 with apikit error body",
+      "requirement_id": "17-REQ-14.E3"
+    },
+    {
+      "id": "17-ERR-22",
+      "condition": "os.MkdirAll fails during audit.OpenDB due to permission error",
+      "behavior": "audit.OpenDB returns a non-nil error; hub startup aborts with the error logged",
+      "requirement_id": "17-REQ-1.E1"
+    },
+    {
+      "id": "17-ERR-23",
+      "condition": "DuckDB file is locked by another process during audit.OpenDB",
+      "behavior": "audit.OpenDB returns a non-nil error; hub startup aborts with the error logged",
+      "requirement_id": "17-REQ-1.E2"
+    },
+    {
+      "id": "17-ERR-24",
+      "condition": "audit.InitSchema transaction fails (e.g., corrupted DuckDB file)",
+      "behavior": "transaction is rolled back; audit.InitSchema returns a non-nil error; hub startup aborts",
+      "requirement_id": "17-REQ-2.E1"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/marcboeker/go-duckdb",
+      "version": "latest compatible with Go 1.26+",
+      "symbols": [
+        {
+          "name": "Driver",
+          "import_path": "github.com/marcboeker/go-duckdb",
+          "signature": "database/sql-compatible driver registered under the name \"duckdb\"",
+          "notes": "Requires CGO_ENABLED=1 at build time. DSN is a plain file path (e.g., /data/audit.duckdb). Use sql.Open(\"duckdb\", path) to open a connection. In-memory DSN (:memory:) is supported but tests use temp-file DuckDB instances via t.TempDir() for isolation."
+        }
+      ]
+    }
+  ]
+}

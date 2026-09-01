@@ -1,0 +1,1588 @@
+{
+  "$schema": null,
+  "spec_id": "17",
+  "spec_name": "audit_storage_ingestion",
+  "schema_version": 1,
+  "test_commands": {
+    "spec_tests": "go test ./internal/audit/... -count=1 -v",
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./..."
+  },
+  "dependencies": [],
+  "task_groups": [
+    {
+      "id": 1,
+      "kind": "tests",
+      "title": "Write tests: DuckDB connection, schema init, and permission scopes",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "title": "Write tests for audit.OpenDB — directory creation and connection",
+          "details": [
+            "In internal/audit/db_test.go, write TestOpenDB_CreatesParentDirs: call OpenDB with a path inside a non-existent subdirectory of t.TempDir(); assert no error and db is non-nil.",
+            "Write TestOpenDB_ReturnsErrorOnBadPath: pass an unwritable path (e.g. /proc/audit.duckdb); assert error is returned.",
+            "Write TestOpenDB_PingSucceeds: open a valid temp-file DB and call db.PingContext; assert no error."
+          ],
+          "test_spec_refs": [
+            "TS-17-1",
+            "TS-17-2",
+            "TS-17-3",
+            "TS-17-4"
+          ],
+          "requirement_refs": [
+            "17-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.2",
+          "title": "Write tests for audit.InitSchema — table creation and idempotency",
+          "details": [
+            "In internal/audit/schema_test.go, write TestInitSchema_CreatesAllTables: call InitSchema on a fresh temp-file DuckDB; query information_schema.tables and assert all nine tables exist (agent_audit_events, hub_audit_events, session_outcomes, tool_calls, tool_errors, agent_traces, postmortems, agent_sessions, token_usage).",
+            "Write TestInitSchema_Idempotent: call InitSchema twice on the same DB; assert no error on the second call and tables still exist.",
+            "Write TestInitSchema_RunsInTransaction: simulate a failure mid-schema (e.g. corrupt DDL injected) and assert no partial tables are created."
+          ],
+          "test_spec_refs": [
+            "TS-17-5",
+            "TS-17-6",
+            "TS-17-7"
+          ],
+          "requirement_refs": [
+            "17-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.3",
+          "title": "Write tests for PAT permission scope definitions",
+          "details": [
+            "In internal/audit/permissions_test.go, write TestPermissions_FourScopesReturned: call audit.Permissions() and assert the returned slice contains exactly four entries.",
+            "Assert the four scope strings are audit:read, audit:write, sessions:read, sessions:write.",
+            "Write TestPermissions_NoDuplicates: assert no two entries share the same scope string."
+          ],
+          "test_spec_refs": [
+            "TS-17-8",
+            "TS-17-9"
+          ],
+          "requirement_refs": [
+            "17-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.4",
+          "title": "Write tests for Emitter interface and default implementation",
+          "details": [
+            "In internal/audit/emitter_test.go, define an inline mock Emitter that records calls; assert it satisfies the Emitter interface at compile time via var _ audit.Emitter = &mockEmitter{}.",
+            "Write TestDefaultEmitter_EmitWritesToHubAuditEvents: create a real Store backed by a temp-file DuckDB; call NewEmitter(store).Emit() with a valid HubEvent; query hub_audit_events and assert the row exists.",
+            "Write TestDefaultEmitter_EmitSwallowsError: replace the store's DB with a closed connection; call Emit and assert no error is returned to the caller.",
+            "Write TestDefaultEmitter_ActorTypeValues: assert that emitting with each of the four ActorType values (admin_token, api_key, pat, system) succeeds without error."
+          ],
+          "test_spec_refs": [
+            "TS-17-10",
+            "TS-17-11",
+            "TS-17-12",
+            "TS-17-13"
+          ],
+          "requirement_refs": [
+            "17-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "1.5",
+          "title": "Write tests for run_id validation and default severity mapping",
+          "details": [
+            "In internal/audit/validate_test.go, write TestValidateRunID_ValidFormats: assert that '20260704_143022_a1b2c3' and similar valid run_ids pass.",
+            "Write TestValidateRunID_InvalidFormats: assert that uppercase hex suffix ('20260704_143022_A1B2C3'), wrong length, missing underscores, and non-hex chars all return errors.",
+            "In internal/audit/severity_test.go, write TestDefaultSeverityFor_KnownTypes: assert session.fail→error, run.limit_reached→warning, git.conflict→warning, harvest.empty→warning, review.parse_failure→warning.",
+            "Write TestDefaultSeverityFor_UnknownType: assert any unknown event_type returns 'info'."
+          ],
+          "test_spec_refs": [
+            "TS-17-14",
+            "TS-17-15",
+            "TS-17-16",
+            "TS-17-60",
+            "TS-17-61"
+          ],
+          "requirement_refs": [
+            "17-REQ-5",
+            "17-REQ-23"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "1.V",
+        "checks": [
+          "All test files in internal/audit/ compile without errors: go build ./internal/audit/...",
+          "Test stubs (functions under test) may panic(\"not implemented\") at this stage — compilation is the gate.",
+          "go vet ./internal/audit/... reports no issues on test files.",
+          "Requirements 17-REQ-1, 17-REQ-2, 17-REQ-3, 17-REQ-4, 17-REQ-5, 17-REQ-23 have corresponding test coverage stubs."
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "kind": "tests",
+      "title": "Write tests: single-record ingestion endpoints (events, outcomes, tool calls/errors, traces)",
+      "subtasks": [
+        {
+          "id": "2.1",
+          "title": "Write tests for single audit event ingestion (POST events)",
+          "details": [
+            "In internal/audit/handlers_test.go, write TestPostEvent_Created201: POST a valid afaudit-shaped event JSON to /api/v1/workspaces/:slug/runs/:run_id/events; assert HTTP 201 and response body contains id, run_id, event_type, severity, created_at.",
+            "Write TestPostEvent_Duplicate200: POST the same event twice; assert second response is HTTP 200 with identical shape.",
+            "Write TestPostEvent_MissingEventType400: POST body without event_type; assert HTTP 400.",
+            "Write TestPostEvent_DefaultSeverityApplied: POST event with event_type=session.fail and no severity; assert stored severity is 'error'.",
+            "Write TestPostEvent_InvalidRunID400: use run_id with uppercase hex in URL; assert HTTP 400."
+          ],
+          "test_spec_refs": [
+            "TS-17-17",
+            "TS-17-18",
+            "TS-17-19",
+            "TS-17-20"
+          ],
+          "requirement_refs": [
+            "17-REQ-6",
+            "17-REQ-5",
+            "17-REQ-23"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.2",
+          "title": "Write tests for session outcome ingestion (POST sessions/outcomes)",
+          "details": [
+            "Write TestPostSessionOutcome_Created201: POST a valid session outcome; assert HTTP 201 and response body contains id, run_id, node_id, status, created_at.",
+            "Write TestPostSessionOutcome_Duplicate200: POST same outcome twice; assert HTTP 200 on second call.",
+            "Write TestPostSessionOutcome_MissingStatus400: POST without status field; assert HTTP 400."
+          ],
+          "test_spec_refs": [
+            "TS-17-25",
+            "TS-17-26"
+          ],
+          "requirement_refs": [
+            "17-REQ-8"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.3",
+          "title": "Write tests for tool call and tool error ingestion",
+          "details": [
+            "Write TestPostToolCall_Created201: POST a valid tool call; assert HTTP 201 and response body contains id, run_id, tool_name, called_at.",
+            "Write TestPostToolCall_Duplicate200: POST same tool call twice; assert HTTP 200.",
+            "Write TestPostToolError_Created201: POST a valid tool error; assert HTTP 201 and response body contains id, run_id, tool_name, failed_at.",
+            "Write TestPostToolError_MissingToolName400: POST without tool_name; assert HTTP 400."
+          ],
+          "test_spec_refs": [
+            "TS-17-27",
+            "TS-17-28",
+            "TS-17-29",
+            "TS-17-30"
+          ],
+          "requirement_refs": [
+            "17-REQ-9",
+            "17-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.4",
+          "title": "Write tests for single trace event ingestion (POST traces)",
+          "details": [
+            "Write TestPostTrace_Created201: POST a valid trace event with event_type=session.init; assert HTTP 201 and response body contains id, run_id, event_type, timestamp.",
+            "Write TestPostTrace_Duplicate200: POST same trace twice; assert HTTP 200.",
+            "Write TestPostTrace_UnknownEventType400: POST with event_type=unknown.type; assert HTTP 400.",
+            "Write TestPostTrace_ValidEventTypes: assert all five valid trace event_types (session.init, assistant.message, tool.use, tool.error, session.result) return HTTP 201."
+          ],
+          "test_spec_refs": [
+            "TS-17-31",
+            "TS-17-32",
+            "TS-17-33"
+          ],
+          "requirement_refs": [
+            "17-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "2.5",
+          "title": "Write tests for postmortem ingestion and retrieval",
+          "details": [
+            "Write TestPostPostmortem_Created201: POST a valid postmortem with all required fields; assert HTTP 201 and response body contains run_id, run_status, created_at.",
+            "Write TestPostPostmortem_Duplicate200: POST same postmortem (same run_id) twice; assert HTTP 200.",
+            "Write TestPostPostmortem_UnknownSchemaVersion422: POST with schema_version=99; assert HTTP 422 with error type unknown_schema_version.",
+            "Write TestPostPostmortem_MissingRunStatus400: POST without run_status; assert HTTP 400.",
+            "Write TestGetPostmortem_Found200: POST then GET postmortem; assert HTTP 200 and full record returned.",
+            "Write TestGetPostmortem_NotFound404: GET postmortem for run_id with no record; assert HTTP 404 with error type postmortem_not_found."
+          ],
+          "test_spec_refs": [
+            "TS-17-37",
+            "TS-17-38",
+            "TS-17-39",
+            "TS-17-40",
+            "TS-17-47",
+            "TS-17-48",
+            "TS-17-49"
+          ],
+          "requirement_refs": [
+            "17-REQ-13",
+            "17-REQ-19"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "2.V",
+        "checks": [
+          "All handler test files compile: go build ./internal/audit/...",
+          "go vet ./internal/audit/... reports no issues.",
+          "Requirements 17-REQ-6, 17-REQ-8, 17-REQ-9, 17-REQ-10, 17-REQ-11, 17-REQ-13, 17-REQ-19 have corresponding test stubs."
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "kind": "tests",
+      "title": "Write tests: batch ingestion, query endpoints, pagination, and workspace auth",
+      "subtasks": [
+        {
+          "id": "3.1",
+          "title": "Write tests for batch audit event ingestion (POST events/batch)",
+          "details": [
+            "Write TestPostEventsBatch_AllAccepted200: POST array of 5 valid events; assert HTTP 200, accepted=5, duplicates=0, errors=[].",
+            "Write TestPostEventsBatch_PartialInvalid: POST array with 3 valid and 2 invalid (missing event_type); assert HTTP 200, accepted=3, errors has 2 entries with correct index.",
+            "Write TestPostEventsBatch_ExceedsLimit413: POST array of 1001 items; assert HTTP 413.",
+            "Write TestPostEventsBatch_EmptyArray400: POST empty array []; assert HTTP 400.",
+            "Write TestPostEventsBatch_Duplicates: POST batch where 2 items share same id as previously inserted; assert duplicates=2."
+          ],
+          "test_spec_refs": [
+            "TS-17-21",
+            "TS-17-22",
+            "TS-17-23",
+            "TS-17-24"
+          ],
+          "requirement_refs": [
+            "17-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.2",
+          "title": "Write tests for batch trace event ingestion (POST traces/batch)",
+          "details": [
+            "Write TestPostTracesBatch_AllAccepted200: POST array of 5 valid trace events; assert HTTP 200, accepted=5.",
+            "Write TestPostTracesBatch_InvalidEventType: POST batch with one item having unknown event_type; assert that item appears in errors array.",
+            "Write TestPostTracesBatch_ExceedsLimit413: POST 1001 trace items; assert HTTP 413.",
+            "Write TestPostTracesBatch_EmptyArray400: POST empty array; assert HTTP 400."
+          ],
+          "test_spec_refs": [
+            "TS-17-34",
+            "TS-17-35",
+            "TS-17-36"
+          ],
+          "requirement_refs": [
+            "17-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.3",
+          "title": "Write tests for GET query endpoints with filters and pagination",
+          "details": [
+            "Write TestGetEvents_BasicQuery: insert 3 events, GET events for run_id; assert all 3 returned in events array with has_more=false.",
+            "Write TestGetEvents_FilterByEventType: insert events of mixed types; GET with event_type filter; assert only matching events returned.",
+            "Write TestGetEvents_TimeRangeFilter: insert events at different timestamps; GET with since/until; assert only in-range events returned.",
+            "Write TestGetEvents_OrderDesc: GET with order=desc; assert events returned in descending timestamp order.",
+            "Write TestGetEvents_CursorPagination: insert 5 events, GET with limit=2; assert next_cursor non-null and has_more=true; use cursor to fetch next page."
+          ],
+          "test_spec_refs": [
+            "TS-17-41",
+            "TS-17-42",
+            "TS-17-55",
+            "TS-17-56",
+            "TS-17-57"
+          ],
+          "requirement_refs": [
+            "17-REQ-14",
+            "17-REQ-21"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.4",
+          "title": "Write tests for GET sessions/outcomes, tools/calls, tools/errors, and traces query endpoints",
+          "details": [
+            "Write TestGetSessionOutcomes_FilterByStatus: insert outcomes with different statuses; GET with status filter; assert only matching returned.",
+            "Write TestGetToolCalls_FilterByToolName: insert tool calls with different tool_names; GET with tool_name filter; assert only matching returned.",
+            "Write TestGetToolErrors_FilterByNodeID: insert tool errors with different node_ids; GET with node_id filter; assert only matching returned.",
+            "Write TestGetTraces_FilterByEventType: insert traces with different event_types; GET with event_type filter; assert only matching returned.",
+            "Write TestGetTraces_CursorPagination: insert 10 traces, paginate with limit=3; assert correct pages and final has_more=false."
+          ],
+          "test_spec_refs": [
+            "TS-17-43",
+            "TS-17-44",
+            "TS-17-45",
+            "TS-17-46"
+          ],
+          "requirement_refs": [
+            "17-REQ-15",
+            "17-REQ-16",
+            "17-REQ-17",
+            "17-REQ-18",
+            "17-REQ-21"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.5",
+          "title": "Write tests for workspace attribution and access control",
+          "details": [
+            "Write TestWorkspaceAuth_ScopedTokenMismatch403: use a workspace-scoped PAT for workspace A to POST to workspace B's endpoint; assert HTTP 403 with workspace_mismatch.",
+            "Write TestWorkspaceAuth_ArchivedWorkspace409: POST to an archived workspace; assert HTTP 409.",
+            "Write TestWorkspaceAuth_InsufficientScope403: use a PAT without audit:write scope; assert HTTP 403.",
+            "Write TestWorkspaceAuth_Unauthenticated401: POST without any auth header; assert HTTP 401.",
+            "Write TestWorkspaceAuth_AdminTokenFullAccess: use admin token; assert HTTP 201 with no scope restrictions."
+          ],
+          "test_spec_refs": [
+            "TS-17-50",
+            "TS-17-51",
+            "TS-17-52",
+            "TS-17-53",
+            "TS-17-54"
+          ],
+          "requirement_refs": [
+            "17-REQ-20"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "3.6",
+          "title": "Write tests for DuckDB write contention and route registration smoke tests",
+          "details": [
+            "Write TestStore_WriteTimeout503: simulate a write timeout by using a context with a very short deadline; assert handler returns HTTP 503 with Retry-After: 5 header.",
+            "Write TestRegisterRoutes_AllRoutesPresent: call RegisterRoutes on a test Echo instance; assert all 14 expected routes are registered (POST/GET for each endpoint).",
+            "Write TS-17-SMOKE-1: end-to-end smoke test — open real temp-file DuckDB, InitSchema, create Store and Emitter, register routes on Echo, POST one event, GET events, assert round-trip."
+          ],
+          "test_spec_refs": [
+            "TS-17-58",
+            "TS-17-59",
+            "TS-17-62",
+            "TS-17-63"
+          ],
+          "requirement_refs": [
+            "17-REQ-22",
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "3.V",
+        "checks": [
+          "All test files compile: go build ./internal/audit/...",
+          "go vet ./internal/audit/... reports no issues.",
+          "Requirements 17-REQ-7, 17-REQ-12, 17-REQ-14 through 17-REQ-18, 17-REQ-20, 17-REQ-21, 17-REQ-22, 17-REQ-24 have corresponding test stubs.",
+          "TS-17-SMOKE-1 test function exists in a _test.go file."
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "kind": "standard",
+      "title": "Implement internal/audit package foundation: types, validation, severity, permissions",
+      "subtasks": [
+        {
+          "id": "4.1",
+          "title": "Implement types.go — domain structs and request/response types",
+          "details": [
+            "Create internal/audit/types.go with Go structs for all domain types: AuditEvent, SessionOutcome, ToolCall, ToolError, AgentTrace, Postmortem, HubEvent.",
+            "Define request body structs for each POST endpoint (e.g. PostEventRequest, PostSessionOutcomeRequest, PostPostmortemRequest) with json tags matching afaudit's snake_case field names.",
+            "Define response body structs for each POST endpoint (single-record acknowledgement shapes) and GET endpoints (paginated envelope with resource-named array key).",
+            "Define BatchIngestResponse struct with accepted int, duplicates int, errors []BatchItemError fields.",
+            "Define Cursor struct with Ts string and ID string fields for base64 pagination encoding."
+          ],
+          "test_spec_refs": [
+            "TS-17-17",
+            "TS-17-25",
+            "TS-17-27",
+            "TS-17-29",
+            "TS-17-31",
+            "TS-17-37",
+            "TS-17-10"
+          ],
+          "requirement_refs": [
+            "17-REQ-6",
+            "17-REQ-7",
+            "17-REQ-8",
+            "17-REQ-9",
+            "17-REQ-10",
+            "17-REQ-11",
+            "17-REQ-12",
+            "17-REQ-13",
+            "17-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.2",
+          "title": "Implement validate.go — run_id regexp and event type validation",
+          "details": [
+            "Create internal/audit/validate.go with a compiled regexp var runIDRegexp = regexp.MustCompile(`^\\d{8}_\\d{6}_[0-9a-f]{6}$`).",
+            "Implement func ValidateRunID(id string) error that returns a descriptive error for non-matching strings.",
+            "Implement func ValidateTraceEventType(et string) error that returns error for any value not in the set {session.init, assistant.message, tool.use, tool.error, session.result}.",
+            "Implement func ValidateUUID(id string) error using a UUID format regexp (8-4-4-4-12 hex with dashes).",
+            "Implement func ValidateSeverity(s string) error for the four valid severity values."
+          ],
+          "test_spec_refs": [
+            "TS-17-14",
+            "TS-17-15",
+            "TS-17-16",
+            "TS-17-33"
+          ],
+          "requirement_refs": [
+            "17-REQ-5",
+            "17-REQ-11"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.3",
+          "title": "Implement severity.go — default severity mapping",
+          "details": [
+            "Create internal/audit/severity.go with func defaultSeverityFor(eventType string) string.",
+            "Map session.fail→error, run.limit_reached→warning, git.conflict→warning, harvest.empty→warning, review.parse_failure→warning, all others→info.",
+            "Use a switch statement or map lookup; the function must be pure with no side effects."
+          ],
+          "test_spec_refs": [
+            "TS-17-60",
+            "TS-17-61"
+          ],
+          "requirement_refs": [
+            "17-REQ-23"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.4",
+          "title": "Implement permissions.go — PAT scope definitions",
+          "details": [
+            "Create internal/audit/permissions.go with func Permissions() []apikit.Permission.",
+            "Return four entries: audit:read, audit:write, sessions:read, sessions:write with appropriate descriptions.",
+            "Ensure the function is deterministic (same order every call) for stable registration."
+          ],
+          "test_spec_refs": [
+            "TS-17-8",
+            "TS-17-9"
+          ],
+          "requirement_refs": [
+            "17-REQ-3"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "4.5",
+          "title": "Implement auth.go — auth helpers for audit scopes",
+          "details": [
+            "Create internal/audit/auth.go with helper functions: requireAuditWrite(c echo.Context) error and requireAuditRead(c echo.Context) error.",
+            "Use apikit.GetAuthInfo to extract credential; check for audit:write / audit:read scope on PATs; allow admin tokens and API keys unconditionally.",
+            "Implement checkWorkspaceAccess(c echo.Context, slug string) error that enforces workspace-scoped token matching, generic token owner access, and archived workspace rejection.",
+            "Return appropriate apikit error types: workspace_mismatch (403), workspace_access_denied (403), workspace_archived (409)."
+          ],
+          "test_spec_refs": [
+            "TS-17-50",
+            "TS-17-51",
+            "TS-17-52",
+            "TS-17-53",
+            "TS-17-54"
+          ],
+          "requirement_refs": [
+            "17-REQ-20"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "4.V",
+        "checks": [
+          "go build ./internal/audit/... succeeds with no errors.",
+          "go vet ./internal/audit/... reports no issues.",
+          "go test ./internal/audit/... -run TestValidateRunID -count=1 passes (TS-17-14, TS-17-15, TS-17-16).",
+          "go test ./internal/audit/... -run TestDefaultSeverityFor -count=1 passes (TS-17-60, TS-17-61).",
+          "go test ./internal/audit/... -run TestPermissions -count=1 passes (TS-17-8, TS-17-9).",
+          "Requirements 17-REQ-3, 17-REQ-5, 17-REQ-20, 17-REQ-23 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "kind": "standard",
+      "title": "Implement db.go, schema.go, and store.go — DuckDB layer",
+      "subtasks": [
+        {
+          "id": "5.1",
+          "title": "Implement db.go — OpenDB with MkdirAll and DuckDB connection",
+          "details": [
+            "Create internal/audit/db.go with func OpenDB(path string) (*sql.DB, error).",
+            "Call os.MkdirAll(filepath.Dir(path), 0755) before sql.Open; return error if MkdirAll fails.",
+            "Use sql.Open(\"duckdb\", path) with the go-duckdb driver; call db.Ping() to verify connectivity.",
+            "Import _ \"github.com/marcboeker/go-duckdb\" for driver registration.",
+            "Return (*sql.DB, error) — never panic on failure."
+          ],
+          "test_spec_refs": [
+            "TS-17-1",
+            "TS-17-2",
+            "TS-17-3",
+            "TS-17-4"
+          ],
+          "requirement_refs": [
+            "17-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.2",
+          "title": "Implement schema.go — DDL constants and InitSchema",
+          "details": [
+            "Create internal/audit/schema.go with all nine CREATE TABLE IF NOT EXISTS DDL statements as package-level string constants.",
+            "Implement func InitSchema(db *sql.DB) error that opens a transaction, executes all nine CREATE TABLE statements, then runs ALTER TABLE ADD COLUMN IF NOT EXISTS migrations (none in this spec — phase is a no-op but the pattern is established), then commits.",
+            "If any statement fails, roll back the transaction and return the error.",
+            "Use context.Background() for the transaction."
+          ],
+          "test_spec_refs": [
+            "TS-17-5",
+            "TS-17-6",
+            "TS-17-7"
+          ],
+          "requirement_refs": [
+            "17-REQ-2"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.3",
+          "title": "Implement store.go — Store struct with insert methods for all tables",
+          "details": [
+            "Create internal/audit/store.go with type Store struct { db *sql.DB } and func NewStore(db *sql.DB) *Store.",
+            "Implement InsertAuditEvent(ctx, event AuditEvent) error using INSERT OR IGNORE; return (bool, error) where bool indicates duplicate.",
+            "Implement InsertSessionOutcome, InsertToolCall, InsertToolError, InsertAgentTrace, InsertPostmortem with the same INSERT OR IGNORE pattern.",
+            "Implement InsertAuditEventBatch(ctx, events []AuditEvent) (accepted, duplicates int, errs []BatchItemError, err error) using a single transaction.",
+            "Implement InsertAgentTraceBatch(ctx, traces []AgentTrace) (accepted, duplicates int, errs []BatchItemError, err error) using a single transaction.",
+            "Set ingested_at to apikit.NowUTC() at insert time."
+          ],
+          "test_spec_refs": [
+            "TS-17-17",
+            "TS-17-18",
+            "TS-17-21",
+            "TS-17-22",
+            "TS-17-25",
+            "TS-17-27",
+            "TS-17-29",
+            "TS-17-31",
+            "TS-17-37"
+          ],
+          "requirement_refs": [
+            "17-REQ-6",
+            "17-REQ-7",
+            "17-REQ-8",
+            "17-REQ-9",
+            "17-REQ-10",
+            "17-REQ-11",
+            "17-REQ-12",
+            "17-REQ-13"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.4",
+          "title": "Implement store.go — query methods with filters, cursor pagination, and sort order",
+          "details": [
+            "Implement QueryAuditEvents(ctx, runID string, params QueryParams) ([]AuditEvent, *Cursor, error) with dynamic WHERE clause building for event_type, severity, node_id, since, until filters.",
+            "Implement QuerySessionOutcomes, QueryToolCalls, QueryToolErrors, QueryAgentTraces with their respective filter parameters.",
+            "Implement GetPostmortem(ctx, runID string) (*Postmortem, error) returning nil if not found.",
+            "Implement cursor encoding/decoding: EncodeCursor(ts time.Time, id string) string and DecodeCursor(s string) (ts time.Time, id string, err error) using base64(JSON{ts, id}).",
+            "Apply cursor WHERE clause as (timestamp, id) > (cursor.ts, cursor.id) for asc and < for desc; apply LIMIT+1 to determine has_more."
+          ],
+          "test_spec_refs": [
+            "TS-17-41",
+            "TS-17-42",
+            "TS-17-43",
+            "TS-17-44",
+            "TS-17-45",
+            "TS-17-46",
+            "TS-17-47",
+            "TS-17-55",
+            "TS-17-56",
+            "TS-17-57"
+          ],
+          "requirement_refs": [
+            "17-REQ-14",
+            "17-REQ-15",
+            "17-REQ-16",
+            "17-REQ-17",
+            "17-REQ-18",
+            "17-REQ-19",
+            "17-REQ-21"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "5.5",
+          "title": "Implement store.go — write contention error handling (503 / Retry-After)",
+          "details": [
+            "Define a sentinel error type WriteTimeoutError in store.go.",
+            "In all Store insert methods, detect context deadline exceeded or DuckDB write timeout errors and wrap them as WriteTimeoutError.",
+            "Document that handlers must check errors.As(err, &WriteTimeoutError{}) and respond with HTTP 503 + Retry-After: 5 header."
+          ],
+          "test_spec_refs": [
+            "TS-17-58",
+            "TS-17-59"
+          ],
+          "requirement_refs": [
+            "17-REQ-22"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "5.V",
+        "checks": [
+          "go test ./internal/audit/... -run TestOpenDB -count=1 passes (TS-17-1 through TS-17-4).",
+          "go test ./internal/audit/... -run TestInitSchema -count=1 passes (TS-17-5 through TS-17-7).",
+          "go test ./internal/audit/... -run TestPostEvent_Created201 -count=1 passes (TS-17-17).",
+          "go test ./internal/audit/... -run TestPostEventsBatch -count=1 passes (TS-17-21 through TS-17-24).",
+          "go vet ./internal/audit/... reports no issues.",
+          "Requirements 17-REQ-1, 17-REQ-2, 17-REQ-6 through 17-REQ-13, 17-REQ-21, 17-REQ-22 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "kind": "standard",
+      "title": "Implement emitter.go and handlers.go — Emitter and HTTP ingestion handlers",
+      "subtasks": [
+        {
+          "id": "6.1",
+          "title": "Implement emitter.go — Emitter interface and default Store-backed implementation",
+          "details": [
+            "Create internal/audit/emitter.go with the Emitter interface: Emit(ctx context.Context, event HubEvent) error.",
+            "Implement type storeEmitter struct { store *Store } and func NewEmitter(store *Store) Emitter.",
+            "In Emit: generate a UUID id, set ingested_at to apikit.NowUTC(), call store.InsertHubAuditEvent; on error, log via slog.Error and return nil (swallow error).",
+            "Implement InsertHubAuditEvent(ctx, event HubEvent) error on Store in store.go using INSERT OR IGNORE into hub_audit_events."
+          ],
+          "test_spec_refs": [
+            "TS-17-10",
+            "TS-17-11",
+            "TS-17-12",
+            "TS-17-13"
+          ],
+          "requirement_refs": [
+            "17-REQ-4"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.2",
+          "title": "Implement handlers.go — POST event and POST events/batch handlers",
+          "details": [
+            "Create internal/audit/handlers.go with handler closures returning echo.HandlerFunc.",
+            "HandlePostEvent: parse body, validate run_id from URL, apply defaultSeverityFor if severity absent, generate UUID if id absent, set timestamp to apikit.NowUTC() if absent, call store.InsertAuditEvent; return 201 or 200 on duplicate; return 503+Retry-After on WriteTimeoutError.",
+            "HandlePostEventsBatch: parse array, enforce max 1000 (413) and non-empty (400), pre-validate each item, call store.InsertAuditEventBatch in single transaction, return 200 with BatchIngestResponse.",
+            "Use apikit.WriteAPIError for all error responses."
+          ],
+          "test_spec_refs": [
+            "TS-17-17",
+            "TS-17-18",
+            "TS-17-19",
+            "TS-17-20",
+            "TS-17-21",
+            "TS-17-22",
+            "TS-17-23",
+            "TS-17-24"
+          ],
+          "requirement_refs": [
+            "17-REQ-6",
+            "17-REQ-7"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.3",
+          "title": "Implement handlers.go — POST sessions/outcomes, tools/calls, tools/errors handlers",
+          "details": [
+            "HandlePostSessionOutcome: parse body, validate run_id, generate id if absent, call store.InsertSessionOutcome; return 201 or 200 on duplicate.",
+            "HandlePostToolCall: parse body, validate run_id and required tool_name, generate id if absent, call store.InsertToolCall; return 201 or 200 on duplicate.",
+            "HandlePostToolError: parse body, validate run_id and required tool_name and error_msg, generate id if absent, call store.InsertToolError; return 201 or 200 on duplicate.",
+            "All handlers check WriteTimeoutError and return 503+Retry-After: 5."
+          ],
+          "test_spec_refs": [
+            "TS-17-25",
+            "TS-17-26",
+            "TS-17-27",
+            "TS-17-28",
+            "TS-17-29",
+            "TS-17-30"
+          ],
+          "requirement_refs": [
+            "17-REQ-8",
+            "17-REQ-9",
+            "17-REQ-10"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.4",
+          "title": "Implement handlers.go — POST traces, POST traces/batch, POST/GET postmortem handlers",
+          "details": [
+            "HandlePostTrace: parse body, validate run_id, validate event_type against five valid values (400 on unknown), generate id if absent, call store.InsertAgentTrace; return 201 or 200.",
+            "HandlePostTraceBatch: same batch semantics as events/batch; pre-validate event_type per item; return 200 with BatchIngestResponse.",
+            "HandlePostPostmortem: parse body, validate run_id, validate schema_version==1 (422 on other), validate required fields (run_status, started_at, completed_at, task_summary, cost_summary), call store.InsertPostmortem; return 201 or 200.",
+            "HandleGetPostmortem: call store.GetPostmortem; return 200 with full record or 404 with postmortem_not_found."
+          ],
+          "test_spec_refs": [
+            "TS-17-31",
+            "TS-17-32",
+            "TS-17-33",
+            "TS-17-34",
+            "TS-17-35",
+            "TS-17-36",
+            "TS-17-37",
+            "TS-17-38",
+            "TS-17-39",
+            "TS-17-40",
+            "TS-17-47",
+            "TS-17-48",
+            "TS-17-49"
+          ],
+          "requirement_refs": [
+            "17-REQ-11",
+            "17-REQ-12",
+            "17-REQ-13",
+            "17-REQ-19"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "6.5",
+          "title": "Implement handlers.go — GET query handlers for events, outcomes, calls, errors, traces",
+          "details": [
+            "HandleGetEvents: parse query params (event_type, severity, node_id, since, until, order, cursor, limit); call store.QueryAuditEvents; return paginated envelope {events, next_cursor, has_more}.",
+            "HandleGetSessionOutcomes: parse node_id, status, since, until, order, cursor, limit; return {outcomes, next_cursor, has_more}.",
+            "HandleGetToolCalls: parse node_id, session_id, tool_name, since, until, order, cursor, limit; return {calls, next_cursor, has_more}.",
+            "HandleGetToolErrors: parse node_id, session_id, tool_name, since, until, order, cursor, limit; return {errors, next_cursor, has_more}.",
+            "HandleGetTraces: parse event_type, node_id, since, until, order, cursor, limit; return {traces, next_cursor, has_more}.",
+            "Default limit=100, max limit=1000; default order=asc; decode cursor if present."
+          ],
+          "test_spec_refs": [
+            "TS-17-41",
+            "TS-17-42",
+            "TS-17-43",
+            "TS-17-44",
+            "TS-17-45",
+            "TS-17-46",
+            "TS-17-55",
+            "TS-17-56",
+            "TS-17-57"
+          ],
+          "requirement_refs": [
+            "17-REQ-14",
+            "17-REQ-15",
+            "17-REQ-16",
+            "17-REQ-17",
+            "17-REQ-18",
+            "17-REQ-21"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "6.V",
+        "checks": [
+          "go test ./internal/audit/... -run TestDefaultEmitter -count=1 passes (TS-17-10 through TS-17-13).",
+          "go test ./internal/audit/... -run TestPostEvent -count=1 passes (TS-17-17 through TS-17-20).",
+          "go test ./internal/audit/... -run TestPostPostmortem -count=1 passes (TS-17-37 through TS-17-40).",
+          "go test ./internal/audit/... -run TestGetEvents -count=1 passes (TS-17-41, TS-17-42).",
+          "go vet ./internal/audit/... reports no issues.",
+          "Requirements 17-REQ-4, 17-REQ-6 through 17-REQ-19 acceptance criteria met."
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "kind": "standard",
+      "title": "Implement routes.go and hub integration in cmd/af-hub/main.go",
+      "subtasks": [
+        {
+          "id": "7.1",
+          "title": "Implement routes.go — RegisterRoutes wiring all 14 endpoints",
+          "details": [
+            "Create internal/audit/routes.go with func RegisterRoutes(api *echo.Group, store *Store, emitter Emitter).",
+            "Register all 14 routes under /workspaces/:slug/runs/:run_id/ prefix: POST events, POST events/batch, GET events, POST sessions/outcomes, GET sessions/outcomes, POST tools/calls, GET tools/calls, POST tools/errors, GET tools/errors, POST traces, POST traces/batch, GET traces, POST postmortem, GET postmortem.",
+            "Apply auth middleware (requireAuditWrite for POST, requireAuditRead for GET) and workspace access check middleware to each route group.",
+            "Pass store and emitter as closure captures to each handler."
+          ],
+          "test_spec_refs": [
+            "TS-17-62",
+            "TS-17-63"
+          ],
+          "requirement_refs": [
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.2",
+          "title": "Wire audit subsystem into cmd/af-hub/main.go",
+          "details": [
+            "In cmd/af-hub/main.go, resolve auditDBPath: use AF_AUDIT_DB_PATH env var if set, otherwise derive from filepath.Dir(config.Database.Path) + \"/audit.duckdb\".",
+            "Call auditDB, err := audit.OpenDB(auditDBPath); abort startup on error.",
+            "Call audit.InitSchema(auditDB); abort startup on error.",
+            "Create store := audit.NewStore(auditDB) and emitter := audit.NewEmitter(store).",
+            "Call audit.RegisterRoutes(api, store, emitter) where api is the existing Echo route group.",
+            "Append audit.Permissions() to extraPerms slice.",
+            "Defer auditDB.Close() for graceful shutdown."
+          ],
+          "test_spec_refs": [
+            "TS-17-62",
+            "TS-17-63"
+          ],
+          "requirement_refs": [
+            "17-REQ-1",
+            "17-REQ-2",
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "7.3",
+          "title": "Add CGo build constraint and go-duckdb dependency",
+          "details": [
+            "Add github.com/marcboeker/go-duckdb to go.mod via go get.",
+            "Add a build tag comment // go:build cgo or document in Makefile that CGO_ENABLED=1 is required for building the audit package.",
+            "Update CI configuration to ensure jobs building or testing internal/audit run on a host with CGo available.",
+            "Verify the binary builds successfully with CGO_ENABLED=1 go build ./cmd/af-hub/..."
+          ],
+          "test_spec_refs": [
+            "TS-17-1"
+          ],
+          "requirement_refs": [
+            "17-REQ-1"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "7.V",
+        "checks": [
+          "go test ./internal/audit/... -run TestRegisterRoutes -count=1 passes (TS-17-62, TS-17-63).",
+          "CGO_ENABLED=1 go build ./cmd/af-hub/... succeeds with no errors.",
+          "go vet ./... reports no issues across the entire codebase.",
+          "Requirements 17-REQ-24 acceptance criteria met: all 14 routes registered and reachable."
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "kind": "checkpoint",
+      "title": "Checkpoint: full test suite passes and all ingestion paths verified",
+      "subtasks": [
+        {
+          "id": "8.1",
+          "title": "Run full audit package test suite and confirm all tests pass",
+          "details": [
+            "Execute go test ./internal/audit/... -count=1 -v and confirm all tests pass.",
+            "Confirm TS-17-1 through TS-17-63 are all exercised by the test run.",
+            "Identify and fix any failing tests before proceeding to wiring verification."
+          ],
+          "test_spec_refs": [
+            "TS-17-1",
+            "TS-17-2",
+            "TS-17-3",
+            "TS-17-4",
+            "TS-17-5",
+            "TS-17-6",
+            "TS-17-7",
+            "TS-17-8",
+            "TS-17-9",
+            "TS-17-10"
+          ],
+          "requirement_refs": [
+            "17-REQ-1",
+            "17-REQ-2",
+            "17-REQ-3",
+            "17-REQ-4",
+            "17-REQ-5"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.2",
+          "title": "Verify batch ingestion pre-validation and transaction atomicity",
+          "details": [
+            "Manually trace through HandlePostEventsBatch: confirm pre-validation phase runs before any transaction is opened.",
+            "Confirm that a simulated DB write failure during the transaction phase rolls back all valid items (no partial commit).",
+            "Confirm that invalid items appear in the errors array with correct index values."
+          ],
+          "test_spec_refs": [
+            "TS-17-21",
+            "TS-17-22",
+            "TS-17-23",
+            "TS-17-24",
+            "TS-17-34",
+            "TS-17-35",
+            "TS-17-36"
+          ],
+          "requirement_refs": [
+            "17-REQ-7",
+            "17-REQ-12"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.3",
+          "title": "Verify cursor pagination correctness across all five paginated endpoints",
+          "details": [
+            "For each of the five paginated GET endpoints, manually verify that: (1) limit+1 fetch is used to determine has_more, (2) next_cursor encodes the last returned record's timestamp and id, (3) using next_cursor in a subsequent request returns the correct next page, (4) order=desc uses < comparison and order=asc uses > comparison.",
+            "Confirm GET postmortem does not expose cursor, has_more, or pagination parameters."
+          ],
+          "test_spec_refs": [
+            "TS-17-55",
+            "TS-17-56",
+            "TS-17-57"
+          ],
+          "requirement_refs": [
+            "17-REQ-21"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "8.4",
+          "title": "Verify workspace auth and error response shapes",
+          "details": [
+            "Confirm all error responses use apikit.WriteAPIError or apikit.WriteAPIErrorWithType.",
+            "Verify workspace_mismatch returns 403, workspace_archived returns 409, postmortem_not_found returns 404, unknown_schema_version returns 422.",
+            "Confirm Retry-After: 5 header is present on all 503 responses."
+          ],
+          "test_spec_refs": [
+            "TS-17-50",
+            "TS-17-51",
+            "TS-17-52",
+            "TS-17-53",
+            "TS-17-54",
+            "TS-17-58",
+            "TS-17-59"
+          ],
+          "requirement_refs": [
+            "17-REQ-20",
+            "17-REQ-22"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "8.V",
+        "checks": [
+          "go test ./internal/audit/... -count=1 exits with code 0 — all tests pass.",
+          "go test ./... -count=1 exits with code 0 — no regressions in other packages.",
+          "go vet ./... reports no issues.",
+          "All 17-REQ-* requirements have at least one passing test covering their acceptance criteria."
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "kind": "wiring_verification",
+      "title": "Wiring verification: end-to-end integration, smoke tests, and dead-code audit",
+      "subtasks": [
+        {
+          "id": "9.1",
+          "title": "Run smoke test TS-17-SMOKE-1 with real DuckDB and Echo",
+          "details": [
+            "Execute go test ./internal/audit/... -run SMOKE -count=1 -v and confirm TS-17-SMOKE-1 passes.",
+            "The smoke test must: open a real temp-file DuckDB via audit.OpenDB, call audit.InitSchema, create Store and Emitter, register routes on a real Echo instance, POST one audit event, GET events for the run, assert the event appears in the response with correct fields.",
+            "Confirm no mocks or stubs are used in the smoke test path — all components are real."
+          ],
+          "test_spec_refs": [
+            "TS-17-SMOKE-1"
+          ],
+          "requirement_refs": [
+            "17-REQ-1",
+            "17-REQ-2",
+            "17-REQ-6",
+            "17-REQ-14",
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.2",
+          "title": "Trace execution paths from HTTP request to DuckDB write",
+          "details": [
+            "For each of the 14 registered routes, verify the call chain: Echo router → auth middleware → workspace check → handler → Store method → DuckDB INSERT/SELECT.",
+            "Confirm no handler returns a stub response (panic(\"not implemented\"), bare return nil in non-trivial paths, or // TODO stubs).",
+            "Grep internal/audit/ for panic(\"not implemented\") and confirm zero matches.",
+            "Grep internal/audit/ for // TODO and confirm any remaining TODOs are non-critical documentation notes, not implementation gaps."
+          ],
+          "test_spec_refs": [
+            "TS-17-62",
+            "TS-17-63"
+          ],
+          "requirement_refs": [
+            "17-REQ-6",
+            "17-REQ-7",
+            "17-REQ-8",
+            "17-REQ-9",
+            "17-REQ-10",
+            "17-REQ-11",
+            "17-REQ-12",
+            "17-REQ-13",
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.3",
+          "title": "Verify return value propagation from Store to handler to HTTP response",
+          "details": [
+            "Confirm that Store insert methods' (bool, error) duplicate indicator is correctly used by handlers to return HTTP 200 vs 201.",
+            "Confirm that Store query methods' (*Cursor, error) return is used by handlers to populate next_cursor and has_more in response envelopes.",
+            "Confirm that WriteTimeoutError from Store is checked via errors.As in every handler and results in HTTP 503 with Retry-After: 5.",
+            "Confirm that GetPostmortem returning nil (not found) results in HTTP 404 with postmortem_not_found error type."
+          ],
+          "test_spec_refs": [
+            "TS-17-47",
+            "TS-17-48",
+            "TS-17-49",
+            "TS-17-55",
+            "TS-17-58",
+            "TS-17-59"
+          ],
+          "requirement_refs": [
+            "17-REQ-19",
+            "17-REQ-21",
+            "17-REQ-22"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.4",
+          "title": "Verify cross-spec entry points: audit.OpenDB, InitSchema, RegisterRoutes, Permissions called from main.go",
+          "details": [
+            "Grep cmd/af-hub/main.go for audit.OpenDB — confirm it is called with the resolved auditDBPath.",
+            "Grep cmd/af-hub/main.go for audit.InitSchema — confirm it is called with the opened *sql.DB.",
+            "Grep cmd/af-hub/main.go for audit.RegisterRoutes — confirm it is called with the api Echo group, store, and emitter.",
+            "Grep cmd/af-hub/main.go for audit.Permissions — confirm its return value is appended to extraPerms.",
+            "Grep cmd/af-hub/main.go for auditDB.Close — confirm it is deferred for graceful shutdown."
+          ],
+          "test_spec_refs": [
+            "TS-17-62",
+            "TS-17-63"
+          ],
+          "requirement_refs": [
+            "17-REQ-1",
+            "17-REQ-2",
+            "17-REQ-3",
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.5",
+          "title": "Stub and dead-code audit across internal/audit package",
+          "details": [
+            "Run: grep -rn 'panic(\"not implemented\")' internal/audit/ — assert zero matches.",
+            "Run: grep -rn 'panic(' internal/audit/ — review any matches; confirm they are not implementation stubs.",
+            "Run: grep -rn 'TODO\\|FIXME\\|HACK' internal/audit/ — review any matches; confirm none represent missing implementation.",
+            "Confirm all nine Store insert methods have real SQL bodies (not just return nil).",
+            "Confirm all five GET query handlers build and execute real DuckDB SELECT queries with filter and cursor logic."
+          ],
+          "test_spec_refs": [
+            "TS-17-SMOKE-1",
+            "TS-17-17",
+            "TS-17-41"
+          ],
+          "requirement_refs": [
+            "17-REQ-6",
+            "17-REQ-7",
+            "17-REQ-8",
+            "17-REQ-9",
+            "17-REQ-10",
+            "17-REQ-11",
+            "17-REQ-12",
+            "17-REQ-13",
+            "17-REQ-14",
+            "17-REQ-15",
+            "17-REQ-16",
+            "17-REQ-17",
+            "17-REQ-18"
+          ],
+          "state": "pending",
+          "optional": false
+        },
+        {
+          "id": "9.6",
+          "title": "Final full test suite run and regression check",
+          "details": [
+            "Execute go test ./... -count=1 and confirm exit code 0.",
+            "Execute go vet ./... and confirm no issues.",
+            "Confirm CGO_ENABLED=1 go build ./cmd/af-hub/... succeeds.",
+            "Confirm all 63 test cases (TS-17-1 through TS-17-63) plus TS-17-SMOKE-1 are covered by the test run output."
+          ],
+          "test_spec_refs": [
+            "TS-17-SMOKE-1",
+            "TS-17-1",
+            "TS-17-62",
+            "TS-17-63"
+          ],
+          "requirement_refs": [
+            "17-REQ-1",
+            "17-REQ-2",
+            "17-REQ-3",
+            "17-REQ-4",
+            "17-REQ-5",
+            "17-REQ-24"
+          ],
+          "state": "pending",
+          "optional": false
+        }
+      ],
+      "verification": {
+        "id": "9.V",
+        "checks": [
+          "go test ./internal/audit/... -run SMOKE -count=1 -v passes: TS-17-SMOKE-1 exercises real DuckDB, real Echo, real Store, and real Emitter.",
+          "go test ./... -count=1 exits with code 0 — no regressions across the entire codebase.",
+          "go vet ./... reports zero issues.",
+          "CGO_ENABLED=1 go build ./cmd/af-hub/... succeeds.",
+          "grep -rn 'panic(\"not implemented\")' internal/audit/ returns zero matches — no stub implementations remain.",
+          "cmd/af-hub/main.go contains calls to audit.OpenDB, audit.InitSchema, audit.NewStore, audit.NewEmitter, audit.RegisterRoutes, and audit.Permissions.",
+          "All 14 audit routes are registered and reachable in the running binary.",
+          "Requirements 17-REQ-1 through 17-REQ-24 acceptance criteria are all met as verified by passing tests."
+        ]
+      }
+    }
+  ],
+  "traceability": [
+    {
+      "requirement_id": "17-REQ-1",
+      "test_spec_id": "TS-17-1",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-1",
+      "test_spec_id": "TS-17-2",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-1",
+      "test_spec_id": "TS-17-3",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-1",
+      "test_spec_id": "TS-17-4",
+      "task_id": "5.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-2",
+      "test_spec_id": "TS-17-5",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-2",
+      "test_spec_id": "TS-17-6",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-2",
+      "test_spec_id": "TS-17-7",
+      "task_id": "5.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-3",
+      "test_spec_id": "TS-17-8",
+      "task_id": "4.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-3",
+      "test_spec_id": "TS-17-9",
+      "task_id": "4.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-4",
+      "test_spec_id": "TS-17-10",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-4",
+      "test_spec_id": "TS-17-11",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-4",
+      "test_spec_id": "TS-17-12",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-4",
+      "test_spec_id": "TS-17-13",
+      "task_id": "6.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-5",
+      "test_spec_id": "TS-17-14",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-5",
+      "test_spec_id": "TS-17-15",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-5",
+      "test_spec_id": "TS-17-16",
+      "task_id": "4.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-6",
+      "test_spec_id": "TS-17-17",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-6",
+      "test_spec_id": "TS-17-18",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-6",
+      "test_spec_id": "TS-17-19",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-6",
+      "test_spec_id": "TS-17-20",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-7",
+      "test_spec_id": "TS-17-21",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-7",
+      "test_spec_id": "TS-17-22",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-7",
+      "test_spec_id": "TS-17-23",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-7",
+      "test_spec_id": "TS-17-24",
+      "task_id": "6.2",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-8",
+      "test_spec_id": "TS-17-25",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-8",
+      "test_spec_id": "TS-17-26",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-9",
+      "test_spec_id": "TS-17-27",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-9",
+      "test_spec_id": "TS-17-28",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-10",
+      "test_spec_id": "TS-17-29",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-10",
+      "test_spec_id": "TS-17-30",
+      "task_id": "6.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-11",
+      "test_spec_id": "TS-17-31",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-11",
+      "test_spec_id": "TS-17-32",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-11",
+      "test_spec_id": "TS-17-33",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-12",
+      "test_spec_id": "TS-17-34",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-12",
+      "test_spec_id": "TS-17-35",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-12",
+      "test_spec_id": "TS-17-36",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-13",
+      "test_spec_id": "TS-17-37",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-13",
+      "test_spec_id": "TS-17-38",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-13",
+      "test_spec_id": "TS-17-39",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-13",
+      "test_spec_id": "TS-17-40",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-14",
+      "test_spec_id": "TS-17-41",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-14",
+      "test_spec_id": "TS-17-42",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-15",
+      "test_spec_id": "TS-17-43",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-16",
+      "test_spec_id": "TS-17-44",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-17",
+      "test_spec_id": "TS-17-45",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-18",
+      "test_spec_id": "TS-17-46",
+      "task_id": "6.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-19",
+      "test_spec_id": "TS-17-47",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-19",
+      "test_spec_id": "TS-17-48",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-19",
+      "test_spec_id": "TS-17-49",
+      "task_id": "6.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-20",
+      "test_spec_id": "TS-17-50",
+      "task_id": "4.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-20",
+      "test_spec_id": "TS-17-51",
+      "task_id": "4.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-20",
+      "test_spec_id": "TS-17-52",
+      "task_id": "4.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-20",
+      "test_spec_id": "TS-17-53",
+      "task_id": "4.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-20",
+      "test_spec_id": "TS-17-54",
+      "task_id": "4.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-21",
+      "test_spec_id": "TS-17-55",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-21",
+      "test_spec_id": "TS-17-56",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-21",
+      "test_spec_id": "TS-17-57",
+      "task_id": "5.4",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-22",
+      "test_spec_id": "TS-17-58",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-22",
+      "test_spec_id": "TS-17-59",
+      "task_id": "5.5",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-23",
+      "test_spec_id": "TS-17-60",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-23",
+      "test_spec_id": "TS-17-61",
+      "task_id": "4.3",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-24",
+      "test_spec_id": "TS-17-62",
+      "task_id": "7.1",
+      "test_path": null
+    },
+    {
+      "requirement_id": "17-REQ-24",
+      "test_spec_id": "TS-17-63",
+      "task_id": "7.1",
+      "test_path": null
+    }
+  ]
+}

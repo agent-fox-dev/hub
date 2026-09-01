@@ -1,0 +1,1185 @@
+{
+  "$schema": null,
+  "spec_id": "18",
+  "spec_name": "hub_audit_query",
+  "schema_version": 1,
+  "introduction": "This spec defines hub-internal audit event emission from all mutation points, a unified query API merging hub and agent events, a conversation transcript reconstruction endpoint, and a real-time SSE streaming endpoint for the af-hub audit subsystem. Note: requirements referencing apikit, Emitter, HubEvent, and Store APIs are based on PRD descriptions cross-referencing spec 17 (audit_storage_ingestion) and should be verified against installed library signatures before implementation.",
+  "glossary": {
+    "AF_SSE_MAX_CONNECTIONS": "Environment variable controlling the maximum number of concurrent SSE connections; defaults to 100",
+    "Emitter": "The audit.Emitter interface defined in spec 17 (audit_storage_ingestion) used to emit structured audit events to DuckDB",
+    "GET /api/v1/audit": "Unified audit event query endpoint returning merged hub and agent events with filtering and cursor pagination",
+    "GET /api/v1/events": "SSE streaming endpoint delivering real-time audit events to connected clients",
+    "GET /api/v1/workspaces/:slug/runs/:run_id/transcript": "Endpoint that reconstructs a conversation transcript from agent trace data for a specific run and node",
+    "HubEvent": "The structured audit event struct defined in spec 17 representing a hub-internal audit event stored in hub_audit_events",
+    "MergeAPIConfig": "Configuration struct for the merge API handler package in internal/merge",
+    "RebuildAPIConfig": "Configuration struct for the carry-patch rebuild API handler package in internal/carrypatch",
+    "SSE": "Server-Sent Events \u2014 an HTTP-based protocol for server-to-client real-time event streaming",
+    "Store": "The audit.Store interface defined in spec 17 providing DuckDB query access",
+    "UNION ALL": "SQL construct used to merge rows from hub_audit_events and agent_audit_events into a single chronological result set",
+    "actor_id": "The authenticated user or system identity that performed the audited action, sourced from apikit.GetAuthInfo",
+    "actor_type": "The credential type of the actor: admin_token, api_key, pat, or system",
+    "agent_audit_events": "DuckDB table storing agent-submitted audit events, defined in spec 17",
+    "agent_traces": "DuckDB table storing agent trace/telemetry data used for transcript reconstruction, defined in spec 17",
+    "apikit.FormatUTC": "apikit helper function that formats a time value as a UTC ISO 8601 string",
+    "apikit.GetAuthInfo": "apikit helper function that extracts authentication information from an Echo context",
+    "apikit.NowUTC": "apikit helper function that returns the current time in UTC",
+    "apikit.WriteAPIError": "apikit helper function that writes a structured JSON error response to an Echo context",
+    "archetype": "Agent archetype field present in agent audit events, null for hub events",
+    "assistant.message": "Agent trace event type representing an assistant response, mapped to the assistant role in transcripts",
+    "audit:read": "Permission scope defined in spec 17 (internal/audit/permissions.go) required to query audit events",
+    "audit_event": "SSE event type carrying a unified audit event matching the GET /api/v1/audit response schema",
+    "broadcaster": "Fan-out component within the SSE connection manager that receives emitted events and forwards them to per-connection goroutines",
+    "cursor": "Opaque URL-safe base64-encoded pagination token encoding {ts, id} for keyset pagination, consistent with spec 17",
+    "event_type": "Dot-notation string identifying the kind of audit event (e.g., hub.workspace.create)",
+    "event_type_prefix": "Query parameter enabling prefix-match filtering on event_type (e.g., hub.workspace matches all workspace events)",
+    "heartbeat": "Periodic SSE keepalive frame sent every 30 seconds to prevent stale connection detection",
+    "hub.git.push": "Audit event_type emitted when a git push is received by the hub git server",
+    "hub.merge.complete": "Audit event_type emitted when a merge completes successfully",
+    "hub.merge.enqueue": "Audit event_type emitted when a merge is submitted",
+    "hub.merge.fail": "Audit event_type emitted when a merge fails",
+    "hub.patch.create": "Audit event_type emitted when a carry-patch is added",
+    "hub.patch.delete": "Audit event_type emitted when a carry-patch is removed",
+    "hub.rebuild.complete": "Audit event_type emitted when a carry-patch rebuild completes",
+    "hub.rebuild.enqueue": "Audit event_type emitted when a carry-patch rebuild is enqueued",
+    "hub.rebuild.fail": "Audit event_type emitted when a carry-patch rebuild fails",
+    "hub.secret.create": "Audit event_type emitted when a secret is created",
+    "hub.secret.delete": "Audit event_type emitted when a secret is deleted",
+    "hub.secret.update": "Audit event_type emitted when a secret is updated",
+    "hub.session.force_closed": "Audit event_type emitted when an agent session is force-closed",
+    "hub.variable.create": "Audit event_type emitted when a variable is created",
+    "hub.variable.delete": "Audit event_type emitted when a variable is deleted",
+    "hub.variable.update": "Audit event_type emitted when a variable is updated",
+    "hub.workspace.archive": "Audit event_type emitted when a workspace is archived",
+    "hub.workspace.create": "Audit event_type emitted when a workspace is created",
+    "hub.workspace.delete": "Audit event_type emitted when a workspace is deleted",
+    "hub.workspace.reactivate": "Audit event_type emitted when a workspace is reactivated",
+    "hub.workspace.sync": "Audit event_type emitted when a workspace is synced with upstream",
+    "hub.workspace.update": "Audit event_type emitted when a workspace is updated",
+    "hub_audit_events": "DuckDB table storing hub-internal audit events, defined in spec 17",
+    "internal/audit/emitter.go": "File containing the default Emitter implementation, extended to broadcast to SSE subscribers on emit",
+    "internal/audit/handlers.go": "File containing the unified query handler, transcript handler, and SSE handler",
+    "internal/audit/routes.go": "File registering audit GET routes including the unified query, transcript, and SSE endpoints",
+    "internal/audit/sse.go": "New file containing the SSE connection manager, broadcaster, and heartbeat goroutine",
+    "node_id": "Identifier for a specific node within an agent run, used to reconstruct conversation transcripts",
+    "resource_type": "The category of resource affected by a hub audit event: workspace, merge, patch, secret, variable, or job",
+    "run_id": "Identifier for a specific agent execution run, used to correlate agent audit events and traces",
+    "session.init": "Agent trace event type representing session initialization, mapped to the system role in transcripts",
+    "session_id": "Identifier for an agent session, populated in agent audit events",
+    "session_outcome": "SSE event type carrying agent session outcome data, schema defined in spec 17",
+    "source": "Field in unified audit query results distinguishing hub-internal events (hub) from agent-submitted events (agent)",
+    "stale-connection timeout": "60-second hardcoded threshold after which an SSE connection with no reads is closed",
+    "tool.error": "Agent trace event type representing a tool error, mapped to the tool_error role in transcripts",
+    "tool.use": "Agent trace event type representing a tool invocation, mapped to the tool_use role in transcripts"
+  },
+  "requirements": [
+    {
+      "id": "18-REQ-1",
+      "title": "Workspace mutation audit emission",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have every workspace mutation automatically emit a structured audit event",
+        "benefit": "I can trace all workspace lifecycle changes in the audit log without modifying individual handler logic"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "emit a HubEvent to the Emitter with the appropriate event_type, actor_id from apikit.GetAuthInfo, actor_type, resource_type set to workspace, resource_id set to the workspace slug, workspace field set to the slug, and action-specific metadata",
+          "return_contract": null,
+          "trigger": "a workspace create, update, archive, reactivate, delete, or sync mutation completes successfully"
+        },
+        {
+          "id": "18-REQ-1.2",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace handler config",
+          "action": "expose an Audit field of type audit.Emitter on the workspace handler config struct, used by all workspace mutation handlers",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-1.3",
+          "ears_pattern": "complex_event",
+          "system": "workspace handler",
+          "action": "skip emission silently without returning an error or panicking",
+          "return_contract": null,
+          "trigger": "a workspace mutation completes",
+          "condition": "the Audit field on the handler config is nil"
+        },
+        {
+          "id": "18-REQ-1.4",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "emit a HubEvent with event_type hub.workspace.create and metadata containing git_url and branch fields",
+          "return_contract": null,
+          "trigger": "a workspace create mutation completes"
+        },
+        {
+          "id": "18-REQ-1.5",
+          "ears_pattern": "event_driven",
+          "system": "workspace handler",
+          "action": "emit a HubEvent with event_type hub.workspace.sync and metadata containing a result field describing the sync outcome",
+          "return_contract": null,
+          "trigger": "a workspace sync mutation completes"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "log the error and continue \u2014 emission failure must not cause the mutation handler to return an error to the caller",
+          "return_contract": "mutation HTTP response is unaffected; emission error is logged but not propagated",
+          "error_condition": "the Emitter.Emit call returns an error"
+        },
+        {
+          "id": "18-REQ-1.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace handler",
+          "action": "emit the HubEvent with an empty actor_id and actor_type set to system rather than panicking",
+          "return_contract": "The HubEvent is stored with empty actor_id and actor_type=\"system\"",
+          "error_condition": "apikit.GetAuthInfo returns no authenticated user (unauthenticated context)"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-2",
+      "title": "Merge mutation audit emission",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have merge submit, complete, and fail events automatically recorded in the audit log",
+        "benefit": "I can audit the full lifecycle of every merge operation"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "emit a HubEvent with event_type hub.merge.enqueue and metadata containing target_branch, source_ref, and job_id",
+          "return_contract": null,
+          "trigger": "a merge is submitted (enqueued)"
+        },
+        {
+          "id": "18-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "emit a HubEvent with event_type hub.merge.complete and metadata containing base_sha and merged_sha",
+          "return_contract": null,
+          "trigger": "a merge completes successfully"
+        },
+        {
+          "id": "18-REQ-2.3",
+          "ears_pattern": "event_driven",
+          "system": "merge handler",
+          "action": "emit a HubEvent with event_type hub.merge.fail and metadata containing a reason field",
+          "return_contract": null,
+          "trigger": "a merge fails"
+        },
+        {
+          "id": "18-REQ-2.4",
+          "ears_pattern": "ubiquitous",
+          "system": "MergeAPIConfig",
+          "action": "expose an Audit field of type audit.Emitter on MergeAPIConfig, used by merge submit and completion/failure handlers",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-2.5",
+          "ears_pattern": "complex_event",
+          "system": "merge handler",
+          "action": "skip emission silently without returning an error or panicking",
+          "return_contract": null,
+          "trigger": "a merge mutation completes",
+          "condition": "the Audit field on MergeAPIConfig is nil"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "merge handler",
+          "action": "log the error and continue \u2014 emission failure must not affect the merge operation result returned to the caller",
+          "return_contract": "merge HTTP response is unaffected; emission error is logged but not propagated",
+          "error_condition": "the Emitter.Emit call returns an error during merge event emission"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-3",
+      "title": "Carry-patch mutation audit emission",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have all carry-patch and rebuild operations recorded in the audit log",
+        "benefit": "I can trace patch stack changes and rebuild outcomes over time"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "carrypatch handler",
+          "action": "emit a HubEvent with event_type hub.patch.create and metadata containing branch_name and position",
+          "return_contract": null,
+          "trigger": "a patch is added to a carry-patch workspace"
+        },
+        {
+          "id": "18-REQ-3.2",
+          "ears_pattern": "event_driven",
+          "system": "carrypatch handler",
+          "action": "emit a HubEvent with event_type hub.patch.delete and metadata containing branch_name",
+          "return_contract": null,
+          "trigger": "a patch is removed from a carry-patch workspace"
+        },
+        {
+          "id": "18-REQ-3.3",
+          "ears_pattern": "event_driven",
+          "system": "carrypatch handler",
+          "action": "emit a HubEvent with event_type hub.rebuild.enqueue and metadata containing job_id and patch_count",
+          "return_contract": null,
+          "trigger": "a rebuild is enqueued"
+        },
+        {
+          "id": "18-REQ-3.4",
+          "ears_pattern": "event_driven",
+          "system": "carrypatch handler",
+          "action": "emit a HubEvent with event_type hub.rebuild.complete and metadata containing patches_applied",
+          "return_contract": null,
+          "trigger": "a rebuild completes successfully"
+        },
+        {
+          "id": "18-REQ-3.5",
+          "ears_pattern": "event_driven",
+          "system": "carrypatch handler",
+          "action": "emit a HubEvent with event_type hub.rebuild.fail and metadata containing a reason field",
+          "return_contract": null,
+          "trigger": "a rebuild fails"
+        },
+        {
+          "id": "18-REQ-3.6",
+          "ears_pattern": "ubiquitous",
+          "system": "carrypatch config structs",
+          "action": "expose an Audit field of type audit.Emitter on all carrypatch config structs including RebuildAPIConfig, used by patch and rebuild handlers",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-3.7",
+          "ears_pattern": "complex_event",
+          "system": "carrypatch handler",
+          "action": "skip emission silently without returning an error or panicking",
+          "return_contract": null,
+          "trigger": "a carrypatch mutation completes",
+          "condition": "the Audit field on the config struct is nil"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-3.E1",
+          "ears_pattern": "unwanted",
+          "system": "carrypatch handler",
+          "action": "log the error and continue \u2014 emission failure must not affect the patch or rebuild operation result",
+          "return_contract": "carrypatch HTTP response is unaffected; emission error is logged but not propagated",
+          "error_condition": "the Emitter.Emit call returns an error during patch or rebuild event emission"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-4",
+      "title": "Secrets and variables mutation audit emission",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have all secret and variable CRUD operations recorded in the audit log",
+        "benefit": "I can audit sensitive credential changes across all scopes"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "secrets handler",
+          "action": "emit a HubEvent with event_type hub.secret.create and metadata containing scope and key",
+          "return_contract": null,
+          "trigger": "a secret is created"
+        },
+        {
+          "id": "18-REQ-4.2",
+          "ears_pattern": "event_driven",
+          "system": "secrets handler",
+          "action": "emit a HubEvent with event_type hub.secret.update and metadata containing scope and key",
+          "return_contract": null,
+          "trigger": "a secret is updated"
+        },
+        {
+          "id": "18-REQ-4.3",
+          "ears_pattern": "event_driven",
+          "system": "secrets handler",
+          "action": "emit a HubEvent with event_type hub.secret.delete and metadata containing scope and key",
+          "return_contract": null,
+          "trigger": "a secret is deleted"
+        },
+        {
+          "id": "18-REQ-4.4",
+          "ears_pattern": "event_driven",
+          "system": "secrets handler",
+          "action": "emit a HubEvent with event_type hub.variable.create and metadata containing scope and key",
+          "return_contract": null,
+          "trigger": "a variable is created"
+        },
+        {
+          "id": "18-REQ-4.5",
+          "ears_pattern": "event_driven",
+          "system": "secrets handler",
+          "action": "emit a HubEvent with event_type hub.variable.update and metadata containing scope and key",
+          "return_contract": null,
+          "trigger": "a variable is updated"
+        },
+        {
+          "id": "18-REQ-4.6",
+          "ears_pattern": "event_driven",
+          "system": "secrets handler",
+          "action": "emit a HubEvent with event_type hub.variable.delete and metadata containing scope and key",
+          "return_contract": null,
+          "trigger": "a variable is deleted"
+        },
+        {
+          "id": "18-REQ-4.7",
+          "ears_pattern": "ubiquitous",
+          "system": "secrets route registration",
+          "action": "accept an audit.Emitter parameter during route registration and pass it to all secret and variable CRUD handlers",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-4.E1",
+          "ears_pattern": "unwanted",
+          "system": "secrets handler",
+          "action": "log the error and continue \u2014 emission failure must not affect the CRUD operation result returned to the caller",
+          "return_contract": "secrets/variables HTTP response is unaffected; emission error is logged but not propagated",
+          "error_condition": "the Emitter.Emit call returns an error during secret or variable event emission"
+        },
+        {
+          "id": "18-REQ-4.E2",
+          "ears_pattern": "unwanted",
+          "system": "secrets handler",
+          "action": "skip emission silently in all CRUD handlers without panicking",
+          "return_contract": "No audit event emitted; handler completes normally without audit side effect",
+          "error_condition": "the Audit emitter is nil at route registration time"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-5",
+      "title": "Git server push audit emission",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have every git push to the hub git server recorded in the audit log",
+        "benefit": "I can track all code changes pushed through the hub"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "gitserver post-push hook",
+          "action": "emit a HubEvent with event_type hub.git.push and metadata containing head_sha and refs_updated",
+          "return_contract": null,
+          "trigger": "a git push is received and processed by the hub git server"
+        },
+        {
+          "id": "18-REQ-5.2",
+          "ears_pattern": "ubiquitous",
+          "system": "gitserver config",
+          "action": "expose an Audit field of type audit.Emitter on the gitserver config struct, used by the post-push hook handler",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-5.3",
+          "ears_pattern": "complex_event",
+          "system": "gitserver post-push hook",
+          "action": "skip emission silently without returning an error or panicking",
+          "return_contract": null,
+          "trigger": "a git push is processed",
+          "condition": "the Audit field on the gitserver config is nil"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-5.E1",
+          "ears_pattern": "unwanted",
+          "system": "gitserver post-push hook",
+          "action": "log the error and continue \u2014 emission failure must not cause the push to be rejected or the hook to fail",
+          "return_contract": "git push response is unaffected; emission error is logged but not propagated",
+          "error_condition": "the Emitter.Emit call returns an error during push event emission"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-6",
+      "title": "Unified audit event query API",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "query all audit events from both hub and agent sources through a single API endpoint with rich filtering",
+        "benefit": "I can investigate incidents and audit activity without querying multiple endpoints"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "audit query handler",
+          "action": "query both hub_audit_events and agent_audit_events via UNION ALL ordered by timestamp, apply any provided filters, and return a paginated JSON response",
+          "return_contract": "returns HTTP 200 with JSON body {events: [...], next_cursor: string|null, has_more: bool}",
+          "trigger": "an authenticated caller with audit:read permission sends GET /api/v1/audit"
+        },
+        {
+          "id": "18-REQ-6.2",
+          "ears_pattern": "ubiquitous",
+          "system": "audit query handler",
+          "action": "support filtering by source, run_id, actor_id, actor_type, resource_type, action, event_type, event_type_prefix, severity, workspace, since, and until query parameters; apply only the filters whose parameters are present in the request",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-6.3",
+          "ears_pattern": "ubiquitous",
+          "system": "audit query handler",
+          "action": "implement cursor-based pagination using URL-safe base64 (RFC 4648 \u00a75) encoding of a JSON object {ts, id}; default page size is 100 events, maximum is 1000",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-6.4",
+          "ears_pattern": "ubiquitous",
+          "system": "audit query handler",
+          "action": "populate hub-specific fields (actor_id, actor_type, resource_type, resource_id, action) for hub events and serialize them as null for agent events; populate agent-specific fields (run_id, node_id, session_id, archetype) for agent events and serialize them as null for hub events",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-6.5",
+          "ears_pattern": "ubiquitous",
+          "system": "audit query handler",
+          "action": "set the source field to hub for events from hub_audit_events and to agent for events from agent_audit_events in every response row",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-6.6",
+          "ears_pattern": "event_driven",
+          "system": "audit query handler",
+          "action": "filter events where event_type starts with the given prefix using a SQL LIKE or equivalent prefix match",
+          "return_contract": null,
+          "trigger": "the event_type_prefix query parameter is provided"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-6.E1",
+          "ears_pattern": "unwanted",
+          "system": "audit query handler",
+          "action": "reject the request with a 400 error using apikit.WriteAPIError with message invalid cursor",
+          "return_contract": "returns HTTP 400 with JSON error body produced by apikit.WriteAPIError",
+          "error_condition": "the cursor query parameter is present but cannot be decoded or parsed"
+        },
+        {
+          "id": "18-REQ-6.E2",
+          "ears_pattern": "unwanted",
+          "system": "audit query handler",
+          "action": "return a 500 error using apikit.WriteAPIError with a generic error message",
+          "return_contract": "returns HTTP 500 with JSON error body produced by apikit.WriteAPIError",
+          "error_condition": "the DuckDB query fails"
+        },
+        {
+          "id": "18-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "audit query handler",
+          "action": "return a standard apikit 401 response before executing any query",
+          "return_contract": "returns HTTP 401 with standard apikit error body",
+          "error_condition": "the request is unauthenticated"
+        },
+        {
+          "id": "18-REQ-6.E4",
+          "ears_pattern": "unwanted",
+          "system": "audit query handler",
+          "action": "return a standard apikit 403 response before executing any query",
+          "return_contract": "returns HTTP 403 with standard apikit error body",
+          "error_condition": "the authenticated caller lacks the audit:read permission scope"
+        },
+        {
+          "id": "18-REQ-6.E5",
+          "ears_pattern": "event_driven",
+          "system": "audit query handler",
+          "action": "clamp the effective limit to 1000 and proceed with the query",
+          "return_contract": "returns HTTP 200 with at most 1000 events",
+          "trigger": "a request is made with limit exceeding 1000"
+        },
+        {
+          "id": "18-REQ-6.E6",
+          "ears_pattern": "event_driven",
+          "system": "audit query handler",
+          "action": "return the most recent 100 events across both sources ordered by timestamp descending",
+          "return_contract": "returns HTTP 200 with JSON body {events: [...], next_cursor: string|null, has_more: bool}",
+          "trigger": "a request is made with no filters and no cursor"
+        },
+        {
+          "id": "18-REQ-6.E7",
+          "ears_pattern": "event_driven",
+          "system": "audit query handler",
+          "action": "return an empty events array rather than a DuckDB error",
+          "return_contract": "returns HTTP 200 with JSON body {events: [], next_cursor: null, has_more: false}",
+          "trigger": "a request is made with since and until parameters where since is after until"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-7",
+      "title": "Conversation transcript reconstruction endpoint",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "reconstruct the full conversation transcript for a specific agent run and node",
+        "benefit": "I can review what an agent said and did during a run for debugging and auditing purposes"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "transcript handler",
+          "action": "query agent_traces for the given run_id and node_id ordered by timestamp, map trace event types to conversation roles, and return the messages array",
+          "return_contract": "returns HTTP 200 with JSON body {run_id: string, node_id: string, messages: [{role, content, tool_name, timestamp}]}",
+          "trigger": "an authenticated caller with audit:read permission sends GET /api/v1/workspaces/:slug/runs/:run_id/transcript with a node_id query parameter"
+        },
+        {
+          "id": "18-REQ-7.2",
+          "ears_pattern": "ubiquitous",
+          "system": "transcript handler",
+          "action": "map session.init trace events to role system with content from payload.system_prompt; map assistant.message to role assistant; map tool.use to role tool_use with tool_name populated; map tool.error to role tool_error with tool_name populated",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-7.3",
+          "ears_pattern": "event_driven",
+          "system": "transcript handler",
+          "action": "return an empty messages array with HTTP 200 \u2014 the endpoint does not distinguish no matching traces from run does not exist",
+          "return_contract": "returns HTTP 200 with JSON body {run_id: string, node_id: string, messages: []}",
+          "trigger": "no traces are found for the given run_id and node_id combination"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-7.E1",
+          "ears_pattern": "unwanted",
+          "system": "transcript handler",
+          "action": "reject the request with a 400 error using apikit.WriteAPIError with message node_id is required",
+          "return_contract": "returns HTTP 400 with JSON error body produced by apikit.WriteAPIError containing message node_id is required",
+          "error_condition": "the node_id query parameter is missing from the request"
+        },
+        {
+          "id": "18-REQ-7.E2",
+          "ears_pattern": "unwanted",
+          "system": "transcript handler",
+          "action": "return a 500 error using apikit.WriteAPIError with a generic error message",
+          "return_contract": "returns HTTP 500 with JSON error body produced by apikit.WriteAPIError",
+          "error_condition": "the DuckDB query against agent_traces fails"
+        },
+        {
+          "id": "18-REQ-7.E3",
+          "ears_pattern": "unwanted",
+          "system": "transcript handler",
+          "action": "return a standard apikit 401 response before executing any query",
+          "return_contract": "returns HTTP 401 with standard apikit error body",
+          "error_condition": "the request is unauthenticated"
+        },
+        {
+          "id": "18-REQ-7.E4",
+          "ears_pattern": "unwanted",
+          "system": "transcript handler",
+          "action": "return a standard apikit 403 response before executing any query",
+          "return_contract": "returns HTTP 403 with standard apikit error body",
+          "error_condition": "the authenticated caller lacks the audit:read permission scope"
+        },
+        {
+          "id": "18-REQ-7.E5",
+          "ears_pattern": "event_driven",
+          "system": "transcript handler",
+          "action": "skip the unrecognized event and continue building the transcript from the remaining events",
+          "return_contract": null,
+          "trigger": "a trace event has an unrecognized event type (not session.init, assistant.message, tool.use, or tool.error)"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-8",
+      "title": "SSE streaming endpoint",
+      "user_story": {
+        "role": "dashboard operator",
+        "goal": "receive real-time audit events via a Server-Sent Events stream",
+        "benefit": "I can build live dashboards that update as hub and agent events are emitted without polling"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "SSE handler",
+          "action": "upgrade the connection to an SSE stream, register the client with the broadcaster, and begin streaming audit_event, session_outcome, and heartbeat frames",
+          "return_contract": "returns HTTP 200 with Content-Type: text/event-stream and a continuous SSE frame stream",
+          "trigger": "an authenticated caller with audit:read permission sends GET /api/v1/events"
+        },
+        {
+          "id": "18-REQ-8.2",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE handler",
+          "action": "support optional filtering by workspace, run_id, and category query parameters; apply only the filters whose parameters are present in the request",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-8.3",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE broadcaster",
+          "action": "send a heartbeat SSE frame with the current UTC timestamp every 30 seconds to all connected clients",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-8.4",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE connection manager",
+          "action": "close any SSE connection that has had no reads for 60 seconds (stale-connection timeout)",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-8.5",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE broadcaster",
+          "action": "use a fan-out channel pattern where the Emitter pushes to a single broadcast channel and per-connection goroutines filter and forward; each per-client buffered channel holds 256 events; when the per-client channel is full, drop the oldest event and log at debug level",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-8.6",
+          "ears_pattern": "event_driven",
+          "system": "SSE handler",
+          "action": "broadcast the event to all registered SSE subscribers; each subscriber goroutine applies its filters and forwards matching events as audit_event SSE frames",
+          "return_contract": null,
+          "trigger": "the Emitter emits a new event"
+        },
+        {
+          "id": "18-REQ-8.7",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE event format",
+          "action": "format each SSE frame with an event field set to the event type name and a data field containing the JSON-encoded event payload, followed by a blank line",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "SSE handler",
+          "action": "reject the new connection with HTTP 503 and JSON body {error: too many SSE connections}",
+          "return_contract": "returns HTTP 503 with JSON body {\"error\": \"too many SSE connections\"}",
+          "error_condition": "the number of active SSE connections equals or exceeds the AF_SSE_MAX_CONNECTIONS limit"
+        },
+        {
+          "id": "18-REQ-8.E2",
+          "ears_pattern": "unwanted",
+          "system": "SSE handler",
+          "action": "return a standard apikit 401 response before upgrading to SSE",
+          "return_contract": "returns HTTP 401 with standard apikit error body",
+          "error_condition": "the request is unauthenticated (including standard EventSource connections that cannot set Authorization headers)"
+        },
+        {
+          "id": "18-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "SSE handler",
+          "action": "return a standard apikit 403 response before upgrading to SSE",
+          "return_contract": "returns HTTP 403 with standard apikit error body",
+          "error_condition": "the authenticated caller lacks the audit:read permission scope"
+        },
+        {
+          "id": "18-REQ-8.E4",
+          "ears_pattern": "unwanted",
+          "system": "SSE broadcaster",
+          "action": "drop the oldest event from the channel, enqueue the new event, and log the drop at debug level",
+          "return_contract": "The SSE client receives the new event; the oldest buffered event is lost",
+          "error_condition": "a per-client buffered channel of 256 events is full when a new event arrives"
+        },
+        {
+          "id": "18-REQ-8.E5",
+          "ears_pattern": "unwanted",
+          "system": "SSE connection manager",
+          "action": "detect the disconnection via context cancellation, deregister the client from the broadcaster, and release the per-client goroutine and channel",
+          "return_contract": "The SSE connection is closed cleanly; the per-client goroutine exits",
+          "error_condition": "the client disconnects (context cancelled or connection closed)"
+        },
+        {
+          "id": "18-REQ-8.E6",
+          "ears_pattern": "state_driven",
+          "system": "SSE connection manager",
+          "action": "close the stale connection, deregister the client from the broadcaster, and release associated resources",
+          "return_contract": null,
+          "state": "a connection has had no reads for 60 seconds"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-9",
+      "title": "SSE connection manager and broadcaster implementation",
+      "user_story": {
+        "role": "platform engineer",
+        "goal": "have a correct and resource-safe SSE connection manager integrated with the Emitter",
+        "benefit": "the SSE subsystem handles concurrent connections, backpressure, and cleanup without leaking goroutines or memory"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-9.1",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE connection manager",
+          "action": "implement the SSE connection manager in internal/audit/sse.go with a broadcaster goroutine, per-connection goroutines, a heartbeat goroutine, and a connection registry protected by a mutex or equivalent synchronization",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-9.2",
+          "ears_pattern": "ubiquitous",
+          "system": "Emitter integration",
+          "action": "extend the default Emitter implementation in internal/audit/emitter.go so that every successful Emit call also publishes the event to the SSE broadcast channel",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-9.3",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE connection manager",
+          "action": "read the maximum connection limit from AF_SSE_MAX_CONNECTIONS at startup, defaulting to 100 if the variable is absent or unparseable",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-9.4",
+          "ears_pattern": "ubiquitous",
+          "system": "SSE connection manager",
+          "action": "define the heartbeat interval as a hardcoded constant of 30 seconds and the stale-connection timeout as a hardcoded constant of 60 seconds; these values must not be read from environment variables",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "SSE broadcaster",
+          "action": "drop the event and log at debug level rather than blocking the Emitter",
+          "return_contract": "The event is not delivered to any SSE client; the Emitter returns without blocking",
+          "error_condition": "the broadcast channel itself is full when the Emitter tries to publish"
+        },
+        {
+          "id": "18-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "SSE connection manager",
+          "action": "fall back to the default limit of 100 and log a warning",
+          "return_contract": "The SSE subsystem initializes with the default limit of 100; a warning is logged",
+          "error_condition": "AF_SSE_MAX_CONNECTIONS is set to a non-integer or negative value"
+        },
+        {
+          "id": "18-REQ-9.E3",
+          "ears_pattern": "unwanted",
+          "system": "SSE connection manager",
+          "action": "recover from the panic, log the error, and restart the broadcaster goroutine to prevent total SSE subsystem failure",
+          "return_contract": "The broadcaster resumes operation; existing SSE connections are unaffected",
+          "error_condition": "the broadcaster goroutine panics"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-10",
+      "title": "Audit route registration",
+      "user_story": {
+        "role": "platform engineer",
+        "goal": "have the unified query, transcript, and SSE endpoints registered on the Echo router",
+        "benefit": "all audit query and streaming endpoints are accessible at their documented paths"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "18-REQ-10.1",
+          "ears_pattern": "ubiquitous",
+          "system": "audit route registration",
+          "action": "register GET /api/v1/audit on the Echo router with the audit:read permission middleware and the unified query handler",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-10.2",
+          "ears_pattern": "ubiquitous",
+          "system": "audit route registration",
+          "action": "register GET /api/v1/workspaces/:slug/runs/:run_id/transcript on the Echo router with the audit:read permission middleware and the transcript handler",
+          "return_contract": null
+        },
+        {
+          "id": "18-REQ-10.3",
+          "ears_pattern": "ubiquitous",
+          "system": "audit route registration",
+          "action": "register GET /api/v1/events on the Echo router with the audit:read permission middleware and the SSE handler",
+          "return_contract": null
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "18-REQ-10.E1",
+          "ears_pattern": "unwanted",
+          "system": "audit route registration",
+          "action": "panic at startup with a descriptive message rather than registering routes that will crash at request time",
+          "return_contract": "process panics at startup with a descriptive error message",
+          "error_condition": "the Store or SSE connection manager is nil at route registration time"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "18-PROP-1",
+      "title": "Emission does not block or fail mutations",
+      "for_any": "hub mutation handler with a non-nil Audit emitter",
+      "invariant": "the HTTP response status and body of the mutation are identical whether Emit succeeds, fails, or the Audit field is nil",
+      "validates": [
+        "18-REQ-1.1",
+        "18-REQ-1.3",
+        "18-REQ-2.5",
+        "18-REQ-3.7",
+        "18-REQ-4.E2",
+        "18-REQ-5.3"
+      ]
+    },
+    {
+      "id": "18-PROP-2",
+      "title": "Cursor round-trip correctness",
+      "for_any": "any valid audit query response with has_more=true",
+      "invariant": "decoding next_cursor from URL-safe base64 yields a valid JSON object with ts and id fields, and using that cursor in a subsequent GET /api/v1/audit request returns the next page of events without duplicates or gaps",
+      "validates": [
+        "18-REQ-6.1",
+        "18-REQ-6.3",
+        "18-REQ-6.E1"
+      ]
+    },
+    {
+      "id": "18-PROP-3",
+      "title": "Source field accuracy in unified query",
+      "for_any": "any event returned by GET /api/v1/audit",
+      "invariant": "events originating from hub_audit_events have source=hub with non-null hub-specific fields and null agent-specific fields; events from agent_audit_events have source=agent with non-null agent-specific fields and null hub-specific fields",
+      "validates": [
+        "18-REQ-6.4",
+        "18-REQ-6.5"
+      ]
+    },
+    {
+      "id": "18-PROP-4",
+      "title": "SSE heartbeat invariant",
+      "for_any": "any active SSE connection",
+      "invariant": "at least one heartbeat frame is delivered within every 30-second window, ensuring the stale-connection timeout of 60 seconds is never triggered by the heartbeat interval alone",
+      "validates": [
+        "18-REQ-8.3",
+        "18-REQ-8.4"
+      ]
+    },
+    {
+      "id": "18-PROP-5",
+      "title": "SSE connection cap enforcement",
+      "for_any": "any sequence of SSE connection attempts",
+      "invariant": "the number of concurrently active SSE connections never exceeds the value of AF_SSE_MAX_CONNECTIONS; any connection attempt that would exceed the cap receives HTTP 503",
+      "validates": [
+        "18-REQ-8.E1",
+        "18-REQ-9.3"
+      ]
+    },
+    {
+      "id": "18-PROP-6",
+      "title": "Transcript ordering",
+      "for_any": "any transcript response for a given run_id and node_id",
+      "invariant": "messages are ordered strictly by ascending timestamp with no reordering or deduplication",
+      "validates": [
+        "18-REQ-7.1",
+        "18-REQ-7.2"
+      ]
+    },
+    {
+      "id": "18-PROP-7",
+      "title": "Nil emitter safety",
+      "for_any": "any handler package with an Audit field set to nil",
+      "invariant": "no nil pointer dereference or panic occurs; the handler behaves identically to a handler with no Audit field configured",
+      "validates": [
+        "18-REQ-1.3",
+        "18-REQ-2.5",
+        "18-REQ-3.7",
+        "18-REQ-4.E2",
+        "18-REQ-5.3"
+      ]
+    },
+    {
+      "id": "18-PROP-8",
+      "title": "SSE backpressure: broadcaster never blocks",
+      "for_any": "any event emitted when one or more per-client channels are full",
+      "invariant": "the Emitter.Emit call returns without blocking regardless of the state of any per-client SSE channel; slow consumers cause event drops, not broadcaster stalls",
+      "validates": [
+        "18-REQ-8.5",
+        "18-REQ-8.E4",
+        "18-REQ-9.E1"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "18-PATH-1",
+      "title": "Workspace create with audit emission",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces with workspace creation parameters and a valid API key"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "validates the request, creates the workspace record in the database, and returns HTTP 201"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "calls cfg.Audit.Emit with a HubEvent of event_type hub.workspace.create, actor_id from apikit.GetAuthInfo, and metadata containing git_url and branch"
+        },
+        {
+          "actor": "Emitter",
+          "action": "writes the HubEvent to hub_audit_events in DuckDB and publishes the event to the SSE broadcast channel"
+        },
+        {
+          "actor": "SSE broadcaster",
+          "action": "fans out the event to all registered SSE subscriber goroutines"
+        },
+        {
+          "actor": "SSE subscriber goroutine",
+          "action": "applies workspace and category filters, then writes an audit_event SSE frame to the connected client"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-2",
+      "title": "Unified audit query with cursor pagination",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends GET /api/v1/audit?source=hub&workspace=my-workspace&limit=50 with a valid bearer token having audit:read scope"
+        },
+        {
+          "actor": "audit query handler",
+          "action": "validates authentication and audit:read permission via apikit middleware"
+        },
+        {
+          "actor": "audit query handler",
+          "action": "constructs a UNION ALL SQL query over hub_audit_events and agent_audit_events with source=hub and workspace=my-workspace filters and limit=50"
+        },
+        {
+          "actor": "Store",
+          "action": "executes the query against DuckDB and returns up to 50 rows ordered by timestamp"
+        },
+        {
+          "actor": "audit query handler",
+          "action": "encodes the next cursor as URL-safe base64 of {ts, id} from the last result row and sets has_more=true if 50 rows were returned"
+        },
+        {
+          "actor": "audit query handler",
+          "action": "returns HTTP 200 with JSON body containing events array, next_cursor, and has_more"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-3",
+      "title": "Conversation transcript reconstruction",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends GET /api/v1/workspaces/my-workspace/runs/run-uuid/transcript?node_id=node-uuid with a valid bearer token having audit:read scope"
+        },
+        {
+          "actor": "transcript handler",
+          "action": "validates authentication, audit:read permission, and presence of node_id query parameter"
+        },
+        {
+          "actor": "transcript handler",
+          "action": "queries agent_traces for run_id=run-uuid and node_id=node-uuid ordered by timestamp"
+        },
+        {
+          "actor": "Store",
+          "action": "returns trace rows from DuckDB for the given run and node"
+        },
+        {
+          "actor": "transcript handler",
+          "action": "maps each trace event type to a conversation role (session.init\u2192system, assistant.message\u2192assistant, tool.use\u2192tool_use, tool.error\u2192tool_error) and builds the messages array"
+        },
+        {
+          "actor": "transcript handler",
+          "action": "returns HTTP 200 with JSON body {run_id, node_id, messages: [...]}"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-4",
+      "title": "SSE real-time event delivery to dashboard",
+      "steps": [
+        {
+          "actor": "dashboard client",
+          "action": "sends GET /api/v1/events?workspace=my-workspace using fetch() with ReadableStream and Authorization: Bearer header"
+        },
+        {
+          "actor": "SSE handler",
+          "action": "validates authentication and audit:read permission; checks that active connection count is below AF_SSE_MAX_CONNECTIONS"
+        },
+        {
+          "actor": "SSE connection manager",
+          "action": "registers the client with a new per-client buffered channel of 256 events and starts a per-connection goroutine"
+        },
+        {
+          "actor": "SSE handler",
+          "action": "begins streaming; sends an initial heartbeat frame to confirm the connection is live"
+        },
+        {
+          "actor": "hub operator",
+          "action": "triggers a workspace mutation (e.g., archive) via the REST API"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "calls cfg.Audit.Emit with a HubEvent of event_type hub.workspace.archive"
+        },
+        {
+          "actor": "Emitter",
+          "action": "writes the event to hub_audit_events and publishes it to the SSE broadcast channel"
+        },
+        {
+          "actor": "SSE broadcaster",
+          "action": "fans out the event to all per-connection goroutines"
+        },
+        {
+          "actor": "SSE per-connection goroutine",
+          "action": "matches the event against the workspace=my-workspace filter and writes an audit_event SSE frame to the dashboard client"
+        },
+        {
+          "actor": "dashboard client",
+          "action": "receives the SSE frame and updates the live dashboard view"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-5",
+      "title": "End-to-end: agent run ingestion through to unified query",
+      "steps": [
+        {
+          "actor": "agent (afaudit)",
+          "action": "sends POST /api/v1/audit/ingest with a batch of JSONL agent audit events (spec 17 ingestion endpoint)"
+        },
+        {
+          "actor": "audit ingestion handler (spec 17)",
+          "action": "validates the payload and writes events to agent_audit_events in DuckDB"
+        },
+        {
+          "actor": "hub operator",
+          "action": "triggers a workspace sync mutation via the REST API"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "calls cfg.Audit.Emit with a HubEvent of event_type hub.workspace.sync"
+        },
+        {
+          "actor": "Emitter (spec 17 + spec 18 extension)",
+          "action": "writes the HubEvent to hub_audit_events and broadcasts to SSE subscribers"
+        },
+        {
+          "actor": "API caller",
+          "action": "sends GET /api/v1/audit?since=2026-09-01T00:00:00Z with audit:read scope"
+        },
+        {
+          "actor": "audit query handler",
+          "action": "executes UNION ALL query over agent_audit_events and hub_audit_events with the since filter"
+        },
+        {
+          "actor": "Store (spec 17)",
+          "action": "returns merged rows from DuckDB ordered by timestamp"
+        },
+        {
+          "actor": "audit query handler",
+          "action": "returns HTTP 200 with unified events array containing both agent and hub events, each with the correct source field"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "18-ERR-1",
+      "condition": "Emitter.Emit returns an error during any hub mutation handler",
+      "behavior": "log the error at an appropriate level and continue; the mutation HTTP response is unaffected",
+      "requirement_id": "18-REQ-1.E1"
+    },
+    {
+      "id": "18-ERR-2",
+      "condition": "cursor query parameter is present but cannot be base64-decoded or JSON-parsed",
+      "behavior": "return HTTP 400 with apikit.WriteAPIError body containing message invalid cursor",
+      "requirement_id": "18-REQ-6.E1"
+    },
+    {
+      "id": "18-ERR-3",
+      "condition": "DuckDB query fails in the unified audit query handler",
+      "behavior": "return HTTP 500 with apikit.WriteAPIError body containing a generic error message",
+      "requirement_id": "18-REQ-6.E2"
+    },
+    {
+      "id": "18-ERR-4",
+      "condition": "request to GET /api/v1/audit, GET /api/v1/events, or GET /api/v1/workspaces/:slug/runs/:run_id/transcript is unauthenticated",
+      "behavior": "return HTTP 401 with standard apikit error body before executing any handler logic",
+      "requirement_id": "18-REQ-6.E3"
+    },
+    {
+      "id": "18-ERR-5",
+      "condition": "authenticated caller lacks audit:read permission scope on any audit endpoint",
+      "behavior": "return HTTP 403 with standard apikit error body before executing any handler logic",
+      "requirement_id": "18-REQ-6.E4"
+    },
+    {
+      "id": "18-ERR-6",
+      "condition": "node_id query parameter is missing from GET /api/v1/workspaces/:slug/runs/:run_id/transcript",
+      "behavior": "return HTTP 400 with apikit.WriteAPIError body containing message node_id is required",
+      "requirement_id": "18-REQ-7.E1"
+    },
+    {
+      "id": "18-ERR-7",
+      "condition": "DuckDB query against agent_traces fails in the transcript handler",
+      "behavior": "return HTTP 500 with apikit.WriteAPIError body containing a generic error message",
+      "requirement_id": "18-REQ-7.E2"
+    },
+    {
+      "id": "18-ERR-8",
+      "condition": "active SSE connection count equals or exceeds AF_SSE_MAX_CONNECTIONS when a new connection arrives",
+      "behavior": "return HTTP 503 with JSON body {\"error\": \"too many SSE connections\"} without upgrading the connection",
+      "requirement_id": "18-REQ-8.E1"
+    },
+    {
+      "id": "18-ERR-9",
+      "condition": "per-client SSE channel of 256 events is full when a new event arrives",
+      "behavior": "drop the oldest event from the channel, enqueue the new event, and log the drop at debug level",
+      "requirement_id": "18-REQ-8.E4"
+    },
+    {
+      "id": "18-ERR-10",
+      "condition": "SSE client disconnects (context cancelled or TCP connection closed)",
+      "behavior": "detect via context cancellation, deregister the client from the broadcaster, and release the per-client goroutine and channel",
+      "requirement_id": "18-REQ-8.E5"
+    },
+    {
+      "id": "18-ERR-11",
+      "condition": "AF_SSE_MAX_CONNECTIONS is set to a non-integer or negative value",
+      "behavior": "fall back to the default limit of 100 and log a warning at startup",
+      "requirement_id": "18-REQ-9.E2"
+    },
+    {
+      "id": "18-ERR-12",
+      "condition": "SSE broadcaster goroutine panics",
+      "behavior": "recover from the panic, log the error, and restart the broadcaster goroutine",
+      "requirement_id": "18-REQ-9.E3"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/labstack/echo/v4",
+      "version": "v4.x",
+      "symbols": [
+        {
+          "name": "Context",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "type Context interface",
+          "notes": "Echo request context passed to all handlers; used to read query params, write responses, and access request context"
+        },
+        {
+          "name": "Echo",
+          "import_path": "github.com/labstack/echo/v4",
+          "signature": "type Echo struct",
+          "notes": "Echo router instance used for route registration"
+        }
+      ]
+    }
+  ]
+}

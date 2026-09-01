@@ -1,0 +1,1846 @@
+{
+  "$schema": null,
+  "spec_id": "17",
+  "spec_name": "audit_storage_ingestion",
+  "schema_version": 1,
+  "test_cases": [
+    {
+      "id": "TS-17-1",
+      "requirement_id": "17-REQ-1.1",
+      "kind": "unit",
+      "description": "audit.OpenDB calls os.MkdirAll on the parent directory and returns a valid *sql.DB on success",
+      "preconditions": [
+        "A temporary directory is available via t.TempDir()",
+        "CGO_ENABLED=1 is set in the build environment",
+        "go-duckdb driver is imported"
+      ],
+      "input": "path = filepath.Join(t.TempDir(), 'subdir', 'audit.duckdb')",
+      "expected": "audit.OpenDB(path) returns (*sql.DB, nil); the parent directory 'subdir' is created; db.Ping() returns nil",
+      "assertion_pseudocode": "db, err = audit.OpenDB(path); assert err == nil; assert db != nil; assert db.Ping() == nil; assert directoryExists(filepath.Dir(path)) == true"
+    },
+    {
+      "id": "TS-17-2",
+      "requirement_id": "17-REQ-1.2",
+      "kind": "integration",
+      "description": "When AF_AUDIT_DB_PATH is set, the hub startup uses that path as the DuckDB file path",
+      "preconditions": [
+        "AF_AUDIT_DB_PATH environment variable is set to a valid temp path",
+        "config.toml has a database.path pointing to a different directory",
+        "CGO_ENABLED=1"
+      ],
+      "input": "AF_AUDIT_DB_PATH=/tmp/custom/audit.duckdb",
+      "expected": "DuckDB connection opens against /tmp/custom/audit.duckdb; the default <data_dir>/audit.duckdb path is not used",
+      "assertion_pseudocode": "setenv('AF_AUDIT_DB_PATH', customPath); db, err = resolveAndOpenAuditDB(config); assert err == nil; assert dbFilePath(db) == customPath"
+    },
+    {
+      "id": "TS-17-3",
+      "requirement_id": "17-REQ-1.3",
+      "kind": "integration",
+      "description": "When AF_AUDIT_DB_PATH is not set, the hub resolves the DuckDB path as <data_dir>/audit.duckdb from config.toml",
+      "preconditions": [
+        "AF_AUDIT_DB_PATH is not set in the environment",
+        "config.toml has database.path = '/data/hub.db'",
+        "CGO_ENABLED=1"
+      ],
+      "input": "config.toml database.path = '/data/hub.db'",
+      "expected": "DuckDB connection opens against '/data/audit.duckdb'",
+      "assertion_pseudocode": "unsetenv('AF_AUDIT_DB_PATH'); resolvedPath = resolveAuditDBPath(config); assert resolvedPath == '/data/audit.duckdb'"
+    },
+    {
+      "id": "TS-17-4",
+      "requirement_id": "17-REQ-1.4",
+      "kind": "integration",
+      "description": "A deferred close of the DuckDB connection is registered on successful open so the connection is closed on hub shutdown",
+      "preconditions": [
+        "audit.OpenDB succeeds",
+        "Hub startup sequence runs to completion"
+      ],
+      "input": "Hub starts up with a valid DuckDB path",
+      "expected": "db.Close() is called when the hub process exits; no resource leak occurs",
+      "assertion_pseudocode": "db, err = audit.OpenDB(path); assert err == nil; defer db.Close(); // verify close is called by checking db.Stats().OpenConnections == 0 after close"
+    },
+    {
+      "id": "TS-17-5",
+      "requirement_id": "17-REQ-2.1",
+      "kind": "unit",
+      "description": "audit.InitSchema creates all nine required tables in a fresh DuckDB database",
+      "preconditions": [
+        "A fresh DuckDB database opened via audit.OpenDB on a t.TempDir() path",
+        "CGO_ENABLED=1"
+      ],
+      "input": "db = freshDuckDB(); audit.InitSchema(db)",
+      "expected": "All nine tables exist: agent_audit_events, hub_audit_events, session_outcomes, tool_calls, tool_errors, agent_traces, postmortems, agent_sessions, token_usage; InitSchema returns nil",
+      "assertion_pseudocode": "err = audit.InitSchema(db); assert err == nil; for table in ['agent_audit_events','hub_audit_events','session_outcomes','tool_calls','tool_errors','agent_traces','postmortems','agent_sessions','token_usage']: assert tableExists(db, table) == true"
+    },
+    {
+      "id": "TS-17-6",
+      "requirement_id": "17-REQ-2.2",
+      "kind": "unit",
+      "description": "audit.InitSchema is non-destructive when run against a DuckDB database that already contains all nine tables",
+      "preconditions": [
+        "DuckDB database already initialized with all nine tables via a prior audit.InitSchema call",
+        "Some rows exist in agent_audit_events"
+      ],
+      "input": "audit.InitSchema(db) called a second time on the same db",
+      "expected": "InitSchema returns nil; existing rows are not dropped or modified; all nine tables still exist",
+      "assertion_pseudocode": "audit.InitSchema(db); insertRow(db, 'agent_audit_events', sampleEvent); err = audit.InitSchema(db); assert err == nil; count = queryCount(db, 'agent_audit_events'); assert count == 1"
+    },
+    {
+      "id": "TS-17-7",
+      "requirement_id": "17-REQ-2.3",
+      "kind": "unit",
+      "description": "audit.InitSchema executes all DDL within a single transaction so partial initialization is never committed",
+      "preconditions": [
+        "Fresh DuckDB database",
+        "Ability to simulate a DDL failure mid-transaction (e.g., by injecting a bad SQL statement)"
+      ],
+      "input": "InitSchema with a simulated failure after the 5th CREATE TABLE statement",
+      "expected": "Either all nine tables are created or none are; no partial set of tables is committed",
+      "assertion_pseudocode": "// Use a wrapper that fails mid-transaction; err = audit.InitSchemaWithDB(faultyDB); assert err != nil; for table in allNineTables: assert tableExists(db, table) == false"
+    },
+    {
+      "id": "TS-17-8",
+      "requirement_id": "17-REQ-3.1",
+      "kind": "unit",
+      "description": "audit.Permissions() returns exactly four apikit.Permission entries with the correct scope names",
+      "preconditions": [
+        "internal/audit package is compiled"
+      ],
+      "input": "audit.Permissions()",
+      "expected": "Returns a slice of exactly 4 apikit.Permission values with names: audit:read, audit:write, sessions:read, sessions:write",
+      "assertion_pseudocode": "perms = audit.Permissions(); assert len(perms) == 4; scopeNames = [p.Name for p in perms]; assert 'audit:read' in scopeNames; assert 'audit:write' in scopeNames; assert 'sessions:read' in scopeNames; assert 'sessions:write' in scopeNames"
+    },
+    {
+      "id": "TS-17-9",
+      "requirement_id": "17-REQ-3.2",
+      "kind": "integration",
+      "description": "Hub startup collects audit.Permissions() into extraPerms so all four scopes are registered with the auth system",
+      "preconditions": [
+        "Hub startup sequence runs",
+        "apikit permission registry is accessible"
+      ],
+      "input": "Hub starts up normally",
+      "expected": "All four audit scopes (audit:read, audit:write, sessions:read, sessions:write) are registered in the auth system's permission registry",
+      "assertion_pseudocode": "startHub(); registeredScopes = getRegisteredPermissionScopes(); assert 'audit:read' in registeredScopes; assert 'audit:write' in registeredScopes; assert 'sessions:read' in registeredScopes; assert 'sessions:write' in registeredScopes"
+    },
+    {
+      "id": "TS-17-10",
+      "requirement_id": "17-REQ-4.1",
+      "kind": "unit",
+      "description": "The Emitter interface and HubEvent struct are exported from the internal/audit package with the correct fields",
+      "preconditions": [
+        "internal/audit package is compiled"
+      ],
+      "input": "Inspect exported symbols from internal/audit",
+      "expected": "Emitter interface has method Emit(ctx context.Context, event HubEvent) error; HubEvent has fields EventType, ActorID, ActorType, ResourceType, ResourceID, Action, Workspace, Metadata map[string]any",
+      "assertion_pseudocode": "var _ audit.Emitter = (*mockEmitter)(nil); event = audit.HubEvent{EventType:'test', ActorID:'a', ActorType:'system', ResourceType:'workspace', ResourceID:'ws1', Action:'create', Workspace:'ws1', Metadata: map[string]any{}}; assert event.EventType == 'test'"
+    },
+    {
+      "id": "TS-17-11",
+      "requirement_id": "17-REQ-4.2",
+      "kind": "unit",
+      "description": "Default Emitter.Emit generates a UUID for the event id, sets ingested_at to current UTC time, and inserts into hub_audit_events",
+      "preconditions": [
+        "Fresh DuckDB database with InitSchema applied",
+        "audit.NewStore(db) and audit.NewEmitter(store) created"
+      ],
+      "input": "emitter.Emit(ctx, HubEvent{EventType:'workspace.created', ActorID:'user1', ActorType:'pat', ResourceType:'workspace', ResourceID:'ws1', Action:'create', Workspace:'ws1', Metadata:{}})",
+      "expected": "Returns nil; one row is inserted into hub_audit_events with a valid UUID id, non-empty ingested_at, and all HubEvent fields stored correctly",
+      "assertion_pseudocode": "err = emitter.Emit(ctx, event); assert err == nil; rows = queryAll(db, 'hub_audit_events'); assert len(rows) == 1; assert isValidUUID(rows[0].id); assert rows[0].event_type == 'workspace.created'; assert rows[0].actor_id == 'user1'; assert rows[0].ingested_at != nil"
+    },
+    {
+      "id": "TS-17-12",
+      "requirement_id": "17-REQ-4.3",
+      "kind": "unit",
+      "description": "Default Emitter.Emit returns nil even when the Store insert fails, and logs the error",
+      "preconditions": [
+        "A mock Store that always returns an error on insert",
+        "slog output is captured"
+      ],
+      "input": "emitter.Emit(ctx, validHubEvent) where the underlying store insert returns an error",
+      "expected": "Emit returns nil; the error is logged via slog at error level; no panic occurs",
+      "assertion_pseudocode": "store = newFailingStore(); emitter = audit.NewEmitter(store); err = emitter.Emit(ctx, validHubEvent); assert err == nil; assert slogOutput contains 'error'"
+    },
+    {
+      "id": "TS-17-13",
+      "requirement_id": "17-REQ-4.4",
+      "kind": "unit",
+      "description": "HubEvent.ActorType accepts the four valid values without runtime validation at ingestion time",
+      "preconditions": [
+        "Fresh DuckDB database with InitSchema applied",
+        "Default Emitter created"
+      ],
+      "input": "HubEvent with ActorType set to each of: admin_token, api_key, pat, system",
+      "expected": "All four ActorType values are accepted and stored without error; no runtime validation error is raised",
+      "assertion_pseudocode": "for actorType in ['admin_token','api_key','pat','system']: err = emitter.Emit(ctx, HubEvent{ActorType: actorType, ...}); assert err == nil; assert queryCount(db, 'hub_audit_events WHERE actor_type = ?', actorType) == 1"
+    },
+    {
+      "id": "TS-17-14",
+      "requirement_id": "17-REQ-5.1",
+      "kind": "unit",
+      "description": "validateRunID returns true for valid run_id strings and false for invalid ones",
+      "preconditions": [
+        "internal/audit/validate.go is compiled"
+      ],
+      "input": "Various run_id strings: '20260704_143022_a1b2c3' (valid), '20260704_143022_A1B2C3' (uppercase, invalid), '' (empty, invalid), '20260704_143022_xyz' (non-hex, invalid)",
+      "expected": "validateRunID('20260704_143022_a1b2c3') == true; validateRunID('20260704_143022_A1B2C3') == false; validateRunID('') == false; validateRunID('20260704_143022_xyz') == false",
+      "assertion_pseudocode": "assert validateRunID('20260704_143022_a1b2c3') == true; assert validateRunID('20260704_143022_A1B2C3') == false; assert validateRunID('') == false; assert validateRunID('20260704_143022_xyz') == false; assert validateRunID('2026070_143022_a1b2c3') == false"
+    },
+    {
+      "id": "TS-17-15",
+      "requirement_id": "17-REQ-5.2",
+      "kind": "unit",
+      "description": "Any audit ingestion endpoint returns HTTP 400 when the run_id URL path parameter does not match the required format",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Valid authenticated request (API key)"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/INVALID_RUN_ID/events with valid event body",
+      "expected": "HTTP 400 response with apikit error body describing invalid run_id format; no database access occurs",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/INVALID_RUN_ID/events', body=validEvent, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'run_id'"
+    },
+    {
+      "id": "TS-17-16",
+      "requirement_id": "17-REQ-5.3",
+      "kind": "unit",
+      "description": "Any audit ingestion endpoint returns HTTP 400 when the body run_id does not match the URL path run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Valid authenticated request"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body containing run_id='20260704_143022_ffffff'",
+      "expected": "HTTP 400 response with apikit error body describing the run_id mismatch",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={...event, run_id:'20260704_143022_ffffff'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'mismatch'"
+    },
+    {
+      "id": "TS-17-17",
+      "requirement_id": "17-REQ-6.1",
+      "kind": "integration",
+      "description": "POST events handler inserts a valid audit event and returns HTTP 201 with the acknowledgement body",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active",
+        "API key with full access"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body {event_type:'session.start', payload:{}}",
+      "expected": "HTTP 201 with body {id: <uuid>, run_id: '20260704_143022_a1b2c3', event_type: 'session.start', severity: 'info', created_at: <timestamp>}; one row in agent_audit_events",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=apiKey); assert resp.status == 201; assert isValidUUID(resp.body.id); assert resp.body.run_id == '20260704_143022_a1b2c3'; assert resp.body.event_type == 'session.start'; assert resp.body.severity == 'info'; assert resp.body.created_at != nil; assert queryCount(db, 'agent_audit_events') == 1"
+    },
+    {
+      "id": "TS-17-18",
+      "requirement_id": "17-REQ-6.2",
+      "kind": "integration",
+      "description": "POST events handler returns HTTP 200 with the same acknowledgement shape when an event with the same id is submitted again",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active",
+        "An event with id='550e8400-e29b-41d4-a716-446655440000' already exists in agent_audit_events"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body {id:'550e8400-e29b-41d4-a716-446655440000', event_type:'session.start'}",
+      "expected": "HTTP 200 with body {id: '550e8400-e29b-41d4-a716-446655440000', run_id: '20260704_143022_a1b2c3', event_type: 'session.start', severity: <string>, created_at: <timestamp>}; still only one row in agent_audit_events",
+      "assertion_pseudocode": "insertEvent(db, {id:'550e8400-e29b-41d4-a716-446655440000', ...}); resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={id:'550e8400-e29b-41d4-a716-446655440000', event_type:'session.start'}, auth=apiKey); assert resp.status == 200; assert resp.body.id == '550e8400-e29b-41d4-a716-446655440000'; assert queryCount(db, 'agent_audit_events') == 1"
+    },
+    {
+      "id": "TS-17-19",
+      "requirement_id": "17-REQ-6.3",
+      "kind": "integration",
+      "description": "POST events handler accepts and stores events with unknown event_type, logging a warning",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active",
+        "slog output is captured"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body {event_type:'custom.unknown.type'}",
+      "expected": "HTTP 201 with standard acknowledgement body; one row in agent_audit_events with event_type='custom.unknown.type'; slog warning logged",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={event_type:'custom.unknown.type'}, auth=apiKey); assert resp.status == 201; assert resp.body.event_type == 'custom.unknown.type'; assert queryCount(db, 'agent_audit_events WHERE event_type = ?', 'custom.unknown.type') == 1; assert slogOutput contains 'warning'"
+    },
+    {
+      "id": "TS-17-20",
+      "requirement_id": "17-REQ-6.4",
+      "kind": "unit",
+      "description": "POST events handler returns HTTP 400 when severity is a non-empty invalid value",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body {event_type:'session.start', severity:'urgent'}",
+      "expected": "HTTP 400 with apikit error body indicating invalid severity value",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start', severity:'urgent'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'severity'"
+    },
+    {
+      "id": "TS-17-21",
+      "requirement_id": "17-REQ-7.1",
+      "kind": "integration",
+      "description": "POST events/batch handler pre-validates all items, inserts valid ones in a single transaction, and returns HTTP 200 with accepted/duplicates/errors summary",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events/batch with array of 5 valid events",
+      "expected": "HTTP 200 with body {accepted: 5, duplicates: 0, errors: []}; 5 rows in agent_audit_events",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events/batch', body=[event1,event2,event3,event4,event5], auth=apiKey); assert resp.status == 200; assert resp.body.accepted == 5; assert resp.body.duplicates == 0; assert resp.body.errors == []; assert queryCount(db, 'agent_audit_events') == 5"
+    },
+    {
+      "id": "TS-17-22",
+      "requirement_id": "17-REQ-7.2",
+      "kind": "integration",
+      "description": "POST events/batch handler inserts only valid items and lists invalid items in the errors array without aborting the batch",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events/batch with array of 3 events: index 0 valid, index 1 missing event_type (invalid), index 2 valid",
+      "expected": "HTTP 200 with body {accepted: 2, duplicates: 0, errors: [{index: 1, id: <string>, message: 'missing required field: event_type'}]}; 2 rows in agent_audit_events",
+      "assertion_pseudocode": "resp = client.post('.../events/batch', body=[validEvent, {payload:{}}, validEvent2], auth=apiKey); assert resp.status == 200; assert resp.body.accepted == 2; assert resp.body.errors[0].index == 1; assert resp.body.errors[0].message contains 'event_type'; assert queryCount(db, 'agent_audit_events') == 2"
+    },
+    {
+      "id": "TS-17-23",
+      "requirement_id": "17-REQ-7.3",
+      "kind": "unit",
+      "description": "POST events/batch handler returns HTTP 413 when the batch array contains more than 1000 items",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events/batch with an array of 1001 valid events",
+      "expected": "HTTP 413 with apikit error body; no items are inserted into agent_audit_events",
+      "assertion_pseudocode": "events = [makeEvent(i) for i in range(1001)]; resp = client.post('.../events/batch', body=events, auth=apiKey); assert resp.status == 413; assert queryCount(db, 'agent_audit_events') == 0"
+    },
+    {
+      "id": "TS-17-24",
+      "requirement_id": "17-REQ-7.4",
+      "kind": "unit",
+      "description": "POST events/batch handler returns HTTP 400 when the batch array is empty",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events/batch with an empty array []",
+      "expected": "HTTP 400 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('.../events/batch', body=[], auth=apiKey); assert resp.status == 400"
+    },
+    {
+      "id": "TS-17-25",
+      "requirement_id": "17-REQ-8.1",
+      "kind": "integration",
+      "description": "POST sessions/outcomes handler inserts a valid session outcome and returns HTTP 201 with the acknowledgement body",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes with body {session_id:'sess-1', status:'completed', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 201 with body {id: <uuid>, run_id: '20260704_143022_a1b2c3', node_id: '', status: 'completed', created_at: <timestamp>}; one row in session_outcomes",
+      "assertion_pseudocode": "resp = client.post('.../sessions/outcomes', body={session_id:'sess-1', status:'completed', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 201; assert isValidUUID(resp.body.id); assert resp.body.status == 'completed'; assert queryCount(db, 'session_outcomes') == 1"
+    },
+    {
+      "id": "TS-17-26",
+      "requirement_id": "17-REQ-8.2",
+      "kind": "integration",
+      "description": "POST sessions/outcomes handler returns HTTP 200 with the same acknowledgement shape when a duplicate id is submitted",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A session outcome with id='550e8400-e29b-41d4-a716-446655440001' already exists in session_outcomes"
+      ],
+      "input": "POST sessions/outcomes with body {id:'550e8400-e29b-41d4-a716-446655440001', session_id:'sess-1', status:'completed', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 200 with same acknowledgement shape; still only one row in session_outcomes",
+      "assertion_pseudocode": "insertOutcome(db, {id:'550e8400-e29b-41d4-a716-446655440001', ...}); resp = client.post('.../sessions/outcomes', body={id:'550e8400-e29b-41d4-a716-446655440001', session_id:'sess-1', status:'completed', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 200; assert queryCount(db, 'session_outcomes') == 1"
+    },
+    {
+      "id": "TS-17-27",
+      "requirement_id": "17-REQ-9.1",
+      "kind": "integration",
+      "description": "POST tools/calls handler inserts a valid tool call and returns HTTP 201 with the acknowledgement body",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls with body {tool_name:'bash', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 201 with body {id: <uuid>, run_id: '20260704_143022_a1b2c3', tool_name: 'bash', called_at: <timestamp>}; one row in tool_calls",
+      "assertion_pseudocode": "resp = client.post('.../tools/calls', body={tool_name:'bash', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 201; assert resp.body.tool_name == 'bash'; assert isValidUUID(resp.body.id); assert queryCount(db, 'tool_calls') == 1"
+    },
+    {
+      "id": "TS-17-28",
+      "requirement_id": "17-REQ-9.2",
+      "kind": "integration",
+      "description": "POST tools/calls handler returns HTTP 200 with the same acknowledgement shape when a duplicate id is submitted",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A tool call with id='550e8400-e29b-41d4-a716-446655440002' already exists in tool_calls"
+      ],
+      "input": "POST tools/calls with body {id:'550e8400-e29b-41d4-a716-446655440002', tool_name:'bash', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 200 with same acknowledgement shape; still only one row in tool_calls",
+      "assertion_pseudocode": "insertToolCall(db, {id:'550e8400-e29b-41d4-a716-446655440002', ...}); resp = client.post('.../tools/calls', body={id:'550e8400-e29b-41d4-a716-446655440002', tool_name:'bash', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 200; assert queryCount(db, 'tool_calls') == 1"
+    },
+    {
+      "id": "TS-17-29",
+      "requirement_id": "17-REQ-10.1",
+      "kind": "integration",
+      "description": "POST tools/errors handler inserts a valid tool error and returns HTTP 201 with the acknowledgement body",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors with body {tool_name:'bash', error_msg:'command not found', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 201 with body {id: <uuid>, run_id: '20260704_143022_a1b2c3', tool_name: 'bash', failed_at: <timestamp>}; one row in tool_errors",
+      "assertion_pseudocode": "resp = client.post('.../tools/errors', body={tool_name:'bash', error_msg:'command not found', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 201; assert resp.body.tool_name == 'bash'; assert isValidUUID(resp.body.id); assert queryCount(db, 'tool_errors') == 1"
+    },
+    {
+      "id": "TS-17-30",
+      "requirement_id": "17-REQ-10.2",
+      "kind": "integration",
+      "description": "POST tools/errors handler returns HTTP 200 with the same acknowledgement shape when a duplicate id is submitted",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A tool error with id='550e8400-e29b-41d4-a716-446655440003' already exists in tool_errors"
+      ],
+      "input": "POST tools/errors with body {id:'550e8400-e29b-41d4-a716-446655440003', tool_name:'bash', error_msg:'fail', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 200 with same acknowledgement shape; still only one row in tool_errors",
+      "assertion_pseudocode": "insertToolError(db, {id:'550e8400-e29b-41d4-a716-446655440003', ...}); resp = client.post('.../tools/errors', body={id:'550e8400-e29b-41d4-a716-446655440003', tool_name:'bash', error_msg:'fail', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 200; assert queryCount(db, 'tool_errors') == 1"
+    },
+    {
+      "id": "TS-17-31",
+      "requirement_id": "17-REQ-11.1",
+      "kind": "integration",
+      "description": "POST traces handler inserts a valid trace event with a valid event_type and returns HTTP 201",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces with body {event_type:'session.init', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 201 with body {id: <uuid>, run_id: '20260704_143022_a1b2c3', event_type: 'session.init', timestamp: <timestamp>}; one row in agent_traces",
+      "assertion_pseudocode": "resp = client.post('.../traces', body={event_type:'session.init', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 201; assert resp.body.event_type == 'session.init'; assert isValidUUID(resp.body.id); assert queryCount(db, 'agent_traces') == 1"
+    },
+    {
+      "id": "TS-17-32",
+      "requirement_id": "17-REQ-11.2",
+      "kind": "unit",
+      "description": "POST traces handler returns HTTP 400 when event_type is not one of the five valid trace event types",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST traces with body {event_type:'unknown.type', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 400 with apikit error body citing unknown trace event_type; no row inserted in agent_traces",
+      "assertion_pseudocode": "resp = client.post('.../traces', body={event_type:'unknown.type', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'event_type'; assert queryCount(db, 'agent_traces') == 0"
+    },
+    {
+      "id": "TS-17-33",
+      "requirement_id": "17-REQ-11.3",
+      "kind": "integration",
+      "description": "POST traces handler returns HTTP 200 with the same acknowledgement shape when a duplicate id is submitted",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A trace event with id='550e8400-e29b-41d4-a716-446655440004' already exists in agent_traces"
+      ],
+      "input": "POST traces with body {id:'550e8400-e29b-41d4-a716-446655440004', event_type:'session.init', timestamp:'2026-09-01T13:00:00Z'}",
+      "expected": "HTTP 200 with same acknowledgement shape; still only one row in agent_traces",
+      "assertion_pseudocode": "insertTrace(db, {id:'550e8400-e29b-41d4-a716-446655440004', event_type:'session.init', ...}); resp = client.post('.../traces', body={id:'550e8400-e29b-41d4-a716-446655440004', event_type:'session.init', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 200; assert queryCount(db, 'agent_traces') == 1"
+    },
+    {
+      "id": "TS-17-34",
+      "requirement_id": "17-REQ-12.1",
+      "kind": "integration",
+      "description": "POST traces/batch handler pre-validates all items including event_type, inserts valid ones in a single transaction, and returns HTTP 200 with summary",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST traces/batch with array of 3 valid trace events (event_type: session.init, assistant.message, tool.use)",
+      "expected": "HTTP 200 with body {accepted: 3, duplicates: 0, errors: []}; 3 rows in agent_traces",
+      "assertion_pseudocode": "resp = client.post('.../traces/batch', body=[{event_type:'session.init',...},{event_type:'assistant.message',...},{event_type:'tool.use',...}], auth=apiKey); assert resp.status == 200; assert resp.body.accepted == 3; assert resp.body.errors == []; assert queryCount(db, 'agent_traces') == 3"
+    },
+    {
+      "id": "TS-17-35",
+      "requirement_id": "17-REQ-12.2",
+      "kind": "unit",
+      "description": "POST traces/batch handler returns HTTP 413 when the batch array contains more than 1000 items",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST traces/batch with an array of 1001 valid trace events",
+      "expected": "HTTP 413 with apikit error body; no items inserted into agent_traces",
+      "assertion_pseudocode": "traces = [makeTrace(i) for i in range(1001)]; resp = client.post('.../traces/batch', body=traces, auth=apiKey); assert resp.status == 413; assert queryCount(db, 'agent_traces') == 0"
+    },
+    {
+      "id": "TS-17-36",
+      "requirement_id": "17-REQ-12.3",
+      "kind": "unit",
+      "description": "POST traces/batch handler returns HTTP 400 when the batch array is empty",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST traces/batch with an empty array []",
+      "expected": "HTTP 400 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('.../traces/batch', body=[], auth=apiKey); assert resp.status == 400"
+    },
+    {
+      "id": "TS-17-37",
+      "requirement_id": "17-REQ-13.1",
+      "kind": "integration",
+      "description": "POST postmortem handler inserts a valid postmortem and returns HTTP 201 with the acknowledgement body",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem with valid body including run_status, started_at, completed_at, task_summary, cost_summary",
+      "expected": "HTTP 201 with body {run_id: '20260704_143022_a1b2c3', run_status: 'stalled', created_at: <timestamp>}; one row in postmortems",
+      "assertion_pseudocode": "resp = client.post('.../postmortem', body=validPostmortem, auth=apiKey); assert resp.status == 201; assert resp.body.run_id == '20260704_143022_a1b2c3'; assert resp.body.run_status == 'stalled'; assert resp.body.created_at != nil; assert queryCount(db, 'postmortems') == 1"
+    },
+    {
+      "id": "TS-17-38",
+      "requirement_id": "17-REQ-13.2",
+      "kind": "integration",
+      "description": "POST postmortem handler returns HTTP 200 with the same acknowledgement shape when a postmortem for the run_id already exists",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A postmortem for run_id='20260704_143022_a1b2c3' already exists in postmortems"
+      ],
+      "input": "POST postmortem with the same run_id in the URL path",
+      "expected": "HTTP 200 with same acknowledgement shape; still only one row in postmortems; stored record is not modified",
+      "assertion_pseudocode": "insertPostmortem(db, {run_id:'20260704_143022_a1b2c3', run_status:'stalled', ...}); resp = client.post('.../postmortem', body=validPostmortem, auth=apiKey); assert resp.status == 200; assert queryCount(db, 'postmortems') == 1"
+    },
+    {
+      "id": "TS-17-39",
+      "requirement_id": "17-REQ-13.3",
+      "kind": "unit",
+      "description": "POST postmortem handler returns HTTP 422 with error type unknown_schema_version when schema_version is not 1",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST postmortem with body containing schema_version: 2",
+      "expected": "HTTP 422 with apikit error body of type 'unknown_schema_version'",
+      "assertion_pseudocode": "resp = client.post('.../postmortem', body={...validPostmortem, schema_version:2}, auth=apiKey); assert resp.status == 422; assert resp.body.error_type == 'unknown_schema_version'"
+    },
+    {
+      "id": "TS-17-40",
+      "requirement_id": "17-REQ-13.4",
+      "kind": "unit",
+      "description": "POST postmortem handler stores session_history as-is without field-level validation",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST postmortem with session_history containing objects with unknown fields and missing expected fields",
+      "expected": "HTTP 201; session_history stored as-is in the DuckDB JSON column; no validation error raised",
+      "assertion_pseudocode": "sessionHistory = [{node_id:'n1', unknown_field:'value'}, {completely_unknown:'data'}]; resp = client.post('.../postmortem', body={...validPostmortem, session_history:sessionHistory}, auth=apiKey); assert resp.status == 201; stored = queryOne(db, 'postmortems WHERE run_id = ?', runID); assert stored.session_history == sessionHistory"
+    },
+    {
+      "id": "TS-17-41",
+      "requirement_id": "17-REQ-14.1",
+      "kind": "integration",
+      "description": "GET events handler returns paginated audit events filtered by run_id and optional parameters",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "10 events in agent_audit_events for run_id='20260704_143022_a1b2c3', 3 with event_type='session.start'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events?event_type=session.start&limit=10&order=asc",
+      "expected": "HTTP 200 with body {events: [3 items], next_cursor: null, has_more: false}; all 3 items have event_type='session.start'",
+      "assertion_pseudocode": "resp = client.get('.../events?event_type=session.start&limit=10&order=asc', auth=apiKey); assert resp.status == 200; assert len(resp.body.events) == 3; assert all(e.event_type == 'session.start' for e in resp.body.events); assert resp.body.has_more == false; assert resp.body.next_cursor == nil"
+    },
+    {
+      "id": "TS-17-42",
+      "requirement_id": "17-REQ-14.2",
+      "kind": "integration",
+      "description": "GET events handler correctly uses a cursor from a previous response to return the next page",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "25 events in agent_audit_events for run_id='20260704_143022_a1b2c3'",
+        "First page fetched with limit=10, returning next_cursor"
+      ],
+      "input": "GET events?limit=10&cursor=<cursor from first page>",
+      "expected": "HTTP 200 with body {events: [10 items], next_cursor: <string>, has_more: true}; events are the 11th-20th records in ascending order",
+      "assertion_pseudocode": "resp1 = client.get('.../events?limit=10&order=asc', auth=apiKey); cursor = resp1.body.next_cursor; resp2 = client.get('.../events?limit=10&order=asc&cursor=' + cursor, auth=apiKey); assert resp2.status == 200; assert len(resp2.body.events) == 10; assert resp2.body.events[0].timestamp >= resp1.body.events[9].timestamp; assert resp2.body.has_more == true"
+    },
+    {
+      "id": "TS-17-43",
+      "requirement_id": "17-REQ-15.1",
+      "kind": "integration",
+      "description": "GET sessions/outcomes handler returns paginated session outcomes filtered by run_id and optional parameters",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "5 session outcomes in session_outcomes for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes?limit=10&order=asc",
+      "expected": "HTTP 200 with body {outcomes: [5 items], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../sessions/outcomes?limit=10&order=asc', auth=apiKey); assert resp.status == 200; assert len(resp.body.outcomes) == 5; assert resp.body.has_more == false; assert resp.body.next_cursor == nil"
+    },
+    {
+      "id": "TS-17-44",
+      "requirement_id": "17-REQ-16.1",
+      "kind": "integration",
+      "description": "GET tools/calls handler returns paginated tool calls filtered by run_id and optional parameters",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "4 tool calls in tool_calls for run_id='20260704_143022_a1b2c3', 2 with tool_name='bash'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls?tool_name=bash",
+      "expected": "HTTP 200 with body {calls: [2 items], next_cursor: null, has_more: false}; all items have tool_name='bash'",
+      "assertion_pseudocode": "resp = client.get('.../tools/calls?tool_name=bash', auth=apiKey); assert resp.status == 200; assert len(resp.body.calls) == 2; assert all(c.tool_name == 'bash' for c in resp.body.calls); assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-45",
+      "requirement_id": "17-REQ-17.1",
+      "kind": "integration",
+      "description": "GET tools/errors handler returns paginated tool errors filtered by run_id and optional parameters",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "3 tool errors in tool_errors for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors?limit=10",
+      "expected": "HTTP 200 with body {errors: [3 items], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../tools/errors?limit=10', auth=apiKey); assert resp.status == 200; assert len(resp.body.errors) == 3; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-46",
+      "requirement_id": "17-REQ-18.1",
+      "kind": "integration",
+      "description": "GET traces handler returns paginated trace events filtered by run_id and optional parameters",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "6 trace events in agent_traces for run_id='20260704_143022_a1b2c3', 2 with event_type='tool.use'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces?event_type=tool.use",
+      "expected": "HTTP 200 with body {traces: [2 items], next_cursor: null, has_more: false}; all items have event_type='tool.use'",
+      "assertion_pseudocode": "resp = client.get('.../traces?event_type=tool.use', auth=apiKey); assert resp.status == 200; assert len(resp.body.traces) == 2; assert all(t.event_type == 'tool.use' for t in resp.body.traces); assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-47",
+      "requirement_id": "17-REQ-19.1",
+      "kind": "integration",
+      "description": "GET postmortem handler returns the full postmortem record for a run that has one",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A postmortem for run_id='20260704_143022_a1b2c3' exists in postmortems",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem",
+      "expected": "HTTP 200 with body containing all postmortem fields: run_id, workspace, schema_version, run_status, started_at, completed_at, task_summary, cost_summary, blocked_tasks, session_history, ingested_at",
+      "assertion_pseudocode": "resp = client.get('.../postmortem', auth=apiKey); assert resp.status == 200; assert resp.body.run_id == '20260704_143022_a1b2c3'; assert resp.body.schema_version == 1; assert resp.body.run_status != nil; assert resp.body.task_summary != nil; assert resp.body.cost_summary != nil; assert resp.body.ingested_at != nil"
+    },
+    {
+      "id": "TS-17-48",
+      "requirement_id": "17-REQ-19.2",
+      "kind": "unit",
+      "description": "GET postmortem handler returns HTTP 404 with error type postmortem_not_found when no postmortem exists for the run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "No postmortem exists for run_id='20260704_143022_a1b2c3' in postmortems",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem",
+      "expected": "HTTP 404 with apikit error body of type 'postmortem_not_found'",
+      "assertion_pseudocode": "resp = client.get('.../postmortem', auth=apiKey); assert resp.status == 404; assert resp.body.error_type == 'postmortem_not_found'"
+    },
+    {
+      "id": "TS-17-49",
+      "requirement_id": "17-REQ-19.3",
+      "kind": "unit",
+      "description": "GET postmortem handler does not accept or apply cursor, limit, since, until, or order parameters",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "A postmortem for run_id='20260704_143022_a1b2c3' exists in postmortems"
+      ],
+      "input": "GET postmortem?cursor=abc&limit=10&since=2026-01-01T00:00:00Z&until=2026-12-31T00:00:00Z&order=desc",
+      "expected": "HTTP 200 with the postmortem object; response body contains no next_cursor or has_more fields",
+      "assertion_pseudocode": "resp = client.get('.../postmortem?cursor=abc&limit=10&since=2026-01-01T00:00:00Z&order=desc', auth=apiKey); assert resp.status == 200; assert 'next_cursor' not in resp.body; assert 'has_more' not in resp.body"
+    },
+    {
+      "id": "TS-17-50",
+      "requirement_id": "17-REQ-20.1",
+      "kind": "integration",
+      "description": "All audit ingestion endpoints store the workspace slug from the URL :slug parameter in the workspace column",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'my-workspace' exists and is active",
+        "Fresh DuckDB database with InitSchema applied"
+      ],
+      "input": "POST /api/v1/workspaces/my-workspace/runs/20260704_143022_a1b2c3/events with valid event body",
+      "expected": "The stored row in agent_audit_events has workspace='my-workspace'",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/my-workspace/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=apiKey); assert resp.status == 201; row = queryOne(db, 'agent_audit_events WHERE id = ?', resp.body.id); assert row.workspace == 'my-workspace'"
+    },
+    {
+      "id": "TS-17-51",
+      "requirement_id": "17-REQ-20.2",
+      "kind": "unit",
+      "description": "Audit ingestion endpoint returns HTTP 403 with error type workspace_mismatch when a workspace-scoped PAT's workspace does not match the URL :slug",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "PAT scoped to workspace 'workspace-B' with audit:write scope",
+        "Workspace 'workspace-A' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/workspace-A/runs/20260704_143022_a1b2c3/events with PAT scoped to workspace-B",
+      "expected": "HTTP 403 with apikit error body of type 'workspace_mismatch'",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/workspace-A/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=patScopedToWorkspaceB); assert resp.status == 403; assert resp.body.error_type == 'workspace_mismatch'"
+    },
+    {
+      "id": "TS-17-52",
+      "requirement_id": "17-REQ-20.3",
+      "kind": "unit",
+      "description": "Audit ingestion endpoint returns HTTP 403 with error type workspace_access_denied when the token owner lacks write access to the workspace",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Generic PAT whose owner does not have write access to workspace 'ws1'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with generic PAT lacking workspace access",
+      "expected": "HTTP 403 with apikit error body of type 'workspace_access_denied'",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=genericPatWithoutAccess); assert resp.status == 403; assert resp.body.error_type == 'workspace_access_denied'"
+    },
+    {
+      "id": "TS-17-53",
+      "requirement_id": "17-REQ-20.4",
+      "kind": "unit",
+      "description": "Audit ingestion endpoint returns HTTP 409 with error type workspace_archived when the target workspace is archived",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists but is archived",
+        "Valid API key"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with valid event body",
+      "expected": "HTTP 409 with apikit error body of type 'workspace_archived'",
+      "assertion_pseudocode": "archiveWorkspace('ws1'); resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=apiKey); assert resp.status == 409; assert resp.body.error_type == 'workspace_archived'"
+    },
+    {
+      "id": "TS-17-54",
+      "requirement_id": "17-REQ-20.5",
+      "kind": "unit",
+      "description": "Audit ingestion endpoint returns HTTP 404 when the target workspace does not exist",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'nonexistent-ws' does not exist",
+        "Valid API key"
+      ],
+      "input": "POST /api/v1/workspaces/nonexistent-ws/runs/20260704_143022_a1b2c3/events with valid event body",
+      "expected": "HTTP 404 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/nonexistent-ws/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=apiKey); assert resp.status == 404"
+    },
+    {
+      "id": "TS-17-55",
+      "requirement_id": "17-REQ-21.1",
+      "kind": "unit",
+      "description": "Paginated GET endpoints encode the cursor as base64 JSON with ts and id fields; next_cursor is null and has_more is false when no further records exist",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "5 events in agent_audit_events for run_id='20260704_143022_a1b2c3'"
+      ],
+      "input": "GET events?limit=5&order=asc",
+      "expected": "HTTP 200 with next_cursor=null and has_more=false; if limit < total, next_cursor is a non-null base64 string decoding to {ts: <ISO8601>, id: <uuid>}",
+      "assertion_pseudocode": "resp = client.get('.../events?limit=5&order=asc', auth=apiKey); assert resp.status == 200; assert resp.body.has_more == false; assert resp.body.next_cursor == nil; // Test with limit=3: resp2 = client.get('.../events?limit=3&order=asc', auth=apiKey); assert resp2.body.has_more == true; decoded = base64Decode(resp2.body.next_cursor); parsed = jsonParse(decoded); assert parsed.ts != nil; assert isValidUUID(parsed.id)"
+    },
+    {
+      "id": "TS-17-56",
+      "requirement_id": "17-REQ-21.2",
+      "kind": "unit",
+      "description": "Paginated GET endpoints use tuple comparison (timestamp, id) for cursor-based pagination with correct direction for asc and desc order",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "20 events in agent_audit_events for run_id='20260704_143022_a1b2c3' with distinct timestamps"
+      ],
+      "input": "Two sequential GET events requests with limit=10 and order=asc using cursor from first response",
+      "expected": "Pages are non-overlapping; all 20 events are returned across 2 pages with no duplicates",
+      "assertion_pseudocode": "resp1 = client.get('.../events?limit=10&order=asc', auth=apiKey); ids1 = [e.id for e in resp1.body.events]; resp2 = client.get('.../events?limit=10&order=asc&cursor=' + resp1.body.next_cursor, auth=apiKey); ids2 = [e.id for e in resp2.body.events]; assert len(set(ids1) & set(ids2)) == 0; assert len(ids1) + len(ids2) == 20"
+    },
+    {
+      "id": "TS-17-57",
+      "requirement_id": "17-REQ-21.3",
+      "kind": "unit",
+      "description": "Paginated GET endpoints enforce a maximum limit of 1000 and default to 100 when limit is not specified",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "200 events in agent_audit_events for run_id='20260704_143022_a1b2c3'"
+      ],
+      "input": "GET events with no limit parameter; then GET events?limit=2000",
+      "expected": "No limit: returns at most 100 records; limit=2000: returns at most 1000 records",
+      "assertion_pseudocode": "resp1 = client.get('.../events', auth=apiKey); assert len(resp1.body.events) <= 100; resp2 = client.get('.../events?limit=2000', auth=apiKey); assert len(resp2.body.events) <= 1000"
+    },
+    {
+      "id": "TS-17-58",
+      "requirement_id": "17-REQ-22.1",
+      "kind": "unit",
+      "description": "Store write methods return HTTP 503 with Retry-After: 5 header when DuckDB write times out under sustained contention",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write timeout error"
+      ],
+      "input": "POST events where the Store insert returns a timeout error",
+      "expected": "HTTP 503 with Retry-After: 5 header and apikit error body",
+      "assertion_pseudocode": "store = newTimeoutStore(); handler = newEventsHandler(store); resp = handler.handle(validEventRequest); assert resp.status == 503; assert resp.headers['Retry-After'] == '5'"
+    },
+    {
+      "id": "TS-17-59",
+      "requirement_id": "17-REQ-22.2",
+      "kind": "unit",
+      "description": "Store write methods do not use an application-level mutex; concurrent writes are serialized by DuckDB internally",
+      "preconditions": [
+        "Fresh DuckDB database with InitSchema applied",
+        "Multiple goroutines ready to write concurrently"
+      ],
+      "input": "10 concurrent goroutines each calling store.InsertEvent with distinct events",
+      "expected": "All 10 inserts complete without deadlock or panic; exactly 10 rows in agent_audit_events; no application-level mutex is used",
+      "assertion_pseudocode": "wg = newWaitGroup(10); for i in range(10): go func(i): store.InsertEvent(ctx, makeEvent(i)); wg.Done(); wg.Wait(); assert queryCount(db, 'agent_audit_events') == 10"
+    },
+    {
+      "id": "TS-17-60",
+      "requirement_id": "17-REQ-23.1",
+      "kind": "unit",
+      "description": "defaultSeverityFor returns the correct severity for each mapped event type and 'info' for unknown types",
+      "preconditions": [
+        "internal/audit/severity.go is compiled"
+      ],
+      "input": "event_type values: 'session.fail', 'run.limit_reached', 'git.conflict', 'harvest.empty', 'review.parse_failure', 'session.start', 'unknown.event'",
+      "expected": "session.fail -> 'error'; run.limit_reached -> 'warning'; git.conflict -> 'warning'; harvest.empty -> 'warning'; review.parse_failure -> 'warning'; session.start -> 'info'; unknown.event -> 'info'",
+      "assertion_pseudocode": "assert defaultSeverityFor('session.fail') == 'error'; assert defaultSeverityFor('run.limit_reached') == 'warning'; assert defaultSeverityFor('git.conflict') == 'warning'; assert defaultSeverityFor('harvest.empty') == 'warning'; assert defaultSeverityFor('review.parse_failure') == 'warning'; assert defaultSeverityFor('session.start') == 'info'; assert defaultSeverityFor('unknown.event') == 'info'"
+    },
+    {
+      "id": "TS-17-61",
+      "requirement_id": "17-REQ-23.2",
+      "kind": "integration",
+      "description": "POST events handler calls defaultSeverityFor and stores the result when no severity is provided in the request",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Fresh DuckDB database with InitSchema applied",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events with body {event_type:'session.fail'} (no severity field)",
+      "expected": "HTTP 201; stored row in agent_audit_events has severity='error'",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.fail'}, auth=apiKey); assert resp.status == 201; assert resp.body.severity == 'error'; row = queryOne(db, 'agent_audit_events WHERE id = ?', resp.body.id); assert row.severity == 'error'"
+    },
+    {
+      "id": "TS-17-62",
+      "requirement_id": "17-REQ-24.1",
+      "kind": "integration",
+      "description": "Hub startup calls audit.OpenDB, InitSchema, NewStore, NewEmitter, RegisterRoutes, and Permissions() in the correct order",
+      "preconditions": [
+        "Valid config.toml with database.path set",
+        "CGO_ENABLED=1",
+        "All audit package functions available"
+      ],
+      "input": "Hub starts up normally",
+      "expected": "All 14 audit endpoints are reachable; all four PAT scopes are registered; no startup error",
+      "assertion_pseudocode": "hub = startHub(config); for endpoint in allAuditEndpoints: resp = client.request(endpoint.method, endpoint.path, auth=apiKey); assert resp.status != 404; assert resp.status != 405; perms = getRegisteredPermissions(); assert 'audit:read' in perms; assert 'audit:write' in perms"
+    },
+    {
+      "id": "TS-17-63",
+      "requirement_id": "17-REQ-24.2",
+      "kind": "unit",
+      "description": "audit.RegisterRoutes registers all 14 audit endpoints under the correct path prefix with correct HTTP methods",
+      "preconditions": [
+        "Echo instance created",
+        "Store and Emitter created with fresh DuckDB"
+      ],
+      "input": "audit.RegisterRoutes(api, store, emitter) called on an Echo group at /api/v1/workspaces/:slug/runs/:run_id/",
+      "expected": "All 14 routes are registered: POST/GET events, POST events/batch, POST/GET sessions/outcomes, POST/GET tools/calls, POST/GET tools/errors, POST/GET traces, POST traces/batch, POST/GET postmortem",
+      "assertion_pseudocode": "audit.RegisterRoutes(api, store, emitter); routes = api.Routes(); routeMap = {(r.method, r.path): true for r in routes}; assert ('POST', '.../events') in routeMap; assert ('GET', '.../events') in routeMap; assert ('POST', '.../events/batch') in routeMap; assert ('POST', '.../sessions/outcomes') in routeMap; assert ('GET', '.../sessions/outcomes') in routeMap; assert ('POST', '.../tools/calls') in routeMap; assert ('GET', '.../tools/calls') in routeMap; assert ('POST', '.../tools/errors') in routeMap; assert ('GET', '.../tools/errors') in routeMap; assert ('POST', '.../traces') in routeMap; assert ('GET', '.../traces') in routeMap; assert ('POST', '.../traces/batch') in routeMap; assert ('POST', '.../postmortem') in routeMap; assert ('GET', '.../postmortem') in routeMap"
+    }
+  ],
+  "property_tests": [
+    {
+      "id": "TS-17-P1",
+      "property_id": "17-PROP-1",
+      "validates": [],
+      "description": "For any audit record type, submitting the same id twice results in the stored record being unchanged and the response shape being identical to the original 201 response",
+      "for_any_strategy": "For each of the 6 record types (events, session outcomes, tool calls, tool errors, traces, postmortems): generate a random valid record with a random UUID id; insert it once; insert it again with the same id but potentially different field values",
+      "invariant_check": "firstResp.status == 201; secondResp.status == 200; secondResp.body.id == firstResp.body.id; queryCount(db, table, 'WHERE id = ?', id) == 1; storedRecord == originalRecord (not modified by second insert)"
+    },
+    {
+      "id": "TS-17-P2",
+      "property_id": "17-PROP-2",
+      "validates": [],
+      "description": "For any request to any audit ingestion or query endpoint, the run_id URL path parameter is validated against the regexp before any database operation",
+      "for_any_strategy": "Generate 100 random strings: 50 matching the pattern ^\\d{8}_\\d{6}_[0-9a-f]{6}$ and 50 not matching (random strings, uppercase hex, wrong lengths, etc.)",
+      "invariant_check": "For all non-matching strings: response.status == 400 and queryCount(db, anyTable) == 0 (no DB access occurred); for all matching strings: response.status != 400 due to run_id format"
+    },
+    {
+      "id": "TS-17-P3",
+      "property_id": "17-PROP-3",
+      "validates": [],
+      "description": "For any batch ingestion request containing N valid items, either all N items are committed or none are; no partial commit occurs",
+      "for_any_strategy": "Generate batches of 1-100 valid events; for each batch, inject a simulated commit failure at a random point during the transaction; check the database state after the failure",
+      "invariant_check": "If commit fails: queryCount(db, 'agent_audit_events') == countBeforeBatch (no new rows); if commit succeeds: queryCount(db, 'agent_audit_events') == countBeforeBatch + N (all N rows added)"
+    },
+    {
+      "id": "TS-17-P4",
+      "property_id": "17-PROP-4",
+      "validates": [],
+      "description": "For any record stored in any audit table via an ingestion endpoint, the workspace column equals the :slug URL path parameter",
+      "for_any_strategy": "Generate 50 random valid workspace slugs and valid records for each of the 6 ingestion endpoint types; submit each record to the corresponding endpoint with the slug in the URL",
+      "invariant_check": "For each stored record: queryOne(db, table, 'WHERE id = ?', id).workspace == slugUsedInURL"
+    },
+    {
+      "id": "TS-17-P5",
+      "property_id": "17-PROP-5",
+      "validates": [],
+      "description": "For any sequence of paginated GET requests with the same filter parameters and order, the union of all returned records equals the full result set with no duplicates and no omissions",
+      "for_any_strategy": "Insert N events (N in [1, 500]) with random timestamps; paginate through all pages with limit in [1, 50] using both asc and desc order; collect all returned ids",
+      "invariant_check": "len(allReturnedIds) == N; len(set(allReturnedIds)) == N (no duplicates); set(allReturnedIds) == set(allInsertedIds) (no omissions); last page has has_more == false and next_cursor == nil"
+    },
+    {
+      "id": "TS-17-P6",
+      "property_id": "17-PROP-6",
+      "validates": [],
+      "description": "For any call to the default Emitter.Emit method, Emit always returns nil regardless of whether the underlying Store insert succeeds or fails",
+      "for_any_strategy": "Generate 50 random HubEvent values; for each, alternate between a working store and a failing store (returning random errors); call Emit with each event",
+      "invariant_check": "For all 50 calls: err = emitter.Emit(ctx, event); assert err == nil; assert no panic occurred"
+    },
+    {
+      "id": "TS-17-P7",
+      "property_id": "17-PROP-7",
+      "validates": [],
+      "description": "For any call to audit.InitSchema on a database that already contains all nine tables, InitSchema completes without error and does not drop, truncate, or modify any existing data",
+      "for_any_strategy": "Initialize schema; insert 1-10 random rows into each of the 9 tables; call InitSchema again; verify all rows still exist",
+      "invariant_check": "err = audit.InitSchema(db); assert err == nil; for each table: assert queryCount(db, table) == countBeforeSecondInit; assert all original rows are unchanged"
+    },
+    {
+      "id": "TS-17-P8",
+      "property_id": "17-PROP-8",
+      "validates": [],
+      "description": "For any batch containing a mix of valid and invalid items, every invalid item appears in the errors array with its zero-based index and no invalid item is silently dropped or inserted",
+      "for_any_strategy": "Generate batches of 2-50 items with a random mix of valid and invalid items (invalid = missing event_type, invalid event_type for traces, etc.); track which indices are invalid",
+      "invariant_check": "errorIndices = [e.index for e in resp.body.errors]; assert set(errorIndices) == set(expectedInvalidIndices); assert len(errorIndices) == len(expectedInvalidIndices); assert resp.body.accepted == len(validItems); assert queryCount(db, table) == len(validItems)"
+    },
+    {
+      "id": "TS-17-P9",
+      "property_id": "17-PROP-9",
+      "validates": [],
+      "description": "For any audit event submitted without a severity field, the stored severity equals the output of defaultSeverityFor(event_type) and is one of the four valid values",
+      "for_any_strategy": "Generate 100 audit events with random event_type strings (mix of known and unknown types) and no severity field; submit each to POST events",
+      "invariant_check": "For each stored event: storedSeverity = queryOne(db, 'agent_audit_events WHERE id = ?', id).severity; assert storedSeverity == defaultSeverityFor(event.event_type); assert storedSeverity in ['info', 'warning', 'error', 'critical']"
+    },
+    {
+      "id": "TS-17-P10",
+      "property_id": "17-PROP-10",
+      "validates": [],
+      "description": "For any POST request to the traces ingestion endpoint, only records with event_type in the valid set are stored; all other event_type values are rejected before any database operation",
+      "for_any_strategy": "Generate 100 trace submissions: 50 with valid event_type values (randomly chosen from the 5 valid types) and 50 with invalid event_type values (random strings not in the valid set)",
+      "invariant_check": "For valid event_types: resp.status == 201 and queryCount(db, 'agent_traces WHERE event_type = ?', eventType) == 1; for invalid event_types: resp.status == 400 and queryCount(db, 'agent_traces') unchanged"
+    }
+  ],
+  "edge_case_tests": [
+    {
+      "id": "TS-17-E1",
+      "requirement_id": "17-REQ-1.E1",
+      "kind": "unit",
+      "description": "audit.OpenDB returns an error when os.MkdirAll fails due to a permission error on the parent directory",
+      "preconditions": [
+        "A path whose parent directory cannot be created (e.g., parent is a read-only filesystem or a file, not a directory)",
+        "CGO_ENABLED=1"
+      ],
+      "input": "audit.OpenDB('/read-only-root/subdir/audit.duckdb') where /read-only-root is not writable",
+      "expected": "Returns (nil, non-nil error); error message describes the MkdirAll failure; no DuckDB connection is opened",
+      "assertion_pseudocode": "db, err = audit.OpenDB('/read-only-root/subdir/audit.duckdb'); assert db == nil; assert err != nil; assert err.Error() contains 'permission' or 'mkdir'"
+    },
+    {
+      "id": "TS-17-E2",
+      "requirement_id": "17-REQ-1.E2",
+      "kind": "unit",
+      "description": "audit.OpenDB returns an error when the DuckDB file is locked by another process",
+      "preconditions": [
+        "A DuckDB file that is already opened exclusively by another process or connection",
+        "CGO_ENABLED=1"
+      ],
+      "input": "audit.OpenDB(path) where path is already locked",
+      "expected": "Returns (nil, non-nil error) with the driver's lock error; hub startup aborts",
+      "assertion_pseudocode": "db1, _ = audit.OpenDB(path); db2, err = audit.OpenDB(path); assert err != nil; assert db2 == nil; db1.Close()"
+    },
+    {
+      "id": "TS-17-E3",
+      "requirement_id": "17-REQ-1.E3",
+      "kind": "unit",
+      "description": "audit.OpenDB returns an error when the resolved path is an empty string",
+      "preconditions": [
+        "CGO_ENABLED=1"
+      ],
+      "input": "audit.OpenDB('')",
+      "expected": "Returns (nil, non-nil error) with a descriptive message about the invalid path; os.MkdirAll is not called",
+      "assertion_pseudocode": "db, err = audit.OpenDB(''); assert db == nil; assert err != nil; assert err.Error() contains 'path' or 'empty'"
+    },
+    {
+      "id": "TS-17-E4",
+      "requirement_id": "17-REQ-2.E1",
+      "kind": "unit",
+      "description": "audit.InitSchema rolls back the transaction and returns an error when a CREATE TABLE statement fails due to a corrupted DuckDB file",
+      "preconditions": [
+        "A DuckDB connection that returns an error on DDL execution (simulated via a mock or corrupted file)"
+      ],
+      "input": "audit.InitSchema(corruptedDB)",
+      "expected": "Returns non-nil error; no tables are partially created; transaction is rolled back",
+      "assertion_pseudocode": "err = audit.InitSchema(corruptedDB); assert err != nil; // Verify no tables were created by checking information_schema or catching the error"
+    },
+    {
+      "id": "TS-17-E5",
+      "requirement_id": "17-REQ-2.E2",
+      "kind": "unit",
+      "description": "audit.InitSchema returns an error immediately when the database transaction cannot be opened",
+      "preconditions": [
+        "A *sql.DB that returns an error on db.Begin() (simulated)"
+      ],
+      "input": "audit.InitSchema(dbThatFailsBegin)",
+      "expected": "Returns non-nil error without executing any DDL statements",
+      "assertion_pseudocode": "db = newFailingBeginDB(); err = audit.InitSchema(db); assert err != nil"
+    },
+    {
+      "id": "TS-17-E6",
+      "requirement_id": "17-REQ-3.E1",
+      "kind": "unit",
+      "description": "Audit write endpoint returns HTTP 403 when a PAT lacking audit:write scope is presented",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "PAT with only audit:read scope (no audit:write)",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with PAT having only audit:read scope",
+      "expected": "HTTP 403 with apikit error body indicating insufficient scope",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.start'}, auth=patWithReadOnly); assert resp.status == 403"
+    },
+    {
+      "id": "TS-17-E7",
+      "requirement_id": "17-REQ-3.E2",
+      "kind": "unit",
+      "description": "Audit read endpoint returns HTTP 403 when a PAT lacking audit:read scope is presented",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "PAT with only audit:write scope (no audit:read)",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with PAT having only audit:write scope",
+      "expected": "HTTP 403 with apikit error body indicating insufficient scope",
+      "assertion_pseudocode": "resp = client.get('.../events', auth=patWithWriteOnly); assert resp.status == 403"
+    },
+    {
+      "id": "TS-17-E8",
+      "requirement_id": "17-REQ-3.E3",
+      "kind": "unit",
+      "description": "Audit ingestion endpoint returns HTTP 401 when no authentication credential is presented",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with no Authorization header",
+      "expected": "HTTP 401 with apikit error body",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.start'}, auth=nil); assert resp.status == 401"
+    },
+    {
+      "id": "TS-17-E9",
+      "requirement_id": "17-REQ-4.E1",
+      "kind": "unit",
+      "description": "Default Emitter.Emit does not panic when called with a nil context",
+      "preconditions": [
+        "Fresh DuckDB database with InitSchema applied",
+        "Default Emitter created"
+      ],
+      "input": "emitter.Emit(nil, validHubEvent)",
+      "expected": "Returns nil without panicking; error (if any from nil context) is logged and swallowed",
+      "assertion_pseudocode": "assert doesNotPanic(func(): emitter.Emit(nil, validHubEvent)); // err should be nil"
+    },
+    {
+      "id": "TS-17-E10",
+      "requirement_id": "17-REQ-4.E2",
+      "kind": "unit",
+      "description": "Default Emitter.Emit stores an empty JSON object in metadata when Metadata contains non-JSON-serializable values",
+      "preconditions": [
+        "Fresh DuckDB database with InitSchema applied",
+        "Default Emitter created"
+      ],
+      "input": "emitter.Emit(ctx, HubEvent{..., Metadata: map[string]any{'fn': func(){}}})",
+      "expected": "Returns nil; the event row is stored with metadata set to '{}'; error is logged",
+      "assertion_pseudocode": "event = HubEvent{EventType:'test', ActorID:'a', ActorType:'system', ResourceType:'r', ResourceID:'r1', Action:'act', Workspace:'ws', Metadata: map[string]any{'fn': func(){}}}; err = emitter.Emit(ctx, event); assert err == nil; row = queryOne(db, 'hub_audit_events ORDER BY ingested_at DESC LIMIT 1'); assert row.metadata == '{}'"
+    },
+    {
+      "id": "TS-17-E11",
+      "requirement_id": "17-REQ-5.E1",
+      "kind": "unit",
+      "description": "run_id validation rejects run_id with uppercase hex characters in the suffix",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_A1B2C3/events with valid event body",
+      "expected": "HTTP 400 with apikit error body describing invalid run_id format",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_A1B2C3/events', body={event_type:'session.start'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'run_id'"
+    },
+    {
+      "id": "TS-17-E12",
+      "requirement_id": "17-REQ-5.E2",
+      "kind": "unit",
+      "description": "run_id validation rejects an empty run_id string",
+      "preconditions": [
+        "Hub running with audit routes registered"
+      ],
+      "input": "validateRunID('')",
+      "expected": "Returns false; any endpoint with empty run_id in URL returns HTTP 400",
+      "assertion_pseudocode": "assert validateRunID('') == false"
+    },
+    {
+      "id": "TS-17-E13",
+      "requirement_id": "17-REQ-5.E3",
+      "kind": "unit",
+      "description": "When the body run_id field is absent, the handler uses the URL path run_id as the authoritative value",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body {event_type:'session.start'} (no run_id in body)",
+      "expected": "HTTP 201; stored row has run_id='20260704_143022_a1b2c3' from the URL path",
+      "assertion_pseudocode": "resp = client.post('/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events', body={event_type:'session.start'}, auth=apiKey); assert resp.status == 201; assert resp.body.run_id == '20260704_143022_a1b2c3'"
+    },
+    {
+      "id": "TS-17-E14",
+      "requirement_id": "17-REQ-6.E1",
+      "kind": "unit",
+      "description": "POST events handler returns HTTP 400 citing missing required field when event_type is absent from the request body",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events with body {} (no event_type field)",
+      "expected": "HTTP 400 with apikit error body mentioning 'event_type' as the missing required field",
+      "assertion_pseudocode": "resp = client.post('.../events', body={}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'event_type'"
+    },
+    {
+      "id": "TS-17-E15",
+      "requirement_id": "17-REQ-6.E2",
+      "kind": "unit",
+      "description": "POST events handler returns HTTP 400 when the payload field is present but is not a JSON object",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events with body {event_type:'session.start', payload:'not-an-object'}",
+      "expected": "HTTP 400 with apikit error body indicating invalid payload",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.start', payload:'not-an-object'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'payload'"
+    },
+    {
+      "id": "TS-17-E16",
+      "requirement_id": "17-REQ-6.E3",
+      "kind": "unit",
+      "description": "POST events handler returns HTTP 500 when DuckDB write fails due to disk full",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a disk-full write error"
+      ],
+      "input": "POST events with valid event body where Store.InsertEvent returns a disk-full error",
+      "expected": "HTTP 500 with apikit error body; no partial data committed",
+      "assertion_pseudocode": "store = newDiskFullStore(); handler = newEventsHandler(store); resp = handler.handle(validEventRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E17",
+      "requirement_id": "17-REQ-6.E4",
+      "kind": "unit",
+      "description": "POST events handler returns HTTP 503 with Retry-After: 5 header when DuckDB write times out under sustained contention",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write timeout error"
+      ],
+      "input": "POST events with valid event body where Store.InsertEvent returns a timeout error",
+      "expected": "HTTP 503 with Retry-After: 5 header and apikit error body",
+      "assertion_pseudocode": "store = newTimeoutStore(); handler = newEventsHandler(store); resp = handler.handle(validEventRequest); assert resp.status == 503; assert resp.headers['Retry-After'] == '5'"
+    },
+    {
+      "id": "TS-17-E18",
+      "requirement_id": "17-REQ-6.E5",
+      "kind": "unit",
+      "description": "POST events handler returns HTTP 400 when the id field is present but does not match the standard UUID format",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events with body {event_type:'session.start', id:'not-a-uuid'}",
+      "expected": "HTTP 400 with apikit error body indicating invalid UUID format",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.start', id:'not-a-uuid'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'id' or 'uuid'"
+    },
+    {
+      "id": "TS-17-E19",
+      "requirement_id": "17-REQ-7.E1",
+      "kind": "unit",
+      "description": "POST events/batch handler rolls back the entire transaction and returns HTTP 500 when the DuckDB transaction fails after pre-validation",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to fail on transaction commit after pre-validation succeeds"
+      ],
+      "input": "POST events/batch with 5 valid events where the DuckDB transaction fails on commit",
+      "expected": "HTTP 500 with apikit error body; accepted count is 0; no rows in agent_audit_events",
+      "assertion_pseudocode": "store = newCommitFailStore(); handler = newBatchEventsHandler(store); resp = handler.handle(batchOf5ValidEvents); assert resp.status == 500; assert queryCount(db, 'agent_audit_events') == 0"
+    },
+    {
+      "id": "TS-17-E20",
+      "requirement_id": "17-REQ-7.E2",
+      "kind": "integration",
+      "description": "POST events/batch handler returns HTTP 200 with accepted=0 and duplicates=1000 when all 1000 items are duplicates",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "1000 events already in agent_audit_events with known ids",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events/batch with the same 1000 events (same ids) that already exist",
+      "expected": "HTTP 200 with body {accepted: 0, duplicates: 1000, errors: []}",
+      "assertion_pseudocode": "existingEvents = [makeEvent(i) for i in range(1000)]; for e in existingEvents: insertEvent(db, e); resp = client.post('.../events/batch', body=existingEvents, auth=apiKey); assert resp.status == 200; assert resp.body.accepted == 0; assert resp.body.duplicates == 1000; assert resp.body.errors == []"
+    },
+    {
+      "id": "TS-17-E21",
+      "requirement_id": "17-REQ-7.E3",
+      "kind": "unit",
+      "description": "POST events/batch handler returns HTTP 200 with all items in errors array and no transaction opened when all items fail pre-validation",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events/batch with 3 items all missing event_type",
+      "expected": "HTTP 200 with body {accepted: 0, duplicates: 0, errors: [{index:0,...},{index:1,...},{index:2,...}]}; no rows in agent_audit_events",
+      "assertion_pseudocode": "resp = client.post('.../events/batch', body=[{},{},{}], auth=apiKey); assert resp.status == 200; assert resp.body.accepted == 0; assert resp.body.duplicates == 0; assert len(resp.body.errors) == 3; assert queryCount(db, 'agent_audit_events') == 0"
+    },
+    {
+      "id": "TS-17-E22",
+      "requirement_id": "17-REQ-7.E4",
+      "kind": "unit",
+      "description": "Echo rejects the request with HTTP 413 before the handler is invoked when the request body exceeds Echo's 4 MB body size limit",
+      "preconditions": [
+        "Hub running with Echo's default 4 MB body size limit",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST events/batch with a request body larger than 4 MB",
+      "expected": "HTTP 413 returned by Echo middleware before the handler executes; no items processed",
+      "assertion_pseudocode": "largeBody = generateBodyLargerThan4MB(); resp = client.post('.../events/batch', body=largeBody, auth=apiKey); assert resp.status == 413"
+    },
+    {
+      "id": "TS-17-E23",
+      "requirement_id": "17-REQ-8.E1",
+      "kind": "unit",
+      "description": "POST sessions/outcomes handler returns HTTP 400 citing missing required field when session_id is absent",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST sessions/outcomes with body {status:'completed', timestamp:'2026-09-01T13:00:00Z'} (no session_id)",
+      "expected": "HTTP 400 with apikit error body mentioning 'session_id'",
+      "assertion_pseudocode": "resp = client.post('.../sessions/outcomes', body={status:'completed', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'session_id'"
+    },
+    {
+      "id": "TS-17-E24",
+      "requirement_id": "17-REQ-8.E2",
+      "kind": "unit",
+      "description": "POST sessions/outcomes handler returns HTTP 400 citing missing required field when status is absent",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST sessions/outcomes with body {session_id:'sess-1', timestamp:'2026-09-01T13:00:00Z'} (no status)",
+      "expected": "HTTP 400 with apikit error body mentioning 'status'",
+      "assertion_pseudocode": "resp = client.post('.../sessions/outcomes', body={session_id:'sess-1', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'status'"
+    },
+    {
+      "id": "TS-17-E25",
+      "requirement_id": "17-REQ-8.E3",
+      "kind": "unit",
+      "description": "POST sessions/outcomes handler returns HTTP 500 when DuckDB write fails",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write error"
+      ],
+      "input": "POST sessions/outcomes with valid body where Store insert returns an error",
+      "expected": "HTTP 500 with apikit error body",
+      "assertion_pseudocode": "store = newFailingStore(); handler = newOutcomesHandler(store); resp = handler.handle(validOutcomeRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E26",
+      "requirement_id": "17-REQ-9.E1",
+      "kind": "unit",
+      "description": "POST tools/calls handler returns HTTP 400 citing missing required field when tool_name is absent",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST tools/calls with body {timestamp:'2026-09-01T13:00:00Z'} (no tool_name)",
+      "expected": "HTTP 400 with apikit error body mentioning 'tool_name'",
+      "assertion_pseudocode": "resp = client.post('.../tools/calls', body={timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'tool_name'"
+    },
+    {
+      "id": "TS-17-E27",
+      "requirement_id": "17-REQ-9.E2",
+      "kind": "unit",
+      "description": "POST tools/calls handler returns HTTP 500 when DuckDB write fails",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write error"
+      ],
+      "input": "POST tools/calls with valid body where Store insert returns an error",
+      "expected": "HTTP 500 with apikit error body",
+      "assertion_pseudocode": "store = newFailingStore(); handler = newToolCallsHandler(store); resp = handler.handle(validToolCallRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E28",
+      "requirement_id": "17-REQ-10.E1",
+      "kind": "unit",
+      "description": "POST tools/errors handler returns HTTP 400 citing missing required field when error_msg is absent",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST tools/errors with body {tool_name:'bash', timestamp:'2026-09-01T13:00:00Z'} (no error_msg)",
+      "expected": "HTTP 400 with apikit error body mentioning 'error_msg'",
+      "assertion_pseudocode": "resp = client.post('.../tools/errors', body={tool_name:'bash', timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'error_msg'"
+    },
+    {
+      "id": "TS-17-E29",
+      "requirement_id": "17-REQ-10.E2",
+      "kind": "unit",
+      "description": "POST tools/errors handler returns HTTP 500 when DuckDB write fails",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write error"
+      ],
+      "input": "POST tools/errors with valid body where Store insert returns an error",
+      "expected": "HTTP 500 with apikit error body",
+      "assertion_pseudocode": "store = newFailingStore(); handler = newToolErrorsHandler(store); resp = handler.handle(validToolErrorRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E30",
+      "requirement_id": "17-REQ-11.E1",
+      "kind": "unit",
+      "description": "POST traces handler returns HTTP 400 citing missing required field when event_type is absent",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST traces with body {timestamp:'2026-09-01T13:00:00Z'} (no event_type)",
+      "expected": "HTTP 400 with apikit error body mentioning 'event_type'",
+      "assertion_pseudocode": "resp = client.post('.../traces', body={timestamp:'2026-09-01T13:00:00Z'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'event_type'"
+    },
+    {
+      "id": "TS-17-E31",
+      "requirement_id": "17-REQ-11.E2",
+      "kind": "unit",
+      "description": "POST traces handler returns HTTP 500 when DuckDB write fails",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write error"
+      ],
+      "input": "POST traces with valid body where Store insert returns an error",
+      "expected": "HTTP 500 with apikit error body",
+      "assertion_pseudocode": "store = newFailingStore(); handler = newTracesHandler(store); resp = handler.handle(validTraceRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E32",
+      "requirement_id": "17-REQ-11.E3",
+      "kind": "unit",
+      "description": "POST traces handler returns HTTP 503 with Retry-After: 5 header when DuckDB write times out under sustained contention",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write timeout error"
+      ],
+      "input": "POST traces with valid body where Store insert returns a timeout error",
+      "expected": "HTTP 503 with Retry-After: 5 header and apikit error body",
+      "assertion_pseudocode": "store = newTimeoutStore(); handler = newTracesHandler(store); resp = handler.handle(validTraceRequest); assert resp.status == 503; assert resp.headers['Retry-After'] == '5'"
+    },
+    {
+      "id": "TS-17-E33",
+      "requirement_id": "17-REQ-12.E1",
+      "kind": "unit",
+      "description": "POST traces/batch handler collects items with invalid event_type in the errors array during pre-validation without including them in the transaction",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST traces/batch with 3 items: index 0 valid (session.init), index 1 invalid event_type ('bad.type'), index 2 valid (tool.use)",
+      "expected": "HTTP 200 with body {accepted: 2, duplicates: 0, errors: [{index: 1, message: contains 'event_type'}]}; 2 rows in agent_traces",
+      "assertion_pseudocode": "resp = client.post('.../traces/batch', body=[{event_type:'session.init',...},{event_type:'bad.type',...},{event_type:'tool.use',...}], auth=apiKey); assert resp.status == 200; assert resp.body.accepted == 2; assert resp.body.errors[0].index == 1; assert resp.body.errors[0].message contains 'event_type'; assert queryCount(db, 'agent_traces') == 2"
+    },
+    {
+      "id": "TS-17-E34",
+      "requirement_id": "17-REQ-12.E2",
+      "kind": "unit",
+      "description": "POST traces/batch handler rolls back the entire transaction and returns HTTP 500 when the DuckDB transaction fails after pre-validation",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to fail on transaction commit"
+      ],
+      "input": "POST traces/batch with 3 valid trace events where the DuckDB transaction fails on commit",
+      "expected": "HTTP 500 with apikit error body; accepted count is 0; no rows in agent_traces",
+      "assertion_pseudocode": "store = newCommitFailStore(); handler = newBatchTracesHandler(store); resp = handler.handle(batchOf3ValidTraces); assert resp.status == 500; assert queryCount(db, 'agent_traces') == 0"
+    },
+    {
+      "id": "TS-17-E35",
+      "requirement_id": "17-REQ-13.E1",
+      "kind": "unit",
+      "description": "POST postmortem handler returns HTTP 400 citing missing required field when run_status is absent",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST postmortem with body missing run_status field",
+      "expected": "HTTP 400 with apikit error body mentioning 'run_status'",
+      "assertion_pseudocode": "body = {started_at:'2026-09-01T12:00:00Z', completed_at:'2026-09-01T13:00:00Z', task_summary:validTaskSummary, cost_summary:validCostSummary}; resp = client.post('.../postmortem', body=body, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'run_status'"
+    },
+    {
+      "id": "TS-17-E36",
+      "requirement_id": "17-REQ-13.E2",
+      "kind": "unit",
+      "description": "POST postmortem handler returns HTTP 400 when task_summary is missing a required integer field",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST postmortem with task_summary missing the 'total' field",
+      "expected": "HTTP 400 with apikit error body mentioning the missing field",
+      "assertion_pseudocode": "body = {...validPostmortem, task_summary:{completed:1, pending:0, blocked:0, failed:0, in_progress:0}}; resp = client.post('.../postmortem', body=body, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'total' or 'task_summary'"
+    },
+    {
+      "id": "TS-17-E37",
+      "requirement_id": "17-REQ-13.E3",
+      "kind": "unit",
+      "description": "POST postmortem handler returns HTTP 400 when run_status is not one of the four accepted values",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST postmortem with body {run_status:'invalid_status', ...}",
+      "expected": "HTTP 400 with apikit error body indicating invalid run_status value",
+      "assertion_pseudocode": "resp = client.post('.../postmortem', body={...validPostmortem, run_status:'invalid_status'}, auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'run_status'"
+    },
+    {
+      "id": "TS-17-E38",
+      "requirement_id": "17-REQ-13.E4",
+      "kind": "unit",
+      "description": "POST postmortem handler returns HTTP 500 when DuckDB write fails",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a write error"
+      ],
+      "input": "POST postmortem with valid body where Store insert returns an error",
+      "expected": "HTTP 500 with apikit error body",
+      "assertion_pseudocode": "store = newFailingStore(); handler = newPostmortemHandler(store); resp = handler.handle(validPostmortemRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E39",
+      "requirement_id": "17-REQ-14.E1",
+      "kind": "unit",
+      "description": "GET events handler clamps the limit to 1000 when the limit parameter exceeds 1000",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "1500 events in agent_audit_events for run_id='20260704_143022_a1b2c3'"
+      ],
+      "input": "GET events?limit=5000",
+      "expected": "HTTP 200 with at most 1000 records returned",
+      "assertion_pseudocode": "resp = client.get('.../events?limit=5000', auth=apiKey); assert resp.status == 200; assert len(resp.body.events) <= 1000"
+    },
+    {
+      "id": "TS-17-E40",
+      "requirement_id": "17-REQ-14.E2",
+      "kind": "unit",
+      "description": "GET events handler returns HTTP 400 when the cursor parameter is malformed (not valid base64 or not valid JSON after decoding)",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET events?cursor=!!!not-valid-base64!!!",
+      "expected": "HTTP 400 with apikit error body indicating malformed cursor",
+      "assertion_pseudocode": "resp = client.get('.../events?cursor=!!!not-valid-base64!!!', auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'cursor'"
+    },
+    {
+      "id": "TS-17-E41",
+      "requirement_id": "17-REQ-14.E3",
+      "kind": "unit",
+      "description": "GET events handler returns HTTP 400 when since or until parameter is not a valid ISO 8601 timestamp",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET events?since=not-a-timestamp",
+      "expected": "HTTP 400 with apikit error body indicating invalid timestamp format",
+      "assertion_pseudocode": "resp = client.get('.../events?since=not-a-timestamp', auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'since' or 'timestamp'"
+    },
+    {
+      "id": "TS-17-E42",
+      "requirement_id": "17-REQ-14.E4",
+      "kind": "unit",
+      "description": "GET events handler returns HTTP 200 with an empty events array when no events exist for the given run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "No events in agent_audit_events for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events",
+      "expected": "HTTP 200 with body {events: [], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../events', auth=apiKey); assert resp.status == 200; assert resp.body.events == []; assert resp.body.next_cursor == nil; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-E43",
+      "requirement_id": "17-REQ-15.E1",
+      "kind": "unit",
+      "description": "GET sessions/outcomes handler returns HTTP 200 with an empty outcomes array when no outcomes exist for the given run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "No outcomes in session_outcomes for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes",
+      "expected": "HTTP 200 with body {outcomes: [], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../sessions/outcomes', auth=apiKey); assert resp.status == 200; assert resp.body.outcomes == []; assert resp.body.next_cursor == nil; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-E44",
+      "requirement_id": "17-REQ-15.E2",
+      "kind": "unit",
+      "description": "GET sessions/outcomes handler returns HTTP 400 when the cursor parameter is malformed",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET sessions/outcomes?cursor=invalid-cursor",
+      "expected": "HTTP 400 with apikit error body indicating malformed cursor",
+      "assertion_pseudocode": "resp = client.get('.../sessions/outcomes?cursor=invalid-cursor', auth=apiKey); assert resp.status == 400"
+    },
+    {
+      "id": "TS-17-E45",
+      "requirement_id": "17-REQ-16.E1",
+      "kind": "unit",
+      "description": "GET tools/calls handler returns HTTP 200 with an empty calls array when no tool calls exist for the given run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "No tool calls in tool_calls for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls",
+      "expected": "HTTP 200 with body {calls: [], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../tools/calls', auth=apiKey); assert resp.status == 200; assert resp.body.calls == []; assert resp.body.next_cursor == nil; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-E46",
+      "requirement_id": "17-REQ-16.E2",
+      "kind": "unit",
+      "description": "GET tools/calls handler returns HTTP 400 when the cursor parameter is malformed",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET tools/calls?cursor=invalid-cursor",
+      "expected": "HTTP 400 with apikit error body indicating malformed cursor",
+      "assertion_pseudocode": "resp = client.get('.../tools/calls?cursor=invalid-cursor', auth=apiKey); assert resp.status == 400"
+    },
+    {
+      "id": "TS-17-E47",
+      "requirement_id": "17-REQ-17.E1",
+      "kind": "unit",
+      "description": "GET tools/errors handler returns HTTP 200 with an empty errors array when no tool errors exist for the given run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "No tool errors in tool_errors for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors",
+      "expected": "HTTP 200 with body {errors: [], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../tools/errors', auth=apiKey); assert resp.status == 200; assert resp.body.errors == []; assert resp.body.next_cursor == nil; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-E48",
+      "requirement_id": "17-REQ-17.E2",
+      "kind": "unit",
+      "description": "GET tools/errors handler returns HTTP 400 when the cursor parameter is malformed",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET tools/errors?cursor=invalid-cursor",
+      "expected": "HTTP 400 with apikit error body indicating malformed cursor",
+      "assertion_pseudocode": "resp = client.get('.../tools/errors?cursor=invalid-cursor', auth=apiKey); assert resp.status == 400"
+    },
+    {
+      "id": "TS-17-E49",
+      "requirement_id": "17-REQ-18.E1",
+      "kind": "unit",
+      "description": "GET traces handler returns HTTP 200 with an empty traces array when no traces exist for the given run_id",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "No traces in agent_traces for run_id='20260704_143022_a1b2c3'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces",
+      "expected": "HTTP 200 with body {traces: [], next_cursor: null, has_more: false}",
+      "assertion_pseudocode": "resp = client.get('.../traces', auth=apiKey); assert resp.status == 200; assert resp.body.traces == []; assert resp.body.next_cursor == nil; assert resp.body.has_more == false"
+    },
+    {
+      "id": "TS-17-E50",
+      "requirement_id": "17-REQ-18.E2",
+      "kind": "unit",
+      "description": "GET traces handler returns HTTP 400 when the cursor parameter is malformed",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET traces?cursor=invalid-cursor",
+      "expected": "HTTP 400 with apikit error body indicating malformed cursor",
+      "assertion_pseudocode": "resp = client.get('.../traces?cursor=invalid-cursor', auth=apiKey); assert resp.status == 400"
+    },
+    {
+      "id": "TS-17-E51",
+      "requirement_id": "17-REQ-19.E1",
+      "kind": "unit",
+      "description": "GET postmortem handler returns HTTP 400 when the run_id in the URL path does not match the required format",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "GET /api/v1/workspaces/ws1/runs/INVALID_RUN_ID/postmortem",
+      "expected": "HTTP 400 with apikit error body describing invalid run_id format; no database query is made",
+      "assertion_pseudocode": "resp = client.get('/api/v1/workspaces/ws1/runs/INVALID_RUN_ID/postmortem', auth=apiKey); assert resp.status == 400; assert resp.body.error contains 'run_id'"
+    },
+    {
+      "id": "TS-17-E52",
+      "requirement_id": "17-REQ-20.E1",
+      "kind": "unit",
+      "description": "Admin token bypasses workspace restriction checks and the request proceeds to handler logic",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Workspace 'ws1' exists and is active",
+        "Admin token available"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with admin token",
+      "expected": "HTTP 201; no workspace access error raised; event stored successfully",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.start'}, auth=adminToken); assert resp.status == 201; assert queryCount(db, 'agent_audit_events') == 1"
+    },
+    {
+      "id": "TS-17-E53",
+      "requirement_id": "17-REQ-20.E2",
+      "kind": "unit",
+      "description": "API key applies the same workspace access check as a generic PAT (token owner must have write access)",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "API key whose owner does not have write access to workspace 'ws1'",
+        "Workspace 'ws1' exists and is active"
+      ],
+      "input": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with API key lacking workspace access",
+      "expected": "HTTP 403 with apikit error body of type 'workspace_access_denied'",
+      "assertion_pseudocode": "resp = client.post('.../events', body={event_type:'session.start'}, auth=apiKeyWithoutAccess); assert resp.status == 403; assert resp.body.error_type == 'workspace_access_denied'"
+    },
+    {
+      "id": "TS-17-E54",
+      "requirement_id": "17-REQ-21.E1",
+      "kind": "unit",
+      "description": "Paginated GET endpoints use the default limit of 100 when limit is set to 0 or a negative value",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "200 events in agent_audit_events for run_id='20260704_143022_a1b2c3'"
+      ],
+      "input": "GET events?limit=0 and GET events?limit=-5",
+      "expected": "HTTP 200 with at most 100 records returned for both requests",
+      "assertion_pseudocode": "resp1 = client.get('.../events?limit=0', auth=apiKey); assert resp1.status == 200; assert len(resp1.body.events) <= 100; resp2 = client.get('.../events?limit=-5', auth=apiKey); assert resp2.status == 200; assert len(resp2.body.events) <= 100"
+    },
+    {
+      "id": "TS-17-E55",
+      "requirement_id": "17-REQ-21.E2",
+      "kind": "unit",
+      "description": "Paginated GET endpoints apply the current request's order parameter when using a cursor generated with a different order",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "20 events in agent_audit_events for run_id='20260704_143022_a1b2c3' with distinct timestamps"
+      ],
+      "input": "First request: GET events?limit=5&order=asc (generates cursor); Second request: GET events?limit=5&order=desc&cursor=<cursor from first>",
+      "expected": "HTTP 200; second response returns records using desc comparison from the cursor position; no error",
+      "assertion_pseudocode": "resp1 = client.get('.../events?limit=5&order=asc', auth=apiKey); cursor = resp1.body.next_cursor; resp2 = client.get('.../events?limit=5&order=desc&cursor=' + cursor, auth=apiKey); assert resp2.status == 200; assert len(resp2.body.events) >= 0"
+    },
+    {
+      "id": "TS-17-E56",
+      "requirement_id": "17-REQ-22.E1",
+      "kind": "unit",
+      "description": "Store write methods return HTTP 500 when disk is full during a DuckDB write; no partial commit occurs",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "Store configured to simulate a disk-full error"
+      ],
+      "input": "POST events with valid body where DuckDB returns a disk-full error",
+      "expected": "HTTP 500 with apikit error body; no rows in agent_audit_events",
+      "assertion_pseudocode": "store = newDiskFullStore(); handler = newEventsHandler(store); resp = handler.handle(validEventRequest); assert resp.status == 500; assert queryCount(db, 'agent_audit_events') == 0"
+    },
+    {
+      "id": "TS-17-E57",
+      "requirement_id": "17-REQ-22.E2",
+      "kind": "unit",
+      "description": "Store write methods log the error and return HTTP 500 when DuckDB file is corrupted and returns an error on the first query",
+      "preconditions": [
+        "Hub running with audit routes registered",
+        "DuckDB connection backed by a corrupted file that returns errors on queries"
+      ],
+      "input": "POST events with valid body where DuckDB returns a corruption error",
+      "expected": "HTTP 500 with apikit error body; error is logged",
+      "assertion_pseudocode": "store = newCorruptedDBStore(); handler = newEventsHandler(store); resp = handler.handle(validEventRequest); assert resp.status == 500"
+    },
+    {
+      "id": "TS-17-E58",
+      "requirement_id": "17-REQ-23.E1",
+      "kind": "unit",
+      "description": "defaultSeverityFor returns 'info' when event_type is an unknown string not in the mapping table",
+      "preconditions": [
+        "internal/audit/severity.go is compiled"
+      ],
+      "input": "defaultSeverityFor('completely.unknown.event.type')",
+      "expected": "Returns the string 'info'",
+      "assertion_pseudocode": "result = defaultSeverityFor('completely.unknown.event.type'); assert result == 'info'"
+    },
+    {
+      "id": "TS-17-E59",
+      "requirement_id": "17-REQ-24.E1",
+      "kind": "unit",
+      "description": "Hub startup aborts with a non-zero exit code and error message when audit.OpenDB returns an error",
+      "preconditions": [
+        "Hub startup sequence configured with an invalid DuckDB path that causes OpenDB to fail"
+      ],
+      "input": "Hub starts with AF_AUDIT_DB_PATH pointing to a read-only location",
+      "expected": "Hub process exits with non-zero exit code; error message is logged",
+      "assertion_pseudocode": "exitCode, stderr = runHub(env={AF_AUDIT_DB_PATH:'/read-only/audit.duckdb'}); assert exitCode != 0; assert stderr contains 'audit' or 'duckdb' or 'error'"
+    },
+    {
+      "id": "TS-17-E60",
+      "requirement_id": "17-REQ-24.E2",
+      "kind": "unit",
+      "description": "Hub startup aborts with a non-zero exit code and error message when audit.InitSchema returns an error",
+      "preconditions": [
+        "Hub startup sequence configured with a DuckDB connection that fails on InitSchema"
+      ],
+      "input": "Hub starts with a DuckDB file that causes InitSchema to fail (e.g., corrupted file)",
+      "expected": "Hub process exits with non-zero exit code; error message is logged",
+      "assertion_pseudocode": "exitCode, stderr = runHubWithCorruptedAuditDB(); assert exitCode != 0; assert stderr contains 'schema' or 'init' or 'error'"
+    }
+  ],
+  "smoke_tests": [
+    {
+      "id": "TS-17-SMOKE-1",
+      "execution_path_id": "17-PATH-1",
+      "description": "Agent submits a single audit event end-to-end: auth middleware validates credential, handler applies defaults, Store inserts into DuckDB, and HTTP 201 is returned",
+      "trigger": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events with body {event_type:'session.start'} and a valid API key",
+      "real_components": [
+        "Echo HTTP framework with auth middleware",
+        "audit events handler (internal/audit/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "defaultSeverityFor (internal/audit/severity.go)",
+        "validateRunID (internal/audit/validate.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 201 response with body containing id (valid UUID), run_id='20260704_143022_a1b2c3', event_type='session.start', severity='info', created_at (non-empty timestamp)",
+        "Exactly one row in agent_audit_events with workspace='ws1', run_id='20260704_143022_a1b2c3', event_type='session.start', severity='info', non-null ingested_at"
+      ]
+    },
+    {
+      "id": "TS-17-SMOKE-2",
+      "execution_path_id": "17-PATH-2",
+      "description": "Agent bulk-uploads a JSONL event file via the batch endpoint: auth middleware validates, handler pre-validates items, Store inserts valid items in a single transaction, and HTTP 200 summary is returned",
+      "trigger": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events/batch with array of 10 valid events and 2 invalid events (missing event_type) and a valid API key",
+      "real_components": [
+        "Echo HTTP framework with auth middleware",
+        "batch events handler (internal/audit/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "validateRunID (internal/audit/validate.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with body {accepted: 10, duplicates: 0, errors: [{index: <i>, message: contains 'event_type'}, {index: <j>, message: contains 'event_type'}]}",
+        "Exactly 10 rows in agent_audit_events",
+        "No rows for the 2 invalid items"
+      ]
+    },
+    {
+      "id": "TS-17-SMOKE-3",
+      "execution_path_id": "17-PATH-3",
+      "description": "Agent submits a postmortem report end-to-end: auth middleware validates, handler validates all required fields and sub-schemas, Store inserts using run_id as primary key, and HTTP 201 is returned",
+      "trigger": "POST /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem with a complete valid postmortem body and a valid API key",
+      "real_components": [
+        "Echo HTTP framework with auth middleware",
+        "postmortem handler (internal/audit/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "validateRunID (internal/audit/validate.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 201 response with body {run_id: '20260704_143022_a1b2c3', run_status: 'stalled', created_at: <timestamp>}",
+        "Exactly one row in postmortems with run_id='20260704_143022_a1b2c3', workspace='ws1', schema_version=1, non-null ingested_at"
+      ]
+    },
+    {
+      "id": "TS-17-SMOKE-4",
+      "execution_path_id": "17-PATH-4",
+      "description": "Operator queries audit events with pagination end-to-end: auth middleware validates, handler parses filter parameters, Store queries DuckDB with filters and pagination, cursor is encoded and returned",
+      "trigger": "GET /api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events?limit=5&order=desc&since=2026-09-01T00:00:00Z with a valid API key, after inserting 10 events",
+      "real_components": [
+        "Echo HTTP framework with auth middleware",
+        "events query handler (internal/audit/handlers.go)",
+        "Store (internal/audit/store.go)",
+        "DuckDB via go-duckdb driver (temp-file database in t.TempDir())",
+        "validateRunID (internal/audit/validate.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 200 response with body {events: [5 items in descending timestamp order], next_cursor: <non-null base64 string>, has_more: true}",
+        "next_cursor decodes to a JSON object with ts and id fields",
+        "All returned events have timestamp >= 2026-09-01T00:00:00Z"
+      ]
+    },
+    {
+      "id": "TS-17-SMOKE-5",
+      "execution_path_id": "17-PATH-5",
+      "description": "Hub startup initializes the entire audit subsystem: resolves DuckDB path, creates parent directories, opens connection, initializes schema, creates Store and Emitter, registers all 14 routes, and collects permissions",
+      "trigger": "Hub binary starts with a valid config.toml and AF_AUDIT_DB_PATH not set",
+      "real_components": [
+        "cmd/af-hub/main.go startup sequence",
+        "audit.OpenDB (internal/audit/db.go)",
+        "audit.InitSchema (internal/audit/schema.go)",
+        "audit.NewStore (internal/audit/store.go)",
+        "audit.NewEmitter (internal/audit/emitter.go)",
+        "audit.RegisterRoutes (internal/audit/routes.go)",
+        "audit.Permissions (internal/audit/permissions.go)",
+        "DuckDB via go-duckdb driver",
+        "Echo HTTP framework"
+      ],
+      "mockable": [
+        "Filesystem (t.TempDir() for DuckDB file path)"
+      ],
+      "expected_effects": [
+        "audit.duckdb file created in <data_dir> alongside the SQLite database",
+        "All nine audit tables exist in the DuckDB file",
+        "All 14 audit endpoints respond to requests (not 404 or 405)",
+        "All four PAT scopes (audit:read, audit:write, sessions:read, sessions:write) are registered",
+        "Hub serves HTTP requests without error"
+      ]
+    },
+    {
+      "id": "TS-17-SMOKE-6",
+      "execution_path_id": "17-PATH-6",
+      "description": "Workspace-scoped PAT is rejected with HTTP 403 workspace_mismatch when the PAT's workspace does not match the URL :slug",
+      "trigger": "POST /api/v1/workspaces/workspace-A/runs/20260704_143022_a1b2c3/events with a PAT scoped to workspace-B and audit:write scope",
+      "real_components": [
+        "Echo HTTP framework with auth middleware",
+        "audit auth middleware (internal/audit/auth.go)",
+        "audit events handler (internal/audit/handlers.go)"
+      ],
+      "mockable": [],
+      "expected_effects": [
+        "HTTP 403 response with apikit error body of type 'workspace_mismatch'",
+        "No rows inserted into agent_audit_events",
+        "Handler logic is never reached (rejected at auth middleware)"
+      ]
+    }
+  ],
+  "coverage": {
+    "requirements_covered": [],
+    "properties_covered": [],
+    "paths_covered": [],
+    "gaps": []
+  }
+}

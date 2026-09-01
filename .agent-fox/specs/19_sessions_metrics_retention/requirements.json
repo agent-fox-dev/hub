@@ -1,0 +1,1521 @@
+{
+  "$schema": null,
+  "spec_id": "19",
+  "spec_name": "sessions_metrics_retention",
+  "schema_version": 1,
+  "introduction": "This spec completes the audit subsystem by adding agent session lifecycle tracking (open/close/usage APIs), a Prometheus-compatible `/metrics` scrape endpoint, and a background retention worker that enforces time-based and run-count limits on the DuckDB audit database. Note: requirements referencing `github.com/prometheus/client_golang` APIs are based on PRD descriptions and should be cross-checked against the installed library version before implementation.",
+  "glossary": {
+    "AF_AUDIT_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained audit event records (default 90).",
+    "AF_AUDIT_MAX_RUNS": "Environment variable controlling the maximum number of distinct run_ids to retain (default 50).",
+    "AF_AUDIT_ORPHAN_RETENTION_DAYS": "Environment variable controlling the grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted (default 30).",
+    "AF_POSTMORTEM_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained postmortem records (default 180).",
+    "AF_SESSION_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained completed session records (default 90).",
+    "AF_TRACE_MAX_AGE_DAYS": "Environment variable controlling the maximum age in days for retained trace records (default 30).",
+    "Emitter": "Interface defined in spec 18 for emitting HubEvent records into the audit subsystem.",
+    "HubEvent": "Go struct defined in spec 17 representing a hub-internal audit event, with fields EventType, ActorType, ActorID, ResourceType, ResourceID, Action, Workspace, and Metadata.",
+    "StartRetentionWorker": "Go function in the audit package that starts the background retention worker goroutine.",
+    "Store": "Go interface defined in spec 17 providing DuckDB-backed persistence for all audit tables.",
+    "active": "Session status indicating the session is open and accepting usage reports.",
+    "admin_token": "Credential type string value indicating the caller is an administrator with implicit full access to all scopes and workspaces.",
+    "afhub_agent_sessions_active": "Prometheus gauge metric tracking currently active sessions, labeled by workspace.",
+    "afhub_agent_tokens_total": "Prometheus counter metric tracking token usage, labeled by workspace, model, and direction.",
+    "afhub_audit_events_total": "Prometheus counter metric tracking total audit events ingested, labeled by source and event_type.",
+    "afhub_audit_table_rows": "Prometheus gauge metric tracking row count per audit table, sampled hourly by the retention worker.",
+    "afhub_http_request_duration_seconds": "Prometheus histogram metric tracking HTTP request latency in seconds, labeled by method and path.",
+    "afhub_http_requests_total": "Prometheus counter metric tracking total HTTP requests, labeled by method, path, and status.",
+    "afhub_jobqueue_depth": "Prometheus gauge metric tracking job queue depth, labeled by type and status; defined here but owned and initialized by the durable_job_queue subsystem.",
+    "afhub_retention_errors_total": "Prometheus counter metric tracking retention step failures, labeled by step name.",
+    "afhub_retention_last_run_timestamp_seconds": "Prometheus gauge metric recording the Unix timestamp of the last fully successful retention worker run.",
+    "afhub_sse_connections": "Prometheus gauge metric tracking active SSE connections.",
+    "agent_audit_events": "DuckDB table (defined in spec 17) storing structured audit events emitted by agents.",
+    "agent_sessions": "DuckDB table (defined in spec 17) that stores the lifecycle record of each agent session, including status, credential info, and timing.",
+    "agent_traces": "DuckDB table (defined in spec 17) storing distributed trace data from agents.",
+    "api_key": "Credential type string value for workspace-scoped API keys.",
+    "apikit": "Internal framework providing authentication middleware, permission enforcement, and standard error-response helpers used across all hub handlers.",
+    "apikit.AuthInfo": "Struct from apikit carrying the authenticated caller's credential_id and credential_type for the current request.",
+    "apikit.WriteAPIError": "Helper function from apikit that writes a standard hub error envelope {error: string, status: int} to the HTTP response.",
+    "archetype": "Agent archetype label associated with a session.",
+    "audit:read": "Permission scope (defined in spec 17 in internal/audit/permissions.go) required to query audit events.",
+    "audit:write": "Permission scope (defined in spec 17 in internal/audit/permissions.go) required to ingest audit events.",
+    "c.Path()": "Echo framework method returning the matched route template string (e.g. /api/v1/sessions/:id) rather than the raw request URI, used as the path label in Prometheus HTTP metrics.",
+    "cache_creation_input_tokens": "Session-level summary field on the complete endpoint representing tokens consumed creating cache entries across all API calls in the session.",
+    "cache_read_input_tokens": "Tokens read from cache during a session, reported on the complete endpoint.",
+    "cache_read_tokens": "Tokens read from cache during a single incremental usage report.",
+    "completed": "Terminal session status indicating the session ended successfully.",
+    "credential_id": "Unique identifier of the credential (API key, PAT, or admin token) that opened or is acting on a session.",
+    "credential_type": "String discriminator for the credential kind: admin_token, api_key, or pat.",
+    "failed": "Terminal session status indicating the session ended with an error.",
+    "force-close": "System-initiated operation that sets all active sessions for a workspace to terminated status during workspace archive or delete.",
+    "group_by": "Query parameter on the cost endpoint controlling the breakdown dimension: day, session, or model.",
+    "hub.session.force_closed": "Audit event type emitted when a session is force-closed due to workspace archive or delete.",
+    "hub_audit_events": "DuckDB table (defined in spec 17) storing structured audit events emitted by the hub itself.",
+    "internal/audit/handlers.go": "Existing Go source file extended with session, usage, cost, and single-session-fetch HTTP handlers.",
+    "internal/audit/metrics.go": "New Go source file containing the custom Prometheus registry, metric definitions, and Echo middleware factory.",
+    "internal/audit/retention.go": "New Go source file containing the background retention worker implementation.",
+    "internal/audit/routes.go": "Existing Go source file extended to register session, usage, cost, and metrics routes.",
+    "internal/audit/store.go": "Existing Go source file extended with session CRUD, token usage, cost aggregation, and retention query methods.",
+    "internal/workspace/handlers.go": "Existing Go source file modified to call session force-close in archive and delete handlers.",
+    "keyset cursor": "Opaque pagination token encoding a (field, id) tuple, URL-safe base64-encoded per RFC 4648 §5 without padding, used for stable keyset-based pagination.",
+    "max_age_days": "Retention configuration value controlling the maximum age of audit event records.",
+    "max_runs": "Retention configuration value controlling the maximum number of distinct run_ids to retain.",
+    "node_id": "Task graph node identifier associated with a session.",
+    "orphan_retention_days": "Grace period after workspace deletion before orphaned audit data is purged by the retention worker.",
+    "pat": "Credential type string value for Personal Access Tokens, which require explicit scope grants at issuance time.",
+    "postmortem_max_age_days": "Retention configuration value controlling the maximum age of postmortem records.",
+    "postmortems": "DuckDB table (defined in spec 17) storing post-mortem analysis records.",
+    "promhttp": "Package from github.com/prometheus/client_golang/prometheus/promhttp providing the HTTP handler for Prometheus scrape endpoints.",
+    "retention worker": "Background goroutine started at hub startup that runs immediately and then every hour to enforce retention policies on all audit tables.",
+    "run_id": "Identifier grouping multiple audit events and sessions that belong to the same agent run.",
+    "session_max_age_days": "Retention configuration value controlling the maximum age of completed session records.",
+    "sessions:read": "Permission scope (defined in spec 17 in internal/audit/permissions.go) required to read session records, usage records, and cost summaries.",
+    "sessions:write": "Permission scope (defined in spec 17 in internal/audit/permissions.go) required to open, close, or report usage on agent sessions.",
+    "terminated": "Internal-only session status set exclusively by force-close logic when a workspace is archived or deleted.",
+    "timeout": "Terminal session status indicating the session ended due to a timeout.",
+    "token_summary": "Aggregated token usage counts (input, output, cache_read) and distinct models list computed at query time from token_usage rows for a session.",
+    "token_usage": "DuckDB table (defined in spec 17) that stores incremental token consumption records linked to a session.",
+    "trace_max_age_days": "Retention configuration value controlling the maximum age of trace records.",
+    "workspace_slug": "URL-safe string identifier for a workspace, used as the primary workspace reference across all hub APIs."
+  },
+  "requirements": [
+    {
+      "id": "19-REQ-1",
+      "title": "Open Agent Session",
+      "user_story": {
+        "role": "agent",
+        "goal": "open a new session via POST /api/v1/sessions with workspace and optional metadata",
+        "benefit": "so that the hub can track the session lifecycle and associate token usage with the correct workspace"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-1.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "create a new agent_sessions record with status active, extract credential_id and credential_type from apikit.AuthInfo, generate a UUID if id is not provided, and return the session",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, workspace_slug: string, credential_id: string, credential_type: string, status: 'active', started_at: RFC3339 timestamp}",
+          "trigger": "a caller with sessions:write permission sends POST /api/v1/sessions with a valid workspace_slug"
+        },
+        {
+          "id": "19-REQ-1.2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the existing session record without creating a duplicate",
+          "return_contract": "returns HTTP 200 with the existing session JSON body in the same shape as the 201 response",
+          "trigger": "a caller sends POST /api/v1/sessions with an id that already exists in agent_sessions"
+        },
+        {
+          "id": "19-REQ-1.3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request using apikit.WriteAPIError with status 400 and message 'workspace_slug is required'",
+          "return_contract": "returns HTTP 400 with JSON body {error: 'workspace_slug is required', status: 400}",
+          "error_condition": "workspace_slug is missing or empty in the POST /api/v1/sessions request body"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-1.E1",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request via apikit auth middleware",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "the caller does not have sessions:write permission when sending POST /api/v1/sessions"
+        },
+        {
+          "id": "19-REQ-1.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "create the session with run_id, node_id, archetype, model set to empty string and metadata set to null",
+          "return_contract": "returns HTTP 201 with a valid session record",
+          "trigger": "a caller sends POST /api/v1/sessions with all optional fields omitted"
+        },
+        {
+          "id": "19-REQ-1.E3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return an internal server error",
+          "return_contract": "returns HTTP 500",
+          "error_condition": "the DuckDB insert fails while processing a POST /api/v1/sessions request with a valid workspace_slug"
+        },
+        {
+          "id": "19-REQ-1.E4",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "one request creates the record and the other returns the existing record idempotently; no duplicate rows are created in agent_sessions",
+          "return_contract": "both requests return HTTP 200 or 201 with the same session record",
+          "trigger": "two concurrent callers send POST /api/v1/sessions with the same id simultaneously"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-2",
+      "title": "Complete Agent Session",
+      "user_story": {
+        "role": "agent",
+        "goal": "close an active session via POST /api/v1/sessions/:id/complete with final status and token usage",
+        "benefit": "so that the hub records the terminal state and usage summary for the session"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-2.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "set the session status to the provided terminal status (completed, failed, or timeout), record ended_at, duration_ms, error_message, and cache_creation_input_tokens, decrement afhub_agent_sessions_active gauge for the session's workspace, and return the updated session record",
+          "return_contract": "returns HTTP 200 with the updated session JSON body including the actual status field",
+          "trigger": "the session owner or an admin_token caller sends POST /api/v1/sessions/:id/complete on an active session"
+        },
+        {
+          "id": "19-REQ-2.2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the existing session record without modification",
+          "return_contract": "returns HTTP 200 with the existing session JSON body including the actual status field",
+          "trigger": "a caller sends POST /api/v1/sessions/:id/complete on a session already in any terminal state (completed, failed, timeout, or terminated)"
+        },
+        {
+          "id": "19-REQ-2.3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 403 Forbidden",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "the caller's credential_id does not match the session's credential_id and the caller's credential_type is not admin_token when sending POST /api/v1/sessions/:id/complete"
+        },
+        {
+          "id": "19-REQ-2.4",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 404 Not Found",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "no session with the given id exists in agent_sessions when a caller sends POST /api/v1/sessions/:id/complete"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-2.E1",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 400 Bad Request",
+          "return_contract": "returns HTTP 400 with a JSON error body",
+          "error_condition": "a caller sends POST /api/v1/sessions/:id/complete with status set to 'terminated', which is not a valid client-settable terminal status"
+        },
+        {
+          "id": "19-REQ-2.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "allow the operation and close the session",
+          "return_contract": "returns HTTP 200 with the updated session record",
+          "trigger": "an admin_token caller sends POST /api/v1/sessions/:id/complete on a session owned by a different credential_id"
+        },
+        {
+          "id": "19-REQ-2.E3",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the existing terminated session record without modification, treating all terminal states uniformly",
+          "return_contract": "returns HTTP 200 with the session record showing status: 'terminated'",
+          "trigger": "a caller sends POST /api/v1/sessions/:id/complete on a terminated session"
+        },
+        {
+          "id": "19-REQ-2.E4",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return an internal server error without modifying the afhub_agent_sessions_active gauge",
+          "return_contract": "returns HTTP 500",
+          "error_condition": "the DuckDB update fails while processing a POST /api/v1/sessions/:id/complete request"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-3",
+      "title": "Report Incremental Token Usage",
+      "user_story": {
+        "role": "agent",
+        "goal": "report incremental token usage via POST /api/v1/sessions/:id/usage during an active session",
+        "benefit": "so that the hub accumulates accurate per-call token consumption for cost tracking"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-3.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "create a new token_usage record linked to the session, resolving workspace_slug from the session record, and return the created record",
+          "return_contract": "returns HTTP 201 with JSON body {id: string, session_id: string, workspace_slug: string, model: string, input_tokens: int, output_tokens: int, cache_read_tokens: int, reported_at: RFC3339 timestamp}",
+          "trigger": "the session owner or an admin_token caller sends POST /api/v1/sessions/:id/usage with a valid model on an active session"
+        },
+        {
+          "id": "19-REQ-3.2",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 404 Not Found",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "no session with the given id exists in agent_sessions when a caller sends POST /api/v1/sessions/:id/usage"
+        },
+        {
+          "id": "19-REQ-3.3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 403 Forbidden",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "the caller's credential_id does not match the session's credential_id and the caller's credential_type is not admin_token when sending POST /api/v1/sessions/:id/usage"
+        },
+        {
+          "id": "19-REQ-3.4",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 409 Conflict",
+          "return_contract": "returns HTTP 409 with JSON body {error: 'session is not active'}",
+          "error_condition": "a caller sends POST /api/v1/sessions/:id/usage on a session whose status is completed, failed, timeout, or terminated"
+        },
+        {
+          "id": "19-REQ-3.5",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "reject the request with 400 Bad Request",
+          "return_contract": "returns HTTP 400 with a JSON error body",
+          "error_condition": "the model field is missing or empty in the POST /api/v1/sessions/:id/usage request body"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-3.E1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "create a separate token_usage record for each call, each with its own generated id and reported_at timestamp",
+          "return_contract": "each call returns HTTP 201 with a distinct token_usage record",
+          "trigger": "a caller sends POST /api/v1/sessions/:id/usage multiple times on the same active session"
+        },
+        {
+          "id": "19-REQ-3.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the existing token_usage record without creating a duplicate (idempotent by id)",
+          "return_contract": "returns HTTP 201 with the existing token_usage record",
+          "trigger": "a caller sends POST /api/v1/sessions/:id/usage with a duplicate id field"
+        },
+        {
+          "id": "19-REQ-3.E3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return an internal server error",
+          "return_contract": "returns HTTP 500",
+          "error_condition": "the DuckDB insert fails while processing a POST /api/v1/sessions/:id/usage request on an active session"
+        },
+        {
+          "id": "19-REQ-3.E4",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "allow the operation and create the token_usage record",
+          "return_contract": "returns HTTP 201 with the created token_usage record",
+          "trigger": "an admin_token caller sends POST /api/v1/sessions/:id/usage on a session owned by a different credential_id"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-4",
+      "title": "List Agent Sessions",
+      "user_story": {
+        "role": "operator",
+        "goal": "list agent sessions with filtering and cursor pagination via GET /api/v1/sessions",
+        "benefit": "so that I can monitor and audit session activity across workspaces"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-4.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return a paginated list of sessions visible to the caller, with token_summary aggregated from token_usage rows for each session, applying any provided filters (workspace_slug, run_id, status, credential_type, since, order, limit, cursor)",
+          "return_contract": "returns HTTP 200 with JSON body {sessions: [...], next_cursor: string|null, has_more: bool}",
+          "trigger": "a caller with sessions:read permission sends GET /api/v1/sessions"
+        },
+        {
+          "id": "19-REQ-4.2",
+          "ears_pattern": "state_driven",
+          "system": "sessions handler",
+          "action": "restrict results to sessions in workspaces the caller has access to; when workspace_slug filter is provided for an inaccessible workspace, return 403; when no workspace_slug filter is provided, silently exclude inaccessible workspaces",
+          "return_contract": "returns HTTP 403 when explicit workspace_slug filter targets an inaccessible workspace; otherwise returns HTTP 200 with filtered results",
+          "state": "the caller's credential_type is not admin_token"
+        },
+        {
+          "id": "19-REQ-4.3",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "apply keyset pagination using the decoded (started_at, id) tuple from the cursor, filtering with < for desc order and > for asc order, and include next_cursor in the response if more records exist",
+          "return_contract": "returns HTTP 200 with the correct page of sessions and a valid next_cursor or null",
+          "trigger": "a caller sends GET /api/v1/sessions with a cursor parameter"
+        },
+        {
+          "id": "19-REQ-4.4",
+          "ears_pattern": "state_driven",
+          "system": "sessions handler",
+          "action": "return sessions across all workspaces without access restriction",
+          "return_contract": "returns HTTP 200 with sessions from all workspaces",
+          "state": "the caller's credential_type is admin_token"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-4.E1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "cap the limit at 500",
+          "return_contract": "returns HTTP 200 with at most 500 sessions",
+          "trigger": "a caller sends GET /api/v1/sessions with limit exceeding 500"
+        },
+        {
+          "id": "19-REQ-4.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "use the default page size of 50",
+          "return_contract": "returns HTTP 200 with at most 50 sessions",
+          "trigger": "a caller sends GET /api/v1/sessions with no limit parameter"
+        },
+        {
+          "id": "19-REQ-4.E3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 400 Bad Request",
+          "return_contract": "returns HTTP 400 with a JSON error body",
+          "error_condition": "a caller sends GET /api/v1/sessions with a malformed or tampered cursor that cannot be decoded or parsed as a valid (started_at, id) tuple"
+        },
+        {
+          "id": "19-REQ-4.E4",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return only sessions with terminated status, since terminated is a valid filter value",
+          "return_contract": "returns HTTP 200 with sessions filtered to terminated status",
+          "trigger": "a caller sends GET /api/v1/sessions with status filter set to 'terminated'"
+        },
+        {
+          "id": "19-REQ-4.E5",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "keyset cursor pagination ensures no records are skipped or duplicated across pages",
+          "return_contract": "returns HTTP 200 with consistent page results",
+          "trigger": "a caller sends GET /api/v1/sessions and new sessions are inserted concurrently during pagination"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-5",
+      "title": "Fetch Single Session",
+      "user_story": {
+        "role": "operator",
+        "goal": "fetch a single session record by ID via GET /api/v1/sessions/:id",
+        "benefit": "so that I can inspect the full details and token summary of a specific session"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-5.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the session record with token_summary aggregated from all token_usage rows for that session",
+          "return_contract": "returns HTTP 200 with the full session JSON object including token_summary",
+          "trigger": "a caller with sessions:read permission sends GET /api/v1/sessions/:id for a session in an accessible workspace"
+        },
+        {
+          "id": "19-REQ-5.2",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 404 Not Found",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "no session with the given id exists in agent_sessions when a caller sends GET /api/v1/sessions/:id"
+        },
+        {
+          "id": "19-REQ-5.3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 403 Forbidden",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "a non-admin caller sends GET /api/v1/sessions/:id for a session that exists but whose workspace the caller cannot access"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-5.E1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the session record regardless of workspace access",
+          "return_contract": "returns HTTP 200 with the full session JSON object",
+          "trigger": "an admin_token caller sends GET /api/v1/sessions/:id for a session in any workspace"
+        },
+        {
+          "id": "19-REQ-5.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return the session with token_summary showing all zero counts and an empty models_used list",
+          "return_contract": "returns HTTP 200 with token_summary {total_input_tokens: 0, total_output_tokens: 0, total_cache_read_tokens: 0, models_used: []}",
+          "trigger": "a caller sends GET /api/v1/sessions/:id for a session with no token_usage records"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-6",
+      "title": "Query Session Token Usage Records",
+      "user_story": {
+        "role": "operator",
+        "goal": "query paginated token usage records for a session via GET /api/v1/sessions/:id/usage",
+        "benefit": "so that I can audit per-call token consumption and verify session totals"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-6.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "return a paginated page of token_usage records for the session and the unbounded totals aggregated across all token_usage records ever recorded for the session",
+          "return_contract": "returns HTTP 200 with JSON body {session_id: string, records: [...], totals: {total_input_tokens, total_output_tokens, total_cache_read_tokens, models_used}, next_cursor: string|null, has_more: bool}",
+          "trigger": "a caller with sessions:read permission sends GET /api/v1/sessions/:id/usage for an accessible session"
+        },
+        {
+          "id": "19-REQ-6.2",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 404 Not Found",
+          "return_contract": "returns HTTP 404",
+          "error_condition": "no session with the given id exists when a caller sends GET /api/v1/sessions/:id/usage"
+        },
+        {
+          "id": "19-REQ-6.3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 403 Forbidden",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "a non-admin caller sends GET /api/v1/sessions/:id/usage for a session that exists but whose workspace the caller cannot access"
+        },
+        {
+          "id": "19-REQ-6.4",
+          "ears_pattern": "ubiquitous",
+          "system": "sessions handler",
+          "action": "compute the totals field by aggregating all token_usage records ever recorded for the session, independent of pagination page or any time range filter",
+          "return_contract": "totals values are consistent across all pages and reflect the complete session history"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-6.E1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "cap the limit at 1000",
+          "return_contract": "returns HTTP 200 with at most 1000 records",
+          "trigger": "a caller sends GET /api/v1/sessions/:id/usage with limit exceeding 1000"
+        },
+        {
+          "id": "19-REQ-6.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "use the default page size of 100",
+          "return_contract": "returns HTTP 200 with at most 100 records",
+          "trigger": "a caller sends GET /api/v1/sessions/:id/usage with no limit parameter"
+        },
+        {
+          "id": "19-REQ-6.E3",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 400 Bad Request",
+          "return_contract": "returns HTTP 400 with a JSON error body",
+          "error_condition": "a caller sends GET /api/v1/sessions/:id/usage with a malformed cursor that cannot be decoded as a valid (reported_at, id) tuple"
+        },
+        {
+          "id": "19-REQ-6.E4",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "keyset cursor pagination ensures no records are skipped or duplicated across pages",
+          "return_contract": "returns HTTP 200 with consistent page results",
+          "trigger": "a caller pages through GET /api/v1/sessions/:id/usage while new usage records are inserted concurrently"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-7",
+      "title": "Workspace Cost Summary",
+      "user_story": {
+        "role": "operator",
+        "goal": "retrieve aggregated token usage for a workspace over a time period via GET /api/v1/workspaces/:slug/cost",
+        "benefit": "so that I can monitor token consumption and identify cost trends by day, session, or model"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-7.1",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "aggregate token_usage records within the [since, until) time window (filtered by reported_at), group by the group_by dimension, and return totals and breakdown; the sessions count reflects distinct session IDs with at least one token_usage record in the period",
+          "return_contract": "returns HTTP 200 with JSON body {workspace: string, period: {since, until}, totals: {input_tokens, output_tokens, cache_read_tokens, sessions}, breakdown: [{<discriminator>: string, input_tokens, output_tokens, cache_read_tokens, sessions}]}",
+          "trigger": "a caller with sessions:read permission sends GET /api/v1/workspaces/:slug/cost for an accessible workspace"
+        },
+        {
+          "id": "19-REQ-7.2",
+          "ears_pattern": "unwanted",
+          "system": "cost handler",
+          "action": "return 400 Bad Request with a descriptive error message",
+          "return_contract": "returns HTTP 400 with JSON body {error: 'since must be before until'}",
+          "error_condition": "a caller sends GET /api/v1/workspaces/:slug/cost with since greater than or equal to until"
+        },
+        {
+          "id": "19-REQ-7.3",
+          "ears_pattern": "unwanted",
+          "system": "cost handler",
+          "action": "return 403 Forbidden",
+          "return_contract": "returns HTTP 403",
+          "error_condition": "a non-admin caller sends GET /api/v1/workspaces/:slug/cost for a workspace slug they cannot access"
+        },
+        {
+          "id": "19-REQ-7.4",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "default since to 24 hours ago and until to now",
+          "return_contract": "returns HTTP 200 with results for the last 24 hours",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/cost with no since or until parameters"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-7.E1",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "return breakdown entries with a date discriminator field (e.g. '2026-09-01') for each day in the period",
+          "return_contract": "returns HTTP 200 with breakdown entries each containing a 'date' field",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/cost with group_by=day"
+        },
+        {
+          "id": "19-REQ-7.E2",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "return breakdown entries with a session_id discriminator field for each distinct session",
+          "return_contract": "returns HTTP 200 with breakdown entries each containing a 'session_id' field",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/cost with group_by=session"
+        },
+        {
+          "id": "19-REQ-7.E3",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "return breakdown entries with a model discriminator field for each distinct model",
+          "return_contract": "returns HTTP 200 with breakdown entries each containing a 'model' field",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/cost with group_by=model"
+        },
+        {
+          "id": "19-REQ-7.E4",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "return zero totals and an empty breakdown array",
+          "return_contract": "returns HTTP 200 with totals all zero and breakdown: []",
+          "trigger": "a caller sends GET /api/v1/workspaces/:slug/cost for a workspace with no token_usage records in the period"
+        },
+        {
+          "id": "19-REQ-7.E5",
+          "ears_pattern": "event_driven",
+          "system": "cost handler",
+          "action": "return cost data regardless of workspace access",
+          "return_contract": "returns HTTP 200 with the cost summary",
+          "trigger": "an admin_token caller sends GET /api/v1/workspaces/:slug/cost for any workspace"
+        },
+        {
+          "id": "19-REQ-7.E6",
+          "ears_pattern": "unwanted",
+          "system": "cost handler",
+          "action": "return 400 Bad Request",
+          "return_contract": "returns HTTP 400 with a JSON error body",
+          "error_condition": "a caller sends GET /api/v1/workspaces/:slug/cost with a group_by value that is not one of day, session, or model"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-8",
+      "title": "Force-Close Sessions on Workspace Archive",
+      "user_story": {
+        "role": "hub system",
+        "goal": "force-close all active sessions when a workspace is archived",
+        "benefit": "so that agents cannot continue reporting usage on a workspace that is no longer active"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-8.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace archive handler",
+          "action": "force-close all active sessions for the workspace by setting status to terminated, ended_at to the archive timestamp, and error_message to 'workspace archived'; decrement afhub_agent_sessions_active for each closed session; emit a hub.session.force_closed HubEvent via Emitter for each session with ActorType='system', ActorID='', ResourceType='session', Action='terminate', and Metadata containing session_id and reason='workspace archived'",
+          "return_contract": "all active sessions for the workspace are persisted with terminated status before the archive response is returned",
+          "trigger": "the workspace archive handler successfully updates the workspace status"
+        },
+        {
+          "id": "19-REQ-8.2",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace archive handler",
+          "action": "leave sessions in non-active states (completed, failed, timeout, terminated) unmodified during force-close",
+          "return_contract": "only active sessions are updated; all other sessions retain their existing status"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-8.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "log a warning via slog and proceed with the archive operation; do not abort the archive",
+          "return_contract": "the workspace archive response is returned; sessions may remain in active state and will be cleaned up by the retention worker",
+          "error_condition": "the DuckDB force-close operation fails when the workspace archive handler attempts to force-close sessions"
+        },
+        {
+          "id": "19-REQ-8.E2",
+          "ears_pattern": "event_driven",
+          "system": "workspace archive handler",
+          "action": "complete without error and without emitting any HubEvents",
+          "return_contract": "the archive response is returned normally",
+          "trigger": "the workspace archive handler runs force-close on a workspace with no active sessions"
+        },
+        {
+          "id": "19-REQ-8.E3",
+          "ears_pattern": "unwanted",
+          "system": "workspace archive handler",
+          "action": "log the error via slog and continue emitting events for remaining sessions",
+          "return_contract": "the archive operation completes; emission failures are logged but do not abort the force-close",
+          "error_condition": "the Emitter returns an error when attempting to emit a hub.session.force_closed event for one session during workspace archive"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-9",
+      "title": "Force-Close Sessions on Workspace Delete",
+      "user_story": {
+        "role": "hub system",
+        "goal": "force-close all active sessions before a workspace is deleted",
+        "benefit": "so that session records are cleanly terminated before cascade deletes and audit data is preserved for the retention grace period"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-9.1",
+          "ears_pattern": "event_driven",
+          "system": "workspace delete handler",
+          "action": "force-close all active sessions for the workspace by setting status to terminated, ended_at to the deletion timestamp, and error_message to 'workspace deleted'; decrement afhub_agent_sessions_active for each closed session; emit a hub.session.force_closed HubEvent via Emitter for each session with reason='workspace deleted'",
+          "return_contract": "all active sessions are persisted with terminated status before the workspace row is deleted",
+          "trigger": "the workspace delete handler is invoked before the workspace row is deleted from SQLite"
+        },
+        {
+          "id": "19-REQ-9.2",
+          "ears_pattern": "ubiquitous",
+          "system": "workspace delete handler",
+          "action": "retain audit data (agent_sessions, token_usage, hub_audit_events, agent_audit_events) after workspace deletion; orphaned audit data is cleaned up by the retention worker after orphan_retention_days",
+          "return_contract": "audit tables are not cascade-deleted when the workspace row is removed from SQLite"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-9.E1",
+          "ears_pattern": "unwanted",
+          "system": "workspace delete handler",
+          "action": "log a warning via slog and proceed with the SQLite workspace deletion; sessions may remain active and will be treated as orphans by the retention worker",
+          "return_contract": "the workspace delete response is returned; the DuckDB failure is logged",
+          "error_condition": "the DuckDB force-close operation fails when the workspace delete handler attempts to force-close sessions"
+        },
+        {
+          "id": "19-REQ-9.E2",
+          "ears_pattern": "unwanted",
+          "system": "workspace delete handler",
+          "action": "return the SQLite error to the caller; sessions remain safely closed in DuckDB",
+          "return_contract": "returns HTTP 500; sessions are terminated in DuckDB regardless",
+          "error_condition": "the SQLite workspace deletion fails after DuckDB sessions have already been force-closed"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-10",
+      "title": "Prometheus Metrics Endpoint",
+      "user_story": {
+        "role": "operations engineer",
+        "goal": "scrape operational metrics from GET /metrics",
+        "benefit": "so that I can monitor hub health, request rates, session activity, and queue depth via Prometheus"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-10.1",
+          "ears_pattern": "event_driven",
+          "system": "metrics endpoint",
+          "action": "return all registered metrics in Prometheus text exposition format using promhttp from the custom registry",
+          "return_contract": "returns HTTP 200 with Content-Type text/plain; version=0.0.4 and Prometheus-formatted metric lines",
+          "trigger": "a Prometheus scraper sends GET /metrics"
+        },
+        {
+          "id": "19-REQ-10.2",
+          "ears_pattern": "ubiquitous",
+          "system": "metrics endpoint",
+          "action": "expose the endpoint without authentication on the public port, mounted outside the API auth middleware group following the same pattern as internal/gitserver",
+          "return_contract": "GET /metrics returns HTTP 200 without requiring any Authorization header"
+        },
+        {
+          "id": "19-REQ-10.3",
+          "ears_pattern": "ubiquitous",
+          "system": "Prometheus middleware",
+          "action": "use c.Path() as the path label value in afhub_http_requests_total and afhub_http_request_duration_seconds to prevent cardinality explosion from unique path parameter values",
+          "return_contract": "path labels contain route templates such as /api/v1/sessions/:id rather than resolved URIs"
+        },
+        {
+          "id": "19-REQ-10.4",
+          "ears_pattern": "ubiquitous",
+          "system": "metrics registry",
+          "action": "use a custom Prometheus registry (not the global default) for all afhub_* metrics to avoid conflicts with other registered metrics",
+          "return_contract": "the custom registry is passed to promhttp handler; global default registry metrics are not included in /metrics output"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-10.E1",
+          "ears_pattern": "event_driven",
+          "system": "Prometheus middleware",
+          "action": "increment afhub_http_requests_total with method, path (from c.Path()), and status labels; observe afhub_http_request_duration_seconds with method and path labels",
+          "return_contract": "metric values are updated before the next scrape",
+          "trigger": "an HTTP request is made to any registered Echo route"
+        },
+        {
+          "id": "19-REQ-10.E2",
+          "ears_pattern": "event_driven",
+          "system": "metrics registry",
+          "action": "register all afhub_* metrics with the custom registry; afhub_jobqueue_depth label combinations are initialized by the durable_job_queue subsystem and may be absent until that subsystem starts",
+          "return_contract": "all metrics except afhub_jobqueue_depth appear in /metrics output immediately after startup",
+          "trigger": "the hub starts up"
+        },
+        {
+          "id": "19-REQ-10.E3",
+          "ears_pattern": "event_driven",
+          "system": "afhub_http_request_duration_seconds",
+          "action": "use the standard latency buckets: 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0 seconds",
+          "return_contract": "the histogram exposes exactly these bucket boundaries in /metrics output",
+          "trigger": "the histogram is registered"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-11",
+      "title": "Prometheus Metric Instrumentation",
+      "user_story": {
+        "role": "operations engineer",
+        "goal": "observe accurate metric values for sessions, tokens, SSE connections, and audit events",
+        "benefit": "so that I can alert on anomalies and track system health in real time"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-11.1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "decrement afhub_agent_sessions_active gauge for the session's workspace_slug label",
+          "return_contract": "the gauge value for the workspace decreases by 1 immediately after the status transition",
+          "trigger": "a session transitions from active to any terminal status (completed, failed, timeout, or terminated)"
+        },
+        {
+          "id": "19-REQ-11.2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "increment afhub_agent_sessions_active gauge for the session's workspace_slug label",
+          "return_contract": "the gauge value for the workspace increases by 1 after the session is persisted",
+          "trigger": "a new session is created via POST /api/v1/sessions"
+        },
+        {
+          "id": "19-REQ-11.3",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "increment afhub_agent_tokens_total counter with workspace, model, and direction labels (input, output, cache_read) for each non-zero token count",
+          "return_contract": "counter values increase by the reported token amounts",
+          "trigger": "a token_usage record is created via POST /api/v1/sessions/:id/usage"
+        },
+        {
+          "id": "19-REQ-11.4",
+          "ears_pattern": "event_driven",
+          "system": "audit emitter",
+          "action": "increment afhub_audit_events_total counter with source and event_type labels",
+          "return_contract": "counter value increases by 1 per ingested event",
+          "trigger": "an audit event is ingested"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-11.E1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "do not increment afhub_agent_sessions_active again for the duplicate call",
+          "return_contract": "gauge value is unchanged after the duplicate open",
+          "trigger": "POST /api/v1/sessions is called with a duplicate id (idempotent open)"
+        },
+        {
+          "id": "19-REQ-11.E2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "do not decrement afhub_agent_sessions_active again for the idempotent close",
+          "return_contract": "gauge value is unchanged after the idempotent close",
+          "trigger": "POST /api/v1/sessions/:id/complete is called on an already-terminal session (idempotent close)"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-12",
+      "title": "Retention Worker Lifecycle and Startup",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have the retention worker start immediately on hub startup and run every hour thereafter",
+        "benefit": "so that stale data from a previous hub instance is cleaned up promptly without waiting up to one hour"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-12.1",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "execute an immediate retention run before the first ticker fires, then repeat every hour using a time.Ticker, selecting on ctx.Done() between ticks",
+          "return_contract": "the goroutine runs the first retention pass synchronously before returning to the tick loop; subsequent runs occur at hourly intervals",
+          "trigger": "StartRetentionWorker is called from main.go with a context, Store, and SQLite DB reference"
+        },
+        {
+          "id": "19-REQ-12.2",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "exit the goroutine cleanly; if a retention run is in progress, complete the current step's DuckDB operation and skip remaining steps",
+          "return_contract": "the goroutine exits without starting new steps after cancellation; at most one extra step completes after shutdown is requested",
+          "trigger": "the context passed to StartRetentionWorker is cancelled (e.g. on SIGTERM)"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-12.E1",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "check ctx.Err() before each step and exit immediately if the context is already cancelled",
+          "return_contract": "no further steps are executed after cancellation is detected",
+          "trigger": "the context is cancelled while the retention worker is between steps"
+        },
+        {
+          "id": "19-REQ-12.E2",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "the immediate startup run cleans up stale data from the previous instance without requiring a full hour wait",
+          "return_contract": "stale data is pruned within seconds of hub startup",
+          "trigger": "the hub restarts after a crash"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-13",
+      "title": "Retention Worker Steps",
+      "user_story": {
+        "role": "hub operator",
+        "goal": "have the retention worker enforce all configured retention policies on each hourly run",
+        "benefit": "so that the DuckDB audit database does not grow unboundedly"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-13.1",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "delete records from all agent tables older than AF_AUDIT_MAX_AGE_DAYS",
+          "return_contract": "rows older than the configured max age are removed; newer rows are retained",
+          "trigger": "a retention run executes step 1"
+        },
+        {
+          "id": "19-REQ-13.2",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "if the count of distinct run_ids in agent_audit_events exceeds AF_AUDIT_MAX_RUNS, delete the oldest runs (determined by MIN(timestamp) per run_id) in ascending order until the count is at or below the limit",
+          "return_contract": "the number of distinct run_ids is at or below AF_AUDIT_MAX_RUNS after the step; the most recent runs are retained",
+          "trigger": "a retention run executes step 2"
+        },
+        {
+          "id": "19-REQ-13.3",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "delete hub_audit_events records older than AF_AUDIT_MAX_AGE_DAYS",
+          "return_contract": "hub_audit_events rows older than the configured max age are removed",
+          "trigger": "a retention run executes step 3"
+        },
+        {
+          "id": "19-REQ-13.4",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "delete completed agent_sessions (status in completed, failed, timeout, terminated) older than AF_SESSION_MAX_AGE_DAYS",
+          "return_contract": "terminal sessions older than the configured max age are removed; active sessions are never deleted by retention",
+          "trigger": "a retention run executes step 4"
+        },
+        {
+          "id": "19-REQ-13.5",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "delete token_usage rows whose session_id references a session that no longer exists in agent_sessions",
+          "return_contract": "orphaned token_usage rows are removed; rows linked to existing sessions are retained",
+          "trigger": "a retention run executes step 5"
+        },
+        {
+          "id": "19-REQ-13.6",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "delete agent_traces records older than AF_TRACE_MAX_AGE_DAYS",
+          "return_contract": "agent_traces rows older than the configured max age are removed",
+          "trigger": "a retention run executes step 6"
+        },
+        {
+          "id": "19-REQ-13.7",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "delete postmortems records older than AF_POSTMORTEM_MAX_AGE_DAYS",
+          "return_contract": "postmortems rows older than the configured max age are removed",
+          "trigger": "a retention run executes step 7"
+        },
+        {
+          "id": "19-REQ-13.8",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "query workspace slugs from SQLite in-memory, then delete DuckDB audit records whose workspace_slug is not in that set and whose ingestion timestamp exceeds AF_AUDIT_ORPHAN_RETENTION_DAYS",
+          "return_contract": "orphaned audit data older than the grace period is removed; data for existing workspaces is retained",
+          "trigger": "a retention run executes step 8"
+        },
+        {
+          "id": "19-REQ-13.9",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "update afhub_audit_table_rows gauge with COUNT(*) per audit table; recalibrate afhub_agent_sessions_active gauge via COUNT(*) WHERE status='active' GROUP BY workspace_slug",
+          "return_contract": "gauge values reflect current row counts after the step completes",
+          "trigger": "a retention run executes step 9"
+        },
+        {
+          "id": "19-REQ-13.10",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "set afhub_retention_last_run_timestamp_seconds to the current Unix timestamp and log rows deleted per table via slog",
+          "return_contract": "afhub_retention_last_run_timestamp_seconds reflects the completion time of the successful run",
+          "trigger": "a retention run completes all 10 steps without context cancellation"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-13.E1",
+          "ears_pattern": "unwanted",
+          "system": "retention worker",
+          "action": "log the error via slog with the table name and error details, increment afhub_retention_errors_total with the appropriate step label, and continue executing the remaining steps",
+          "return_contract": "subsequent steps execute; afhub_retention_last_run_timestamp_seconds is not updated if any step fails",
+          "error_condition": "any of steps 1-9 returns a DuckDB error during a retention run"
+        },
+        {
+          "id": "19-REQ-13.E2",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "skip deletion and proceed to step 3",
+          "return_contract": "no rows are deleted; the step completes without error",
+          "trigger": "step 2 runs and the distinct run_id count is already at or below AF_AUDIT_MAX_RUNS"
+        },
+        {
+          "id": "19-REQ-13.E3",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "treat all DuckDB audit records as potentially orphaned and apply the grace period filter before deleting",
+          "return_contract": "only records older than AF_AUDIT_ORPHAN_RETENTION_DAYS are deleted",
+          "trigger": "step 8 runs and the SQLite workspace slug query returns an empty list"
+        },
+        {
+          "id": "19-REQ-13.E4",
+          "ears_pattern": "event_driven",
+          "system": "retention worker",
+          "action": "use AF_AUDIT_MAX_AGE_DAYS=90, AF_AUDIT_MAX_RUNS=50, AF_TRACE_MAX_AGE_DAYS=30, AF_SESSION_MAX_AGE_DAYS=90, AF_POSTMORTEM_MAX_AGE_DAYS=180, AF_AUDIT_ORPHAN_RETENTION_DAYS=30 when environment variables are not set",
+          "return_contract": "retention runs with the documented default values",
+          "trigger": "a retention run executes with default configuration values"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-14",
+      "title": "Keyset Cursor Pagination",
+      "user_story": {
+        "role": "API client",
+        "goal": "paginate through sessions and usage records using opaque cursors",
+        "benefit": "so that I can retrieve large result sets without skipping or duplicating records"
+      },
+      "acceptance_criteria": [
+        {
+          "id": "19-REQ-14.1",
+          "ears_pattern": "ubiquitous",
+          "system": "sessions handler",
+          "action": "encode pagination cursors as URL-safe base64 (RFC 4648 §5, no padding) tuples: (started_at, id) for GET /api/v1/sessions and (reported_at, id) for GET /api/v1/sessions/:id/usage",
+          "return_contract": "cursors are opaque strings that clients must not construct or parse"
+        },
+        {
+          "id": "19-REQ-14.2",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "filter results using WHERE (started_at, id) < (cursor_started_at, cursor_id) for sessions or WHERE (reported_at, id) < (cursor_reported_at, cursor_id) for usage records",
+          "return_contract": "returns the next page of results in descending order without duplicates",
+          "trigger": "a caller provides a cursor with desc order"
+        },
+        {
+          "id": "19-REQ-14.3",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "filter results using WHERE (started_at, id) > (cursor_started_at, cursor_id) for sessions or WHERE (reported_at, id) > (cursor_reported_at, cursor_id) for usage records",
+          "return_contract": "returns the next page of results in ascending order without duplicates",
+          "trigger": "a caller provides a cursor with asc order"
+        }
+      ],
+      "edge_cases": [
+        {
+          "id": "19-REQ-14.E1",
+          "ears_pattern": "event_driven",
+          "system": "sessions handler",
+          "action": "set next_cursor to null and has_more to false",
+          "return_contract": "response contains next_cursor: null and has_more: false",
+          "trigger": "the last page of results is returned"
+        },
+        {
+          "id": "19-REQ-14.E2",
+          "ears_pattern": "unwanted",
+          "system": "sessions handler",
+          "action": "return 400 Bad Request",
+          "return_contract": "returns HTTP 400 with a JSON error body",
+          "error_condition": "a caller provides a cursor that is not valid URL-safe base64 or does not decode to a valid (timestamp, id) tuple"
+        }
+      ]
+    }
+  ],
+  "correctness_properties": [
+    {
+      "id": "19-PROP-1",
+      "title": "Session Open Idempotency",
+      "for_any": "session id submitted to POST /api/v1/sessions",
+      "invariant": "the agent_sessions table contains exactly one row with that id regardless of how many times the request is submitted",
+      "validates": [
+        "19-REQ-1.1",
+        "19-REQ-1.2",
+        "19-REQ-1.E4"
+      ]
+    },
+    {
+      "id": "19-PROP-2",
+      "title": "Session Close Idempotency on Terminal States",
+      "for_any": "session in any terminal status (completed, failed, timeout, or terminated)",
+      "invariant": "calling POST /api/v1/sessions/:id/complete returns 200 with the existing status and does not modify the session record",
+      "validates": [
+        "19-REQ-2.2",
+        "19-REQ-2.E3"
+      ]
+    },
+    {
+      "id": "19-PROP-3",
+      "title": "Active Session Gauge Accuracy",
+      "for_any": "workspace_slug with N active sessions",
+      "invariant": "afhub_agent_sessions_active gauge for that workspace equals the COUNT(*) of agent_sessions rows with status=active for that workspace_slug, after any session open, close, or force-close operation",
+      "validates": [
+        "19-REQ-11.1",
+        "19-REQ-11.2",
+        "19-REQ-11.E1",
+        "19-REQ-11.E2",
+        "19-REQ-13.9"
+      ]
+    },
+    {
+      "id": "19-PROP-4",
+      "title": "Usage Totals Are Unbounded and Consistent",
+      "for_any": "session with any number of token_usage records",
+      "invariant": "the totals field in GET /api/v1/sessions/:id/usage always equals the SUM of all token_usage rows for that session regardless of pagination page or time range",
+      "validates": [
+        "19-REQ-6.1",
+        "19-REQ-6.4"
+      ]
+    },
+    {
+      "id": "19-PROP-5",
+      "title": "Keyset Pagination No Skip or Duplicate",
+      "for_any": "sequence of paginated requests to GET /api/v1/sessions or GET /api/v1/sessions/:id/usage",
+      "invariant": "the union of all pages equals the full result set with no duplicated or skipped records, even under concurrent inserts",
+      "validates": [
+        "19-REQ-14.1",
+        "19-REQ-14.2",
+        "19-REQ-14.3",
+        "19-REQ-4.E5",
+        "19-REQ-6.E4"
+      ]
+    },
+    {
+      "id": "19-PROP-6",
+      "title": "Force-Close Only Affects Active Sessions",
+      "for_any": "workspace with a mix of active and terminal sessions",
+      "invariant": "force-close sets status=terminated only on sessions with status=active; sessions in any terminal state are not modified",
+      "validates": [
+        "19-REQ-8.1",
+        "19-REQ-8.2",
+        "19-REQ-9.1"
+      ]
+    },
+    {
+      "id": "19-PROP-7",
+      "title": "Retention Last Run Timestamp Updated Only on Full Success",
+      "for_any": "retention run that fails any step",
+      "invariant": "afhub_retention_last_run_timestamp_seconds is not updated if any retention step fails; it is updated only after all 10 steps complete without error",
+      "validates": [
+        "19-REQ-13.10",
+        "19-REQ-13.E1"
+      ]
+    },
+    {
+      "id": "19-PROP-8",
+      "title": "Ownership Enforcement on Session Mutations",
+      "for_any": "credential that is not the session owner and not an admin_token",
+      "invariant": "POST /api/v1/sessions/:id/complete and POST /api/v1/sessions/:id/usage return 403 Forbidden",
+      "validates": [
+        "19-REQ-2.3",
+        "19-REQ-3.3"
+      ]
+    },
+    {
+      "id": "19-PROP-9",
+      "title": "Cost Endpoint Time Range Validation",
+      "for_any": "since and until parameters where since >= until",
+      "invariant": "GET /api/v1/workspaces/:slug/cost returns 400 with error message 'since must be before until'",
+      "validates": [
+        "19-REQ-7.2"
+      ]
+    },
+    {
+      "id": "19-PROP-10",
+      "title": "Retention Worker Step Independence",
+      "for_any": "retention step that fails with a DuckDB error",
+      "invariant": "all subsequent steps still execute; the failure of one step does not prevent other steps from running",
+      "validates": [
+        "19-REQ-13.E1"
+      ]
+    },
+    {
+      "id": "19-PROP-11",
+      "title": "Terminated Status Is Internal-Only",
+      "for_any": "request to POST /api/v1/sessions/:id/complete with status='terminated'",
+      "invariant": "the handler rejects the request with 400; terminated status can only be set by force-close logic",
+      "validates": [
+        "19-REQ-2.E1"
+      ]
+    },
+    {
+      "id": "19-PROP-12",
+      "title": "Workspace Access Scoping for Non-Admin Callers",
+      "for_any": "non-admin caller accessing sessions or cost data for an inaccessible workspace",
+      "invariant": "the handler returns 403 Forbidden when an explicit workspace_slug filter or path parameter targets an inaccessible workspace",
+      "validates": [
+        "19-REQ-4.2",
+        "19-REQ-5.3",
+        "19-REQ-6.3",
+        "19-REQ-7.3"
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "19-PATH-1",
+      "title": "Agent Session Open to Close with Token Usage",
+      "steps": [
+        {
+          "actor": "Agent",
+          "action": "sends POST /api/v1/sessions with workspace_slug and optional metadata; authenticated via apikit.AuthInfo"
+        },
+        {
+          "actor": "sessions handler (internal/audit/handlers.go)",
+          "action": "validates workspace_slug is present; extracts credential_id and credential_type from apikit.AuthInfo; generates UUID if id not provided"
+        },
+        {
+          "actor": "Store (internal/audit/store.go)",
+          "action": "inserts a new agent_sessions row with status=active into DuckDB; returns existing row if id already exists"
+        },
+        {
+          "actor": "sessions handler",
+          "action": "increments afhub_agent_sessions_active gauge for the workspace; returns HTTP 201 (or 200 for duplicate) with session JSON"
+        },
+        {
+          "actor": "Agent",
+          "action": "sends POST /api/v1/sessions/:id/usage with model and token counts"
+        },
+        {
+          "actor": "sessions handler",
+          "action": "loads session record from Store; verifies caller is session owner or admin_token; checks session status is active"
+        },
+        {
+          "actor": "Store",
+          "action": "inserts a new token_usage row linked to the session in DuckDB"
+        },
+        {
+          "actor": "sessions handler",
+          "action": "increments afhub_agent_tokens_total counter; returns HTTP 201 with token_usage record"
+        },
+        {
+          "actor": "Agent",
+          "action": "sends POST /api/v1/sessions/:id/complete with status=completed and final token counts"
+        },
+        {
+          "actor": "sessions handler",
+          "action": "loads session record; verifies ownership; updates session status to completed, sets ended_at and duration_ms in DuckDB"
+        },
+        {
+          "actor": "sessions handler",
+          "action": "decrements afhub_agent_sessions_active gauge for the workspace; returns HTTP 200 with updated session record"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-2",
+      "title": "Workspace Archive Triggering Session Force-Close",
+      "steps": [
+        {
+          "actor": "Operator",
+          "action": "sends POST /api/v1/workspaces/:slug/archive via the workspace API"
+        },
+        {
+          "actor": "workspace archive handler (internal/workspace/handlers.go)",
+          "action": "updates workspace status to archived in SQLite"
+        },
+        {
+          "actor": "workspace archive handler",
+          "action": "calls force-close logic for all active sessions in the workspace"
+        },
+        {
+          "actor": "Store (internal/audit/store.go)",
+          "action": "updates all active agent_sessions rows for the workspace: sets status=terminated, ended_at=archive timestamp, error_message='workspace archived' in DuckDB"
+        },
+        {
+          "actor": "sessions handler / force-close logic",
+          "action": "decrements afhub_agent_sessions_active gauge for each force-closed session"
+        },
+        {
+          "actor": "Emitter (spec 18)",
+          "action": "emits a hub.session.force_closed HubEvent for each force-closed session with ActorType='system', ActorID='', ResourceType='session', Action='terminate', and Metadata containing session_id and reason='workspace archived'"
+        },
+        {
+          "actor": "workspace archive handler",
+          "action": "returns the archive response to the operator"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-3",
+      "title": "Retention Worker Hourly Run",
+      "steps": [
+        {
+          "actor": "main.go",
+          "action": "calls StartRetentionWorker(ctx, store, sqliteDB) at hub startup"
+        },
+        {
+          "actor": "retention worker (internal/audit/retention.go)",
+          "action": "executes an immediate retention run before the first ticker fires"
+        },
+        {
+          "actor": "retention worker",
+          "action": "checks ctx.Err() before each step; executes steps 1-8 sequentially: deletes aged agent records, enforces run-count limit, deletes aged hub events, deletes aged sessions, deletes orphaned token_usage, deletes aged traces, deletes aged postmortems, deletes orphaned workspace audit data"
+        },
+        {
+          "actor": "Store (internal/audit/store.go)",
+          "action": "executes each DELETE query against DuckDB; queries SQLite for workspace slugs for orphan detection (step 8)"
+        },
+        {
+          "actor": "retention worker",
+          "action": "executes step 9: updates afhub_audit_table_rows gauge with COUNT(*) per table; recalibrates afhub_agent_sessions_active gauge"
+        },
+        {
+          "actor": "retention worker",
+          "action": "executes step 10: sets afhub_retention_last_run_timestamp_seconds to current Unix timestamp; logs rows deleted per table via slog"
+        },
+        {
+          "actor": "retention worker",
+          "action": "waits for next tick (1 hour) or ctx.Done(), then repeats"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-4",
+      "title": "Prometheus Scrape of /metrics",
+      "steps": [
+        {
+          "actor": "Prometheus scraper",
+          "action": "sends GET /metrics to the hub's public port"
+        },
+        {
+          "actor": "Echo router (cmd/af-hub/main.go)",
+          "action": "routes the request to the promhttp handler mounted outside the API auth middleware group"
+        },
+        {
+          "actor": "promhttp handler (internal/audit/metrics.go)",
+          "action": "collects all metrics from the custom Prometheus registry"
+        },
+        {
+          "actor": "promhttp handler",
+          "action": "returns HTTP 200 with Prometheus text exposition format containing all afhub_* metric values"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-5",
+      "title": "End-to-End: Agent Session Lifecycle with Cost Query",
+      "steps": [
+        {
+          "actor": "Agent",
+          "action": "sends POST /api/v1/sessions with workspace_slug='my-workspace'; receives HTTP 201 with session id"
+        },
+        {
+          "actor": "sessions handler (internal/audit/handlers.go)",
+          "action": "creates agent_sessions row in DuckDB via Store; increments afhub_agent_sessions_active for 'my-workspace'"
+        },
+        {
+          "actor": "Agent",
+          "action": "sends POST /api/v1/sessions/:id/usage three times with different models and token counts"
+        },
+        {
+          "actor": "Store (internal/audit/store.go)",
+          "action": "inserts three token_usage rows in DuckDB; handler increments afhub_agent_tokens_total for each"
+        },
+        {
+          "actor": "Agent",
+          "action": "sends POST /api/v1/sessions/:id/complete with status=completed"
+        },
+        {
+          "actor": "sessions handler",
+          "action": "updates agent_sessions row to completed in DuckDB; decrements afhub_agent_sessions_active"
+        },
+        {
+          "actor": "Operator",
+          "action": "sends GET /api/v1/workspaces/my-workspace/cost?group_by=model&since=...&until=..."
+        },
+        {
+          "actor": "cost handler (internal/audit/handlers.go)",
+          "action": "verifies caller has access to 'my-workspace'; queries token_usage rows in DuckDB filtered by reported_at in [since, until)"
+        },
+        {
+          "actor": "Store",
+          "action": "aggregates token counts grouped by model; counts distinct session IDs with at least one token_usage record"
+        },
+        {
+          "actor": "cost handler",
+          "action": "returns HTTP 200 with totals and model-grouped breakdown including session count"
+        },
+        {
+          "actor": "Prometheus scraper",
+          "action": "sends GET /metrics; receives updated afhub_agent_tokens_total and afhub_agent_sessions_active values reflecting the completed session"
+        }
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "19-ERR-1",
+      "condition": "POST /api/v1/sessions is called with a missing or empty workspace_slug",
+      "behavior": "handler calls apikit.WriteAPIError(c, 400, 'workspace_slug is required') and returns HTTP 400 with JSON body {error: 'workspace_slug is required', status: 400}",
+      "requirement_id": "19-REQ-1.3"
+    },
+    {
+      "id": "19-ERR-2",
+      "condition": "POST /api/v1/sessions/:id/complete is called with status='terminated'",
+      "behavior": "handler returns HTTP 400 with a JSON error body indicating terminated is not a valid client-settable status",
+      "requirement_id": "19-REQ-2.E1"
+    },
+    {
+      "id": "19-ERR-3",
+      "condition": "POST /api/v1/sessions/:id/complete or POST /api/v1/sessions/:id/usage is called by a non-owner non-admin credential",
+      "behavior": "handler returns HTTP 403 Forbidden after comparing credential_id from apikit.AuthInfo against the stored session record",
+      "requirement_id": "19-REQ-2.3"
+    },
+    {
+      "id": "19-ERR-4",
+      "condition": "POST /api/v1/sessions/:id/usage is called on a session with status not equal to active",
+      "behavior": "handler returns HTTP 409 Conflict with JSON body {error: 'session is not active'}",
+      "requirement_id": "19-REQ-3.4"
+    },
+    {
+      "id": "19-ERR-5",
+      "condition": "GET /api/v1/sessions is called with an explicit workspace_slug filter for a workspace the non-admin caller cannot access",
+      "behavior": "handler returns HTTP 403 Forbidden",
+      "requirement_id": "19-REQ-4.2"
+    },
+    {
+      "id": "19-ERR-6",
+      "condition": "GET /api/v1/sessions/:id is called for a session in a workspace the non-admin caller cannot access",
+      "behavior": "handler returns HTTP 403 Forbidden",
+      "requirement_id": "19-REQ-5.3"
+    },
+    {
+      "id": "19-ERR-7",
+      "condition": "GET /api/v1/workspaces/:slug/cost is called with since >= until",
+      "behavior": "handler returns HTTP 400 with JSON body {error: 'since must be before until'}",
+      "requirement_id": "19-REQ-7.2"
+    },
+    {
+      "id": "19-ERR-8",
+      "condition": "GET /api/v1/workspaces/:slug/cost is called by a non-admin caller for an inaccessible workspace",
+      "behavior": "handler returns HTTP 403 Forbidden",
+      "requirement_id": "19-REQ-7.3"
+    },
+    {
+      "id": "19-ERR-9",
+      "condition": "DuckDB force-close operation fails during workspace archive or delete",
+      "behavior": "the workspace handler logs a warning via slog and proceeds with the workspace lifecycle operation; sessions may remain active and will be treated as orphans by the retention worker",
+      "requirement_id": "19-REQ-8.E1"
+    },
+    {
+      "id": "19-ERR-10",
+      "condition": "A retention step fails with a DuckDB error",
+      "behavior": "the retention worker logs the error via slog with table name and error details, increments afhub_retention_errors_total with the appropriate step label, and continues executing remaining steps; afhub_retention_last_run_timestamp_seconds is not updated",
+      "requirement_id": "19-REQ-13.E1"
+    },
+    {
+      "id": "19-ERR-11",
+      "condition": "A pagination cursor cannot be decoded or parsed as a valid tuple",
+      "behavior": "handler returns HTTP 400 with a JSON error body",
+      "requirement_id": "19-REQ-14.E2"
+    },
+    {
+      "id": "19-ERR-12",
+      "condition": "SQLite workspace deletion fails after DuckDB sessions have been force-closed",
+      "behavior": "handler returns HTTP 500; sessions remain safely closed in DuckDB with terminated status",
+      "requirement_id": "19-REQ-9.E2"
+    },
+    {
+      "id": "19-ERR-13",
+      "condition": "GET /api/v1/sessions/:id/usage is called for a session in an inaccessible workspace by a non-admin caller",
+      "behavior": "handler returns HTTP 403 Forbidden after loading the session record and checking workspace access",
+      "requirement_id": "19-REQ-6.3"
+    },
+    {
+      "id": "19-ERR-14",
+      "condition": "POST /api/v1/sessions/:id/usage is called with a missing or empty model field",
+      "behavior": "handler returns HTTP 400 with a JSON error body",
+      "requirement_id": "19-REQ-3.5"
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/prometheus/client_golang",
+      "version": "unverified — cross-check installed version before implementation",
+      "symbols": [
+        {
+          "name": "NewRegistry",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func NewRegistry() *Registry",
+          "notes": "Creates a new custom Prometheus registry; use instead of the global default to avoid conflicts"
+        },
+        {
+          "name": "NewCounterVec",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func NewCounterVec(opts CounterOpts, labelNames []string) *CounterVec",
+          "notes": "Used to create labeled counters such as afhub_http_requests_total and afhub_audit_events_total"
+        },
+        {
+          "name": "NewHistogramVec",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func NewHistogramVec(opts HistogramOpts, labelNames []string) *HistogramVec",
+          "notes": "Used to create afhub_http_request_duration_seconds with custom buckets"
+        },
+        {
+          "name": "NewGaugeVec",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func NewGaugeVec(opts GaugeOpts, labelNames []string) *GaugeVec",
+          "notes": "Used to create labeled gauges such as afhub_agent_sessions_active and afhub_audit_table_rows"
+        },
+        {
+          "name": "NewGauge",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func NewGauge(opts GaugeOpts) Gauge",
+          "notes": "Used to create unlabeled gauges such as afhub_sse_connections and afhub_retention_last_run_timestamp_seconds"
+        },
+        {
+          "name": "HandlerFor",
+          "import_path": "github.com/prometheus/client_golang/prometheus/promhttp",
+          "signature": "func HandlerFor(reg prometheus.Gatherer, opts HandlerOpts) http.Handler",
+          "notes": "Creates the HTTP handler for the /metrics endpoint using the custom registry"
+        },
+        {
+          "name": "MustRegister",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func (r *Registry) MustRegister(cs ...Collector)",
+          "notes": "Registers metrics with the custom registry; panics on duplicate registration"
+        }
+      ]
+    }
+  ]
+}
