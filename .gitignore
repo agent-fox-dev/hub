@@ -15,6 +15,7 @@ web/dist/
 
 # Go build output
 bin/
+af-hub
 
 # own stuff
 hack/
