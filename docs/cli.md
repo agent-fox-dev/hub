@@ -1787,15 +1787,17 @@ afc keys [subcommand] [flags]
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List all API keys |
-| `create` | Create a new API key |
-| `revoke` | Revoke an API key by ID |
+| `refresh` | Rotate the current API key |
+| `revoke` | Revoke the current API key |
 
 **Behavior:**
 
 - `list`: Retrieves and displays all API keys for the authenticated user.
-- `create`: Creates a new API key and displays the full key value (shown
-  only once at creation time).
-- `revoke`: Revokes the specified API key.
+- `refresh`: Rotates the current API key — generates a new secret while
+  keeping the same key_id. The new key is automatically saved to the config
+  file.
+- `revoke`: Invalidates the current API key immediately and clears it from
+  the config file.
 
 **Exit Codes:**
 
@@ -1821,30 +1823,47 @@ afc tokens [subcommand] [flags]
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List all personal access tokens |
-| `create` | Create a new personal access token with specified scopes |
-| `revoke` | Revoke a personal access token by ID |
+| `create` | Create a new personal access token |
+| `show <token_id>` | Show a personal access token by ID |
+| `revoke <token_id>` | Revoke a personal access token by ID |
+| `replace <token_id>` | Replace all permissions on a token |
+| `add <token_id>` | Add permissions to a token |
+| `remove <token_id>` | Remove permissions from a token |
 
 **Flags (create):**
 
-| Flag | Type | Description |
-|------|------|-------------|
-| `--scopes` | string[] | Permission scopes to grant to the token |
-| `--description` | string | Human-readable label for the token |
+| Flag | Required | Type | Default | Description |
+|------|----------|------|---------|-------------|
+| `--name` | yes | string | | Token name |
+| `--permissions` | yes | string | | Comma-separated permissions (e.g., `users:read,orgs:read`) |
+| `--expires` | no | int | 90 | Token expiry in days (0, 30, 60, or 90) |
+
+**Flags (replace / add / remove):**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--permissions` | yes | string | Comma-separated permissions |
 
 **Behavior:**
 
 - `list`: Retrieves and displays all PATs for the authenticated user,
-  including their granted scopes.
-- `create`: Creates a new PAT with the specified scopes and displays the
-  full token value (shown only once at creation time).
-- `revoke`: Revokes the specified PAT.
+  including their granted permissions.
+- `create`: Creates a new PAT with the specified name, permissions, and
+  expiry. Displays the full token value (shown only once at creation time).
+- `show`: Retrieves and displays metadata for a specific PAT.
+- `revoke`: Revokes the specified PAT immediately.
+- `replace`: Replaces the entire permission set on an existing PAT.
+- `add`: Adds one or more permissions to an existing PAT without replacing
+  the current set.
+- `remove`: Removes one or more permissions from an existing PAT without
+  revoking it entirely.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
 | 0 | Operation completed successfully |
-| 1 | Invalid scopes, unauthenticated, token not found, API error, or network error |
+| 1 | Invalid permissions, unauthenticated, token not found, API error, or network error |
 
 ---
 
@@ -1863,22 +1882,23 @@ afc orgs [subcommand] [flags]
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List organizations the user belongs to |
-| `create` | Create a new organization |
-| `get` | Get organization details by slug |
+| `show <id\|slug>` | Show organization details by ID or slug |
+| `members <id\|slug>` | List members of an organization |
 
 **Behavior:**
 
 - `list`: Retrieves and displays all organizations the authenticated user
   belongs to.
-- `create`: Creates a new organization with the specified name and slug.
-- `get`: Retrieves and displays details for a specific organization.
+- `show`: Retrieves and displays details for a specific organization
+  identified by UUID or slug.
+- `members`: Lists all members of an organization identified by UUID or slug.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
 | 0 | Operation completed successfully |
-| 1 | Org not found, slug conflict, unauthenticated, API error, or network error |
+| 1 | Org not found, unauthenticated, API error, or network error |
 
 ---
 
@@ -1897,15 +1917,54 @@ afc admin [subcommand] [flags]
 
 | Subcommand | Description |
 |------------|-------------|
-| `users` | List all users |
-| `stats` | View system statistics |
-| `delete-user` | Delete a user account |
+| `users` | Manage users (list, show, create, update, promote, demote, block, unblock) |
+| `orgs` | Manage organizations (list, create, update, delete, block, unblock, members) |
+| `keys` | Manage user API keys (list, revoke) |
+| `tokens` | Manage user personal access tokens (list, revoke) |
+
+**admin users subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all users |
+| `show <id\|username\|email>` | Show a user by ID, username, or email |
+| `create` | Create a new user |
+| `update <id\|username\|email>` | Update a user |
+| `promote <id\|username\|email>` | Grant admin role to a user |
+| `demote <id\|username\|email>` | Revoke admin role from a user |
+| `block <id\|username\|email>` | Block a user |
+| `unblock <id\|username\|email>` | Unblock a user |
+
+**admin orgs subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all organizations |
+| `create` | Create a new organization |
+| `update <id\|slug>` | Update an organization |
+| `delete <id\|slug>` | Delete an organization |
+| `block <id\|slug>` | Block an organization |
+| `unblock <id\|slug>` | Unblock an organization |
+| `members list <id\|slug>` | List members of an organization |
+| `members add <org> <user>` | Add a member to an organization |
+| `members remove <org> <user>` | Remove a member from an organization |
+
+**admin keys subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `list <user_id\|username\|email>` | List a user's API keys |
+| `revoke <user_id\|username\|email> <key_id>` | Revoke a user's API key |
+
+**admin tokens subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `list <user_id\|username\|email>` | List a user's personal access tokens |
+| `revoke <user_id\|username\|email> <token_id>` | Revoke a user's personal access token |
 
 **Behavior:**
 
-- `users`: Lists all registered users in the system.
-- `stats`: Displays system-wide statistics.
-- `delete-user`: Permanently deletes a user account.
 - All admin subcommands require an admin token; non-admin credentials
   receive a 403 error.
 

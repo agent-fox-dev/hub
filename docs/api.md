@@ -1088,10 +1088,12 @@ patches (status `"deleted"`) are excluded from the listing.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Workspace is not in carry_patch mode |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:read` scope |
 | 404 | Workspace does not exist |
+
+**Note:** Standard (non-carry_patch) workspaces return HTTP 200 with an empty
+array `[]` rather than an error.
 
 ---
 
@@ -1122,7 +1124,7 @@ Update a patch's position, status, description, or upstream PR URL.
 | Field | Required | Type | Constraints |
 |-------|----------|------|-------------|
 | `position` | no | integer | 1-based; must be >= 1 and <= total patch count for the workspace |
-| `status` | no | string | Must be one of: `"active"`, `"merged_upstream"`, `"conflict"`, `"disabled"` |
+| `status` | no | string | Must be one of: `"active"`, `"merged_upstream"`, `"conflict"`, `"disabled"`, `"deleted"` |
 | `description` | no | string | Free-form description |
 | `upstream_pr_url` | no | string | URL of the upstream pull request |
 
@@ -1449,7 +1451,9 @@ Submit a new rebuild job for the workspace.
 
 When the request body is omitted, `strategy` defaults to the `REBUILD_STRATEGY`
 workspace variable (or `"rebase"` if unset), and `fail_mode` defaults to the
-`REBUILD_FAIL_MODE` workspace variable (or `"fail_fast"` if unset).
+`REBUILD_FAIL_MODE` workspace variable. If neither the request body nor the
+workspace variable provides a value, `fail_mode` is left empty at enqueue time
+and the executor applies `"fail_fast"` as the runtime default.
 
 **Response (202 Accepted):**
 
@@ -1462,8 +1466,7 @@ workspace variable (or `"rebase"` if unset), and `fail_mode` defaults to the
   "group_key": "<workspace-slug>:<integration-branch>",
   "payload": {
     "workspace_slug": "<slug>",
-    "strategy": "rebase",
-    "fail_mode": "fail_fast"
+    "strategy": "rebase"
   }
 }
 ```
@@ -1543,6 +1546,9 @@ List rebuild jobs for a workspace, ordered by creation time descending.
 | 403 | PAT lacks `rebuilds:read` scope |
 | 500 | Internal server error (failed to list rebuild jobs) |
 
+**Note:** Workspace existence is not validated. A query for a non-existent
+workspace slug returns HTTP 200 with an empty jobs array rather than 404.
+
 ### GET /api/v1/workspaces/:slug/rebuilds/:id
 
 Get a single rebuild job by ID, including `patch_results` for completed jobs
@@ -1595,6 +1601,11 @@ Requeue a dead-lettered rebuild job.
 | 409 | Job is not in `dead_letter` status, or an active rebuild job already exists for this workspace |
 
 ### POST /api/v1/workspaces/:slug/rebuilds/:id/rollback
+
+> **Not registered in production.** The handler is implemented
+> (`RegisterRebuildRollbackRoutes`) but not wired in the server binary.
+> Calling this endpoint returns 404. The documentation below describes the
+> intended behavior for when the route is enabled.
 
 Roll back the integration branch to the state before a completed rebuild by
 resetting it to the `previous_integration_head_sha` stored in the rebuild

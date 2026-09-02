@@ -787,7 +787,7 @@ func handleRollbackRebuild(cfg RebuildRollbackAPIConfig) echo.HandlerFunc {
 		}
 		integrationBranch := payload.IntegrationBranch
 		if integrationBranch == "" {
-			integrationBranch = "integration"
+			integrationBranch = "deploy"
 		}
 
 		// Reset the integration branch to the previous HEAD.

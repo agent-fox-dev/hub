@@ -165,6 +165,9 @@ git config --global credential.<hub-url>.helper "!afc credential-helper"
 | `GET /user/tokens` | allowed | own PATs |
 | `GET /user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
 | `DELETE /user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
+| `PUT /user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
+| `PATCH /user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
+| `DELETE /user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
 
 #### Workspace Endpoints (all API keys)
 
@@ -246,7 +249,7 @@ keys (`Role == "admin"`) pass `RequireAdmin` and gain access to:
 
 ## apikit Built-in Permissions
 
-These 6 permissions are registered automatically by `apikit`'s
+These 8 permissions are registered automatically by `apikit`'s
 `NewPermissionRegistry()` in `apikit/internal/auth/permissions.go`.
 
 ### users:read
@@ -264,6 +267,14 @@ These 6 permissions are registered automatically by `apikit`'s
 | **Source** | apikit |
 | **Grants** | Read access to the authenticated user's organization memberships |
 | **Endpoints** | `GET /user/orgs` |
+
+### orgs:write
+
+| | |
+|---|---|
+| **Source** | apikit |
+| **Grants** | Reserved for PAT-scoped organization write operations |
+| **Endpoints** | — (registered but not yet enforced by apikit handlers) |
 
 ### keys:read
 
@@ -294,8 +305,16 @@ These 6 permissions are registered automatically by `apikit`'s
 | | |
 |---|---|
 | **Source** | apikit |
-| **Grants** | Create and revoke PATs. Privilege escalation is blocked: a new PAT's permissions must be a subset of the creating PAT's permissions. |
-| **Endpoints** | `POST /user/tokens`, `DELETE /user/tokens/:token_id` |
+| **Grants** | Create and revoke PATs, and modify PAT permissions. Privilege escalation is blocked: a new PAT's permissions must be a subset of the creating PAT's permissions. |
+| **Endpoints** | `POST /user/tokens`, `DELETE /user/tokens/:token_id`, `PUT /user/tokens/:token_id/permissions`, `PATCH /user/tokens/:token_id/permissions`, `DELETE /user/tokens/:token_id/permissions` |
+
+### tokens:write
+
+| | |
+|---|---|
+| **Source** | apikit |
+| **Grants** | Modify PAT permissions. A strict subset of `tokens:manage` by convention — a caller with `tokens:manage` can do everything `tokens:write` allows. |
+| **Endpoints** | `PUT /user/tokens/:token_id/permissions`, `PATCH /user/tokens/:token_id/permissions`, `DELETE /user/tokens/:token_id/permissions` |
 
 ---
 
@@ -463,8 +482,8 @@ at startup via the `extraPerms` parameter.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Query audit events, traces, session outcomes, tool calls, and tool errors |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/runs/:run_id/events`, `GET /api/v1/workspaces/:slug/runs/:run_id/traces`, `GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors` |
+| **Grants** | Query audit events, traces, session outcomes, tool calls, tool errors, postmortems, unified audit queries, transcripts, and SSE event streams |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/runs/:run_id/events`, `GET /api/v1/workspaces/:slug/runs/:run_id/traces`, `GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `GET /api/v1/workspaces/:slug/runs/:run_id/postmortem`, `GET /api/v1/audit`, `GET /api/v1/workspaces/:slug/runs/:run_id/transcript`, `GET /api/v1/events` |
 
 ### audit:write
 
@@ -472,7 +491,7 @@ at startup via the `extraPerms` parameter.
 |---|---|
 | **Source** | hub |
 | **Grants** | Ingest audit events, traces, session outcomes, tool calls, tool errors, and postmortems |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/runs/:run_id/events`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces`, `POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `POST /api/v1/workspaces/:slug/runs/:run_id/postmortem` |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/runs/:run_id/events`, `POST /api/v1/workspaces/:slug/runs/:run_id/events/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `POST /api/v1/workspaces/:slug/runs/:run_id/postmortem` |
 
 ---
 
@@ -620,7 +639,7 @@ endpoint checks for the literal `workspaces:write` scope string.
 
 ## Complete Permission List
 
-All 31 registered permission scopes, sorted alphabetically:
+All 33 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -633,28 +652,30 @@ All 31 registered permission scopes, sorted alphabetically:
 | 7 | `merges:read` | hub | merges | read |
 | 8 | `merges:write` | hub | merges | write |
 | 9 | `orgs:read` | apikit | orgs | read |
-| 10 | `patches:read` | hub | patches | read |
-| 11 | `patches:write` | hub | patches | write |
-| 12 | `rebuilds:read` | hub | rebuilds | read |
-| 13 | `rebuilds:write` | hub | rebuilds | write |
-| 14 | `secrets:delete` | hub | secrets | delete |
-| 15 | `secrets:list` | hub | secrets | list |
-| 16 | `secrets:manage` | hub | secrets | manage |
-| 17 | `secrets:write` | hub | secrets | write |
-| 18 | `sessions:read` | hub | sessions | read |
-| 19 | `sessions:write` | hub | sessions | write |
-| 20 | `tokens:manage` | apikit | tokens | manage |
-| 21 | `tokens:read` | apikit | tokens | read |
-| 22 | `users:read` | apikit | users | read |
-| 23 | `vars:delete` | hub | vars | delete |
-| 24 | `vars:manage` | hub | vars | manage |
-| 25 | `vars:read` | hub | vars | read |
-| 26 | `vars:write` | hub | vars | write |
-| 27 | `workspaces:create` | hub | workspaces | create |
-| 28 | `workspaces:delete` | hub | workspaces | delete |
-| 29 | `workspaces:read` | hub | workspaces | read |
-| 30 | `workspaces:sync` | hub | workspaces | sync |
-| 31 | `workspaces:write` | hub | workspaces | write |
+| 10 | `orgs:write` | apikit | orgs | write |
+| 11 | `patches:read` | hub | patches | read |
+| 12 | `patches:write` | hub | patches | write |
+| 13 | `rebuilds:read` | hub | rebuilds | read |
+| 14 | `rebuilds:write` | hub | rebuilds | write |
+| 15 | `secrets:delete` | hub | secrets | delete |
+| 16 | `secrets:list` | hub | secrets | list |
+| 17 | `secrets:manage` | hub | secrets | manage |
+| 18 | `secrets:write` | hub | secrets | write |
+| 19 | `sessions:read` | hub | sessions | read |
+| 20 | `sessions:write` | hub | sessions | write |
+| 21 | `tokens:manage` | apikit | tokens | manage |
+| 22 | `tokens:read` | apikit | tokens | read |
+| 23 | `tokens:write` | apikit | tokens | write |
+| 24 | `users:read` | apikit | users | read |
+| 25 | `vars:delete` | hub | vars | delete |
+| 26 | `vars:manage` | hub | vars | manage |
+| 27 | `vars:read` | hub | vars | read |
+| 28 | `vars:write` | hub | vars | write |
+| 29 | `workspaces:create` | hub | workspaces | create |
+| 30 | `workspaces:delete` | hub | workspaces | delete |
+| 31 | `workspaces:read` | hub | workspaces | read |
+| 32 | `workspaces:sync` | hub | workspaces | sync |
+| 33 | `workspaces:write` | hub | workspaces | write |
 
 ---
 
@@ -726,36 +747,21 @@ handler returns 403 for missing `workspaces:read` scope.
 
 ## Hub Audit Permissions
 
-These 4 permissions are registered by `Permissions()` in
-`hub/internal/audit/permissions.go` and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter.
+The `audit:read`, `audit:write`, `sessions:read`, and `sessions:write`
+permissions are registered by `Permissions()` in
+`hub/internal/audit/permissions.go`. The complete endpoint lists for
+`audit:read` and `audit:write` are documented in the
+[Hub Audit and Session Permissions](#audit-read) section above.
 
-### audit:read
+**Ownership notes:**
 
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Query unified audit events, reconstruct conversation transcripts, and connect to the real-time SSE event stream |
-| **Endpoints** | `GET /api/v1/audit`, `GET /api/v1/workspaces/:slug/runs/:run_id/transcript`, `GET /api/v1/events` |
-| **Ownership** | Not enforced. Any authenticated user with the required scope can query audit events for any workspace. |
-
-### audit:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Ingest agent audit events, session outcomes, tool calls, tool errors, traces, and postmortem reports |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/runs/:run_id/events`, `POST /api/v1/workspaces/:slug/runs/:run_id/events/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/postmortem` |
-| **Ownership** | Workspace-scoped PATs must match the URL workspace slug. Generic PATs and API keys are checked against workspace ownership via SQLite. Admin tokens bypass all workspace checks. |
-
-### sessions:read
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | List and view agent sessions, query token usage records, and view workspace cost summaries |
-| **Endpoints** | `GET /api/v1/sessions`, `GET /api/v1/sessions/:id`, `GET /api/v1/sessions/:id/usage`, `GET /api/v1/workspaces/:slug/cost` |
-| **Ownership** | Non-admin users are restricted to sessions for workspaces they own (checked via SQLite). |
+- **audit:read**: Not enforced. Any authenticated user with the required
+  scope can query audit events for any workspace.
+- **audit:write**: Workspace-scoped PATs must match the URL workspace slug.
+  Generic PATs and API keys are checked against workspace ownership via
+  SQLite. Admin tokens bypass all workspace checks.
+- **sessions:read**: Non-admin users are restricted to sessions for
+  workspaces they own (checked via SQLite).
 
 ### sessions:write
 

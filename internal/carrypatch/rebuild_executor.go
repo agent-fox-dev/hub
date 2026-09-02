@@ -270,7 +270,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// Force-update integration branch ref to the temporary branch HEAD.
 	integrationBranch := payload.IntegrationBranch
 	if integrationBranch == "" {
-		integrationBranch = "integration"
+		integrationBranch = "deploy"
 	}
 
 	// Capture the previous integration branch HEAD before force-updating.

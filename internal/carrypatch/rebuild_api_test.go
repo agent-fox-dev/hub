@@ -498,14 +498,14 @@ func TestRollbackRebuild_Success_Returns200(t *testing.T) {
 		if len(call.Args) >= 4 &&
 			call.Args[0] == "branch" &&
 			call.Args[1] == "-f" &&
-			call.Args[2] == "integration" &&
+			call.Args[2] == "deploy" &&
 			call.Args[3] == previousSHA {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected 'git branch -f integration <previousSHA>' call")
+		t.Error("expected 'git branch -f deploy <previousSHA>' call")
 	}
 }
 

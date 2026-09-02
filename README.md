@@ -19,9 +19,10 @@ The project produces two binaries:
 | `hub` | API server -- owns user identity, OAuth, workspaces, git hosting, merge queue, carry-patch workflows, secrets, and access control |
 | `afc` | CLI client -- authenticates with the hub and manages resources |
 
-Data is stored in an embedded SQLite database (pure Go, no CGo). Authentication
-supports three credential types: admin tokens, user API keys, and
-workspace-scoped tokens.
+Primary data is stored in an embedded SQLite database (modernc.org/sqlite,
+pure Go). Audit logs use an embedded DuckDB database (requires CGo).
+Authentication supports three credential types: admin tokens, user API keys,
+and workspace-scoped tokens.
 
 The hub binary includes a built-in git smart HTTP server that exposes
 workspace repositories at `/git/<org>/<slug>.git` for clone, fetch, and push
@@ -41,7 +42,8 @@ operations.
 make build
 ```
 
-This compiles both binaries into `bin/`.
+This builds the `hub` binary into `bin/` and installs `afc` into `$GOBIN`
+(or `$GOPATH/bin`).
 
 ### Configure the server
 
@@ -97,7 +99,7 @@ generate-and-exit behaviour).
 ### Authenticate with the CLI
 
 ```sh
-bin/afc login
+afc login
 ```
 
 This opens a browser for GitHub OAuth, exchanges the code, and saves

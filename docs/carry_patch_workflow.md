@@ -574,22 +574,23 @@ afc patch update api-gateway <patch-id> --status merged_upstream
 
 ### Recovering from an upstream force-push
 
-If the upstream repository force-pushes (rewriting history), a standard sync
-returns a `409 Diverged` error. Use the `--reset-to-upstream` flag to
-force-reset the local tracking ref:
+For **carry-patch workspaces**, the sync handler detects force-pushes
+automatically. The sync proceeds normally and reports the detection via the
+`force_push_detected` field in the response. A rebuild should follow to
+reapply patches on top of the new upstream base. The `--reset-to-upstream`
+flag has no effect for carry-patch workspaces because the carry-patch sync
+handler intercepts the request before the flag is processed.
+
+For **standard workspaces**, a force-push causes the sync to return a
+`409 Diverged` error. Use the `--reset-to-upstream` flag to force-reset
+the local tracking ref:
 
 ```
-afc workspace sync api-gateway --reset-to-upstream
+afc workspace sync <slug> --reset-to-upstream
 ```
 
 This discards the local upstream tracking state and replaces it with the
-new upstream HEAD. A rebuild should follow to reapply patches on top of the
-new base.
-
-For carry-patch workspaces, the sync handler also detects force-pushes and
-reports them via the `force_push_detected` field in the response. This
-detection is informational -- the sync proceeds normally and the flag
-allows operators or automation to take additional action if needed.
+new upstream HEAD.
 
 ### Cancelling a queued rebuild
 

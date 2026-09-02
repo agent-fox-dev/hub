@@ -103,6 +103,7 @@ provider.
 | `AF_POSTMORTEM_MAX_AGE_DAYS` | Maximum age in days for retained postmortem records. Default: `180`. |
 | `AF_AUDIT_ORPHAN_RETENTION_DAYS` | Grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted. Default: `30`. |
 | `AF_AUDIT_DB_PATH` | Path to the DuckDB audit database file. Default: `<dir of SQLite database>/audit.duckdb`. |
+| `AF_SSE_MAX_CONNECTIONS` | Maximum number of concurrent SSE connections accepted by the event streaming endpoint. Accepts positive integers; invalid or non-positive values fall back to the default with a warning log. Default: `100`. |
 
 ## First Boot
 
@@ -173,7 +174,7 @@ To use the bundled config, either mount your own config at
 The database path depends on whether a config file is found:
 
 - **Config file found** (with `path = "afhub.db"`): `/data/afhub.db`
-- **No config file found** (programmatic default): `/data/afhub.db`
+- **No config file found** (programmatic default): `/data/apikit.db`
 
 The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 `/usr/bin/hub` with no flags.
@@ -216,5 +217,5 @@ The `deploy/` directory contains reference manifests:
 
 | Path | Purpose |
 |------|---------|
-| `/healthz` | Liveness probe (database ping). |
-| `/readyz` | Readiness probe. |
+| `/healthz` | Liveness probe (always returns ok). |
+| `/readyz` | Readiness probe (database ping via HealthChecker). |

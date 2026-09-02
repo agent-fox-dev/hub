@@ -344,7 +344,7 @@ func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 		// 15-REQ-10.3: Validate status.
 		if req.Status != nil {
 			if !validPatchStatuses[*req.Status] {
-				return respondError(c, http.StatusBadRequest, "invalid status value; must be one of: active, merged_upstream, conflict, disabled")
+				return respondError(c, http.StatusBadRequest, "invalid status value; must be one of: active, merged_upstream, conflict, disabled, deleted")
 			}
 			p.Status = *req.Status
 		}
