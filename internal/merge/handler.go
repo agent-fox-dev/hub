@@ -99,6 +99,30 @@ type Handler struct {
 	Audit audit.Emitter
 }
 
+// emitMergeAudit emits a hub-internal audit event for merge operations.
+// If the Audit emitter is nil, emission is silently skipped (18-REQ-2.5,
+// 18-PROP-7). If Emit returns an error, the error is logged and the caller
+// is unaffected (18-REQ-2.E1, 18-PROP-1).
+func (h *Handler) emitMergeAudit(ctx context.Context, workspace, eventType string, metadata map[string]any) {
+	if h.Audit == nil {
+		return
+	}
+	event := audit.HubEvent{
+		EventType:    eventType,
+		ResourceType: "merge",
+		ActorType:    "system",
+		Workspace:    workspace,
+		Metadata:     metadata,
+	}
+	if err := h.Audit.Emit(ctx, event); err != nil {
+		slog.Error("audit: failed to emit merge event",
+			"event_type", eventType,
+			"workspace", workspace,
+			"error", err,
+		)
+	}
+}
+
 // TrunkDir returns the workspace trunk directory path for the given slug.
 func (h *Handler) TrunkDir(slug string) string {
 	return fmt.Sprintf("%s/%s/trunk", h.WorkspaceRoot, slug)

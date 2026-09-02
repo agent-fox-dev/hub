@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -366,6 +367,33 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		job, err := cfg.Queue.GetByID(jobID)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		}
+
+		// 18-REQ-2.1: Emit hub.merge.enqueue audit event.
+		if cfg.Audit != nil {
+			event := audit.HubEvent{
+				EventType:    "hub.merge.enqueue",
+				ResourceType: "merge",
+				ResourceID:   jobID,
+				Action:       "enqueue",
+				Workspace:    slug,
+				Metadata: map[string]any{
+					"target_branch": req.TargetBranch,
+					"source_ref":    req.SourceRef,
+					"job_id":        jobID,
+				},
+			}
+			if auth != nil {
+				event.ActorID = auth.UserID
+				event.ActorType = auth.CredentialType
+			}
+			if emitErr := cfg.Audit.Emit(c.Request().Context(), event); emitErr != nil {
+				slog.Error("audit: failed to emit hub.merge.enqueue",
+					"workspace", slug,
+					"job_id", jobID,
+					"error", emitErr,
+				)
+			}
 		}
 
 		resp := ProjectMergeJobResponse(job)

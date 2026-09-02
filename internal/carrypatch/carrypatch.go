@@ -183,6 +183,30 @@ type RebuildHandler struct {
 	Audit audit.Emitter
 }
 
+// emitRebuildAudit emits a hub-internal audit event for rebuild operations.
+// If the Audit emitter is nil, emission is silently skipped (18-REQ-3.7,
+// 18-PROP-7). If Emit returns an error, the error is logged and the caller
+// is unaffected (18-REQ-3.E1, 18-PROP-1).
+func (h *RebuildHandler) emitRebuildAudit(ctx context.Context, workspace, eventType string, metadata map[string]any) {
+	if h.Audit == nil {
+		return
+	}
+	event := audit.HubEvent{
+		EventType:    eventType,
+		ResourceType: "patch",
+		ActorType:    "system",
+		Workspace:    workspace,
+		Metadata:     metadata,
+	}
+	if err := h.Audit.Emit(ctx, event); err != nil {
+		slog.Error("audit: failed to emit rebuild event",
+			"event_type", eventType,
+			"workspace", workspace,
+			"error", err,
+		)
+	}
+}
+
 // RegisterRebuildJob registers the 'rebuild' job type in the job queue.
 func RegisterRebuildJob(q *jobqueue.Queue, h *RebuildHandler) error {
 	handler := func(ctx context.Context, payload json.RawMessage) (any, bool, error) {

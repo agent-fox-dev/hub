@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -512,6 +513,32 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		// 16-REQ-1.E4: duplicate queued/running job.
 		if duplicate {
 			return apikit.WriteAPIErrorWithType(c, http.StatusConflict, "a rebuild job is already queued or running for this workspace", "concurrent_rebuild")
+		}
+
+		// 18-REQ-3.3: Emit hub.rebuild.enqueue audit event.
+		if cfg.Audit != nil {
+			event := audit.HubEvent{
+				EventType:    "hub.rebuild.enqueue",
+				ResourceType: "patch",
+				ResourceID:   jobID,
+				Action:       "enqueue",
+				Workspace:    slug,
+				Metadata: map[string]any{
+					"job_id":      jobID,
+					"patch_count": patchCount,
+				},
+			}
+			if auth != nil {
+				event.ActorID = auth.UserID
+				event.ActorType = auth.CredentialType
+			}
+			if emitErr := cfg.Audit.Emit(c.Request().Context(), event); emitErr != nil {
+				slog.Error("audit: failed to emit hub.rebuild.enqueue",
+					"workspace", slug,
+					"job_id", jobID,
+					"error", emitErr,
+				)
+			}
 		}
 
 		// Return the job record.

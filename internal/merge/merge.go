@@ -64,11 +64,20 @@ func RegisterHandler(q *jobqueue.Queue, h *Handler) error {
 //
 // Errors are returned as structured JSON matching mergeJobError format so that
 // ProjectMergeJobResponse can extract conflict_files and check_output fields.
-func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (any, bool, error) {
+func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (retResult any, retRetryable bool, retErr error) {
 	var p MergePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, false, newMergeJobError("invalid_payload", nil, "")
 	}
+
+	// 18-REQ-2.3: Emit hub.merge.fail on any error return from this function.
+	defer func() {
+		if retErr != nil {
+			h.emitMergeAudit(ctx, p.WorkspaceSlug, "hub.merge.fail", map[string]any{
+				"reason": retErr.Error(),
+			})
+		}
+	}()
 
 	slog.Info("merge: starting merge job",
 		"workspace", p.WorkspaceSlug,
@@ -155,6 +164,13 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 	if err != nil {
 		return nil, false, err
 	}
+
+	// 18-REQ-2.2: Emit hub.merge.complete audit event.
+	h.emitMergeAudit(ctx, p.WorkspaceSlug, "hub.merge.complete", map[string]any{
+		"base_sha":   baseSHA,
+		"merged_sha": mergedSHA,
+	})
+
 	return mergeResult, false, nil
 }
 

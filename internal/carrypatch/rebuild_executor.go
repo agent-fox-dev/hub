@@ -48,12 +48,21 @@ func (e *rebuildConflictError) Error() string {
 //     branch, and return a non-retryable error.
 //
 // Returns (result, retryable, error).
-func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.RawMessage) (any, bool, error) {
+func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.RawMessage) (retResult any, retRetryable bool, retErr error) {
 	// 1. Parse payload.
 	var payload RebuildPayload
 	if err := json.Unmarshal(rawPayload, &payload); err != nil {
 		return nil, false, fmt.Errorf("invalid rebuild payload: %w", err)
 	}
+
+	// 18-REQ-3.5: Emit hub.rebuild.fail on any error return from this function.
+	defer func() {
+		if retErr != nil {
+			h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.fail", map[string]any{
+				"reason": retErr.Error(),
+			})
+		}
+	}()
 
 	// 2. Resolve upstream auth (16-REQ-1.2, 16-REQ-1.E9).
 	if h.ResolveAuth != nil {
@@ -288,6 +297,11 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	// Compact remaining positions to be contiguous.
 	_ = h.PatchStore.CompactPositions(ctx, payload.WorkspaceSlug)
+
+	// 18-REQ-3.4: Emit hub.rebuild.complete audit event.
+	h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.complete", map[string]any{
+		"patches_applied": result.PatchesApplied,
+	})
 
 	return result, false, nil
 }
