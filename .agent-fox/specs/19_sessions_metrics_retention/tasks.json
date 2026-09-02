@@ -1149,7 +1149,7 @@
             "19-REQ-7",
             "19-REQ-10"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1175,7 +1175,7 @@
             "19-REQ-11",
             "19-REQ-13"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1200,7 +1200,7 @@
             "19-REQ-10",
             "19-REQ-12"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1224,7 +1224,7 @@
             "19-REQ-12",
             "19-REQ-13"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -1258,7 +1258,7 @@
             "19-REQ-13",
             "19-REQ-14"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
