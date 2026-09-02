@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/labstack/echo/v4"
@@ -174,7 +175,19 @@ func main() {
 
 	// Create SSE connection manager and audit emitter for hub event
 	// broadcasting (spec 18) and session force-close audit events (spec 19).
-	sseMgr := audit.NewSSEManager(100)
+	// Read AF_SSE_MAX_CONNECTIONS from environment, default to 100 (18-REQ-9.3).
+	sseMaxConns := audit.DefaultMaxConnections
+	if envMax := os.Getenv("AF_SSE_MAX_CONNECTIONS"); envMax != "" {
+		if n, parseErr := strconv.Atoi(envMax); parseErr != nil || n <= 0 {
+			slog.Warn("AF_SSE_MAX_CONNECTIONS is invalid, using default",
+				"value", envMax,
+				"default", audit.DefaultMaxConnections,
+			)
+		} else {
+			sseMaxConns = n
+		}
+	}
+	sseMgr := audit.NewSSEManager(sseMaxConns)
 	go sseMgr.Run(ctx.Done())
 	auditEmitter := audit.NewEmitterWithBroadcast(auditStore, sseMgr)
 
@@ -203,6 +216,11 @@ func main() {
 	// Wire audit dependencies into workspace package for force-close on
 	// archive/delete (19-REQ-8, 19-REQ-9).
 	workspace.SetAuditDependencies(auditStore, auditEmitter, metrics)
+
+	// Wire audit emitter into merge and rebuild job handlers so that
+	// complete/fail events are emitted (18-REQ-2, 18-REQ-3).
+	mergeHandler.Audit = auditEmitter
+	rebuildHandler.Audit = auditEmitter
 
 	// ---------------------------------------------------------------------------
 	// Audit routes (specs 17-19)
@@ -252,6 +270,7 @@ func main() {
 		merge.DefaultBranchChecker(cfg.Workspace.Path),
 		cfg.Workspace.Path,
 	)
+	mergeCfg.Audit = auditEmitter
 	merge.RegisterMergeRoutes(server.APIGroup(), mergeCfg)
 
 	// ---------------------------------------------------------------------------
@@ -265,6 +284,7 @@ func main() {
 		DB:          database.SqlDB,
 		Queue:       mergeQueue,
 		GetVariable: store.GetVariableValue,
+		Audit:       auditEmitter,
 	})
 
 	carrypatch.RegisterRerereRoutes(cpAPI, carrypatch.RerereAPIConfig{
