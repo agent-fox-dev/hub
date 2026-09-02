@@ -550,6 +550,32 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			Status:   jobqueue.StatusQueued,
 			Payload:  payloadJSON,
 		}
+
+		// Emit audit event for rebuild enqueue (18-REQ-3.3).
+		// Errors are logged but never propagated (18-REQ-3.E1, 18-PROP-1).
+		if cfg.Audit != nil {
+			event := audit.HubEvent{
+				EventType:    "hub.rebuild.enqueue",
+				ResourceType: "patch",
+				ResourceID:   slug,
+				Action:       "enqueue",
+				Workspace:    slug,
+				Metadata: map[string]any{
+					"job_id":      jobID,
+					"patch_count": patchCount,
+				},
+			}
+			event.ActorID = auth.UserID
+			event.ActorType = auth.CredentialType
+			if err := cfg.Audit.Emit(c.Request().Context(), event); err != nil {
+				slog.Error("audit: failed to emit rebuild enqueue event",
+					"event_type", event.EventType,
+					"workspace", slug,
+					"error", err,
+				)
+			}
+		}
+
 		return c.JSON(http.StatusAccepted, resp)
 	}
 }

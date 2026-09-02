@@ -397,6 +397,33 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		resp := ProjectMergeJobResponse(job)
+
+		// Emit audit event for merge enqueue (18-REQ-2.1).
+		// Errors are logged but never propagated (18-REQ-2.E1, 18-PROP-1).
+		if cfg.Audit != nil {
+			event := audit.HubEvent{
+				EventType:    "hub.merge.enqueue",
+				ResourceType: "merge",
+				ResourceID:   slug,
+				Action:       "enqueue",
+				Workspace:    slug,
+				Metadata: map[string]any{
+					"target_branch": req.TargetBranch,
+					"source_ref":    req.SourceRef,
+					"job_id":        jobID,
+				},
+			}
+			event.ActorID = auth.UserID
+			event.ActorType = auth.CredentialType
+			if err := cfg.Audit.Emit(c.Request().Context(), event); err != nil {
+				slog.Error("audit: failed to emit merge enqueue event",
+					"event_type", event.EventType,
+					"workspace", slug,
+					"error", err,
+				)
+			}
+		}
+
 		return c.JSON(http.StatusAccepted, resp)
 	}
 }
