@@ -49,8 +49,9 @@ build-container: build
 
 # Clean build artifacts
 clean:
-	rm -rf bin/af-hub bin/afc
-	podman rmi $(IMAGE):$(IMAGE_TAG)
+	-rm -rf bin/af-hub bin/afc
+	-rm af-hub afc
+	-podman rmi $(IMAGE):$(IMAGE_TAG)
 
 # Clear all data and config
 hub-reset:

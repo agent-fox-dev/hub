@@ -5,17 +5,13 @@ node_modules/
 web/dist/
 
 # agent-fox
-.agent-fox/*
-!.agent-fox/config.toml
-!.agent-fox/steering.md
-!.agent-fox/specs/
-!.agent-fox/profiles/
-!.agent-fox/profiles/*
+.agent-fox/
 .claude/worktrees/
 
 # Go build output
 bin/
 af-hub
+afc
 
 # own stuff
 hack/
