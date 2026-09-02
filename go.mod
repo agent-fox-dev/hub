@@ -72,4 +72,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/txsvc/apikit => /Users/candlekeep/devel/workspace/agentfox/apikit
+replace github.com/txsvc/apikit => ../apikit
