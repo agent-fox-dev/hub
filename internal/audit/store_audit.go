@@ -849,13 +849,13 @@ func (s *duckDBStore) QueryAgentTraces(ctx context.Context, runID, workspace str
 	return results, nextCursor, hasMore, nil
 }
 
-func (s *duckDBStore) GetPostmortem(ctx context.Context, runID string) (map[string]any, error) {
+func (s *duckDBStore) GetPostmortem(ctx context.Context, runID string, workspace string) (map[string]any, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT run_id, workspace, schema_version, run_status,
 		        started_at, completed_at,
 		        task_summary, cost_summary, blocked_tasks, session_history,
 		        ingested_at
-		 FROM postmortems WHERE run_id = ?`, runID,
+		 FROM postmortems WHERE run_id = ? AND workspace = ?`, runID, workspace,
 	)
 	var (
 		rID, ws, runStatus                                     string

@@ -313,12 +313,13 @@ func handleGetPostmortemImpl(store Store) echo.HandlerFunc {
 		if auth == nil {
 			return nil
 		}
+		slug := c.Param("slug")
 		runID := c.Param("run_id")
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
 		ds := store.(*duckDBStore)
-		result, err := ds.GetPostmortem(c.Request().Context(), runID)
+		result, err := ds.GetPostmortem(c.Request().Context(), runID, slug)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}

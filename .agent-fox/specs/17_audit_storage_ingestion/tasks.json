@@ -862,7 +862,7 @@
           "requirement_refs": [
             "17-REQ-24"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -886,7 +886,7 @@
             "17-REQ-2",
             "17-REQ-24"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         },
         {
@@ -904,7 +904,7 @@
           "requirement_refs": [
             "17-REQ-1"
           ],
-          "state": "pending",
+          "state": "done",
           "optional": false
         }
       ],
