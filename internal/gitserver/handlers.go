@@ -282,6 +282,9 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 		// Errors are logged but do not fail the push response.
 		updateHeadSHA(db, slug, wsRoot)
 
+		// 18-REQ-5.1: Emit hub.git.push audit event after successful push.
+		emitGitPushAudit(c, slug, req.Commands)
+
 		// Post-push hook: extract pushed branch names and invoke the
 		// registered hook for carry-patch auto-rebuild (issue #14).
 		if postPushHook != nil {

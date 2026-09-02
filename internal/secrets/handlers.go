@@ -164,6 +164,10 @@ func doCreateSecrets(c echo.Context, store *Store, ownerType, ownerID string) er
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
+	// 18-REQ-4.1: Emit hub.secret.create for each created entry.
+	for _, entry := range req.Entries {
+		emitSecretAudit(c, "hub.secret.create", ownerType, entry.Key)
+	}
 	return c.JSON(http.StatusCreated, entries)
 }
 
@@ -189,6 +193,8 @@ func doUpdateSecret(c echo.Context, store *Store, ownerType, ownerID string) err
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
+	// 18-REQ-4.2: Emit hub.secret.update after successful update.
+	emitSecretAudit(c, "hub.secret.update", ownerType, key)
 	return c.JSON(http.StatusOK, entry)
 }
 
@@ -199,6 +205,8 @@ func doDeleteSecret(c echo.Context, store *Store, ownerType, ownerID string) err
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
+	// 18-REQ-4.3: Emit hub.secret.delete after successful deletion.
+	emitSecretAudit(c, "hub.secret.delete", ownerType, key)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -412,6 +420,10 @@ func doCreateVars(c echo.Context, store *Store, ownerType, ownerID string) error
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
+	// 18-REQ-4.4: Emit hub.variable.create for each created entry.
+	for _, entry := range req.Entries {
+		emitVarAudit(c, "hub.variable.create", ownerType, entry.Key)
+	}
 	return c.JSON(http.StatusCreated, entries)
 }
 
@@ -437,6 +449,8 @@ func doUpdateVar(c echo.Context, store *Store, ownerType, ownerID string) error 
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
+	// 18-REQ-4.5: Emit hub.variable.update after successful update.
+	emitVarAudit(c, "hub.variable.update", ownerType, key)
 	return c.JSON(http.StatusOK, entry)
 }
 
@@ -447,6 +461,8 @@ func doDeleteVar(c echo.Context, store *Store, ownerType, ownerID string) error 
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
+	// 18-REQ-4.6: Emit hub.variable.delete after successful deletion.
+	emitVarAudit(c, "hub.variable.delete", ownerType, key)
 	return c.NoContent(http.StatusNoContent)
 }
 

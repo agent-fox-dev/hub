@@ -236,7 +236,10 @@ func main() {
 	if err := secrets.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
-	if err := secrets.RegisterRoutes(server.APIGroup(), database.SqlDB); err != nil {
+	if err := secrets.RegisterRoutesWithAudit(server.APIGroup(), secrets.SecretsRouteConfig{
+		DB:    database.SqlDB,
+		Audit: auditEmitter,
+	}); err != nil {
 		log.Fatal(err)
 	}
 
@@ -319,6 +322,9 @@ func main() {
 		mergeQueue,
 		store.GetVariableValue,
 	))
+
+	// Set the audit emitter for git server push events (18-REQ-5.2).
+	gitserver.SetAuditEmitter(auditEmitter)
 
 	// Mount git smart HTTP handlers on the Echo instance. The git server
 	// registers routes at /git/:org/:slug.git/* outside the API group,
