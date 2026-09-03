@@ -1,4 +1,4 @@
-name: build the hub containers
+name: agentfox hub container build
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-hub-container:
-    uses: ./.github/workflows/build.yaml
+    uses: ./.github/workflows/inc-build-hub.yaml
     with:
       container_name: hub
     secrets: inherit

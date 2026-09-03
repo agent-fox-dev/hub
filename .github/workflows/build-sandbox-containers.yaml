@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-sandbox-container:
-    uses: ./.github/workflows/build.yaml
+    uses: ./.github/workflows/inc-build.yaml
     with:
       container_name: sandbox
     secrets: inherit
@@ -19,7 +19,7 @@ jobs:
       attestations: write
 
   build-agents-container:
-    uses: ./.github/workflows/build.yaml
+    uses: ./.github/workflows/inc-build.yaml
     needs: [build-sandbox-container]
     with:
       container_name: agents

@@ -1,4 +1,4 @@
-name: CLI build
+name: agentfox hub cli build
 
 on:
   push:
