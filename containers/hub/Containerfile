@@ -1,5 +1,5 @@
 ARG BUILDER=registry.redhat.io/ubi10/go-toolset:latest
-ARG RUNTIME=registry.access.redhat.com/ubi10/ubi-micro:latest
+ARG RUNTIME=registry.access.redhat.com/ubi10/ubi-minimal:latest
 
 # ---------- build ----------
 FROM ${BUILDER} AS build
@@ -11,6 +11,11 @@ ARG BUILD_TIME=
 USER root
 WORKDIR /build
 
+# go-duckdb (used by internal/audit) requires cgo and links against libstdc++.
+RUN dnf install -y --setopt=tsflags=nodocs gcc gcc-c++ && \
+    dnf -y clean all --enablerepo='*' && \
+    rm -rf /var/cache/dnf
+
 # Local replace github.com/txsvc/apikit => ../apikit (see go.mod).
 # Supply the sibling tree via: podman build --build-context apikit=../apikit
 COPY --from=apikit . /build/apikit
@@ -19,7 +24,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=1 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \
       -X github.com/txsvc/apikit.Commit=${BUILD} \
@@ -30,7 +35,7 @@ RUN CGO_ENABLED=0 go build \
       -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
     -o hub ./cmd/af-hub
 
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=1 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \
       -X github.com/txsvc/apikit.Commit=${BUILD} \
@@ -44,13 +49,19 @@ RUN CGO_ENABLED=0 go build \
 # ---------- runtime ----------
 FROM ${RUNTIME}
 
+# ubi-micro has no package manager and thus no way to provide libstdc++,
+# which the cgo-enabled go-duckdb dependency needs at runtime. ubi-minimal
+# gives us microdnf to install just that shared library.
+RUN microdnf install -y --setopt=install_weak_deps=0 libstdc++ && \
+    microdnf clean all
+
 ENV XDG_CONFIG_HOME=/config
 ENV XDG_DATA_HOME=/data
 
 EXPOSE 80
 EXPOSE 8080
 
-# CA certificates for outbound TLS (ubi-micro ships without them)
+# CA certificates for outbound TLS
 COPY --from=build /etc/pki/tls/certs/ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt
 
 RUN mkdir -p /config/af-hub /data/af-hub
