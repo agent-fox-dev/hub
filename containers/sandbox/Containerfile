@@ -75,7 +75,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv  /bin/uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uvx /bin/uvx
 
 # install python dependencies
-COPY requirements.txt /tmp/requirements.txt
+COPY containers/sandbox/requirements.txt /tmp/requirements.txt
 
 RUN uv venv --clear /venv && \
     uv pip install -r /tmp/requirements.txt && \
