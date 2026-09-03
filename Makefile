@@ -1,4 +1,4 @@
-.PHONY: check test lint build build-container run-container web-dev web-build web-lint
+.PHONY: check test lint build build-containers build-hub-container build-sandbox-container build-agents-container web-dev web-build web-lint
 
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -13,12 +13,17 @@ LDFLAGS := -ldflags "\
   -X github.com/txsvc/apikit.TokenPrefix=af \
   -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af"
 
-CONTAINER_NAME ?= hub
-CONTAINERFILE := containers/$(CONTAINER_NAME)/Containerfile
+CONTAINER_REGISTRY ?= quay.io/agentfox
 
-IMAGE ?= af-hub
-IMAGE_TAG ?= $(VERSION)
-PORT ?= 8080
+HUB_IMAGE ?= hub
+HUB_IMAGE_TAG ?= $(VERSION)
+HUB_PORT ?= 8080
+
+SANDBOX_IMAGE ?= sandbox
+SANDBOX_IMAGE_TAG ?= $(VERSION)
+
+AGENTS_IMAGE ?= agents
+AGENTS_IMAGE_TAG ?= $(VERSION)
 
 # Run lint + all tests
 check: lint test
@@ -38,22 +43,36 @@ build:
 	CGO_ENABLED=0 go install $(LDFLAGS) ./cmd/afc
 	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 
-# Build the af-hub container locally.
+build-containers: build-hub-container build-sandbox-container build-agents-container
+
+# Build the hub container locally.
 # Uses sibling ../apikit via additional build context (go.mod replace).
-build-container: build
+build-hub-container: build
 	podman build \
 		--build-context apikit=../apikit \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg BUILD=$(COMMIT) \
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
-		-t $(IMAGE):$(IMAGE_TAG) \
-		-f $(CONTAINERFILE) .
+		-t $(CONTAINER_REGISTRY)/$(HUB_IMAGE):$(HUB_IMAGE_TAG) \
+		-f containers/hub/Containerfile .
+
+# Build the sandbox container locally.
+build-sandbox-container:
+	podman build \
+		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):$(SANDBOX_IMAGE_TAG) \
+		-f containers/sandbox/Containerfile .
+
+# Build the agents container locally.
+build-agents-container: build-sandbox-container
+	podman build \
+		-t $(CONTAINER_REGISTRY)/$(AGENTS_IMAGE):$(AGENTS_IMAGE_TAG) \
+		-f containers/agents/Containerfile .
 
 # Clean build artifacts
 clean:
 	-rm -rf bin/af-hub bin/afc
 	-rm af-hub afc
-	-podman rmi $(IMAGE):$(IMAGE_TAG)
+	-podman rmi $(HUB_IMAGE):$(HUB_IMAGE_TAG)
 
 # Clear all data and config
 hub-reset:
@@ -76,11 +95,11 @@ hub-run:
 hub-runc:
 	-mv bin/config/admin_token bin/config/token
 	podman run --rm -it \
-		-p $(PORT):8080 \
+		-p $(HUB_PORT):8080 \
 		-e ADMIN_TOKEN=$$(cat bin/config/token) \
 		-v $(CURDIR)/bin/config:/config \
 		-v $(CURDIR)/bin/data:/data \
-		$(IMAGE):$(IMAGE_TAG)
+		$(HUB_IMAGE):$(HUB_IMAGE_TAG)
 
 # Start the Vite dev server with hot reload
 web-dev:
