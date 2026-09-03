@@ -17,3 +17,14 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+
+  build-sandbox-container:
+    uses: ./.github/workflows/build.yaml
+    with:
+      container_name: sandbox
+    secrets: inherit
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+      attestations: write

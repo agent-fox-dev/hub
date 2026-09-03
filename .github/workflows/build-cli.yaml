@@ -38,6 +38,8 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_tag=${IS_TAG}" >> $GITHUB_OUTPUT
 
+
+
   build:
     needs: prepare
     strategy:
