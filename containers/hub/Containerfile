@@ -29,6 +29,7 @@ RUN CGO_ENABLED=0 go build \
       -X github.com/txsvc/apikit.TokenPrefix=af \
       -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
     -o hub ./cmd/af-hub
+
 RUN CGO_ENABLED=0 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \

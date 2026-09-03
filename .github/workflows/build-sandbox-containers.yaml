@@ -1,4 +1,4 @@
-name: container build
+name: build the sandbox containers
 
 on:
   push:
@@ -7,17 +7,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-hub-container:
-    uses: ./.github/workflows/build.yaml
-    with:
-      container_name: hub
-    secrets: inherit
-    permissions:
-      packages: write
-      contents: read
-      id-token: write
-      attestations: write
-
   build-sandbox-container:
     uses: ./.github/workflows/build.yaml
     with:
