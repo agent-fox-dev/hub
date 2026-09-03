@@ -32,9 +32,11 @@ lint:
 	go vet ./...
 
 # Build all packages
+# afc has no cgo dependencies and stays a static binary; hub links go-duckdb
+# (internal/audit) and requires cgo.
 build:
-	go install $(LDFLAGS) ./cmd/afc
-	go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
+	CGO_ENABLED=0 go install $(LDFLAGS) ./cmd/afc
+	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 
 # Build the af-hub container locally.
 # Uses sibling ../apikit via additional build context (go.mod replace).
