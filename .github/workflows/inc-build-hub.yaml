@@ -89,6 +89,8 @@ jobs:
         with:
           context: "."
           file: "containers/${{ inputs.container_name }}/Containerfile"
+          build-contexts: |
+            apikit=../apikit
           tags: ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-${{ matrix.suffix }}
           labels: ${{ steps.metadata.outputs.labels }}
           platforms: ${{ matrix.platform }}

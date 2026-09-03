@@ -1,4 +1,4 @@
-name: build the sandbox containers
+name: agentfox sandbox containers build
 
 on:
   push:
