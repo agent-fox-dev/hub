@@ -15,7 +15,7 @@ ENV ARCH=${TARGETARCH:-arm64} \
 ENV UV_PYTHON=python3.14 VIRTUAL_ENV=/venv
 
 # install python dependencies
-COPY requirements.txt /tmp/requirements.txt
+COPY containers/agents/requirements.txt /tmp/requirements.txt
 
 RUN uv venv --clear /venv && \
     uv pip install -r /tmp/requirements.txt && \
