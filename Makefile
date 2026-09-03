@@ -54,18 +54,21 @@ build-hub-container: build
 		--build-arg BUILD=$(COMMIT) \
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t $(CONTAINER_REGISTRY)/$(HUB_IMAGE):$(HUB_IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(HUB_IMAGE):latest \
 		-f containers/hub/Containerfile .
 
 # Build the sandbox container locally.
 build-sandbox-container:
 	podman build \
 		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):$(SANDBOX_IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest \
 		-f containers/sandbox/Containerfile .
 
 # Build the agents container locally.
 build-agents-container: build-sandbox-container
 	podman build \
 		-t $(CONTAINER_REGISTRY)/$(AGENTS_IMAGE):$(AGENTS_IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(AGENTS_IMAGE):latest \
 		-f containers/agents/Containerfile .
 
 # Clean build artifacts
