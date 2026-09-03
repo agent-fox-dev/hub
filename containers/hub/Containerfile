@@ -24,6 +24,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
+# hub links go-duckdb (internal/audit) and needs cgo.
 RUN CGO_ENABLED=1 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \
@@ -35,7 +37,8 @@ RUN CGO_ENABLED=1 go build \
       -X github.com/txsvc/apikit/internal/cli.TokenPrefix=af" \
     -o hub ./cmd/af-hub
 
-RUN CGO_ENABLED=1 go build \
+# afc is a plain CLI with no cgo dependencies; keep it a static binary.
+RUN CGO_ENABLED=0 go build \
     -ldflags "-s -w \
       -X github.com/txsvc/apikit.Version=${VERSION} \
       -X github.com/txsvc/apikit.Commit=${BUILD} \
