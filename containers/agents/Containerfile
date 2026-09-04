@@ -39,11 +39,11 @@ RUN curl -fsSL https://pi.dev/install.sh | sh
 # note: unset VERSION first -- it's set to the RHEL major version (e.g. "10")
 # by the s2i-core base image, and opencode's installer misreads it as a
 # requested opencode release version (VERSION=10 -> "Release v10 not found").
-#ENV PATH=${HOME}/.opencode/bin:${PATH}
-#RUN curl -fsSL https://opencode.ai/install | env -u VERSION bash
+ENV PATH=${HOME}/.opencode/bin:${PATH}
+RUN curl -fsSL https://opencode.ai/install | env -u VERSION bash
 
 # install claude code agent
-#RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # clean up
 RUN dnf -y clean all --enablerepo='*' && \
