@@ -22,14 +22,6 @@ RUN uv venv --clear /venv && \
     uv pip install -r /tmp/requirements.txt && \
     rm -rf /tmp/requirements.txt
 
-# install the agents here
-
-# install nightshift agent
-RUN curl -fsSL https://raw.githubusercontent.com/agent-fox-dev/nightshift/refs/heads/main/install.sh | sh
-
-# install agent-fox agent
-#RUN curl -fsSL https://raw.githubusercontent.com/agent-fox-dev/agent-fox/refs/heads/main/install.sh | sh
-
 # install pi, opencode, claude code
 
 # install pi agent
