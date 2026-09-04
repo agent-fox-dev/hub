@@ -8,7 +8,7 @@ this repository. Treat this file as mandatory policy for every coding session.
 Before making any changes, orient yourself:
 
 1. **Read `README.md`** for project overview and quick-start.
-2. **Read `.agent-fox/steering.md`** if it exists — project-level directives that
+2. **Read `.specs/steering.md`** if it exists — project-level directives that
    apply to all agents and skills. Follow any instructions found there.
 3. **Read relevant specs** in `.agent-fox/specs/` for the area you're working on.
 4. **Read ADRs** in `docs/adr/` for architectural context.
