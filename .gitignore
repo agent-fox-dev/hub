@@ -6,6 +6,7 @@ web/dist/
 
 # agent-fox
 .agent-fox/
+.nightshift/
 .claude/worktrees/
 
 # Go build output
