@@ -251,15 +251,24 @@ Fetch the latest upstream state and detect any patches that have been merged:
 afc workspace sync api-gateway
 ```
 
-For carry-patch workspaces, the sync response includes additional fields:
+For carry-patch workspaces, the sync response is the usual workspace JSON with
+four extra fields added on top of it:
 
 ```json
 {
+  "slug": "api-gateway",
+  "workspace_mode": "carry_patch",
+  "sync_status": "idle",
+  "upstream_head_sha": "abc123def456...",
+  "last_sync_at": "2024-06-15T10:30:00Z",
+
   "patches_merged": ["fix/connection-pool-leak"],
   "rebuild_triggered": true,
   "force_push_detected": false
 }
 ```
+
+(Abbreviated -- every standard workspace field is present too.)
 
 If any patches are detected as merged, their status transitions to
 `merged_upstream`. By default, a rebuild is automatically triggered after

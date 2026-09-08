@@ -92,8 +92,6 @@ type CompleteSessionRequest struct {
 	ErrorMessage             string `json:"error_message,omitempty"`
 	DurationMs               *int64 `json:"duration_ms,omitempty"`
 	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens,omitempty"`
-	InputTokens              int64  `json:"input_tokens,omitempty"`
-	OutputTokens             int64  `json:"output_tokens,omitempty"`
 }
 
 // ReportUsageRequest is the JSON body for POST /api/v1/sessions/:id/usage.

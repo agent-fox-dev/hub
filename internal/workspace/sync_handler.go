@@ -124,14 +124,25 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		// is registered, delegate to it. The hook handles upstream fetch,
 		// merge detection, and auto-rebuild enqueue independently of the
 		// standard sync flow.
+		//
+		// 16-REQ-5.1 requires the carry-patch fields to be returned "in
+		// addition to standard sync fields", so the hook returns them as a
+		// map and this handler merges them into the workspace response. The
+		// workspace row is re-read first so that upstream_head_sha and
+		// last_sync_at reflect the writes the hook just made.
 		if ws.WorkspaceMode == "carry_patch" && carryPatchSyncHook != nil {
 			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
-			handled, hookErr := carryPatchSyncHook(c, slug, repoPath)
+			extras, handled, hookErr := carryPatchSyncHook(c, slug, repoPath)
 			if hookErr != nil {
 				return hookErr
 			}
 			if handled {
-				return nil
+				updated, readErr := getWorkspaceBySlug(db, slug)
+				if readErr != nil || updated == nil {
+					return respondError(c, http.StatusInternalServerError,
+						"failed to read workspace after sync")
+				}
+				return respondWorkspaceWithExtras(c, http.StatusOK, updated, db, extras)
 			}
 			// If not handled, fall through to standard sync.
 		}

@@ -293,6 +293,16 @@ func main() {
 		NewGitRunner:  cpGitRunnerFactory,
 	})
 
+	// Rebuild rollback resets the integration branch to the SHA recorded
+	// before a completed rebuild. Backs `afc rebuild rollback`.
+	carrypatch.RegisterRebuildRollbackRoutes(cpAPI, carrypatch.RebuildRollbackAPIConfig{
+		DB:            database.SqlDB,
+		Queue:         mergeQueue,
+		WorkspaceRoot: cfg.Workspace.Path,
+		NewGitRunner:  cpGitRunnerFactory,
+		Audit:         auditEmitter,
+	})
+
 	carrypatch.RegisterRebuildPreviewRoutes(cpAPI, carrypatch.RebuildPreviewAPIConfig{
 		DB:            database.SqlDB,
 		WorkspaceRoot: cfg.Workspace.Path,

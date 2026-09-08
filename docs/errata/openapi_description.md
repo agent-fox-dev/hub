@@ -4,10 +4,16 @@
 was built by reading handler source -- both this repository and apikit
 (`github.com/txsvc/apikit`, resolved through the `replace` directive in
 `go.mod`) -- and cross-checking against `docs/api.md` and
-`docs/permissions.md`. This erratum records where the prose docs disagree with
-the code. In every case the OpenAPI document follows the code.
+`docs/permissions.md`.
 
-## 1. Every apikit endpoint is missing its `/api/v1` prefix in the prose docs
+Writing it surfaced six divergences between the prose docs and the handlers.
+All six have since been resolved: four were documentation errors, two were
+implementation bugs. This erratum records what was wrong and how it was
+settled, so the reasoning survives beyond the diff.
+
+## Resolved
+
+### 1. Every apikit endpoint was missing its `/api/v1` prefix — *docs fixed*
 
 `apikit.Server.MountHandlers` registers **all** of its handlers on the server's
 API group, not on the root Echo instance (`apikit/server.go`):
@@ -22,32 +28,33 @@ handlers.NewPATHandler(database, permReg).RegisterRoutes(api)
 ```
 
 That group is mounted at `cfg.Server.MountPoint`, which defaults to `/api/v1`.
-So the real paths are `/api/v1/user`, `/api/v1/user/keys`,
-`/api/v1/user/tokens`, `/api/v1/users`, `/api/v1/orgs`, `/api/v1/auth/callback`
--- not the root-level `/user`, `/users`, `/orgs` that both `docs/api.md` and
-`docs/permissions.md` show throughout.
+The real paths are therefore `/api/v1/user`, `/api/v1/user/keys`,
+`/api/v1/user/tokens`, `/api/v1/users`, `/api/v1/orgs`, and
+`/api/v1/auth/callback` -- not the root-level `/user`, `/users`, `/orgs` that
+both `docs/api.md` and `docs/permissions.md` showed throughout.
 
-Only `/healthz`, `/readyz`, and `/version` are registered on the root instance,
-outside both the mount point and the auth middleware. Hub's own `/metrics` and
-`/git/...` routes are likewise mounted on the root instance.
+Only `GET /healthz`, `GET /readyz`, and `GET /version` are registered on the
+root instance, outside both the mount point and the auth middleware. Hub's own
+`/metrics` and `/git/...` routes are likewise on the root instance.
 
-This also explains the hub's own paths: `/api/v1/user/secrets` and
+This also explains hub's own layout: `/api/v1/user/secrets` and
 `/api/v1/orgs/:slug/secrets` sit alongside apikit's `/api/v1/user` and
-`/api/v1/orgs/:id`, which is why hub's org-scoped secrets and variables live
-under `/orgs` at all.
+`/api/v1/orgs/:id`.
 
-Note the parameter mismatch that results: apikit addresses organizations by
-**id** (`/api/v1/orgs/:id`) while hub's secrets and variables handlers address
-them by **slug** (`/api/v1/orgs/:slug/secrets`). Echo stores parameter names
-per route, so both resolve correctly, but a client cannot assume one identifier
-works for both.
+**Resolution.** Both documents now carry the prefix, and each states the mount
+point explicitly. One asymmetry is worth keeping in mind and is now called out
+in `docs/api.md`: apikit addresses organizations by **id**
+(`/api/v1/orgs/:id`) while hub's secrets and variables handlers address them by
+**slug** (`/api/v1/orgs/:slug/secrets`). Echo stores parameter names per route
+so both resolve correctly, but a client cannot assume one identifier works for
+both.
 
-## 2. `docs/api.md`'s "Non-Workspace Endpoints (apikit-provided)" section is wrong
+### 2. `docs/api.md`'s apikit section described routes that do not exist — *docs fixed*
 
-Beyond the missing prefix, most of that section does not correspond to any
-route apikit registers.
+Beyond the missing prefix, most of the old "Non-Workspace Endpoints
+(apikit-provided)" section did not correspond to any route apikit registers.
 
-| `docs/api.md` claims | Actually |
+| The old text claimed | Actually |
 |---|---|
 | `POST /login` with email + password | No such route. API keys are issued **only** by `POST /api/v1/auth/callback`, the OAuth code exchange. There is no password authentication anywhere in apikit. |
 | `PUT /user` | The route is `PATCH /api/v1/user`. |
@@ -59,68 +66,75 @@ route apikit registers.
 | `POST /orgs` takes `{name, slug}` | `CreateOrgRequest` is `{name, slug, url, owner_id}`. |
 | `GET /orgs/:slug` | The route is `GET /api/v1/orgs/:id`. |
 
-`docs/permissions.md` gets the route *names* right (it was clearly written
-against apikit source) and additionally documents endpoints `docs/api.md` omits
+`docs/permissions.md` had the route *names* right -- it was clearly written
+against apikit source -- and documented endpoints `docs/api.md` omitted
 entirely: `GET /user/tokens/:token_id`, the three
 `/user/tokens/:token_id/permissions` verbs, `POST /user/keys/:key_id/refresh`,
 the `promote`/`demote`/`block`/`unblock` user actions, and the organization
-membership endpoints. Its only error is the missing prefix.
+membership endpoints. Its only error was the missing prefix.
 
-Two routes appear in neither document: `GET /version` and
-`GET /api/v1/auth/providers`. Both are in `docs/openapi.yaml`.
+Two routes appeared in neither document: `GET /version` and
+`GET /api/v1/auth/providers`.
 
-## 3. `POST /api/v1/workspaces/:slug/sync` returns two different bodies
+**Resolution.** `docs/api.md`'s section was rewritten from apikit source. It
+now documents the real routes, request bodies, and status codes, including the
+two that were missing. Both `/auth` routes are public: `RegisterOAuthHandlers`
+runs before `api.Use(authMiddleware)`, and Echo snapshots a group's middleware
+when a route is added, so neither carries the auth middleware.
 
-`docs/api.md` presents the carry-patch fields (`patches_merged`,
-`rebuild_triggered`, `rebuild_job_id`, `force_push_detected`) as additions to
-the workspace response body, and says they are "omitted from the response" for
-standard workspaces -- implying one schema with optional fields.
+### 3. `POST /api/v1/workspaces/:slug/sync` dropped the standard sync fields — *code fixed*
 
-The code returns two disjoint bodies. `handleSyncWorkspace`
-(`internal/workspace/sync_handler.go`) delegates to the carry-patch sync hook
-before the standard sync flow runs; when the hook handles the request the
-handler returns immediately, so the workspace object is never serialised:
+16-REQ-5.1 specifies the return contract as:
 
-```go
-if ws.WorkspaceMode == "carry_patch" && carryPatchSyncHook != nil {
-    handled, hookErr := carryPatchSyncHook(c, slug, repoPath)
-    ...
-    if handled {
-        return nil
-    }
-}
-```
+> sync response includes patches_merged (list of branch names) and
+> rebuild_triggered (boolean) **in addition to standard sync fields**
 
-`handleCarryPatchSyncEndpoint` (`internal/carrypatch/sync_handlers.go`) then
-writes a bare `CarryPatchSyncResponse`. So:
+The implementation returned only the carry-patch fields. `handleSyncWorkspace`
+delegated to the carry-patch hook, and the hook wrote its own body and returned
+`(true, nil)`, so the handler returned immediately and the workspace record was
+never serialised. `docs/cli.md` had it right -- `afc workspace sync` claims to
+print "the updated workspace JSON" -- but for a carry-patch workspace it
+printed four fields and nothing else.
 
-- `standard` workspace -> the full workspace object;
-- `carry_patch` workspace -> only the four carry-patch fields.
+**Resolution.** The hook contract changed: `CarryPatchSyncFunc` now returns the
+carry-patch fields as a `map[string]any` rather than writing a response, and
+`handleSyncWorkspace` merges them into the workspace JSON via
+`respondWorkspaceWithExtras`. The workspace row is re-read first, so
+`upstream_head_sha` and `last_sync_at` reflect the hook's writes.
 
-The OpenAPI document models the `200` response as a `oneOf` over `Workspace`,
-`CarryPatchSyncResponse`, and `SyncStatusAck`. The third arm covers
-`handleCarryPatchSyncEndpoint`'s `{"status": "synced"}` early return, reachable
-only if that handler is mounted directly as a route (via `RegisterSyncRoutes`)
-rather than through the hook. The shipped binary wires the hook, so a standard
-workspace always takes the workspace-object path.
+The old code also had a `{"status": "synced"}` stub for the standard-workspace
+case, which is not the "standard sync response" 16-REQ-5.E4 calls for. The hook
+now reports "not handled" for a non-carry-patch workspace and the request falls
+through to the standard sync flow.
 
-## 4. `POST /api/v1/sessions/:id/complete` accepts two undocumented fields
+`RegisterSyncRoutes` still mounts the carry-patch logic as a standalone route
+for the carrypatch package's own tests. The server binary does not use it --
+only the hook -- because the workspace record is rendered by the workspace
+package. That is documented on the function.
 
-`docs/api.md` lists `status`, `error_message`, `duration_ms`, and
-`cache_creation_input_tokens`. `audit.CompleteSessionRequest`
-(`internal/audit/types.go`) also binds `input_tokens` and `output_tokens`. Both
-are in the OpenAPI request schema.
+Covered by `internal/workspace/sync_carry_patch_response_test.go`.
 
-## 5. Scope and ownership notes that `docs/api.md` omits
+### 4. `POST /api/v1/sessions/:id/complete` bound two dead fields — *code fixed*
 
-`docs/api.md`'s scope table is correct as far as it goes, but three behaviours
-documented only in `docs/permissions.md` are load-bearing for a client:
+`audit.CompleteSessionRequest` declared `input_tokens` and `output_tokens`
+alongside `cache_creation_input_tokens`. Nothing read them: `CompleteSession`
+persists only status, `ended_at`, `error_message`, `duration_ms`, and
+`cache_creation_input_tokens`, which is exactly what 19-REQ-2.1 specifies. A
+client sending token counts to this endpoint got a silent no-op.
+
+**Resolution.** Both fields were removed from the struct. Callers with token
+counts to report should use `POST /api/v1/sessions/:id/usage`, which records
+them. Existing clients are unaffected -- `encoding/json` already ignored the
+extra keys.
+
+### 5. Scope and ownership behaviour was undocumented in `docs/api.md` — *docs fixed*
+
+Three behaviours documented only in `docs/permissions.md` are load-bearing for
+a client:
 
 - `POST /api/v1/workspaces/:slug/sync` accepts `workspaces:write` as well as
-  `workspaces:sync` **when the workspace is in `carry_patch` mode** -- the
-  carry-patch handler checks `hasScope(auth, "workspaces:sync",
-  "workspaces:write")`. The standard sync path and reclone require
-  `workspaces:sync` exclusively.
+  `workspaces:sync` **when the workspace is in `carry_patch` mode**. The
+  standard sync path and reclone require `workspaces:sync` exclusively.
 - `GET /api/v1/workspaces/:slug/rerere`, `DELETE
   /api/v1/workspaces/:slug/rerere/*pathspec`, and
   `GET /api/v1/workspaces/:slug/patch-status` test for the **literal**
@@ -131,20 +145,33 @@ documented only in `docs/permissions.md` are load-bearing for a client:
   patch-status, and audit-read handlers. Only workspace CRUD, secrets,
   variables, session reads, and the git server check `owner_id`.
 
-All three are recorded on the operations they affect.
+**Resolution.** `docs/api.md` gained "Scopes Checked Literally" and "Workspace
+Ownership" sections covering all three, and each operation in
+`docs/openapi.yaml` records the scopes it accepts in `x-required-scopes`.
 
-## 6. `POST /api/v1/workspaces/:slug/rebuilds/:id/rollback` is not mounted
+The unenforced ownership is **behaviour, not a documentation gap**, and it was
+left as-is deliberately: no spec requires ownership on those handlers, and
+changing it would break any caller that relies on cross-workspace access
+today. It is now written down rather than implied. Whether it should stay that
+way is a design question worth deciding on its own.
 
-`docs/api.md` already flags this. `carrypatch.RegisterRebuildRollbackRoutes`
-implements the handler but `cmd/af-hub/main.go` never calls it, so the route
-answers `404` in the shipped binary. The operation is described and marked
-`x-route-registered: false`.
+### 6. `POST /api/v1/workspaces/:slug/rebuilds/:id/rollback` was not mounted — *code fixed*
+
+`carrypatch.RegisterRebuildRollbackRoutes` implemented the handler, and it had
+seven passing tests, but `cmd/af-hub/main.go` never called it. The route
+answered `404` in the shipped binary, which also meant the documented
+`afc rebuild rollback` CLI command could not work.
+
+**Resolution.** The route is registered in `cmd/af-hub/main.go` alongside the
+other carry-patch routes, wired with the same DB, queue, workspace root, git
+runner factory, and audit emitter. The "not registered in production" warning
+is gone from `docs/api.md` and `docs/openapi.yaml`.
 
 ## Verification
 
-The document is valid OpenAPI 3.1, checked with `openapi-spec-validator` 0.9.0.
-No validator runs in `make check`, because the repository carries no Python or
-Node toolchain. To check it manually:
+`docs/openapi.yaml` is valid OpenAPI 3.1, checked with
+`openapi-spec-validator` 0.9.0. No validator runs in `make check`, because the
+repository carries no Python or Node toolchain. To check it manually:
 
 ```sh
 pip install openapi-spec-validator
@@ -159,5 +186,5 @@ print('valid')
 Route coverage was verified by extracting every `(*echo.Group).VERB("path")`
 and `(*echo.Echo).VERB("path")` registration from the non-test Go sources of
 both repositories and diffing against the document's paths. The sets match
-exactly in both directions: 84 hub-owned operations plus 40 apikit operations,
-124 in total across 85 paths.
+exactly in both directions: 84 hub operations plus 40 apikit operations, 124 in
+total across 85 paths.

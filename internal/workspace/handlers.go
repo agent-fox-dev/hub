@@ -43,6 +43,23 @@ func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB) error
 	return c.JSON(code, workspaceResponse(ws, hubURL))
 }
 
+// respondWorkspaceWithExtras writes a workspace JSON object augmented with
+// additional top-level fields. It is used by the sync endpoint, which must
+// return carry-patch fields "in addition to standard sync fields"
+// (16-REQ-5.1).
+//
+// Extras are applied on top of the workspace fields, so a key collision
+// resolves in favour of the extra. Passing a nil or empty map is equivalent
+// to respondWorkspace.
+func respondWorkspaceWithExtras(c echo.Context, code int, ws *Workspace, db *sql.DB, extras map[string]any) error {
+	hubURL := buildHubURL(db, ws)
+	body := workspaceResponse(ws, hubURL)
+	for k, v := range extras {
+		body[k] = v
+	}
+	return c.JSON(code, body)
+}
+
 // workspaceResponse converts a Workspace to a JSON-serializable map.
 // hubURL is included as-is; pass nil for workspaces without a hub URL.
 //

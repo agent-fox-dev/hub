@@ -27,243 +27,296 @@ import (
 //
 // The returned function receives the Echo context, workspace slug, and repo
 // path from the workspace sync handler. It performs upstream fetch, merge
-// detection, and auto-rebuild enqueue, then returns (true, nil) to indicate
-// the sync was handled.
-func NewCarryPatchSyncHook(cfg SyncAPIConfig) func(c echo.Context, slug, repoPath string) (bool, error) {
-	handler := handleCarryPatchSyncEndpoint(cfg)
-	return func(c echo.Context, slug, repoPath string) (bool, error) {
-		// Delegate to the full carry-patch sync handler. Auth is already
-		// validated by the workspace sync handler, so this just executes
-		// the carry-patch-specific logic.
-		if err := handler(c); err != nil {
-			return true, err
+// detection, and auto-rebuild enqueue, and returns the carry-patch response
+// fields for the caller to merge into the standard sync response, as
+// 16-REQ-5.1 requires. It does not write a success body of its own.
+//
+// A (nil, false, nil) return means the workspace turned out not to be in
+// carry_patch mode, and the caller should apply standard sync behaviour
+// (16-REQ-5.E4).
+func NewCarryPatchSyncHook(cfg SyncAPIConfig) func(c echo.Context, slug, repoPath string) (map[string]any, bool, error) {
+	return func(c echo.Context, slug, repoPath string) (map[string]any, bool, error) {
+		// Auth is already validated by the workspace sync handler, so this
+		// just executes the carry-patch-specific logic.
+		resp, err := runCarryPatchSync(cfg, c)
+		if err != nil {
+			return nil, true, err
 		}
-		return true, nil
+		if resp == nil {
+			return nil, false, nil
+		}
+		return resp.asExtras(), true, nil
 	}
+}
+
+// asExtras renders the carry-patch response as top-level JSON fields to merge
+// into the standard sync response. rebuild_job_id is omitted when no rebuild
+// was enqueued, matching the `omitempty` tag on the struct field.
+func (r *CarryPatchSyncResponse) asExtras() map[string]any {
+	extras := map[string]any{
+		"patches_merged":      r.PatchesMerged,
+		"rebuild_triggered":   r.RebuildTriggered,
+		"force_push_detected": r.ForcePushDetected,
+	}
+	if r.RebuildJobID != nil {
+		extras["rebuild_job_id"] = *r.RebuildJobID
+	}
+	return extras
 }
 
 // ===========================================================================
 // POST /workspaces/:slug/sync — carry-patch sync extension
 // ===========================================================================
 
-// handleCarryPatchSyncEndpoint handles POST /api/v1/workspaces/:slug/sync.
+// runCarryPatchSync executes the carry-patch sync extension for the workspace
+// named by the request's :slug parameter: upstream fetch, merge detection
+// (IsAncestor plus the squash-merge heuristics), and auto-rebuild enqueue
+// (16-REQ-5).
 //
-// 16-REQ-5: For carry_patch workspaces, extends the standard sync with
-// upstream merge detection (IsAncestor) and auto-rebuild triggering.
-// 16-REQ-5.E4: For standard workspaces, returns a simple response without
-// carry-patch-specific fields (patches_merged, rebuild_triggered).
-func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		// Auth check.
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+// It returns the carry-patch response fields on success. A nil response with a
+// nil error means the workspace is not in carry_patch mode and the caller
+// should apply standard sync behaviour instead (16-REQ-5.E4).
+//
+// This function deliberately does not write a success body. 16-REQ-5.1
+// requires the carry-patch fields to accompany the standard sync fields, and
+// only the workspace package can render a workspace. Error responses are still
+// written here, and are returned as the error value.
+func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncResponse, error) {
+	// Auth check.
+	auth := apikit.GetAuthInfo(c)
+	if auth == nil {
+		return nil, apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
+	}
+	if isPAT(auth) && !hasScope(auth, "workspaces:sync", "workspaces:write") {
+		return nil, apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:sync")
+	}
+
+	slug := c.Param("slug")
+
+	// Load workspace record.
+	var mode, status, cloneStatus, integrationBranch string
+	var upstreamHeadSHA sql.NullString
+	err := cfg.DB.QueryRow(
+		`SELECT workspace_mode, status, clone_status, integration_branch, upstream_head_sha
+		 FROM workspaces WHERE slug = ?`, slug,
+	).Scan(&mode, &status, &cloneStatus, &integrationBranch, &upstreamHeadSHA)
+	if err == sql.ErrNoRows {
+		return nil, apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+	}
+	if err != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
+	}
+
+	// 16-REQ-5.E4: a standard workspace uses standard sync behaviour without
+	// carry-patch extensions. Report "not handled" so the caller falls
+	// through to it, rather than substituting a non-standard response body.
+	if mode != "carry_patch" {
+		return nil, nil
+	}
+
+	ctx := c.Request().Context()
+
+	// 16-REQ-5.1: Resolve upstream credentials via resolveUpstreamAuth.
+	if cfg.ResolveAuth != nil {
+		if authErr := cfg.ResolveAuth(slug); authErr != nil {
+			// 16-REQ-5.E1: auth failure aborts sync; no state modified.
+			return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "failed to resolve upstream credentials")
 		}
-		if isPAT(auth) && !hasScope(auth, "workspaces:sync", "workspaces:write") {
-			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:sync")
+	}
+
+	// Determine repo path and create git runner.
+	repoPath := filepath.Join(cfg.WorkspaceRoot, slug, "trunk")
+	git, gitErr := cfg.NewGitRunner(repoPath)
+	if gitErr != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to create git runner")
+	}
+
+	// 16-REQ-5.1: Fetch from the 'upstream' remote (not 'origin').
+	if cfg.Fetch != nil {
+		if fetchErr := cfg.Fetch(ctx, repoPath); fetchErr != nil {
+			// 16-REQ-5.E1 / 16-ERR-8: fetch failure aborts sync;
+			// upstream_tracking_ref and patch statuses are not modified.
+			return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "upstream fetch failed")
+		}
+	}
+
+	// Resolve the new upstream HEAD after fetch.
+	newUpstreamHead, err := git.Run(ctx, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to resolve upstream HEAD")
+	}
+
+	// Compare with stored upstream_head_sha.
+	storedSHA := ""
+	if upstreamHeadSHA.Valid {
+		storedSHA = upstreamHeadSHA.String
+	}
+	upstreamAdvanced := newUpstreamHead != storedSHA
+
+	// Detect upstream force-push via ancestry check.
+	// If the stored SHA is non-empty and the new upstream HEAD is not
+	// a descendant of it, the upstream has been force-pushed (history
+	// rewrite). The flag is informational — sync still proceeds.
+	forcePushDetected := false
+	if upstreamAdvanced && storedSHA != "" {
+		isAnc, ancErr := git.IsAncestor(ctx, storedSHA, newUpstreamHead)
+		if ancErr == nil && !isAnc {
+			forcePushDetected = true
+		}
+		// If IsAncestor errors, conservatively leave forcePushDetected
+		// as false to avoid false alarms (NS-REQ-5).
+	}
+
+	// Prepare response.
+	resp := CarryPatchSyncResponse{
+		PatchesMerged:     make([]string, 0),
+		RebuildTriggered:  false,
+		ForcePushDetected: forcePushDetected,
+	}
+
+	// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
+	// with no patches_merged and no rebuild triggered.
+	if !upstreamAdvanced {
+		return &resp, nil
+	}
+
+	// Upstream has advanced — update the workspace record.
+	now := apikit.NowUTC()
+	_, err = cfg.DB.Exec(
+		`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
+		newUpstreamHead, now, now, slug,
+	)
+	if err != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
+	}
+
+	// 16-REQ-5.1: Check each active patch for upstream merge via IsAncestor.
+	patches, listErr := cfg.PatchStore.ListPatches(ctx, slug)
+	if listErr != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
+	}
+
+	// Determine squash merge detection mode from workspace variable.
+	// Values: "ancestry_only", "content_based", "both" (default).
+	squashDetectionMode := "both"
+	if cfg.GetVariable != nil {
+		val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
+		if val == "ancestry_only" || val == "content_based" || val == "both" {
+			squashDetectionMode = val
+		}
+	}
+
+	for _, patch := range patches {
+		// Only check active patches.
+		// 16-PROP-6: merged_upstream is monotonic — never revert.
+		if patch.Status != PatchStatusActive {
+			continue
 		}
 
-		slug := c.Param("slug")
+		merged := false
 
-		// Load workspace record.
-		var mode, status, cloneStatus, integrationBranch string
-		var upstreamHeadSHA sql.NullString
-		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, status, clone_status, integration_branch, upstream_head_sha
-			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &status, &cloneStatus, &integrationBranch, &upstreamHeadSHA)
-		if err == sql.ErrNoRows {
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
-		}
-		if err != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
-		}
-
-		// 16-REQ-5.E4: standard workspaces use standard sync behavior
-		// without carry-patch extensions.
-		if mode != "carry_patch" {
-			return c.JSON(http.StatusOK, map[string]string{"status": "synced"})
-		}
-
-		ctx := c.Request().Context()
-
-		// 16-REQ-5.1: Resolve upstream credentials via resolveUpstreamAuth.
-		if cfg.ResolveAuth != nil {
-			if authErr := cfg.ResolveAuth(slug); authErr != nil {
-				// 16-REQ-5.E1: auth failure aborts sync; no state modified.
-				return apikit.WriteAPIError(c, http.StatusBadGateway, "failed to resolve upstream credentials")
-			}
-		}
-
-		// Determine repo path and create git runner.
-		repoPath := filepath.Join(cfg.WorkspaceRoot, slug, "trunk")
-		git, gitErr := cfg.NewGitRunner(repoPath)
-		if gitErr != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to create git runner")
-		}
-
-		// 16-REQ-5.1: Fetch from the 'upstream' remote (not 'origin').
-		if cfg.Fetch != nil {
-			if fetchErr := cfg.Fetch(ctx, repoPath); fetchErr != nil {
-				// 16-REQ-5.E1 / 16-ERR-8: fetch failure aborts sync;
-				// upstream_tracking_ref and patch statuses are not modified.
-				return apikit.WriteAPIError(c, http.StatusBadGateway, "upstream fetch failed")
-			}
-		}
-
-		// Resolve the new upstream HEAD after fetch.
-		newUpstreamHead, err := git.Run(ctx, "rev-parse", "FETCH_HEAD")
-		if err != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to resolve upstream HEAD")
-		}
-
-		// Compare with stored upstream_head_sha.
-		storedSHA := ""
-		if upstreamHeadSHA.Valid {
-			storedSHA = upstreamHeadSHA.String
-		}
-		upstreamAdvanced := newUpstreamHead != storedSHA
-
-		// Detect upstream force-push via ancestry check.
-		// If the stored SHA is non-empty and the new upstream HEAD is not
-		// a descendant of it, the upstream has been force-pushed (history
-		// rewrite). The flag is informational — sync still proceeds.
-		forcePushDetected := false
-		if upstreamAdvanced && storedSHA != "" {
-			isAnc, ancErr := git.IsAncestor(ctx, storedSHA, newUpstreamHead)
-			if ancErr == nil && !isAnc {
-				forcePushDetected = true
-			}
-			// If IsAncestor errors, conservatively leave forcePushDetected
-			// as false to avoid false alarms (NS-REQ-5).
-		}
-
-		// Prepare response.
-		resp := CarryPatchSyncResponse{
-			PatchesMerged:     make([]string, 0),
-			RebuildTriggered:  false,
-			ForcePushDetected: forcePushDetected,
-		}
-
-		// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
-		// with no patches_merged and no rebuild triggered.
-		if !upstreamAdvanced {
-			return c.JSON(http.StatusOK, resp)
-		}
-
-		// Upstream has advanced — update the workspace record.
-		now := apikit.NowUTC()
-		_, err = cfg.DB.Exec(
-			`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
-			newUpstreamHead, now, now, slug,
-		)
-		if err != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
-		}
-
-		// 16-REQ-5.1: Check each active patch for upstream merge via IsAncestor.
-		patches, listErr := cfg.PatchStore.ListPatches(ctx, slug)
-		if listErr != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
-		}
-
-		// Determine squash merge detection mode from workspace variable.
-		// Values: "ancestry_only", "content_based", "both" (default).
-		squashDetectionMode := "both"
-		if cfg.GetVariable != nil {
-			val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
-			if val == "ancestry_only" || val == "content_based" || val == "both" {
-				squashDetectionMode = val
-			}
-		}
-
-		for _, patch := range patches {
-			// Only check active patches.
-			// 16-PROP-6: merged_upstream is monotonic — never revert.
-			if patch.Status != PatchStatusActive {
+		// Step 1: ancestry check (unless mode is content_based only).
+		if squashDetectionMode != "content_based" {
+			// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
+			// new upstream HEAD.
+			ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
+			if ancestorErr != nil {
+				// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
+				// does not exist locally). Leave status unchanged.
 				continue
 			}
-
-			merged := false
-
-			// Step 1: ancestry check (unless mode is content_based only).
-			if squashDetectionMode != "content_based" {
-				// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
-				// new upstream HEAD.
-				ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
-				if ancestorErr != nil {
-					// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
-					// does not exist locally). Leave status unchanged.
-					continue
-				}
-				merged = ancestorResult
-			}
-
-			// Step 2: squash merge fallback (content-based + PR-number scanning).
-			if !merged && squashDetectionMode != "ancestry_only" {
-				merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
-			}
-
-			if merged {
-				// Transition patch to merged_upstream.
-				_ = cfg.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusMergedUpstream, nil)
-				resp.PatchesMerged = append(resp.PatchesMerged, patch.BranchName)
-			}
+			merged = ancestorResult
 		}
 
-		// ===========================================================
-		// 16-REQ-5.3 / 16-REQ-5.4: Auto-rebuild trigger logic
-		// ===========================================================
+		// Step 2: squash merge fallback (content-based + PR-number scanning).
+		if !merged && squashDetectionMode != "ancestry_only" {
+			merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
+		}
 
-		// Since we already returned early when upstream hasn't advanced,
-		// shouldRebuild is always true here (upstream advanced OR patches
-		// merged). Check the AUTO_REBUILD_AFTER_SYNC workspace variable.
-		autoRebuild := true // default when unset (16-REQ-5.3)
+		if merged {
+			// Transition patch to merged_upstream.
+			_ = cfg.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusMergedUpstream, nil)
+			resp.PatchesMerged = append(resp.PatchesMerged, patch.BranchName)
+		}
+	}
+
+	// ===========================================================
+	// 16-REQ-5.3 / 16-REQ-5.4: Auto-rebuild trigger logic
+	// ===========================================================
+
+	// Since we already returned early when upstream hasn't advanced,
+	// shouldRebuild is always true here (upstream advanced OR patches
+	// merged). Check the AUTO_REBUILD_AFTER_SYNC workspace variable.
+	autoRebuild := true // default when unset (16-REQ-5.3)
+	if cfg.GetVariable != nil {
+		val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
+		if val == "false" {
+			// 16-REQ-5.4: explicitly disabled.
+			autoRebuild = false
+		}
+	}
+
+	if autoRebuild {
+		// Capture strategy at enqueue time (16-PROP-3).
+		strategy := StrategyRebase
 		if cfg.GetVariable != nil {
-			val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
-			if val == "false" {
-				// 16-REQ-5.4: explicitly disabled.
-				autoRebuild = false
+			val, _ := cfg.GetVariable("workspace", slug, "REBUILD_STRATEGY")
+			if val != "" {
+				strategy = val
 			}
 		}
 
-		if autoRebuild {
-			// Capture strategy at enqueue time (16-PROP-3).
-			strategy := StrategyRebase
-			if cfg.GetVariable != nil {
-				val, _ := cfg.GetVariable("workspace", slug, "REBUILD_STRATEGY")
-				if val != "" {
-					strategy = val
-				}
-			}
-
-			payload := RebuildPayload{
-				WorkspaceSlug:     slug,
-				Strategy:          strategy,
-				SubmittedBy:       auth.UserID,
-				IntegrationBranch: integrationBranch,
-			}
-			payloadJSON, _ := json.Marshal(payload)
-			groupKey := slug + ":" + integrationBranch
-			nonce := uuid.New().String()
-
-			jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
-				Type:        "rebuild",
-				Key:         slug,
-				Nonce:       nonce,
-				Payload:     payloadJSON,
-				SubmittedBy: auth.UserID,
-				Group:       groupKey,
-			})
-
-			if enqErr == nil && !duplicate {
-				resp.RebuildTriggered = true
-				resp.RebuildJobID = &jobID
-			}
-			// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
-			// running, silently ignore — rebuild_triggered stays false.
+		payload := RebuildPayload{
+			WorkspaceSlug:     slug,
+			Strategy:          strategy,
+			SubmittedBy:       auth.UserID,
+			IntegrationBranch: integrationBranch,
 		}
+		payloadJSON, _ := json.Marshal(payload)
+		groupKey := slug + ":" + integrationBranch
+		nonce := uuid.New().String()
 
+		jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
+			Type:        "rebuild",
+			Key:         slug,
+			Nonce:       nonce,
+			Payload:     payloadJSON,
+			SubmittedBy: auth.UserID,
+			Group:       groupKey,
+		})
+
+		if enqErr == nil && !duplicate {
+			resp.RebuildTriggered = true
+			resp.RebuildJobID = &jobID
+		}
+		// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
+		// running, silently ignore — rebuild_triggered stays false.
+	}
+
+	return &resp, nil
+}
+
+// handleCarryPatchSyncEndpoint adapts runCarryPatchSync to an echo.HandlerFunc
+// for RegisterSyncRoutes, which mounts the carry-patch sync logic as a
+// standalone route.
+//
+// The server binary does not use this route: it registers the workspace sync
+// endpoint and reaches the carry-patch logic through NewCarryPatchSyncHook, so
+// that the response carries the standard sync fields as well (16-REQ-5.1).
+// Mounted on its own, only the carry-patch fields are available, because the
+// workspace record is rendered by the workspace package.
+func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		resp, err := runCarryPatchSync(cfg, c)
+		if err != nil {
+			return err
+		}
+		if resp == nil {
+			// 16-REQ-5.E4: standard workspace. Without the workspace package
+			// there is no standard sync response to fall through to, so
+			// acknowledge the sync without carry-patch fields.
+			return c.JSON(http.StatusOK, map[string]string{"status": "synced"})
+		}
 		return c.JSON(http.StatusOK, resp)
 	}
 }

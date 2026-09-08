@@ -40,7 +40,7 @@ ownership and role instead.
 ### Lifecycle
 
 **Creation.** API keys are created exclusively through the OAuth login
-flow (`POST /auth/callback`). The CLI runs `afc login`, opens a browser
+flow (`POST /api/v1/auth/callback`). The CLI runs `afc login`, opens a browser
 for GitHub OAuth, receives an authorization code, and exchanges it with
 the hub. The hub upserts the user record, revokes all existing API keys
 for that user, generates a new key (`af_<key_id>_<secret>`), and returns
@@ -48,14 +48,14 @@ it once. The plaintext secret is never stored server-side — only the
 SHA-256 hash is persisted. Default expiry is 90 days (allowed: 0, 30, 60,
 or 90).
 
-**Refresh.** `POST /user/keys/:key_id/refresh` generates a new secret
+**Refresh.** `POST /api/v1/user/keys/:key_id/refresh` generates a new secret
 while preserving the key_id and recalculates expiry. This endpoint
 rejects PAT authentication — API key auth is required.
 
 **Revocation.** Keys can be revoked three ways:
-- Self-service: `DELETE /user/keys/:key_id` (self-revocation of the
+- Self-service: `DELETE /api/v1/user/keys/:key_id` (self-revocation of the
   authenticating key is allowed).
-- Admin: `DELETE /users/:id/keys/:key_id`.
+- Admin: `DELETE /api/v1/users/:id/keys/:key_id`.
 - Automatic: re-login via OAuth mass-revokes all existing keys for the
   user.
 
@@ -90,7 +90,7 @@ keys — they have implicit `git:read` + `git:write`.
 
 **2. Ownership enforcement.** Despite bypassing scope checks, API keys
 are strictly scoped to resources they own:
-- REST `/user/*` endpoints query `WHERE user_id = ?` using the
+- REST `/api/v1/user/*` endpoints query `WHERE user_id = ?` using the
   authenticated user's ID.
 - Core workspace CRUD handlers (create, list, get, update, archive,
   reactivate, delete) check `ws.OwnerID == auth.UserID` and return 404 on
@@ -126,7 +126,7 @@ Only admin tokens bypass ownership.
 | Permissions | Implicit full access (bypass all scope checks) | Must carry explicit scopes |
 | Admin access | Admin-role keys pass `RequireAdmin` | Never admin, regardless of user role |
 | Privilege escalation | Can create PATs with any registered permissions | New PAT must be a subset of creating PAT |
-| Credential refresh | `POST /user/keys/:key_id/refresh` (API key auth only) | Not supported |
+| Credential refresh | `POST /api/v1/user/keys/:key_id/refresh` (API key auth only) | Not supported |
 | Intended use | Interactive / CLI | Programmatic / CI |
 
 ### CLI Usage
@@ -151,23 +151,29 @@ git config --global credential.<hub-url>.helper "!afc credential-helper"
 
 ### Endpoint Access Matrix
 
+All apikit endpoints below are mounted on the same API group as the workspace
+endpoints, so they live under the configured mount point -- `/api/v1` by
+default (`server.mount_point` in `config.toml`). Only `GET /healthz`,
+`GET /readyz`, `GET /version`, hub's `GET /metrics`, and the `/git/...` routes
+sit outside it.
+
 #### Self-Service Endpoints (all API keys)
 
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
-| `GET /user` | allowed | own profile via `GetUserID` |
-| `PATCH /user` | allowed | own profile |
-| `GET /user/orgs` | allowed | own memberships |
-| `GET /user/keys` | allowed | own keys via `WHERE user_id = ?` |
-| `POST /user/keys/:key_id/refresh` | allowed | own key (404 on mismatch) |
-| `DELETE /user/keys/:key_id` | allowed | own key (self-revocation permitted) |
-| `POST /user/tokens` | allowed | creates PAT for own user (no escalation check) |
-| `GET /user/tokens` | allowed | own PATs |
-| `GET /user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
-| `DELETE /user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
-| `PUT /user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
-| `PATCH /user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
-| `DELETE /user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
+| `GET /api/v1/user` | allowed | own profile via `GetUserID` |
+| `PATCH /api/v1/user` | allowed | own profile |
+| `GET /api/v1/user/orgs` | allowed | own memberships |
+| `GET /api/v1/user/keys` | allowed | own keys via `WHERE user_id = ?` |
+| `POST /api/v1/user/keys/:key_id/refresh` | allowed | own key (404 on mismatch) |
+| `DELETE /api/v1/user/keys/:key_id` | allowed | own key (self-revocation permitted) |
+| `POST /api/v1/user/tokens` | allowed | creates PAT for own user (no escalation check) |
+| `GET /api/v1/user/tokens` | allowed | own PATs |
+| `GET /api/v1/user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
+| `DELETE /api/v1/user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
+| `PUT /api/v1/user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
+| `PATCH /api/v1/user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
+| `DELETE /api/v1/user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
 
 #### Workspace Endpoints (all API keys)
 
@@ -204,28 +210,28 @@ keys (`Role == "admin"`) pass `RequireAdmin` and gain access to:
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /users` | Create user |
-| `GET /users` | List all users |
-| `GET /users/:id` | Get any user |
-| `PATCH /users/:id` | Update any user |
-| `POST /users/:id/promote` | Promote to admin |
-| `POST /users/:id/demote` | Demote from admin |
-| `POST /users/:id/block` | Block user |
-| `POST /users/:id/unblock` | Unblock user |
-| `GET /users/:id/keys` | List any user's keys |
-| `DELETE /users/:id/keys/:key_id` | Revoke any user's key |
-| `GET /users/:id/tokens` | List any user's PATs |
-| `DELETE /users/:id/tokens/:token_id` | Revoke any user's PAT |
-| `POST /orgs` | Create org |
-| `GET /orgs` | List all orgs |
-| `GET /orgs/:id` | View any org (bypasses membership) |
-| `PATCH /orgs/:id` | Update any org |
-| `DELETE /orgs/:id` | Delete org |
-| `POST /orgs/:id/block` | Block org |
-| `POST /orgs/:id/unblock` | Unblock org |
-| `GET /orgs/:id/members` | List members (bypasses membership) |
-| `PUT /orgs/:id/members/:user_id` | Add member |
-| `DELETE /orgs/:id/members/:user_id` | Remove member |
+| `POST /api/v1/users` | Create user |
+| `GET /api/v1/users` | List all users |
+| `GET /api/v1/users/:id` | Get any user |
+| `PATCH /api/v1/users/:id` | Update any user |
+| `POST /api/v1/users/:id/promote` | Promote to admin |
+| `POST /api/v1/users/:id/demote` | Demote from admin |
+| `POST /api/v1/users/:id/block` | Block user |
+| `POST /api/v1/users/:id/unblock` | Unblock user |
+| `GET /api/v1/users/:id/keys` | List any user's keys |
+| `DELETE /api/v1/users/:id/keys/:key_id` | Revoke any user's key |
+| `GET /api/v1/users/:id/tokens` | List any user's PATs |
+| `DELETE /api/v1/users/:id/tokens/:token_id` | Revoke any user's PAT |
+| `POST /api/v1/orgs` | Create org |
+| `GET /api/v1/orgs` | List all orgs |
+| `GET /api/v1/orgs/:id` | View any org (bypasses membership) |
+| `PATCH /api/v1/orgs/:id` | Update any org |
+| `DELETE /api/v1/orgs/:id` | Delete org |
+| `POST /api/v1/orgs/:id/block` | Block org |
+| `POST /api/v1/orgs/:id/unblock` | Unblock org |
+| `GET /api/v1/orgs/:id/members` | List members (bypasses membership) |
+| `PUT /api/v1/orgs/:id/members/:user_id` | Add member |
+| `DELETE /api/v1/orgs/:id/members/:user_id` | Remove member |
 
 ### Non-Obvious Behaviors
 
@@ -258,7 +264,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | Read access to the authenticated user's own profile |
-| **Endpoints** | `GET /user`, `PATCH /user` |
+| **Endpoints** | `GET /api/v1/user`, `PATCH /api/v1/user` |
 
 ### orgs:read
 
@@ -266,7 +272,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | Read access to the authenticated user's organization memberships |
-| **Endpoints** | `GET /user/orgs` |
+| **Endpoints** | `GET /api/v1/user/orgs` |
 
 ### orgs:write
 
@@ -290,7 +296,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | Reserved for PAT-scoped API key management (revoke) |
-| **Endpoints** | `DELETE /user/keys/:key_id` |
+| **Endpoints** | `DELETE /api/v1/user/keys/:key_id` |
 
 ### tokens:read
 
@@ -298,7 +304,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | List and retrieve the authenticated user's PATs (metadata only) |
-| **Endpoints** | `GET /user/tokens`, `GET /user/tokens/:token_id` |
+| **Endpoints** | `GET /api/v1/user/tokens`, `GET /api/v1/user/tokens/:token_id` |
 
 ### tokens:manage
 
@@ -306,7 +312,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | Create and revoke PATs, and modify PAT permissions. Privilege escalation is blocked: a new PAT's permissions must be a subset of the creating PAT's permissions. |
-| **Endpoints** | `POST /user/tokens`, `DELETE /user/tokens/:token_id`, `PUT /user/tokens/:token_id/permissions`, `PATCH /user/tokens/:token_id/permissions`, `DELETE /user/tokens/:token_id/permissions` |
+| **Endpoints** | `POST /api/v1/user/tokens`, `DELETE /api/v1/user/tokens/:token_id`, `PUT /api/v1/user/tokens/:token_id/permissions`, `PATCH /api/v1/user/tokens/:token_id/permissions`, `DELETE /api/v1/user/tokens/:token_id/permissions` |
 
 ### tokens:write
 
@@ -314,7 +320,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | Modify PAT permissions. A strict subset of `tokens:manage` by convention — a caller with `tokens:manage` can do everything `tokens:write` allows. |
-| **Endpoints** | `PUT /user/tokens/:token_id/permissions`, `PATCH /user/tokens/:token_id/permissions`, `DELETE /user/tokens/:token_id/permissions` |
+| **Endpoints** | `PUT /api/v1/user/tokens/:token_id/permissions`, `PATCH /api/v1/user/tokens/:token_id/permissions`, `DELETE /api/v1/user/tokens/:token_id/permissions` |
 
 ---
 

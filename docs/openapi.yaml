@@ -528,14 +528,19 @@ paths:
         (`idle -> syncing -> idle|error`, `error -> syncing -> idle`); a
         deferred cleanup guarantees it never remains stuck at `syncing`.
 
-        ### Response shape depends on `workspace_mode`
+        ### Response shape
 
-        For a `standard` workspace the response is the updated workspace
-        object. For a `carry_patch` workspace the request is delegated to the
-        carry-patch sync extension, which fetches the `upstream` remote,
-        detects patches merged upstream, flags upstream force-pushes, and may
-        enqueue a rebuild -- and returns the carry-patch sync summary instead
-        of the workspace object.
+        The response is always the updated workspace object. For a
+        `carry_patch` workspace the request is delegated to the carry-patch
+        sync extension -- which fetches the `upstream` remote, detects patches
+        merged upstream, flags upstream force-pushes, and may enqueue a
+        rebuild -- and its four fields are merged into the workspace JSON as
+        additional top-level keys, per 16-REQ-5.1. The workspace row is
+        re-read after the extension runs, so `upstream_head_sha` and
+        `last_sync_at` reflect its writes.
+
+        A `standard` workspace takes the standard sync path and carries none
+        of the carry-patch fields (16-REQ-5.E4).
 
         Merge detection for carry-patch workspaces is governed by the
         `SQUASH_MERGE_DETECTION` workspace variable (`ancestry_only`,
@@ -561,15 +566,16 @@ paths:
       responses:
         "200":
           description: |
-            Sync completed. Standard workspaces return the updated workspace;
-            carry-patch workspaces return the carry-patch sync summary.
+            Sync completed. The body is the updated workspace; a carry-patch
+            workspace additionally carries `patches_merged`,
+            `rebuild_triggered`, `force_push_detected`, and -- when a rebuild
+            was enqueued -- `rebuild_job_id`.
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: "#/components/schemas/Workspace"
                   - $ref: "#/components/schemas/CarryPatchSyncResponse"
-                  - $ref: "#/components/schemas/SyncStatusAck"
               examples:
                 standard:
                   summary: Standard workspace, fast-forwarded
@@ -578,12 +584,22 @@ paths:
                     status: active
                     clone_status: ready
                     sync_status: idle
+                    workspace_mode: standard
                     head_sha: fedcba9876543210fedcba9876543210fedcba98
                     upstream_head_sha: fedcba9876543210fedcba9876543210fedcba98
                     last_sync_at: "2026-09-01T12:00:00Z"
                 carryPatch:
                   summary: Carry-patch workspace, rebuild enqueued
                   value:
+                    slug: vendor-fork
+                    status: active
+                    clone_status: ready
+                    sync_status: idle
+                    workspace_mode: carry_patch
+                    upstream_url: https://github.com/upstream/repo.git
+                    integration_branch: deploy
+                    upstream_head_sha: abc123def456abc123def456abc123def456abcd
+                    last_sync_at: "2026-09-01T12:00:00Z"
                     patches_merged: ["feature/already-merged"]
                     rebuild_triggered: true
                     rebuild_job_id: d3b07384-d113-4ec5-8a4e-a12345678901
@@ -1224,16 +1240,11 @@ paths:
       tags: [Rebuilds]
       operationId: rollbackRebuild
       summary: Roll the integration branch back to a pre-rebuild state
-      description: |
-        **Not mounted in the shipped server.** `RegisterRebuildRollbackRoutes`
-        implements this handler but `cmd/af-hub/main.go` does not call it, so
-        the route currently answers `404`. The description below covers the
-        intended behaviour once it is wired up.
-
+      description: >-
         Resets the integration branch to the `previous_integration_head_sha`
-        recorded in the rebuild result.
+        recorded in the rebuild result. Backs `afc rebuild rollback`.
+        Ownership is not enforced.
       x-required-scopes: ["rebuilds:write"]
-      x-route-registered: false
       responses:
         "200":
           description: The integration branch was reset.
@@ -1246,13 +1257,7 @@ paths:
         "403":
           $ref: "#/components/responses/MissingScope"
         "404":
-          description: >-
-            The route is not mounted in the shipped server; when mounted, the
-            job was not found or belongs to another workspace.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          $ref: "#/components/responses/JobNotFound"
         "409":
           description: >-
             No previous integration head is available to roll back to (first
@@ -5343,9 +5348,12 @@ components:
 
     CarryPatchSyncResponse:
       type: object
-      description: >-
+      description: |
         Returned by `POST /api/v1/workspaces/{slug}/sync` when the workspace is
-        in `carry_patch` mode.
+        in `carry_patch` mode: the full workspace object plus the four
+        carry-patch fields as additional top-level keys (16-REQ-5.1).
+      allOf:
+        - $ref: "#/components/schemas/Workspace"
       required: [patches_merged, rebuild_triggered, force_push_detected]
       properties:
         patches_merged:
@@ -5359,26 +5367,17 @@ components:
           type: boolean
           description: Whether this sync enqueued a rebuild job.
         rebuild_job_id:
-          type: [string, "null"]
+          type: string
           format: uuid
           description: >-
-            The enqueued rebuild job. Present only when `rebuild_triggered` is
-            true.
+            The enqueued rebuild job. Omitted entirely when no rebuild was
+            enqueued -- it is never sent as null.
         force_push_detected:
           type: boolean
           description: >-
             Whether the new upstream HEAD is not a descendant of the previously
             stored one, indicating a history rewrite. Informational only -- the
             sync still proceeds.
-
-    SyncStatusAck:
-      type: object
-      description: >-
-        Returned by the carry-patch sync handler when it is invoked directly
-        for a `standard` workspace.
-      properties:
-        status:
-          const: synced
 
     # -- Patches ---------------------------------------------------------------
 
@@ -6116,12 +6115,6 @@ components:
           type: [integer, "null"]
           format: int64
         cache_creation_input_tokens:
-          type: integer
-          format: int64
-        input_tokens:
-          type: integer
-          format: int64
-        output_tokens:
           type: integer
           format: int64
 

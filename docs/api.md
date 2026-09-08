@@ -79,11 +79,49 @@ they can access. The following scopes are available for workspace operations:
 - `vars:write` implies `vars:read` — a PAT with write scope can also list and
   read variable values.
 
+### Scopes Checked Literally
+
+Three handlers test for a scope string directly rather than through the
+implications above. A PAT holding only `workspaces:create` or
+`workspaces:write` can list and get workspaces but is rejected by:
+
+| Endpoint | Requires the literal scope |
+|----------|---------------------------|
+| `GET /api/v1/workspaces/:slug/rerere` | `workspaces:read` |
+| `GET /api/v1/workspaces/:slug/patch-status` | `workspaces:read` |
+| `DELETE /api/v1/workspaces/:slug/rerere/*pathspec` | `workspaces:write` |
+
+Conversely, `POST /api/v1/workspaces/:slug/sync` accepts **either**
+`workspaces:sync` or `workspaces:write` when the workspace is in `carry_patch`
+mode. The standard sync path and `POST /api/v1/workspaces/:slug/reclone`
+require `workspaces:sync` exclusively.
+
+### Workspace Ownership
+
+Ownership is not enforced uniformly. Holding the right scope is sufficient to
+act on **any** workspace slug at these endpoints, whoever owns it:
+
+- sync and reclone
+- all patch endpoints
+- all merge endpoints and batch rebase
+- all rebuild endpoints, rebuild-preview, and patch-status
+- rerere list and forget
+- audit read endpoints
+
+Ownership **is** enforced (non-owners get 404) on workspace CRUD, secrets,
+variables, session reads, and the git server.
+
 ### Anti-Enumeration Policy
 
 When a PAT lacks the required scope for an endpoint, or the requested
-workspace is not owned by the PAT's user, the API returns HTTP 404 (not 403)
-to avoid disclosing the existence of resources.
+workspace is not owned by the PAT's user, the workspace CRUD endpoints (list,
+get, update, archive, reactivate, delete) return HTTP 404 (not 403) to avoid
+disclosing the existence of resources. The git server does the same, answering
+a pkt-line 404 for non-owner access.
+
+`POST /api/v1/workspaces` is the exception: it returns 403, because there is no
+existing resource to enumerate. The other endpoint families also return 403 for
+a missing scope.
 
 ---
 
@@ -496,11 +534,25 @@ or unexpected failures.
 
 When the workspace is in `carry_patch` mode, the sync endpoint extends the
 standard behavior with upstream merge detection, squash merge detection,
-upstream force-push detection, and automatic rebuild triggering. The response
-includes additional fields:
+upstream force-push detection, and automatic rebuild triggering.
+
+The four carry-patch fields are added **on top of** the standard workspace
+JSON, not in place of it (16-REQ-5.1). The workspace record is re-read after
+the carry-patch work completes, so `upstream_head_sha` and `last_sync_at`
+reflect it:
 
 ```json
 {
+  "slug": "my-workspace",
+  "status": "active",
+  "clone_status": "ready",
+  "sync_status": "idle",
+  "workspace_mode": "carry_patch",
+  "upstream_url": "https://github.com/upstream/repo.git",
+  "integration_branch": "deploy",
+  "upstream_head_sha": "abc123def456...",
+  "last_sync_at": "2024-06-15T10:30:00Z",
+
   "patches_merged": ["feature/already-merged"],
   "rebuild_triggered": true,
   "rebuild_job_id": "d3b07384-d113-4ec5-8a4e-a12345678901",
@@ -508,11 +560,13 @@ includes additional fields:
 }
 ```
 
+(Abbreviated -- every field from the Workspace Response Schema is present.)
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `patches_merged` | string[] | Branch names of patches detected as merged upstream (via ancestry check, content-based `git cherry` detection, or PR-number scanning) |
 | `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
-| `rebuild_job_id` | string or null | ID of the enqueued rebuild job (present only when `rebuild_triggered` is `true`) |
+| `rebuild_job_id` | string | ID of the enqueued rebuild job. Omitted entirely when no rebuild was enqueued -- it is never `null`. |
 | `force_push_detected` | boolean | Whether the upstream HEAD is not a descendant of the previously stored upstream SHA, indicating a history rewrite. Informational only -- sync still proceeds. |
 
 **Carry-Patch Sync Flow:**
@@ -543,8 +597,10 @@ includes additional fields:
    (`rebuild_triggered=false`).
 
 **Standard Workspace Behavior:** When the workspace is in `standard` mode, the
-carry-patch-specific fields (`patches_merged`, `rebuild_triggered`,
-`rebuild_job_id`, `force_push_detected`) are omitted from the response.
+carry-patch extension does not run at all -- the request takes the standard
+sync path and the response is the plain workspace JSON, with none of
+`patches_merged`, `rebuild_triggered`, `rebuild_job_id`, or
+`force_push_detected` (16-REQ-5.E4).
 
 ---
 
@@ -1606,11 +1662,6 @@ Requeue a dead-lettered rebuild job.
 | 409 | Job is not in `dead_letter` status, or an active rebuild job already exists for this workspace |
 
 ### POST /api/v1/workspaces/:slug/rebuilds/:id/rollback
-
-> **Not registered in production.** The handler is implemented
-> (`RegisterRebuildRollbackRoutes`) but not wired in the server binary.
-> Calling this endpoint returns 404. The documentation below describes the
-> intended behavior for when the route is enabled.
 
 Roll back the integration branch to the state before a completed rebuild by
 resetting it to the `previous_integration_head_sha` stored in the rebuild
@@ -2962,17 +3013,68 @@ behavior. They can be set via the
 
 ---
 
-## Non-Workspace Endpoints (apikit-provided)
+## Identity and Access Endpoints (apikit-provided)
 
-The following endpoints are provided by the `apikit` library and are available
-alongside the workspace endpoints. All endpoints use the same authentication
-mechanisms and error envelope format described above.
+The following endpoints are provided by the `apikit` library. They are mounted
+on the **same API group** as the workspace endpoints, so they live under the
+configured mount point -- `/api/v1` by default (`server.mount_point` in
+`config.toml`). They use the same authentication mechanisms and error envelope
+described above.
 
-### Login
+The only routes registered outside the API group are `GET /healthz`,
+`GET /readyz`, `GET /version`, and hub's own `GET /metrics` and
+`/git/...` endpoints.
 
-#### POST /login
+### Server Information
 
-Authenticate a user and obtain an API key.
+#### GET /version
+
+Return build information and the configured API mount point.
+
+**Authentication:** None. Registered at the server root, outside the API auth
+group. Cached publicly.
+
+**Response:** HTTP 200 OK.
+
+```json
+{
+  "go_version": "1.26.5",
+  "build_time": "2026-09-01T00:00:00Z",
+  "commit": "abc1234",
+  "mount_point": "/api/v1"
+}
+```
+
+---
+
+### Authentication
+
+#### GET /api/v1/auth/providers
+
+List the configured OAuth providers and the authorize URL for each.
+
+**Authentication:** None. `RegisterOAuthHandlers` runs before the auth
+middleware is attached to the API group, and Echo captures a group's middleware
+when a route is added, so both `/auth` routes are public. Cached publicly for
+five minutes.
+
+**Response:** HTTP 200 OK with a JSON array.
+
+```json
+[
+  {
+    "name": "github",
+    "authorize_url": "https://github.com/login/oauth/authorize?client_id=..."
+  }
+]
+```
+
+---
+
+#### POST /api/v1/auth/callback
+
+Exchange an OAuth authorization code for a user record and an API key. This is
+the **only** way an API key is created -- there is no password login endpoint.
 
 **Authentication:** None (public endpoint).
 
@@ -2980,106 +3082,173 @@ Authenticate a user and obtain an API key.
 
 ```json
 {
-  "email": "user@example.com",
-  "password": "secret"
+  "provider": "github",
+  "code": "authorization-code-from-provider",
+  "redirect_uri": "http://localhost:8080/callback",
+  "expires": 90
 }
 ```
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `email` | yes | string | User's email address |
-| `password` | yes | string | User's password |
+| `provider` | yes | string | Provider name, as listed by `GET /api/v1/auth/providers` |
+| `code` | yes | string | Authorization code returned by the OAuth provider |
+| `redirect_uri` | no | string | Validated against the provider's redirect allowlist |
+| `expires` | no | integer | API key lifetime in days; must be 0, 30, 60, or 90. Defaults to 90. `0` means no expiry. |
 
-**Response:** HTTP 200 OK with a JSON object containing the API key and user
-information.
+**Behavior:** In a single transaction the hub upserts the user record, revokes
+**all** existing API keys for that user, and generates a new key. The plaintext
+key is returned once; only its SHA-256 hash is persisted. On a new user, hub's
+`OnAfterUserCreate` hook runs inside the same transaction and creates the
+user's personal organization.
+
+**Note:** Because re-login mass-revokes keys, any automation still holding an
+older key for the same user stops working after a login.
+
+**Response:** HTTP 200 OK.
+
+```json
+{
+  "user": {
+    "id": "uuid-string",
+    "username": "alice",
+    "email": "alice@example.com",
+    "full_name": "Alice Example",
+    "status": "active",
+    "role": "user",
+    "provider": "github",
+    "provider_id": "12345",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+  },
+  "api_key": {
+    "key": "af_<key_id>_<secret>",
+    "key_id": "<key_id>",
+    "expires_at": "2024-04-01T00:00:00Z"
+  }
+}
+```
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Missing or invalid fields |
-| 401 | Invalid credentials |
+| 400 | Missing or invalid fields; `redirect_uri` not in the allowlist |
+| 401 | The authorization code is invalid or expired |
+| 403 | The matched user is blocked |
+| 409 | The user already exists under a conflicting identity |
 
 ---
 
 ### User
 
-#### GET /user
+#### GET /api/v1/user
 
 Get the profile of the authenticated user.
 
-**Authentication:** API Key, PAT, or Admin Token.
+**Authentication:** API Key, PAT with `users:read` scope, or Admin Token.
 
-**Response:** HTTP 200 OK with user profile JSON.
+**Response:** HTTP 200 OK with the user object (see the callback response
+above for the field set).
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
+| 404 | User not found |
 
-#### PUT /user
+#### PATCH /api/v1/user
 
-Update the authenticated user's profile.
+Update the authenticated user's profile. `full_name` is the only mutable
+field, and it is **required** -- a missing or null value is rejected.
 
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key, PAT with `users:read` scope, or Admin Token.
 
-**Response:** HTTP 200 OK with updated user profile JSON.
+**Request Body:**
+
+```json
+{
+  "full_name": "Alice Example"
+}
+```
+
+**Response:** HTTP 200 OK with the updated user object.
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Invalid request body |
+| 400 | Invalid request body, or `full_name` is missing |
 | 401 | Unauthenticated request |
+| 404 | User not found |
 
 ---
 
 ### Keys
 
-#### GET /user/keys
+API keys are created only by the OAuth callback. These endpoints list, rotate,
+and revoke them; none of them creates a key.
 
-List API keys for the authenticated user.
+#### GET /api/v1/user/keys
 
-**Authentication:** API Key or Admin Token.
+List API keys for the authenticated user. Metadata only -- secret hashes,
+expiry-day settings, and plaintext secrets are never returned. Supports
+conditional GET via ETag.
 
-**Response:** HTTP 200 OK with a JSON array of API key metadata.
+**Authentication:** API Key, PAT with `keys:read` scope, or Admin Token.
+
+**Response:** HTTP 200 OK with a JSON array.
+
+```json
+[
+  {
+    "key_id": "<key_id>",
+    "created_at": "2024-01-01T00:00:00Z",
+    "expires_at": "2024-04-01T00:00:00Z",
+    "revoked_at": null
+  }
+]
+```
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
+| 304 | The ETag matched; the listing is unchanged |
 | 401 | Unauthenticated request |
 
-#### POST /user/keys
+#### POST /api/v1/user/keys/:key_id/refresh
 
-Create a new API key for the authenticated user.
+Rotate an API key's secret, preserving `key_id` and recomputing the expiry
+from the key's stored lifetime.
 
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key only. **PAT authentication is rejected.**
 
-**Request Body:**
+**Response:** HTTP 200 OK. The plaintext key is returned only here.
 
 ```json
 {
-  "description": "My API Key"
+  "key": "af_<key_id>_<new-secret>",
+  "key_id": "<key_id>",
+  "expires_at": "2024-07-01T00:00:00Z"
 }
 ```
-
-**Response:** HTTP 201 Created with the new API key (the full key value is
-only returned once at creation time).
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Invalid request body |
-| 401 | Unauthenticated request |
+| 400 | The key is revoked, or already expired |
+| 401 | Unauthenticated, or authenticated with something other than an API key |
+| 404 | Key not found or not owned by the user |
 
-#### DELETE /user/keys/:id
+#### DELETE /api/v1/user/keys/:key_id
 
-Revoke an API key.
+Revoke an API key. Self-revocation is permitted: the auth middleware validates
+the credential before the handler runs and does not re-validate mid-flight.
 
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key, PAT with `keys:manage` scope, or Admin Token.
 
 **Response:** HTTP 204 No Content.
 
@@ -3088,179 +3257,246 @@ Revoke an API key.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 404 | Key not found or not owned by user |
+| 404 | Key not found or not owned by the user |
 
 ---
 
 ### Tokens
 
-#### GET /user/tokens
+#### GET /api/v1/user/tokens
 
-List personal access tokens (PATs) for the authenticated user.
+List personal access tokens (PATs) for the authenticated user, including the
+permissions granted to each.
 
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key, PAT with `tokens:read` scope, or Admin Token.
 
-**Response:** HTTP 200 OK with a JSON array of token metadata, including
-scopes granted to each token.
+**Response:** HTTP 200 OK with a JSON array.
 
-**Error Codes:**
+```json
+[
+  {
+    "token_id": "<token_id>",
+    "name": "CI token",
+    "permissions": ["workspaces:read", "workspaces:create"],
+    "expires_at": "2024-04-01T00:00:00Z",
+    "created_at": "2024-01-01T00:00:00Z",
+    "revoked_at": null
+  }
+]
+```
 
-| Status | Condition |
-|--------|-----------|
-| 401 | Unauthenticated request |
+#### POST /api/v1/user/tokens
 
-#### POST /user/tokens
+Create a personal access token with specific permissions.
 
-Create a new personal access token with specific permission scopes.
-
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key, PAT with `tokens:manage` scope, or Admin Token.
 
 **Request Body:**
 
 ```json
 {
-  "description": "CI token",
-  "scopes": ["workspaces:read", "workspaces:create"]
+  "name": "CI token",
+  "permissions": ["workspaces:read", "workspaces:create"],
+  "expires": 90
 }
 ```
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `description` | yes | string | Human-readable label for the token |
-| `scopes` | yes | string[] | Permission scopes to grant (see Permission Scopes section) |
+| `name` | yes | string | Human-readable label; max 255 characters |
+| `permissions` | yes | string[] | Permission scopes to grant (see Permission Scopes) |
+| `expires` | no | integer | Token lifetime in days; must be 0, 30, 60, or 90. `0` means no expiry. |
 
-**Response:** HTTP 201 Created with the new token (the full token value is
-only returned once at creation time).
+**Privilege escalation:** A PAT creating another PAT may only grant permissions
+it already holds; exceeding them returns 403. API keys are not subject to this
+restriction and may mint a PAT with any registered permission.
+
+**Response:** HTTP 201 Created. The plaintext token is returned only here.
+
+```json
+{
+  "token_id": "<token_id>",
+  "name": "CI token",
+  "token": "af_pat_<token_id>_<secret>",
+  "permissions": ["workspaces:read", "workspaces:create"],
+  "expires_at": "2024-04-01T00:00:00Z",
+  "created_at": "2024-01-01T00:00:00Z"
+}
+```
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Invalid request body, missing fields, or invalid scopes |
+| 400 | Invalid body; `name` missing or over 255 characters; `permissions` empty; a permission is malformed or unknown; `expires` not 0, 30, 60, or 90 |
 | 401 | Unauthenticated request |
+| 403 | Caller lacks `tokens:manage`, or a PAT tried to grant a permission it does not hold |
 
-#### DELETE /user/tokens/:id
+#### GET /api/v1/user/tokens/:token_id
+
+Get a single PAT belonging to the authenticated user.
+
+**Authentication:** API Key, PAT with `tokens:read` scope, or Admin Token.
+
+**Response:** HTTP 200 OK with the token metadata.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 404 | Token not found or not owned by the user |
+
+#### DELETE /api/v1/user/tokens/:token_id
 
 Revoke a personal access token.
 
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key, PAT with `tokens:manage` scope, or Admin Token.
 
-**Response:** HTTP 204 No Content.
-
-**Error Codes:**
-
-| Status | Condition |
-|--------|-----------|
-| 401 | Unauthenticated request |
-| 404 | Token not found or not owned by user |
-
----
-
-### Orgs
-
-#### GET /user/orgs
-
-List organizations the authenticated user belongs to.
-
-**Authentication:** API Key, PAT, or Admin Token.
-
-**Response:** HTTP 200 OK with a JSON array of organization objects.
+**Response:** HTTP 200 OK with the revoked token's metadata (not 204).
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
+| 400 | The token is already revoked |
 | 401 | Unauthenticated request |
+| 404 | Token not found or not owned by the user |
 
-#### POST /orgs
+#### PUT / PATCH / DELETE /api/v1/user/tokens/:token_id/permissions
 
-Create a new organization.
+Modify a PAT's permissions. `PUT` replaces the list, `PATCH` adds to it, and
+`DELETE` removes from it.
 
-**Authentication:** API Key or Admin Token.
+**Authentication:** API Key, PAT with `tokens:write` or `tokens:manage` scope,
+or Admin Token.
 
 **Request Body:**
 
 ```json
 {
-  "name": "My Organization",
-  "slug": "my-org"
+  "permissions": ["workspaces:read"]
 }
 ```
 
-**Response:** HTTP 201 Created with the new organization JSON.
+An absent or null `permissions` field is always an error. On `PUT`, an explicit
+empty array clears every permission and auto-revokes the token; on `PATCH` and
+`DELETE` an empty array is rejected.
+
+**Response:** HTTP 200 OK with the token's metadata after the change.
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Invalid request body or missing fields |
+| 400 | Invalid body; `permissions` absent; empty on `PATCH`/`DELETE`; token is revoked |
 | 401 | Unauthenticated request |
-| 409 | Organization slug already exists |
+| 403 | Caller lacks the required scope, or a PAT tried to grant a permission it does not hold |
+| 404 | Token not found or not owned by the user |
 
-#### GET /orgs/:slug
+---
 
-Get organization details by slug.
+### Orgs
 
-**Authentication:** API Key, PAT, or Admin Token.
+#### GET /api/v1/user/orgs
 
-**Response:** HTTP 200 OK with organization JSON.
+List organizations the authenticated user belongs to.
+
+**Authentication:** API Key, PAT with `orgs:read` scope, or Admin Token.
+
+**Response:** HTTP 200 OK with a JSON array of organization objects.
+
+```json
+[
+  {
+    "id": "org-id",
+    "name": "My Organization",
+    "slug": "my-org",
+    "url": "https://example.com",
+    "owner_id": "uuid-string",
+    "status": "active",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+  }
+]
+```
+
+#### GET /api/v1/orgs/:id
+
+Get organization details. Non-admin callers must be a member; admin
+credentials bypass the membership check. Supports conditional GET via ETag.
+
+**Note:** apikit addresses organizations by **id**. Hub's org-scoped secrets
+and variables endpoints (`/api/v1/orgs/:slug/secrets`,
+`/api/v1/orgs/:slug/vars`) address them by **slug**. Echo stores parameter
+names per route, so both resolve correctly, but a client cannot assume one
+identifier works for both.
+
+**Authentication:** API Key, PAT with `orgs:read` scope, or Admin Token.
+
+**Response:** HTTP 200 OK with the organization object.
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
+| 304 | The ETag matched; the record is unchanged |
 | 401 | Unauthenticated request |
+| 403 | Caller is not a member of the organization |
 | 404 | Organization not found |
 
 ---
 
-### Admin
+### Administration
 
-#### GET /admin/users
+Administration endpoints require an admin token or an admin-role API key.
+There is no `/admin` path prefix.
 
-List all users (admin only).
+**Note the asymmetry:** an admin-role API key passes `RequireAdmin` here, but
+is treated as an ordinary user by the workspace and git subsystems, which check
+for the admin token credential type directly. Only admin tokens have
+cross-tenant workspace and git access.
 
-**Authentication:** Admin Token.
+#### Users
 
-**Response:** HTTP 200 OK with a JSON array of user objects.
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/v1/users` | Create a user. Body: `{username, email, provider, provider_id}`. Returns 201, or 409 if the username or provider identity exists. |
+| `GET /api/v1/users` | List all users |
+| `GET /api/v1/users/:id` | Get any user. Supports ETag; returns 304 when unchanged. |
+| `PATCH /api/v1/users/:id` | Update any user. Body: `{full_name}`, required. |
+| `POST /api/v1/users/:id/promote` | Promote to admin. Idempotent. |
+| `POST /api/v1/users/:id/demote` | Demote from admin. Returns 409 for the last remaining admin. |
+| `POST /api/v1/users/:id/block` | Block a user |
+| `POST /api/v1/users/:id/unblock` | Unblock a user |
+| `GET /api/v1/users/:id/keys` | List any user's API keys. Entries include `user_id`. |
+| `DELETE /api/v1/users/:id/keys/:key_id` | Revoke any user's API key. Returns 204. |
+| `GET /api/v1/users/:id/tokens` | List any user's PATs. Entries include `user_id`. |
+| `DELETE /api/v1/users/:id/tokens/:token_id` | Revoke any user's PAT. Returns 204. |
 
-**Error Codes:**
+Blocking a user disables all their API keys at authentication time without
+individually revoking them; unblocking re-enables every non-revoked, unexpired
+key.
 
-| Status | Condition |
-|--------|-----------|
-| 401 | Unauthenticated request |
-| 403 | Non-admin credential |
+#### Organizations
 
-#### GET /admin/stats
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/v1/orgs` | Create an org. Body: `{name, slug, url, owner_id}`. Returns 201, or 409 if the name or slug exists, or 400 for an invalid slug format. |
+| `GET /api/v1/orgs` | List all organizations |
+| `PATCH /api/v1/orgs/:id` | Update an org. Body: `{name, url}`; at least one required. Returns 409 on a name collision. |
+| `DELETE /api/v1/orgs/:id` | Delete an org. Returns 204. |
+| `POST /api/v1/orgs/:id/block` | Block an org |
+| `POST /api/v1/orgs/:id/unblock` | Unblock an org |
+| `GET /api/v1/orgs/:id/members` | List members. Bypasses the membership check. |
+| `PUT /api/v1/orgs/:id/members/:user_id` | Add a member. Returns the membership record. |
+| `DELETE /api/v1/orgs/:id/members/:user_id` | Remove a member. Returns 204. |
 
-Get system statistics (admin only).
+A membership record has the shape
+`{org_id, user_id, username, email, role, created_at}`.
 
-**Authentication:** Admin Token.
-
-**Response:** HTTP 200 OK with system statistics JSON.
-
-**Error Codes:**
-
-| Status | Condition |
-|--------|-----------|
-| 401 | Unauthenticated request |
-| 403 | Non-admin credential |
-
-#### DELETE /admin/users/:id
-
-Delete a user account (admin only).
-
-**Authentication:** Admin Token.
-
-**Response:** HTTP 204 No Content.
-
-**Error Codes:**
-
-| Status | Condition |
-|--------|-----------|
-| 401 | Unauthenticated request |
-| 403 | Non-admin credential |
-| 404 | User not found |
+All administration endpoints return 401 when unauthenticated and 403 for a
+non-admin credential.
 
 ---
 

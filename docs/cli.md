@@ -337,8 +337,9 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 - Prints the updated workspace JSON to stdout, including sync status fields
   (`sync_status`, `sync_mode`, `upstream_head_sha`, `last_sync_at`,
   `sync_error`).
-- For carry-patch workspaces, the response includes `rebuild_triggered` and
-  `rebuild_job_id` fields.
+- For carry-patch workspaces, the response additionally carries
+  `patches_merged`, `rebuild_triggered`, `force_push_detected`, and --
+  only when a rebuild was enqueued -- `rebuild_job_id`.
 - With `--wait`: if a rebuild was triggered (`rebuild_job_id` is present),
   polls `GET /api/v1/workspaces/<slug>/rebuilds/<id>` until the rebuild
   reaches a terminal state. Prints the final rebuild record and exits 0.
