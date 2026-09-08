@@ -120,6 +120,7 @@ curl http://localhost:8080/readyz
 
 | Document | Description |
 |----------|-------------|
+| [OpenAPI Description](docs/openapi.yaml) | Machine-readable OpenAPI 3.1 description of the full HTTP surface |
 | [API Reference](docs/api.md) | REST API endpoints, authentication, request/response schemas |
 | [CLI Reference](docs/cli.md) | `afc` commands, flags, and configuration |
 | [Server Configuration](docs/configuration.md) | `config.toml` reference and environment variables |

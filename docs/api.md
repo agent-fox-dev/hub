@@ -5,6 +5,11 @@ including workspace management endpoints and apikit-provided endpoints for
 authentication, user management, API keys, tokens, organizations, and
 administration.
 
+A machine-readable OpenAPI 3.1 description of the same surface lives in
+[`docs/openapi.yaml`](openapi.yaml). It is generated from the handler source
+rather than from this document; where the two disagree, see
+[`docs/errata/openapi_description.md`](errata/openapi_description.md).
+
 ## Authentication
 
 All API endpoints require authentication via one of the following methods:
