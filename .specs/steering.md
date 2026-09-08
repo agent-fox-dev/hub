@@ -58,9 +58,10 @@ session — not as a follow-up task.
 
 | What changed | Update |
 |---|---|
-| REST endpoints added/changed/removed | `docs/api.md` |
+| REST endpoints added/changed/removed | `docs/api.md` **and** `docs/openapi.yaml` |
+| Request/response schemas, status codes, or query parameters | `docs/api.md` **and** `docs/openapi.yaml` |
 | CLI commands, subcommands, or flags added/changed/removed | `docs/cli.md` |
-| Permission scopes added/changed | `docs/permissions.md` |
+| Permission scopes added/changed | `docs/permissions.md` **and** the `x-required-scopes` of every affected operation in `docs/openapi.yaml` |
 | Config keys or env vars added/changed | `docs/configuration.md` |
 | Architecture, package layout, or data flow changed | `docs/architecture.md` and/or relevant ADR |
 | Setup, quickstart, or project overview changed | `README.md` |
@@ -75,3 +76,65 @@ session — not as a follow-up task.
 3. If a doc file listed above does not exist yet, create it with the correct
    content rather than skipping the update.
 4. Run `make check` after doc updates to ensure nothing is broken.
+
+### OpenAPI Description
+
+`docs/openapi.yaml` is an OpenAPI 3.1 description of the whole HTTP surface.
+**Any change to the REST API requires a matching change to it, in the same
+session.** It is a shipped artifact -- clients generate against it -- so a
+stale entry is a broken contract, not a stale sentence.
+
+**The handlers are the source of truth, not `docs/api.md`.** Write each entry
+from the code you just changed: the route registration, the request and
+response structs and their JSON tags (including `omitempty`, which decides
+whether a field is omitted or sent as `null`), and every status code the
+handler can return. Where the two documents disagree, fix `docs/api.md` too
+rather than copying it.
+
+Update all of the following when they change:
+
+- **Paths and operations.** Echo route parameters (`:slug`) become OpenAPI
+  template parameters (`{slug}`); a wildcard (`*`) becomes a named parameter
+  that accepts slashes. Give every operation a unique `operationId`.
+- **Schemas.** Add or amend the `components/schemas` entry rather than inlining
+  a shape that already has a name. Match nullability to the Go type: a `*T`
+  field with no `omitempty` is `type: [x, "null"]`; a field with `omitempty` is
+  absent from `required` and is never sent as `null`.
+- **`x-required-scopes`.** Every operation lists the PAT scopes it accepts. An
+  empty list means no scope check runs. Record scopes that are tested
+  literally, and any that are accepted only in certain modes, in the operation
+  description -- the implication rules in `docs/permissions.md` do not apply
+  everywhere.
+- **Error responses.** Reuse `components/responses` where one fits. If the
+  handler sets an `error_type`, add it to the `Error` schema's enum and name it
+  in the response description.
+- **`x-provider: apikit`.** Mark operations served by apikit rather than by hub
+  code. These are mounted on the API group, so they live under the configured
+  mount point (`/api/v1` by default) -- not at the server root. Only
+  `/healthz`, `/readyz`, `/version`, `/metrics`, and `/git/...` sit outside it.
+
+**Before committing, verify both of these:**
+
+1. **The document is valid.** No validator runs in `make check`, because the
+   repository carries no Python or Node toolchain:
+
+   ```sh
+   pip install openapi-spec-validator
+   python3 -c "
+   from openapi_spec_validator import validate
+   from openapi_spec_validator.readers import read_from_filename
+   validate(read_from_filename('docs/openapi.yaml')[0])
+   print('valid')
+   "
+   ```
+
+2. **Route coverage matches the code.** Extract every
+   `(*echo.Group).VERB("path")` and `(*echo.Echo).VERB("path")` registration
+   from the non-test sources of this repository and of apikit, and diff that
+   set against the document's paths. It must match in **both** directions: a
+   route missing from the document is an undocumented endpoint, and a path in
+   the document with no registration is a phantom one.
+
+If a divergence turns out to be a bug in the handler rather than in the
+document, fix the handler -- and record the finding in `docs/errata/` so the
+reasoning survives the diff.
