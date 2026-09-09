@@ -10,11 +10,10 @@ Before making any changes, orient yourself:
 1. **Read `README.md`** for project overview and quick-start.
 2. **Read `.specs/steering.md`** if it exists — project-level directives that
    apply to all agents and skills. Follow any instructions found there.
-3. **Read relevant specs** in `.agent-fox/specs/` for the area you're working on.
-4. **Read ADRs** in `docs/adr/` for architectural context.
-5. **Explore the codebase:** `<main_package>/` is the main package, `<test_directory>/` has
+3. **Read ADRs and errata** in `docs/` for architectural context.
+4. **Explore the codebase:** `<main_package>/` is the main package, `<test_directory>/` has
    unit, property, and integration tests. Their location is language dependent.
-6. **Check git state:** `git log --oneline -20`, `git status --short --branch`.
+5. **Check git state:** `git log --oneline -20`, `git status --short --branch`.
 
 **Important:** Read all documents and code in depth — don't skim.
 
@@ -29,42 +28,23 @@ Do not implement anything before completing these steps.
 <main_package>/         # Main package
 <test_directory>/       # Tests directory
 docs/                   # Documentation
-.agent-fox/specs/                 # Specs to be implemented
-.agent-fox/specs/archive/         # Old specs. Ignore for coding tasks, except for reference
+.specs/                 # Specs to be implemented
+.specs/archive/         # Old specs. Ignore for coding tasks, except for reference
 ```
 
 ## Spec-Driven Workflow
 
 This project uses spec-driven development. Specifications live in
-`.agent-fox/specs/NN_name/` (numbered by creation order) and contain these artifacts:
+`.specs/NN_name/` (numbered by creation order) and contain:
 
-- `prd.md` — product requirements document (source of truth for intent,
-  goals, tech stack, and high-level design)
-- `requirements.json` — EARS-syntax acceptance criteria, correctness
-  properties, execution paths, error handling, external API contracts,
-  and glossary
-- `test_spec.json` — language-agnostic test contracts (unit, property,
-  edge-case, and smoke tests)
+- `prd.md` — product requirements, goals, tech stack, high-level design
+- `requirements.json` — EARS-syntax acceptance criteria, execution paths, external API contracts, glossary
+- `test_spec.json` — language-agnostic test contracts
 - `tasks.json` — implementation plan with subtask states and test commands
-- `architecture.md` — (optional) architecture overview for complex specs
+- `architecture.md` — (optional) detailed architecture
 
-### Where to find design information
-
-Design-relevant information is distributed across spec artifacts rather than
-in a single design document:
-
-| What you need | Where to find it |
-|---------------|-----------------|
-| High-level architecture, tech stack, package layout | `prd.md` |
-| Interfaces, function signatures, external API contracts | `requirements.json` → `external_apis` |
-| Data flow, execution paths | `requirements.json` → `execution_paths` |
-| Invariants, correctness properties | `requirements.json` → `correctness_properties` |
-| Error handling contracts | `requirements.json` → `error_handling` |
-| Domain terminology | `requirements.json` → `glossary` |
-| Detailed architecture (when present) | `architecture.md` |
-
-When implementing, cross-reference `external_apis` against the actual
-installed libraries — API signatures in specs may be unverified assumptions.
+Cross-reference `external_apis` in `requirements.json` against installed
+libraries — API signatures in specs may be unverified assumptions.
 
 ## Quality Commands
 
@@ -99,6 +79,9 @@ make check
 
 ## Documentation
 
+- **PRDs** live in `docs/prd/NN-imperative-verb-phrase.md`. To choose NN,
+  list existing files, find the max numeric prefix, and use the next number
+  zero-padded to two digits for consistency (three digits once past 99).
 - **ADRs** live in `docs/adr/NN-imperative-verb-phrase.md`. To choose NN,
   list existing files, find the max numeric prefix, and use the next number
   zero-padded to two digits for consistency (three digits once past 99).
@@ -114,7 +97,7 @@ make check
 
 A session is not complete until:
 
-1. `make check` or `make test` passes (no regressions).
+1. `make lint` and `make test` passes (no regressions).
 2. Changes are committed with a clear conventional commit message.
 3. Changes are merged into `main` locally.
 4. `git status` shows a clean working tree.
