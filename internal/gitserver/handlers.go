@@ -1,7 +1,7 @@
 package gitserver
 
 import (
-	"bytes"
+	"bufio"
 	"database/sql"
 	"fmt"
 	"io"
@@ -52,6 +52,10 @@ func RegisterPostPushHook(fn PostPushHookFunc) {
 //
 // Must be called after NewServer and before Start.
 func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
+	// Exempt git smart HTTP requests from the request body size limit that
+	// apikit installs on the whole Echo instance. See gitBodyPassthrough.
+	e.Pre(gitBodyPassthrough())
+
 	loader := NewWorkspaceLoader(db, workspaceRoot)
 	// Create the go-git server transport once at startup rather than
 	// per-request. The transport is stateless and thread-safe.
@@ -68,6 +72,47 @@ func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 	g.POST("/git-receive-pack", handleReceivePack(db, srv, workspaceRoot))
 
 	return nil
+}
+
+// gitBodyContextKey is the Echo context key under which gitBodyPassthrough
+// stashes the original request body for git routes.
+const gitBodyContextKey = "gitserver.body"
+
+// gitBodyPassthrough returns a Pre middleware that exempts git smart HTTP
+// requests from apikit's global request body size limit.
+//
+// apikit.NewServer registers its body-size-limit middleware with e.Use, so it
+// applies to every route on the instance, including /git/... which is mounted
+// outside the API group. That middleware rejects requests whose Content-Length
+// exceeds max_body_size (1MB by default) with 413, and wraps the body in an
+// http.MaxBytesReader otherwise. A git push of any real size exceeds 1MB, so
+// without this exemption the git server cannot accept pushes.
+//
+// Pre middleware runs before routing and before the Use chain. For requests
+// under /git/ it stashes the original body reader in the Echo context and
+// clears Content-Length so the size check is skipped; the git handlers then
+// read from the stashed reader via requestBody rather than from the wrapped
+// c.Request().Body. All other routes are untouched and keep the limit.
+func gitBodyPassthrough() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			req := c.Request()
+			if strings.HasPrefix(req.URL.Path, "/git/") && req.Body != nil {
+				c.Set(gitBodyContextKey, req.Body)
+				req.ContentLength = -1
+			}
+			return next(c)
+		}
+	}
+}
+
+// requestBody returns the request body to read for a git route: the reader
+// stashed by gitBodyPassthrough when present, otherwise c.Request().Body.
+func requestBody(c echo.Context) io.Reader {
+	if body, ok := c.Get(gitBodyContextKey).(io.ReadCloser); ok && body != nil {
+		return body
+	}
+	return c.Request().Body
 }
 
 // requireDotGitSuffix returns middleware that verifies the :slug.git path
@@ -188,7 +233,7 @@ func handleUploadPack(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 
 		// Decode the upload-pack request (want lines + capabilities) from the body.
 		req := packp.NewUploadPackRequest()
-		if err := req.UploadRequest.Decode(c.Request().Body); err != nil {
+		if err := req.UploadRequest.Decode(requestBody(c)); err != nil {
 			writeSessionError(c.Response(), err)
 			return nil
 		}
@@ -239,18 +284,18 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 			return nil
 		}
 
-		// Read the body to distinguish empty (no-op) from invalid data.
-		// An empty body means the pack was already applied to disk (e.g.
-		// by a direct commit); treat it as a successful no-op push.
-		bodyBytes, err := io.ReadAll(c.Request().Body)
-		if err != nil {
-			writeSessionError(c.Response(), err)
-			return nil
-		}
-
+		// Peek at the body to distinguish empty (no-op) from real data
+		// without buffering the whole pack in memory. An empty body means
+		// the pack was already applied to disk (e.g. by a direct commit);
+		// treat it as a successful no-op push.
+		body := bufio.NewReader(requestBody(c))
 		slug := strings.TrimSuffix(c.Param("slug.git"), ".git")
 
-		if len(bodyBytes) == 0 {
+		if _, err := body.Peek(1); err != nil {
+			if err != io.EOF {
+				writeSessionError(c.Response(), err)
+				return nil
+			}
 			// No-op push: the repository state is already on disk.
 			// Report success and update head_sha from current HEAD.
 			_, _ = c.Response().Write(encodePktLine("unpack ok\n"))
@@ -259,9 +304,10 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 			return nil
 		}
 
-		// Decode the reference update request from the body.
+		// Decode the reference update request from the body. The packfile
+		// that follows the command list is streamed from the same reader.
 		req := packp.NewReferenceUpdateRequest()
-		if err := req.Decode(bytes.NewReader(bodyBytes)); err != nil {
+		if err := req.Decode(body); err != nil {
 			writeSessionError(c.Response(), err)
 			return nil
 		}

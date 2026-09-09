@@ -156,25 +156,26 @@ git credentials automatically.
 
 The container image sets:
 
-- `XDG_CONFIG_HOME=/config`
-- `XDG_DATA_HOME=/data`
+- `XDG_CONFIG_HOME=/config/af-hub`
+- `XDG_DATA_HOME=/data/af-hub`
 
-The bundled default config is installed at `/config/af-hub/config.toml`. It
-contains only the `[server]`, `[database]`, and `[logging]` sections; the
-`[workspace]` and `[[oauth.providers]]` sections are omitted and fall back to
-programmatic defaults. Because `XDG_CONFIG_HOME=/config`, the server looks for
-`/config/config.toml`, which does not match the bundled path. Without a volume
-mount or environment override, the server will not find the bundled config and
-will fall back to programmatic defaults.
+The bundled default config is installed at `/config/af-hub/config.toml`, so
+the server finds it without any overrides. It contains only the `[server]`,
+`[database]`, and `[logging]` sections; the `[workspace]` and
+`[[oauth.providers]]` sections are omitted and fall back to programmatic
+defaults. Mount your own `config.toml` at `/config/af-hub/config.toml` to
+replace it.
 
-To use the bundled config, either mount your own config at
-`/config/config.toml` or override the environment variable:
-`XDG_CONFIG_HOME=/config/af-hub`.
+With the bundled config (`path = "afhub.db"`) the SQLite database lives at
+`/data/af-hub/afhub.db`, the DuckDB audit database at
+`/data/af-hub/audit.duckdb`, and workspace clones under
+`/data/af-hub/workspaces/`. If no config file is found at all, the
+programmatic default database path is `/data/af-hub/apikit.db`.
 
-The database path depends on whether a config file is found:
-
-- **Config file found** (with `path = "afhub.db"`): `/data/afhub.db`
-- **No config file found** (programmatic default): `/data/apikit.db`
+The runtime image includes the `git` CLI (`git-core`). The hub shells out to
+git for merge, batch rebase, and every carry-patch operation (sync, rebuild,
+preview, rerere); clone, fetch, and push of standard workspaces use go-git and
+do not need it.
 
 The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 `/usr/bin/hub` with no flags.
@@ -183,8 +184,8 @@ The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 
 | Mount Point | Purpose |
 |-------------|---------|
-| `/config` | Config directory. Mount a PVC or ConfigMap. |
-| `/data` | Persistent data directory. Mount a PVC. |
+| `/config/af-hub` | Config directory. Mount a PVC or ConfigMap. |
+| `/data/af-hub` | Persistent data directory. Mount a PVC. |
 
 ### Exposed Ports
 
@@ -195,12 +196,11 @@ The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 
 ## Kubernetes Deployment
 
-The Kubernetes `deployment.yaml` overrides the container image's environment
-variables to use subdirectories: `XDG_CONFIG_HOME=/config/af-hub` and
-`XDG_DATA_HOME=/data/af-hub`. Volumes are mounted at `/config/af-hub` and
-`/data/af-hub` accordingly. This means the Kubernetes deployment resolves the
-config file at `/config/af-hub/config.toml` and the database at
-`/data/af-hub/afhub.db` (when the configmap is found).
+The Kubernetes `deployment.yaml` sets the same environment variables as the
+image (`XDG_CONFIG_HOME=/config/af-hub` and `XDG_DATA_HOME=/data/af-hub`) and
+mounts volumes at `/config/af-hub` and `/data/af-hub`. The deployment resolves
+the config file at `/config/af-hub/config.toml` and the database at
+`/data/af-hub/afhub.db`.
 
 The `deploy/` directory contains reference manifests:
 
