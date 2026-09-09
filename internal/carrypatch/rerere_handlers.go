@@ -9,6 +9,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // ===========================================================================
@@ -38,47 +40,10 @@ func handleListRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 			return nil
 		}
 
-		// Read rr-cache directory.
-		rrCacheDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git", "rr-cache")
-		resolutions := make([]RerereResolution, 0)
-
-		entries, err := os.ReadDir(rrCacheDir)
-		if err != nil {
-			// 16-REQ-4.E1: directory doesn't exist or is empty — return empty list.
-			return c.JSON(http.StatusOK, RerereListResponse{Resolutions: resolutions})
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-
-			subdir := filepath.Join(rrCacheDir, entry.Name())
-
-			// Derive path from preimage or postimage file.
-			path := derivePathFromRRCache(subdir)
-			if path == nil {
-				// 16-REQ-4.E3: skip malformed entries (no preimage/postimage).
-				continue
-			}
-
-			// Derive recorded_at from file modification time.
-			var recordedAt *string
-			if info, statErr := os.Stat(filepath.Join(subdir, "preimage")); statErr == nil {
-				ts := apikit.FormatUTC(info.ModTime())
-				recordedAt = &ts
-			} else if info, statErr := os.Stat(filepath.Join(subdir, "postimage")); statErr == nil {
-				ts := apikit.FormatUTC(info.ModTime())
-				recordedAt = &ts
-			}
-
-			resolutions = append(resolutions, RerereResolution{
-				Path:       path,
-				RecordedAt: recordedAt,
-			})
-		}
-
-		return c.JSON(http.StatusOK, RerereListResponse{Resolutions: resolutions})
+		// Read rr-cache directory (16-REQ-4.E1: missing directory is an
+		// empty list).
+		gitDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git")
+		return c.JSON(http.StatusOK, RerereListResponse{Resolutions: listRerereEntries(gitDir)})
 	}
 }
 
@@ -120,9 +85,27 @@ func handleForgetRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 			return nil
 		}
 
-		// 16-REQ-4.2 / 16-ERR-7: check if pathspec has a recorded resolution.
-		rrCacheDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git", "rr-cache")
-		if !hasRerereResolution(rrCacheDir, pathspec) {
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
+
+		// 16-REQ-4.2 / 16-ERR-7: the argument is either an rr-cache entry id
+		// (from GET /rerere) or a file path with a recorded resolution.
+		gitDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git")
+		rrCacheDir := filepath.Join(gitDir, "rr-cache")
+		if isRerereEntryID(rrCacheDir, pathspec) {
+			// Dropping the cache entry is exactly what `git rerere forget`
+			// does at the storage level, and it works for entries whose path
+			// git no longer remembers (the common case after a rebuild).
+			if err := os.RemoveAll(filepath.Join(rrCacheDir, pathspec)); err != nil {
+				return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to remove rerere entry")
+			}
+			return c.NoContent(http.StatusNoContent)
+		}
+		if !hasRerereResolution(gitDir, pathspec) {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "no recorded resolution for pathspec")
 		}
 
@@ -146,12 +129,80 @@ func handleForgetRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 // rr-cache helpers
 // ===========================================================================
 
+// listRerereEntries enumerates the rr-cache of the repository whose .git
+// directory is gitDir. Entries without a preimage or postimage are skipped
+// (16-REQ-4.E3).
+func listRerereEntries(gitDir string) []RerereResolution {
+	rrCacheDir := filepath.Join(gitDir, "rr-cache")
+	resolutions := make([]RerereResolution, 0)
+	entries, err := os.ReadDir(rrCacheDir)
+	if err != nil {
+		return resolutions
+	}
+	pathsByID := readMergeRR(gitDir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		subdir := filepath.Join(rrCacheDir, entry.Name())
+		preimage, preErr := os.Stat(filepath.Join(subdir, "preimage"))
+		postimage, postErr := os.Stat(filepath.Join(subdir, "postimage"))
+		if preErr != nil && postErr != nil {
+			continue
+		}
+		res := RerereResolution{ID: entry.Name(), Resolved: postErr == nil}
+		if p, ok := pathsByID[entry.Name()]; ok {
+			res.Path = &p
+		} else {
+			res.Path = derivePathFromRRCache(subdir)
+		}
+		if postErr == nil {
+			ts := apikit.FormatUTC(postimage.ModTime())
+			res.RecordedAt = &ts
+		} else {
+			ts := apikit.FormatUTC(preimage.ModTime())
+			res.RecordedAt = &ts
+		}
+		resolutions = append(resolutions, res)
+	}
+	return resolutions
+}
+
+// readMergeRR parses .git/MERGE_RR, which maps rr-cache ids to the paths of
+// conflicts currently in progress (NUL-terminated "<id>\t<path>" records).
+// It is the only place git records the path of a conflict.
+func readMergeRR(gitDir string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(filepath.Join(gitDir, "MERGE_RR"))
+	if err != nil {
+		return out
+	}
+	for _, rec := range strings.Split(string(data), "\x00") {
+		id, path, ok := strings.Cut(rec, "\t")
+		if ok && id != "" && path != "" {
+			out[id] = path
+		}
+	}
+	return out
+}
+
+// isRerereEntryID reports whether name is the id of an existing rr-cache
+// entry (a single path component naming a subdirectory of rr-cache).
+func isRerereEntryID(rrCacheDir, name string) bool {
+	if name == "" || strings.ContainsAny(name, "/\\") || strings.HasPrefix(name, ".") {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(rrCacheDir, name))
+	return err == nil && info.IsDir()
+}
+
 // derivePathFromRRCache reads a preimage or postimage file in the given
 // rr-cache subdirectory and extracts the conflict path from the first
-// conflict marker line (e.g., "<<<<<<< src/config.go").
+// labelled conflict marker line (e.g., "<<<<<<< src/config.go").
 //
-// Returns nil if no preimage/postimage file exists or if no path can be
-// extracted from the conflict markers.
+// git itself writes unlabelled markers ("<<<<<<<") into rr-cache images, so
+// this only yields a path for images produced with labels; callers must
+// tolerate a nil result.
 func derivePathFromRRCache(dir string) *string {
 	for _, filename := range []string{"preimage", "postimage"} {
 		p := filepath.Join(dir, filename)
@@ -179,20 +230,11 @@ func derivePathFromRRCache(dir string) *string {
 	return nil
 }
 
-// hasRerereResolution checks if any rr-cache subdirectory contains a
-// preimage or postimage that references the given pathspec.
-func hasRerereResolution(rrCacheDir, pathspec string) bool {
-	entries, err := os.ReadDir(rrCacheDir)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		subdir := filepath.Join(rrCacheDir, entry.Name())
-		path := derivePathFromRRCache(subdir)
-		if path != nil && *path == pathspec {
+// hasRerereResolution checks whether any rr-cache entry is known to belong
+// to the given path (via MERGE_RR or a labelled preimage).
+func hasRerereResolution(gitDir, pathspec string) bool {
+	for _, r := range listRerereEntries(gitDir) {
+		if r.Path != nil && *r.Path == pathspec {
 			return true
 		}
 	}

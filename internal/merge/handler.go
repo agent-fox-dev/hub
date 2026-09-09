@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
 // RejectionReason is a typed constant identifying why a merge was rejected
@@ -63,7 +65,7 @@ type CommandExecutor interface {
 
 // FetchFunc abstracts the go-git fetch operation for testing. It fetches
 // the named ref from the upstream remote using the provided auth credentials.
-type FetchFunc func(trunkDir string, targetBranch string, auth transport.AuthMethod) error
+type FetchFunc func(ctx context.Context, trunkDir string, targetBranch string, auth transport.AuthMethod) error
 
 // ResolveAuthFunc abstracts credential resolution for testing.
 type ResolveAuthFunc func(workspaceSlug string) (transport.AuthMethod, error)
@@ -245,13 +247,13 @@ func (h *Handler) dryRunConflictCheck(ctx context.Context, runner *gitcmd.GitRun
 
 // FetchTarget fetches the latest target branch state from the upstream
 // remote via go-git using resolved clone credentials.
-func (h *Handler) FetchTarget(_ context.Context, workspaceSlug, targetBranch string) error {
+func (h *Handler) FetchTarget(ctx context.Context, workspaceSlug, targetBranch string) error {
 	auth, err := h.ResolveAuth(workspaceSlug)
 	if err != nil {
 		return fmt.Errorf("merge: resolve clone auth for %q: %w", workspaceSlug, err)
 	}
 	trunkDir := h.TrunkDir(workspaceSlug)
-	return h.Fetch(trunkDir, targetBranch, auth)
+	return h.Fetch(ctx, trunkDir, targetBranch, auth)
 }
 
 // RebaseSource captures the pre-rebase SHA of the source branch, then
@@ -264,8 +266,12 @@ func (h *Handler) RebaseSource(ctx context.Context, workspaceSlug, targetBranch,
 		return "", fmt.Errorf("merge: rebase source: %w", err)
 	}
 
-	// Checkout the source branch before capturing its SHA and rebasing.
-	if _, err := runner.Run(ctx, "checkout", sourceRef); err != nil {
+	// Clear anything a crashed or cancelled job left behind (in-progress
+	// rebase/cherry-pick/merge, dirty tree) so the checkout cannot fail on
+	// stale state, then check out the source branch before capturing its SHA
+	// and rebasing.
+	runner.ResetInProgressState(ctx)
+	if err := runner.Checkout(ctx, sourceRef); err != nil {
 		return "", fmt.Errorf("merge: checkout %q: %w", sourceRef, err)
 	}
 
@@ -287,6 +293,12 @@ func (h *Handler) RebaseSource(ctx context.Context, workspaceSlug, targetBranch,
 				ConflictFiles: conflictErr.ConflictingFiles,
 			}
 		}
+		if ctx.Err() != nil {
+			// Cancelled mid-rebase: the runner does not abort on context
+			// errors, so do it here (with a fresh context) to leave the
+			// trunk usable for the next job.
+			_ = runner.RebaseAbort(context.Background())
+		}
 		return "", fmt.Errorf("merge: rebase %q onto %q: %w", sourceRef, targetBranch, err)
 	}
 
@@ -303,8 +315,32 @@ func (h *Handler) RunCheckCommand(ctx context.Context, workspaceSlug, targetBran
 		"MERGE_SOURCE=" + sourceRef,
 		"WORKSPACE_SLUG=" + workspaceSlug,
 	}
-	_, err := h.Executor.Run(ctx, trunkDir, env, CheckCommandTimeout, "sh", "-c", checkCmd)
-	return err
+	output, err := h.Executor.Run(ctx, trunkDir, env, CheckCommandTimeout, "sh", "-c", checkCmd)
+	if err != nil {
+		return &CheckCommandError{Output: truncateOutput(output, maxCheckOutputBytes), ExitCode: exitCodeOf(err)}
+	}
+	return nil
+}
+
+// maxCheckOutputBytes bounds the check command output kept in the job record.
+const maxCheckOutputBytes = 64 * 1024
+
+// truncateOutput keeps the tail of s (where the failure usually is) when it
+// exceeds limit bytes.
+func truncateOutput(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return "...[truncated]...\n" + s[len(s)-limit:]
+}
+
+// exitCodeOf extracts the process exit code from an exec error, or -1.
+func exitCodeOf(err error) int {
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
 
 // MergeResult contains the successful outcome of a merge operation.
@@ -323,7 +359,7 @@ type CheckCommandError struct {
 }
 
 func (e *CheckCommandError) Error() string {
-	return fmt.Sprintf("check command failed (exit %d): %s", e.ExitCode, e.Output)
+	return fmt.Sprintf("check command failed (exit %d): %s", e.ExitCode, strings.TrimSpace(e.Output))
 }
 
 // RollbackFunc reverts the source branch to a previous SHA after a failed
@@ -339,8 +375,14 @@ type RollbackFunc func(ctx context.Context, trunkDir, branch, sha string) error
 func (h *Handler) RunCheckStep(ctx context.Context, workspaceSlug, targetBranch, sourceRef, preRebaseSHA string) (executed bool, err error) {
 	checkCmd, getErr := h.GetVariable("workspace", workspaceSlug, "CHECK_COMMAND")
 	if getErr != nil {
-		// Variable not found — skip the check step entirely.
-		return false, nil
+		// Only a definite "not set" skips the gate. Any other store error
+		// (database unavailable, corrupt value) must not silently disable
+		// the check; fail retryable instead.
+		var notFound *secrets.NotFoundError
+		if errors.As(getErr, &notFound) {
+			return false, nil
+		}
+		return false, &MergeRejection{Permanent: false}
 	}
 	if checkCmd == "" {
 		return false, nil
@@ -365,8 +407,8 @@ func (h *Handler) RunCheckStep(ctx context.Context, workspaceSlug, targetBranch,
 				Permanent: true,
 			}
 		}
-		// Rollback succeeded — return the check command error.
-		return true, fmt.Errorf("check command failed: %w", err)
+		// Rollback succeeded — return the check command error (with output).
+		return true, err
 	}
 
 	return true, nil

@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/agent-fox-dev/hub/internal/upstream"
 )
 
 // ErrAlreadyUpToDate is a sentinel error matching go-git's
@@ -13,11 +17,12 @@ import (
 var ErrAlreadyUpToDate = errors.New("already up-to-date")
 
 // ArchiveOpenAndPushFuncType opens a local git repository at repoPath
-// and pushes to origin using gitURL as the remote URL (which may contain
-// embedded credentials). Returns nil on success, ErrAlreadyUpToDate
-// when the remote already has all local commits (nothing to push), or
-// an error on failure (including open failures and push rejections).
-type ArchiveOpenAndPushFuncType func(repoPath, gitURL string) error
+// and pushes all local branches to origin using gitURL as the remote URL
+// and auth as the credentials (nil for public repositories). Returns nil on
+// success, ErrAlreadyUpToDate when the remote already has all local commits
+// (nothing to push), or an error on failure (including open failures and
+// push rejections).
+type ArchiveOpenAndPushFuncType func(repoPath, gitURL string, auth transport.AuthMethod) error
 
 // ArchiveHeadFuncType reads the 40-character hex SHA of HEAD from
 // a local repository at repoPath. Called after a successful push
@@ -52,6 +57,7 @@ var defaultQueue *JobQueue
 // Called during server boot after EnsureWorkspaceRoot.
 func InitCloneQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers int) {
 	cloneFn = defaultCloneFn
+	upstreamFetchFn = upstream.Fetch
 	archiveOpenAndPushFn = defaultArchiveOpenAndPushFn
 	archiveHeadFn = defaultArchiveHeadFn
 	validateCredentialsFn = defaultValidateCredentialsFn

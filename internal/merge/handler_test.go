@@ -10,6 +10,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
 // ===========================================================================
@@ -39,7 +40,7 @@ type fetchCall struct {
 	auth         transport.AuthMethod
 }
 
-func (rf *recordingFetch) fn(trunkDir, targetBranch string, auth transport.AuthMethod) error {
+func (rf *recordingFetch) fn(_ context.Context, trunkDir, targetBranch string, auth transport.AuthMethod) error {
 	rf.calls = append(rf.calls, fetchCall{
 		trunkDir:     trunkDir,
 		targetBranch: targetBranch,
@@ -90,7 +91,10 @@ func stubGetVariable(vars map[string]string) func(string, string, string) (strin
 		if v, ok := vars[mapKey]; ok {
 			return v, nil
 		}
-		return "", fmt.Errorf("variable not found: %s", mapKey)
+		// Mirror the production store: a missing variable is reported as
+		// *secrets.NotFoundError, which is the only error that skips the
+		// check step.
+		return "", &secrets.NotFoundError{Key: key}
 	}
 }
 
@@ -588,7 +592,7 @@ func TestCheckStep_SkippedWhenCheckCommandNotSet(t *testing.T) {
 	h := &Handler{
 		WorkspaceRoot: workspaceRoot,
 		Executor:      executor,
-		GetVariable: stubGetVariable(map[string]string{
+		GetVariable:   stubGetVariable(map[string]string{
 			// Intentionally empty — CHECK_COMMAND is not set.
 		}),
 	}

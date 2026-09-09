@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"io"
 	"log/slog"
 	"net/http"
@@ -705,8 +706,8 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return mock, nil
 		},
-		Fetch:       func(_ context.Context, _ string) error { return nil },
-		ResolveAuth: func(_ string) error { return nil },
+		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
@@ -799,8 +800,8 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return mock, nil
 		},
-		Fetch:       func(_ context.Context, _ string) error { return nil },
-		ResolveAuth: func(_ string) error { return nil },
+		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
@@ -865,8 +866,8 @@ func addWorkspaceColumns(t *testing.T, db *sql.DB) {
 	// upstream_url, upstream_head_sha, last_sync_at might not be in the
 	// minimal workspaces table. Add them safely with IF NOT EXISTS semantics.
 	columns := []struct {
-		name     string
-		typeDef  string
+		name    string
+		typeDef string
 	}{
 		{"upstream_url", "TEXT NOT NULL DEFAULT ''"},
 		{"upstream_head_sha", "TEXT"},

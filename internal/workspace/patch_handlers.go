@@ -364,10 +364,15 @@ func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
-		// 15-REQ-10.3: Validate status.
+		// 15-REQ-10.3: Validate status. "deleted" is a rebuild outcome (soft
+		// delete with deleted_at) and cannot be set directly; use DELETE to
+		// remove a patch and POST .../restore to bring a soft-deleted one back.
 		if req.Status != nil {
-			if !validPatchStatuses[*req.Status] {
-				return respondError(c, http.StatusBadRequest, "invalid status value; must be one of: active, merged_upstream, conflict, disabled, deleted")
+			if !validPatchStatuses[*req.Status] || *req.Status == "deleted" {
+				return respondError(c, http.StatusBadRequest, "invalid status value; must be one of: active, merged_upstream, conflict, disabled")
+			}
+			if p.Status == "deleted" {
+				return respondError(c, http.StatusConflict, "patch is soft-deleted; restore it first")
 			}
 			p.Status = *req.Status
 		}

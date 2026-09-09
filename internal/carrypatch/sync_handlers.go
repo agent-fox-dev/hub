@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // ===========================================================================
@@ -98,11 +100,11 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 
 	// Load workspace record.
 	var mode, status, cloneStatus, integrationBranch string
-	var upstreamHeadSHA sql.NullString
+	var upstreamHeadSHA, wsBranch sql.NullString
 	err := cfg.DB.QueryRow(
-		`SELECT workspace_mode, status, clone_status, integration_branch, upstream_head_sha
+		`SELECT workspace_mode, status, clone_status, integration_branch, upstream_head_sha, branch
 		 FROM workspaces WHERE slug = ?`, slug,
-	).Scan(&mode, &status, &cloneStatus, &integrationBranch, &upstreamHeadSHA)
+	).Scan(&mode, &status, &cloneStatus, &integrationBranch, &upstreamHeadSHA, &wsBranch)
 	if err == sql.ErrNoRows {
 		return nil, apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 	}
@@ -119,12 +121,24 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 
 	ctx := c.Request().Context()
 
+	// The fetch and merge detection touch the shared trunk; refuse to run
+	// while a rebuild, merge, or other sync holds the workspace.
+	unlock, locked := wslock.TryLock(slug)
+	if !locked {
+		return nil, apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+			"another operation is running on this workspace; retry later", "workspace_busy")
+	}
+	defer unlock()
+
 	// 16-REQ-5.1: Resolve upstream credentials via resolveUpstreamAuth.
+	var upstreamAuth transport.AuthMethod
 	if cfg.ResolveAuth != nil {
-		if authErr := cfg.ResolveAuth(slug); authErr != nil {
+		resolved, authErr := cfg.ResolveAuth(slug)
+		if authErr != nil {
 			// 16-REQ-5.E1: auth failure aborts sync; no state modified.
 			return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "failed to resolve upstream credentials")
 		}
+		upstreamAuth = resolved
 	}
 
 	// Determine repo path and create git runner.
@@ -136,15 +150,16 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 
 	// 16-REQ-5.1: Fetch from the 'upstream' remote (not 'origin').
 	if cfg.Fetch != nil {
-		if fetchErr := cfg.Fetch(ctx, repoPath); fetchErr != nil {
+		if fetchErr := cfg.Fetch(ctx, repoPath, upstreamAuth); fetchErr != nil {
 			// 16-REQ-5.E1 / 16-ERR-8: fetch failure aborts sync;
 			// upstream_tracking_ref and patch statuses are not modified.
 			return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "upstream fetch failed")
 		}
 	}
 
-	// Resolve the new upstream HEAD after fetch.
-	newUpstreamHead, err := git.Run(ctx, "rev-parse", "FETCH_HEAD")
+	// Resolve the new upstream HEAD after fetch (the upstream default branch;
+	// see resolveUpstreamBase).
+	newUpstreamHead, err := resolveUpstreamBase(ctx, git, wsBranch.String)
 	if err != nil {
 		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to resolve upstream HEAD")
 	}
@@ -260,21 +275,8 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	if autoRebuild {
-		// Capture strategy at enqueue time (16-PROP-3).
-		strategy := StrategyRebase
-		if cfg.GetVariable != nil {
-			val, _ := cfg.GetVariable("workspace", slug, "REBUILD_STRATEGY")
-			if val != "" {
-				strategy = val
-			}
-		}
-
-		payload := RebuildPayload{
-			WorkspaceSlug:     slug,
-			Strategy:          strategy,
-			SubmittedBy:       auth.UserID,
-			IntegrationBranch: integrationBranch,
-		}
+		// Capture strategy and fail mode at enqueue time (16-PROP-3).
+		payload := BuildRebuildPayload(slug, integrationBranch, auth.UserID, cfg.GetVariable, "", "")
 		payloadJSON, _ := json.Marshal(payload)
 		groupKey := slug + ":" + integrationBranch
 		nonce := uuid.New().String()
@@ -422,10 +424,12 @@ func detectSquashMergeByPRNumber(ctx context.Context, git GitRunner, prNumber, o
 		return false
 	}
 
-	// Scan each commit message for the PR number pattern.
+	// Scan each commit subject for GitHub's squash-merge suffix. Only a
+	// trailing "(#NNN)" counts: a subject that merely mentions the PR (for
+	// example `Revert "Feature (#42)" (#57)`) must not mark #42 as merged.
 	target := fmt.Sprintf("(#%s)", prNumber)
 	for _, line := range strings.Split(logOutput, "\n") {
-		if strings.Contains(line, target) {
+		if strings.HasSuffix(strings.TrimSpace(line), target) {
 			return true
 		}
 	}

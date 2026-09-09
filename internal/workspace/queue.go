@@ -210,7 +210,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 	// (15-REQ-6.2).
 	ws, wsErr := getWorkspaceBySlug(db, slug)
 	if wsErr == nil && ws != nil && ws.WorkspaceMode == "carry_patch" {
-		carryPatchPostCloneSetup(ctx, trunkDir, ws)
+		carryPatchPostCloneSetup(ctx, trunkDir, ws, store)
 	}
 
 	// Step 6: Clone succeeded — record HEAD SHA and set status to ready.
@@ -223,17 +223,27 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 // workspaces: adds the upstream remote, enables rerere, and creates the
 // integration branch. All errors are logged as warnings; none prevent the
 // workspace from being marked ready (15-REQ-6.2).
-func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspace) {
+func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspace, store *secrets.Store) {
 	runner, err := gitcmd.New(trunkDir, nil)
 	if err != nil {
 		log.Printf("clone job %q: warning: carry-patch setup: git runner init failed: %v", ws.Slug, err)
 		return
 	}
 
-	// Step 1: Add upstream remote (15-REQ-6.1).
+	// Step 1: Add upstream remote (15-REQ-6.1) and fetch it so that the
+	// integration branch can start at the upstream default branch instead
+	// of the fork's HEAD.
 	if ws.UpstreamURL != nil && *ws.UpstreamURL != "" {
 		if err := runner.RemoteAdd(ctx, "upstream", *ws.UpstreamURL); err != nil {
 			log.Printf("clone job %q: warning: carry-patch setup: RemoteAdd: %v", ws.Slug, err)
+		}
+		if upstreamFetchFn != nil && store != nil {
+			auth, authErr := resolveUpstreamAuth(store, ws.Slug)
+			if authErr != nil {
+				log.Printf("clone job %q: warning: carry-patch setup: upstream credentials: %v", ws.Slug, authErr)
+			} else if fetchErr := upstreamFetchFn(ctx, trunkDir, auth); fetchErr != nil {
+				log.Printf("clone job %q: warning: carry-patch setup: upstream fetch: %v", ws.Slug, fetchErr)
+			}
 		}
 	}
 
@@ -262,6 +272,11 @@ func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspac
 		}
 	}
 }
+
+// upstreamFetchFn fetches the upstream remote of a freshly cloned carry-patch
+// workspace (see package upstream). Tests may set it to nil or a stub; the
+// production default is set by InitCloneQueue.
+var upstreamFetchFn func(ctx context.Context, repoPath string, auth transport.AuthMethod) error
 
 // updateCloneStatus updates the clone_status, head_sha, and clone_error
 // fields for the workspace identified by slug.

@@ -473,3 +473,14 @@ func (r *GitRunner) UpdateRef(ctx context.Context, ref, sha string) error {
 	_, err := r.Run(ctx, "update-ref", endOfOptions, ref, sha)
 	return err
 }
+
+// ResetInProgressState clears state a crashed or cancelled operation may
+// have left in the working tree: an in-progress rebase, cherry-pick, or
+// merge, plus uncommitted changes. Every step is best-effort; errors are
+// ignored because the state simply may not exist.
+func (r *GitRunner) ResetInProgressState(ctx context.Context) {
+	_, _ = r.Run(ctx, "rebase", "--abort")
+	_, _ = r.Run(ctx, "cherry-pick", "--abort")
+	_, _ = r.Run(ctx, "merge", "--abort")
+	_, _ = r.Run(ctx, "reset", "--hard", "HEAD", "--")
+}

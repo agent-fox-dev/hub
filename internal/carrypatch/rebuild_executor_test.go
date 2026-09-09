@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
@@ -52,8 +54,8 @@ func TestRebuildExecutor_RebaseStrategy_CherryPicksCommits(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -136,8 +138,8 @@ func TestRebuildExecutor_MergeStrategy_MergesWithNoFF(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -223,8 +225,8 @@ func TestRebuildExecutor_Conflict_FailFast(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -292,8 +294,8 @@ func TestRebuildExecutor_MergeConflict_FailFast(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -362,8 +364,8 @@ func TestRebuildExecutor_MissingBranch_Skipped(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -432,8 +434,8 @@ func TestRebuildExecutor_MergedAndDisabled_Skipped(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -511,8 +513,8 @@ func TestRebuildExecutor_SkippedReason_Differentiation(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -626,8 +628,8 @@ func TestRebuildJob_ConflictIsNonRetryable(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -657,10 +659,10 @@ func TestRebuildJob_TransientErrorIsRetryable(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch: func(_ context.Context, _ string) error {
+		Fetch: func(_ context.Context, _ string, _ transport.AuthMethod) error {
 			return &TransientError{Err: errors.New("network timeout")}
 		},
-		ResolveAuth: func(_ string) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -703,8 +705,8 @@ func TestRebuildResult_ContainsRequiredFields(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -783,8 +785,8 @@ func TestRebuildExecutor_PatchesAppliedInPositionOrder(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -838,8 +840,8 @@ func TestRebuildExecutor_ConflictStatusIncluded(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -872,45 +874,54 @@ func TestRebuildExecutor_ConflictStatusIncluded(t *testing.T) {
 }
 
 // ===========================================================================
-// TS-NS-1: The rebuild executor resolves the upstream HEAD using FETCH_HEAD,
-// not HEAD, immediately after the fetch step.
+// TS-NS-1: The rebuild executor resolves the upstream base from the upstream
+// default branch recorded by the fetch (refs/remotes/upstream/HEAD), not from
+// the trunk's local HEAD.
 //
 // Requirement: NS-REQ-1
 // ===========================================================================
 
-func TestRebuildExecutor_UsesFetchHeadNotHead(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	fetchHeadSHA := "fetch000000000000000000000000000000000001"
-	localHeadSHA := "local000000000000000000000000000000000001"
-	commitSHA := "bbbb000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+// upstreamBaseMock answers rev-parse for the upstream tracking ref with
+// upstreamSHA and every other rev-parse with localSHA.
+func upstreamBaseMock(upstreamSHA, localSHA, commitSHA string) func(context.Context, ...string) (string, error) {
+	return func(_ context.Context, args ...string) (string, error) {
 		if len(args) >= 2 && args[0] == "rev-parse" {
-			if args[1] == "FETCH_HEAD" {
-				return fetchHeadSHA, nil
+			if len(args) >= 3 && args[1] == "--verify" && args[2] == "refs/remotes/upstream/HEAD^{commit}" {
+				return upstreamSHA, nil
 			}
-			// Any other rev-parse (including HEAD) returns a different SHA.
-			return localHeadSHA, nil
+			if args[1] == "FETCH_HEAD" {
+				return "", fmt.Errorf("fatal: FETCH_HEAD should not be consulted when the tracking ref exists")
+			}
+			return localSHA, nil
 		}
 		for _, arg := range args {
 			if arg == "--reverse" {
 				return commitSHA, nil
 			}
 		}
-		return localHeadSHA, nil
+		return localSHA, nil
 	}
+}
+
+func TestRebuildExecutor_UsesUpstreamTrackingRefNotHead(t *testing.T) {
+	mock := newMockGitRunner()
+
+	patches := newMockPatchStore([]Patch{
+		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
+	})
+
+	upstreamSHA := "fetch000000000000000000000000000000000001"
+	localHeadSHA := "local000000000000000000000000000000000001"
+	commitSHA := "bbbb000000000000000000000000000000000001"
+
+	mock.RunFunc = upstreamBaseMock(upstreamSHA, localHeadSHA, commitSHA)
 	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
 
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -925,33 +936,38 @@ func TestRebuildExecutor_UsesFetchHeadNotHead(t *testing.T) {
 		t.Fatalf("HandleRebuildJob returned error: %v", err)
 	}
 
-	// Verify that rev-parse FETCH_HEAD was called and rev-parse HEAD was NOT
-	// called for upstream resolution (before checkout -b).
-	foundFetchHead := false
-	for _, call := range mock.RunCalls {
-		if len(call.Args) >= 2 && call.Args[0] == "rev-parse" && call.Args[1] == "FETCH_HEAD" {
-			foundFetchHead = true
-			break
-		}
-	}
-	if !foundFetchHead {
-		t.Error("expected a 'rev-parse FETCH_HEAD' call, but none was recorded")
-	}
-
-	// Verify checkout -b was called with the FETCH_HEAD SHA.
+	// Verify the temporary branch was created at the upstream SHA.
 	foundCheckout := false
 	for _, call := range mock.RunCalls {
-		if len(call.Args) >= 3 && call.Args[0] == "checkout" && call.Args[1] == "-b" {
-			if call.Args[3] == fetchHeadSHA {
+		if len(call.Args) >= 4 && call.Args[0] == "checkout" && call.Args[1] == "-B" {
+			if call.Args[3] == upstreamSHA {
 				foundCheckout = true
 			} else if call.Args[3] == localHeadSHA {
-				t.Error("checkout -b used local HEAD SHA instead of FETCH_HEAD SHA")
+				t.Error("checkout -B used local HEAD SHA instead of the upstream tracking ref")
 			}
 			break
 		}
 	}
 	if !foundCheckout {
-		t.Error("expected checkout -b with FETCH_HEAD SHA as start point")
+		t.Error("expected checkout -B with the upstream tracking ref SHA as start point")
+	}
+
+	// The commits to replay are computed against the upstream base with
+	// merge commits and already-upstream content filtered out.
+	foundLog := false
+	for _, call := range mock.RunCalls {
+		if len(call.Args) > 0 && call.Args[0] == "log" {
+			foundLog = true
+			joined := strings.Join(call.Args, " ")
+			for _, want := range []string{"--no-merges", "--right-only", "--cherry-pick", upstreamSHA + "...feature/foo"} {
+				if !strings.Contains(joined, want) {
+					t.Errorf("log call %v missing %q", call.Args, want)
+				}
+			}
+		}
+	}
+	if !foundLog {
+		t.Error("expected a git log call to list patch commits")
 	}
 }
 
@@ -962,39 +978,25 @@ func TestRebuildExecutor_UsesFetchHeadNotHead(t *testing.T) {
 // Requirement: NS-REQ-2
 // ===========================================================================
 
-func TestRebuildExecutor_UpstreamHeadSHA_ReflectsFetchHead(t *testing.T) {
+func TestRebuildExecutor_UpstreamHeadSHA_ReflectsUpstreamTip(t *testing.T) {
 	mock := newMockGitRunner()
 
 	patches := newMockPatchStore([]Patch{
 		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
 	})
 
-	fetchHeadSHA := "fetch000000000000000000000000000000000001"
+	upstreamSHA := "fetch000000000000000000000000000000000001"
 	localHeadSHA := "local000000000000000000000000000000000001"
 	commitSHA := "bbbb000000000000000000000000000000000001"
 
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" {
-			if args[1] == "FETCH_HEAD" {
-				return fetchHeadSHA, nil
-			}
-			// HEAD and other rev-parse calls return localHeadSHA.
-			return localHeadSHA, nil
-		}
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
-			}
-		}
-		return localHeadSHA, nil
-	}
+	mock.RunFunc = upstreamBaseMock(upstreamSHA, localHeadSHA, commitSHA)
 	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
 
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1014,24 +1016,20 @@ func TestRebuildExecutor_UpstreamHeadSHA_ReflectsFetchHead(t *testing.T) {
 		t.Fatalf("expected result to be *RebuildResult, got %T", result)
 	}
 
-	// The UpstreamHeadSHA must equal FETCH_HEAD, not local HEAD.
-	if rebuildResult.UpstreamHeadSHA != fetchHeadSHA {
-		t.Errorf("UpstreamHeadSHA = %q, want %q (FETCH_HEAD)", rebuildResult.UpstreamHeadSHA, fetchHeadSHA)
-	}
-	if rebuildResult.UpstreamHeadSHA == localHeadSHA {
-		t.Error("UpstreamHeadSHA incorrectly reflects local HEAD instead of FETCH_HEAD")
+	if rebuildResult.UpstreamHeadSHA != upstreamSHA {
+		t.Errorf("UpstreamHeadSHA = %q, want %q (upstream tracking ref)", rebuildResult.UpstreamHeadSHA, upstreamSHA)
 	}
 }
 
 // ===========================================================================
-// TS-NS-4: When FETCH_HEAD is unavailable (e.g., no fetch has been performed),
-// the executor returns a retryable transient error rather than silently using
-// HEAD.
+// TS-NS-4: When no upstream base can be resolved (no tracking ref and no
+// FETCH_HEAD), the executor returns a retryable transient error rather than
+// silently using HEAD.
 //
 // Requirement: NS-REQ-4
 // ===========================================================================
 
-func TestRebuildExecutor_FetchHeadUnavailable_ReturnsTransientError(t *testing.T) {
+func TestRebuildExecutor_UpstreamBaseUnavailable_ReturnsTransientError(t *testing.T) {
 	mock := newMockGitRunner()
 
 	patches := newMockPatchStore([]Patch{
@@ -1039,8 +1037,13 @@ func TestRebuildExecutor_FetchHeadUnavailable_ReturnsTransientError(t *testing.T
 	})
 
 	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "FETCH_HEAD" {
-			return "", fmt.Errorf("fatal: FETCH_HEAD does not exist")
+		if len(args) >= 2 && args[0] == "rev-parse" {
+			if args[1] == "FETCH_HEAD" {
+				return "", fmt.Errorf("fatal: FETCH_HEAD does not exist")
+			}
+			if len(args) >= 3 && args[1] == "--verify" && strings.HasPrefix(args[2], "refs/remotes/upstream/") {
+				return "", fmt.Errorf("fatal: Needed a single revision")
+			}
 		}
 		return "aaaa000000000000000000000000000000000001", nil
 	}
@@ -1048,8 +1051,8 @@ func TestRebuildExecutor_FetchHeadUnavailable_ReturnsTransientError(t *testing.T
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1061,31 +1064,22 @@ func TestRebuildExecutor_FetchHeadUnavailable_ReturnsTransientError(t *testing.T
 
 	result, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
 
-	// Should return an error.
 	if err == nil {
-		t.Fatal("expected error when FETCH_HEAD is unavailable, got nil")
+		t.Fatal("expected error when the upstream base is unavailable, got nil")
 	}
-
-	// Should be retryable (transient).
 	if !retryable {
-		t.Error("expected retryable=true for unavailable FETCH_HEAD")
+		t.Error("expected retryable=true for unavailable upstream base")
 	}
-
-	// Should be a TransientError.
 	var te *TransientError
 	if !errors.As(err, &te) {
 		t.Errorf("expected *TransientError, got %T: %v", err, err)
 	}
-
-	// Should not return a result.
 	if result != nil {
-		t.Error("expected nil result when FETCH_HEAD is unavailable")
+		t.Error("expected nil result when the upstream base is unavailable")
 	}
-
-	// Should NOT have attempted checkout -b (no temp branch created).
 	for _, call := range mock.RunCalls {
-		if len(call.Args) >= 2 && call.Args[0] == "checkout" && call.Args[1] == "-b" {
-			t.Error("should not create temp branch when FETCH_HEAD resolution fails")
+		if len(call.Args) >= 2 && call.Args[0] == "checkout" && call.Args[1] == "-B" {
+			t.Error("should not create temp branch when upstream base resolution fails")
 		}
 	}
 }
@@ -1133,8 +1127,8 @@ func TestRebuildExecutor_PreviousIntegrationHeadSHA_Set(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1218,8 +1212,8 @@ func TestRebuildExecutor_PreviousIntegrationHeadSHA_EmptyOnFirstRebuild(t *testi
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1311,8 +1305,8 @@ func TestRebuildExecutor_ContinueMode_ConflictDoesNotStopProcessing(t *testing.T
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1426,8 +1420,8 @@ func TestRebuildExecutor_ContinueMode_PatchResultsDistinguishStatuses(t *testing
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1535,8 +1529,8 @@ func TestRebuildExecutor_DefaultFailFast_Unchanged(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	// No FailMode set — should default to fail_fast.
@@ -1606,8 +1600,8 @@ func TestRebuildExecutor_ExplicitFailFast_BehavesLikeDefault(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	// Explicit fail_fast.
@@ -1670,8 +1664,8 @@ func TestRebuildExecutor_ContinueMode_MergeStrategy(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -1745,8 +1739,8 @@ func TestRebuildExecutor_ContinueMode_HardResetFailReturnsPartialResult(t *testi
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{

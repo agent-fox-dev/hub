@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -1007,6 +1008,24 @@ func (q *Queue) ListByKey(typeName string, key string) ([]*Job, error) {
 	)
 }
 
+// ListByKeyPrefix returns up to limit jobs of the given type whose key starts
+// with prefix, ordered by created_at descending. limit <= 0 selects the
+// default of 50.
+func (q *Queue) ListByKeyPrefix(typeName, prefix string, limit int) ([]*Job, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Escape LIKE metacharacters in the prefix so it matches literally.
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	return q.queryJobs(
+		`SELECT id, type, key, group_key, nonce, status, payload, result, error,
+		  progress, retry_count, available_at, submitted_by, created_at, updated_at
+		 FROM jobs WHERE type = ? AND key LIKE ? ESCAPE '\'
+		 ORDER BY created_at DESC LIMIT ?`,
+		typeName, escaped+"%", limit,
+	)
+}
+
 // CountByStatus returns a map of status string to integer count for all
 // jobs of the given type. Statuses with zero jobs are omitted from the map.
 func (q *Queue) CountByStatus(typeName string) (map[string]int, error) {
@@ -1113,7 +1132,7 @@ func (q *Queue) UpdateProgress(jobID string, data any) error {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = q.db.Exec(
-		"UPDATE jobs SET progress = ?, updated_at = ? WHERE id = ?",
+		"UPDATE jobs SET progress = ?, updated_at = ? WHERE id = ? AND status = 'running'",
 		string(progressJSON), now, jobID,
 	)
 	if err != nil {

@@ -121,11 +121,14 @@ func main() {
 		WorkspaceRoot: cfg.Workspace.Path,
 		NewGitRunner:  cpGitRunnerFactory,
 		Fetch:         carrypatch.DefaultFetchFunc(),
-		ResolveAuth: func(slug string) error {
-			return workspace.ResolveUpstreamAuth(store, slug)
+		ResolveAuth: func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveUpstreamAuthMethod(store, slug)
 		},
 		GetVariable: store.GetVariableValue,
 		PatchStore:  cpPatchStore,
+		PushIntegration: carrypatch.DefaultPushIntegrationFunc(func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveCloneAuth(store, slug)
+		}),
 	}
 
 	if err := carrypatch.RegisterRebuildJob(mergeQueue, rebuildHandler); err != nil {
@@ -337,8 +340,8 @@ func main() {
 			WorkspaceRoot: cfg.Workspace.Path,
 			NewGitRunner:  cpGitRunnerFactory,
 			Fetch:         carrypatch.DefaultFetchFunc(),
-			ResolveAuth: func(slug string) error {
-				return workspace.ResolveUpstreamAuth(store, slug)
+			ResolveAuth: func(slug string) (transport.AuthMethod, error) {
+				return workspace.ResolveUpstreamAuthMethod(store, slug)
 			},
 			GetVariable: store.GetVariableValue,
 			PatchStore:  cpPatchStore,

@@ -155,9 +155,10 @@ func addPatchesBatch(db *sql.DB, patches []*Patch) ([]*Patch, error) {
 
 	workspaceSlug := patches[0].WorkspaceSlug
 
-	// Load existing patches in position order.
+	// Load existing non-deleted patches in position order. Soft-deleted
+	// patches sit at negative positions and keep them.
 	rows, err := tx.Query(
-		`SELECT id, position FROM patches WHERE workspace_slug = ? ORDER BY position ASC`,
+		`SELECT id, position FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {
@@ -218,25 +219,19 @@ func addPatchesBatch(db *sql.DB, patches []*Patch) ([]*Patch, error) {
 		order = append(order, p.ID)
 	}
 
-	// Move all existing patches to negative temporary positions to avoid
-	// UNIQUE constraint violations during reassignment.
-	for i, ip := range existing {
-		negPos := -(i + 1)
-		if _, err := tx.Exec(
-			`UPDATE patches SET position = ?, updated_at = ? WHERE workspace_slug = ? AND id = ?`,
-			negPos, now, workspaceSlug, ip.id,
-		); err != nil {
-			return nil, fmt.Errorf("batch add temp position %q: %w", ip.id, err)
-		}
+	// Park every row of the workspace at a unique negative position (-rowid)
+	// to avoid UNIQUE constraint violations during reassignment. Soft-deleted
+	// rows already live there and simply stay.
+	if _, err := parkPositions(tx, workspaceSlug, now); err != nil {
+		return nil, fmt.Errorf("batch add temp positions: %w", err)
 	}
 
-	// Insert new patches with negative temporary positions.
+	// Insert new patches, parking each at -rowid as well.
 	for i, p := range patches {
-		negPos := -(len(existing) + i + 1)
 		_, err = tx.Exec(
 			`INSERT INTO patches (id, workspace_slug, branch_name, position, status, upstream_pr_url, description, added_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			p.ID, p.WorkspaceSlug, p.BranchName, negPos, p.Status,
+			 VALUES (?, ?, ?, -(SELECT COALESCE(MAX(rowid), 0) + 1 FROM patches), ?, ?, ?, ?, ?)`,
+			p.ID, p.WorkspaceSlug, p.BranchName, p.Status,
 			p.UpstreamPRURL, p.Description, p.AddedAt, p.UpdatedAt,
 		)
 		if err != nil {
@@ -334,6 +329,17 @@ func shiftPositionsDown(tx *sql.Tx, workspaceSlug string, fromPosition int) erro
 	return nil
 }
 
+// parkPositions moves every patch of the workspace to a unique negative
+// position (-rowid) so that positions can be reassigned without violating
+// UNIQUE(workspace_slug, position) part-way through. Soft-deleted patches
+// are parked there permanently by SoftDeletePatch.
+func parkPositions(tx *sql.Tx, workspaceSlug, now string) (sql.Result, error) {
+	return tx.Exec(
+		`UPDATE patches SET position = -rowid, updated_at = ? WHERE workspace_slug = ?`,
+		now, workspaceSlug,
+	)
+}
+
 // compactPositions reassigns sequential 1-based positions to all non-deleted
 // patches in a workspace after a deletion, ordered by their current position.
 // Must be called within a transaction (15-REQ-11.1).
@@ -357,6 +363,11 @@ func compactPositions(tx *sql.Tx, workspaceSlug string) error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("compact positions iterate: %w", err)
+	}
+	rows.Close()
+
+	if _, err := parkPositions(tx, workspaceSlug, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("compact positions park: %w", err)
 	}
 
 	for i, id := range ids {
@@ -532,18 +543,13 @@ func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*P
 	}
 
 	// Reassign positions (15-REQ-12.1).
-	// Use a two-pass approach to avoid unique constraint violations:
-	// first set all to negative positions, then to the final values.
+	// Park all rows at unique negative positions first to avoid unique
+	// constraint violations, then set the final values.
 	now := time.Now().UTC().Format(time.RFC3339)
+	rows.Close()
 
-	for i, id := range orderedIDs {
-		negPos := -(i + 1)
-		if _, err := tx.Exec(
-			`UPDATE patches SET position = ?, updated_at = ? WHERE workspace_slug = ? AND id = ?`,
-			negPos, now, workspaceSlug, id,
-		); err != nil {
-			return nil, fmt.Errorf("reorder patches temp update %q: %w", id, err)
-		}
+	if _, err := parkPositions(tx, workspaceSlug, now); err != nil {
+		return nil, fmt.Errorf("reorder patches park: %w", err)
 	}
 
 	for i, id := range orderedIDs {
@@ -633,15 +639,9 @@ func updatePatchPosition(db *sql.DB, workspaceSlug, patchID string, newPosition 
 	newOrder = append(newOrder, patchID)
 	newOrder = append(newOrder, others[idx:]...)
 
-	// Two-pass: first set all to negative positions.
-	for i, id := range newOrder {
-		negPos := -(i + 1)
-		if _, err := tx.Exec(
-			`UPDATE patches SET position = ?, updated_at = ? WHERE workspace_slug = ? AND id = ?`,
-			negPos, now, workspaceSlug, id,
-		); err != nil {
-			return fmt.Errorf("update patch position temp %q: %w", id, err)
-		}
+	// Park all rows at unique negative positions first.
+	if _, err := parkPositions(tx, workspaceSlug, now); err != nil {
+		return fmt.Errorf("update patch position park: %w", err)
 	}
 	// Then set final positions.
 	for i, id := range newOrder {

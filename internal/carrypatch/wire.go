@@ -4,12 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/upstream"
 )
 
 // ===========================================================================
@@ -42,11 +48,22 @@ func (a *GitRunnerAdapter) Run(ctx context.Context, args ...string) (string, err
 // it does NOT auto-abort on conflict — the repository is left in a conflicted
 // state so that the rebuild executor can invoke rerere (16-REQ-1.5, 16-REQ-3.1).
 func (a *GitRunnerAdapter) CherryPick(ctx context.Context, commitSHA string) error {
-	_, err := a.runner.Run(ctx, "cherry-pick", commitSHA)
+	_, err := a.runner.Run(ctx, "cherry-pick", "--end-of-options", commitSHA)
 	if err != nil {
 		// Check if CHERRY_PICK_HEAD exists — indicates a conflict in progress.
 		_, revErr := a.runner.Run(ctx, "rev-parse", "--verify", "CHERRY_PICK_HEAD")
 		if revErr == nil {
+			// A cherry-pick whose changes are already upstream stops with
+			// CHERRY_PICK_HEAD set but no unmerged paths and nothing staged.
+			// That is not a conflict: skip the commit and carry on.
+			unmerged, _ := a.runner.Run(ctx, "diff", "--name-only", "--diff-filter=U")
+			if strings.TrimSpace(unmerged) == "" {
+				if _, stagedErr := a.runner.Run(ctx, "diff", "--cached", "--quiet"); stagedErr == nil {
+					if _, skipErr := a.runner.Run(ctx, "cherry-pick", "--skip"); skipErr == nil {
+						return nil
+					}
+				}
+			}
 			return &CherryPickConflictError{}
 		}
 		return err
@@ -57,7 +74,7 @@ func (a *GitRunnerAdapter) CherryPick(ctx context.Context, commitSHA string) err
 // MergeNoFF merges a branch with --no-ff. Unlike gitcmd.MergeNoFF, it does NOT
 // auto-abort on conflict (same reason as CherryPick).
 func (a *GitRunnerAdapter) MergeNoFF(ctx context.Context, branch string) error {
-	_, err := a.runner.Run(ctx, "merge", "--no-ff", branch)
+	_, err := a.runner.Run(ctx, "merge", "--no-ff", "--no-edit", "--end-of-options", branch)
 	if err != nil {
 		// Check if MERGE_HEAD exists — indicates a merge conflict in progress.
 		_, revErr := a.runner.Run(ctx, "rev-parse", "--verify", "MERGE_HEAD")
@@ -169,10 +186,15 @@ func (s *SQLPatchStore) DeletePatch(_ context.Context, patchID string) error {
 }
 
 // SoftDeletePatch transitions a patch to status='deleted' and sets deleted_at.
+//
+// The row keeps its identity but gives up its slot in the 1-based position
+// sequence: it is parked at a unique negative position (-rowid) so that
+// compaction of the remaining patches can never collide with it on the
+// UNIQUE(workspace_slug, position) constraint.
 func (s *SQLPatchStore) SoftDeletePatch(_ context.Context, patchID string) error {
 	now := apikit.NowUTC()
 	_, err := s.DB.Exec(
-		`UPDATE patches SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE patches SET status = 'deleted', deleted_at = ?, updated_at = ?, position = -rowid WHERE id = ?`,
 		now, now, patchID,
 	)
 	return err
@@ -182,7 +204,10 @@ func (s *SQLPatchStore) SoftDeletePatch(_ context.Context, patchID string) error
 func (s *SQLPatchStore) RestorePatch(_ context.Context, patchID string) error {
 	now := apikit.NowUTC()
 	_, err := s.DB.Exec(
-		`UPDATE patches SET status = 'active', deleted_at = NULL, updated_at = ? WHERE id = ? AND status = 'deleted'`,
+		`UPDATE patches SET status = 'active', deleted_at = NULL, updated_at = ?,
+		        position = (SELECT COALESCE(MAX(position), 0) + 1 FROM patches p2
+		                    WHERE p2.workspace_slug = patches.workspace_slug AND p2.status != 'deleted')
+		 WHERE id = ? AND status = 'deleted'`,
 		now, patchID,
 	)
 	return err
@@ -201,40 +226,54 @@ func (s *SQLPatchStore) PurgeDeletedPatches(_ context.Context, olderThan string)
 	return result.RowsAffected()
 }
 
-// CompactPositions re-numbers patch positions to be contiguous starting from 1,
-// ignoring soft-deleted patches.
+// CompactPositions re-numbers the non-deleted patches of a workspace to
+// contiguous 1-based positions in their current order. Soft-deleted patches
+// keep a unique negative position (-rowid) and are excluded.
+//
+// All rows of the workspace are first parked at -rowid (unique per table)
+// within one transaction so that no intermediate state violates
+// UNIQUE(workspace_slug, position).
 func (s *SQLPatchStore) CompactPositions(_ context.Context, workspaceSlug string) error {
-	rows, err := s.DB.Query(
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
 		`SELECT id FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return err
 		}
 		ids = append(ids, id)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
 
+	if _, err := tx.Exec(`UPDATE patches SET position = -rowid WHERE workspace_slug = ?`, workspaceSlug); err != nil {
+		return err
+	}
 	now := apikit.NowUTC()
 	for i, id := range ids {
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`UPDATE patches SET position = ?, updated_at = ? WHERE id = ?`,
 			i+1, now, id,
 		); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ===========================================================================
@@ -253,17 +292,107 @@ func PurgeExpiredDeletedPatches(ctx context.Context, store PatchStore) (int64, e
 // DefaultFetchFunc: production fetch using gitcmd
 // ===========================================================================
 
-// DefaultFetchFunc returns a FetchFunc that fetches from the 'upstream' remote
-// using git CLI. The upstream remote is expected to be pre-configured via
-// carry-patch clone setup (spec 15).
+// DefaultFetchFunc returns a FetchFunc that fetches the 'upstream' remote via
+// go-git with the resolved credentials and records the upstream default
+// branch under refs/remotes/upstream/HEAD (see package upstream). The
+// upstream remote is expected to be pre-configured via carry-patch clone
+// setup (spec 15).
 func DefaultFetchFunc() FetchFunc {
-	return func(ctx context.Context, repoPath string) error {
-		runner, err := gitcmd.New(repoPath, nil)
+	return upstream.Fetch
+}
+
+// DefaultPushIntegrationFunc returns a PushIntegrationFunc that force-pushes
+// the integration branch to the origin remote via go-git, using the origin
+// credentials resolved by resolveOriginAuth.
+func DefaultPushIntegrationFunc(resolveOriginAuth func(slug string) (transport.AuthMethod, error)) PushIntegrationFunc {
+	return func(ctx context.Context, workspaceSlug, repoPath, branch string) error {
+		auth, err := resolveOriginAuth(workspaceSlug)
 		if err != nil {
+			return fmt.Errorf("resolve origin credentials: %w", err)
+		}
+		repo, err := git.PlainOpen(repoPath)
+		if err != nil {
+			return fmt.Errorf("open repository: %w", err)
+		}
+		spec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", branch, branch))
+		err = repo.PushContext(ctx, &git.PushOptions{
+			RemoteName: "origin",
+			RefSpecs:   []config.RefSpec{spec},
+			Auth:       auth,
+			Force:      true,
+		})
+		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return err
 		}
-		_, fetchErr := runner.Run(ctx, "fetch", "upstream")
-		return fetchErr
+		return nil
+	}
+}
+
+// resolveUpstreamBase returns the commit the rebuild, sync, and preview
+// operations treat as "upstream HEAD" for the workspace.
+//
+// Resolution order:
+//  1. refs/remotes/upstream/HEAD — the upstream default branch, recorded by
+//     the fetch (package upstream). This is the intended base.
+//  2. refs/remotes/upstream/<branch> — the workspace branch, when the
+//     tracking ref for it exists (fetched by an older hub version).
+//  3. FETCH_HEAD — legacy fallback; only correct for single-branch upstreams.
+func resolveUpstreamBase(ctx context.Context, git GitRunner, workspaceBranch string) (string, error) {
+	candidates := []string{upstream.HeadRef}
+	if workspaceBranch != "" {
+		candidates = append(candidates, "refs/remotes/upstream/"+workspaceBranch)
+	}
+	for _, ref := range candidates {
+		if sha, err := git.Run(ctx, "rev-parse", "--verify", ref+"^{commit}"); err == nil && sha != "" {
+			return sha, nil
+		}
+	}
+	sha, err := git.Run(ctx, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve upstream base: %w", err)
+	}
+	return sha, nil
+}
+
+// workspaceBranch returns the workspace's configured branch ("" when unset
+// or when db is nil).
+func workspaceBranch(db *sql.DB, slug string) string {
+	if db == nil {
+		return ""
+	}
+	var branch sql.NullString
+	if err := db.QueryRow(`SELECT branch FROM workspaces WHERE slug = ?`, slug).Scan(&branch); err != nil {
+		return ""
+	}
+	return branch.String
+}
+
+// BuildRebuildPayload assembles the rebuild job payload, capturing the
+// rebuild strategy and fail mode at enqueue time (16-PROP-3). Explicit
+// overrides win over the REBUILD_STRATEGY / REBUILD_FAIL_MODE workspace
+// variables; unset or invalid variables fall back to the defaults.
+func BuildRebuildPayload(slug, integrationBranch, submittedBy string, getVariable GetVariableFunc, strategyOverride, failModeOverride string) RebuildPayload {
+	strategy := strategyOverride
+	if strategy == "" {
+		strategy = StrategyRebase
+		if getVariable != nil {
+			if val, err := getVariable("workspace", slug, "REBUILD_STRATEGY"); err == nil && (val == StrategyRebase || val == StrategyMerge) {
+				strategy = val
+			}
+		}
+	}
+	failMode := failModeOverride
+	if failMode == "" && getVariable != nil {
+		if val, err := getVariable("workspace", slug, "REBUILD_FAIL_MODE"); err == nil && (val == FailModeFailFast || val == FailModeContinue) {
+			failMode = val
+		}
+	}
+	return RebuildPayload{
+		WorkspaceSlug:     slug,
+		Strategy:          strategy,
+		SubmittedBy:       submittedBy,
+		IntegrationBranch: integrationBranch,
+		FailMode:          failMode,
 	}
 }
 
@@ -284,14 +413,6 @@ func CarryPatchPermissions() []apikit.Permission {
 // ===========================================================================
 // DefaultResolveAuthFunc: wraps workspace.ResolveUpstreamAuth
 // ===========================================================================
-
-// DefaultResolveAuthFunc returns a ResolveAuthFunc that validates upstream
-// credentials exist for a workspace. It wraps the provided function to
-// discard the credential value (only used as a precondition check; the
-// actual auth is handled by the git fetch configuration).
-func DefaultResolveAuthFunc(resolveFunc func(slug string) error) ResolveAuthFunc {
-	return resolveFunc
-}
 
 // ===========================================================================
 // FormatGroupKey constructs the job queue group_key for rebuild jobs.

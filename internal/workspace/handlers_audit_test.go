@@ -237,7 +237,7 @@ func TestWorkspaceArchiveNilAuditDoesNotPanic(t *testing.T) {
 	t.Cleanup(func() { archiveHeadFn = origArchiveHead })
 
 	origArchivePush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_, _ string) error { return nil }
+	archiveOpenAndPushFn = func(_, _ string, _ transport.AuthMethod) error { return nil }
 	t.Cleanup(func() { archiveOpenAndPushFn = origArchivePush })
 
 	// Create a workspace first.
@@ -371,7 +371,7 @@ func TestWorkspaceArchiveAuditEmission(t *testing.T) {
 	t.Cleanup(func() { archiveHeadFn = origArchiveHead })
 
 	origArchivePush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_, _ string) error { return nil }
+	archiveOpenAndPushFn = func(_, _ string, _ transport.AuthMethod) error { return nil }
 	t.Cleanup(func() { archiveOpenAndPushFn = origArchivePush })
 
 	// Create workspace first.
@@ -428,7 +428,7 @@ func TestWorkspaceReactivateAuditEmission(t *testing.T) {
 	t.Cleanup(func() { archiveHeadFn = origArchiveHead })
 
 	origArchivePush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_, _ string) error { return nil }
+	archiveOpenAndPushFn = func(_, _ string, _ transport.AuthMethod) error { return nil }
 	t.Cleanup(func() { archiveOpenAndPushFn = origArchivePush })
 
 	// Create and archive workspace first.
@@ -486,7 +486,7 @@ func TestWorkspaceDeleteAuditEmission(t *testing.T) {
 	t.Cleanup(func() { archiveHeadFn = origArchiveHead })
 
 	origArchivePush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(_, _ string) error { return nil }
+	archiveOpenAndPushFn = func(_, _ string, _ transport.AuthMethod) error { return nil }
 	t.Cleanup(func() { archiveOpenAndPushFn = origArchivePush })
 
 	// Create workspace first.

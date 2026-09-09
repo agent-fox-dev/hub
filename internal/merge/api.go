@@ -18,6 +18,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // BranchChecker checks whether a branch exists in a workspace repository.
@@ -419,18 +420,16 @@ func handleListMerges(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		// List all merge jobs and filter by workspace slug via key prefix.
-		jobs, err := cfg.Queue.ListByType(MergeJobType, jobqueue.ListOpts{})
+		// Filter by workspace in SQL so that the page limit applies to this
+		// workspace's jobs rather than to the hub-wide job list.
+		jobs, err := cfg.Queue.ListByKeyPrefix(MergeJobType, slug+":", 200)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
 
-		// Filter to jobs belonging to this workspace (key starts with "slug:").
-		prefix := slug + ":"
 		var results []MergeJobResponse
 		for _, j := range jobs {
-			if strings.HasPrefix(j.Key, prefix) {
-				results = append(results, ProjectMergeJobResponse(j))
-			}
+			results = append(results, ProjectMergeJobResponse(j))
 		}
 
 		// Return non-nil empty array per spec (12-REQ-10.E1).
@@ -652,6 +651,14 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		if cfg.BatchRebase == nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "batch rebase not configured")
 		}
+
+		// Batch rebase mutates the shared trunk synchronously.
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
 
 		results, err := cfg.BatchRebase(c.Request().Context(), slug, req.TargetRef, req.Branches)
 		if err != nil {

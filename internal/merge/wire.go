@@ -18,7 +18,7 @@ import (
 // upstream remote. This is the production implementation used when the merge
 // handler is wired in the server bootstrap.
 func DefaultFetchFunc() FetchFunc {
-	return func(trunkDir string, targetBranch string, auth transport.AuthMethod) error {
+	return func(ctx context.Context, trunkDir string, targetBranch string, auth transport.AuthMethod) error {
 		repo, err := git.PlainOpen(trunkDir)
 		if err != nil {
 			return fmt.Errorf("merge: open repository at %s: %w", trunkDir, err)
@@ -29,7 +29,7 @@ func DefaultFetchFunc() FetchFunc {
 			Auth:       auth,
 		}
 
-		err = repo.Fetch(fetchOpts)
+		err = repo.FetchContext(ctx, fetchOpts)
 		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return fmt.Errorf("merge: fetch from upstream: %w", err)
 		}

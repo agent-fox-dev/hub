@@ -18,6 +18,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // PostPushHookFunc is called after a successful git push with the workspace
@@ -416,12 +418,20 @@ func updateHeadSHA(db *sql.DB, slug, wsRoot string) {
 
 	// Reset the working tree to match the new HEAD. The receive-pack
 	// session updates refs and objects but does not touch the worktree,
-	// so without this the on-disk files stay at the old commit.
-	wt, err := repo.Worktree()
-	if err != nil {
-		log.Printf("git push: failed to get worktree for reset: %v", err)
-	} else if err := wt.Reset(&git.ResetOptions{Commit: head.Hash(), Mode: git.HardReset}); err != nil {
-		log.Printf("git push: failed to reset worktree to HEAD: %v", err)
+	// so without this the on-disk files stay at the old commit. Skip the
+	// reset when a rebuild, merge, or sync currently owns the trunk; the
+	// refs are already updated and the running operation restores the
+	// tree when it finishes.
+	if unlock, ok := wslock.TryLock(slug); ok {
+		wt, err := repo.Worktree()
+		if err != nil {
+			log.Printf("git push: failed to get worktree for reset: %v", err)
+		} else if err := wt.Reset(&git.ResetOptions{Commit: head.Hash(), Mode: git.HardReset}); err != nil {
+			log.Printf("git push: failed to reset worktree to HEAD: %v", err)
+		}
+		unlock()
+	} else {
+		log.Printf("git push: workspace %q busy; skipping worktree reset", slug)
 	}
 
 	sha := head.Hash().String()

@@ -129,6 +129,13 @@ func ResolveUpstreamAuth(store *secrets.Store, slug string) error {
 	return err
 }
 
+// ResolveUpstreamAuthMethod returns the credentials to use for the upstream
+// remote of a carry-patch workspace (nil when none are configured), for use
+// by the carry-patch fetch.
+func ResolveUpstreamAuthMethod(store *secrets.Store, slug string) (transport.AuthMethod, error) {
+	return resolveUpstreamAuth(store, slug)
+}
+
 // isNotFoundError checks whether err is a *secrets.NotFoundError.
 func isNotFoundError(err error) bool {
 	_, ok := err.(*secrets.NotFoundError)

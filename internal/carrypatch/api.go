@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // ===========================================================================
@@ -105,10 +105,18 @@ type RerereListResponse struct {
 	Resolutions []RerereResolution `json:"resolutions"`
 }
 
-// RerereResolution represents a single rerere resolution entry.
+// RerereResolution represents a single rr-cache entry.
+//
+// git keys the rerere cache by a hash of the conflict hunks, not by file
+// path: the path is only known while the conflict is in progress (MERGE_RR)
+// or when a preimage carries a labelled conflict marker. ID is therefore the
+// stable handle; Path may be null. Resolved reports whether a resolution
+// (postimage) has been recorded for the conflict.
 type RerereResolution struct {
+	ID         string  `json:"id"`
 	Path       *string `json:"path"`
 	RecordedAt *string `json:"recorded_at"`
+	Resolved   bool    `json:"resolved"`
 }
 
 // SyncAPIConfig holds dependencies for carry-patch sync extension endpoints.
@@ -274,10 +282,11 @@ func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
 
 		// 2. Load workspace and validate.
 		var mode, status, cloneStatus string
+		var wsBranch sql.NullString
 		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, status, clone_status
+			`SELECT workspace_mode, status, clone_status, branch
 			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &status, &cloneStatus)
+		).Scan(&mode, &status, &cloneStatus, &wsBranch)
 		if err == sql.ErrNoRows {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
@@ -299,11 +308,13 @@ func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
 				"failed to initialize git runner")
 		}
 
-		// 4. Resolve upstream HEAD.
-		upstreamHead, headErr := git.Run(c.Request().Context(), "rev-parse", "HEAD")
+		// 4. Resolve the upstream base as of the last sync/rebuild fetch
+		// (refs/remotes/upstream/HEAD), the same commit a rebuild would use.
+		// The preview does not fetch; run a sync first for a fresh base.
+		upstreamHead, headErr := resolveUpstreamBase(c.Request().Context(), git, wsBranch.String)
 		if headErr != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError,
-				"failed to resolve upstream HEAD")
+				"failed to resolve upstream HEAD; sync the workspace first")
 		}
 
 		// 5. List active patches in position order.
@@ -472,41 +483,11 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 			}
 		}
 
-		// 16-REQ-1.1: capture REBUILD_STRATEGY at enqueue time.
-		// Body strategy overrides the workspace variable.
-		strategy := bodyStrategy
-		if strategy == "" {
-			strategy = StrategyRebase // default
-			if cfg.GetVariable != nil {
-				val, varErr := cfg.GetVariable("workspace", slug, "REBUILD_STRATEGY")
-				if varErr == nil && val != "" {
-					strategy = val
-				}
-			}
-		}
-
-		// NS-REQ-4: capture REBUILD_FAIL_MODE at enqueue time.
-		// Body fail_mode overrides the workspace variable.
-		failMode := bodyFailMode
-		if failMode == "" {
-			if cfg.GetVariable != nil {
-				val, varErr := cfg.GetVariable("workspace", slug, "REBUILD_FAIL_MODE")
-				if varErr == nil && (val == FailModeFailFast || val == FailModeContinue) {
-					failMode = val
-				}
-			}
-			// Default is empty string; executor defaults to fail_fast.
-		}
-
-		// Build payload. 16-PROP-3: capture strategy at enqueue time.
+		// 16-REQ-1.1 / NS-REQ-4 / 16-PROP-3: capture REBUILD_STRATEGY and
+		// REBUILD_FAIL_MODE at enqueue time; body values override the
+		// workspace variables.
 		ib := nullStr(integrationBranch)
-		payload := RebuildPayload{
-			WorkspaceSlug:     slug,
-			Strategy:          strategy,
-			SubmittedBy:       auth.UserID,
-			IntegrationBranch: ib,
-			FailMode:          failMode,
-		}
+		payload := BuildRebuildPayload(slug, ib, auth.UserID, cfg.GetVariable, bodyStrategy, bodyFailMode)
 		payloadJSON, err := json.Marshal(payload)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to marshal payload")
@@ -830,6 +811,13 @@ func handleRollbackRebuild(cfg RebuildRollbackAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to initialize git runner")
 		}
 
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
+
 		if _, err := git.Run(c.Request().Context(), "branch", "-f", integrationBranch, result.PreviousIntegrationHeadSHA); err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to roll back integration branch")
 		}
@@ -1018,10 +1006,9 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 			}
 		}
 
-		// Count total rerere resolutions for the workspace.
+		// Count rr-cache entries for the workspace.
 		// 16-REQ-6.E4: If rr-cache is inaccessible, count remains 0.
-		rrCacheDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git", "rr-cache")
-		totalRerereResolutions := countRerereResolutions(rrCacheDir)
+		totalRerereResolutions := len(listRerereEntries(filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git")))
 
 		// Build patches array.
 		patchEntries := make([]PatchStatusEntry, 0, len(patches))
@@ -1101,26 +1088,4 @@ func nullStr(ns sql.NullString) string {
 		return ns.String
 	}
 	return ""
-}
-
-// countRerereResolutions reads the rr-cache directory and returns the total
-// count of resolution entries. Returns 0 if rr-cache is inaccessible
-// (16-REQ-6.E4).
-func countRerereResolutions(rrCacheDir string) int {
-	entries, err := os.ReadDir(rrCacheDir)
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		subdir := filepath.Join(rrCacheDir, entry.Name())
-		path := derivePathFromRRCache(subdir)
-		if path != nil {
-			count++
-		}
-	}
-	return count
 }
