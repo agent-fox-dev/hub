@@ -98,18 +98,32 @@ require `workspaces:sync` exclusively.
 
 ### Workspace Ownership
 
-Ownership is not enforced uniformly. Holding the right scope is sufficient to
-act on **any** workspace slug at these endpoints, whoever owns it:
+Ownership is enforced on every workspace-scoped endpoint. A workspace is
+visible only to its owner (the user behind the API key or PAT); admin tokens
+bypass the check. Non-owners receive HTTP 404 (see the anti-enumeration
+policy below), never 403, so slugs cannot be probed. This covers:
 
-- sync and reclone
-- all patch endpoints
+- workspace CRUD, sync, reclone, archive, reactivate
+- all patch endpoints, rebuild, rebuild-preview, rollback, patch-status
 - all merge endpoints and batch rebase
-- all rebuild endpoints, rebuild-preview, and patch-status
 - rerere list and forget
-- audit read endpoints
+- secrets and variables
+- agent sessions (`POST /api/v1/sessions` returns 404 for a workspace the
+  caller does not own) and every per-run audit endpoint
+- the unified audit query and the SSE stream, which return only events of
+  workspaces the caller owns (hub events without a workspace, such as user
+  or credential changes, are visible to admin tokens only)
+- the git server
 
-Ownership **is** enforced (non-owners get 404) on workspace CRUD, secrets,
-variables, session reads, and the git server.
+Blocked users are rejected by the git server as well as by the API.
+
+### Workspace Lock
+
+Operations that modify a workspace clone (sync, reclone, archive, rebuild,
+merge, batch rebase, rollback, rerere forget, and the post-push hook) are
+serialised per workspace. HTTP handlers that cannot acquire the lock
+immediately return `409` with `error_type: workspace_busy`; background jobs
+wait for it.
 
 ### Anti-Enumeration Policy
 
@@ -160,6 +174,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild | Workspace is not in `carry_patch` mode |
 | `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
 | `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
+| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget | Another operation currently holds the workspace lock; retry later |
 
 ---
 
@@ -419,6 +434,16 @@ tokens can archive any workspace.
 
 **Response:** HTTP 200 OK with the updated workspace JSON (status = `"archived"`).
 
+**Behavior:**
+
+- For a workspace whose clone is `ready`, the hub first pushes all local
+  branches to `origin` using the workspace's stored credentials (branches
+  pushed through the hub's git server only exist in the hub's clone).
+  If that push fails (or no credentials can be resolved) the workspace is
+  still archived, but the local clone directory is kept and a warning is
+  logged, so no commits are lost; reactivation reuses the retained clone.
+- The archive acquires the workspace lock (see *Workspace Lock*).
+
 **Error Codes:**
 
 | Status | Condition |
@@ -426,7 +451,7 @@ tokens can archive any workspace.
 | 400 | Workspace is already archived |
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
-| 409 | Clone is in progress; archive is rejected until the clone completes or fails |
+| 409 | Clone is in progress; archive is rejected until the clone completes or fails. Another operation holds the workspace lock (`error_type: workspace_busy`) |
 
 ---
 
@@ -465,10 +490,9 @@ fast-forwards the local integration branch if possible. If a force-push is
 detected (upstream history has diverged), the sync sets an error state with
 instructions to use the `reset_to_upstream` query parameter for recovery.
 
-**Authentication:** API Key, or PAT with `workspaces:sync` scope.
-Workspace ownership is not enforced: any API key holder can sync any
-workspace. PATs require `workspaces:sync` scope but also do not check
-workspace ownership.
+**Authentication:** API Key, or PAT with `workspaces:sync` scope. The
+workspace must be owned by the caller (admin tokens bypass); other
+workspaces answer 404.
 
 **Path Parameters:**
 
@@ -525,8 +549,8 @@ or unexpected failures.
 | 400 | Workspace is not active; clone is not ready; sync is disabled |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:sync` scope |
-| 404 | Workspace not found |
-| 409 | Sync already in progress (concurrent sync rejected); upstream history has diverged (force-push detected) |
+| 404 | Workspace not found or not owned by the caller |
+| 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`); upstream history has diverged (force-push detected) |
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
@@ -611,10 +635,11 @@ to upstream first), deletes the local clone directory, and re-clones from
 upstream. The workspace status remains `"active"` throughout the entire reclone
 lifecycle.
 
-**Authentication:** API Key, or PAT with `workspaces:sync` scope.
-Workspace ownership is not enforced: any API key holder can reclone any
-workspace. PATs require `workspaces:sync` scope but also do not check
-workspace ownership.
+**Authentication:** API Key, or PAT with `workspaces:sync` scope. The
+workspace must be owned by the caller (admin tokens bypass); other
+workspaces answer 404. The archive-and-push step uses the workspace's stored
+credentials, and the whole operation holds the workspace lock (`409`
+`workspace_busy` while another operation runs).
 
 **Path Parameters:**
 
@@ -776,6 +801,7 @@ exists (idempotent).
 |--------|-----------|
 | 400 | `workspace_slug` is missing or empty |
 | 403 | Caller lacks `sessions:write` scope |
+| 404 | Workspace does not exist or is not owned by the caller (admin tokens bypass) |
 
 ---
 
@@ -1185,7 +1211,7 @@ Update a patch's position, status, description, or upstream PR URL.
 | Field | Required | Type | Constraints |
 |-------|----------|------|-------------|
 | `position` | no | integer | 1-based; must be >= 1 and <= total patch count for the workspace |
-| `status` | no | string | Must be one of: `"active"`, `"merged_upstream"`, `"conflict"`, `"disabled"`, `"deleted"` |
+| `status` | no | string | Must be one of: `"active"`, `"merged_upstream"`, `"conflict"`, `"disabled"`. `"deleted"` is a rebuild outcome and cannot be set here; use `DELETE` to remove a patch and `.../restore` to bring it back |
 | `description` | no | string | Free-form description |
 | `upstream_pr_url` | no | string | URL of the upstream pull request |
 
@@ -1205,11 +1231,12 @@ Update a patch's position, status, description, or upstream PR URL.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | `status` is not one of the valid values |
+| 400 | `status` is not one of the valid values, or is `"deleted"` |
 | 400 | `position` is less than 1 or greater than the total number of patches |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:write` scope |
-| 404 | Patch ID does not exist for the given workspace |
+| 404 | Patch ID does not exist for the given workspace; workspace not found or not owned by the caller |
+| 409 | Patch is soft-deleted; restore it first |
 
 ---
 
@@ -1353,12 +1380,16 @@ List all recorded rerere resolutions for a workspace.
 {
   "resolutions": [
     {
+      "id": "3f2a9c0e7b1d4c5a8e6f0b2d1c3a4e5f6a7b8c9d",
       "path": "src/config.go",
-      "recorded_at": "2024-06-15T10:30:00Z"
+      "recorded_at": "2024-06-15T10:30:00Z",
+      "resolved": true
     },
     {
-      "path": "pkg/handler.go",
-      "recorded_at": "2024-06-14T08:15:00Z"
+      "id": "9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c",
+      "path": null,
+      "recorded_at": "2024-06-14T08:15:00Z",
+      "resolved": false
     }
   ]
 }
@@ -1366,14 +1397,16 @@ List all recorded rerere resolutions for a workspace.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `resolutions` | array | List of recorded rerere resolutions |
-| `resolutions[].path` | string or null | File path derived from the preimage/postimage conflict marker |
-| `resolutions[].recorded_at` | string (RFC 3339) or null | Timestamp derived from the file modification time of the rr-cache entry |
+| `resolutions` | array | List of recorded rerere entries, newest first |
+| `resolutions[].id` | string | The rr-cache entry name (git's conflict hash); stable identifier for `DELETE` |
+| `resolutions[].path` | string or null | File path of the conflict. git only records the path while a conflict is in progress (`MERGE_RR`), so it is null for entries recorded by earlier rebuilds |
+| `resolutions[].recorded_at` | string (RFC 3339) or null | Modification time of the rr-cache entry |
+| `resolutions[].resolved` | boolean | `true` when the entry has a `postimage` (a recorded resolution that rerere will replay); `false` when only the `preimage` (conflict pattern) has been seen |
 
 **Edge Cases:**
 
 - If the `rr-cache` directory does not exist or is empty, returns `{"resolutions": []}`.
-- Malformed rr-cache subdirectories (no preimage or postimage file) are silently skipped.
+- Entries without a `preimage` file are skipped.
 
 **Error Codes:**
 
@@ -1387,7 +1420,11 @@ List all recorded rerere resolutions for a workspace.
 
 ### DELETE /api/v1/workspaces/:slug/rerere/\*pathspec
 
-Forget a specific recorded rerere resolution by executing `git rerere forget <pathspec>`.
+Forget a recorded rerere entry. The parameter is either an entry `id` from
+the list endpoint (the rr-cache directory is removed) or a file path, in
+which case `git rerere forget <path>` is executed; the latter only works
+while that path is in a conflicted state, which is why the id form is
+preferred for housekeeping.
 
 **Authentication:** API Key, or PAT with `workspaces:write` scope.
 
@@ -1396,7 +1433,7 @@ Forget a specific recorded rerere resolution by executing `git rerere forget <pa
 | Parameter | Description |
 |-----------|-------------|
 | `:slug` | The workspace slug |
-| `*pathspec` | The file path to forget (wildcard parameter captures slashes, e.g. `src/config.go`) |
+| `*pathspec` | Entry id (40 or 64 hex characters) or the file path to forget (wildcard parameter captures slashes, e.g. `src/config.go`). A path must not start with `-` |
 
 **Response (success):** HTTP 204 No Content
 
@@ -1404,10 +1441,11 @@ Forget a specific recorded rerere resolution by executing `git rerere forget <pa
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Empty pathspec |
+| 400 | Empty or invalid pathspec |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:write` scope |
-| 404 | Workspace not found; no recorded resolution for the given pathspec |
+| 404 | Workspace not found or not owned by the caller; no entry with the given id; no recorded resolution for the given path |
+| 409 | Another operation holds the workspace lock (`error_type: workspace_busy`) |
 
 ---
 
@@ -1442,7 +1480,8 @@ any workspace.
     }
   ],
   "integration_head_sha": "<sha>",
-  "previous_integration_head_sha": "<sha>"
+  "previous_integration_head_sha": "<sha>",
+  "integration_branch_pushed": true
 }
 ```
 
@@ -1457,10 +1496,13 @@ any workspace.
 | `patch_results` | array or absent | Per-patch rebuild outcomes; present for completed jobs and for running jobs with intermediate progress |
 | `integration_head_sha` | string | SHA of the integration branch HEAD after rebuild; empty for non-completed jobs |
 | `previous_integration_head_sha` | string | SHA of the integration branch HEAD before rebuild; empty for first-ever rebuild or non-completed jobs |
+| `upstream_head_sha` | string | SHA of the upstream base the rebuild started from (`refs/remotes/upstream/HEAD`, falling back to `refs/remotes/upstream/<workspace branch>` and then `FETCH_HEAD`) |
+| `integration_branch_pushed` | boolean | `true` when the `REBUILD_PUSH_INTEGRATION_BRANCH` workspace variable is `"true"` and the rebuilt integration branch was force-pushed to `origin`; omitted otherwise |
 
 Fields with `omitempty` tags (`strategy`, `error`, `patch_results`,
-`integration_head_sha`, `previous_integration_head_sha`) are omitted from the
-response when empty rather than included as null.
+`integration_head_sha`, `previous_integration_head_sha`,
+`integration_branch_pushed`) are omitted from the response when empty rather
+than included as null.
 
 #### Patch Result Schema
 
@@ -1963,8 +2005,14 @@ Submit a merge request to integrate a source branch into a target branch.
 | 400 | Missing `target_branch` or `source_ref`; malformed JSON; workspace is not active; clone is not ready; source or target branch does not exist |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `merges:write` scope |
-| 404 | Workspace not found |
+| 404 | Workspace not found or not owned by the caller |
 | 409 | A merge job for this source and target branch is already queued or running (`error_type: duplicate_merge`) |
+
+Branch names are validated with git's ref-name rules (no leading `-`, no
+`..`, no control characters, etc.) and rejected with 400 otherwise. A
+`CHECK_COMMAND` that exits non-zero fails the job with error class
+`CheckFailed`; a missing `CHECK_COMMAND` skips the check, while any other
+error resolving it is retried rather than treated as "no check".
 
 ---
 
@@ -2279,7 +2327,9 @@ No `value` field is ever returned for secrets.
 
 Create one or more user-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:manage` scope.
+**Authentication:** API Key, or PAT with `secrets:manage` scope. Admin
+tokens have no user identity and receive `403` on every `/api/v1/user/secrets`
+and `/api/v1/user/vars` endpoint.
 
 **Request Body:**
 
@@ -2983,7 +3033,8 @@ sorted by key (case-insensitive).
 ```
 
 The `origin` field indicates which tier the value came from: `"user"`,
-`"org"`, or `"workspace"`.
+`"org"`, or `"workspace"`. The org tier is only consulted when the workspace
+owner is a member of the workspace's organization.
 
 **Error Codes:**
 
@@ -3518,6 +3569,11 @@ ingestion — duplicates return `200` instead of `201`.
 The `run_id` URL parameter must match the format `YYYYMMDD_HHMMSS_6hexchars`
 (e.g. `20260704_143022_a1b2c3`).
 
+Client-supplied timestamps (`timestamp`, `started_at`, `completed_at`) must be
+RFC 3339; offsets are accepted and normalised to UTC. Malformed values are
+rejected with `400` (per item, in the batch endpoints). GET endpoints under
+the same prefix require the caller to own the workspace (404 otherwise).
+
 ### POST /api/v1/workspaces/:slug/runs/:run_id/events
 
 Ingest a single audit event.
@@ -3831,6 +3887,13 @@ Unified audit event query that merges events from `hub_audit_events` and
 | `limit` | integer | 100 | Maximum number of events to return (clamped to 1000) |
 | `cursor` | string | (none) | Opaque pagination cursor from a previous response |
 
+Non-admin callers only receive events of workspaces they own; hub events
+that carry no workspace (user, org, and credential changes) are returned to
+admin tokens only. Timestamps of both sources are compared as instants, so
+hub events (recorded with microsecond precision) and agent events interleave
+correctly; `timestamp` is rendered as RFC 3339 UTC with fractional seconds
+where present.
+
 **Response:** HTTP 200 OK
 
 ```json
@@ -3974,8 +4037,11 @@ to connected clients. Uses the `text/event-stream` content type.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `workspace` | string | Filter events by workspace slug |
-| `run_id` | string | Filter events by agent run ID |
-| `category` | string | Filter events by category |
+| `run_id` | string | Accepted for forward compatibility but currently ignored: streamed hub events carry no run id |
+| `category` | string | Filter events by category: `hub` or `agent` |
+
+Non-admin callers only receive events of workspaces they own; a `workspace`
+filter naming another user's workspace answers 404.
 
 **Response:** HTTP 200 OK with `Content-Type: text/event-stream`
 

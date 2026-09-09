@@ -631,17 +631,22 @@ afc rerere list api-gateway
 ```json
 {
   "resolutions": [
-    {"path": "pkg/auth.go", "recorded_at": "2025-03-15T14:22:00Z"},
-    {"path": "internal/config/defaults.go", "recorded_at": "2025-03-10T09:15:00Z"}
+    {"id": "3f2a9c0e...", "path": null, "recorded_at": "2025-03-15T14:22:00Z", "resolved": true},
+    {"id": "9d8c7b6a...", "path": null, "recorded_at": "2025-03-10T09:15:00Z", "resolved": false}
   ]
 }
 ```
 
+Git keys rerere entries by a hash of the conflict, not by file, and only
+knows the path while a conflict is in progress, so `path` is usually null.
+`resolved: false` marks an entry for which only the conflict pattern has
+been seen (no resolution recorded yet).
+
 If a recorded resolution is outdated or incorrect and you want rerere to
-re-prompt for manual resolution on the next conflict, forget it:
+re-prompt for manual resolution on the next conflict, forget it by id:
 
 ```
-afc rerere forget api-gateway pkg/auth.go
+afc rerere forget api-gateway 3f2a9c0e...
 ```
 
 ### Viewing rebuild history
@@ -664,6 +669,19 @@ afc rebuild status api-gateway <rebuild-id>
 
 Workspace variables control carry-patch behavior. Set them with the
 `afc vars` commands.
+
+### REBUILD_PUSH_INTEGRATION_BRANCH
+
+Opt-in. When set to `"true"`, every successful rebuild force-pushes the
+integration branch to `origin` using the workspace's stored credentials,
+so codespaces and CI that clone the fork see the rebuilt branch without an
+extra step. Off by default because the push rewrites the branch on the
+remote; the job record reports `integration_branch_pushed: true` when it
+happened, and a push failure is logged without failing the rebuild.
+
+```
+afc vars create REBUILD_PUSH_INTEGRATION_BRANCH=true --workspace api-gateway
+```
 
 ### REBUILD_STRATEGY
 
@@ -778,14 +796,22 @@ differs from the original patch commits.
 
 When a rebuild job runs, the hub executes the following steps:
 
-1. **Resolve credentials.** Validates that upstream authentication
-   credentials are available. If not, the job is retried.
+1. **Resolve credentials.** Resolves the upstream credentials
+   (`UPSTREAM_GIT_PAT`, then username/password, then the origin
+   credentials). If resolution fails, the job is retried.
 
-2. **Fetch upstream.** Runs `git fetch upstream` in the workspace repository
-   to get the latest upstream refs.
+2. **Fetch upstream.** Fetches `refs/heads/*` and `HEAD` of the `upstream`
+   remote into `refs/remotes/upstream/*` with those credentials (go-git,
+   so private upstreams work).
 
-3. **Create a temporary branch.** Creates `_rebuild_temp` at the current
-   upstream HEAD SHA (resolved from `FETCH_HEAD`).
+3. **Create a temporary branch.** Determines the upstream base as
+   `refs/remotes/upstream/HEAD`, falling back to
+   `refs/remotes/upstream/<workspace branch>` and finally `FETCH_HEAD`, and
+   creates `_rebuild_temp` there (`checkout -B`, so a stale temp branch from
+   an aborted run is reset). Before that, any in-progress cherry-pick,
+   merge, or rebase state left behind by a crashed job is aborted. The job
+   holds the workspace lock for its whole duration, so syncs, merges and
+   pushes to the same workspace wait.
 
 4. **Enable rerere.** Sets `rerere.enabled=true` and
    `rerere.autoupdate=true` in the repo's git config.
@@ -797,7 +823,10 @@ When a rebuild job runs, the hub executes the following steps:
    - **Missing branches:** If the branch does not exist in the repository,
      the patch is skipped (not an error).
    - **Rebase strategy:** Identifies commits unique to the patch branch
-     (not already in upstream) and cherry-picks each one in order.
+     (`git log --right-only --cherry-pick --no-merges <base>...<branch>`, so
+     commits already applied upstream under a different SHA are skipped) and
+     cherry-picks each one in order. A cherry-pick that turns out empty is
+     skipped rather than treated as a conflict.
    - **Merge strategy:** Merges the patch branch with `--no-ff`.
    - **Conflict handling:** If a cherry-pick or merge produces conflicts,
      the hub runs `git rerere` to attempt automatic resolution. If rerere
@@ -815,18 +844,24 @@ When a rebuild job runs, the hub executes the following steps:
 
 6. **Finalize on success.** Captures the previous integration branch HEAD
    SHA (for rollback), force-updates the integration branch ref to the
-   final HEAD of the temporary branch, deletes the temporary branch,
-   soft-deletes `merged_upstream` patches, and compacts positions.
+   final HEAD of the temporary branch, restores whatever branch was checked
+   out before the rebuild, deletes the temporary branch, soft-deletes
+   `merged_upstream` patches, and compacts positions. When the
+   `REBUILD_PUSH_INTEGRATION_BRANCH` workspace variable is `"true"`, the
+   integration branch is then force-pushed to `origin` with the workspace
+   credentials and the job record reports `integration_branch_pushed`.
+   The working tree is restored on every exit path, including failures.
 
 ### Sync algorithm
 
 The carry-patch sync differs from the standard workspace sync:
 
-1. **Resolve upstream credentials** and fetch from the `upstream` remote.
+1. **Resolve upstream credentials** and fetch from the `upstream` remote
+   (same refspecs and credentials as the rebuild).
 
-2. **Detect upstream changes.** Compare the new upstream HEAD (from
-   `FETCH_HEAD`) with the stored `upstream_head_sha`. If unchanged, return
-   immediately.
+2. **Detect upstream changes.** Compare the new upstream base
+   (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
+   with the stored `upstream_head_sha`. If unchanged, return immediately.
 
 3. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
    the new upstream HEAD, set `force_push_detected` to true. This is
@@ -1002,10 +1037,12 @@ upstream, it can be recovered without needing to re-create it from scratch.
 changed afterward. To switch from `standard` to `carry_patch` (or vice
 versa), you must create a new workspace.
 
-**Integration branch created at fork HEAD.** During workspace creation, the
-integration branch is created at the fork's HEAD because upstream refs are
-not available until the first fetch. The branch is not correctly positioned
-until after the first sync and rebuild.
+**Integration branch position after creation.** During workspace creation
+the hub fetches `upstream` (with the stored credentials) and creates the
+integration branch at the upstream base when that fetch succeeds; if the
+fetch fails (for example because credentials are added later), the branch is
+created at the fork's HEAD and is only correctly positioned after the first
+sync and rebuild.
 
 **Rerere resolution count is workspace-level.** The `total_rerere_resolutions`
 field in the patch-status dashboard summary counts all recorded rerere
@@ -1020,7 +1057,10 @@ immediately after creation.
 **Concurrent rebuild prevention.** Only one rebuild job can be queued or
 running for a workspace at a time. Submitting a rebuild while one is already
 in progress returns HTTP 409. Wait for the current rebuild to complete before
-resubmitting.
+resubmitting. More generally, every operation that touches the clone (sync,
+rebuild, merge, rollback, rerere forget, archive, reclone, git push) takes a
+per-workspace lock; HTTP calls that find it taken answer 409
+`workspace_busy` instead of waiting.
 
 **First rebuild cannot be rolled back.** The rollback mechanism requires a
 previous integration branch HEAD SHA, which is only available after at least

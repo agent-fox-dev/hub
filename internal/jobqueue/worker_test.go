@@ -169,12 +169,8 @@ func TestWorker_GoroutineCount(t *testing.T) {
 	}
 	defer q.Stop()
 
-	// Allow goroutines to be scheduled.
-	runtime.Gosched()
-	time.Sleep(100 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
-	delta := after - before
+	// See waitForGoroutineDelta: the process-wide count is noisy.
+	delta, after := waitForGoroutineDelta(before, 3)
 
 	// Expect at least 3 new goroutines (the workers). There may be
 	// additional goroutines (e.g., a promote/poll coordinator), so we

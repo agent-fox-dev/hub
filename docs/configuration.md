@@ -104,6 +104,17 @@ provider.
 | `AF_AUDIT_ORPHAN_RETENTION_DAYS` | Grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted. Default: `30`. |
 | `AF_AUDIT_DB_PATH` | Path to the DuckDB audit database file. Default: `<dir of SQLite database>/audit.duckdb`. |
 | `AF_SSE_MAX_CONNECTIONS` | Maximum number of concurrent SSE connections accepted by the event streaming endpoint. Accepts positive integers; invalid or non-positive values fall back to the default with a warning log. Default: `100`. |
+| `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | Identity used for commits the hub creates (carry-patch cherry-picks and merges, merge jobs). Default: `af-hub <af-hub@localhost>` when unset. |
+
+All `AF_*_DAYS` and `AF_AUDIT_MAX_RUNS` values must be positive integers;
+anything else (including `0`) falls back to the default with a warning log.
+
+The hub runs git with a hardened environment: `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS` and similar repository-redirecting
+variables are dropped, `LC_ALL=C`, `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0`
+and `GIT_CONFIG_NOSYSTEM=1` are forced, each git invocation runs in its own
+process group and is killed as a group on cancellation, and commands without
+an explicit deadline are bounded to 10 minutes.
 
 ## First Boot
 
@@ -174,8 +185,11 @@ programmatic default database path is `/data/af-hub/apikit.db`.
 
 The runtime image includes the `git` CLI (`git-core`). The hub shells out to
 git for merge, batch rebase, and every carry-patch operation (sync, rebuild,
-preview, rerere); clone, fetch, and push of standard workspaces use go-git and
-do not need it.
+preview, rerere); clone, fetch, and push (including the upstream fetch of
+carry-patch workspaces) use go-git and do not need it. No git identity needs
+to be configured in the container: commits fall back to
+`af-hub <af-hub@localhost>` unless the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+variables are set.
 
 The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 `/usr/bin/hub` with no flags.

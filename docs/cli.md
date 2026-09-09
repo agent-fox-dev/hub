@@ -13,9 +13,16 @@ API.
 - Destructive commands that receive an HTTP 204 No Content response emit a
   synthetic JSON status object to stdout (e.g. `{"status":"deleted","slug":"x"}`)
   in addition to any human-readable confirmation on stderr.
-- On error, commands print an error message to stderr and exit with code 1.
+- On error, commands print a JSON error envelope to stdout and exit with a
+  non-zero code (1 for API and network errors, 2 for usage errors).
 - Network timeouts and connection failures result in exit code 1 with a
   descriptive error message on stderr.
+- Commands that wait for a job (`--wait`, `merge wait`, `rebuild wait`)
+  poll immediately and then every `--poll-interval`. They print the final
+  record and exit 0 only when the job `completed` (or the clone is `ready`);
+  `failed`, `dead_letter`, `cancelled`, and a failed clone exit non-zero.
+- Every user-supplied path element (slugs, keys, ids) is percent-encoded
+  before it is placed in a request URL.
 
 ---
 
@@ -465,17 +472,22 @@ git push origin main
 ```
 
 Git calls `afc credential-helper get` behind the scenes whenever it needs
-credentials for the hub host. The helper reads the API key from
-`~/.af/config.toml` and supplies it as HTTP Basic auth. Requests to other
-hosts are ignored, allowing git's default credential chain to handle them.
+credentials for the hub host. The helper reads the endpoint URL and API key
+from the `ENDPOINT_URL` and `API_KEY` environment variables when set (the
+same precedence every other `afc` command applies, so environment-only
+setups such as CI jobs and devcontainers work) and otherwise from
+`~/.af/config.toml`. It supplies the key as HTTP Basic auth. Requests to
+other hosts are ignored, allowing git's default credential chain to handle
+them.
 
 ### How It Works
 
 The credential helper implements the standard
 [git credential helper protocol](https://git-scm.com/docs/gitcredentials).
-It only responds to `get` requests where the host matches the configured
-`endpoint_url`. The `store` and `erase` actions are no-ops since credentials
-are managed by `afc login`.
+It only responds to `get` requests whose scheme and host:port match the
+configured `endpoint_url` (a plain-`http` request for an `https` hub is
+ignored, so the key is never downgraded). The `store` and `erase` actions
+are no-ops since credentials are managed by `afc login`.
 
 ---
 
@@ -507,11 +519,17 @@ afc credential set <workspace-slug> [flags]
 | `--upstream-git-pat` | no | string | Personal access token for authenticating against the upstream remote |
 | `--upstream-git-username` | no | string | Username for HTTP basic auth against the upstream remote |
 | `--upstream-git-password` | no | string | Password for HTTP basic auth against the upstream remote |
+| `--from-stdin` | no | boolean | Read the PAT (or, with `--upstream-git-username`, the password) from stdin instead of a flag, keeping it out of shell history and `ps` output. One trailing newline is stripped |
 
-At least one credential flag must be provided. The `--upstream-git-pat` flag
-stores a `UPSTREAM_GIT_PAT` workspace secret. The `--upstream-git-username` and
-`--upstream-git-password` flags store `UPSTREAM_GIT_USERNAME` and
-`UPSTREAM_GIT_PASSWORD` workspace secrets respectively.
+At least one credential must be provided. The `--upstream-git-pat` flag
+stores a `UPSTREAM_GIT_PAT` workspace secret. `--upstream-git-username` and
+`--upstream-git-password` store `UPSTREAM_GIT_USERNAME` and
+`UPSTREAM_GIT_PASSWORD` and must be given together (one without the other is
+an unusable credential and is rejected).
+
+```
+printf '%s' "$GITHUB_TOKEN" | afc credential set my-ws --from-stdin
+```
 
 **Behavior:**
 
@@ -530,7 +548,7 @@ stores a `UPSTREAM_GIT_PAT` workspace secret. The `--upstream-git-username` and
 |------|-----------|
 | 0 | Credentials stored successfully |
 | 1 | Workspace not found, API error, network error, or timeout |
-| 2 | No credential flags provided |
+| 2 | No credential provided; username without password (or vice versa); `--from-stdin` combined with `--upstream-git-pat` or `--upstream-git-password` |
 
 ---
 
@@ -559,14 +577,16 @@ Create one or more secrets.
 **Usage:**
 
 ```
-afc secrets create <KEY=VALUE[,KEY2=VALUE2,...]> [flags]
+afc secrets create <KEY=VALUE[,KEY2=VALUE2,...]> [KEY3=VALUE3 ...] [flags]
+afc secrets create <KEY> --from-stdin [flags]
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `<KEY=VALUE[,...]>` | Comma-separated KEY=VALUE pairs |
+| `<KEY=VALUE[,...]>` | One or more arguments, each a comma-separated list of KEY=VALUE pairs |
+| `<KEY>` | With `--from-stdin`: the single key whose value is read from stdin |
 
 Keys may contain alphanumeric characters and underscores. Values may contain
 additional `=` characters. An empty or whitespace-only key is rejected.
@@ -578,6 +598,7 @@ additional `=` characters. An empty or whitespace-only key is rejected.
 | `--user` | boolean | Target user scope |
 | `--org` | string | Target organization scope (by slug) |
 | `--workspace` | string | Target workspace scope (by slug) |
+| `--from-stdin` | boolean | Read the value for the single `KEY` argument from stdin (one trailing newline stripped). Keeps secrets out of shell history |
 
 **Behavior:**
 
@@ -593,7 +614,7 @@ additional `=` characters. An empty or whitespace-only key is rejected.
 |------|-----------|
 | 0 | Secrets created successfully in all targeted scopes |
 | 1 | API error (4xx/5xx), network error, or timeout in any scope |
-| 2 | Missing argument or invalid KEY=VALUE format |
+| 2 | Missing argument, invalid KEY=VALUE format, or `--from-stdin` with anything but a single bare KEY |
 
 ---
 
@@ -640,6 +661,7 @@ Update a secret value.
 
 ```
 afc secrets update <KEY=VALUE> [flags]
+afc secrets update <KEY> --from-stdin [flags]
 ```
 
 **Arguments:**
@@ -647,6 +669,7 @@ afc secrets update <KEY=VALUE> [flags]
 | Argument | Description |
 |----------|-------------|
 | `<KEY=VALUE>` | The secret key and its new value |
+| `<KEY>` | With `--from-stdin`: the key whose new value is read from stdin |
 
 **Flags:**
 
@@ -655,6 +678,7 @@ afc secrets update <KEY=VALUE> [flags]
 | `--user` | boolean | Target user scope |
 | `--org` | string | Target organization scope (by slug) |
 | `--workspace` | string | Target workspace scope (by slug) |
+| `--from-stdin` | boolean | Read the new value from stdin (one trailing newline stripped) |
 
 **Behavior:**
 
@@ -737,8 +761,12 @@ Create one or more variables.
 **Usage:**
 
 ```
-afc vars create <KEY=VALUE[,KEY2=VALUE2,...]> [flags]
+afc vars create <KEY=VALUE[,KEY2=VALUE2,...]> [KEY3=VALUE3 ...] [flags]
+afc vars create <KEY> --from-stdin [flags]
 ```
+
+Multiple arguments and `--from-stdin` behave exactly as for
+`afc secrets create`.
 
 **Arguments:**
 
@@ -818,6 +846,7 @@ Update a variable value.
 
 ```
 afc vars update <KEY=VALUE> [flags]
+afc vars update <KEY> --from-stdin [flags]
 ```
 
 **Arguments:**
@@ -966,10 +995,11 @@ afc merge submit <workspace-slug> --target <branch> --source <branch> [--wait] [
 - Prints the created merge job JSON to stdout, including `id` and
   `status` (initially `queued`).
 - With `--wait`: prints the initial submit response, then polls
-  `GET /api/v1/workspaces/<slug>/merges/<id>` until the job reaches a
-  terminal state (`completed`, `failed`, `dead_letter`, or `cancelled`).
-  Prints the final job record and exits 0. If the timeout is exceeded,
-  prints a timeout message to stderr and exits 1.
+  `GET /api/v1/workspaces/<slug>/merges/<id>` (immediately, then every
+  `--poll-interval`) until the job reaches a terminal state (`completed`,
+  `failed`, `dead_letter`, or `cancelled`). Prints the final job record;
+  exits 0 only for `completed`. If the timeout is exceeded, prints a timeout
+  message to stderr and exits 1.
 - Requires `merges:write` permission scope for PATs.
 
 **Exit Codes:**
@@ -977,7 +1007,7 @@ afc merge submit <workspace-slug> --target <branch> --source <branch> [--wait] [
 | Code | Condition |
 |------|-----------|
 | 0 | Merge job submitted successfully (or completed when using `--wait`) |
-| 1 | API error (4xx/5xx), network error, or timeout (with `--wait`) |
+| 1 | API error (4xx/5xx), network error, timeout, or job ended `failed`/`dead_letter`/`cancelled` (with `--wait`) |
 | 2 | Missing `--target` or `--source` flag |
 
 ---
@@ -1117,6 +1147,33 @@ afc merge requeue <workspace-slug> <merge-id>
 
 ---
 
+### afc merge wait
+
+Wait for an existing merge job to reach a terminal state.
+
+**Usage:**
+
+```
+afc merge wait <workspace-slug> <merge-id> [--timeout <duration>] [--poll-interval <duration>]
+```
+
+**Behavior:**
+
+- Polls `GET /api/v1/workspaces/<slug>/merges/<merge-id>` immediately and
+  then every `--poll-interval` (default `5s`) until the job is `completed`,
+  `failed`, `dead_letter`, or `cancelled`, or `--timeout` (default `5m0s`)
+  elapses.
+- Prints the final job record to stdout.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Job completed |
+| 1 | Job ended `failed`, `dead_letter`, or `cancelled`; timeout; job not found; API or network error |
+
+---
+
 ## Rebase Commands
 
 All rebase commands are subcommands of `afc rebase`. They manage batch rebase
@@ -1204,17 +1261,18 @@ afc rebuild submit <workspace-slug> [--strategy <strategy>] [--fail-mode <mode>]
   `status` (`queued`).
 - Exits with code 0 on success.
 - With `--wait`: prints the initial submit response, then polls
-  `GET /api/v1/workspaces/<slug>/rebuilds/<id>` until the job reaches a
-  terminal state (`completed`, `failed`, `dead_letter`, or `cancelled`).
-  Prints the final job record and exits 0. If the timeout is exceeded,
-  prints a timeout message to stderr and exits 1.
+  `GET /api/v1/workspaces/<slug>/rebuilds/<id>` (immediately, then every
+  `--poll-interval`) until the job reaches a terminal state (`completed`,
+  `failed`, `dead_letter`, or `cancelled`). Prints the final job record;
+  exits 0 only for `completed`. If the timeout is exceeded, prints a timeout
+  message to stderr and exits 1.
 
 **Exit Codes:**
 
 | Code | Condition |
 |------|-----------|
 | 0 | Rebuild job submitted successfully (or completed when using `--wait`) |
-| 1 | Missing workspace slug, workspace not in carry_patch mode, no active patches, duplicate job, API error, network error, or timeout (with `--wait`) |
+| 1 | Missing workspace slug, workspace not in carry_patch mode, no active patches, duplicate job, API error, network error, timeout, or job ended `failed`/`dead_letter`/`cancelled` (with `--wait`) |
 
 ---
 
@@ -1409,7 +1467,35 @@ afc rebuild rollback <workspace-slug> <rebuild-id>
 | Code | Condition |
 |------|-----------|
 | 0 | Rollback completed successfully |
-| 1 | Rebuild not found, rollback not possible, API error, network error, or timeout |
+| 1 | Rebuild not found, rollback not possible, workspace busy, API error, network error, or timeout |
+
+---
+
+### afc rebuild wait
+
+Wait for an existing rebuild job to reach a terminal state.
+
+**Usage:**
+
+```
+afc rebuild wait <workspace-slug> <rebuild-id> [--timeout <duration>] [--poll-interval <duration>]
+```
+
+**Behavior:**
+
+- Polls `GET /api/v1/workspaces/<slug>/rebuilds/<rebuild-id>` immediately
+  and then every `--poll-interval` (default `5s`) until the job is
+  `completed`, `failed`, `dead_letter`, or `cancelled`, or `--timeout`
+  (default `5m0s`) elapses. Useful after `afc workspace sync` or a push that
+  auto-triggered a rebuild.
+- Prints the final job record to stdout.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Job completed |
+| 1 | Job ended `failed`, `dead_letter`, or `cancelled`; timeout; job not found; API or network error |
 
 ---
 
@@ -1437,8 +1523,9 @@ afc rerere list <workspace-slug>
 **Behavior:**
 
 - Sends `GET /api/v1/workspaces/<slug>/rerere`.
-- Prints the resolution list as JSON to stdout, including `path` and
-  `recorded_at` for each resolution.
+- Prints the entry list as JSON to stdout with `id` (the rr-cache entry
+  name), `path` (null unless a conflict is currently in progress),
+  `recorded_at`, and `resolved` (whether a replayable resolution exists).
 - Exits with code 0 on success.
 
 **Exit Codes:**
@@ -1457,7 +1544,7 @@ Forget a specific recorded rerere resolution.
 **Usage:**
 
 ```
-afc rerere forget <workspace-slug> <pathspec>
+afc rerere forget <workspace-slug> <id-or-pathspec>
 ```
 
 **Arguments:**
@@ -1465,13 +1552,13 @@ afc rerere forget <workspace-slug> <pathspec>
 | Argument | Description |
 |----------|-------------|
 | `<workspace-slug>` | The workspace slug |
-| `<pathspec>` | The file path to forget (may contain slashes, e.g. `src/config.go`) |
+| `<id-or-pathspec>` | An entry `id` from `afc rerere list`, or the file path to forget (may contain slashes, e.g. `src/config.go`; only works while that path is in conflict) |
 
 **Behavior:**
 
-- Sends `DELETE /api/v1/workspaces/<slug>/rerere/<pathspec>`.
-- The pathspec is appended as a path segment without additional URL encoding
-  of slashes, relying on the server's wildcard route.
+- Sends `DELETE /api/v1/workspaces/<slug>/rerere/<id-or-pathspec>`.
+- Slashes in a pathspec are preserved (the server uses a wildcard route);
+  every other character is percent-encoded.
 - On success, emits a synthetic JSON status object to stdout
   (`{"status":"forgotten","pathspec":"<path>"}`) and prints a confirmation
   message to stderr.
@@ -1639,6 +1726,8 @@ afc patch update <workspace-slug> <patch-id> [flags]
 
 - Sends `PATCH /api/v1/workspaces/<slug>/patches/<patch-id>` with only the
   flags that were explicitly provided.
+- At least one flag is required; without one the command exits 2 without
+  making a request.
 - Prints the updated patch JSON to stdout.
 - Requires `patches:write` permission scope for PATs.
 
@@ -1647,7 +1736,8 @@ afc patch update <workspace-slug> <patch-id> [flags]
 | Code | Condition |
 |------|-----------|
 | 0 | Patch updated successfully |
-| 1 | Patch not found, invalid status, API error, network error, or timeout |
+| 1 | Patch not found, invalid status, soft-deleted patch, API error, network error, or timeout |
+| 2 | No update flag provided |
 
 ---
 

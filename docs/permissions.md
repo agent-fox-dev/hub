@@ -186,8 +186,9 @@ sit outside it.
 | `POST /api/v1/workspaces/:slug/archive` | allowed | must own |
 | `POST /api/v1/workspaces/:slug/reactivate` | allowed | must own |
 | `DELETE /api/v1/workspaces/:slug` | allowed | must own, must be archived |
-| `POST /api/v1/workspaces/:slug/sync` | allowed | no ownership check |
-| `POST /api/v1/workspaces/:slug/reclone` | allowed | no ownership check |
+| `POST /api/v1/workspaces/:slug/sync` | allowed | must own |
+| `POST /api/v1/workspaces/:slug/reclone` | allowed | must own |
+| patches, merges, rebase, rebuilds, rerere, patch-status, audit | allowed | must own (404 if not) |
 
 Admin-role API keys have the same access as user-role — they do NOT see
 other users' workspaces.
@@ -201,7 +202,7 @@ other users' workspaces.
 | `POST /git/:org/:slug.git/git-receive-pack` | allowed | must own workspace |
 
 API keys have implicit `git:read` + `git:write`. Admin-role API keys do
-NOT bypass ownership in the git server.
+NOT bypass ownership in the git server. Blocked users are rejected.
 
 #### Admin Endpoints (admin-role API keys only)
 
@@ -243,7 +244,14 @@ keys (`Role == "admin"`) pass `RequireAdmin` and gain access to:
   in workspace and git subsystems. Only admin tokens have cross-tenant
   workspace/git access.
 - **Admin tokens cannot create workspaces.** They have no user identity,
-  so workspace creation is rejected with 403.
+  so workspace creation is rejected with 403. For the same reason they get
+  403 on the user-scoped secrets and variables endpoints (`/api/v1/user/...`).
+- **`vars:write` on a workspace is code execution on the hub.** The
+  `CHECK_COMMAND` workspace variable is run with `sh -c` inside the trunk
+  by merge jobs. Grant `vars:write`/`vars:manage` only to credentials you
+  would trust with shell access to the hub process. The command runs with a
+  minimal environment (PATH, HOME, TMPDIR, TZ, Go and git safety variables)
+  plus the workspace's resolved variables; hub secrets are not exported.
 - **API keys can create PATs with any permissions.** The privilege
   escalation check only applies when a PAT creates another PAT.
 - **Self-revocation is allowed.** A key can revoke itself because the
@@ -736,6 +744,10 @@ the existence of resources. The workspace create endpoint returns HTTP 403
 there is no existing resource to enumerate. The git server returns HTTP 404
 for non-owner access (`authorizeGitAccess` writes a pkt-line 404
 `"repository not found"`) to prevent workspace slug enumeration.
+
+All workspace-scoped endpoint groups (sync, reclone, patches, merges,
+rebuilds, rerere, patch-status, sessions, audit) return HTTP 404 for a
+workspace the caller does not own, matching the CRUD endpoints.
 
 Other endpoint groups return HTTP 403 for missing PAT scopes:
 git scope check returns 403 with `"insufficient git permissions"`;

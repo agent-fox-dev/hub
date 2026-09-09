@@ -66,11 +66,17 @@ info:
 
     ## Ownership enforcement
 
-    Ownership is *not* uniformly enforced. The sync, reclone, patch, merge,
-    rebuild, rerere, patch-status, and audit-read handlers look a workspace
-    up by slug without checking `owner_id`, so any authenticated caller
-    holding the right scope can act on any workspace. Core workspace CRUD,
-    secrets, variables, session reads, and the git server do enforce it.
+    Ownership is enforced on every workspace-scoped endpoint: sync, reclone,
+    patches, merges, rebuilds, rerere, patch-status, sessions and audit
+    reads look the workspace up by slug *and* owner and answer `404` for a
+    workspace the caller does not own (admin tokens bypass). The unified
+    audit query and SSE stream are restricted to the caller's workspaces.
+
+    ## Workspace lock
+
+    Operations that modify a workspace clone are serialised per workspace.
+    Handlers that cannot take the lock immediately answer `409` with
+    `error_type: workspace_busy`.
 
     ## Error envelope
 
@@ -5505,15 +5511,23 @@ components:
 
     RerereResolution:
       type: object
-      required: [path, recorded_at]
+      required: [id, path, recorded_at, resolved]
       properties:
+        id:
+          type: string
+          description: rr-cache entry name (git's conflict hash); use it with DELETE.
         path:
           type: [string, "null"]
-          description: File path derived from the preimage/postimage conflict marker.
+          description: >-
+            File path of the conflict. Only known while the conflict is in
+            progress (MERGE_RR), otherwise null.
         recorded_at:
           type: [string, "null"]
           format: date-time
           description: Derived from the modification time of the rr-cache entry.
+        resolved:
+          type: boolean
+          description: True when a postimage (replayable resolution) is recorded.
 
     # -- Rebuilds --------------------------------------------------------------
 
