@@ -159,7 +159,7 @@ func TestAuditRouteRegistrationPanicsOnNilStore(t *testing.T) {
 	}()
 
 	env := newAuditQueryTestEnvRaw(t)
-	RegisterAuditQueryRoutes(env.apiGroup, nil, &mockSSEManager{})
+	RegisterAuditQueryRoutes(env.apiGroup, nil, &mockSSEManager{}, nil)
 }
 
 func TestAuditRouteRegistrationPanicsOnNilSSEManager(t *testing.T) {
@@ -170,7 +170,7 @@ func TestAuditRouteRegistrationPanicsOnNilSSEManager(t *testing.T) {
 	}()
 
 	env := newAuditQueryTestEnvRaw(t)
-	RegisterAuditQueryRoutes(env.apiGroup, env.store, nil)
+	RegisterAuditQueryRoutes(env.apiGroup, env.store, nil, nil)
 }
 
 // ===========================================================================
@@ -200,7 +200,7 @@ func newAuditQueryTestEnv(t *testing.T) *auditQueryTestEnv {
 	api.Use(testAuthMiddleware())
 
 	// Register the audit query, transcript, and SSE routes.
-	RegisterAuditQueryRoutes(api, store, &mockSSEManager{})
+	RegisterAuditQueryRoutes(api, store, &mockSSEManager{}, nil)
 
 	return &auditQueryTestEnv{
 		auditTestEnv: &auditTestEnv{

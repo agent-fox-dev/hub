@@ -24,29 +24,43 @@ var validPatchStatuses = map[string]bool{
 }
 
 // requirePatchReadScope checks that the caller has patches:read scope.
-// Returns nil if authorized, or writes an error response and returns it.
-func requirePatchReadScope(c echo.Context) error {
+// Returns the auth info if authorized, or writes an error response and
+// returns nil.
+func requirePatchReadScope(c echo.Context) *apikit.AuthInfo {
 	auth := apikit.GetAuthInfo(c)
 	if auth == nil {
-		return respondError(c, http.StatusUnauthorized, "authentication required")
+		_ = respondError(c, http.StatusUnauthorized, "authentication required")
+		return nil
 	}
 	if isPAT(auth) && !hasScope(auth, "patches:read", "patches:write") {
-		return respondError(c, http.StatusForbidden, "PAT requires patches:read scope")
+		_ = respondError(c, http.StatusForbidden, "PAT requires patches:read scope")
+		return nil
 	}
-	return nil
+	return auth
 }
 
 // requirePatchWriteScope checks that the caller has patches:write scope.
-// Returns nil if authorized, or writes an error response and returns it.
-func requirePatchWriteScope(c echo.Context) error {
+// Returns the auth info if authorized, or writes an error response and
+// returns nil.
+func requirePatchWriteScope(c echo.Context) *apikit.AuthInfo {
 	auth := apikit.GetAuthInfo(c)
 	if auth == nil {
-		return respondError(c, http.StatusUnauthorized, "authentication required")
+		_ = respondError(c, http.StatusUnauthorized, "authentication required")
+		return nil
 	}
 	if isPAT(auth) && !hasScope(auth, "patches:write") {
-		return respondError(c, http.StatusForbidden, "PAT requires patches:write scope")
+		_ = respondError(c, http.StatusForbidden, "PAT requires patches:write scope")
+		return nil
 	}
-	return nil
+	return auth
+}
+
+// lookupPatchWorkspace resolves the workspace for a patch endpoint, enforcing
+// ownership (404 for non-owners, admin bypass). Returns nil after writing the
+// error response when the workspace is not accessible.
+func lookupPatchWorkspace(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo) *Workspace {
+	ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+	return ws
 }
 
 // addPatchRequest represents a single patch add request body.
@@ -65,19 +79,20 @@ type addPatchRequest struct {
 // the existing record instead of 409.
 func handleAddPatch(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if err := requirePatchWriteScope(c); err != nil {
-			return err
+		auth := requirePatchWriteScope(c)
+		if auth == nil {
+			return nil
 		}
 
 		slug := c.Param("slug")
 
-		// Look up workspace.
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
+		// Look up workspace (owner or admin only).
+		ws := lookupPatchWorkspace(c, db, slug, auth)
+		if ws == nil {
+			return nil
 		}
-		if ws == nil || ws.Status != "active" {
-			return respondError(c, http.StatusBadRequest, "workspace not found or not active")
+		if ws.Status != "active" {
+			return respondError(c, http.StatusBadRequest, "workspace is not active")
 		}
 
 		// 15-REQ-8.3: Reject for standard workspaces.
@@ -113,9 +128,12 @@ func handleAddPatch(db *sql.DB) echo.HandlerFunc {
 
 // handleAddPatchSingle handles the single-object add patch path.
 func handleAddPatchSingle(c echo.Context, db *sql.DB, slug string, ws *Workspace, req addPatchRequest) error {
-	// 15-REQ-8.6: branch_name required.
+	// 15-REQ-8.6: branch_name required and must be a valid git ref name.
 	if req.BranchName == "" {
 		return respondError(c, http.StatusBadRequest, "branch_name is required")
+	}
+	if err := validateBranch(req.BranchName); err != nil {
+		return respondError(c, http.StatusBadRequest, "invalid branch_name: "+err.Error())
 	}
 
 	// 15-REQ-8.5: Reject if branch_name equals integration_branch.
@@ -205,6 +223,9 @@ func handleAddPatchBatch(c echo.Context, db *sql.DB, slug string, ws *Workspace,
 		if req.BranchName == "" {
 			return respondError(c, http.StatusBadRequest, fmt.Sprintf("patch[%d]: branch_name is required", i))
 		}
+		if err := validateBranch(req.BranchName); err != nil {
+			return respondError(c, http.StatusBadRequest, fmt.Sprintf("patch[%d]: invalid branch_name: %v", i, err))
+		}
 		if ws.IntegrationBranch != nil && req.BranchName == *ws.IntegrationBranch {
 			return respondError(c, http.StatusBadRequest, fmt.Sprintf("patch[%d]: branch_name cannot be the integration branch", i))
 		}
@@ -273,20 +294,17 @@ func handleAddPatchBatch(c echo.Context, db *sql.DB, slug string, ws *Workspace,
 // handleListPatches handles GET /api/v1/workspaces/:slug/patches (15-REQ-9).
 func handleListPatches(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if err := requirePatchReadScope(c); err != nil {
-			return err
+		auth := requirePatchReadScope(c)
+		if auth == nil {
+			return nil
 		}
 
 		slug := c.Param("slug")
 
-		// Look up workspace.
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
-		}
-		// 15-REQ-9.E1: workspace not found returns 404.
+		// 15-REQ-9.E1: workspace not found (or not owned) returns 404.
+		ws := lookupPatchWorkspace(c, db, slug, auth)
 		if ws == nil {
-			return respondError(c, http.StatusNotFound, "workspace not found")
+			return nil
 		}
 
 		// 15-REQ-9.E2: Standard workspaces return an empty array (they have no patches).
@@ -311,12 +329,17 @@ func handleListPatches(db *sql.DB) echo.HandlerFunc {
 // handleUpdatePatch handles PATCH /api/v1/workspaces/:slug/patches/:id (15-REQ-10).
 func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if err := requirePatchWriteScope(c); err != nil {
-			return err
+		auth := requirePatchWriteScope(c)
+		if auth == nil {
+			return nil
 		}
 
 		slug := c.Param("slug")
 		patchID := c.Param("id")
+
+		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+			return nil
+		}
 
 		// Look up the existing patch.
 		p, err := getPatch(db, slug, patchID)
@@ -341,10 +364,15 @@ func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
-		// 15-REQ-10.3: Validate status.
+		// 15-REQ-10.3: Validate status. "deleted" is a rebuild outcome (soft
+		// delete with deleted_at) and cannot be set directly; use DELETE to
+		// remove a patch and POST .../restore to bring a soft-deleted one back.
 		if req.Status != nil {
-			if !validPatchStatuses[*req.Status] {
-				return respondError(c, http.StatusBadRequest, "invalid status value; must be one of: active, merged_upstream, conflict, disabled, deleted")
+			if !validPatchStatuses[*req.Status] || *req.Status == "deleted" {
+				return respondError(c, http.StatusBadRequest, "invalid status value; must be one of: active, merged_upstream, conflict, disabled")
+			}
+			if p.Status == "deleted" {
+				return respondError(c, http.StatusConflict, "patch is soft-deleted; restore it first")
 			}
 			p.Status = *req.Status
 		}
@@ -395,12 +423,17 @@ func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 // handleRemovePatch handles DELETE /api/v1/workspaces/:slug/patches/:id (15-REQ-11).
 func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if err := requirePatchWriteScope(c); err != nil {
-			return err
+		auth := requirePatchWriteScope(c)
+		if auth == nil {
+			return nil
 		}
 
 		slug := c.Param("slug")
 		patchID := c.Param("id")
+
+		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+			return nil
+		}
 
 		// Look up patch before deletion for audit metadata (18-REQ-3.2).
 		patchInfo, _ := getPatch(db, slug, patchID)
@@ -436,20 +469,21 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 // It transitions a soft-deleted patch back to active status and clears deleted_at.
 func handleRestorePatch(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if err := requirePatchWriteScope(c); err != nil {
-			return err
+		auth := requirePatchWriteScope(c)
+		if auth == nil {
+			return nil
 		}
 
 		slug := c.Param("slug")
 		patchID := c.Param("id")
 
-		// Look up workspace.
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
+		// Look up workspace (owner or admin only).
+		ws := lookupPatchWorkspace(c, db, slug, auth)
+		if ws == nil {
+			return nil
 		}
-		if ws == nil || ws.Status != "active" {
-			return respondError(c, http.StatusBadRequest, "workspace not found or not active")
+		if ws.Status != "active" {
+			return respondError(c, http.StatusBadRequest, "workspace is not active")
 		}
 		if ws.WorkspaceMode != "carry_patch" {
 			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
@@ -475,7 +509,7 @@ func handleRestorePatch(db *sql.DB) echo.HandlerFunc {
 
 		// Get max position for non-deleted patches.
 		var maxPos sql.NullInt64
-		err = db.QueryRow(
+		err := db.QueryRow(
 			`SELECT MAX(position) FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL)`,
 			slug,
 		).Scan(&maxPos)
@@ -508,11 +542,16 @@ func handleRestorePatch(db *sql.DB) echo.HandlerFunc {
 // handleReorderPatches handles POST /api/v1/workspaces/:slug/patches/reorder (15-REQ-12).
 func handleReorderPatches(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if err := requirePatchWriteScope(c); err != nil {
-			return err
+		auth := requirePatchWriteScope(c)
+		if auth == nil {
+			return nil
 		}
 
 		slug := c.Param("slug")
+
+		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+			return nil
+		}
 
 		// Parse request body.
 		var req struct {

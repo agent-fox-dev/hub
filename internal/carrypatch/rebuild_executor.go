@@ -9,7 +9,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // ===========================================================================
@@ -65,10 +68,13 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	}()
 
 	// 2. Resolve upstream auth (16-REQ-1.2, 16-REQ-1.E9).
+	var auth transport.AuthMethod
 	if h.ResolveAuth != nil {
-		if err := h.ResolveAuth(payload.WorkspaceSlug); err != nil {
+		resolved, err := h.ResolveAuth(payload.WorkspaceSlug)
+		if err != nil {
 			return nil, true, &TransientError{Err: err}
 		}
+		auth = resolved
 	}
 
 	// 3. Determine repo path.
@@ -77,9 +83,14 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		repoPath = filepath.Join(h.WorkspaceRoot, payload.WorkspaceSlug, "trunk")
 	}
 
+	// The trunk working tree is shared with pushes, syncs, and merge jobs;
+	// hold the workspace lock for the whole rebuild.
+	unlock := wslock.Lock(payload.WorkspaceSlug)
+	defer unlock()
+
 	// 4. Fetch from upstream (16-REQ-1.2, 16-REQ-1.E5).
 	if h.Fetch != nil {
-		if err := h.Fetch(ctx, repoPath); err != nil {
+		if err := h.Fetch(ctx, repoPath, auth); err != nil {
 			var te *TransientError
 			if errors.As(err, &te) {
 				return nil, true, err
@@ -94,26 +105,34 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 6. Resolve upstream HEAD via FETCH_HEAD (16-REQ-1.2).
-	// FETCH_HEAD points to the tip of the most recently fetched branch,
-	// which is the correct upstream reference after the fetch in step 4.
-	// Using HEAD here would resolve to whatever branch is checked out,
-	// which may differ from the fetched upstream tip.
-	upstreamHead, err := git.Run(ctx, "rev-parse", "FETCH_HEAD")
+	// 6. Resolve the upstream base: the upstream default branch recorded by
+	// the fetch (refs/remotes/upstream/HEAD), falling back to the workspace
+	// branch tracking ref and finally FETCH_HEAD (16-REQ-1.2).
+	upstreamHead, err := resolveUpstreamBase(ctx, git, workspaceBranch(h.DB, payload.WorkspaceSlug))
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 7. Create temporary branch at upstream HEAD.
+	// 7. Remember what the trunk had checked out so it can be restored
+	// afterwards: clones served by the hub's git server must not end up on
+	// a detached HEAD or on the temporary branch. Then clear any state a
+	// crashed or cancelled rebuild may have left behind (in-progress
+	// cherry-pick/merge, dirty tree, stale temporary branch) and create the
+	// temporary branch at the upstream base.
 	const tempBranch = "_rebuild_temp"
-	if _, err := git.Run(ctx, "checkout", "-b", tempBranch, upstreamHead); err != nil {
+	originalRef := currentCheckout(ctx, git)
+	if originalRef == tempBranch {
+		originalRef = ""
+	}
+	preflightCleanup(ctx, git)
+	if _, err := git.Run(ctx, "checkout", "-B", tempBranch, upstreamHead, "--"); err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// cleanupTempBranch deletes the temporary branch. Called on both success
-	// and failure to satisfy 16-PROP-9.
+	// cleanupTempBranch restores the original checkout and deletes the
+	// temporary branch. Called on both success and failure (16-PROP-9).
 	cleanupTempBranch := func() {
-		_, _ = git.Run(ctx, "checkout", "--detach")
+		restoreCheckout(ctx, git, originalRef)
 		_, _ = git.Run(ctx, "branch", "-D", tempBranch)
 	}
 
@@ -298,12 +317,70 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// Compact remaining positions to be contiguous.
 	_ = h.PatchStore.CompactPositions(ctx, payload.WorkspaceSlug)
 
+	// Opt-in: publish the rebuilt integration branch to the fork so that
+	// consumers cloning from origin (rather than from the hub) see it.
+	if h.PushIntegration != nil && h.GetVariable != nil {
+		if val, err := h.GetVariable("workspace", payload.WorkspaceSlug, "REBUILD_PUSH_INTEGRATION_BRANCH"); err == nil && val == "true" {
+			if pushErr := h.PushIntegration(ctx, payload.WorkspaceSlug, repoPath, integrationBranch); pushErr != nil {
+				h.logf("rebuild: push of integration branch %q to origin failed for %q: %v",
+					integrationBranch, payload.WorkspaceSlug, pushErr)
+				h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.push_failed", map[string]any{
+					"integration_branch": integrationBranch,
+					"reason":             pushErr.Error(),
+				})
+			} else {
+				result.IntegrationBranchPushed = true
+			}
+		}
+	}
+
 	// 18-REQ-3.4: Emit hub.rebuild.complete audit event.
 	h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.complete", map[string]any{
 		"patches_applied": result.PatchesApplied,
 	})
 
 	return result, false, nil
+}
+
+// logf logs through the handler's logger when one is configured.
+func (h *RebuildHandler) logf(format string, args ...any) {
+	if h.Logger != nil {
+		h.Logger.Warn(fmt.Sprintf(format, args...))
+	}
+}
+
+// currentCheckout returns the branch currently checked out in the trunk
+// (short name), or the detached HEAD commit, or "" when neither can be read.
+func currentCheckout(ctx context.Context, git GitRunner) string {
+	if ref, err := git.Run(ctx, "symbolic-ref", "--short", "-q", "HEAD"); err == nil && ref != "" {
+		return ref
+	}
+	if sha, err := git.Run(ctx, "rev-parse", "HEAD"); err == nil {
+		return sha
+	}
+	return ""
+}
+
+// restoreCheckout returns the working tree to ref (a branch name or commit)
+// recorded by currentCheckout, detaching HEAD when ref is empty so that the
+// temporary branch can always be deleted.
+func restoreCheckout(ctx context.Context, git GitRunner, ref string) {
+	if ref != "" {
+		if _, err := git.Run(ctx, "checkout", "--force", ref, "--"); err == nil {
+			return
+		}
+	}
+	_, _ = git.Run(ctx, "checkout", "--detach")
+}
+
+// preflightCleanup clears state a crashed or cancelled rebuild may have left
+// in the trunk: an in-progress cherry-pick or merge, uncommitted changes, and
+// a stale temporary branch. Every step is best-effort.
+func preflightCleanup(ctx context.Context, git GitRunner) {
+	_, _ = git.Run(ctx, "cherry-pick", "--abort")
+	_, _ = git.Run(ctx, "merge", "--abort")
+	_, _ = git.Run(ctx, "rebase", "--abort")
+	_ = git.HardReset(ctx, "HEAD")
 }
 
 // writeProgress writes the current patch results to the job's progress column.
@@ -326,9 +403,13 @@ func (h *RebuildHandler) writeProgress(jobID string, patchResults []PatchResult)
 // exist, returns errPatchBranchNotFound. If an unresolvable conflict occurs,
 // returns *rebuildConflictError.
 func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, branchName, upstreamHead string) error {
-	// 16-REQ-1.3: determine unique commits via git log --reverse.
-	logOutput, err := git.Run(ctx, "log", "--reverse", "--format=%H",
-		upstreamHead+".."+branchName)
+	// 16-REQ-1.3: determine the commits to replay: those on the patch branch
+	// that are not in upstream, skipping merge commits (as git rebase does)
+	// and commits whose patch-id already exists upstream (already
+	// cherry-picked or squash-merged content), which would otherwise stop
+	// the cherry-pick as "empty".
+	logOutput, err := git.Run(ctx, "log", "--reverse", "--format=%H", "--no-merges",
+		"--right-only", "--cherry-pick", upstreamHead+"..."+branchName)
 	if err != nil {
 		// Branch doesn't exist or is not valid.
 		return errPatchBranchNotFound

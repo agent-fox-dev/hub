@@ -146,7 +146,10 @@ func lookupPAT(db *sql.DB, tokenID, secret string) (*apikit.AuthInfo, error) {
 	var perms []string
 	_ = json.Unmarshal([]byte(permissions), &perms)
 
-	role := lookupUserRole(db, userID)
+	role, blocked := lookupUserRole(db, userID)
+	if blocked {
+		return nil, nil
+	}
 
 	return &apikit.AuthInfo{
 		CredentialType: "pat",
@@ -201,7 +204,10 @@ func lookupAPIKey(db *sql.DB, keyID, secret string) (*apikit.AuthInfo, error) {
 		return nil, nil
 	}
 
-	role := lookupUserRole(db, userID)
+	role, blocked := lookupUserRole(db, userID)
+	if blocked {
+		return nil, nil
+	}
 
 	return &apikit.AuthInfo{
 		CredentialType: "api_key",
@@ -249,14 +255,17 @@ func resolveAdminToken(db *sql.DB, token string) (*apikit.AuthInfo, error) {
 	}, nil
 }
 
-// lookupUserRole queries the users table for a user's role. Returns "user" if
-// the lookup fails.
-func lookupUserRole(db *sql.DB, userID string) string {
-	var role string
-	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, userID).Scan(&role); err != nil {
-		return "user"
+// lookupUserRole queries the users table for a user's role and status.
+// Returns role "user" if the lookup fails. blocked is true when the user's
+// status is "blocked": apikit's REST auth middleware rejects credentials of
+// blocked users, and the git server must apply the same rule so that
+// blocking a user also revokes their clone/push access.
+func lookupUserRole(db *sql.DB, userID string) (role string, blocked bool) {
+	var status sql.NullString
+	if err := db.QueryRow(`SELECT role, status FROM users WHERE id = ?`, userID).Scan(&role, &status); err != nil {
+		return "user", false
 	}
-	return role
+	return role, status.Valid && status.String == "blocked"
 }
 
 // hashCredential returns the hex-encoded SHA-256 hash of the input string.

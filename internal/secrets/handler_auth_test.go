@@ -24,11 +24,18 @@ func TestSecretAuthz_AdminFullAccess(t *testing.T) {
 		}
 	})
 
-	t.Run("list user secrets as admin", func(t *testing.T) {
+	// Admin tokens carry no user identity, so user-scoped endpoints reject
+	// them instead of operating on a phantom ("user", "") scope.
+	t.Run("list user secrets as admin is rejected", func(t *testing.T) {
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", auth)
-		if rec.Code != http.StatusOK {
+		if rec.Code != http.StatusForbidden {
 			t.Errorf("GET /api/v1/user/secrets status = %d; want %d",
-				rec.Code, http.StatusOK)
+				rec.Code, http.StatusForbidden)
+		}
+		rec = env.doRequest(t, http.MethodGet, "/api/v1/user/vars", "", auth)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("GET /api/v1/user/vars status = %d; want %d",
+				rec.Code, http.StatusForbidden)
 		}
 	})
 

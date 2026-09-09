@@ -159,7 +159,7 @@ func TestSmoke13_RecloneEndToEnd(t *testing.T) {
 	defer func() { archiveHeadFn = origArchiveHead }()
 
 	origArchivePush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
+	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error {
 		return nil
 	}
 	defer func() { archiveOpenAndPushFn = origArchivePush }()

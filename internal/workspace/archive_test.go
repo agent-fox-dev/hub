@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"encoding/json"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -150,7 +151,7 @@ func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 			// Mock archive push: track calls to verify it is NOT called.
 			var pushCalled int32
 			oldPush := archiveOpenAndPushFn
-			archiveOpenAndPushFn = func(_, _ string) error {
+			archiveOpenAndPushFn = func(_, _ string, _ transport.AuthMethod) error {
 				atomic.AddInt32(&pushCalled, 1)
 				return nil
 			}
@@ -255,4 +256,3 @@ func TestArchive_Spec05_CloningReturns409(t *testing.T) {
 		t.Errorf("workspace status = %q; want %q (unchanged)", status, "active")
 	}
 }
-

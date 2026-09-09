@@ -53,15 +53,19 @@ func RebaseBranch(ctx context.Context, runner RebaseRunner, sourceBranch, target
 	}
 
 	// Checkout the source branch.
-	if _, err := runner.Run(ctx, "checkout", sourceBranch); err != nil {
+	if _, err := runner.Run(ctx, "checkout", sourceBranch, "--"); err != nil {
 		return "", fmt.Errorf("merge: checkout %q: %w", sourceBranch, err)
 	}
 
 	// Rebase onto the target ref. On conflict, the runner auto-aborts and
 	// returns *RebaseConflictError. On timeout, the context error is
-	// returned directly (preserving errors.Is compatibility).
+	// returned directly (preserving errors.Is compatibility); abort the
+	// rebase ourselves so the trunk is not left mid-rebase.
 	newSHA, err := runner.Rebase(ctx, targetRef)
 	if err != nil {
+		if ctx.Err() != nil {
+			_, _ = runner.Run(context.Background(), "rebase", "--abort")
+		}
 		return "", err
 	}
 
@@ -74,6 +78,12 @@ func RebaseBranch(ctx context.Context, runner RebaseRunner, sourceBranch, target
 func BatchRebase(ctx context.Context, runner RebaseRunner, targetRef string, branches []string) ([]RebaseResult, error) {
 	if len(branches) == 0 {
 		return nil, fmt.Errorf("merge: empty branches list")
+	}
+
+	// Restore the original checkout afterwards; the per-branch checkouts
+	// must not leave the trunk on an arbitrary branch.
+	if original, err := runner.Run(ctx, "symbolic-ref", "--short", "-q", "HEAD"); err == nil && original != "" {
+		defer func() { _, _ = runner.Run(context.Background(), "checkout", original, "--") }()
 	}
 
 	results := make([]RebaseResult, 0, len(branches))

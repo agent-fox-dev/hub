@@ -11,9 +11,11 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // MergePayload contains the data stored in a merge job's payload field.
@@ -85,6 +87,10 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		"source", p.SourceRef,
 	)
 
+	// The trunk working tree is shared with pushes, syncs, and rebuild jobs.
+	unlock := wslock.Lock(p.WorkspaceSlug)
+	defer unlock()
+
 	// Step 1: Pre-check (dry-run conflict detection, AlreadyMerged, BranchNotReady).
 	result, err := h.PreCheck(ctx, p.WorkspaceSlug, p.TargetBranch, p.SourceRef)
 	if err != nil {
@@ -124,6 +130,22 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		return nil, true, fmt.Errorf("merge: resolve target head: %w", err)
 	}
 
+	// Remember what the trunk had checked out so it can be restored: the
+	// rebase below checks out the source branch, and that branch is deleted
+	// on success, which would otherwise leave HEAD dangling.
+	originalCheckout := currentCheckout(ctx, runner)
+	defer func() {
+		restore := originalCheckout
+		if restore == "" || restore == p.SourceRef {
+			restore = p.TargetBranch
+		}
+		if err := runner.Checkout(context.Background(), restore); err != nil {
+			slog.Warn("merge: could not restore trunk checkout",
+				"workspace", p.WorkspaceSlug, "ref", restore, "error", err.Error())
+			_, _ = runner.Run(context.Background(), "checkout", "--detach")
+		}
+	}()
+
 	// Step 4: Rebase source branch onto target.
 	preRebaseSHA, err := h.RebaseSource(ctx, p.WorkspaceSlug, p.TargetBranch, p.SourceRef)
 	if err != nil {
@@ -149,8 +171,13 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		return nil, true, err // retryable (12-REQ-6.E4)
 	}
 
-	// Step 8: Delete source branch ref.
-	if err := h.DeleteSourceBranch(ctx, p.WorkspaceSlug, p.SourceRef); err != nil {
+	// Step 8: Delete source branch ref. Move HEAD off the source branch
+	// first: deleting the checked-out branch leaves HEAD dangling and breaks
+	// every later git operation in the trunk.
+	if err := runner.Checkout(ctx, p.TargetBranch); err != nil {
+		slog.Warn("merge: could not check out target before deleting source; keeping source branch",
+			"workspace", p.WorkspaceSlug, "target", p.TargetBranch, "error", err.Error())
+	} else if err := h.DeleteSourceBranch(ctx, p.WorkspaceSlug, p.SourceRef); err != nil {
 		slog.Error("merge: source branch deletion failed after successful ref update",
 			"workspace", p.WorkspaceSlug,
 			"source", p.SourceRef,
@@ -211,7 +238,11 @@ func convertMergeError(err error) (retryable bool, mergeErr error) {
 			"",
 		)
 	}
-	// Non-MergeRejection errors: pass through as non-retryable.
+	var checkErr *CheckCommandError
+	if errors.As(err, &checkErr) {
+		return false, newMergeJobError("CheckFailed", nil, checkErr.Output)
+	}
+	// Other errors: pass through as non-retryable.
 	return false, err
 }
 
@@ -268,4 +299,14 @@ func EnqueueMergeJob(q *jobqueue.Queue, workspaceSlug, targetBranch, sourceRef, 
 		SubmittedBy: submittedBy,
 		Group:       group,
 	})
+}
+
+// currentCheckout returns the branch checked out in the trunk (short name),
+// or "" when HEAD is detached or unreadable.
+func currentCheckout(ctx context.Context, runner *gitcmd.GitRunner) string {
+	ref, err := runner.Run(ctx, "symbolic-ref", "--short", "-q", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return ref
 }

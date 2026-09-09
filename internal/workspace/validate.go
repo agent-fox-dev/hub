@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 )
 
 // slugPattern matches lowercase alphanumeric characters and hyphens, 3–64 chars.
@@ -156,6 +158,12 @@ func validateBranch(branch string) error {
 		if strings.HasPrefix(comp, ".") {
 			return fmt.Errorf("branch must not have a leading dot in any path component")
 		}
+	}
+
+	// Remaining git ref-format rules, including the rejection of names that
+	// start with '-' (which git would otherwise parse as an option).
+	if err := gitcmd.ValidateRefName(branch); err != nil {
+		return fmt.Errorf("branch %s", strings.TrimPrefix(err.Error(), "ref name "))
 	}
 
 	return nil

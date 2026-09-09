@@ -51,6 +51,19 @@ func canVarsDelete(auth *apikit.AuthInfo) bool {
 	return hasScope(auth, "vars:delete", "vars:manage")
 }
 
+// requireUserIdentity rejects credentials that carry no user identity (admin
+// tokens) on user-scoped endpoints. Admin tokens have UserID == "", so letting
+// them through would read and write a phantom ("user", "") scope that no real
+// user can ever see. Returns false after writing the error response.
+func requireUserIdentity(c echo.Context, auth *apikit.AuthInfo) bool {
+	if auth.UserID == "" {
+		_ = respondError(c, http.StatusForbidden,
+			"user-scoped endpoints require a user credential; admin tokens have no user identity")
+		return false
+	}
+	return true
+}
+
 // respondError writes a JSON error envelope and sets the HTTP status code.
 func respondError(c echo.Context, code int, message string) error {
 	return c.JSON(code, map[string]any{
@@ -77,6 +90,16 @@ func checkOrgMembership(db *sql.DB, userID, orgSlug string) (string, int, string
 	}
 
 	return orgID, 0, ""
+}
+
+// isOrgMember reports whether userID is a member of the org identified by
+// its ID. Any lookup error is treated as "not a member".
+func isOrgMember(db *sql.DB, orgID, userID string) bool {
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM org_members WHERE org_id = ? AND user_id = ?", orgID, userID).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // lookupWorkspaceOwner retrieves a workspace and checks ownership.
@@ -221,6 +244,9 @@ func handleCreateUserSecrets(store *Store) echo.HandlerFunc {
 		if isPAT(auth) && !canSecretsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
+		if !requireUserIdentity(c, auth) {
+			return nil
+		}
 		return doCreateSecrets(c, store, "user", auth.UserID)
 	}
 }
@@ -233,6 +259,9 @@ func handleListUserSecrets(store *Store) echo.HandlerFunc {
 		}
 		if isPAT(auth) && !canSecretsList(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		if !requireUserIdentity(c, auth) {
+			return nil
 		}
 		return doListSecrets(c, store, "user", auth.UserID)
 	}
@@ -247,6 +276,9 @@ func handleUpdateUserSecret(store *Store) echo.HandlerFunc {
 		if isPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
+		if !requireUserIdentity(c, auth) {
+			return nil
+		}
 		return doUpdateSecret(c, store, "user", auth.UserID)
 	}
 }
@@ -259,6 +291,9 @@ func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
 		}
 		if isPAT(auth) && !canSecretsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		if !requireUserIdentity(c, auth) {
+			return nil
 		}
 		return doDeleteSecret(c, store, "user", auth.UserID)
 	}
@@ -477,6 +512,9 @@ func handleCreateUserVars(store *Store) echo.HandlerFunc {
 		if isPAT(auth) && !canVarsManage(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
+		if !requireUserIdentity(c, auth) {
+			return nil
+		}
 		return doCreateVars(c, store, "user", auth.UserID)
 	}
 }
@@ -489,6 +527,9 @@ func handleListUserVars(store *Store) echo.HandlerFunc {
 		}
 		if isPAT(auth) && !canVarsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		if !requireUserIdentity(c, auth) {
+			return nil
 		}
 		return doListVars(c, store, "user", auth.UserID)
 	}
@@ -503,6 +544,9 @@ func handleUpdateUserVar(store *Store) echo.HandlerFunc {
 		if isPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
+		if !requireUserIdentity(c, auth) {
+			return nil
+		}
 		return doUpdateVar(c, store, "user", auth.UserID)
 	}
 }
@@ -515,6 +559,9 @@ func handleDeleteUserVar(store *Store) echo.HandlerFunc {
 		}
 		if isPAT(auth) && !canVarsDelete(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
+		}
+		if !requireUserIdentity(c, auth) {
+			return nil
 		}
 		return doDeleteVar(c, store, "user", auth.UserID)
 	}
@@ -702,6 +749,13 @@ func handleResolvedWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 		wsOwnerID, orgID, code, msg := lookupWorkspaceForResolution(db, slug, auth.UserID, isAdmin(auth))
 		if code != 0 {
 			return respondError(c, code, msg)
+		}
+
+		// The org tier is only visible to org members, matching the org
+		// endpoints. A workspace whose owner has since left the org must not
+		// keep receiving the org's variables through resolution.
+		if orgID != "" && !isAdmin(auth) && !isOrgMember(db, orgID, wsOwnerID) {
+			orgID = ""
 		}
 
 		resolved, err := store.ResolveVariables(wsOwnerID, orgID, slug)

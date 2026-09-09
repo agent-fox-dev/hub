@@ -31,6 +31,7 @@ func RebuildCmd() *cobra.Command {
 		newRebuildCancelCmd(),
 		newRebuildRequeueCmd(),
 		newRebuildRollbackCmd(),
+		newRebuildWaitCmd(),
 	)
 
 	return cmd
@@ -73,7 +74,7 @@ func newRebuildSubmitCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+slug+"/rebuild", body)
+				apiPath("workspaces", slug, "rebuild"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -90,11 +91,8 @@ func newRebuildSubmitCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			statusPath := "/workspaces/" + slug + "/rebuilds/" + jobID
-			if err := pollJobStatus(cmd, client, wf, statusPath); err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-			return nil
+			statusPath := apiPath("workspaces", slug, "rebuilds", jobID)
+			return pollJobStatus(cmd, client, wf, statusPath)
 		},
 	}
 
@@ -121,7 +119,7 @@ func newRebuildListCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
-				"/workspaces/"+args[0]+"/rebuilds", nil)
+				apiPath("workspaces", args[0], "rebuilds"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -148,7 +146,7 @@ func newRebuildStatusCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
-				"/workspaces/"+args[0]+"/rebuilds/"+args[1], nil)
+				apiPath("workspaces", args[0], "rebuilds", args[1]), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -175,7 +173,7 @@ func newRebuildPreviewCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
-				"/workspaces/"+args[0]+"/rebuild-preview", nil)
+				apiPath("workspaces", args[0], "rebuild-preview"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -201,7 +199,7 @@ func newRebuildCancelCmd() *cobra.Command {
 			}
 
 			_, err = client.DoRequest(cmd.Context(), http.MethodDelete,
-				"/workspaces/"+args[0]+"/rebuilds/"+args[1], nil)
+				apiPath("workspaces", args[0], "rebuilds", args[1]), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -237,7 +235,7 @@ func newRebuildRequeueCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+args[0]+"/rebuilds/"+args[1]+"/requeue", nil)
+				apiPath("workspaces", args[0], "rebuilds", args[1], "requeue"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -265,7 +263,7 @@ func newRebuildRollbackCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+args[0]+"/rebuilds/"+args[1]+"/rollback", nil)
+				apiPath("workspaces", args[0], "rebuilds", args[1], "rollback"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -273,4 +271,27 @@ func newRebuildRollbackCmd() *cobra.Command {
 			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
+}
+
+// newRebuildWaitCmd returns the 'rebuild wait' subcommand. It polls
+// GET /api/v1/workspaces/:slug/rebuilds/:id until the job reaches a terminal
+// state, prints the final record, and exits non-zero unless it completed.
+func newRebuildWaitCmd() *cobra.Command {
+	var wf waitFlags
+	cmd := &cobra.Command{
+		Use:           "wait <workspace-slug> <rebuild-id>",
+		Short:         "Wait for a rebuild job to finish",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+			return pollJobStatus(cmd, client, wf, apiPath("workspaces", args[0], "rebuilds", args[1]))
+		},
+	}
+	addPollFlags(cmd, &wf)
+	return cmd
 }

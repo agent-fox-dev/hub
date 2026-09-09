@@ -83,7 +83,7 @@ func newPatchAddCmd() *cobra.Command {
 				body["if_not_exists"] = true
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/patches", body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "patches"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -119,7 +119,7 @@ func newPatchListCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodGet, "/workspaces/"+args[0]+"/patches", nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet, apiPath("workspaces", args[0], "patches"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -145,7 +145,7 @@ func newPatchRemoveCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, "/workspaces/"+args[0]+"/patches/"+args[1], nil)
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, apiPath("workspaces", args[0], "patches", args[1]), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -185,7 +185,7 @@ func newPatchReorderCmd() *cobra.Command {
 				"patch_ids": args[1:],
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/patches/reorder", body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "patches", "reorder"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -232,8 +232,12 @@ func newPatchUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("position") {
 				body["position"] = position
 			}
+			if len(body) == 0 {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"at least one of --status, --description, --upstream-pr, --position is required"))
+			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPatch, "/workspaces/"+args[0]+"/patches/"+args[1], body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPatch, apiPath("workspaces", args[0], "patches", args[1]), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -266,7 +270,7 @@ func newPatchRestoreCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/patches/"+args[1]+"/restore", nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "patches", args[1], "restore"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

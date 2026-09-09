@@ -94,6 +94,51 @@ func requireAuditRead(c echo.Context) *apikit.AuthInfo {
 	return auth
 }
 
+// requireWorkspaceRead enforces workspace ownership on audit read endpoints:
+// admin tokens may read any workspace, every other credential only
+// workspaces it owns. Unknown and non-owned workspaces both yield 404 so the
+// endpoint cannot be used to enumerate slugs.
+//
+// When sqliteDB is nil (route registration without a SQLite handle, used by
+// unit tests) the check is skipped; the server binary always wires it.
+// Returns false after writing the error response.
+func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB) bool {
+	if isAdmin(auth) || sqliteDB == nil {
+		return true
+	}
+	var ownerID string
+	err := sqliteDB.QueryRow("SELECT owner_id FROM workspaces WHERE slug = ?", slug).Scan(&ownerID)
+	if err != nil || ownerID != auth.UserID {
+		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		return false
+	}
+	return true
+}
+
+// ownedWorkspaces returns the set of workspace slugs the caller may read for
+// cross-workspace audit endpoints. It returns nil (unrestricted) for admin
+// tokens or when sqliteDB is nil, and an empty set when the caller owns no
+// workspaces.
+func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, error) {
+	if isAdmin(auth) || sqliteDB == nil {
+		return nil, nil
+	}
+	rows, err := sqliteDB.Query("SELECT slug FROM workspaces WHERE owner_id = ?", auth.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	owned := make(map[string]bool)
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, err
+		}
+		owned[slug] = true
+	}
+	return owned, rows.Err()
+}
+
 // checkWorkspaceAccess enforces workspace-level access control for audit
 // ingestion endpoints. It checks:
 // 1. Workspace-scoped PAT workspace matches the URL :slug (403 workspace_mismatch)

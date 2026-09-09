@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"encoding/json"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -58,7 +59,7 @@ func TestReclone_SuccessfulReclone(t *testing.T) {
 
 	// Mock the archive push function (should be called but not block reclone).
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
+	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error {
 		return nil // push succeeds
 	}
 	defer func() { archiveOpenAndPushFn = oldPush }()
@@ -143,7 +144,7 @@ func TestReclone_StatusRemainsActive(t *testing.T) {
 	}
 
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error { return nil }
+	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error { return nil }
 	defer func() { archiveOpenAndPushFn = oldPush }()
 
 	oldHead := archiveHeadFn
@@ -215,7 +216,7 @@ func TestReclone_CLIRecloneWithConfirm(t *testing.T) {
 	}
 
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error { return nil }
+	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error { return nil }
 	defer func() { archiveOpenAndPushFn = oldPush }()
 
 	oldHead := archiveHeadFn
@@ -275,7 +276,7 @@ func TestReclone_CloneJobEnqueued(t *testing.T) {
 	}
 
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error { return nil }
+	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error { return nil }
 	defer func() { archiveOpenAndPushFn = oldPush }()
 
 	oldHead := archiveHeadFn
@@ -345,7 +346,7 @@ func TestReclone_ArchivePushFailureContinues(t *testing.T) {
 
 	// Mock push to FAIL — reclone should continue regardless.
 	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string) error {
+	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error {
 		return os.ErrPermission
 	}
 	defer func() { archiveOpenAndPushFn = oldPush }()

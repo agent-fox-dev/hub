@@ -34,7 +34,7 @@ func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error) 
 	}
 
 	// Run git cherry-pick <sha> via runWithExitCode for exit-code discrimination.
-	args := []string{"cherry-pick", sha}
+	args := []string{"cherry-pick", endOfOptions, sha}
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
 		// 14-REQ-4.3, 14-REQ-4.E4: context cancellation or deadline exceeded —

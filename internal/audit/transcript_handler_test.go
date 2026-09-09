@@ -45,7 +45,7 @@ func newTranscriptTestEnv(t *testing.T) *auditTestEnv {
 	e.HTTPErrorHandler = apikit.HTTPErrorHandler
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
-	RegisterAuditQueryRoutes(api, store, &mockSSEManager{})
+	RegisterAuditQueryRoutes(api, store, &mockSSEManager{}, nil)
 
 	return &auditTestEnv{
 		echo:  e,

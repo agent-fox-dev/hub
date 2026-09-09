@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,12 @@ type waitFlags struct {
 func addWaitFlags(cmd *cobra.Command, wf *waitFlags) {
 	cmd.Flags().BoolVar(&wf.Wait, "wait", false,
 		"Block until the async operation reaches a terminal state")
+	addPollFlags(cmd, wf)
+}
+
+// addPollFlags registers --timeout and --poll-interval for commands that
+// always wait (the `wait` subcommands).
+func addPollFlags(cmd *cobra.Command, wf *waitFlags) {
 	cmd.Flags().DurationVar(&wf.Timeout, "timeout", defaultWaitTimeout,
 		"Maximum time to wait for completion (e.g. 60s, 5m)")
 	cmd.Flags().DurationVar(&wf.PollInterval, "poll-interval", defaultWaitPollInterval,
@@ -49,45 +56,73 @@ func isTerminalStatus(status string) bool {
 }
 
 // pollJobStatus polls a job status endpoint until the job reaches a
-// terminal state or the timeout expires. It prints the final job record
-// to stdout on success. Returns an error if the timeout is exceeded or
-// the status check fails.
+// terminal state or the timeout expires. The first poll happens
+// immediately; subsequent polls every wf.PollInterval. The final job record
+// is printed to stdout in every terminal state; when that state is not
+// "completed" (failed, dead_letter, cancelled) the command exits non-zero so
+// scripts can rely on the exit status.
 //
-// statusPath is the API path for the status endpoint, e.g.
+// All errors are already reported through CLIHandleError; callers return
+// them as is. statusPath is the API path for the status endpoint, e.g.
 // "/workspaces/<slug>/rebuilds/<id>".
 func pollJobStatus(cmd *cobra.Command, client *apikit.CLIClient, wf waitFlags, statusPath string) error {
+	return pollUntil(cmd, client, wf, statusPath, "job", func(m map[string]any) (bool, string) {
+		status, _ := m["status"].(string)
+		if !isTerminalStatus(status) {
+			return false, ""
+		}
+		if status == "completed" {
+			return true, ""
+		}
+		return true, "job ended with status " + status
+	})
+}
+
+// pollUntil implements the shared polling loop. done inspects a decoded
+// status response and reports whether polling is finished and, if so, an
+// optional failure message that turns the result into a non-zero exit.
+func pollUntil(cmd *cobra.Command, client *apikit.CLIClient, wf waitFlags, statusPath, what string,
+	done func(m map[string]any) (finished bool, failure string)) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), wf.Timeout)
 	defer cancel()
+
+	timedOut := func() error {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Timed out waiting for %s to complete after %s\n", what, wf.Timeout)
+		return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, fmt.Sprintf("timed out after %s", wf.Timeout)))
+	}
 
 	ticker := time.NewTicker(wf.PollInterval)
 	defer ticker.Stop()
 
 	for {
+		result, err := client.DoRequest(ctx, http.MethodGet, statusPath, nil)
+		if err != nil {
+			// On context deadline exceeded, report timeout rather than
+			// the raw HTTP error.
+			if ctx.Err() != nil {
+				return timedOut()
+			}
+			return apikit.CLIHandleError(cmd, err)
+		}
+
+		if m, ok := result.(map[string]any); ok {
+			finished, failure := done(m)
+			if finished {
+				if err := apikit.CLIPrintResult(cmd, result); err != nil {
+					return err
+				}
+				if failure != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), strings.ToUpper(failure[:1])+failure[1:]+".")
+					return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, failure))
+				}
+				return nil
+			}
+		}
+
 		select {
 		case <-ctx.Done():
-			fmt.Fprintf(cmd.ErrOrStderr(), "Timed out waiting for job to complete after %s\n", wf.Timeout)
-			return apikit.NewCLIError(1, fmt.Sprintf("timed out after %s", wf.Timeout))
+			return timedOut()
 		case <-ticker.C:
-			result, err := client.DoRequest(ctx, http.MethodGet, statusPath, nil)
-			if err != nil {
-				// On context deadline exceeded, report timeout rather
-				// than the raw HTTP error.
-				if ctx.Err() != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Timed out waiting for job to complete after %s\n", wf.Timeout)
-					return apikit.NewCLIError(1, fmt.Sprintf("timed out after %s", wf.Timeout))
-				}
-				return err
-			}
-
-			m, ok := result.(map[string]any)
-			if !ok {
-				continue
-			}
-
-			status, _ := m["status"].(string)
-			if isTerminalStatus(status) {
-				return apikit.CLIPrintResult(cmd, result)
-			}
 		}
 	}
 }
@@ -130,37 +165,19 @@ func extractCloneStatus(result any) string {
 }
 
 // pollWorkspaceCloneStatus polls a workspace's clone_status until it
-// reaches "ready" or "failed", or the timeout expires.
+// reaches "ready" or "failed", or the timeout expires. A failed clone
+// exits non-zero after printing the workspace record.
 func pollWorkspaceCloneStatus(cmd *cobra.Command, client *apikit.CLIClient, wf waitFlags, slug string) error {
-	ctx, cancel := context.WithTimeout(cmd.Context(), wf.Timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(wf.PollInterval)
-	defer ticker.Stop()
-
-	statusPath := "/workspaces/" + slug
-
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Fprintf(cmd.ErrOrStderr(), "Timed out waiting for workspace clone to complete after %s\n", wf.Timeout)
-			return apikit.NewCLIError(1, fmt.Sprintf("timed out after %s", wf.Timeout))
-		case <-ticker.C:
-			result, err := client.DoRequest(ctx, http.MethodGet, statusPath, nil)
-			if err != nil {
-				if ctx.Err() != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Timed out waiting for workspace clone to complete after %s\n", wf.Timeout)
-					return apikit.NewCLIError(1, fmt.Sprintf("timed out after %s", wf.Timeout))
-				}
-				return err
-			}
-
-			cloneStatus := extractCloneStatus(result)
-			if cloneStatus == "ready" || cloneStatus == "failed" {
-				return apikit.CLIPrintResult(cmd, result)
-			}
+	return pollUntil(cmd, client, wf, apiPath("workspaces", slug), "workspace clone", func(m map[string]any) (bool, string) {
+		switch extractCloneStatus(m) {
+		case "ready":
+			return true, ""
+		case "failed":
+			return true, "workspace clone failed"
+		default:
+			return false, ""
 		}
-	}
+	})
 }
 
 // printJSON marshals v to JSON and writes it to cmd's output writer.

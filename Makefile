@@ -100,8 +100,8 @@ hub-runc:
 	podman run --rm -it \
 		-p $(HUB_PORT):8080 \
 		-e ADMIN_TOKEN=$$(cat bin/config/token) \
-		-v $(CURDIR)/bin/config:/config \
-		-v $(CURDIR)/bin/data:/data \
+		-v $(CURDIR)/bin/config:/config/af-hub \
+		-v $(CURDIR)/bin/data:/data/af-hub \
 		$(HUB_IMAGE):$(HUB_IMAGE_TAG)
 
 # Start the Vite dev server with hot reload

@@ -15,7 +15,7 @@ import (
 
 // handleCreateSession handles POST /api/v1/sessions.
 // Creates a new agent session or returns existing if id is duplicate.
-func handleCreateSession(store Store, metrics *Metrics) echo.HandlerFunc {
+func handleCreateSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
@@ -32,6 +32,14 @@ func handleCreateSession(store Store, metrics *Metrics) echo.HandlerFunc {
 
 		if strings.TrimSpace(req.WorkspaceSlug) == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace_slug is required")
+		}
+
+		// Sessions may only be opened in workspaces the caller owns (admin
+		// tokens may open sessions anywhere). This keeps cost and session
+		// listings per workspace trustworthy and bounds the workspace label
+		// on the active-sessions gauge to real workspaces.
+		if !requireWorkspaceRead(c, auth, req.WorkspaceSlug, sqliteDB) {
+			return nil
 		}
 
 		if req.ID == "" {
@@ -65,6 +73,13 @@ func handleCreateSession(store Store, metrics *Metrics) echo.HandlerFunc {
 				metrics.AgentSessionsActive.WithLabelValues(req.WorkspaceSlug).Inc()
 			}
 			return c.JSON(http.StatusCreated, created)
+		}
+		// Idempotent replay: the id already exists. Only return the existing
+		// record when it belongs to a workspace the caller may read, so a
+		// guessed id cannot disclose another tenant's session.
+		if created.WorkspaceSlug != req.WorkspaceSlug &&
+			!requireWorkspaceRead(c, auth, created.WorkspaceSlug, sqliteDB) {
+			return nil
 		}
 		return c.JSON(http.StatusOK, created)
 	}
@@ -561,8 +576,8 @@ func handlePostPostmortem(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 
 // handleGetPostmortem handles GET /workspaces/:slug/runs/:run_id/postmortem.
 // Retrieves a postmortem report by run_id.
-func handleGetPostmortem(store Store) echo.HandlerFunc {
-	return handleGetPostmortemImpl(store)
+func handleGetPostmortem(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handleGetPostmortemImpl(store, sqliteDB)
 }
 
 // handlePostEventsBatch handles POST /workspaces/:slug/runs/:run_id/events/batch.
@@ -573,26 +588,26 @@ func handlePostEventsBatch(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 
 // handleGetEvents handles GET /workspaces/:slug/runs/:run_id/events.
 // Queries audit events with filters and cursor-based pagination.
-func handleGetEvents(store Store) echo.HandlerFunc {
-	return handleGetEventsImpl(store)
+func handleGetEvents(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handleGetEventsImpl(store, sqliteDB)
 }
 
 // handleGetSessionOutcomes handles GET /workspaces/:slug/runs/:run_id/sessions/outcomes.
 // Queries session outcomes with filters and cursor-based pagination.
-func handleGetSessionOutcomes(store Store) echo.HandlerFunc {
-	return handleGetSessionOutcomesImpl(store)
+func handleGetSessionOutcomes(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handleGetSessionOutcomesImpl(store, sqliteDB)
 }
 
 // handleGetToolCalls handles GET /workspaces/:slug/runs/:run_id/tools/calls.
 // Queries tool calls with filters and cursor-based pagination.
-func handleGetToolCalls(store Store) echo.HandlerFunc {
-	return handleGetToolCallsImpl(store)
+func handleGetToolCalls(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handleGetToolCallsImpl(store, sqliteDB)
 }
 
 // handleGetToolErrors handles GET /workspaces/:slug/runs/:run_id/tools/errors.
 // Queries tool errors with filters and cursor-based pagination.
-func handleGetToolErrors(store Store) echo.HandlerFunc {
-	return handleGetToolErrorsImpl(store)
+func handleGetToolErrors(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handleGetToolErrorsImpl(store, sqliteDB)
 }
 
 // handlePostTracesBatch handles POST /workspaces/:slug/runs/:run_id/traces/batch.
@@ -603,6 +618,6 @@ func handlePostTracesBatch(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 
 // handleGetTraces handles GET /workspaces/:slug/runs/:run_id/traces.
 // Queries trace events with filters and cursor-based pagination.
-func handleGetTraces(store Store) echo.HandlerFunc {
-	return handleGetTracesImpl(store)
+func handleGetTraces(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
+	return handleGetTracesImpl(store, sqliteDB)
 }

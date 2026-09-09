@@ -3,6 +3,7 @@ package carrypatch
 import (
 	"context"
 	"encoding/json"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"testing"
 )
 
@@ -44,11 +45,11 @@ func TestRebuildExecutor_FullSuccessPath(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch: func(_ context.Context, _ string) error {
+		Fetch: func(_ context.Context, _ string, _ transport.AuthMethod) error {
 			fetchCalled = true
 			return nil
 		},
-		ResolveAuth: func(_ string) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -175,8 +176,8 @@ func TestRebuildExecutor_NoActivePatchesAtExecutionTime_Succeeds(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -238,8 +239,8 @@ func TestRebuildExecutor_MergedPatchesCleanedUp(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -321,8 +322,8 @@ func TestRebuildExecutor_TempBranchDeleted_OnSuccess(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -364,8 +365,8 @@ func TestRebuildExecutor_IntegrationHeadSHA_Updated(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{

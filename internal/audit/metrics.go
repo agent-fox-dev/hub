@@ -3,6 +3,7 @@ package audit
 import (
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -36,9 +37,39 @@ type Metrics struct {
 	JobQueueDepth *prometheus.GaugeVec
 
 	// Retention metrics
-	RetentionErrorsTotal     *prometheus.CounterVec
+	RetentionErrorsTotal      *prometheus.CounterVec
 	RetentionLastRunTimestamp prometheus.Gauge
-	AuditTableRows           *prometheus.GaugeVec
+	AuditTableRows            *prometheus.GaugeVec
+}
+
+// activeMetrics holds the Metrics instance used by package-level recorders
+// (SSE connection gauge, audit event counter). It is nil until SetMetrics is
+// called, in which case recording is a no-op.
+var activeMetrics atomic.Pointer[Metrics]
+
+// SetMetrics registers m as the process-wide metrics sink for subsystems that
+// are not constructed with an explicit *Metrics (the SSE manager and the audit
+// event emitter/ingestion handlers). Passing nil disables recording.
+func SetMetrics(m *Metrics) {
+	activeMetrics.Store(m)
+}
+
+// recordAuditEvents increments afhub_audit_events_total by n for the given
+// source ("hub" or "agent") and event type.
+func recordAuditEvents(source, eventType string, n int) {
+	if n <= 0 {
+		return
+	}
+	if m := activeMetrics.Load(); m != nil {
+		m.AuditEventsTotal.WithLabelValues(source, eventType).Add(float64(n))
+	}
+}
+
+// recordSSEConnections sets afhub_sse_connections to the given value.
+func recordSSEConnections(n int) {
+	if m := activeMetrics.Load(); m != nil {
+		m.SSEConnections.Set(float64(n))
+	}
 }
 
 // NewMetrics creates a new Metrics instance with a custom Prometheus registry

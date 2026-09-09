@@ -104,6 +104,17 @@ provider.
 | `AF_AUDIT_ORPHAN_RETENTION_DAYS` | Grace period in days before orphaned audit data (workspace no longer in SQLite) is deleted. Default: `30`. |
 | `AF_AUDIT_DB_PATH` | Path to the DuckDB audit database file. Default: `<dir of SQLite database>/audit.duckdb`. |
 | `AF_SSE_MAX_CONNECTIONS` | Maximum number of concurrent SSE connections accepted by the event streaming endpoint. Accepts positive integers; invalid or non-positive values fall back to the default with a warning log. Default: `100`. |
+| `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | Identity used for commits the hub creates (carry-patch cherry-picks and merges, merge jobs). Default: `af-hub <af-hub@localhost>` when unset. |
+
+All `AF_*_DAYS` and `AF_AUDIT_MAX_RUNS` values must be positive integers;
+anything else (including `0`) falls back to the default with a warning log.
+
+The hub runs git with a hardened environment: `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS` and similar repository-redirecting
+variables are dropped, `LC_ALL=C`, `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0`
+and `GIT_CONFIG_NOSYSTEM=1` are forced, each git invocation runs in its own
+process group and is killed as a group on cancellation, and commands without
+an explicit deadline are bounded to 10 minutes.
 
 ## First Boot
 
@@ -156,25 +167,29 @@ git credentials automatically.
 
 The container image sets:
 
-- `XDG_CONFIG_HOME=/config`
-- `XDG_DATA_HOME=/data`
+- `XDG_CONFIG_HOME=/config/af-hub`
+- `XDG_DATA_HOME=/data/af-hub`
 
-The bundled default config is installed at `/config/af-hub/config.toml`. It
-contains only the `[server]`, `[database]`, and `[logging]` sections; the
-`[workspace]` and `[[oauth.providers]]` sections are omitted and fall back to
-programmatic defaults. Because `XDG_CONFIG_HOME=/config`, the server looks for
-`/config/config.toml`, which does not match the bundled path. Without a volume
-mount or environment override, the server will not find the bundled config and
-will fall back to programmatic defaults.
+The bundled default config is installed at `/config/af-hub/config.toml`, so
+the server finds it without any overrides. It contains only the `[server]`,
+`[database]`, and `[logging]` sections; the `[workspace]` and
+`[[oauth.providers]]` sections are omitted and fall back to programmatic
+defaults. Mount your own `config.toml` at `/config/af-hub/config.toml` to
+replace it.
 
-To use the bundled config, either mount your own config at
-`/config/config.toml` or override the environment variable:
-`XDG_CONFIG_HOME=/config/af-hub`.
+With the bundled config (`path = "afhub.db"`) the SQLite database lives at
+`/data/af-hub/afhub.db`, the DuckDB audit database at
+`/data/af-hub/audit.duckdb`, and workspace clones under
+`/data/af-hub/workspaces/`. If no config file is found at all, the
+programmatic default database path is `/data/af-hub/apikit.db`.
 
-The database path depends on whether a config file is found:
-
-- **Config file found** (with `path = "afhub.db"`): `/data/afhub.db`
-- **No config file found** (programmatic default): `/data/apikit.db`
+The runtime image includes the `git` CLI (`git-core`). The hub shells out to
+git for merge, batch rebase, and every carry-patch operation (sync, rebuild,
+preview, rerere); clone, fetch, and push (including the upstream fetch of
+carry-patch workspaces) use go-git and do not need it. No git identity needs
+to be configured in the container: commits fall back to
+`af-hub <af-hub@localhost>` unless the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+variables are set.
 
 The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 `/usr/bin/hub` with no flags.
@@ -183,8 +198,8 @@ The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 
 | Mount Point | Purpose |
 |-------------|---------|
-| `/config` | Config directory. Mount a PVC or ConfigMap. |
-| `/data` | Persistent data directory. Mount a PVC. |
+| `/config/af-hub` | Config directory. Mount a PVC or ConfigMap. |
+| `/data/af-hub` | Persistent data directory. Mount a PVC. |
 
 ### Exposed Ports
 
@@ -195,12 +210,11 @@ The container entrypoint is `/usr/local/bin/run`, a shell script that executes
 
 ## Kubernetes Deployment
 
-The Kubernetes `deployment.yaml` overrides the container image's environment
-variables to use subdirectories: `XDG_CONFIG_HOME=/config/af-hub` and
-`XDG_DATA_HOME=/data/af-hub`. Volumes are mounted at `/config/af-hub` and
-`/data/af-hub` accordingly. This means the Kubernetes deployment resolves the
-config file at `/config/af-hub/config.toml` and the database at
-`/data/af-hub/afhub.db` (when the configmap is found).
+The Kubernetes `deployment.yaml` sets the same environment variables as the
+image (`XDG_CONFIG_HOME=/config/af-hub` and `XDG_DATA_HOME=/data/af-hub`) and
+mounts volumes at `/config/af-hub` and `/data/af-hub`. The deployment resolves
+the config file at `/config/af-hub/config.toml` and the database at
+`/data/af-hub/afhub.db`.
 
 The `deploy/` directory contains reference manifests:
 

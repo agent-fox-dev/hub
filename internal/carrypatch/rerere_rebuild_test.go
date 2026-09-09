@@ -3,6 +3,7 @@ package carrypatch
 import (
 	"context"
 	"encoding/json"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"testing"
 )
 
@@ -68,8 +69,8 @@ func TestRerereIntegration_AutoResolvesConflict_RebuildContinues(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -159,8 +160,8 @@ func TestRerereIntegration_ReplayIsIdempotent(t *testing.T) {
 		h := &RebuildHandler{
 			PatchStore:   patches,
 			NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-			Fetch:        func(_ context.Context, _ string) error { return nil },
-			ResolveAuth:  func(_ string) error { return nil },
+			Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+			ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		}
 
 		payload := RebuildPayload{
@@ -235,8 +236,8 @@ func TestRerereIntegration_PartialResolve_AbortsAndRecordsConflict(t *testing.T)
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -322,8 +323,8 @@ func TestRerereIntegration_NotEnabled_ConflictHalts(t *testing.T) {
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{
@@ -383,8 +384,8 @@ func TestRerereIntegration_PartialResolve_ConflictFilesContainOnlyUnresolved(t *
 	h := &RebuildHandler{
 		PatchStore:   patches,
 		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string) error { return nil },
-		ResolveAuth:  func(_ string) error { return nil },
+		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
 
 	payload := RebuildPayload{

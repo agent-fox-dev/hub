@@ -56,7 +56,7 @@ func newSSEHandlerTestEnv(t *testing.T) *auditTestEnv {
 	e.HTTPErrorHandler = apikit.HTTPErrorHandler
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
-	RegisterAuditQueryRoutes(api, store, mgr)
+	RegisterAuditQueryRoutes(api, store, mgr, nil)
 
 	return &auditTestEnv{
 		echo:  e,

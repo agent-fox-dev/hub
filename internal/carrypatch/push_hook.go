@@ -90,26 +90,14 @@ func postPushRebuildHook(
 	}
 
 	// 4. Enqueue rebuild job with duplicate suppression (NS-REQ-1, NS-REQ-4).
-	// Capture strategy at enqueue time, consistent with sync auto-rebuild.
-	strategy := StrategyRebase
-	if getVariable != nil {
-		val, _ := getVariable("workspace", slug, "REBUILD_STRATEGY")
-		if val != "" {
-			strategy = val
-		}
-	}
-
+	// Capture strategy and fail mode at enqueue time, consistent with the
+	// submit endpoint and sync auto-rebuild.
 	ib := ""
 	if integrationBranch.Valid {
 		ib = integrationBranch.String
 	}
 
-	payload := RebuildPayload{
-		WorkspaceSlug:     slug,
-		Strategy:          strategy,
-		SubmittedBy:       "system:push-hook",
-		IntegrationBranch: ib,
-	}
+	payload := BuildRebuildPayload(slug, ib, "system:push-hook", getVariable, "", "")
 	payloadJSON, _ := json.Marshal(payload)
 	groupKey := FormatGroupKey(slug, ib)
 	nonce := uuid.New().String()

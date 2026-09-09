@@ -11,6 +11,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // handleRecloneWorkspace handles POST /api/v1/workspaces/:slug/reclone.
@@ -39,12 +42,11 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// ---- Look up workspace (13-REQ-7.E6) ----
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
-		}
+		// Reclone discards the local clone, so it is restricted to the
+		// workspace owner (or an admin token); non-owners get 404.
+		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
 		if ws == nil {
-			return respondError(c, http.StatusNotFound, "workspace not found")
+			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
 		// ---- Reject concurrent reclone (13-REQ-7.E7) ----
@@ -52,6 +54,14 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusConflict,
 				"clone operation already in progress; cannot reclone while clone_status is '"+ws.CloneStatus+"'")
 		}
+
+		// Reclone removes the trunk; refuse while another operation uses it.
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return respondErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
 
 		// ---- Archive flow: push local commits (13-REQ-7.1, 13-REQ-7.E1) ----
 		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
@@ -66,10 +76,15 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
-		// Attempt to push local commits to upstream.
+		// Attempt to push local commits to upstream with the workspace's
+		// stored credentials.
 		// 13-ERR-11: If push fails, log a warning and continue with reclone.
 		if archiveOpenAndPushFn != nil {
-			if pushErr := archiveOpenAndPushFn(repoPath, ws.GitURL); pushErr != nil {
+			pushAuth, authErr := resolveCloneAuth(secrets.NewStore(db), slug)
+			if authErr != nil {
+				log.Printf("warning: reclone %q: credential resolution failed: %v", slug, authErr)
+			}
+			if pushErr := archiveOpenAndPushFn(repoPath, ws.GitURL, pushAuth); pushErr != nil {
 				log.Printf("warning: reclone %q: archive push failed: %v", slug, pushErr)
 			}
 		}
@@ -87,7 +102,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		// Set clone_status='pending', sync_status='idle', clear sync_error and
 		// upstream_head_sha. Workspace status remains 'active' — never modified.
 		now := time.Now().UTC().Format(timestampFormat)
-		_, err = db.Exec(
+		_, err := db.Exec(
 			`UPDATE workspaces SET clone_status = 'pending', sync_status = 'idle', sync_error = NULL, upstream_head_sha = NULL, updated_at = ? WHERE slug = ?`,
 			now, slug,
 		)

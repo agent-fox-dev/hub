@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
@@ -82,14 +84,14 @@ func (e *TransientError) Unwrap() error {
 
 // Patch represents a carry-patch record from the patches table.
 type Patch struct {
-	ID             string   `json:"id"`
-	WorkspaceID    string   `json:"workspace_id"`
-	BranchName     string   `json:"branch_name"`
-	Position       int      `json:"position"`
-	Status         string   `json:"status"`
-	ConflictFiles  []string `json:"conflict_files,omitempty"`
-	UpstreamPRURL  *string  `json:"upstream_pr_url,omitempty"`
-	DeletedAt      *string  `json:"deleted_at,omitempty"`
+	ID            string   `json:"id"`
+	WorkspaceID   string   `json:"workspace_id"`
+	BranchName    string   `json:"branch_name"`
+	Position      int      `json:"position"`
+	Status        string   `json:"status"`
+	ConflictFiles []string `json:"conflict_files,omitempty"`
+	UpstreamPRURL *string  `json:"upstream_pr_url,omitempty"`
+	DeletedAt     *string  `json:"deleted_at,omitempty"`
 }
 
 // RebuildPayload is the JSON payload stored in the job queue for rebuild jobs.
@@ -114,16 +116,17 @@ type PatchResult struct {
 
 // RebuildResult is the structured result returned by a successful rebuild job.
 type RebuildResult struct {
-	UpstreamHeadSHA             string        `json:"upstream_head_sha"`
-	IntegrationHeadSHA          string        `json:"integration_head_sha"`
-	PreviousIntegrationHeadSHA  string        `json:"previous_integration_head_sha,omitempty"`
-	Strategy                    string        `json:"strategy"`
-	FailMode                    string        `json:"fail_mode,omitempty"`
-	PatchesApplied              int           `json:"patches_applied"`
-	PatchesSkipped              int           `json:"patches_skipped"`
-	PatchesConflicted           int           `json:"patches_conflicted"`
-	PatchesRemoved              int           `json:"patches_removed"`
-	PatchResults                []PatchResult `json:"patch_results"`
+	UpstreamHeadSHA            string        `json:"upstream_head_sha"`
+	IntegrationHeadSHA         string        `json:"integration_head_sha"`
+	PreviousIntegrationHeadSHA string        `json:"previous_integration_head_sha,omitempty"`
+	Strategy                   string        `json:"strategy"`
+	FailMode                   string        `json:"fail_mode,omitempty"`
+	PatchesApplied             int           `json:"patches_applied"`
+	PatchesSkipped             int           `json:"patches_skipped"`
+	PatchesConflicted          int           `json:"patches_conflicted"`
+	PatchesRemoved             int           `json:"patches_removed"`
+	PatchResults               []PatchResult `json:"patch_results"`
+	IntegrationBranchPushed    bool          `json:"integration_branch_pushed,omitempty"`
 }
 
 // ===========================================================================
@@ -152,11 +155,19 @@ type PatchStore interface {
 	CompactPositions(ctx context.Context, workspaceSlug string) error
 }
 
-// FetchFunc fetches from the upstream remote.
-type FetchFunc func(ctx context.Context, repoPath string) error
+// FetchFunc fetches from the upstream remote of the repository at repoPath
+// using the given credentials (nil for a public upstream). The production
+// implementation is DefaultFetchFunc.
+type FetchFunc func(ctx context.Context, repoPath string, auth transport.AuthMethod) error
 
-// ResolveAuthFunc resolves upstream auth credentials.
-type ResolveAuthFunc func(workspaceSlug string) error
+// ResolveAuthFunc resolves the credentials to use for the upstream remote of
+// a workspace. It returns (nil, nil) when no credentials are configured.
+type ResolveAuthFunc func(workspaceSlug string) (transport.AuthMethod, error)
+
+// PushIntegrationFunc pushes the integration branch of the repository at
+// repoPath to the origin remote (force-updating the remote branch). Optional:
+// when nil, the opt-in REBUILD_PUSH_INTEGRATION_BRANCH behaviour is disabled.
+type PushIntegrationFunc func(ctx context.Context, workspaceSlug, repoPath, branch string) error
 
 // GetVariableFunc retrieves a workspace variable.
 type GetVariableFunc func(scope, slug, key string) (string, error)
@@ -176,6 +187,10 @@ type RebuildHandler struct {
 	ResolveAuth   ResolveAuthFunc
 	GetVariable   GetVariableFunc
 	PatchStore    PatchStore
+
+	// PushIntegration, when non-nil, is invoked after a successful rebuild
+	// if the workspace variable REBUILD_PUSH_INTEGRATION_BRANCH is "true".
+	PushIntegration PushIntegrationFunc
 
 	// Audit is the optional audit event emitter. When non-nil, rebuild
 	// complete and fail events are emitted. When nil, audit emission

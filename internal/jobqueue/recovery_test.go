@@ -138,14 +138,10 @@ func TestRecovery_NoRunningJobsNoRecoveryActions(t *testing.T) {
 	}
 	defer q.Stop()
 
-	// Allow goroutines to be scheduled.
-	runtime.Gosched()
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify worker goroutines started.
-	after := runtime.NumGoroutine()
-	delta := after - baseline
-	if delta < 2 {
+	// Verify worker goroutines started. The process-wide count also moves
+	// with unrelated goroutines winding down, so wait for the delta rather
+	// than sampling once.
+	if delta, after := waitForGoroutineDelta(baseline, 2); delta < 2 {
 		t.Errorf("expected at least 2 new goroutines for WithWorkers(2), "+
 			"got delta=%d (before=%d, after=%d)", delta, baseline, after)
 	}
@@ -239,3 +235,18 @@ func TestRecovery_IdempotencyDocumented(t *testing.T) {
 	}
 }
 
+// waitForGoroutineDelta polls runtime.NumGoroutine until it exceeds
+// baseline by at least want, or two seconds pass. It returns the last delta
+// and count observed.
+func waitForGoroutineDelta(baseline, want int) (delta, after int) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime.Gosched()
+		after = runtime.NumGoroutine()
+		delta = after - baseline
+		if delta >= want || time.Now().After(deadline) {
+			return delta, after
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -54,12 +54,18 @@ FROM ${RUNTIME}
 
 # ubi-micro has no package manager and thus no way to provide libstdc++,
 # which the cgo-enabled go-duckdb dependency needs at runtime. ubi-minimal
-# gives us microdnf to install just that shared library.
-RUN microdnf install -y --setopt=install_weak_deps=0 libstdc++ && \
+# gives us microdnf to install that shared library plus the git CLI, which
+# internal/gitcmd shells out to for merge, rebase, and carry-patch rebuild
+# operations (gitcmd.New requires git >= 2.38 on PATH).
+RUN microdnf install -y --setopt=install_weak_deps=0 libstdc++ git-core && \
     microdnf clean all
 
-ENV XDG_CONFIG_HOME=/config
-ENV XDG_DATA_HOME=/data
+# The bundled config lives at /config/af-hub/config.toml and the data
+# directory at /data/af-hub, matching deploy/deployment.yaml. apikit resolves
+# $XDG_CONFIG_HOME/config.toml, so both variables must point at the af-hub
+# subdirectories for the bundled config to be found without overrides.
+ENV XDG_CONFIG_HOME=/config/af-hub
+ENV XDG_DATA_HOME=/data/af-hub
 
 EXPOSE 80
 EXPOSE 8080

@@ -407,6 +407,10 @@ func (s *duckDBStore) QueryAuditEvents(ctx context.Context, runID, workspace str
 		conditions = append(conditions, "node_id = ?")
 		args = append(args, params.NodeID)
 	}
+	if params.SessionID != "" {
+		conditions = append(conditions, "session_id = ?")
+		args = append(args, params.SessionID)
+	}
 	if params.Since != "" {
 		conditions = append(conditions, "timestamp >= CAST(? AS TIMESTAMPTZ)")
 		args = append(args, params.Since)
@@ -456,8 +460,8 @@ func (s *duckDBStore) QueryAuditEvents(ctx context.Context, runID, workspace str
 			"id": id, "run_id": rID, "workspace": ws,
 			"event_type": eventType, "severity": severity,
 			"node_id": nodeID, "session_id": sessionID,
-			"timestamp": ts.Format(time.RFC3339Nano),
-			"payload": jsonStringToAny(payload),
+			"timestamp":   ts.Format(time.RFC3339Nano),
+			"payload":     jsonStringToAny(payload),
 			"ingested_at": ingestedAt,
 		}
 		results = append(results, event)
@@ -492,6 +496,10 @@ func (s *duckDBStore) QuerySessionOutcomes(ctx context.Context, runID, workspace
 	if params.NodeID != "" {
 		conditions = append(conditions, "node_id = ?")
 		args = append(args, params.NodeID)
+	}
+	if params.SessionID != "" {
+		conditions = append(conditions, "session_id = ?")
+		args = append(args, params.SessionID)
 	}
 	if params.Status != "" {
 		conditions = append(conditions, "status = ?")
@@ -546,7 +554,7 @@ func (s *duckDBStore) QuerySessionOutcomes(ctx context.Context, runID, workspace
 		outcome := map[string]any{
 			"id": id, "run_id": rID, "workspace": ws,
 			"session_id": sessionID, "node_id": nodeID, "status": status,
-			"timestamp": ts.Format(time.RFC3339Nano),
+			"timestamp":   ts.Format(time.RFC3339Nano),
 			"duration_ms": durationMs, "token_usage": jsonStringToAny(tokenUsage),
 			"ingested_at": ingestedAt,
 		}
@@ -640,9 +648,9 @@ func (s *duckDBStore) QueryToolCalls(ctx context.Context, runID, workspace strin
 		call := map[string]any{
 			"id": id, "run_id": rID, "workspace": ws,
 			"tool_name": toolName, "node_id": nodeID, "session_id": sessionID,
-			"timestamp": ts.Format(time.RFC3339Nano),
+			"timestamp":   ts.Format(time.RFC3339Nano),
 			"duration_ms": durationMs,
-			"input": jsonStringToAny(input), "output": jsonStringToAny(output),
+			"input":       jsonStringToAny(input), "output": jsonStringToAny(output),
 			"ingested_at": ingestedAt,
 		}
 		results = append(results, call)
@@ -736,7 +744,7 @@ func (s *duckDBStore) QueryToolErrors(ctx context.Context, runID, workspace stri
 			"id": id, "run_id": rID, "workspace": ws,
 			"tool_name": toolName, "node_id": nodeID, "session_id": sessionID,
 			"error_code": errorCode, "error_msg": errorMsg,
-			"timestamp": ts.Format(time.RFC3339Nano),
+			"timestamp":   ts.Format(time.RFC3339Nano),
 			"ingested_at": ingestedAt,
 		}
 		results = append(results, toolErr)

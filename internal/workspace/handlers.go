@@ -18,6 +18,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // OrgMembershipCheckFunc is the signature for org membership checks.
@@ -34,6 +35,12 @@ var orgMembershipCheckFn OrgMembershipCheckFunc = checkOrgMembership
 // consistent error format across the platform.
 func respondError(c echo.Context, code int, message string) error {
 	return apikit.WriteAPIError(c, code, message)
+}
+
+// respondErrorWithType writes a JSON error envelope carrying a machine-readable
+// error_type field.
+func respondErrorWithType(c echo.Context, code int, message, errorType string) error {
+	return apikit.WriteAPIErrorWithType(c, code, message, errorType)
 }
 
 // respondWorkspace writes a workspace JSON object as the response body.
@@ -185,13 +192,13 @@ type createWorkspaceRequest struct {
 
 	// Carry-patch fields (15-REQ-2).
 	WorkspaceMode     *string `json:"workspace_mode"`     // nullable: nil → "standard"
-	UpstreamURL       *string `json:"upstream_url"`        // required for carry_patch mode
-	IntegrationBranch *string `json:"integration_branch"`  // nullable: nil → "deploy" for carry_patch
+	UpstreamURL       *string `json:"upstream_url"`       // required for carry_patch mode
+	IntegrationBranch *string `json:"integration_branch"` // nullable: nil → "deploy" for carry_patch
 
 	// Optional git credential fields (09-REQ-2.1).
 	// PAT and username/password are mutually exclusive.
 	GitPAT      *string `json:"git_pat,omitempty"`
-	GitUsername  *string `json:"git_username,omitempty"`
+	GitUsername *string `json:"git_username,omitempty"`
 	GitPassword *string `json:"git_password,omitempty"`
 }
 
@@ -395,6 +402,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			ib := "deploy"
 			if req.IntegrationBranch != nil && *req.IntegrationBranch != "" {
 				ib = *req.IntegrationBranch
+			}
+			if err := validateBranch(ib); err != nil {
+				return respondError(c, http.StatusBadRequest, "invalid integration_branch: "+err.Error())
 			}
 			integrationBranch = &ib
 		} else {
@@ -917,8 +927,15 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 				"clone in progress; try again after it completes")
 
 		case "ready":
-			// Record head_sha, delete workspace directory, then archive.
-			// Upstream push is deferred until credential management is implemented.
+			// Record head_sha, push local branches to origin, delete the
+			// workspace directory, then archive.
+			unlock, locked := wslock.TryLock(slug)
+			if !locked {
+				return respondErrorWithType(c, http.StatusConflict,
+					"another operation is running on this workspace; retry later", "workspace_busy")
+			}
+			defer unlock()
+
 			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 
 			headSHA, headErr := archiveHeadFn(repoPath)
@@ -928,9 +945,28 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 				return respondError(c, http.StatusInternalServerError, headErr.Error())
 			}
 
+			// Branches that only exist in the hub's clone (pushed through the
+			// hub git server, or the rebuilt integration branch) would be
+			// lost with the directory. Push them to origin first; if that is
+			// not possible, keep the directory so that reactivation finds it
+			// (the clone job treats an existing directory as already cloned).
+			keepDir := false
+			if archiveOpenAndPushFn != nil {
+				pushAuth, authErr := resolveCloneAuth(secrets.NewStore(db), slug)
+				if authErr != nil {
+					log.Printf("warning: archive %q: credential resolution failed, keeping local clone: %v", slug, authErr)
+					keepDir = true
+				} else if pushErr := archiveOpenAndPushFn(repoPath, ws.GitURL, pushAuth); pushErr != nil && !errors.Is(pushErr, ErrAlreadyUpToDate) {
+					log.Printf("warning: archive %q: push to origin failed, keeping local clone: %v", slug, pushErr)
+					keepDir = true
+				}
+			}
+
 			// Delete workspace directory from disk.
 			wsDir := filepath.Join(defaultWorkspaceRoot, slug)
-			if rmErr := os.RemoveAll(wsDir); rmErr != nil {
+			if keepDir {
+				log.Printf("archive %q: local clone retained at %q", slug, wsDir)
+			} else if rmErr := os.RemoveAll(wsDir); rmErr != nil {
 				// 05-REQ-6.E3: Log warning but continue with DB update.
 				log.Printf("warning: failed to delete workspace directory %q: %v", wsDir, rmErr)
 			}

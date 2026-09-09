@@ -47,6 +47,11 @@ type sseFilters struct {
 	workspace string
 	runID     string
 	category  string // "hub" or "agent"
+
+	// allowedWorkspaces restricts delivery to events of the given
+	// workspaces. nil means unrestricted (admin tokens). Events without a
+	// workspace are only delivered when unrestricted.
+	allowedWorkspaces map[string]bool
 }
 
 // SSEOption configures the SSE connection manager.
@@ -118,6 +123,7 @@ func (m *SSEManager) Register(filters sseFilters) (*sseConn, error) {
 		lastRead: time.Now(),
 	}
 	m.connections[id] = conn
+	recordSSEConnections(len(m.connections))
 	return conn, nil
 }
 
@@ -129,6 +135,7 @@ func (m *SSEManager) Unregister(id connID) {
 	if conn, ok := m.connections[id]; ok {
 		delete(m.connections, id)
 		close(conn.ch)
+		recordSSEConnections(len(m.connections))
 	}
 }
 
@@ -316,6 +323,9 @@ func matchesFilters(event HubEvent, f sseFilters) bool {
 	if f.workspace != "" && event.Workspace != f.workspace {
 		return false
 	}
+	if f.allowedWorkspaces != nil && !f.allowedWorkspaces[event.Workspace] {
+		return false
+	}
 	if f.category == "hub" && event.EventType != "" &&
 		len(event.EventType) >= 4 && event.EventType[:4] != "hub." &&
 		event.EventType != "heartbeat" {
@@ -325,8 +335,8 @@ func matchesFilters(event HubEvent, f sseFilters) bool {
 		len(event.EventType) >= 4 && event.EventType[:4] == "hub." {
 		return false
 	}
-	// run_id filter: HubEvent doesn't have a RunID field, so this filter
-	// only applies if we extend events later. For now, always passes.
+	// run_id filter: HubEvent carries no run_id, so the filter cannot be
+	// applied and is documented as unsupported (docs/api.md). Always passes.
 	return true
 }
 

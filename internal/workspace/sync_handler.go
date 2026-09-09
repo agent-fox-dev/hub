@@ -15,6 +15,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // SyncFetchAndCompareFuncType performs the complete fetch-and-compare step
@@ -86,13 +87,11 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Precondition checks (13-REQ-3) ----
 
-		// 13-REQ-3.5: Workspace must exist.
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
-		}
+		// 13-REQ-3.5: Workspace must exist and be owned by the caller
+		// (admin tokens may sync any workspace). Non-owners get 404.
+		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
 		if ws == nil {
-			return respondError(c, http.StatusNotFound, "workspace not found")
+			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
 		// 13-REQ-3.1: Workspace status must be 'active'.
@@ -147,11 +146,27 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			// If not handled, fall through to standard sync.
 		}
 
+		// The fetch and fast-forward touch the shared trunk; refuse to run
+		// while a rebuild, merge, reclone, or archive holds the workspace.
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return respondErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
+
 		// ---- Set sync_status='syncing' (13-REQ-4.1, 13-REQ-9.1) ----
-		if err := setSyncStatus(db, slug, "syncing", nil, nil, nil); err != nil {
+		// The transition is conditional so that two concurrent requests that
+		// both passed the precondition check cannot both proceed.
+		claimed, err := claimSyncStatus(db, slug)
+		if err != nil {
 			// 13-REQ-9.E2: DB failure at transition start.
 			return respondError(c, http.StatusInternalServerError,
 				"failed to update sync status")
+		}
+		if !claimed {
+			return respondError(c, http.StatusConflict,
+				"sync already in progress for this workspace")
 		}
 
 		// ---- Deferred cleanup (13-REQ-4.5) ----
@@ -403,6 +418,26 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 		Metadata:     map[string]any{"result": "reset_to_upstream"},
 	})
 	return respondWorkspace(c, http.StatusOK, updated, db)
+}
+
+// claimSyncStatus atomically transitions sync_status to 'syncing' and reports
+// whether this caller won the transition (false when another sync already
+// holds it).
+func claimSyncStatus(db *sql.DB, slug string) (bool, error) {
+	now := time.Now().UTC().Format(timestampFormat)
+	res, err := db.Exec(
+		`UPDATE workspaces SET sync_status = 'syncing', sync_error = NULL, updated_at = ?
+		 WHERE slug = ? AND sync_status != 'syncing'`,
+		now, slug,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // setSyncStatus updates the sync_status, upstream_head_sha, sync_error, and

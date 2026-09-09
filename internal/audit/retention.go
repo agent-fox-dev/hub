@@ -19,7 +19,7 @@ type RetentionConfig struct {
 	TraceMaxAgeDays         int // AF_TRACE_MAX_AGE_DAYS, default 30
 	SessionMaxAgeDays       int // AF_SESSION_MAX_AGE_DAYS, default 90
 	PostmortemMaxAgeDays    int // AF_POSTMORTEM_MAX_AGE_DAYS, default 180
-	OrphanRetentionDays    int // AF_AUDIT_ORPHAN_RETENTION_DAYS, default 30
+	OrphanRetentionDays     int // AF_AUDIT_ORPHAN_RETENTION_DAYS, default 30
 	SessionMaxActiveAgeDays int // AF_SESSION_MAX_ACTIVE_AGE_DAYS, default 7
 }
 
@@ -31,7 +31,7 @@ func DefaultRetentionConfig() RetentionConfig {
 		TraceMaxAgeDays:         30,
 		SessionMaxAgeDays:       90,
 		PostmortemMaxAgeDays:    180,
-		OrphanRetentionDays:    30,
+		OrphanRetentionDays:     30,
 		SessionMaxActiveAgeDays: 7,
 	}
 }
@@ -59,7 +59,9 @@ func envIntOr(name string, defaultVal int) int {
 		return defaultVal
 	}
 	v, err := strconv.Atoi(s)
-	if err != nil {
+	if err != nil || v < 1 {
+		slog.Warn("retention: ignoring invalid value, using default",
+			"name", name, "value", s, "default", defaultVal)
 		return defaultVal
 	}
 	return v
@@ -105,14 +107,14 @@ func runRetentionWithLogging(ctx context.Context, duckDB *sql.DB, sqliteDB *sql.
 
 // retentionStepName maps step numbers to label names for afhub_retention_errors_total.
 var retentionStepNames = []string{
-	"pre_step_force_close",     // 0: pre-step
-	"step_1_agent_records",     // 1
-	"step_2_max_runs",          // 2
-	"step_3_hub_events",        // 3
-	"step_4_aged_sessions",     // 4
-	"step_5_orphaned_usage",    // 5
-	"step_6_aged_traces",       // 6
-	"step_7_aged_postmortems",  // 7
+	"pre_step_force_close",      // 0: pre-step
+	"step_1_agent_records",      // 1
+	"step_2_max_runs",           // 2
+	"step_3_hub_events",         // 3
+	"step_4_aged_sessions",      // 4
+	"step_5_orphaned_usage",     // 5
+	"step_6_aged_traces",        // 6
+	"step_7_aged_postmortems",   // 7
 	"step_8_orphaned_workspace", // 8
 	"step_9_recalibrate_gauges", // 9
 }
@@ -247,13 +249,29 @@ func RetentionStep1_DeleteAgedAgentRecords(ctx context.Context, db *sql.DB, maxA
 		return 0, ctx.Err()
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
-	result, err := db.ExecContext(ctx,
-		`DELETE FROM agent_audit_events WHERE timestamp < CAST(? AS TIMESTAMPTZ)`,
-		cutoff.Format(time.RFC3339Nano))
-	if err != nil {
-		return 0, fmt.Errorf("delete aged agent_audit_events: %w", err)
+	cutoffStr := cutoff.Format(time.RFC3339Nano)
+
+	// All per-run agent record tables age out together; otherwise
+	// session_outcomes, tool_calls and tool_errors would only ever be removed
+	// by the orphaned-workspace step.
+	var total int64
+	for _, table := range []string{"agent_audit_events", "session_outcomes", "tool_calls", "tool_errors"} {
+		if ctx.Err() != nil {
+			return total, ctx.Err()
+		}
+		result, err := db.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE timestamp < CAST(? AS TIMESTAMPTZ)`, table),
+			cutoffStr)
+		if err != nil {
+			return total, fmt.Errorf("delete aged %s: %w", table, err)
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("delete aged %s: rows affected: %w", table, err)
+		}
+		total += n
 	}
-	return result.RowsAffected()
+	return total, nil
 }
 
 // RetentionStep2_EnforceMaxRuns deletes the oldest run_ids from
@@ -463,7 +481,7 @@ func RetentionStep8_DeleteOrphanedWorkspaceData(ctx context.Context, duckDB *sql
 			// No workspaces in SQLite — all records are potentially orphaned.
 			// Apply grace period filter only.
 			result, err := duckDB.ExecContext(ctx,
-				fmt.Sprintf(`DELETE FROM %s WHERE ingested_at < CAST(? AS TIMESTAMPTZ)`, tc.table),
+				fmt.Sprintf(`DELETE FROM %s WHERE %s <> '' AND ingested_at < CAST(? AS TIMESTAMPTZ)`, tc.table, tc.column),
 				cutoffStr)
 			if err != nil {
 				return totalDeleted, fmt.Errorf("delete orphaned %s (all orphaned): %w", tc.table, err)
@@ -482,9 +500,12 @@ func RetentionStep8_DeleteOrphanedWorkspaceData(ctx context.Context, duckDB *sql
 		}
 		args = append(args, cutoffStr)
 
+		// Rows without a workspace (hub-level events such as user or
+		// credential changes) are not orphans of any workspace and are
+		// aged out by the regular max-age steps instead.
 		query := fmt.Sprintf(
-			`DELETE FROM %s WHERE %s NOT IN (%s) AND ingested_at < CAST(? AS TIMESTAMPTZ)`,
-			tc.table, tc.column, joinStrings(placeholders, ","))
+			`DELETE FROM %s WHERE %s <> '' AND %s NOT IN (%s) AND ingested_at < CAST(? AS TIMESTAMPTZ)`,
+			tc.table, tc.column, tc.column, joinStrings(placeholders, ","))
 		result, err := duckDB.ExecContext(ctx, query, args...)
 		if err != nil {
 			return totalDeleted, fmt.Errorf("delete orphaned %s: %w", tc.table, err)

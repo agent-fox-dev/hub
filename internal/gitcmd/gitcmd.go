@@ -29,7 +29,86 @@ type GitError struct {
 // into a human-readable message.
 func (e *GitError) Error() string {
 	return fmt.Sprintf("git %s: exit code %d: %s",
-		strings.Join(e.Args, " "), e.ExitCode, e.Stderr)
+		strings.Join(redactArgs(e.Args), " "), e.ExitCode, redactUserinfo(e.Stderr))
+}
+
+// redactArgs returns a copy of args with credentials embedded in URLs
+// (https://user:token@host/...) replaced, so that error messages stored in
+// job records, audit events, or logs never carry a token.
+func redactArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = redactUserinfo(a)
+	}
+	return out
+}
+
+// redactUserinfo masks the userinfo part of any URL-looking token in s.
+func redactUserinfo(s string) string {
+	for _, scheme := range []string{"https://", "http://", "ssh://"} {
+		idx := 0
+		for {
+			start := strings.Index(s[idx:], scheme)
+			if start < 0 {
+				break
+			}
+			start += idx + len(scheme)
+			end := start
+			for end < len(s) && s[end] != '/' && s[end] != ' ' && s[end] != '\n' && s[end] != '"' && s[end] != '\'' {
+				end++
+			}
+			if at := strings.LastIndex(s[start:end], "@"); at >= 0 {
+				s = s[:start] + "***@" + s[start+at+1:]
+				end = start + len("***@")
+			}
+			idx = end
+		}
+	}
+	return s
+}
+
+// DefaultTimeout bounds every git invocation whose context carries no
+// deadline of its own. Job handlers normally pass a deadline-bearing context;
+// this is the safety net for the ones that do not, so a wedged git process
+// (stuck credential helper, hung remote) cannot pin a workspace lock forever.
+var DefaultTimeout = 10 * time.Minute
+
+// Default committer identity used when neither the process environment nor
+// extraEnv provides one. Without it git refuses to create commits in
+// containers whose hostname has no domain part ("unable to auto-detect
+// email address"), which breaks carry-patch rebuilds and merge jobs.
+const (
+	DefaultIdentityName  = "af-hub"
+	DefaultIdentityEmail = "af-hub@localhost"
+)
+
+// strippedEnvVars are inherited environment variables that redirect git to
+// a different repository or inject configuration. They must never leak from
+// the hub process (or a test harness) into the subprocesses that operate on
+// workspace trunks.
+var strippedEnvVars = map[string]bool{
+	"GIT_DIR":                          true,
+	"GIT_WORK_TREE":                    true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_COMMON_DIR":                   true,
+	"GIT_NAMESPACE":                    true,
+	"GIT_CONFIG_PARAMETERS":            true,
+	"GIT_CONFIG_COUNT":                 true,
+}
+
+// defaultedEnvVars are appended only when absent from the inherited
+// environment and extraEnv, so operators can still override them.
+var defaultedEnvVars = []string{
+	"GIT_AUTHOR_NAME=" + DefaultIdentityName,
+	"GIT_AUTHOR_EMAIL=" + DefaultIdentityEmail,
+	"GIT_COMMITTER_NAME=" + DefaultIdentityName,
+	"GIT_COMMITTER_EMAIL=" + DefaultIdentityEmail,
+	// Never open an editor for merge/cherry-pick messages.
+	"GIT_EDITOR=true",
+	// Never page output.
+	"GIT_PAGER=cat",
 }
 
 // GitRunner wraps git CLI subprocess calls with safety defaults and uniform
@@ -100,16 +179,38 @@ func New(workDir string, extraEnv []string) (*GitRunner, error) {
 }
 
 // assembleEnv builds the full environment slice for git subprocesses.
-// Order: os.Environ() + extraEnv + hardcoded safety variables.
+// Order: filtered os.Environ() + extraEnv + identity/editor defaults (only
+// when not already set) + hardcoded safety variables. The safety variables
+// are last so they always take precedence (11-REQ-2.2, 11-REQ-2.3).
 func assembleEnv(extraEnv []string) []string {
 	base := os.Environ()
-	env := make([]string, 0, len(base)+len(extraEnv)+3)
-	env = append(env, base...)
-	env = append(env, extraEnv...)
+	env := make([]string, 0, len(base)+len(extraEnv)+len(defaultedEnvVars)+4)
+	present := make(map[string]bool, len(base)+len(extraEnv))
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		if strippedEnvVars[key] {
+			continue
+		}
+		present[key] = true
+		env = append(env, kv)
+	}
+	for _, kv := range extraEnv {
+		key, _, _ := strings.Cut(kv, "=")
+		present[key] = true
+		env = append(env, kv)
+	}
+	for _, kv := range defaultedEnvVars {
+		key, _, _ := strings.Cut(kv, "=")
+		if !present[key] {
+			env = append(env, kv)
+		}
+	}
 	env = append(env,
 		"GIT_ALLOW_PROTOCOL=file:https:ssh",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_NOSYSTEM=1",
+		// Parsers (conflict detection, rev-parse) rely on English output.
+		"LC_ALL=C",
 	)
 	return env
 }
@@ -122,9 +223,16 @@ func assembleEnv(extraEnv []string) []string {
 // This helper enables callers like LsRemote to perform exit-code discrimination
 // without re-implementing the subprocess boilerplate.
 func (r *GitRunner) runWithExitCode(ctx context.Context, args ...string) (stdout string, exitCode int, stderr string, err error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && DefaultTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = r.workDir
 	cmd.Env = r.env
+	configureProcess(cmd)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
@@ -204,7 +312,7 @@ func (e *RebaseConflictError) Error() string {
 // discrimination: exit 0 returns (stdout, nil), exit 2 returns
 // ("", ErrRefNotFound), exit 1 returns ("", *GitError).
 func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, error) {
-	args := []string{"ls-remote", "--exit-code", remote, ref}
+	args := []string{"ls-remote", "--exit-code", endOfOptions, remote, ref}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
@@ -241,7 +349,7 @@ func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, e
 // See parseConflictFiles in conflict.go for the CONFLICT line parsing rule
 // and representative sample output.
 func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, error) {
-	args := []string{"merge-tree", "--write-tree", base, head}
+	args := []string{"merge-tree", "--write-tree", endOfOptions, base, head}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
@@ -298,7 +406,7 @@ func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, e
 //   - rev-parse failure after successful rebase: returns *GitError
 //     (11-REQ-6.E4).
 func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
-	args := []string{"rebase", onto}
+	args := []string{"rebase", endOfOptions, onto}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
@@ -422,13 +530,30 @@ func (r *GitRunner) RebaseContinue(ctx context.Context) (string, error) {
 	return newSHA, nil
 }
 
-// RevParse executes git rev-parse to resolve a ref to its full SHA.
+// RevParse executes git rev-parse --verify to resolve a single ref to its
+// full SHA. --verify makes an unknown or option-like ref an error instead of
+// echoing it back, and --end-of-options prevents ref from being parsed as an
+// option.
 func (r *GitRunner) RevParse(ctx context.Context, ref string) (string, error) {
-	return r.Run(ctx, "rev-parse", ref)
+	if ref == "" {
+		return "", &GitError{Args: []string{"rev-parse"}, ExitCode: -1, Stderr: "ref must not be empty"}
+	}
+	return r.Run(ctx, "rev-parse", "--verify", endOfOptions, ref)
 }
 
 // UpdateRef executes git update-ref to update a reference to point to a SHA.
 func (r *GitRunner) UpdateRef(ctx context.Context, ref, sha string) error {
-	_, err := r.Run(ctx, "update-ref", ref, sha)
+	_, err := r.Run(ctx, "update-ref", endOfOptions, ref, sha)
 	return err
+}
+
+// ResetInProgressState clears state a crashed or cancelled operation may
+// have left in the working tree: an in-progress rebase, cherry-pick, or
+// merge, plus uncommitted changes. Every step is best-effort; errors are
+// ignored because the state simply may not exist.
+func (r *GitRunner) ResetInProgressState(ctx context.Context) {
+	_, _ = r.Run(ctx, "rebase", "--abort")
+	_, _ = r.Run(ctx, "cherry-pick", "--abort")
+	_, _ = r.Run(ctx, "merge", "--abort")
+	_, _ = r.Run(ctx, "reset", "--hard", "HEAD", "--")
 }

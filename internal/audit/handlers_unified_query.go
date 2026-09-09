@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,15 @@ type unifiedQueryParams struct {
 	until           string
 	limit           int
 	cursor          string
+
+	// cursorMicros and cursorID are the decoded cursor position (epoch
+	// microseconds and event id); only valid when cursor is non-empty.
+	cursorMicros int64
+	cursorID     string
+
+	// allowedWorkspaces restricts results to the given workspace slugs.
+	// nil means unrestricted (admin tokens); an empty map yields no rows.
+	allowedWorkspaces map[string]bool
 }
 
 const (
@@ -71,7 +81,7 @@ const (
 
 // handleAuditQuery implements GET /api/v1/audit — the unified audit event
 // query handler (18-REQ-6).
-func handleAuditQuery(store Store) echo.HandlerFunc {
+func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check: audit:read required (18-REQ-6.E3, 18-REQ-6.E4).
 		auth := requireAuditRead(c)
@@ -83,6 +93,17 @@ func handleAuditQuery(store Store) echo.HandlerFunc {
 		params, err := parseUnifiedQueryParams(c)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+
+		// Non-admin callers only see events of workspaces they own; events
+		// without a workspace (user- and org-scoped) are admin-only.
+		owned, ownedErr := ownedWorkspaces(auth, sqliteDB)
+		if ownedErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		}
+		params.allowedWorkspaces = owned
+		if owned != nil && params.workspace != "" && !owned[params.workspace] {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		// Execute unified query against DuckDB.
@@ -142,32 +163,36 @@ func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 
 	// Validate cursor (18-REQ-6.E1).
 	if params.cursor != "" {
-		if _, _, err := decodeCursor(params.cursor); err != nil {
+		ts, id, err := decodeCursor(params.cursor)
+		if err != nil {
 			return unifiedQueryParams{}, fmt.Errorf("invalid cursor")
 		}
+		t, err := ParseTimestamp(ts)
+		if err != nil {
+			return unifiedQueryParams{}, fmt.Errorf("invalid cursor")
+		}
+		params.cursorMicros = t.UnixMicro()
+		params.cursorID = id
 	}
 
-	// Validate since/until timestamps (18-REQ-6.E8).
+	// Validate since/until timestamps (18-REQ-6.E8) and normalize them to
+	// UTC so DuckDB parses them unambiguously.
 	var sinceTime, untilTime time.Time
 	if params.since != "" {
-		t, err := time.Parse(time.RFC3339, params.since)
+		t, err := ParseTimestamp(params.since)
 		if err != nil {
-			t, err = time.Parse(time.RFC3339Nano, params.since)
-			if err != nil {
-				return unifiedQueryParams{}, fmt.Errorf("invalid query parameter: since/until must be RFC 3339")
-			}
+			return unifiedQueryParams{}, fmt.Errorf("invalid query parameter: since/until must be RFC 3339")
 		}
 		sinceTime = t
+		params.since = t.UTC().Format(time.RFC3339Nano)
 	}
 	if params.until != "" {
-		t, err := time.Parse(time.RFC3339, params.until)
+		t, err := ParseTimestamp(params.until)
 		if err != nil {
-			t, err = time.Parse(time.RFC3339Nano, params.until)
-			if err != nil {
-				return unifiedQueryParams{}, fmt.Errorf("invalid query parameter: since/until must be RFC 3339")
-			}
+			return unifiedQueryParams{}, fmt.Errorf("invalid query parameter: since/until must be RFC 3339")
 		}
 		untilTime = t
+		params.until = t.UTC().Format(time.RFC3339Nano)
 	}
 
 	// Validate since < until (18-REQ-6.E7).
@@ -215,9 +240,12 @@ func executeUnifiedQuery(db *sql.DB, params unifiedQueryParams) ([]UnifiedAuditE
 		return []UnifiedAuditEvent{}, "", false, nil
 	}
 
-	// Build the full UNION ALL query with ORDER BY and LIMIT.
+	// Build the full UNION ALL query with ORDER BY and LIMIT. Both
+	// sub-queries expose the event time as epoch microseconds (ts) so hub
+	// events (VARCHAR timestamps) and agent events (TIMESTAMPTZ) order
+	// consistently regardless of their textual representation.
 	query := strings.Join(subQueries, " UNION ALL ")
-	query = "SELECT * FROM (" + query + ") unified ORDER BY timestamp DESC, id DESC LIMIT ?"
+	query = "SELECT * FROM (" + query + ") unified ORDER BY ts DESC, id DESC LIMIT ?"
 	args = append(args, params.limit+1)
 
 	rows, err := db.Query(query, args...)
@@ -229,11 +257,12 @@ func executeUnifiedQuery(db *sql.DB, params unifiedQueryParams) ([]UnifiedAuditE
 	var events []UnifiedAuditEvent
 	for rows.Next() {
 		var ev UnifiedAuditEvent
+		var tsMicros int64
 		var actorID, actorType, resourceType, resourceID, action sql.NullString
 		var runID, nodeID, sessionID, archetype sql.NullString
 
 		if err := rows.Scan(
-			&ev.ID, &ev.EventType, &ev.Source, &ev.Timestamp,
+			&ev.ID, &ev.EventType, &ev.Source, &tsMicros,
 			&ev.Severity, &ev.Workspace,
 			&actorID, &actorType, &resourceType, &resourceID, &action,
 			&runID, &nodeID, &sessionID, &archetype,
@@ -241,6 +270,7 @@ func executeUnifiedQuery(db *sql.DB, params unifiedQueryParams) ([]UnifiedAuditE
 			return nil, "", false, fmt.Errorf("unified query scan: %w", err)
 		}
 
+		ev.Timestamp = time.UnixMicro(tsMicros).UTC().Format(time.RFC3339Nano)
 		ev.ActorID = nullableString(actorID)
 		ev.ActorType = nullableString(actorType)
 		ev.ResourceType = nullableString(resourceType)
@@ -276,6 +306,11 @@ func executeUnifiedQuery(db *sql.DB, params unifiedQueryParams) ([]UnifiedAuditE
 	return events, nextCursor, hasMore, nil
 }
 
+// hubTimestampMicros converts the VARCHAR timestamp of hub_audit_events into
+// epoch microseconds. Rows written before the timestamp column was populated
+// (empty string) fall back to ingested_at so they still sort sensibly.
+const hubTimestampMicros = "epoch_us(COALESCE(TRY_CAST(timestamp AS TIMESTAMPTZ), ingested_at))"
+
 // buildHubSubQuery builds the SELECT ... FROM hub_audit_events sub-query
 // with applicable WHERE clauses.
 func buildHubSubQuery(params unifiedQueryParams) (string, []any) {
@@ -300,12 +335,16 @@ func buildHubSubQuery(params unifiedQueryParams) (string, []any) {
 		args = append(args, params.severity)
 	}
 	if params.since != "" {
-		conditions = append(conditions, "timestamp >= ?")
+		conditions = append(conditions, hubTimestampMicros+" >= epoch_us(CAST(? AS TIMESTAMPTZ))")
 		args = append(args, params.since)
 	}
 	if params.until != "" {
-		conditions = append(conditions, "timestamp < ?")
+		conditions = append(conditions, hubTimestampMicros+" < epoch_us(CAST(? AS TIMESTAMPTZ))")
 		args = append(args, params.until)
+	}
+	if cond, a := allowedWorkspacesCondition(params.allowedWorkspaces); cond != "" {
+		conditions = append(conditions, cond)
+		args = append(args, a...)
 	}
 
 	// Hub-specific filters.
@@ -328,10 +367,9 @@ func buildHubSubQuery(params unifiedQueryParams) (string, []any) {
 
 	// Cursor-based pagination (18-REQ-6.3).
 	if params.cursor != "" {
-		cursorTS, cursorID, _ := decodeCursor(params.cursor)
 		conditions = append(conditions,
-			"(timestamp < ? OR (timestamp = ? AND id < ?))")
-		args = append(args, cursorTS, cursorTS, cursorID)
+			"("+hubTimestampMicros+" < ? OR ("+hubTimestampMicros+" = ? AND id < ?))")
+		args = append(args, params.cursorMicros, params.cursorMicros, params.cursorID)
 	}
 
 	where := ""
@@ -339,7 +377,7 @@ func buildHubSubQuery(params unifiedQueryParams) (string, []any) {
 		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	q := `SELECT id, event_type, 'hub' AS source, timestamp, severity, workspace,
+	q := `SELECT id, event_type, 'hub' AS source, ` + hubTimestampMicros + ` AS ts, severity, workspace,
 		actor_id, actor_type, resource_type, resource_id, action,
 		NULL AS run_id, NULL AS node_id, NULL AS session_id, NULL AS archetype
 		FROM hub_audit_events` + where
@@ -371,12 +409,16 @@ func buildAgentSubQuery(params unifiedQueryParams) (string, []any) {
 		args = append(args, params.severity)
 	}
 	if params.since != "" {
-		conditions = append(conditions, "CAST(timestamp AS VARCHAR) >= ?")
+		conditions = append(conditions, "timestamp >= CAST(? AS TIMESTAMPTZ)")
 		args = append(args, params.since)
 	}
 	if params.until != "" {
-		conditions = append(conditions, "CAST(timestamp AS VARCHAR) < ?")
+		conditions = append(conditions, "timestamp < CAST(? AS TIMESTAMPTZ)")
 		args = append(args, params.until)
+	}
+	if cond, a := allowedWorkspacesCondition(params.allowedWorkspaces); cond != "" {
+		conditions = append(conditions, cond)
+		args = append(args, a...)
 	}
 
 	// Agent-specific filters.
@@ -387,10 +429,9 @@ func buildAgentSubQuery(params unifiedQueryParams) (string, []any) {
 
 	// Cursor-based pagination (18-REQ-6.3).
 	if params.cursor != "" {
-		cursorTS, cursorID, _ := decodeCursor(params.cursor)
 		conditions = append(conditions,
-			"(CAST(timestamp AS VARCHAR) < ? OR (CAST(timestamp AS VARCHAR) = ? AND id < ?))")
-		args = append(args, cursorTS, cursorTS, cursorID)
+			"(epoch_us(timestamp) < ? OR (epoch_us(timestamp) = ? AND id < ?))")
+		args = append(args, params.cursorMicros, params.cursorMicros, params.cursorID)
 	}
 
 	where := ""
@@ -398,13 +439,37 @@ func buildAgentSubQuery(params unifiedQueryParams) (string, []any) {
 		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	q := `SELECT id, event_type, 'agent' AS source, CAST(timestamp AS VARCHAR) AS timestamp,
+	q := `SELECT id, event_type, 'agent' AS source, epoch_us(timestamp) AS ts,
 		severity, workspace,
 		NULL AS actor_id, NULL AS actor_type, NULL AS resource_type, NULL AS resource_id, NULL AS action,
 		run_id, node_id, session_id, archetype
 		FROM agent_audit_events` + where
 
 	return q, args
+}
+
+// allowedWorkspacesCondition renders the ownership restriction as a SQL
+// condition. A nil set means unrestricted and yields no condition; an empty
+// set yields a condition that matches nothing.
+func allowedWorkspacesCondition(allowed map[string]bool) (string, []any) {
+	if allowed == nil {
+		return "", nil
+	}
+	if len(allowed) == 0 {
+		return "1 = 0", nil
+	}
+	slugs := make([]string, 0, len(allowed))
+	for slug := range allowed {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	placeholders := make([]string, len(slugs))
+	args := make([]any, len(slugs))
+	for i, slug := range slugs {
+		placeholders[i] = "?"
+		args[i] = slug
+	}
+	return "workspace IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 // nullableString converts a sql.NullString to *string for JSON serialization.
@@ -424,7 +489,7 @@ func nullableString(ns sql.NullString) *string {
 
 // handleTranscript implements GET /api/v1/workspaces/:slug/runs/:run_id/transcript.
 // Returns a conversation transcript reconstructed from agent trace data.
-func handleTranscript(store Store) echo.HandlerFunc {
+func handleTranscript(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -434,6 +499,9 @@ func handleTranscript(store Store) echo.HandlerFunc {
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
 		nodeID := c.QueryParam("node_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 
 		// 18-REQ-7.E1: node_id is required.
 		if nodeID == "" {
@@ -551,19 +619,29 @@ func queryTranscriptMessages(db *sql.DB, workspace, runID, nodeID string) ([]tra
 // ---------------------------------------------------------------------------
 
 // handleSSEStream implements GET /api/v1/events — the SSE streaming endpoint.
-func handleSSEStream(store Store, mgr *SSEManager) echo.HandlerFunc {
+func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
 			return nil
 		}
 
+		// Non-admin callers only receive events of workspaces they own.
+		owned, ownedErr := ownedWorkspaces(auth, sqliteDB)
+		if ownedErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if owned != nil && c.QueryParam("workspace") != "" && !owned[c.QueryParam("workspace")] {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		}
+
 		// Check connection limit (18-REQ-8.E1).
 		if mgr != nil {
 			filters := sseFilters{
-				workspace: c.QueryParam("workspace"),
-				runID:     c.QueryParam("run_id"),
-				category:  c.QueryParam("category"),
+				workspace:         c.QueryParam("workspace"),
+				runID:             c.QueryParam("run_id"),
+				category:          c.QueryParam("category"),
+				allowedWorkspaces: owned,
 			}
 
 			conn, err := mgr.Register(filters)

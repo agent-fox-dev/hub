@@ -21,7 +21,7 @@ func (r *GitRunner) IsAncestor(ctx context.Context, commitA, commitB string) (bo
 		}
 	}
 
-	args := []string{"merge-base", "--is-ancestor", commitA, commitB}
+	args := []string{"merge-base", "--is-ancestor", endOfOptions, commitA, commitB}
 
 	_, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {

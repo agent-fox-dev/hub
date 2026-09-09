@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 )
@@ -44,7 +45,7 @@ func defaultCloneFn(ctx context.Context, path string, url string, depth int, sin
 // ArchiveOpenAndPushFuncType. It opens an existing local repository via
 // go-git PlainOpen and pushes to origin. Returns ErrAlreadyUpToDate when
 // the remote already has all local commits (nothing to push).
-func defaultArchiveOpenAndPushFn(repoPath, gitURL string) error {
+func defaultArchiveOpenAndPushFn(repoPath, gitURL string, auth transport.AuthMethod) error {
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
 		return err
@@ -52,6 +53,8 @@ func defaultArchiveOpenAndPushFn(repoPath, gitURL string) error {
 	err = repo.Push(&git.PushOptions{
 		RemoteName: "origin",
 		RemoteURL:  gitURL,
+		Auth:       auth,
+		RefSpecs:   []config.RefSpec{"refs/heads/*:refs/heads/*"},
 	})
 	if err != nil {
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {

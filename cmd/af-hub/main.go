@@ -121,11 +121,14 @@ func main() {
 		WorkspaceRoot: cfg.Workspace.Path,
 		NewGitRunner:  cpGitRunnerFactory,
 		Fetch:         carrypatch.DefaultFetchFunc(),
-		ResolveAuth: func(slug string) error {
-			return workspace.ResolveUpstreamAuth(store, slug)
+		ResolveAuth: func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveUpstreamAuthMethod(store, slug)
 		},
 		GetVariable: store.GetVariableValue,
 		PatchStore:  cpPatchStore,
+		PushIntegration: carrypatch.DefaultPushIntegrationFunc(func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveCloneAuth(store, slug)
+		}),
 	}
 
 	if err := carrypatch.RegisterRebuildJob(mergeQueue, rebuildHandler); err != nil {
@@ -149,6 +152,9 @@ func main() {
 	// ---------------------------------------------------------------------------
 
 	metrics := audit.NewMetrics()
+	// SSE connection gauge and audit event counter are recorded through the
+	// package-level sink.
+	audit.SetMetrics(metrics)
 
 	// ---------------------------------------------------------------------------
 	// Audit DuckDB database (specs 17-19)
@@ -234,7 +240,7 @@ func main() {
 	audit.RegisterRoutes(auditAPI, auditStore, auditEmitter, database.SqlDB)
 
 	// Register unified audit query, transcript, and SSE streaming routes (spec 18).
-	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr)
+	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr, database.SqlDB)
 
 	// Start the retention worker goroutine. Runs an immediate retention
 	// pass then repeats hourly (19-REQ-12.1). Exits cleanly on ctx cancel.
@@ -337,8 +343,8 @@ func main() {
 			WorkspaceRoot: cfg.Workspace.Path,
 			NewGitRunner:  cpGitRunnerFactory,
 			Fetch:         carrypatch.DefaultFetchFunc(),
-			ResolveAuth: func(slug string) error {
-				return workspace.ResolveUpstreamAuth(store, slug)
+			ResolveAuth: func(slug string) (transport.AuthMethod, error) {
+				return workspace.ResolveUpstreamAuthMethod(store, slug)
 			},
 			GetVariable: store.GetVariableValue,
 			PatchStore:  cpPatchStore,

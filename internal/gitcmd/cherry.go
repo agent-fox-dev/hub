@@ -26,7 +26,7 @@ func (r *GitRunner) Cherry(ctx context.Context, upstream, head string) (applied 
 		}
 	}
 
-	stdout, runErr := r.Run(ctx, "cherry", upstream, head)
+	stdout, runErr := r.Run(ctx, "cherry", endOfOptions, upstream, head)
 	if runErr != nil {
 		return nil, nil, runErr
 	}

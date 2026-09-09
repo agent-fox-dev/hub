@@ -17,6 +17,8 @@ import (
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // BranchChecker checks whether a branch exists in a workspace repository.
@@ -240,38 +242,25 @@ func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) error {
 // Workspace lookup helpers
 // ---------------------------------------------------------------------------
 
-// workspaceState holds the minimal fields needed by merge handlers.
-type workspaceState struct {
-	Slug        string
-	Status      string
-	CloneStatus string
-}
-
-// lookupWorkspace retrieves workspace status by slug. Returns nil if not found.
-func lookupWorkspace(db *sql.DB, slug string) (*workspaceState, error) {
-	var ws workspaceState
-	err := db.QueryRow(
-		"SELECT slug, status, clone_status FROM workspaces WHERE slug = ?", slug,
-	).Scan(&ws.Slug, &ws.Status, &ws.CloneStatus)
-	if err == sql.ErrNoRows {
-		return nil, nil
+// authorizeMergeWorkspace enforces workspace ownership (owner or admin token;
+// non-owners get 404) for merge endpoints that do not need the full
+// precondition check. It writes the error response and returns false when
+// access is denied.
+func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
+	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug); code != 0 {
+		_ = apikit.WriteAPIError(c, code, msg)
+		return false
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &ws, nil
+	return true
 }
 
 // validateWorkspaceForMerge checks that the workspace exists, is active, and
 // has a ready clone. Writes an error response and returns non-nil error if
 // validation fails. Returns nil to proceed.
-func validateWorkspaceForMerge(c echo.Context, db *sql.DB, slug string) error {
-	ws, err := lookupWorkspace(db, slug)
-	if err != nil {
-		return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
-	}
-	if ws == nil {
-		return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) error {
+	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug)
+	if code != 0 {
+		return apikit.WriteAPIError(c, code, msg)
 	}
 	if ws.Status != "active" {
 		return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
@@ -320,9 +309,15 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if req.SourceRef == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "source_ref is required")
 		}
+		if err := gitcmd.ValidateRefName(req.TargetBranch); err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid target_branch: "+err.Error())
+		}
+		if err := gitcmd.ValidateRefName(req.SourceRef); err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid source_ref: "+err.Error())
+		}
 
 		// Validate workspace exists, is active, and clone is ready.
-		if err := validateWorkspaceForMerge(c, cfg.DB, slug); err != nil {
+		if err := validateWorkspaceForMerge(c, cfg.DB, auth, slug); err != nil {
 			return nil // Response already written.
 		}
 
@@ -420,20 +415,21 @@ func handleListMerges(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// List all merge jobs and filter by workspace slug via key prefix.
-		jobs, err := cfg.Queue.ListByType(MergeJobType, jobqueue.ListOpts{})
+		// Filter by workspace in SQL so that the page limit applies to this
+		// workspace's jobs rather than to the hub-wide job list.
+		jobs, err := cfg.Queue.ListByKeyPrefix(MergeJobType, slug+":", 200)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
 
-		// Filter to jobs belonging to this workspace (key starts with "slug:").
-		prefix := slug + ":"
 		var results []MergeJobResponse
 		for _, j := range jobs {
-			if strings.HasPrefix(j.Key, prefix) {
-				results = append(results, ProjectMergeJobResponse(j))
-			}
+			results = append(results, ProjectMergeJobResponse(j))
 		}
 
 		// Return non-nil empty array per spec (12-REQ-10.E1).
@@ -463,6 +459,9 @@ func handleGetMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		job, err := cfg.Queue.GetByID(jobID)
 		if err != nil {
@@ -502,6 +501,9 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Look up the job first to verify it exists and belongs to this workspace.
 		job, err := cfg.Queue.GetByID(jobID)
@@ -561,6 +563,9 @@ func handleRequeueMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Look up the job to verify it exists and belongs to this workspace.
 		job, err := cfg.Queue.GetByID(jobID)
@@ -627,9 +632,18 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		if len(req.Branches) == 0 {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "branches list must not be empty")
 		}
+		if err := gitcmd.ValidateRefName(req.TargetRef); err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid target_ref: "+err.Error())
+		}
+		for i, b := range req.Branches {
+			if err := gitcmd.ValidateRefName(b); err != nil {
+				return apikit.WriteAPIError(c, http.StatusBadRequest,
+					fmt.Sprintf("invalid branches[%d]: %v", i, err))
+			}
+		}
 
 		// Validate workspace exists and is active.
-		if err := validateWorkspaceForMerge(c, cfg.DB, slug); err != nil {
+		if err := validateWorkspaceForMerge(c, cfg.DB, auth, slug); err != nil {
 			return nil // Response already written.
 		}
 
@@ -637,6 +651,14 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		if cfg.BatchRebase == nil {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "batch rebase not configured")
 		}
+
+		// Batch rebase mutates the shared trunk synchronously.
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
 
 		results, err := cfg.BatchRebase(c.Request().Context(), slug, req.TargetRef, req.Branches)
 		if err != nil {
