@@ -51,6 +51,12 @@ func handlePostEventImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		ts, err := NormalizeTimestamp(req.Timestamp)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+		req.Timestamp = ts
+
 		if req.Severity != "" {
 			if err := ValidateSeverity(req.Severity); err != nil {
 				return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
@@ -72,6 +78,9 @@ func handlePostEventImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		resp, isNew, err := ds.InsertAuditEvent(c.Request().Context(), req, runID, slug)
 		if err != nil {
 			return writeStoreError(c, err)
+		}
+		if isNew {
+			recordAuditEvents("agent", req.EventType, 1)
 		}
 
 		if isNew {
@@ -106,6 +115,11 @@ func handlePostSessionOutcomeImpl(store Store, sqliteDB *sql.DB) echo.HandlerFun
 		if req.Status == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "missing required field: status")
 		}
+		ts, err := NormalizeTimestamp(req.Timestamp)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+		req.Timestamp = ts
 		if req.ID != "" {
 			if err := ValidateUUID(req.ID); err != nil {
 				return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
@@ -145,6 +159,11 @@ func handlePostToolCallImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		if req.ToolName == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "missing required field: tool_name")
 		}
+		ts, err := NormalizeTimestamp(req.Timestamp)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+		req.Timestamp = ts
 		if req.ID != "" {
 			if err := ValidateUUID(req.ID); err != nil {
 				return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
@@ -187,6 +206,11 @@ func handlePostToolErrorImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		if req.ErrorMsg == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "missing required field: error_msg")
 		}
+		ts, err := NormalizeTimestamp(req.Timestamp)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+		req.Timestamp = ts
 		if req.ID != "" {
 			if err := ValidateUUID(req.ID); err != nil {
 				return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
@@ -229,6 +253,11 @@ func handlePostTraceImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		if err := ValidateTraceEventType(req.EventType); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
+		ts, err := NormalizeTimestamp(req.Timestamp)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+		req.Timestamp = ts
 		if req.ID != "" {
 			if err := ValidateUUID(req.ID); err != nil {
 				return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
@@ -288,6 +317,15 @@ func handlePostPostmortemImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		if req.CompletedAt == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "missing required field: completed_at")
 		}
+		startedAt, err := NormalizeTimestamp(req.StartedAt)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid started_at: must be RFC 3339")
+		}
+		completedAt, err := NormalizeTimestamp(req.CompletedAt)
+		if err != nil {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid completed_at: must be RFC 3339")
+		}
+		req.StartedAt, req.CompletedAt = startedAt, completedAt
 		// Validate task_summary has required fields.
 		if tsMap, ok := req.TaskSummary.(map[string]any); ok {
 			if _, exists := tsMap["total"]; !exists {
@@ -378,6 +416,12 @@ func handlePostEventsBatchImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 					continue
 				}
 			}
+			ts, err := NormalizeTimestamp(req.Timestamp)
+			if err != nil {
+				batchErrors = append(batchErrors, BatchItemError{Index: i, ID: req.ID, Message: err.Error()})
+				continue
+			}
+			req.Timestamp = ts
 			validItems = append(validItems, req)
 		}
 		resp := BatchIngestResponse{Errors: batchErrors}
@@ -392,6 +436,7 @@ func handlePostEventsBatchImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		if err != nil {
 			return writeStoreError(c, err)
 		}
+		recordAuditEvents("agent", "batch", accepted)
 		resp.Accepted = accepted
 		resp.Duplicates = duplicates
 		return c.JSON(http.StatusOK, resp)
@@ -440,6 +485,12 @@ func handlePostTracesBatchImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 					continue
 				}
 			}
+			ts, err := NormalizeTimestamp(req.Timestamp)
+			if err != nil {
+				batchErrors = append(batchErrors, BatchItemError{Index: i, ID: req.ID, Message: err.Error()})
+				continue
+			}
+			req.Timestamp = ts
 			validItems = append(validItems, req)
 		}
 		resp := BatchIngestResponse{Errors: batchErrors}
@@ -665,7 +716,11 @@ func parseAuditQueryParamsFromRequest(c echo.Context) (QueryParams, error) {
 	}
 	// Validate cursor if present.
 	if params.Cursor != "" {
-		if _, _, err := decodeCursor(params.Cursor); err != nil {
+		ts, _, err := decodeCursor(params.Cursor)
+		if err != nil {
+			return QueryParams{}, fmt.Errorf("invalid cursor")
+		}
+		if _, err := ParseTimestamp(ts); err != nil {
 			return QueryParams{}, fmt.Errorf("invalid cursor")
 		}
 	}

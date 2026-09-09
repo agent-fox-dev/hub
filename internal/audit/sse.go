@@ -123,6 +123,7 @@ func (m *SSEManager) Register(filters sseFilters) (*sseConn, error) {
 		lastRead: time.Now(),
 	}
 	m.connections[id] = conn
+	recordSSEConnections(len(m.connections))
 	return conn, nil
 }
 
@@ -134,6 +135,7 @@ func (m *SSEManager) Unregister(id connID) {
 	if conn, ok := m.connections[id]; ok {
 		delete(m.connections, id)
 		close(conn.ch)
+		recordSSEConnections(len(m.connections))
 	}
 }
 
@@ -333,8 +335,8 @@ func matchesFilters(event HubEvent, f sseFilters) bool {
 		len(event.EventType) >= 4 && event.EventType[:4] == "hub." {
 		return false
 	}
-	// run_id filter: HubEvent doesn't have a RunID field, so this filter
-	// only applies if we extend events later. For now, always passes.
+	// run_id filter: HubEvent carries no run_id, so the filter cannot be
+	// applied and is documented as unsupported (docs/api.md). Always passes.
 	return true
 }
 

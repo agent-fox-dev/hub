@@ -31,6 +31,7 @@ type HubEventRow struct {
 	Action       string
 	Workspace    string
 	Metadata     string // JSON-encoded
+	Timestamp    string // RFC 3339 UTC, when the event occurred
 	IngestedAt   string
 }
 
@@ -140,9 +141,9 @@ type UsageListParams struct {
 
 // CostResponse is the JSON body for GET /api/v1/workspaces/:slug/cost.
 type CostResponse struct {
-	Workspace string         `json:"workspace"`
-	Period    CostPeriod     `json:"period"`
-	Totals   CostTotals     `json:"totals"`
+	Workspace string               `json:"workspace"`
+	Period    CostPeriod           `json:"period"`
+	Totals    CostTotals           `json:"totals"`
 	Breakdown []CostBreakdownEntry `json:"breakdown"`
 }
 
@@ -191,14 +192,14 @@ type ForceCloseResult struct {
 
 // PostEventRequest is the JSON body for POST /workspaces/:slug/runs/:run_id/events.
 type PostEventRequest struct {
-	ID        string         `json:"id,omitempty"`
-	RunID     string         `json:"run_id,omitempty"`
-	EventType string         `json:"event_type"`
-	Severity  string         `json:"severity,omitempty"`
-	NodeID    string         `json:"node_id,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	Timestamp string         `json:"timestamp,omitempty"`
-	Payload   any            `json:"payload,omitempty"`
+	ID        string `json:"id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	EventType string `json:"event_type"`
+	Severity  string `json:"severity,omitempty"`
+	NodeID    string `json:"node_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Payload   any    `json:"payload,omitempty"`
 }
 
 // PostEventResponse is the JSON body returned from POST /workspaces/:slug/runs/:run_id/events.

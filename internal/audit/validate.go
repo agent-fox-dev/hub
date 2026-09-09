@@ -3,6 +3,7 @@ package audit
 import (
 	"fmt"
 	"regexp"
+	"time"
 )
 
 // runIDRegexp validates run_id format: YYYYMMDD_HHMMSS_6hexchars.
@@ -70,4 +71,34 @@ func ValidateSeverity(s string) error {
 		return fmt.Errorf("invalid severity: %q (must be one of: info, warning, error, critical)", s)
 	}
 	return nil
+}
+
+// ParseTimestamp parses an RFC 3339 timestamp (with or without fractional
+// seconds). Timestamps are accepted from clients on every ingestion endpoint
+// and are validated here so that malformed values are rejected with HTTP 400
+// instead of failing inside DuckDB with a 500.
+func ParseTimestamp(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, s)
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid timestamp: %q (must be RFC 3339)", s)
+	}
+	return t, nil
+}
+
+// NormalizeTimestamp validates s with ParseTimestamp and returns it in UTC
+// RFC 3339 form with nanosecond precision (trailing zeros trimmed), which is
+// the canonical representation stored in DuckDB. An empty string is returned
+// unchanged so callers can fall back to the server clock.
+func NormalizeTimestamp(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	t, err := ParseTimestamp(s)
+	if err != nil {
+		return "", err
+	}
+	return t.UTC().Format(time.RFC3339Nano), nil
 }

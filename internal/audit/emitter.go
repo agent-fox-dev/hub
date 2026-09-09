@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/txsvc/apikit"
 )
 
 // Emitter defines the interface for emitting hub-internal audit events.
@@ -33,12 +33,14 @@ func NewEmitterWithBroadcast(store Store, mgr *SSEManager) Emitter {
 	return &defaultEmitter{store: store, mgr: mgr}
 }
 
-// Emit generates a UUID for the event id, sets ingested_at to current UTC
-// time, inserts into hub_audit_events, and optionally broadcasts to SSE
-// subscribers. Insert errors are swallowed and logged (TS-17-12).
+// Emit generates a UUID for the event id, sets timestamp and ingested_at to
+// the current UTC time (microsecond precision so that hub and agent events
+// interleave correctly in the unified query), inserts into hub_audit_events,
+// and optionally broadcasts to SSE subscribers. Insert errors are swallowed
+// and logged (TS-17-12).
 func (e *defaultEmitter) Emit(ctx context.Context, event HubEvent) error {
 	id := uuid.New().String()
-	now := apikit.NowUTC()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	metadataJSON := "{}"
 	if event.Metadata != nil {
@@ -57,6 +59,7 @@ func (e *defaultEmitter) Emit(ctx context.Context, event HubEvent) error {
 		Action:       event.Action,
 		Workspace:    event.Workspace,
 		Metadata:     metadataJSON,
+		Timestamp:    now,
 		IngestedAt:   now,
 	}
 
@@ -68,6 +71,8 @@ func (e *defaultEmitter) Emit(ctx context.Context, event HubEvent) error {
 		)
 		return nil // swallow error (TS-17-12)
 	}
+
+	recordAuditEvents("hub", event.EventType, 1)
 
 	// Populate the event with generated fields before broadcasting.
 	event.ID = id

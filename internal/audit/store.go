@@ -75,10 +75,10 @@ type duckDBStore struct {
 func (s *duckDBStore) InsertHubEvent(_ context.Context, row HubEventRow) error {
 	_, err := s.db.Exec(
 		`INSERT INTO hub_audit_events (id, event_type, actor_id, actor_type, resource_type,
-			resource_id, action, workspace, metadata, ingested_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			resource_id, action, workspace, metadata, timestamp, ingested_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ID, row.EventType, row.ActorID, row.ActorType, row.ResourceType,
-		row.ResourceID, row.Action, row.Workspace, row.Metadata, row.IngestedAt,
+		row.ResourceID, row.Action, row.Workspace, row.Metadata, row.Timestamp, row.IngestedAt,
 	)
 	return err
 }
@@ -138,13 +138,13 @@ func (s *duckDBStore) getSessionByID(id string) (*Session, error) {
 	var errorMsg sql.NullString
 	var endedAt sql.NullString
 	var durationMs sql.NullInt64
-	var metadataJSON sql.NullString
+	var metadataRaw any
 
 	err := row.Scan(
 		&sess.ID, &sess.RunID, &sess.WorkspaceSlug, &sess.NodeID, &sess.Archetype,
 		&sess.Status, &sess.StartedAt, &sess.Model, &sess.CredentialID,
 		&sess.CredentialType, &errorMsg, &endedAt, &durationMs,
-		&sess.CacheCreationInputTokens, &metadataJSON,
+		&sess.CacheCreationInputTokens, &metadataRaw,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
@@ -164,12 +164,7 @@ func (s *duckDBStore) getSessionByID(id string) (*Session, error) {
 		d := durationMs.Int64
 		sess.DurationMs = &d
 	}
-	if metadataJSON.Valid && metadataJSON.String != "" && metadataJSON.String != "null" {
-		var meta any
-		if err := json.Unmarshal([]byte(metadataJSON.String), &meta); err == nil {
-			sess.Metadata = meta
-		}
-	}
+	sess.Metadata = decodeMetadata(metadataRaw)
 
 	return &sess, nil
 }
@@ -349,13 +344,13 @@ func (s *duckDBStore) ListSessions(_ context.Context, params SessionListParams, 
 		var errorMsg sql.NullString
 		var endedAt sql.NullString
 		var durationMs sql.NullInt64
-		var metadataJSON sql.NullString
+		var metadataRaw any
 
 		if err := rows.Scan(
 			&sess.ID, &sess.RunID, &sess.WorkspaceSlug, &sess.NodeID, &sess.Archetype,
 			&sess.Status, &sess.StartedAt, &sess.Model, &sess.CredentialID,
 			&sess.CredentialType, &errorMsg, &endedAt, &durationMs,
-			&sess.CacheCreationInputTokens, &metadataJSON,
+			&sess.CacheCreationInputTokens, &metadataRaw,
 		); err != nil {
 			return nil, fmt.Errorf("list sessions scan: %w", err)
 		}
@@ -371,12 +366,7 @@ func (s *duckDBStore) ListSessions(_ context.Context, params SessionListParams, 
 			d := durationMs.Int64
 			sess.DurationMs = &d
 		}
-		if metadataJSON.Valid && metadataJSON.String != "" && metadataJSON.String != "null" {
-			var meta any
-			if json.Unmarshal([]byte(metadataJSON.String), &meta) == nil {
-				sess.Metadata = meta
-			}
-		}
+		sess.Metadata = decodeMetadata(metadataRaw)
 
 		sessions = append(sessions, sess)
 	}
@@ -823,6 +813,37 @@ func nilStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// decodeMetadata converts the driver value of the agent_sessions.metadata
+// JSON column into a plain Go value. go-duckdb returns JSON columns as
+// already-decoded values (maps, slices, scalars) on current versions and as
+// JSON text on older ones, so both shapes are accepted. SQL NULL and the JSON
+// literal null both decode to nil.
+func decodeMetadata(raw any) any {
+	switch v := raw.(type) {
+	case nil:
+		return nil
+	case string:
+		return decodeMetadataText(v)
+	case []byte:
+		return decodeMetadataText(string(v))
+	default:
+		return v
+	}
+}
+
+func decodeMetadataText(text string) any {
+	text = strings.TrimSpace(text)
+	if text == "" || text == "null" {
+		return nil
+	}
+	var meta any
+	if err := json.Unmarshal([]byte(text), &meta); err != nil {
+		// Not JSON text: surface the raw string rather than dropping it.
+		return text
+	}
+	return meta
 }
 
 // metadataToJSON converts a metadata value to JSON string for DuckDB storage.

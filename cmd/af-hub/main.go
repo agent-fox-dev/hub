@@ -152,6 +152,9 @@ func main() {
 	// ---------------------------------------------------------------------------
 
 	metrics := audit.NewMetrics()
+	// SSE connection gauge and audit event counter are recorded through the
+	// package-level sink.
+	audit.SetMetrics(metrics)
 
 	// ---------------------------------------------------------------------------
 	// Audit DuckDB database (specs 17-19)

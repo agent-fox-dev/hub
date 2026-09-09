@@ -28,59 +28,13 @@ type auditQueryResponse struct {
 
 const auditQueryPath = "/api/v1/audit"
 
-// initUnifiedQuerySchema creates hub_audit_events and agent_audit_events
-// tables with all columns required by the unified query handler, including
-// timestamp on hub events and archetype on agent events.
-func initUnifiedQuerySchema(t *testing.T, db *sql.DB) {
-	t.Helper()
-	// DROP + CREATE instead of CREATE IF NOT EXISTS because openTestAuditDB →
-	// InitSchema already creates these tables without the extra columns
-	// (severity, timestamp on hub; archetype on agent). The IF NOT EXISTS
-	// variant would be a no-op, leaving the wrong schema in place.
-	ddl := []string{
-		`DROP TABLE IF EXISTS hub_audit_events`,
-		`DROP TABLE IF EXISTS agent_audit_events`,
-		`CREATE TABLE hub_audit_events (
-			id            VARCHAR PRIMARY KEY,
-			event_type    VARCHAR NOT NULL,
-			actor_id      VARCHAR NOT NULL DEFAULT '',
-			actor_type    VARCHAR NOT NULL DEFAULT '',
-			resource_type VARCHAR NOT NULL DEFAULT '',
-			resource_id   VARCHAR NOT NULL DEFAULT '',
-			action        VARCHAR NOT NULL DEFAULT '',
-			workspace     VARCHAR NOT NULL DEFAULT '',
-			severity      VARCHAR NOT NULL DEFAULT 'info',
-			timestamp     VARCHAR NOT NULL DEFAULT '',
-			metadata      VARCHAR NOT NULL DEFAULT '{}',
-			ingested_at   VARCHAR NOT NULL DEFAULT ''
-		)`,
-		`CREATE TABLE agent_audit_events (
-			id          VARCHAR PRIMARY KEY,
-			run_id      VARCHAR NOT NULL,
-			workspace   VARCHAR NOT NULL DEFAULT '',
-			event_type  VARCHAR NOT NULL,
-			severity    VARCHAR NOT NULL DEFAULT 'info',
-			node_id     VARCHAR NOT NULL DEFAULT '',
-			session_id  VARCHAR NOT NULL DEFAULT '',
-			archetype   VARCHAR NOT NULL DEFAULT '',
-			timestamp   VARCHAR NOT NULL DEFAULT '',
-			payload     VARCHAR NOT NULL DEFAULT '{}',
-			ingested_at VARCHAR NOT NULL DEFAULT ''
-		)`,
-	}
-	for _, stmt := range ddl {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("initUnifiedQuerySchema: %v\nSQL: %s", err, stmt)
-		}
-	}
-}
-
 // newUnifiedQueryTestEnv creates a test environment with audit query routes
 // registered and both hub_audit_events and agent_audit_events tables.
 func newUnifiedQueryTestEnv(t *testing.T) *auditTestEnv {
 	t.Helper()
+	// openTestAuditDB runs InitSchema, so the tables carry the production
+	// column types (TIMESTAMPTZ for agent events, VARCHAR for hub events).
 	duckDB := openTestAuditDB(t)
-	initUnifiedQuerySchema(t, duckDB)
 	store := NewStore(duckDB)
 
 	e := echo.New()
