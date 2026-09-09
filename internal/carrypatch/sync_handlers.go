@@ -92,6 +92,9 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	slug := c.Param("slug")
+	if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		return nil, echo.ErrNotFound
+	}
 
 	// Load workspace record.
 	var mode, status, cloneStatus, integrationBranch string

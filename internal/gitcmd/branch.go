@@ -20,7 +20,7 @@ func (r *GitRunner) CreateBranch(ctx context.Context, name, startPoint string) e
 			Stderr:   "name and startPoint must not be empty",
 		}
 	}
-	_, err := r.Run(ctx, "branch", name, startPoint)
+	_, err := r.Run(ctx, "branch", endOfOptions, name, startPoint)
 	return err
 }
 
@@ -42,6 +42,6 @@ func (r *GitRunner) DeleteBranch(ctx context.Context, name string) error {
 			Stderr:   "branch name must not be empty",
 		}
 	}
-	_, err := r.Run(ctx, "branch", "-D", name)
+	_, err := r.Run(ctx, "branch", "-D", endOfOptions, name)
 	return err
 }

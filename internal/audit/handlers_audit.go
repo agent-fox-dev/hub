@@ -307,7 +307,7 @@ func handlePostPostmortemImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 }
 
 // handleGetPostmortemImpl handles GET /workspaces/:slug/runs/:run_id/postmortem.
-func handleGetPostmortemImpl(store Store) echo.HandlerFunc {
+func handleGetPostmortemImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -315,6 +315,9 @@ func handleGetPostmortemImpl(store Store) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
@@ -462,7 +465,7 @@ func handlePostTracesBatchImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 // handleGetEventsImpl handles GET /workspaces/:slug/runs/:run_id/events.
-func handleGetEventsImpl(store Store) echo.HandlerFunc {
+func handleGetEventsImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -470,6 +473,9 @@ func handleGetEventsImpl(store Store) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
@@ -494,7 +500,7 @@ func handleGetEventsImpl(store Store) echo.HandlerFunc {
 }
 
 // handleGetSessionOutcomesImpl handles GET /workspaces/:slug/runs/:run_id/sessions/outcomes.
-func handleGetSessionOutcomesImpl(store Store) echo.HandlerFunc {
+func handleGetSessionOutcomesImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -502,6 +508,9 @@ func handleGetSessionOutcomesImpl(store Store) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
@@ -526,7 +535,7 @@ func handleGetSessionOutcomesImpl(store Store) echo.HandlerFunc {
 }
 
 // handleGetToolCallsImpl handles GET /workspaces/:slug/runs/:run_id/tools/calls.
-func handleGetToolCallsImpl(store Store) echo.HandlerFunc {
+func handleGetToolCallsImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -534,6 +543,9 @@ func handleGetToolCallsImpl(store Store) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
@@ -558,7 +570,7 @@ func handleGetToolCallsImpl(store Store) echo.HandlerFunc {
 }
 
 // handleGetToolErrorsImpl handles GET /workspaces/:slug/runs/:run_id/tools/errors.
-func handleGetToolErrorsImpl(store Store) echo.HandlerFunc {
+func handleGetToolErrorsImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -566,6 +578,9 @@ func handleGetToolErrorsImpl(store Store) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
@@ -590,7 +605,7 @@ func handleGetToolErrorsImpl(store Store) echo.HandlerFunc {
 }
 
 // handleGetTracesImpl handles GET /workspaces/:slug/runs/:run_id/traces.
-func handleGetTracesImpl(store Store) echo.HandlerFunc {
+func handleGetTracesImpl(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -598,6 +613,9 @@ func handleGetTracesImpl(store Store) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 		if err := ValidateRunIDErr(runID); err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}

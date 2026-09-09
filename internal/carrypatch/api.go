@@ -18,6 +18,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
 // ===========================================================================
@@ -53,15 +54,15 @@ type RebuildListResponse struct {
 
 // RebuildJobRecord is a single rebuild job in list and detail responses.
 type RebuildJobRecord struct {
-	ID                          string          `json:"id"`
-	Status                      string          `json:"status"`
-	Strategy                    string          `json:"strategy,omitempty"`
-	Error                       string          `json:"error,omitempty"`
-	CreatedAt                   string          `json:"created_at"`
-	CompletedAt                 *string         `json:"completed_at"`
-	PatchResults                json.RawMessage `json:"patch_results,omitempty"`
-	IntegrationHeadSHA          string          `json:"integration_head_sha,omitempty"`
-	PreviousIntegrationHeadSHA  string          `json:"previous_integration_head_sha,omitempty"`
+	ID                         string          `json:"id"`
+	Status                     string          `json:"status"`
+	Strategy                   string          `json:"strategy,omitempty"`
+	Error                      string          `json:"error,omitempty"`
+	CreatedAt                  string          `json:"created_at"`
+	CompletedAt                *string         `json:"completed_at"`
+	PatchResults               json.RawMessage `json:"patch_results,omitempty"`
+	IntegrationHeadSHA         string          `json:"integration_head_sha,omitempty"`
+	PreviousIntegrationHeadSHA string          `json:"previous_integration_head_sha,omitempty"`
 }
 
 // RollbackResponse is the JSON response for POST /rebuilds/:id/rollback.
@@ -140,24 +141,24 @@ type PatchStatusAPIConfig struct {
 
 // PatchStatusResponse is the JSON response for GET /patch-status.
 type PatchStatusResponse struct {
-	WorkspaceSlug      string             `json:"workspace_slug"`
-	WorkspaceMode      string             `json:"workspace_mode"`
-	Status             string             `json:"status"`
-	CloneStatus        string             `json:"clone_status"`
-	CloneError         string             `json:"clone_error,omitempty"`
-	SyncStatus         string             `json:"sync_status"`
-	SyncError          string             `json:"sync_error,omitempty"`
-	SyncMode           string             `json:"sync_mode"`
-	HeadSHA            string             `json:"head_sha"`
-	GitURL             string             `json:"git_url"`
-	UpstreamURL        string             `json:"upstream_url"`
-	UpstreamHeadSHA    string             `json:"upstream_head_sha"`
-	IntegrationBranch  string             `json:"integration_branch"`
-	IntegrationHeadSHA string             `json:"integration_head_sha"`
-	LastSyncAt         *string            `json:"last_sync_at"`
+	WorkspaceSlug      string              `json:"workspace_slug"`
+	WorkspaceMode      string              `json:"workspace_mode"`
+	Status             string              `json:"status"`
+	CloneStatus        string              `json:"clone_status"`
+	CloneError         string              `json:"clone_error,omitempty"`
+	SyncStatus         string              `json:"sync_status"`
+	SyncError          string              `json:"sync_error,omitempty"`
+	SyncMode           string              `json:"sync_mode"`
+	HeadSHA            string              `json:"head_sha"`
+	GitURL             string              `json:"git_url"`
+	UpstreamURL        string              `json:"upstream_url"`
+	UpstreamHeadSHA    string              `json:"upstream_head_sha"`
+	IntegrationBranch  string              `json:"integration_branch"`
+	IntegrationHeadSHA string              `json:"integration_head_sha"`
+	LastSyncAt         *string             `json:"last_sync_at"`
 	LastRebuild        *PatchStatusRebuild `json:"last_rebuild"`
-	Patches            []PatchStatusEntry `json:"patches"`
-	Summary            PatchStatusSummary `json:"summary"`
+	Patches            []PatchStatusEntry  `json:"patches"`
+	Summary            PatchStatusSummary  `json:"summary"`
 }
 
 // PatchStatusRebuild is the last rebuild info in the patch-status response.
@@ -178,11 +179,11 @@ type PatchStatusEntry struct {
 
 // PatchStatusSummary aggregates patch status counts.
 type PatchStatusSummary struct {
-	TotalPatches          int `json:"total_patches"`
-	Active                int `json:"active"`
-	MergedUpstream        int `json:"merged_upstream"`
-	Conflict              int `json:"conflict"`
-	Disabled              int `json:"disabled"`
+	TotalPatches           int `json:"total_patches"`
+	Active                 int `json:"active"`
+	MergedUpstream         int `json:"merged_upstream"`
+	Conflict               int `json:"conflict"`
+	Disabled               int `json:"disabled"`
 	TotalRerereResolutions int `json:"total_rerere_resolutions"`
 }
 
@@ -201,6 +202,17 @@ func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 		}
 	}
 	return false
+}
+
+// authorizeWorkspace enforces workspace ownership for carry-patch endpoints
+// (owner or admin token; non-owners get 404). It writes the error response
+// and returns false when access is denied.
+func authorizeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
+	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug); code != 0 {
+		_ = apikit.WriteAPIError(c, code, msg)
+		return false
+	}
+	return true
 }
 
 // ===========================================================================
@@ -256,6 +268,9 @@ func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// 2. Load workspace and validate.
 		var mode, status, cloneStatus string
@@ -387,6 +402,9 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// 2. Load workspace and validate.
 		var mode, status, cloneStatus string
@@ -571,6 +589,9 @@ func handleListRebuilds(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Fetch rebuild jobs for this workspace.
 		jobs, err := cfg.Queue.ListByKey("rebuild", slug)
@@ -606,6 +627,9 @@ func handleGetRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Fetch the job.
 		j, err := cfg.Queue.GetByID(jobID)
@@ -614,7 +638,7 @@ func handleGetRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		// 16-REQ-2.E2: prevent cross-workspace information leakage.
-		if j.Key != slug {
+		if j.Key != slug || j.Type != "rebuild" {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
 		}
 
@@ -644,6 +668,9 @@ func handleCancelRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Look up the job to verify it exists and belongs to this workspace.
 		j, err := cfg.Queue.GetByID(jobID)
@@ -699,6 +726,9 @@ func handleRequeueRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Look up the job to verify it exists and belongs to this workspace.
 		j, err := cfg.Queue.GetByID(jobID)
@@ -753,6 +783,9 @@ func handleRollbackRebuild(cfg RebuildRollbackAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Look up the job to verify it exists and belongs to this workspace.
 		j, err := cfg.Queue.GetByID(jobID)
@@ -901,6 +934,9 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
+		}
 
 		// Load workspace metadata.
 		var mode, wsStatus, cloneStatus, syncStatus, syncMode string
@@ -1088,4 +1124,3 @@ func countRerereResolutions(rrCacheDir string) int {
 	}
 	return count
 }
-

@@ -234,7 +234,7 @@ func main() {
 	audit.RegisterRoutes(auditAPI, auditStore, auditEmitter, database.SqlDB)
 
 	// Register unified audit query, transcript, and SSE streaming routes (spec 18).
-	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr)
+	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr, database.SqlDB)
 
 	// Start the retention worker goroutine. Runs an immediate retention
 	// pass then repeats hourly (19-REQ-12.1). Exits cleanly on ctx cancel.

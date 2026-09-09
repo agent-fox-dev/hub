@@ -20,6 +20,6 @@ func (r *GitRunner) RemoteAdd(ctx context.Context, name, url string) error {
 			Stderr:   "name and url must not be empty",
 		}
 	}
-	_, err := r.Run(ctx, "remote", "add", name, url)
+	_, err := r.Run(ctx, "remote", "add", endOfOptions, name, url)
 	return err
 }

@@ -396,6 +396,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			if req.IntegrationBranch != nil && *req.IntegrationBranch != "" {
 				ib = *req.IntegrationBranch
 			}
+			if err := validateBranch(ib); err != nil {
+				return respondError(c, http.StatusBadRequest, "invalid integration_branch: "+err.Error())
+			}
 			integrationBranch = &ib
 		} else {
 			// 15-REQ-2.5: Standard mode must not include upstream_url or

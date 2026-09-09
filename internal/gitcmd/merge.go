@@ -35,7 +35,7 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch string) (string, error
 	}
 
 	// Run git merge --no-ff <branch> via runWithExitCode for exit-code discrimination.
-	args := []string{"merge", "--no-ff", branch}
+	args := []string{"merge", "--no-ff", endOfOptions, branch}
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
 		// 14-REQ-9.3, 14-REQ-9.E4: context cancellation or deadline exceeded —

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"database/sql"
+	"sort"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -62,6 +63,10 @@ type unifiedQueryParams struct {
 	until           string
 	limit           int
 	cursor          string
+
+	// allowedWorkspaces restricts results to the given workspace slugs.
+	// nil means unrestricted (admin tokens); an empty map yields no rows.
+	allowedWorkspaces map[string]bool
 }
 
 const (
@@ -71,7 +76,7 @@ const (
 
 // handleAuditQuery implements GET /api/v1/audit — the unified audit event
 // query handler (18-REQ-6).
-func handleAuditQuery(store Store) echo.HandlerFunc {
+func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check: audit:read required (18-REQ-6.E3, 18-REQ-6.E4).
 		auth := requireAuditRead(c)
@@ -83,6 +88,17 @@ func handleAuditQuery(store Store) echo.HandlerFunc {
 		params, err := parseUnifiedQueryParams(c)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
+		}
+
+		// Non-admin callers only see events of workspaces they own; events
+		// without a workspace (user- and org-scoped) are admin-only.
+		owned, ownedErr := ownedWorkspaces(auth, sqliteDB)
+		if ownedErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		}
+		params.allowedWorkspaces = owned
+		if owned != nil && params.workspace != "" && !owned[params.workspace] {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
 
 		// Execute unified query against DuckDB.
@@ -307,6 +323,10 @@ func buildHubSubQuery(params unifiedQueryParams) (string, []any) {
 		conditions = append(conditions, "timestamp < ?")
 		args = append(args, params.until)
 	}
+	if cond, a := allowedWorkspacesCondition(params.allowedWorkspaces); cond != "" {
+		conditions = append(conditions, cond)
+		args = append(args, a...)
+	}
 
 	// Hub-specific filters.
 	if params.actorID != "" {
@@ -378,6 +398,10 @@ func buildAgentSubQuery(params unifiedQueryParams) (string, []any) {
 		conditions = append(conditions, "CAST(timestamp AS VARCHAR) < ?")
 		args = append(args, params.until)
 	}
+	if cond, a := allowedWorkspacesCondition(params.allowedWorkspaces); cond != "" {
+		conditions = append(conditions, cond)
+		args = append(args, a...)
+	}
 
 	// Agent-specific filters.
 	if params.runID != "" {
@@ -407,6 +431,30 @@ func buildAgentSubQuery(params unifiedQueryParams) (string, []any) {
 	return q, args
 }
 
+// allowedWorkspacesCondition renders the ownership restriction as a SQL
+// condition. A nil set means unrestricted and yields no condition; an empty
+// set yields a condition that matches nothing.
+func allowedWorkspacesCondition(allowed map[string]bool) (string, []any) {
+	if allowed == nil {
+		return "", nil
+	}
+	if len(allowed) == 0 {
+		return "1 = 0", nil
+	}
+	slugs := make([]string, 0, len(allowed))
+	for slug := range allowed {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	placeholders := make([]string, len(slugs))
+	args := make([]any, len(slugs))
+	for i, slug := range slugs {
+		placeholders[i] = "?"
+		args[i] = slug
+	}
+	return "workspace IN (" + strings.Join(placeholders, ", ") + ")", args
+}
+
 // nullableString converts a sql.NullString to *string for JSON serialization.
 // Valid strings become non-nil pointers; NULL becomes nil (JSON null).
 func nullableString(ns sql.NullString) *string {
@@ -424,7 +472,7 @@ func nullableString(ns sql.NullString) *string {
 
 // handleTranscript implements GET /api/v1/workspaces/:slug/runs/:run_id/transcript.
 // Returns a conversation transcript reconstructed from agent trace data.
-func handleTranscript(store Store) echo.HandlerFunc {
+func handleTranscript(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
@@ -434,6 +482,9 @@ func handleTranscript(store Store) echo.HandlerFunc {
 		slug := c.Param("slug")
 		runID := c.Param("run_id")
 		nodeID := c.QueryParam("node_id")
+		if !requireWorkspaceRead(c, auth, slug, sqliteDB) {
+			return nil
+		}
 
 		// 18-REQ-7.E1: node_id is required.
 		if nodeID == "" {
@@ -551,19 +602,29 @@ func queryTranscriptMessages(db *sql.DB, workspace, runID, nodeID string) ([]tra
 // ---------------------------------------------------------------------------
 
 // handleSSEStream implements GET /api/v1/events — the SSE streaming endpoint.
-func handleSSEStream(store Store, mgr *SSEManager) echo.HandlerFunc {
+func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := requireAuditRead(c)
 		if auth == nil {
 			return nil
 		}
 
+		// Non-admin callers only receive events of workspaces they own.
+		owned, ownedErr := ownedWorkspaces(auth, sqliteDB)
+		if ownedErr != nil {
+			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if owned != nil && c.QueryParam("workspace") != "" && !owned[c.QueryParam("workspace")] {
+			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		}
+
 		// Check connection limit (18-REQ-8.E1).
 		if mgr != nil {
 			filters := sseFilters{
-				workspace: c.QueryParam("workspace"),
-				runID:     c.QueryParam("run_id"),
-				category:  c.QueryParam("category"),
+				workspace:         c.QueryParam("workspace"),
+				runID:             c.QueryParam("run_id"),
+				category:          c.QueryParam("category"),
+				allowedWorkspaces: owned,
 			}
 
 			conn, err := mgr.Register(filters)

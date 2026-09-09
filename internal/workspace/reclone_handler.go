@@ -39,12 +39,11 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// ---- Look up workspace (13-REQ-7.E6) ----
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
-		}
+		// Reclone discards the local clone, so it is restricted to the
+		// workspace owner (or an admin token); non-owners get 404.
+		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
 		if ws == nil {
-			return respondError(c, http.StatusNotFound, "workspace not found")
+			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
 		// ---- Reject concurrent reclone (13-REQ-7.E7) ----
@@ -87,7 +86,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		// Set clone_status='pending', sync_status='idle', clear sync_error and
 		// upstream_head_sha. Workspace status remains 'active' — never modified.
 		now := time.Now().UTC().Format(timestampFormat)
-		_, err = db.Exec(
+		_, err := db.Exec(
 			`UPDATE workspaces SET clone_status = 'pending', sync_status = 'idle', sync_error = NULL, upstream_head_sha = NULL, updated_at = ? WHERE slug = ?`,
 			now, slug,
 		)

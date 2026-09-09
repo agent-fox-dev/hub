@@ -22,7 +22,7 @@ import (
 //	GET    /sessions/:id/usage    - Query token usage records (paginated)
 //	GET    /workspaces/:slug/cost - Workspace cost summary
 func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB, metrics *Metrics) {
-	api.POST("/sessions", handleCreateSession(store, metrics))
+	api.POST("/sessions", handleCreateSession(store, metrics, sqliteDB))
 	api.POST("/sessions/:id/complete", handleCompleteSession(store, metrics))
 	api.POST("/sessions/:id/usage", handleReportUsage(store, metrics))
 	api.GET("/sessions", handleListSessions(store, sqliteDB))
@@ -39,19 +39,19 @@ func RegisterRoutes(api *echo.Group, store Store, emitter Emitter, sqliteDB *sql
 
 	// Agent ingestion endpoints.
 	runs.POST("/events", handlePostEvent(store, sqliteDB))
-	runs.GET("/events", handleGetEvents(store))
+	runs.GET("/events", handleGetEvents(store, sqliteDB))
 	runs.POST("/events/batch", handlePostEventsBatch(store, sqliteDB))
 	runs.POST("/sessions/outcomes", handlePostSessionOutcome(store, sqliteDB))
-	runs.GET("/sessions/outcomes", handleGetSessionOutcomes(store))
+	runs.GET("/sessions/outcomes", handleGetSessionOutcomes(store, sqliteDB))
 	runs.POST("/tools/calls", handlePostToolCall(store, sqliteDB))
-	runs.GET("/tools/calls", handleGetToolCalls(store))
+	runs.GET("/tools/calls", handleGetToolCalls(store, sqliteDB))
 	runs.POST("/tools/errors", handlePostToolError(store, sqliteDB))
-	runs.GET("/tools/errors", handleGetToolErrors(store))
+	runs.GET("/tools/errors", handleGetToolErrors(store, sqliteDB))
 	runs.POST("/traces", handlePostTrace(store, sqliteDB))
-	runs.GET("/traces", handleGetTraces(store))
+	runs.GET("/traces", handleGetTraces(store, sqliteDB))
 	runs.POST("/traces/batch", handlePostTracesBatch(store, sqliteDB))
 
 	// Postmortem endpoints.
 	runs.POST("/postmortem", handlePostPostmortem(store, sqliteDB))
-	runs.GET("/postmortem", handleGetPostmortem(store))
+	runs.GET("/postmortem", handleGetPostmortem(store, sqliteDB))
 }

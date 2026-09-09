@@ -873,16 +873,17 @@ func TestCarryPatch_AddPatch_WorkspaceNotFound(t *testing.T) {
 	body := `{"branch_name": "feature/foo"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/nonexistent-ws/patches", body, auth)
 
-	// Spec says HTTP 400 for non-existent workspace via WriteAPIError.
-	if rec.Code != http.StatusBadRequest {
+	// A non-existent (or non-owned) workspace is reported as 404, matching
+	// the anti-enumeration behaviour of every other per-workspace endpoint.
+	if rec.Code != http.StatusNotFound {
 		t.Errorf("POST to non-existent workspace: status = %d; want %d; body: %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
+			rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 
 	// Verify error envelope format (WriteAPIError).
 	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusBadRequest)
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
 	}
 	if resp.Error.Message == "" {
 		t.Error("error.message is empty; want non-empty descriptive message")

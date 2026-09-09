@@ -20,6 +20,12 @@ func (r *GitRunner) Checkout(ctx context.Context, ref string) error {
 			Stderr:   "ref must not be empty",
 		}
 	}
-	_, err := r.Run(ctx, "checkout", ref)
+	// git checkout does not accept --end-of-options; reject option-like refs
+	// outright and terminate the ref list with "--" so it is never parsed as
+	// a pathspec either.
+	if err := ValidateRefName(ref); err != nil {
+		return &GitError{Args: []string{"checkout", ref}, ExitCode: -1, Stderr: err.Error()}
+	}
+	_, err := r.Run(ctx, "checkout", ref, "--")
 	return err
 }

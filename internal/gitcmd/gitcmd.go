@@ -29,7 +29,42 @@ type GitError struct {
 // into a human-readable message.
 func (e *GitError) Error() string {
 	return fmt.Sprintf("git %s: exit code %d: %s",
-		strings.Join(e.Args, " "), e.ExitCode, e.Stderr)
+		strings.Join(redactArgs(e.Args), " "), e.ExitCode, redactUserinfo(e.Stderr))
+}
+
+// redactArgs returns a copy of args with credentials embedded in URLs
+// (https://user:token@host/...) replaced, so that error messages stored in
+// job records, audit events, or logs never carry a token.
+func redactArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = redactUserinfo(a)
+	}
+	return out
+}
+
+// redactUserinfo masks the userinfo part of any URL-looking token in s.
+func redactUserinfo(s string) string {
+	for _, scheme := range []string{"https://", "http://", "ssh://"} {
+		idx := 0
+		for {
+			start := strings.Index(s[idx:], scheme)
+			if start < 0 {
+				break
+			}
+			start += idx + len(scheme)
+			end := start
+			for end < len(s) && s[end] != '/' && s[end] != ' ' && s[end] != '\n' && s[end] != '"' && s[end] != '\'' {
+				end++
+			}
+			if at := strings.LastIndex(s[start:end], "@"); at >= 0 {
+				s = s[:start] + "***@" + s[start+at+1:]
+				end = start + len("***@")
+			}
+			idx = end
+		}
+	}
+	return s
 }
 
 // GitRunner wraps git CLI subprocess calls with safety defaults and uniform
@@ -204,7 +239,7 @@ func (e *RebaseConflictError) Error() string {
 // discrimination: exit 0 returns (stdout, nil), exit 2 returns
 // ("", ErrRefNotFound), exit 1 returns ("", *GitError).
 func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, error) {
-	args := []string{"ls-remote", "--exit-code", remote, ref}
+	args := []string{"ls-remote", "--exit-code", endOfOptions, remote, ref}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
@@ -241,7 +276,7 @@ func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, e
 // See parseConflictFiles in conflict.go for the CONFLICT line parsing rule
 // and representative sample output.
 func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, error) {
-	args := []string{"merge-tree", "--write-tree", base, head}
+	args := []string{"merge-tree", "--write-tree", endOfOptions, base, head}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
@@ -298,7 +333,7 @@ func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, e
 //   - rev-parse failure after successful rebase: returns *GitError
 //     (11-REQ-6.E4).
 func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
-	args := []string{"rebase", onto}
+	args := []string{"rebase", endOfOptions, onto}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
@@ -422,13 +457,19 @@ func (r *GitRunner) RebaseContinue(ctx context.Context) (string, error) {
 	return newSHA, nil
 }
 
-// RevParse executes git rev-parse to resolve a ref to its full SHA.
+// RevParse executes git rev-parse --verify to resolve a single ref to its
+// full SHA. --verify makes an unknown or option-like ref an error instead of
+// echoing it back, and --end-of-options prevents ref from being parsed as an
+// option.
 func (r *GitRunner) RevParse(ctx context.Context, ref string) (string, error) {
-	return r.Run(ctx, "rev-parse", ref)
+	if ref == "" {
+		return "", &GitError{Args: []string{"rev-parse"}, ExitCode: -1, Stderr: "ref must not be empty"}
+	}
+	return r.Run(ctx, "rev-parse", "--verify", endOfOptions, ref)
 }
 
 // UpdateRef executes git update-ref to update a reference to point to a SHA.
 func (r *GitRunner) UpdateRef(ctx context.Context, ref, sha string) error {
-	_, err := r.Run(ctx, "update-ref", ref, sha)
+	_, err := r.Run(ctx, "update-ref", endOfOptions, ref, sha)
 	return err
 }

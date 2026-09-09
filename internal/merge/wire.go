@@ -69,13 +69,35 @@ func (e *ShellExecutor) Run(ctx context.Context, dir string, env []string, timeo
 
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	// Do not inherit the hub process environment: it carries the hub's own
+	// secrets (OAuth client secret, admin token, database paths). The check
+	// command is workspace-controlled input, so it only gets a minimal
+	// baseline plus the merge-specific variables.
+	cmd.Env = append(checkCommandBaseEnv(), env...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), err
 	}
 	return string(output), nil
+}
+
+// checkCommandBaseEnv returns the minimal environment for CHECK_COMMAND: the
+// variables a shell and git need to function, copied from the hub process,
+// and nothing else. Git is pinned to the working tree it runs in and kept
+// non-interactive.
+func checkCommandBaseEnv() []string {
+	env := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"LC_ALL=C",
+	}
+	for _, key := range []string{"PATH", "HOME", "TMPDIR", "TZ", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS"} {
+		if v, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+v)
+		}
+	}
+	return env
 }
 
 // DefaultBranchChecker returns a BranchChecker that uses GitRunner to verify

@@ -86,13 +86,11 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Precondition checks (13-REQ-3) ----
 
-		// 13-REQ-3.5: Workspace must exist.
-		ws, err := getWorkspaceBySlug(db, slug)
-		if err != nil {
-			return respondError(c, http.StatusInternalServerError, "internal server error")
-		}
+		// 13-REQ-3.5: Workspace must exist and be owned by the caller
+		// (admin tokens may sync any workspace). Non-owners get 404.
+		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
 		if ws == nil {
-			return respondError(c, http.StatusNotFound, "workspace not found")
+			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
 		// 13-REQ-3.1: Workspace status must be 'active'.

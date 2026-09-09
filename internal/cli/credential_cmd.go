@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,19 +42,22 @@ func CredentialHelperCmd() *cobra.Command {
 				return nil
 			}
 
-			cfg, err := loadAFConfig()
-			if err != nil || cfg.EndpointURL == "" || cfg.APIKey == "" {
+			cfg := loadHelperConfig()
+			if cfg.EndpointURL == "" || cfg.APIKey == "" {
 				return nil
 			}
 
-			hubHost, err := hostFromURL(cfg.EndpointURL)
-			if err != nil {
+			hub, err := url.Parse(cfg.EndpointURL)
+			if err != nil || hub.Host == "" {
 				return nil
 			}
 
 			attrs := parseCredentialInput(cmd.InOrStdin())
 
-			if attrs["host"] != hubHost {
+			// Only answer for the hub's own scheme and host:port. Matching on
+			// host alone would hand the full-access API key to a plain-http
+			// request for the same host (a downgraded or spoofed remote).
+			if !credentialMatchesHub(attrs, hub) {
 				return nil
 			}
 
@@ -90,7 +94,7 @@ func CredentialCmd() *cobra.Command {
 func newCredentialSetCmd() *cobra.Command {
 	var (
 		upstreamGitPAT      string
-		upstreamGitUsername  string
+		upstreamGitUsername string
 		upstreamGitPassword string
 	)
 
@@ -165,6 +169,59 @@ func newCredentialSetCmd() *cobra.Command {
 	return cmd
 }
 
+// loadHelperConfig resolves the endpoint URL and API key for the credential
+// helper. The ENDPOINT_URL and API_KEY environment variables take precedence,
+// matching the precedence apikit applies to every other afc command, so an
+// environment-only setup (CI, devcontainers, Codespaces) works for git too.
+// The config file fills in whatever the environment does not provide.
+func loadHelperConfig() *afConfig {
+	cfg := &afConfig{}
+	if fileCfg, err := loadAFConfig(); err == nil {
+		cfg = fileCfg
+	}
+	if v := os.Getenv("ENDPOINT_URL"); v != "" {
+		cfg.EndpointURL = v
+	}
+	if v := os.Getenv("API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+	return cfg
+}
+
+// credentialMatchesHub reports whether the git credential request (protocol,
+// host, optional port) targets the configured hub URL. Scheme and host:port
+// must both match; a missing port on either side means the scheme default.
+func credentialMatchesHub(attrs map[string]string, hub *url.URL) bool {
+	if attrs["protocol"] != hub.Scheme {
+		return false
+	}
+	reqHost := attrs["host"]
+	if reqHost == "" {
+		return false
+	}
+	return normalizeHostPort(reqHost, attrs["protocol"]) == normalizeHostPort(hub.Host, hub.Scheme)
+}
+
+// normalizeHostPort lowercases the host and appends the scheme's default
+// port when none is present so that "hub.example.com" and
+// "hub.example.com:443" compare equal for https.
+func normalizeHostPort(hostport, scheme string) string {
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+		port = ""
+	}
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return strings.ToLower(host) + ":" + port
+}
+
 func loadAFConfig() (*afConfig, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -179,14 +236,6 @@ func loadAFConfig() (*afConfig, error) {
 		return nil, err
 	}
 	return &cfg, nil
-}
-
-func hostFromURL(rawURL string) (string, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", err
-	}
-	return u.Host, nil
 }
 
 func parseCredentialInput(r interface{ Read([]byte) (int, error) }) map[string]string {

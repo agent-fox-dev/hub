@@ -19,6 +19,6 @@ func (r *GitRunner) ConfigSet(ctx context.Context, key, value string) error {
 			Stderr:   "key and value must not be empty",
 		}
 	}
-	_, err := r.Run(ctx, "config", key, value)
+	_, err := r.Run(ctx, "config", endOfOptions, key, value)
 	return err
 }

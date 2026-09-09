@@ -2,7 +2,6 @@ package carrypatch
 
 import (
 	"bufio"
-	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,16 +33,9 @@ func handleListRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		// Verify workspace exists.
-		var mode string
-		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode)
-		if err == sql.ErrNoRows {
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
-		}
-		if err != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
+		// Verify workspace exists and is owned by the caller.
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
 		}
 
 		// Read rr-cache directory.
@@ -119,17 +111,13 @@ func handleForgetRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 		if pathspec == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "pathspec is required")
 		}
-
-		// Verify workspace exists.
-		var mode string
-		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode)
-		if err == sql.ErrNoRows {
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		if strings.HasPrefix(pathspec, "-") {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "pathspec must not start with '-'")
 		}
-		if err != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
+
+		// Verify workspace exists and is owned by the caller.
+		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+			return nil
 		}
 
 		// 16-REQ-4.2 / 16-ERR-7: check if pathspec has a recorded resolution.

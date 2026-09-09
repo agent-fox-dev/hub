@@ -47,6 +47,11 @@ type sseFilters struct {
 	workspace string
 	runID     string
 	category  string // "hub" or "agent"
+
+	// allowedWorkspaces restricts delivery to events of the given
+	// workspaces. nil means unrestricted (admin tokens). Events without a
+	// workspace are only delivered when unrestricted.
+	allowedWorkspaces map[string]bool
 }
 
 // SSEOption configures the SSE connection manager.
@@ -314,6 +319,9 @@ func (m *SSEManager) TouchLastRead(id connID) {
 // criteria. Empty filter fields match all events.
 func matchesFilters(event HubEvent, f sseFilters) bool {
 	if f.workspace != "" && event.Workspace != f.workspace {
+		return false
+	}
+	if f.allowedWorkspaces != nil && !f.allowedWorkspaces[event.Workspace] {
 		return false
 	}
 	if f.category == "hub" && event.EventType != "" &&
