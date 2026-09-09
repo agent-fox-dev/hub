@@ -29,6 +29,7 @@ func MergeCmd() *cobra.Command {
 		newMergeStatusCmd(),
 		newMergeCancelCmd(),
 		newMergeRequeueCmd(),
+		newMergeWaitCmd(),
 	)
 
 	return cmd
@@ -71,7 +72,7 @@ func newMergeSubmitCmd() *cobra.Command {
 				"source_ref":    source,
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+slug+"/merges", body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", slug, "merges"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -88,11 +89,8 @@ func newMergeSubmitCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			statusPath := "/workspaces/" + slug + "/merges/" + jobID
-			if err := pollJobStatus(cmd, client, wf, statusPath); err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-			return nil
+			statusPath := apiPath("workspaces", slug, "merges", jobID)
+			return pollJobStatus(cmd, client, wf, statusPath)
 		},
 	}
 
@@ -118,7 +116,7 @@ func newMergeListCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodGet, "/workspaces/"+args[0]+"/merges", nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet, apiPath("workspaces", args[0], "merges"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -143,7 +141,7 @@ func newMergeStatusCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodGet, "/workspaces/"+args[0]+"/merges/"+args[1], nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet, apiPath("workspaces", args[0], "merges", args[1]), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -168,7 +166,7 @@ func newMergeCancelCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, "/workspaces/"+args[0]+"/merges/"+args[1], nil)
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, apiPath("workspaces", args[0], "merges", args[1]), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -204,7 +202,7 @@ func newMergeRequeueCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+args[0]+"/merges/"+args[1]+"/requeue", nil)
+				apiPath("workspaces", args[0], "merges", args[1], "requeue"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -212,4 +210,27 @@ func newMergeRequeueCmd() *cobra.Command {
 			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
+}
+
+// newMergeWaitCmd returns the 'merge wait' subcommand. It polls
+// GET /api/v1/workspaces/:slug/merges/:id until the job reaches a terminal
+// state, prints the final record, and exits non-zero unless it completed.
+func newMergeWaitCmd() *cobra.Command {
+	var wf waitFlags
+	cmd := &cobra.Command{
+		Use:           "wait <workspace-slug> <merge-id>",
+		Short:         "Wait for a merge job to finish",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+			return pollJobStatus(cmd, client, wf, apiPath("workspaces", args[0], "merges", args[1]))
+		},
+	}
+	addPollFlags(cmd, &wf)
+	return cmd
 }

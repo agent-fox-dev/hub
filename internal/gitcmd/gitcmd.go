@@ -67,6 +67,50 @@ func redactUserinfo(s string) string {
 	return s
 }
 
+// DefaultTimeout bounds every git invocation whose context carries no
+// deadline of its own. Job handlers normally pass a deadline-bearing context;
+// this is the safety net for the ones that do not, so a wedged git process
+// (stuck credential helper, hung remote) cannot pin a workspace lock forever.
+var DefaultTimeout = 10 * time.Minute
+
+// Default committer identity used when neither the process environment nor
+// extraEnv provides one. Without it git refuses to create commits in
+// containers whose hostname has no domain part ("unable to auto-detect
+// email address"), which breaks carry-patch rebuilds and merge jobs.
+const (
+	DefaultIdentityName  = "af-hub"
+	DefaultIdentityEmail = "af-hub@localhost"
+)
+
+// strippedEnvVars are inherited environment variables that redirect git to
+// a different repository or inject configuration. They must never leak from
+// the hub process (or a test harness) into the subprocesses that operate on
+// workspace trunks.
+var strippedEnvVars = map[string]bool{
+	"GIT_DIR":                          true,
+	"GIT_WORK_TREE":                    true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_COMMON_DIR":                   true,
+	"GIT_NAMESPACE":                    true,
+	"GIT_CONFIG_PARAMETERS":            true,
+	"GIT_CONFIG_COUNT":                 true,
+}
+
+// defaultedEnvVars are appended only when absent from the inherited
+// environment and extraEnv, so operators can still override them.
+var defaultedEnvVars = []string{
+	"GIT_AUTHOR_NAME=" + DefaultIdentityName,
+	"GIT_AUTHOR_EMAIL=" + DefaultIdentityEmail,
+	"GIT_COMMITTER_NAME=" + DefaultIdentityName,
+	"GIT_COMMITTER_EMAIL=" + DefaultIdentityEmail,
+	// Never open an editor for merge/cherry-pick messages.
+	"GIT_EDITOR=true",
+	// Never page output.
+	"GIT_PAGER=cat",
+}
+
 // GitRunner wraps git CLI subprocess calls with safety defaults and uniform
 // error handling. Use New to construct an instance.
 //
@@ -135,16 +179,38 @@ func New(workDir string, extraEnv []string) (*GitRunner, error) {
 }
 
 // assembleEnv builds the full environment slice for git subprocesses.
-// Order: os.Environ() + extraEnv + hardcoded safety variables.
+// Order: filtered os.Environ() + extraEnv + identity/editor defaults (only
+// when not already set) + hardcoded safety variables. The safety variables
+// are last so they always take precedence (11-REQ-2.2, 11-REQ-2.3).
 func assembleEnv(extraEnv []string) []string {
 	base := os.Environ()
-	env := make([]string, 0, len(base)+len(extraEnv)+3)
-	env = append(env, base...)
-	env = append(env, extraEnv...)
+	env := make([]string, 0, len(base)+len(extraEnv)+len(defaultedEnvVars)+4)
+	present := make(map[string]bool, len(base)+len(extraEnv))
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		if strippedEnvVars[key] {
+			continue
+		}
+		present[key] = true
+		env = append(env, kv)
+	}
+	for _, kv := range extraEnv {
+		key, _, _ := strings.Cut(kv, "=")
+		present[key] = true
+		env = append(env, kv)
+	}
+	for _, kv := range defaultedEnvVars {
+		key, _, _ := strings.Cut(kv, "=")
+		if !present[key] {
+			env = append(env, kv)
+		}
+	}
 	env = append(env,
 		"GIT_ALLOW_PROTOCOL=file:https:ssh",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_NOSYSTEM=1",
+		// Parsers (conflict detection, rev-parse) rely on English output.
+		"LC_ALL=C",
 	)
 	return env
 }
@@ -157,9 +223,16 @@ func assembleEnv(extraEnv []string) []string {
 // This helper enables callers like LsRemote to perform exit-code discrimination
 // without re-implementing the subprocess boilerplate.
 func (r *GitRunner) runWithExitCode(ctx context.Context, args ...string) (stdout string, exitCode int, stderr string, err error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && DefaultTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = r.workDir
 	cmd.Env = r.env
+	configureProcess(cmd)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf

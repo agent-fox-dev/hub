@@ -96,6 +96,7 @@ func newCredentialSetCmd() *cobra.Command {
 		upstreamGitPAT      string
 		upstreamGitUsername string
 		upstreamGitPassword string
+		fromStdin           bool
 	)
 
 	cmd := &cobra.Command{
@@ -111,9 +112,33 @@ func newCredentialSetCmd() *cobra.Command {
 			hasUsername := cmd.Flags().Changed("upstream-git-username")
 			hasPassword := cmd.Flags().Changed("upstream-git-password")
 
+			// --from-stdin supplies the secret part that was not given as a
+			// flag: the password when a username is set, the PAT otherwise.
+			if fromStdin {
+				if hasPAT || hasPassword {
+					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+						"--from-stdin cannot be combined with --upstream-git-pat or --upstream-git-password"))
+				}
+				value, err := readValueFromStdin(cmd)
+				if err != nil {
+					return apikit.CLIHandleError(cmd, err)
+				}
+				if hasUsername {
+					upstreamGitPassword, hasPassword = value, true
+				} else {
+					upstreamGitPAT, hasPAT = value, true
+				}
+			}
+
 			if !hasPAT && !hasUsername && !hasPassword {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
 					"at least one credential flag is required (--upstream-git-pat, --upstream-git-username/--upstream-git-password)"))
+			}
+			// Basic auth needs both halves; storing one alone silently
+			// produces an unusable credential.
+			if hasUsername != hasPassword {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
+					"--upstream-git-username and --upstream-git-password must be provided together"))
 			}
 
 			// Build the list of secret entries to store.
@@ -148,7 +173,7 @@ func newCredentialSetCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+slug+"/secrets", body)
+				apiPath("workspaces", slug, "secrets"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -165,6 +190,8 @@ func newCredentialSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&upstreamGitPAT, "upstream-git-pat", "", "Upstream personal access token")
 	cmd.Flags().StringVar(&upstreamGitUsername, "upstream-git-username", "", "Upstream git username")
 	cmd.Flags().StringVar(&upstreamGitPassword, "upstream-git-password", "", "Upstream git password")
+	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false,
+		"Read the PAT (or the password when --upstream-git-username is set) from stdin")
 
 	return cmd
 }

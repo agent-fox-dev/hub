@@ -88,7 +88,7 @@ func newCreateCmd() *cobra.Command {
 		upstreamURL       string
 		integrationBranch string
 		gitPAT            string
-		gitUsername        string
+		gitUsername       string
 		gitPassword       string
 		wf                waitFlags
 	)
@@ -223,7 +223,7 @@ func newCreateCmd() *cobra.Command {
 				body["git_password"] = gitPassword
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces", body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -235,10 +235,7 @@ func newCreateCmd() *cobra.Command {
 			// Print the initial create response, then poll for clone completion.
 			printJSON(cmd, result)
 
-			if err := pollWorkspaceCloneStatus(cmd, client, wf, slug); err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-			return nil
+			return pollWorkspaceCloneStatus(cmd, client, wf, slug)
 		},
 	}
 
@@ -319,7 +316,7 @@ func newUpdateCmd() *cobra.Command {
 				body["org_id"] = org
 			}
 
-			result, err := client.DoRequest(ctx, http.MethodPatch, "/workspaces/"+slug, body)
+			result, err := client.DoRequest(ctx, http.MethodPatch, apiPath("workspaces", slug), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -361,7 +358,7 @@ func newListCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			path := "/workspaces"
+			path := apiPath("workspaces")
 			if includeArchived {
 				path += "?include_archived=true"
 			}
@@ -394,7 +391,7 @@ func newGetCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodGet, "/workspaces/"+args[0], nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodGet, apiPath("workspaces", args[0]), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -418,7 +415,7 @@ func newArchiveCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/archive", nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "archive"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -442,7 +439,7 @@ func newReactivateCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+args[0]+"/reactivate", nil)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "reactivate"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -474,7 +471,7 @@ func newDeleteCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, "/workspaces/"+slug, nil)
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, apiPath("workspaces", slug), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -522,7 +519,7 @@ func newSyncCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			path := "/workspaces/" + slug + "/sync"
+			path := apiPath("workspaces", slug, "sync")
 			if resetToUpstream {
 				path += "?reset_to_upstream=true"
 			}
@@ -546,11 +543,8 @@ func newSyncCmd() *cobra.Command {
 				return nil
 			}
 
-			statusPath := "/workspaces/" + slug + "/rebuilds/" + rebuildJobID
-			if err := pollJobStatus(cmd, client, wf, statusPath); err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-			return nil
+			statusPath := apiPath("workspaces", slug, "rebuilds", rebuildJobID)
+			return pollJobStatus(cmd, client, wf, statusPath)
 		},
 	}
 
@@ -589,7 +583,7 @@ func newRecloneCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				"/workspaces/"+slug+"/reclone", nil)
+				apiPath("workspaces", slug, "reclone"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -621,7 +615,7 @@ func newPatchStatusCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
-				"/workspaces/"+args[0]+"/patch-status", nil)
+				apiPath("workspaces", args[0], "patch-status"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

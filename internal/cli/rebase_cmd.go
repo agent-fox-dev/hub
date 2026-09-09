@@ -66,7 +66,7 @@ func newRebaseSubmitCmd() *cobra.Command {
 				"branches":   branchList,
 			}
 
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost, "/workspaces/"+slug+"/rebase", body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", slug, "rebase"), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

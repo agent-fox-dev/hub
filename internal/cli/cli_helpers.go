@@ -2,10 +2,97 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"net/url"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/txsvc/apikit"
 )
+
+// apiPath joins path segments into an API path (without the /api/v1 prefix
+// that DoRequest adds), percent-encoding every segment so user-supplied
+// slugs, keys and ids cannot escape into a different route.
+func apiPath(segments ...string) string {
+	var b strings.Builder
+	for _, seg := range segments {
+		b.WriteByte('/')
+		b.WriteString(url.PathEscape(seg))
+	}
+	return b.String()
+}
+
+// escapePathKeepSlashes percent-encodes each slash-separated element of p
+// while preserving the slashes, for wildcard routes that accept a path.
+func escapePathKeepSlashes(p string) string {
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+// readValueFromStdin reads a single value from the command's stdin. One
+// trailing line break is removed so `echo value | afc ...` and here-strings
+// behave as expected; other whitespace is preserved verbatim.
+func readValueFromStdin(cmd *cobra.Command) (string, error) {
+	data, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return "", apikit.NewCLIError(2, fmt.Sprintf("failed to read value from stdin: %v", err))
+	}
+	v := string(data)
+	v = strings.TrimSuffix(v, "\n")
+	v = strings.TrimSuffix(v, "\r")
+	return v, nil
+}
+
+// collectEntries parses the KEY=VALUE arguments of a create command. Every
+// argument may itself be a comma-separated list. With fromStdin, exactly one
+// bare KEY is expected and its value is read from stdin, which keeps secrets
+// out of shell history and process listings.
+func collectEntries(cmd *cobra.Command, args []string, fromStdin bool) ([]kvEntry, error) {
+	if fromStdin {
+		if len(args) != 1 || strings.Contains(args[0], "=") || strings.Contains(args[0], ",") {
+			return nil, apikit.NewCLIError(2, "--from-stdin expects exactly one KEY argument")
+		}
+		if strings.TrimSpace(args[0]) == "" {
+			return nil, apikit.NewCLIError(2, "empty key")
+		}
+		value, err := readValueFromStdin(cmd)
+		if err != nil {
+			return nil, err
+		}
+		return []kvEntry{{Key: args[0], Value: value}}, nil
+	}
+	var entries []kvEntry
+	for _, arg := range args {
+		parsed, err := parseKeyValueList(arg)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, parsed...)
+	}
+	return entries, nil
+}
+
+// singleEntry parses the argument of an update command: KEY=VALUE, or a
+// bare KEY whose value is read from stdin when fromStdin is set.
+func singleEntry(cmd *cobra.Command, arg string, fromStdin bool) (string, string, error) {
+	if fromStdin {
+		if strings.Contains(arg, "=") {
+			return "", "", apikit.NewCLIError(2, "--from-stdin expects a bare KEY argument")
+		}
+		if strings.TrimSpace(arg) == "" {
+			return "", "", apikit.NewCLIError(2, "empty key")
+		}
+		value, err := readValueFromStdin(cmd)
+		if err != nil {
+			return "", "", err
+		}
+		return arg, value, nil
+	}
+	return parseKeyValue(arg)
+}
 
 // kvEntry represents a single key=value pair parsed from CLI arguments.
 type kvEntry struct {
@@ -77,10 +164,10 @@ func resolveScope(userFlag bool, orgFlag, workspaceFlag string) []scopeTarget {
 		targets = append(targets, scopeTarget{PathPrefix: "/user"})
 	}
 	if orgFlag != "" {
-		targets = append(targets, scopeTarget{PathPrefix: "/orgs/" + orgFlag})
+		targets = append(targets, scopeTarget{PathPrefix: apiPath("orgs", orgFlag)})
 	}
 	if workspaceFlag != "" {
-		targets = append(targets, scopeTarget{PathPrefix: "/workspaces/" + workspaceFlag})
+		targets = append(targets, scopeTarget{PathPrefix: apiPath("workspaces", workspaceFlag)})
 	}
 
 	return targets
@@ -114,7 +201,7 @@ func singleScope(userFlag bool, orgFlag, workspaceFlag string) (scopeTarget, err
 		return scopeTarget{PathPrefix: "/user"}, nil
 	}
 	if orgFlag != "" {
-		return scopeTarget{PathPrefix: "/orgs/" + orgFlag}, nil
+		return scopeTarget{PathPrefix: apiPath("orgs", orgFlag)}, nil
 	}
-	return scopeTarget{PathPrefix: "/workspaces/" + workspaceFlag}, nil
+	return scopeTarget{PathPrefix: apiPath("workspaces", workspaceFlag)}, nil
 }

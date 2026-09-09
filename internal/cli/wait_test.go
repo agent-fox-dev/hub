@@ -120,8 +120,8 @@ func TestRebuildCLI_Submit_Wait_Timeout(t *testing.T) {
 }
 
 // ===========================================================================
-// TS-NS-2 (rebuild submit --wait with failed job): exits 0 because the job
-// reached a terminal state.
+// TS-NS-2 (rebuild submit --wait with failed job): the final record is
+// printed and the command exits non-zero so scripts can detect failure.
 // ===========================================================================
 
 func TestRebuildCLI_Submit_Wait_FailedJob(t *testing.T) {
@@ -148,15 +148,21 @@ func TestRebuildCLI_Submit_Wait_FailedJob(t *testing.T) {
 	}))
 	defer server.Close()
 
-	stdout, _, err := runRebuildCmd(t, server.URL, "test-api-key",
+	stdout, stderr, err := runRebuildCmd(t, server.URL, "test-api-key",
 		"submit", "my-workspace", "--wait", "--poll-interval", "100ms")
 
-	if err != nil {
-		t.Fatalf("expected exit 0 (terminal state reached); got error: %v", err)
+	if err == nil {
+		t.Fatal("expected a non-zero exit for a failed job")
 	}
 
-	if !strings.Contains(stdout, "failed") {
-		t.Errorf("stdout should contain 'failed'; got: %s", stdout)
+	if !strings.Contains(stdout, "something went wrong") {
+		t.Errorf("stdout should contain the final job record; got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "job ended with status failed") {
+		t.Errorf("stdout should contain the error envelope; got: %s", stdout)
+	}
+	if !strings.Contains(stderr, "failed") {
+		t.Errorf("stderr should mention the failed status; got: %s", stderr)
 	}
 }
 
@@ -379,11 +385,11 @@ func TestMergeCLI_Submit_Wait_Success(t *testing.T) {
 		if r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"id":            "merge-uuid-1",
+				"id":             "merge-uuid-1",
 				"workspace_slug": "ws1",
-				"target_branch": "main",
-				"source_ref":    "feature/a",
-				"status":        "queued",
+				"target_branch":  "main",
+				"source_ref":     "feature/a",
+				"status":         "queued",
 			})
 			return
 		}
@@ -392,11 +398,11 @@ func TestMergeCLI_Submit_Wait_Success(t *testing.T) {
 			pollCount.Add(1)
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"id":            "merge-uuid-1",
+				"id":             "merge-uuid-1",
 				"workspace_slug": "ws1",
-				"target_branch": "main",
-				"source_ref":    "feature/a",
-				"status":        "completed",
+				"target_branch":  "main",
+				"source_ref":     "feature/a",
+				"status":         "completed",
 			})
 			return
 		}

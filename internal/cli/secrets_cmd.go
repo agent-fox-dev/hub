@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/spf13/cobra"
 	"github.com/txsvc/apikit"
@@ -34,10 +35,11 @@ func newSecretsCreateCmd() *cobra.Command {
 		userFlag      bool
 		orgFlag       string
 		workspaceFlag string
+		fromStdin     bool
 	)
 
 	cmd := &cobra.Command{
-		Use:           "create <KEY=VALUE[,KEY2=VALUE2,...]>",
+		Use:           "create <KEY=VALUE[,KEY2=VALUE2,...]> [KEY3=VALUE3 ...] | create <KEY> --from-stdin",
 		Short:         "Create secrets",
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -46,7 +48,7 @@ func newSecretsCreateCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "required argument: KEY=VALUE"))
 			}
 
-			entries, err := parseKeyValueList(args[0])
+			entries, err := collectEntries(cmd, args, fromStdin)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -84,6 +86,7 @@ func newSecretsCreateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&userFlag, "user", false, "Target user scope")
 	cmd.Flags().StringVar(&orgFlag, "org", "", "Target organization scope (by slug)")
 	cmd.Flags().StringVar(&workspaceFlag, "workspace", "", "Target workspace scope (by slug)")
+	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false, "Read the value of the single KEY argument from stdin")
 
 	return cmd
 }
@@ -134,10 +137,11 @@ func newSecretsUpdateCmd() *cobra.Command {
 		userFlag      bool
 		orgFlag       string
 		workspaceFlag string
+		fromStdin     bool
 	)
 
 	cmd := &cobra.Command{
-		Use:           "update <KEY=VALUE>",
+		Use:           "update <KEY=VALUE> | update <KEY> --from-stdin",
 		Short:         "Update a secret",
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -146,7 +150,7 @@ func newSecretsUpdateCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "required argument: KEY=VALUE"))
 			}
 
-			key, value, err := parseKeyValue(args[0])
+			key, value, err := singleEntry(cmd, args[0], fromStdin)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -162,7 +166,7 @@ func newSecretsUpdateCmd() *cobra.Command {
 			}
 
 			body := map[string]any{"value": value}
-			result, err := client.DoRequest(cmd.Context(), http.MethodPatch, scope.PathPrefix+"/secrets/"+key, body)
+			result, err := client.DoRequest(cmd.Context(), http.MethodPatch, scope.PathPrefix+"/secrets/"+url.PathEscape(key), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -174,6 +178,7 @@ func newSecretsUpdateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&userFlag, "user", false, "Target user scope")
 	cmd.Flags().StringVar(&orgFlag, "org", "", "Target organization scope (by slug)")
 	cmd.Flags().StringVar(&workspaceFlag, "workspace", "", "Target workspace scope (by slug)")
+	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false, "Read the new value of KEY from stdin")
 
 	return cmd
 }
@@ -208,7 +213,7 @@ func newSecretsDeleteCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, scope.PathPrefix+"/secrets/"+key, nil)
+			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, scope.PathPrefix+"/secrets/"+url.PathEscape(key), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

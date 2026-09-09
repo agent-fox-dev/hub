@@ -49,7 +49,7 @@ func newRerereListCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodGet,
-				"/workspaces/"+args[0]+"/rerere", nil)
+				apiPath("workspaces", args[0], "rerere"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}
@@ -78,8 +78,9 @@ func newRerereForgetCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			// 16-REQ-8.E1: append pathspec as path segment without encoding slashes.
-			path := "/workspaces/" + args[0] + "/rerere/" + args[1]
+			// 16-REQ-8.E1: the pathspec keeps its slashes (wildcard route);
+			// each element is percent-encoded. A rerere id works the same way.
+			path := apiPath("workspaces", args[0], "rerere") + "/" + escapePathKeepSlashes(args[1])
 
 			_, err = client.DoRequest(cmd.Context(), http.MethodDelete, path, nil)
 			if err != nil {
