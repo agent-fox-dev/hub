@@ -738,3 +738,44 @@ func TestSpec03_Group3_PatchOrgMembershipServiceErrorReturns500(t *testing.T) {
 		t.Errorf("org_id = %v; want nil (no partial write)", *dbOrgID)
 	}
 }
+
+// TestSpec03_Group3_PatchOrgSlugResolvesToCanonicalID verifies that PATCH with
+// an org slug resolves to the canonical org ID, verifies membership, and updates
+// the DB row accordingly.
+func TestSpec03_Group3_PatchOrgSlugResolvesToCanonicalID(t *testing.T) {
+	env := newTestEnv(t)
+
+	orgUUID := "770e8400-e29b-41d4-a716-446655440002"
+	orgSlug := "mickume-patch"
+	env.seedOrg(t, orgUUID, "Michael Patch Org", orgSlug)
+	env.seedOrgMember(t, orgUUID, "u1-id")
+
+	env.seedWorkspace(t, &Workspace{
+		Slug:    "patch-slug-ws",
+		GitURL:  "https://git.example.com/repo",
+		OwnerID: "u1-id",
+		Status:  "active",
+	})
+
+	body := `{"org_id":"mickume-patch"}`
+	rec := env.doRequest(t, http.MethodPatch, "/api/v1/workspaces/patch-slug-ws", body, userAuth("u1-id"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH status = %d; want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	ws := parseWorkspaceJSON(t, rec)
+	if ws.OrgID == nil || *ws.OrgID != orgUUID {
+		t.Errorf("response org_id = %v; want canonical org UUID %q", ws.OrgID, orgUUID)
+	}
+
+	// Verify database row has the canonical org UUID.
+	var dbOrgID *string
+	err := env.db.QueryRow("SELECT org_id FROM workspaces WHERE slug = ?", "patch-slug-ws").Scan(&dbOrgID)
+	if err != nil {
+		t.Fatalf("DB query failed: %v", err)
+	}
+	if dbOrgID == nil || *dbOrgID != orgUUID {
+		t.Errorf("DB org_id = %v; want %q", dbOrgID, orgUUID)
+	}
+}

@@ -272,7 +272,7 @@ workspace requires a real user as owner.
 | `slug` | yes | string | Globally unique, URL-safe identifier. 3-64 characters; must start with a lowercase letter; must end with a lowercase letter or digit; only lowercase letters, digits, and hyphens allowed; no consecutive hyphens. |
 | `git_url` | yes | string | Valid HTTPS or SSH git URL |
 | `branch` | no | string | Git ref; defaults to null |
-| `org_id` | no | string (UUID) | Must reference an org the owner is a member of; when omitted or empty, the server auto-assigns the user's personal organization |
+| `org_id` | no | string | Organization UUID or slug. Must reference an org the owner is a member of; when omitted or empty, the server auto-assigns the user's personal organization |
 | `display_name` | no | string | Max 128 characters; defaults to slug value if omitted or empty |
 | `description` | no | string | Max 1024 characters; defaults to empty string if omitted |
 | `sync_mode` | no | string | Upstream sync mode: `"pull_only"` (default) or `"disabled"`; invalid values are rejected with HTTP 400 |
@@ -392,7 +392,7 @@ mutable fields. At least one field must be provided.
 |-------|------|-------------|---------------|
 | `display_name` | string or null | Max 128 characters | Setting to `null` clears the display name back to the workspace slug |
 | `description` | string or null | Max 1024 characters | Setting to `null` clears the description to an empty string |
-| `org_id` | string (UUID) or null | Must reference an org the owner is a member of | Setting to `null` removes the organization association |
+| `org_id` | string or null | Organization UUID or slug. Must reference an org the owner is a member of | Setting to `null` removes the organization association |
 | `sync_mode` | string | Must be `"pull_only"` or `"disabled"` | Setting to `null` is rejected with HTTP 400 |
 
 **Partial Update Behavior:**

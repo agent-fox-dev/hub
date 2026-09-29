@@ -455,6 +455,10 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			if orgCode != 0 {
 				return respondError(c, orgCode, orgMsg)
 			}
+			// Resolve to canonical org ID if a slug was provided.
+			if canonicalID, err := resolveOrgID(db, *req.OrgID); err == nil {
+				req.OrgID = &canonicalID
+			}
 		} else {
 			// No org_id: look up user's personal org (04-REQ-8.1).
 			personalOrgID, err := lookupPersonalOrg(db, auth.UserID)
@@ -567,25 +571,38 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 	}
 }
 
+// resolveOrgID looks up an organization by id or slug and returns its canonical id.
+// If the organization is not found, it returns ("", sql.ErrNoRows).
+func resolveOrgID(db *sql.DB, orgIDOrSlug string) (string, error) {
+	var id string
+	err := db.QueryRow("SELECT id FROM orgs WHERE id = ?", orgIDOrSlug).Scan(&id)
+	if err == sql.ErrNoRows {
+		err = db.QueryRow("SELECT id FROM orgs WHERE slug = ?", orgIDOrSlug).Scan(&id)
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 // checkOrgMembership verifies that the org exists and the user is a member.
+// It accepts either an org ID or an org slug.
 // Returns (0, "") if the check passes, or (httpCode, message) on failure.
 // Returns 500 on actual database/service errors (query failure, table missing),
 // 400 if the org does not exist, and 403 if the user is not a member.
 func checkOrgMembership(db *sql.DB, userID, orgID string) (int, string) {
-	// Try to query the orgs table (apikit schema uses 'orgs').
-	var exists int
-	err := db.QueryRow("SELECT COUNT(*) FROM orgs WHERE id = ?", orgID).Scan(&exists)
+	actualID, err := resolveOrgID(db, orgID)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return http.StatusBadRequest, "organization not found"
+		}
 		// Table might not exist or query failed — this is a service error.
 		return http.StatusInternalServerError, "organization membership check failed"
-	}
-	if exists == 0 {
-		return http.StatusBadRequest, "organization not found"
 	}
 
 	// Check membership.
 	var isMember int
-	err = db.QueryRow("SELECT COUNT(*) FROM org_members WHERE org_id = ? AND user_id = ?", orgID, userID).Scan(&isMember)
+	err = db.QueryRow("SELECT COUNT(*) FROM org_members WHERE org_id = ? AND user_id = ?", actualID, userID).Scan(&isMember)
 	if err != nil {
 		// Query failed — this is a service error.
 		return http.StatusInternalServerError, "organization membership check failed"
@@ -784,6 +801,10 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 				orgCode, orgMsg := orgMembershipCheckFn(db, auth.UserID, *fields.OrgID)
 				if orgCode != 0 {
 					return respondError(c, orgCode, orgMsg)
+				}
+				// Resolve to canonical org ID if a slug was provided.
+				if canonicalID, err := resolveOrgID(db, *fields.OrgID); err == nil {
+					fields.OrgID = &canonicalID
 				}
 				ws.OrgID = fields.OrgID
 			} else {

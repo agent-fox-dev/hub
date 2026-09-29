@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -302,4 +303,85 @@ func TestWorkspaceCreate_DBInsertFailure(t *testing.T) {
 	if count != 0 {
 		t.Errorf("found %d rows with slug 'db-fail-ws'; want 0", count)
 	}
+}
+
+// TestWorkspaceCreate_WithOrgSlug verifies that providing an org slug (instead of
+// an org UUID) in org_id resolves to the canonical org ID, verifies membership,
+// and sets the clone URL with the org slug.
+func TestWorkspaceCreate_WithOrgSlug(t *testing.T) {
+	oldURL := defaultExternalURL
+	defaultExternalURL = "https://hub.example.com"
+	t.Cleanup(func() { defaultExternalURL = oldURL })
+
+	env := newTestEnv(t)
+
+	// Seed an organization with UUID id and distinct slug.
+	orgUUID := "550e8400-e29b-41d4-a716-446655440000"
+	orgSlug := "mickume"
+	env.seedOrg(t, orgUUID, "Michael Org", orgSlug)
+	env.seedOrgMember(t, orgUUID, "alice-id")
+
+	auth := userAuth("alice-id")
+
+	t.Run("valid org slug resolves to canonical ID and generates clone URL", func(t *testing.T) {
+		body := `{"slug":"openknowledge","git_url":"https://github.com/mickume/open-knowledge","org_id":"mickume"}`
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST /api/v1/workspaces status = %d; want %d; body = %s",
+				rec.Code, http.StatusCreated, rec.Body.String())
+		}
+
+		ws := parseWorkspaceJSON(t, rec)
+		if ws.OrgID == nil || *ws.OrgID != orgUUID {
+			t.Errorf("response org_id = %v; want canonical org UUID %q", ws.OrgID, orgUUID)
+		}
+		if ws.HubURL == nil || !strings.Contains(*ws.HubURL, "/git/mickume/openknowledge.git") {
+			t.Errorf("hub_url = %v; want to contain '/git/mickume/openknowledge.git'", ws.HubURL)
+		}
+
+		// Verify database row has the canonical org UUID.
+		var dbOrgID string
+		err := env.db.QueryRow("SELECT org_id FROM workspaces WHERE slug = ?", "openknowledge").Scan(&dbOrgID)
+		if err != nil {
+			t.Fatalf("querying workspace org_id: %v", err)
+		}
+		if dbOrgID != orgUUID {
+			t.Errorf("DB org_id = %q; want canonical org UUID %q", dbOrgID, orgUUID)
+		}
+	})
+
+	t.Run("nonexistent org slug returns 400", func(t *testing.T) {
+		body := `{"slug":"other-ws","git_url":"https://github.com/org/repo","org_id":"nonexistent-slug"}`
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST /api/v1/workspaces status = %d; want %d", rec.Code, http.StatusBadRequest)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusBadRequest {
+			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusBadRequest)
+		}
+		if resp.Error.Message != "organization not found" {
+			t.Errorf("error.message = %q; want %q", resp.Error.Message, "organization not found")
+		}
+	})
+
+	t.Run("org slug where user is not member returns 403", func(t *testing.T) {
+		otherUUID := "660e8400-e29b-41d4-a716-446655440001"
+		otherSlug := "forbidden-org"
+		env.seedOrg(t, otherUUID, "Forbidden Org", otherSlug)
+		// Do not add alice-id as member.
+
+		body := `{"slug":"forbidden-ws","git_url":"https://github.com/org/repo","org_id":"forbidden-org"}`
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("POST /api/v1/workspaces status = %d; want %d", rec.Code, http.StatusForbidden)
+		}
+		resp := parseErrorEnvelope(t, rec)
+		if resp.Error.Code != http.StatusForbidden {
+			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusForbidden)
+		}
+	})
 }

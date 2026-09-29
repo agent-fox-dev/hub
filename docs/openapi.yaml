@@ -5279,10 +5279,9 @@ components:
           type: [string, "null"]
         org_id:
           type: [string, "null"]
-          format: uuid
           description: >-
-            Must reference an organization the owner belongs to. When omitted or
-            empty, the caller's personal organization is assigned.
+            Must reference an organization the owner belongs to (by UUID or slug).
+            When omitted or empty, the caller's personal organization is assigned.
         display_name:
           type: [string, "null"]
           maxLength: 128
@@ -5342,10 +5341,9 @@ components:
           description: "`null` clears the description to an empty string."
         org_id:
           type: [string, "null"]
-          format: uuid
           description: >-
-            Must reference an organization the owner belongs to. `null` removes
-            the association.
+            Must reference an organization the owner belongs to (by UUID or slug).
+            `null` removes the association.
         sync_mode:
           type: string
           enum: [pull_only, disabled]
