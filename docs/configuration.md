@@ -184,9 +184,10 @@ With the bundled config (`path = "afhub.db"`) the SQLite database lives at
 programmatic default database path is `/data/af-hub/apikit.db`.
 
 The runtime image includes the `git` CLI (`git-core`). The hub shells out to
-git for merge, batch rebase, and every carry-patch operation (sync, rebuild,
-preview, rerere); clone, fetch, and push (including the upstream fetch of
-carry-patch workspaces) use go-git and do not need it. No git identity needs
+git for merge, batch rebase, every carry-patch operation (sync, rebuild,
+preview, rerere), and for serving clone/fetch requests on the built-in git
+server (`git upload-pack --stateless-rpc`). Pushes to the git server, initial
+workspace clones, and the upstream fetch of carry-patch workspaces use go-git. No git identity needs
 to be configured in the container: commits fall back to
 `af-hub <af-hub@localhost>` unless the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
 variables are set.

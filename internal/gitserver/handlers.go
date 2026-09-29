@@ -164,36 +164,27 @@ func handleInfoRefs(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 		_, _ = c.Response().Write(encodePktLine(announcement))
 		_, _ = c.Response().Write(encodePktFlush())
 
-		// Create sessions from the pre-initialized go-git server transport.
-		ep := endpointFromContext(c)
-
-		var ar *packp.AdvRefs
+		// upload-pack (fetch/clone) is served by the git CLI so that the
+		// advertised capabilities match the implementation handling the
+		// subsequent POST. See uploadpack.go.
 		if service == "git-upload-pack" {
-			sess, err := srv.NewUploadPackSession(ep, nil)
-			if err != nil {
-				writeSessionError(c.Response(), err)
-				return nil
-			}
-			defer sess.Close()
+			writeUploadPackAdvertisement(c)
+			return nil
+		}
 
-			ar, err = sess.AdvertisedReferencesContext(c.Request().Context())
-			if err != nil {
-				writeSessionError(c.Response(), err)
-				return nil
-			}
-		} else {
-			sess, err := srv.NewReceivePackSession(ep, nil)
-			if err != nil {
-				writeSessionError(c.Response(), err)
-				return nil
-			}
-			defer sess.Close()
+		// receive-pack uses the pre-initialized go-git server transport.
+		ep := endpointFromContext(c)
+		sess, err := srv.NewReceivePackSession(ep, nil)
+		if err != nil {
+			writeSessionError(c.Response(), err)
+			return nil
+		}
+		defer sess.Close()
 
-			ar, err = sess.AdvertisedReferencesContext(c.Request().Context())
-			if err != nil {
-				writeSessionError(c.Response(), err)
-				return nil
-			}
+		ar, err := sess.AdvertisedReferencesContext(c.Request().Context())
+		if err != nil {
+			writeSessionError(c.Response(), err)
+			return nil
 		}
 
 		// Write the ref advertisement and final flush.
@@ -206,9 +197,9 @@ func handleInfoRefs(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 
 // handleUploadPack returns the git smart HTTP upload-pack (fetch/clone) handler.
 //
-// It creates a go-git UploadPackSession, decodes the upload-pack request
-// from the HTTP body, executes the session, and streams the pack response
-// back to the client.
+// It delegates to `git upload-pack --stateless-rpc`, which implements the
+// multi-round stateless negotiation (have/ACK/NAK/done) that go-git's server
+// lacks, and streams the result back to the client. See uploadpack.go.
 func handleUploadPack(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := requireGitScope(c, "git-upload-pack"); err != nil {
@@ -216,42 +207,10 @@ func handleUploadPack(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 		}
 
 		c.Response().Header().Set("Content-Type", "application/x-git-upload-pack-result")
+		c.Response().Header().Set("Cache-Control", "no-cache")
 		c.Response().WriteHeader(http.StatusOK)
 
-		// Create upload-pack session from the pre-initialized transport.
-		ep := endpointFromContext(c)
-		sess, err := srv.NewUploadPackSession(ep, nil)
-		if err != nil {
-			writeSessionError(c.Response(), err)
-			return nil
-		}
-		defer sess.Close()
-
-		// Initialize session capabilities (must be called before UploadPack).
-		if _, err = sess.AdvertisedReferencesContext(c.Request().Context()); err != nil {
-			writeSessionError(c.Response(), err)
-			return nil
-		}
-
-		// Decode the upload-pack request (want lines + capabilities) from the body.
-		req := packp.NewUploadPackRequest()
-		if err := req.UploadRequest.Decode(requestBody(c)); err != nil {
-			writeSessionError(c.Response(), err)
-			return nil
-		}
-
-		// Execute the upload-pack session to generate the pack response.
-		resp, err := sess.UploadPack(c.Request().Context(), req)
-		if err != nil {
-			writeSessionError(c.Response(), err)
-			return nil
-		}
-
-		// Stream the pack response (NAK + PACK data) to the client.
-		if err := resp.Encode(c.Response()); err != nil {
-			log.Printf("git upload-pack: failed to encode response: %v", err)
-		}
-
+		serveUploadPack(c)
 		return nil
 	}
 }

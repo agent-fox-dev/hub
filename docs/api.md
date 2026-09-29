@@ -2258,6 +2258,14 @@ Git ref advertisement endpoint (smart HTTP discovery).
 
 Git fetch/clone data transfer.
 
+Served by `git upload-pack --stateless-rpc` (the git CLI), which implements
+the full stateless negotiation (`have`/`ACK`/`NAK`/`done`), so incremental
+fetches into repositories that already hold part of the history transfer only
+the missing objects. The ref advertisement for `service=git-upload-pack` is
+produced by the same implementation. Protocol v0 is spoken; clients requesting
+protocol v2 fall back to v0 automatically. Gzip-encoded request bodies
+(`Content-Encoding: gzip`) are accepted.
+
 **Authentication:** HTTP Basic. PATs require `git:read` scope.
 
 **Response:** HTTP 200 with `Content-Type: application/x-git-upload-pack-result`.
