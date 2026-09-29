@@ -140,14 +140,6 @@ make hub-runc         # run the af-hub container
 make clean            # remove build binaries and container image
 ```
 
-The web UI scaffold (Vite + React + TypeScript) lives in `web/`:
-
-```sh
-make web-dev    # start dev server with API proxy
-make web-build  # production build
-make web-lint   # lint frontend
-```
-
 ## License
 
 See [LICENSE](LICENSE) for details.

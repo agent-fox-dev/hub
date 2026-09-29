@@ -1,4 +1,4 @@
-.PHONY: check test lint build build-containers build-hub-container build-sandbox-container build-agents-container web-dev web-build web-lint
+.PHONY: check test lint build build-containers build-hub-container build-sandbox-container build-agents-container
 
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -103,15 +103,3 @@ hub-runc:
 		-v $(CURDIR)/bin/config:/config/af-hub \
 		-v $(CURDIR)/bin/data:/data/af-hub \
 		$(HUB_IMAGE):$(HUB_IMAGE_TAG)
-
-# Start the Vite dev server with hot reload
-web-dev:
-	cd web && npm run dev
-
-# Run a Vite production build
-web-build:
-	cd web && npm run build
-
-# Run ESLint and TypeScript type checking
-web-lint:
-	cd web && npm run lint
