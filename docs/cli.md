@@ -311,8 +311,28 @@ afc workspace delete <slug> --confirm
 
 ### afc workspace sync
 
-Trigger an upstream sync operation for a workspace. Fetches from the remote
-repository and fast-forwards the local integration branch.
+Trigger a sync of the hub's clone of the workspace with a remote repository.
+The remote that is fetched depends on the workspace mode:
+
+| Workspace mode | Syncs from | What happens |
+|---|---|---|
+| `standard` | `origin` -- the `--git-url` given at creation | Fetches `origin` and fast-forwards the workspace branch (`--branch`, or the repository's default branch) to it. A diverged branch (force-push on `origin`) fails with 409; recover with `--reset-to-upstream`. |
+| `carry_patch` | `upstream` -- the `--upstream-url` given at creation (**not** `origin`) | Fetches all `upstream` branches, records the upstream default branch as the new base, marks patches that were merged upstream as `merged_upstream`, and -- if upstream advanced -- enqueues a rebuild of the integration branch (upstream HEAD + active patches). The integration branch itself changes only when that rebuild completes. |
+
+Notes for carry-patch workspaces:
+
+- Your fork (`origin`) is never fetched by sync. Patch branches are read from
+  the hub's clone, so push them to the hub's git server
+  (`git push <hub-remote> <branch>`, using the workspace `hub_url`); pushing a
+  registered patch branch also triggers a rebuild.
+- Upstream credentials come from the `UPSTREAM_GIT_PAT` (or
+  `UPSTREAM_GIT_USERNAME`/`UPSTREAM_GIT_PASSWORD`) workspace secrets, set with
+  `afc credential set`; without them the `--git-pat` / `--git-username`
+  credentials of `origin` are used.
+- The rebuilt integration branch is pushed back to `origin` only when the
+  workspace variable `REBUILD_PUSH_INTEGRATION_BRANCH` is `true`.
+- Set the workspace variable `AUTO_REBUILD_AFTER_SYNC=false` to sync without
+  triggering a rebuild.
 
 **Usage:**
 
@@ -330,7 +350,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 
 | Flag | Required | Type | Default | Description |
 |------|----------|------|---------|-------------|
-| `--reset-to-upstream` | no | boolean | `false` | Force-reset the local integration branch to match upstream HEAD (recovery after force-push) |
+| `--reset-to-upstream` | no | boolean | `false` | Standard workspaces only: force-reset the local workspace branch to the `origin` branch HEAD (recovery after a force-push). Ignored for carry-patch workspaces |
 | `--wait` | no | boolean | `false` | Block until the auto-triggered rebuild (if any) reaches a terminal state |
 | `--timeout` | no | duration | `5m0s` | Maximum time to wait for rebuild completion (only effective with `--wait`) |
 | `--poll-interval` | no | duration | `5s` | Interval between rebuild status polls (only effective with `--wait`) |
@@ -339,8 +359,11 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 
 - Sends `POST /api/v1/workspaces/<slug>/sync`.
 - When `--reset-to-upstream` is provided, appends `?reset_to_upstream=true`
-  to the request, which force-resets the local branch to upstream HEAD
-  regardless of ancestry (useful for recovering from force-pushes).
+  to the request, which (standard workspaces only) force-resets the local
+  branch to the `origin` branch HEAD regardless of ancestry (useful for
+  recovering from force-pushes). Carry-patch workspaces ignore it: an
+  upstream force-push is reported as `force_push_detected` and handled by the
+  rebuild.
 - Prints the updated workspace JSON to stdout, including sync status fields
   (`sync_status`, `sync_mode`, `upstream_head_sha`, `last_sync_at`,
   `sync_error`).

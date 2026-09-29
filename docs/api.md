@@ -485,10 +485,29 @@ enqueued.
 
 ### POST /api/v1/workspaces/:slug/sync
 
-Trigger an upstream sync operation that fetches from the remote repository and
-fast-forwards the local integration branch if possible. If a force-push is
-detected (upstream history has diverged), the sync sets an error state with
-instructions to use the `reset_to_upstream` query parameter for recovery.
+Trigger a sync of the hub's local clone of the workspace
+(`<workspace_root>/<slug>/trunk`) with a remote repository. **Which remote is
+fetched depends on `workspace_mode`:**
+
+| `workspace_mode` | Remote fetched | URL | Credentials | What is updated |
+|---|---|---|---|---|
+| `standard` | `origin` | `git_url` | `GIT_PAT`, or `GIT_USERNAME` + `GIT_PASSWORD` workspace secrets (none for public repos) | The workspace branch (`branch`, or the repository's default branch when unset) is fast-forwarded to `refs/remotes/origin/<branch>`; `head_sha` and `upstream_head_sha` advance |
+| `carry_patch` | `upstream` (**not** `origin`) | `upstream_url` | `UPSTREAM_GIT_PAT`, or `UPSTREAM_GIT_USERNAME` + `UPSTREAM_GIT_PASSWORD`; falls back to the `origin` credentials when neither is set | All upstream branches are fetched into `refs/remotes/upstream/*` and the upstream default branch into `refs/remotes/upstream/HEAD`; `upstream_head_sha` advances, patches merged upstream are detected, and a rebuild of the integration branch is enqueued. `head_sha` and the integration branch are **not** touched by the sync itself -- the rebuild updates them |
+
+In a carry-patch workspace `origin` (the fork at `git_url`) is never fetched
+by sync: patch branches are read from the hub's own clone, so they must be
+pushed to the hub's git server (`/git/:org/:slug.git`), which also triggers
+an automatic rebuild when a registered patch branch is pushed. The rebuilt
+integration branch is only pushed back to `origin` when the workspace
+variable `REBUILD_PUSH_INTEGRATION_BRANCH` is `"true"`.
+
+The rest of this section describes the **standard** sync path; see
+[Carry-Patch Sync Extension](#carry-patch-sync-extension) below for the
+carry-patch path. In standard mode, if a force-push is detected (the `origin`
+branch has diverged from the local branch), the sync sets an error state with
+instructions to use the `reset_to_upstream` query parameter for recovery. In
+standard mode "upstream" in field and parameter names (`upstream_head_sha`,
+`reset_to_upstream`) refers to `origin`.
 
 **Authentication:** API Key, or PAT with `workspaces:sync` scope. The
 workspace must be owned by the caller (admin tokens bypass); other
@@ -504,7 +523,7 @@ workspaces answer 404.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `reset_to_upstream` | boolean | `false` | When `true`, force-resets the local integration branch ref to the upstream HEAD, ignoring ancestry. Used to recover from diverged (force-push) state. |
+| `reset_to_upstream` | boolean | `false` | Standard workspaces only. When `true`, force-resets the local workspace branch ref to the `origin` branch HEAD, ignoring ancestry. Used to recover from diverged (force-push) state. Ignored for carry-patch workspaces, whose integration branch is always recreated by a rebuild. |
 
 **Preconditions:**
 
@@ -556,9 +575,27 @@ or unexpected failures.
 
 #### Carry-Patch Sync Extension
 
-When the workspace is in `carry_patch` mode, the sync endpoint extends the
-standard behavior with upstream merge detection, squash merge detection,
-upstream force-push detection, and automatic rebuild triggering.
+When the workspace is in `carry_patch` mode, the sync endpoint replaces the
+standard fetch-and-fast-forward with a fetch of the **`upstream` remote**
+(`upstream_url`) followed by upstream merge detection, squash merge
+detection, upstream force-push detection, and automatic rebuild triggering.
+The `origin` remote (`git_url`, your fork) is not fetched.
+
+Differences from the standard path:
+
+- The preconditions above (active, clone ready, sync mode not `disabled`, no
+  sync in progress) still apply, and the workspace lock is held for the
+  duration (`409` `workspace_busy` while a rebuild, merge, or other sync
+  runs).
+- `sync_status` is not moved to `syncing`/`error`; failures are reported by
+  the HTTP status only (`502` when upstream credentials cannot be resolved or
+  the upstream fetch fails; no workspace or patch state is modified).
+- `head_sha` and the integration branch are not changed by the sync; they
+  change when the enqueued rebuild completes (follow it via
+  `GET /api/v1/workspaces/:slug/rebuilds/:id`).
+- `reset_to_upstream` is ignored, and an upstream force-push is not an error:
+  it is reported via `force_push_detected` and the rebuild re-applies the
+  patches onto the rewritten upstream.
 
 The four carry-patch fields are added **on top of** the standard workspace
 JSON, not in place of it (16-REQ-5.1). The workspace record is re-read after
@@ -595,8 +632,13 @@ reflect it:
 
 **Carry-Patch Sync Flow:**
 
-1. Resolve upstream credentials via `resolveUpstreamAuth`.
-2. Fetch from the `upstream` remote (not `origin`).
+1. Resolve upstream credentials via `resolveUpstreamAuth`: `UPSTREAM_GIT_PAT`,
+   then `UPSTREAM_GIT_USERNAME` + `UPSTREAM_GIT_PASSWORD`, then the `origin`
+   credentials (`GIT_PAT` / `GIT_USERNAME` + `GIT_PASSWORD`), then none.
+2. Fetch from the `upstream` remote (not `origin`): every upstream branch into
+   `refs/remotes/upstream/*` and the upstream default branch into
+   `refs/remotes/upstream/HEAD`, which is the "upstream HEAD" used below and
+   as the rebuild base.
 3. Compare the new upstream HEAD against the stored `upstream_head_sha`.
 4. If unchanged, return immediately with `patches_merged=[]`,
    `rebuild_triggered=false`, and `force_push_detected=false`.
