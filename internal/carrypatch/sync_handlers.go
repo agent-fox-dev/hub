@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -44,6 +46,9 @@ func NewCarryPatchSyncHook(cfg SyncAPIConfig) func(c echo.Context, slug, repoPat
 		if err != nil {
 			return nil, true, err
 		}
+		if c.Response().Committed {
+			return nil, true, nil
+		}
 		if resp == nil {
 			return nil, false, nil
 		}
@@ -59,6 +64,7 @@ func (r *CarryPatchSyncResponse) asExtras() map[string]any {
 		"patches_merged":      r.PatchesMerged,
 		"rebuild_triggered":   r.RebuildTriggered,
 		"force_push_detected": r.ForcePushDetected,
+		"origin_fetched":      r.OriginFetched,
 	}
 	if r.RebuildJobID != nil {
 		extras["rebuild_job_id"] = *r.RebuildJobID
@@ -157,6 +163,45 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		}
 	}
 
+	// 02-REQ-1.1: Read PATCH_BRANCH_SOURCE fresh on every sync; treat anything other than "origin" as "hub".
+	patchBranchSource := "hub"
+	if cfg.GetVariable != nil {
+		val, _ := cfg.GetVariable("workspace", slug, "PATCH_BRANCH_SOURCE")
+		if val == "origin" {
+			patchBranchSource = "origin"
+		}
+	}
+
+	originFetched := false
+	divergencePolicy := "replace"
+	if patchBranchSource == "origin" {
+		// 02-REQ-1.2: Read PATCH_DIVERGENCE_POLICY only when origin mode; treat anything other than "report" as "replace".
+		if cfg.GetVariable != nil {
+			val, _ := cfg.GetVariable("workspace", slug, "PATCH_DIVERGENCE_POLICY")
+			if val == "report" {
+				divergencePolicy = "report"
+			}
+		}
+
+		// 02-REQ-2.1: Resolve origin credentials and fetch the origin remote while holding wslock.
+		var originAuth transport.AuthMethod
+		if cfg.ResolveOriginAuth != nil {
+			resolved, authErr := cfg.ResolveOriginAuth(slug)
+			if authErr != nil {
+				return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "origin fetch failed")
+			}
+			originAuth = resolved
+		}
+
+		if cfg.OriginFetch != nil {
+			if fetchErr := cfg.OriginFetch(ctx, repoPath, originAuth); fetchErr != nil && !errors.Is(fetchErr, gogit.NoErrAlreadyUpToDate) {
+				return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "origin fetch failed")
+			}
+		}
+		originFetched = true
+	}
+	_ = divergencePolicy
+
 	// Resolve the new upstream HEAD after fetch (the upstream default branch;
 	// see resolveUpstreamBase).
 	newUpstreamHead, err := resolveUpstreamBase(ctx, git, wsBranch.String)
@@ -190,6 +235,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		PatchesMerged:     make([]string, 0),
 		RebuildTriggered:  false,
 		ForcePushDetected: forcePushDetected,
+		OriginFetched:     originFetched,
 	}
 
 	// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
@@ -315,6 +361,9 @@ func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
 		resp, err := runCarryPatchSync(cfg, c)
 		if err != nil {
 			return err
+		}
+		if c.Response().Committed {
+			return nil
 		}
 		if resp == nil {
 			// 16-REQ-5.E4: standard workspace. Without the workspace package

@@ -121,14 +121,16 @@ type RerereResolution struct {
 
 // SyncAPIConfig holds dependencies for carry-patch sync extension endpoints.
 type SyncAPIConfig struct {
-	DB            *sql.DB
-	Queue         *jobqueue.Queue
-	WorkspaceRoot string
-	NewGitRunner  func(repoPath string) (GitRunner, error)
-	Fetch         FetchFunc
-	ResolveAuth   ResolveAuthFunc
-	GetVariable   GetVariableFunc
-	PatchStore    PatchStore
+	DB                *sql.DB
+	Queue             *jobqueue.Queue
+	WorkspaceRoot     string
+	NewGitRunner      func(repoPath string) (GitRunner, error)
+	Fetch             FetchFunc
+	ResolveAuth       ResolveAuthFunc
+	OriginFetch       FetchFunc
+	ResolveOriginAuth ResolveAuthFunc
+	GetVariable       GetVariableFunc
+	PatchStore        PatchStore
 }
 
 // CarryPatchSyncResponse extends the standard sync response with carry-patch fields.
@@ -137,6 +139,7 @@ type CarryPatchSyncResponse struct {
 	RebuildTriggered  bool     `json:"rebuild_triggered"`
 	RebuildJobID      *string  `json:"rebuild_job_id,omitempty"`
 	ForcePushDetected bool     `json:"force_push_detected"`
+	OriginFetched     bool     `json:"origin_fetched"`
 }
 
 // PatchStatusAPIConfig holds dependencies for patch-status endpoint.

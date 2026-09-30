@@ -22,6 +22,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 	_ "modernc.org/sqlite"
 )
 
@@ -630,13 +631,53 @@ func writeFileHelper(t *testing.T, path, content string) {
 // fullTestEnv holds a test HTTP server with all carrypatch routes
 // (rebuild, rerere, sync, patch-status) mounted.
 type fullTestEnv struct {
-	echo          *echo.Echo
-	db            *sql.DB
-	queue         *jobqueue.Queue
-	workspaceRoot string
-	gitRunner     *mockGitRunner
-	patchStore    *mockPatchStore
-	getVariable   GetVariableFunc
+	echo              *echo.Echo
+	db                *sql.DB
+	queue             *jobqueue.Queue
+	workspaceRoot     string
+	gitRunner         *mockGitRunner
+	patchStore        *mockPatchStore
+	getVariable       GetVariableFunc
+	originFetch       FetchFunc
+	resolveOriginAuth ResolveAuthFunc
+}
+
+// recordingOriginFetchStub records calls to OriginFetch and checks whether
+// wslock was held during the call.
+type recordingOriginFetchStub struct {
+	mu              sync.Mutex
+	called          bool
+	callCount       int
+	repoPath        string
+	auth            transport.AuthMethod
+	calledUnderLock bool
+	err             error
+}
+
+func newRecordingOriginFetchStub(err error) *recordingOriginFetchStub {
+	return &recordingOriginFetchStub{err: err}
+}
+
+func (s *recordingOriginFetchStub) Fetch(slug string) FetchFunc {
+	return func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.called = true
+		s.callCount++
+		s.repoPath = repoPath
+		s.auth = auth
+
+		// If wslock is held by the caller for this workspace slug, TryLock
+		// fails and returns false. If TryLock succeeds, the lock was not held.
+		unlock, ok := wslock.TryLock(slug)
+		if !ok {
+			s.calledUnderLock = true
+		} else {
+			s.calledUnderLock = false
+			unlock()
+		}
+		return s.err
+	}
 }
 
 // newFullTestEnv creates an echo server with all carry-patch routes mounted.
@@ -669,7 +710,11 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	mock := newMockGitRunner()
 	patches := newMockPatchStore(nil)
 
+	var env *fullTestEnv
 	getVar := func(scope, slug, key string) (string, error) {
+		if env != nil && env.getVariable != nil {
+			return env.getVariable(scope, slug, key)
+		}
 		if key == "REBUILD_STRATEGY" {
 			return "rebase", nil
 		}
@@ -708,6 +753,18 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 		},
 		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
 		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
+		OriginFetch: func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
+			if env != nil && env.originFetch != nil {
+				return env.originFetch(ctx, repoPath, auth)
+			}
+			return nil
+		},
+		ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
+			if env != nil && env.resolveOriginAuth != nil {
+				return env.resolveOriginAuth(slug)
+			}
+			return nil, nil
+		},
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
@@ -741,15 +798,15 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	}
 	RegisterRebuildRollbackRoutes(api, rollbackCfg)
 
-	return &fullTestEnv{
+	env = &fullTestEnv{
 		echo:          e,
 		db:            db,
 		queue:         q,
 		workspaceRoot: workspaceRoot,
 		gitRunner:     mock,
 		patchStore:    patches,
-		getVariable:   getVar,
 	}
+	return env
 }
 
 // newFullTestEnvWithGetVariable creates a full test env with custom GetVariable.
@@ -782,6 +839,18 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	mock := newMockGitRunner()
 	patches := newMockPatchStore(nil)
 
+	var env *fullTestEnv
+	baseGetVar := getVar
+	forwardGetVar := func(scope, slug, key string) (string, error) {
+		if env != nil && env.getVariable != nil {
+			return env.getVariable(scope, slug, key)
+		}
+		if baseGetVar != nil {
+			return baseGetVar(scope, slug, key)
+		}
+		return "", nil
+	}
+
 	e := echo.New()
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
@@ -789,7 +858,7 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	rebuildCfg := RebuildAPIConfig{
 		DB:          db,
 		Queue:       q,
-		GetVariable: getVar,
+		GetVariable: forwardGetVar,
 	}
 	RegisterRebuildRoutes(api, rebuildCfg)
 
@@ -802,7 +871,19 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 		},
 		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
 		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
-		GetVariable: getVar,
+		OriginFetch: func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
+			if env != nil && env.originFetch != nil {
+				return env.originFetch(ctx, repoPath, auth)
+			}
+			return nil
+		},
+		ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
+			if env != nil && env.resolveOriginAuth != nil {
+				return env.resolveOriginAuth(slug)
+			}
+			return nil, nil
+		},
+		GetVariable: forwardGetVar,
 		PatchStore:  patches,
 	}
 	RegisterSyncRoutes(api, syncCfg)
@@ -825,15 +906,15 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	}
 	RegisterPatchStatusRoutes(api, patchStatusCfg)
 
-	return &fullTestEnv{
+	env = &fullTestEnv{
 		echo:          e,
 		db:            db,
 		queue:         q,
 		workspaceRoot: workspaceRoot,
 		gitRunner:     mock,
 		patchStore:    patches,
-		getVariable:   getVar,
 	}
+	return env
 }
 
 // doRequest performs an HTTP request against the full test server.

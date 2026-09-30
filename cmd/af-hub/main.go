@@ -346,7 +346,11 @@ func main() {
 			ResolveAuth: func(slug string) (transport.AuthMethod, error) {
 				return workspace.ResolveUpstreamAuthMethod(store, slug)
 			},
-			GetVariable: store.GetVariableValue,
+			OriginFetch: carrypatch.DefaultOriginFetchFunc(),
+			ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
+				return workspace.ResolveCloneAuth(store, slug)
+			},
+			GetVariable:   store.GetVariableValue,
 			PatchStore:  cpPatchStore,
 		},
 	))

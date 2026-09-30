@@ -794,6 +794,51 @@ PR-number scanning looks for GitHub's squash-merge commit message format
 `upstream_pr_url` set. This detects squash merges where the commit content
 differs from the original patch commits.
 
+### PATCH_BRANCH_SOURCE
+
+Controls the authority for patch branches in a carry-patch workspace: whether
+the hub or the fork (`origin`) remote is the source of truth.
+
+| Value | Behavior |
+|-------|----------|
+| `hub` (default, unset, or any value other than `"origin"`) | Hub is the authority for patch branches. Sync only fetches `upstream`. |
+| `origin` | Fork (`origin`) is the authority for patch branches. Sync fetches `origin` and synchronizes registered patch branches with the fork's tips. |
+
+Set patch branch source to `origin`:
+
+```
+afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway
+```
+
+Revert to hub authority by deleting the variable or setting it to `hub`:
+
+```
+afc vars create PATCH_BRANCH_SOURCE=hub --workspace api-gateway
+```
+
+### PATCH_DIVERGENCE_POLICY
+
+Controls how divergence between local and fork patch branches is handled
+during sync when `PATCH_BRANCH_SOURCE` is set to `origin`. Consulted only in
+`origin` mode.
+
+| Value | Behavior |
+|-------|----------|
+| `replace` (default, unset, or any value other than `"report"`) | Backs up the current local tip to `refs/hub/replaced/<branch>` and moves the local branch to the origin tip. |
+| `report` | Leaves the local branch untouched and records the divergence in the sync response and patch status. |
+
+Set divergence policy to `report`:
+
+```
+afc vars create PATCH_DIVERGENCE_POLICY=report --workspace api-gateway
+```
+
+Revert to replace policy by deleting the variable or setting it to `replace`:
+
+```
+afc vars create PATCH_DIVERGENCE_POLICY=replace --workspace api-gateway
+```
+
 ---
 
 ## How it works
