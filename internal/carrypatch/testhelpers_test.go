@@ -123,6 +123,9 @@ func createPatchesTable(t *testing.T, db *sql.DB) {
 			conflict_files  TEXT,
 			created_at      TEXT NOT NULL,
 			updated_at      TEXT NOT NULL,
+			origin_sync_state TEXT,
+			origin_sha      TEXT,
+			origin_synced_at TEXT,
 			FOREIGN KEY (workspace_slug) REFERENCES workspaces(slug)
 		)`)
 	if err != nil {
@@ -296,6 +299,13 @@ func (m *mockGitRunner) HardReset(ctx context.Context, ref string) error {
 // Mock PatchStore for unit tests
 // ===========================================================================
 
+type mockOriginSyncStateCall struct {
+	PatchID  string
+	State    *string
+	SHA      *string
+	SyncedAt string
+}
+
 // mockPatchStore is a recording mock for the PatchStore interface.
 type mockPatchStore struct {
 	mu                 sync.Mutex
@@ -306,12 +316,15 @@ type mockPatchStore struct {
 	RestoredPatches    []string
 	PurgedCount        int64
 	Compacted          bool
+	OriginSyncStates   map[string]mockOriginSyncStateCall
+	ClearedOriginSync  []string
 }
 
 func newMockPatchStore(patches []Patch) *mockPatchStore {
 	return &mockPatchStore{
-		Patches:        patches,
-		UpdatedPatches: make(map[string]Patch),
+		Patches:          patches,
+		UpdatedPatches:   make(map[string]Patch),
+		OriginSyncStates: make(map[string]mockOriginSyncStateCall),
 	}
 }
 
@@ -365,6 +378,43 @@ func (m *mockPatchStore) CompactPositions(_ context.Context, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Compacted = true
+	return nil
+}
+
+func (m *mockPatchStore) SetOriginSyncState(_ context.Context, patchID string, state, sha *string, syncedAt string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.OriginSyncStates == nil {
+		m.OriginSyncStates = make(map[string]mockOriginSyncStateCall)
+	}
+	m.OriginSyncStates[patchID] = mockOriginSyncStateCall{
+		PatchID:  patchID,
+		State:    state,
+		SHA:      sha,
+		SyncedAt: syncedAt,
+	}
+	for i := range m.Patches {
+		if m.Patches[i].ID == patchID {
+			m.Patches[i].OriginSyncState = state
+			m.Patches[i].OriginSHA = sha
+			m.Patches[i].OriginSyncedAt = &syncedAt
+			break
+		}
+	}
+	return nil
+}
+
+func (m *mockPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ClearedOriginSync = append(m.ClearedOriginSync, workspaceSlug)
+	for i := range m.Patches {
+		if m.Patches[i].WorkspaceID == workspaceSlug {
+			m.Patches[i].OriginSyncState = nil
+			m.Patches[i].OriginSHA = nil
+			m.Patches[i].OriginSyncedAt = nil
+		}
+	}
 	return nil
 }
 

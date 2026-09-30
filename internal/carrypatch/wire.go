@@ -137,7 +137,8 @@ func NewSQLPatchStore(db *sql.DB) *SQLPatchStore {
 // ListPatches returns all non-deleted patches for a workspace ordered by position.
 func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]Patch, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url
+		`SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url,
+		        origin_sync_state, origin_sha, origin_synced_at
 		 FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
@@ -150,7 +151,8 @@ func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]
 	for rows.Next() {
 		var p Patch
 		var conflictFilesJSON sql.NullString
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON, &p.UpstreamPRURL); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON, &p.UpstreamPRURL,
+			&p.OriginSyncState, &p.OriginSHA, &p.OriginSyncedAt); err != nil {
 			return nil, err
 		}
 		if conflictFilesJSON.Valid && conflictFilesJSON.String != "" {
@@ -159,6 +161,26 @@ func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]
 		patches = append(patches, p)
 	}
 	return patches, rows.Err()
+}
+
+// SetOriginSyncState updates origin sync fields for a patch.
+func (s *SQLPatchStore) SetOriginSyncState(_ context.Context, patchID string, state, sha *string, syncedAt string) error {
+	now := apikit.NowUTC()
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ?, updated_at = ? WHERE id = ?`,
+		state, sha, syncedAt, now, patchID,
+	)
+	return err
+}
+
+// ClearOriginSyncState clears origin sync fields for all non-deleted patches of a workspace.
+func (s *SQLPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug string) error {
+	now := apikit.NowUTC()
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL, updated_at = ? WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL)`,
+		now, workspaceSlug,
+	)
+	return err
 }
 
 // UpdatePatchStatus updates a patch's status and conflict_files.
