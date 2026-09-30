@@ -169,16 +169,22 @@ If the upstream repository requires authentication, store credentials
 separately from the fork credentials:
 
 ```
-afc credential set api-gateway --upstream-git-pat ghp_upstream_token_here
+printf '%s' "$UPSTREAM_TOKEN" | \
+  afc secrets create UPSTREAM_GIT_PAT --from-stdin --workspace api-gateway
 ```
 
 Alternatively, use username/password authentication:
 
 ```
-afc credential set api-gateway \
-  --upstream-git-username your-bot-user \
-  --upstream-git-password ghp_upstream_token_here
+afc secrets create UPSTREAM_GIT_USERNAME=your-bot-user --workspace api-gateway
+printf '%s' "$UPSTREAM_TOKEN" | \
+  afc secrets create UPSTREAM_GIT_PASSWORD --from-stdin --workspace api-gateway
 ```
+
+`UPSTREAM_GIT_PAT`, `UPSTREAM_GIT_USERNAME` and `UPSTREAM_GIT_PASSWORD` are
+*reserved* secret names: the hub reads them to authenticate against the
+upstream remote (see [Reserved secret names](cli.md#reserved-secret-names)).
+Use `afc secrets list|update|delete --workspace api-gateway` to manage them.
 
 The hub resolves upstream credentials in this priority order:
 

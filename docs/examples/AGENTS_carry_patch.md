@@ -530,7 +530,7 @@ with `afc rebuild submit --fail-mode <fail_fast|continue>`.
 | Reset to upstream (recovery) | `afc workspace sync <workspace-slug> --reset-to-upstream` |
 | List rerere resolutions | `afc rerere list <workspace-slug>` |
 | Forget a rerere resolution | `afc rerere forget <workspace-slug> <pathspec>` |
-| Set upstream credentials | `afc credential set <workspace-slug> --upstream-git-pat <token>` |
+| Set upstream credentials | `afc secrets create UPSTREAM_GIT_PAT=<token> --workspace <workspace-slug>` (reserved secret name) |
 
 ## Quality Gates
 

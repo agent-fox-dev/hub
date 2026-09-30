@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
-	"github.com/txsvc/apikit"
 )
 
 // afConfig is a minimal representation of ~/.af/config.toml,
@@ -70,130 +68,6 @@ func CredentialHelperCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// CredentialCmd returns the 'credential' parent command with the 'set'
-// subcommand for storing upstream git credentials as workspace secrets.
-func CredentialCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:           "credential",
-		Short:         "Manage git credentials",
-		SilenceErrors: true,
-		SilenceUsage:  true,
-	}
-
-	cmd.AddCommand(newCredentialSetCmd())
-
-	return cmd
-}
-
-// newCredentialSetCmd returns the 'credential set' subcommand that stores
-// upstream git credentials as workspace secrets via the secrets API.
-// Supports --upstream-git-pat, --upstream-git-username, --upstream-git-password.
-// Requirements: 15-REQ-5.2, 15-REQ-5.3
-func newCredentialSetCmd() *cobra.Command {
-	var (
-		upstreamGitPAT      string
-		upstreamGitUsername string
-		upstreamGitPassword string
-		fromStdin           bool
-	)
-
-	cmd := &cobra.Command{
-		Use:           "set <workspace-slug>",
-		Short:         "Set upstream git credentials for a workspace",
-		Args:          cobra.ExactArgs(1),
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			slug := args[0]
-
-			hasPAT := cmd.Flags().Changed("upstream-git-pat")
-			hasUsername := cmd.Flags().Changed("upstream-git-username")
-			hasPassword := cmd.Flags().Changed("upstream-git-password")
-
-			// --from-stdin supplies the secret part that was not given as a
-			// flag: the password when a username is set, the PAT otherwise.
-			if fromStdin {
-				if hasPAT || hasPassword {
-					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
-						"--from-stdin cannot be combined with --upstream-git-pat or --upstream-git-password"))
-				}
-				value, err := readValueFromStdin(cmd)
-				if err != nil {
-					return apikit.CLIHandleError(cmd, err)
-				}
-				if hasUsername {
-					upstreamGitPassword, hasPassword = value, true
-				} else {
-					upstreamGitPAT, hasPAT = value, true
-				}
-			}
-
-			if !hasPAT && !hasUsername && !hasPassword {
-				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
-					"at least one credential flag is required (--upstream-git-pat, --upstream-git-username/--upstream-git-password)"))
-			}
-			// Basic auth needs both halves; storing one alone silently
-			// produces an unusable credential.
-			if hasUsername != hasPassword {
-				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
-					"--upstream-git-username and --upstream-git-password must be provided together"))
-			}
-
-			// Build the list of secret entries to store.
-			var entries []map[string]string
-
-			if hasPAT {
-				entries = append(entries, map[string]string{
-					"key":   "UPSTREAM_GIT_PAT",
-					"value": upstreamGitPAT,
-				})
-			}
-			if hasUsername {
-				entries = append(entries, map[string]string{
-					"key":   "UPSTREAM_GIT_USERNAME",
-					"value": upstreamGitUsername,
-				})
-			}
-			if hasPassword {
-				entries = append(entries, map[string]string{
-					"key":   "UPSTREAM_GIT_PASSWORD",
-					"value": upstreamGitPassword,
-				})
-			}
-
-			client, err := apikit.CLIClientFromCmd(cmd)
-			if err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-
-			body := map[string]any{
-				"entries": entries,
-			}
-
-			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
-				apiPath("workspaces", slug, "secrets"), body)
-			if err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-
-			// Print API response JSON to stdout; human-readable confirmation to stderr.
-			if err := apikit.CLIPrintResult(cmd, result); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Upstream credentials stored for workspace '%s'.\n", slug)
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&upstreamGitPAT, "upstream-git-pat", "", "Upstream personal access token")
-	cmd.Flags().StringVar(&upstreamGitUsername, "upstream-git-username", "", "Upstream git username")
-	cmd.Flags().StringVar(&upstreamGitPassword, "upstream-git-password", "", "Upstream git password")
-	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false,
-		"Read the PAT (or the password when --upstream-git-username is set) from stdin")
-
-	return cmd
 }
 
 // loadHelperConfig resolves the endpoint URL and API key for the credential

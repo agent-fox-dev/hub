@@ -129,46 +129,6 @@ func TestCLI_SecretsCreate_MultipleArgsAndStdin(t *testing.T) {
 	}
 }
 
-func TestCLI_CredentialSet_RequiresUsernamePasswordPairAndReadsStdin(t *testing.T) {
-	srv, requests := recordingServer(t, http.StatusCreated, map[string]any{"created": 1})
-
-	stdout, _, err := runAfc(t, srv.URL, "", "credential", "set", "ws", "--upstream-git-username", "bob")
-	if err == nil {
-		t.Fatal("username without password should be rejected")
-	}
-	if !strings.Contains(stdout, "must be provided together") {
-		t.Errorf("error envelope missing pairing message: %s", stdout)
-	}
-	if n := len(requests()); n != 0 {
-		t.Fatalf("server received %d requests, want 0", n)
-	}
-
-	if _, _, err := runAfc(t, srv.URL, "ghp_token\n", "credential", "set", "ws", "--from-stdin"); err != nil {
-		t.Fatalf("PAT from stdin: %v", err)
-	}
-	if _, _, err := runAfc(t, srv.URL, "pw\n", "credential", "set", "ws", "--upstream-git-username", "bob", "--from-stdin"); err != nil {
-		t.Fatalf("password from stdin: %v", err)
-	}
-	got := requests()
-	if len(got) != 2 {
-		t.Fatalf("got %d requests, want 2", len(got))
-	}
-	entries := func(body map[string]any) map[string]string {
-		out := map[string]string{}
-		for _, e := range body["entries"].([]any) {
-			m := e.(map[string]any)
-			out[m["key"].(string)] = m["value"].(string)
-		}
-		return out
-	}
-	if e := entries(got[0].Body); e["UPSTREAM_GIT_PAT"] != "ghp_token" || len(e) != 1 {
-		t.Errorf("PAT entries = %v", e)
-	}
-	if e := entries(got[1].Body); e["UPSTREAM_GIT_USERNAME"] != "bob" || e["UPSTREAM_GIT_PASSWORD"] != "pw" {
-		t.Errorf("basic auth entries = %v", e)
-	}
-}
-
 func TestCLI_PatchUpdate_RequiresAChange(t *testing.T) {
 	srv, requests := recordingServer(t, http.StatusOK, map[string]any{"id": "p1"})
 	stdout, _, err := runAfc(t, srv.URL, "", "patch", "update", "ws", "p1")
