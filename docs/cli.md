@@ -327,7 +327,8 @@ Notes for carry-patch workspaces:
   registered patch branch also triggers a rebuild.
 - Upstream credentials come from the `UPSTREAM_GIT_PAT` (or
   `UPSTREAM_GIT_USERNAME`/`UPSTREAM_GIT_PASSWORD`) workspace secrets, set with
-  `afc credential set`; without them the `--git-pat` / `--git-username`
+  `afc secrets create --workspace <slug> ...` (see
+  [Reserved secret names](#reserved-secret-names)); without them the `--git-pat` / `--git-username`
   credentials of `origin` are used.
 - The rebuilt integration branch is pushed back to `origin` only when the
   workspace variable `REBUILD_PUSH_INTEGRATION_BRANCH` is `true`.
@@ -514,67 +515,6 @@ are no-ops since credentials are managed by `afc login`.
 
 ---
 
-## Credential Commands
-
-All credential commands are subcommands of `afc credential`.
-
-### afc credential set
-
-Store upstream git credentials as workspace secrets. Used for carry-patch
-workspaces that authenticate against a separate upstream remote.
-
-**Usage:**
-
-```
-afc credential set <workspace-slug> [flags]
-```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<workspace-slug>` | The workspace slug to store credentials for |
-
-**Flags:**
-
-| Flag | Required | Type | Description |
-|------|----------|------|-------------|
-| `--upstream-git-pat` | no | string | Personal access token for authenticating against the upstream remote |
-| `--upstream-git-username` | no | string | Username for HTTP basic auth against the upstream remote |
-| `--upstream-git-password` | no | string | Password for HTTP basic auth against the upstream remote |
-| `--from-stdin` | no | boolean | Read the PAT (or, with `--upstream-git-username`, the password) from stdin instead of a flag, keeping it out of shell history and `ps` output. One trailing newline is stripped |
-
-At least one credential must be provided. The `--upstream-git-pat` flag
-stores a `UPSTREAM_GIT_PAT` workspace secret. `--upstream-git-username` and
-`--upstream-git-password` store `UPSTREAM_GIT_USERNAME` and
-`UPSTREAM_GIT_PASSWORD` and must be given together (one without the other is
-an unusable credential and is rejected).
-
-```
-printf '%s' "$GITHUB_TOKEN" | afc credential set my-ws --from-stdin
-```
-
-**Behavior:**
-
-- Sends `POST /api/v1/workspaces/<slug>/secrets` with the credential entries.
-- Upstream credentials use the same storage, encryption, and access control
-  mechanisms as existing workspace credentials (spec 09).
-- The `resolveUpstreamAuth` function resolves credentials in priority order:
-  `UPSTREAM_GIT_PAT` -> `UPSTREAM_GIT_USERNAME`+`UPSTREAM_GIT_PASSWORD` ->
-  falls back to origin credentials via `resolveCloneAuth`.
-- On success, prints the API response JSON to stdout and a human-readable
-  confirmation message to stderr.
-
-**Exit Codes:**
-
-| Code | Condition |
-|------|-----------|
-| 0 | Credentials stored successfully |
-| 1 | Workspace not found, API error, network error, or timeout |
-| 2 | No credential provided; username without password (or vice versa); `--from-stdin` combined with `--upstream-git-pat` or `--upstream-git-password` |
-
----
-
 ## Secrets Commands
 
 All secrets commands are subcommands of `afc secrets`. They use scope flags to
@@ -592,6 +532,55 @@ provided, the command exits with code 2.
 
 For `create`: multiple scope flags can be specified to write to multiple scopes
 sequentially. If none is given, the command defaults to user scope.
+
+### Reserved secret names
+
+Secrets are opaque key/value pairs, but the hub itself reads a fixed set of
+workspace secret names to authenticate its git operations. These names are
+*reserved*: they carry a specific meaning, and there is no separate command for
+managing them -- use the regular `afc secrets` commands with `--workspace <slug>`.
+All other names are ordinary secrets the hub never interprets.
+
+| Name | Used for |
+|------|----------|
+| `GIT_PAT` | Personal access token for the workspace's `origin` remote (clone, fetch, push). Sent as HTTP basic auth with username `x-token-auth` |
+| `GIT_USERNAME` + `GIT_PASSWORD` | HTTP basic auth for `origin`, as an alternative to `GIT_PAT`. Both must be set; a username without a password is ignored (with a server warning) and treated as no credentials |
+| `UPSTREAM_GIT_PAT` | Personal access token for the `upstream` remote of a `carry_patch` workspace |
+| `UPSTREAM_GIT_USERNAME` + `UPSTREAM_GIT_PASSWORD` | HTTP basic auth for `upstream`, as an alternative to `UPSTREAM_GIT_PAT`. Both must be set |
+
+Resolution order:
+
+- **`origin`:** `GIT_PAT` -> `GIT_USERNAME`+`GIT_PASSWORD` -> no credentials
+  (public repository).
+- **`upstream`:** `UPSTREAM_GIT_PAT` -> `UPSTREAM_GIT_USERNAME`+`UPSTREAM_GIT_PASSWORD`
+  -> falls back to the `origin` resolution above.
+
+`GIT_PAT`/`GIT_USERNAME`/`GIT_PASSWORD` can also be supplied at workspace
+creation via `--git-pat`, `--git-username` and `--git-password`; the hub stores
+them under these names.
+
+Reserved names are only honored in workspace scope. Values are stored encrypted
+and are never returned by the API.
+
+Examples:
+
+```
+# Set an upstream PAT without leaving it in shell history
+printf '%s' "$GITHUB_TOKEN" | afc secrets create UPSTREAM_GIT_PAT --from-stdin --workspace my-ws
+
+# Basic auth for the upstream (set both halves)
+afc secrets create UPSTREAM_GIT_USERNAME=my-bot --workspace my-ws
+printf '%s' "$TOKEN" | afc secrets create UPSTREAM_GIT_PASSWORD --from-stdin --workspace my-ws
+
+# Rotate, inspect, or remove (falls back to origin credentials)
+printf '%s' "$NEW_TOKEN" | afc secrets update UPSTREAM_GIT_PAT --from-stdin --workspace my-ws
+afc secrets list --workspace my-ws
+afc secrets delete UPSTREAM_GIT_PAT --workspace my-ws
+```
+
+When removing basic-auth credentials, delete both `UPSTREAM_GIT_USERNAME` and
+`UPSTREAM_GIT_PASSWORD`; leaving one behind is ignored and the hub falls back to
+the `origin` credentials.
 
 ### afc secrets create
 

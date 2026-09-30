@@ -140,8 +140,10 @@ access token than the fork).
   found, it falls back to the standard workspace credentials (same
   PAT/password used for origin). This fallback handles the common case where
   the upstream is public or uses the same PAT.
-- The CLI accepts `--upstream-git-pat` and `--upstream-git-username` /
-  `--upstream-git-password` flags on `afc credential set`.
+- Upstream credentials are set as the reserved workspace secrets
+  `UPSTREAM_GIT_PAT` or `UPSTREAM_GIT_USERNAME` / `UPSTREAM_GIT_PASSWORD` using
+  `afc secrets create --workspace <slug>`. (The original `afc credential set`
+  command was removed in favor of the generic secrets commands.)
 - Upstream credentials follow the same storage, encryption, and access control
   rules as existing workspace credentials (spec 09).
 
