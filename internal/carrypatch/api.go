@@ -220,6 +220,9 @@ type PatchStatusEntry struct {
 	Status            string   `json:"status"`
 	LastRebuildResult *string  `json:"last_rebuild_result"`
 	ConflictFiles     []string `json:"conflict_files,omitempty"`
+	OriginSyncState   *string  `json:"origin_sync_state"`
+	OriginSHA         *string  `json:"origin_sha"`
+	OriginSyncedAt    *string  `json:"origin_synced_at"`
 }
 
 // PatchStatusSummary aggregates patch status counts.
@@ -230,6 +233,8 @@ type PatchStatusSummary struct {
 	Conflict               int `json:"conflict"`
 	Disabled               int `json:"disabled"`
 	TotalRerereResolutions int `json:"total_rerere_resolutions"`
+	PatchesDiverged        int `json:"patches_diverged"`
+	PatchesMissingOnOrigin int `json:"patches_missing_on_origin"`
 }
 
 // ===========================================================================
@@ -990,7 +995,8 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		// Query patches from the database, ordered by position.
 		// Exclude soft-deleted patches from the patch-status dashboard.
 		patchRows, queryErr := cfg.DB.Query(
-			`SELECT id, workspace_slug, branch_name, position, status, conflict_files
+			`SELECT id, workspace_slug, branch_name, position, status, conflict_files,
+			        origin_sync_state, origin_sha, origin_synced_at
 			 FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`, slug,
 		)
 		if queryErr != nil {
@@ -1002,7 +1008,8 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		for patchRows.Next() {
 			var p Patch
 			var conflictFilesJSON sql.NullString
-			if scanErr := patchRows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON); scanErr != nil {
+			if scanErr := patchRows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON,
+				&p.OriginSyncState, &p.OriginSHA, &p.OriginSyncedAt); scanErr != nil {
 				return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to scan patch")
 			}
 			if conflictFilesJSON.Valid && conflictFilesJSON.String != "" {
@@ -1051,10 +1058,13 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		patchEntries := make([]PatchStatusEntry, 0, len(patches))
 		for _, p := range patches {
 			entry := PatchStatusEntry{
-				ID:         p.ID,
-				BranchName: p.BranchName,
-				Position:   p.Position,
-				Status:     p.Status,
+				ID:              p.ID,
+				BranchName:      p.BranchName,
+				Position:        p.Position,
+				Status:          p.Status,
+				OriginSyncState: p.OriginSyncState,
+				OriginSHA:       p.OriginSHA,
+				OriginSyncedAt:  p.OriginSyncedAt,
 			}
 
 			// Set last_rebuild_result from the most recent rebuild.
@@ -1082,6 +1092,14 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 				summary.Conflict++
 			case PatchStatusDisabled:
 				summary.Disabled++
+			}
+			if p.OriginSyncState != nil {
+				switch *p.OriginSyncState {
+				case "diverged":
+					summary.PatchesDiverged++
+				case "missing_on_origin":
+					summary.PatchesMissingOnOrigin++
+				}
 			}
 		}
 

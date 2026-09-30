@@ -70,6 +70,7 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	// Patch routes (15-REQ-8, 15-REQ-9, 15-REQ-10, 15-REQ-11, 15-REQ-12).
 	api.POST("/workspaces/:slug/patches", handleAddPatch(db))
 	api.GET("/workspaces/:slug/patches", handleListPatches(db))
+	api.GET("/workspaces/:slug/patches/:id", handleGetPatch(db))
 	api.PATCH("/workspaces/:slug/patches/:id", handleUpdatePatch(db))
 	api.DELETE("/workspaces/:slug/patches/:id", handleRemovePatch(db))
 	api.POST("/workspaces/:slug/patches/reorder", handleReorderPatches(db))

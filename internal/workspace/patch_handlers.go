@@ -326,6 +326,33 @@ func handleListPatches(db *sql.DB) echo.HandlerFunc {
 	}
 }
 
+// handleGetPatch handles GET /api/v1/workspaces/:slug/patches/:id.
+func handleGetPatch(db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth := requirePatchReadScope(c)
+		if auth == nil {
+			return nil
+		}
+
+		slug := c.Param("slug")
+		patchID := c.Param("id")
+
+		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+			return nil
+		}
+
+		p, err := getPatch(db, slug, patchID)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if p == nil {
+			return respondError(c, http.StatusNotFound, "patch not found")
+		}
+
+		return c.JSON(http.StatusOK, patchResponse(p))
+	}
+}
+
 // handleUpdatePatch handles PATCH /api/v1/workspaces/:slug/patches/:id (15-REQ-10).
 func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {

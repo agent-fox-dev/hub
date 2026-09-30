@@ -826,6 +826,27 @@ paths:
     parameters:
       - $ref: "#/components/parameters/WorkspaceSlug"
       - $ref: "#/components/parameters/PatchId"
+    get:
+      tags: [Patches]
+      operationId: getPatch
+      summary: Get a patch by ID
+      description: Retrieve a single patch record by its UUID.
+      x-required-scopes: ["patches:read"]
+      responses:
+        "200":
+          description: The patch record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Patch"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/PatchNotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
     patch:
       tags: [Patches]
       operationId: updatePatch
@@ -5483,6 +5504,17 @@ components:
         updated_at:
           type: string
           format: date-time
+        origin_sync_state:
+          type: [string, "null"]
+          enum: [in_sync, diverged, missing_on_origin, null]
+          description: Fork-sync state. Null when unset or in hub mode.
+        origin_sha:
+          type: [string, "null"]
+          description: Commit SHA on the fork remote at last sync. Null when unset or in hub mode.
+        origin_synced_at:
+          type: [string, "null"]
+          format: date-time
+          description: Timestamp of last fork-sync for this patch. Null when unset or in hub mode.
 
     AddPatchRequest:
       type: object
@@ -5862,6 +5894,17 @@ components:
           description: Present only when `last_rebuild_result` is `conflict`.
           items:
             type: string
+        origin_sync_state:
+          type: [string, "null"]
+          enum: [in_sync, diverged, missing_on_origin, null]
+          description: Fork-sync state. Null when unset or in hub mode.
+        origin_sha:
+          type: [string, "null"]
+          description: Commit SHA on the fork remote at last sync. Null when unset or in hub mode.
+        origin_synced_at:
+          type: [string, "null"]
+          format: date-time
+          description: Timestamp of last fork-sync for this patch. Null when unset or in hub mode.
 
     PatchStatusSummary:
       type: object
@@ -5872,6 +5915,8 @@ components:
         - conflict
         - disabled
         - total_rerere_resolutions
+        - patches_diverged
+        - patches_missing_on_origin
       properties:
         total_patches:
           type: integer
@@ -5886,6 +5931,12 @@ components:
         total_rerere_resolutions:
           type: integer
           description: Reported as 0 when the rr-cache is inaccessible.
+        patches_diverged:
+          type: integer
+          description: Count of patches in diverged state.
+        patches_missing_on_origin:
+          type: integer
+          description: Count of patches missing on origin remote.
 
     # -- Merges ----------------------------------------------------------------
 

@@ -11,17 +11,20 @@ import (
 
 // Patch represents a row in the patches table (15-REQ-7).
 type Patch struct {
-	ID            string   // TEXT PRIMARY KEY (UUID)
-	WorkspaceSlug string   // TEXT NOT NULL
-	BranchName    string   // TEXT NOT NULL
-	Position      int      // INTEGER NOT NULL
-	Status        string   // TEXT NOT NULL DEFAULT 'active'
-	ConflictFiles []string // TEXT (nullable, JSON array)
-	UpstreamPRURL *string  // TEXT (nullable)
-	Description   *string  // TEXT (nullable)
-	DeletedAt     *string  // TEXT (nullable, RFC 3339)
-	AddedAt       string   // TEXT NOT NULL (RFC 3339)
-	UpdatedAt     string   // TEXT NOT NULL (RFC 3339)
+	ID              string   // TEXT PRIMARY KEY (UUID)
+	WorkspaceSlug   string   // TEXT NOT NULL
+	BranchName      string   // TEXT NOT NULL
+	Position        int      // INTEGER NOT NULL
+	Status          string   // TEXT NOT NULL DEFAULT 'active'
+	ConflictFiles   []string // TEXT (nullable, JSON array)
+	UpstreamPRURL   *string  // TEXT (nullable)
+	Description     *string  // TEXT (nullable)
+	DeletedAt       *string  // TEXT (nullable, RFC 3339)
+	AddedAt         string   // TEXT NOT NULL (RFC 3339)
+	UpdatedAt       string   // TEXT NOT NULL (RFC 3339)
+	OriginSyncState *string  // TEXT (nullable)
+	OriginSHA       *string  // TEXT (nullable)
+	OriginSyncedAt  *string  // TEXT (nullable, RFC 3339)
 }
 
 // patchResponse converts a Patch to a JSON-serializable map for API responses.
@@ -53,6 +56,21 @@ func patchResponse(p *Patch) map[string]any {
 	} else {
 		resp["deleted_at"] = nil
 	}
+	if p.OriginSyncState != nil {
+		resp["origin_sync_state"] = *p.OriginSyncState
+	} else {
+		resp["origin_sync_state"] = nil
+	}
+	if p.OriginSHA != nil {
+		resp["origin_sha"] = *p.OriginSHA
+	} else {
+		resp["origin_sha"] = nil
+	}
+	if p.OriginSyncedAt != nil {
+		resp["origin_synced_at"] = *p.OriginSyncedAt
+	} else {
+		resp["origin_synced_at"] = nil
+	}
 	return resp
 }
 
@@ -64,6 +82,7 @@ func scanPatch(scanner interface{ Scan(dest ...any) error }) (*Patch, error) {
 		&p.ID, &p.WorkspaceSlug, &p.BranchName, &p.Position,
 		&p.Status, &conflictFilesJSON, &p.UpstreamPRURL, &p.Description,
 		&p.DeletedAt, &p.AddedAt, &p.UpdatedAt,
+		&p.OriginSyncState, &p.OriginSHA, &p.OriginSyncedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -75,7 +94,7 @@ func scanPatch(scanner interface{ Scan(dest ...any) error }) (*Patch, error) {
 }
 
 // patchSelectColumns is the column list for SELECT queries on the patches table.
-const patchSelectColumns = `id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url, description, deleted_at, added_at, updated_at`
+const patchSelectColumns = `id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url, description, deleted_at, added_at, updated_at, origin_sync_state, origin_sha, origin_synced_at`
 
 // getPatch retrieves a single patch by workspace slug and patch ID.
 // Returns nil, nil if the patch is not found.

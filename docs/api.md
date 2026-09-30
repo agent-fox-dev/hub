@@ -39,7 +39,7 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
-| `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches |
+| `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches, GET /api/v1/workspaces/:slug/patches/:id |
 | `patches:write` | Add, remove, update, restore, and reorder patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/:id/restore, POST /api/v1/workspaces/:slug/patches/reorder |
 | `rebuilds:read` | View rebuild job status, history, and preview | GET /api/v1/workspaces/:slug/rebuilds, GET /api/v1/workspaces/:slug/rebuilds/:id, GET /api/v1/workspaces/:slug/rebuild-preview |
 | `rebuilds:write` | Submit, cancel, requeue, and rollback rebuild jobs for carry-patch workspaces | POST /api/v1/workspaces/:slug/rebuild, DELETE /api/v1/workspaces/:slug/rebuilds/:id, POST /api/v1/workspaces/:slug/rebuilds/:id/requeue, POST /api/v1/workspaces/:slug/rebuilds/:id/rollback |
@@ -1101,7 +1101,10 @@ All patch endpoints that return patch data use the following JSON schema:
   "description": null,
   "deleted_at": null,
   "added_at": "2024-01-01T00:00:00Z",
-  "updated_at": "2024-01-01T00:00:00Z"
+  "updated_at": "2024-01-01T00:00:00Z",
+  "origin_sync_state": null,
+  "origin_sha": null,
+  "origin_synced_at": null
 }
 ```
 
@@ -1118,6 +1121,9 @@ All patch endpoints that return patch data use the following JSON schema:
 | `deleted_at` | string (RFC 3339) or null | Timestamp of soft-deletion; null for non-deleted patches |
 | `added_at` | string (RFC 3339) | Timestamp of when the patch was added |
 | `updated_at` | string (RFC 3339) | Timestamp of when the patch was last modified |
+| `origin_sync_state` | string or null | Fork-sync state: `"in_sync"`, `"diverged"`, `"missing_on_origin"`, or null |
+| `origin_sha` | string or null | Commit SHA of the patch branch on the fork (`origin`) remote at last sync |
+| `origin_synced_at` | string (RFC 3339) or null | Timestamp of the last fork-sync operation for this patch |
 
 ---
 
@@ -1238,6 +1244,32 @@ patches (status `"deleted"`) are excluded from the listing.
 
 **Note:** Standard (non-carry_patch) workspaces return HTTP 200 with an empty
 array `[]` rather than an error.
+
+---
+
+### GET /api/v1/workspaces/:slug/patches/:id
+
+Get a single patch by ID.
+
+**Authentication:** API Key, or PAT with `patches:read` or `patches:write`
+scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The patch UUID |
+
+**Response:** HTTP 200 OK with the patch JSON object.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:read` scope |
+| 404 | Workspace or patch does not exist |
 
 ---
 
@@ -1895,7 +1927,10 @@ Return a full status dashboard for the carry-patch stack.
       "branch_name": "feature/patch-a",
       "position": 1,
       "status": "active",
-      "last_rebuild_result": "success"
+      "last_rebuild_result": "success",
+      "origin_sync_state": "in_sync",
+      "origin_sha": "fedcba987654...",
+      "origin_synced_at": "2024-06-15T10:30:00Z"
     },
     {
       "id": "uuid-string",
@@ -1903,7 +1938,10 @@ Return a full status dashboard for the carry-patch stack.
       "position": 2,
       "status": "conflict",
       "last_rebuild_result": "conflict",
-      "conflict_files": ["pkg/api.go"]
+      "conflict_files": ["pkg/api.go"],
+      "origin_sync_state": "diverged",
+      "origin_sha": "123456abcdef...",
+      "origin_synced_at": "2024-06-15T10:30:00Z"
     }
   ],
   "summary": {
@@ -1912,7 +1950,9 @@ Return a full status dashboard for the carry-patch stack.
     "merged_upstream": 0,
     "conflict": 1,
     "disabled": 0,
-    "total_rerere_resolutions": 1
+    "total_rerere_resolutions": 1,
+    "patches_diverged": 1,
+    "patches_missing_on_origin": 0
   }
 }
 ```
@@ -1944,6 +1984,9 @@ Return a full status dashboard for the carry-patch stack.
 | `patches[].status` | string | Current patch status (`active`, `conflict`, `disabled`, `merged_upstream`) |
 | `patches[].last_rebuild_result` | string or null | Per-patch result from most recent rebuild (`success`, `conflict`, `skipped`); null if no rebuild has been attempted |
 | `patches[].conflict_files` | array of strings | File paths with unresolved conflicts (present only when `last_rebuild_result` is `conflict`) |
+| `patches[].origin_sync_state` | string or null | Fork-sync state: `"in_sync"`, `"diverged"`, `"missing_on_origin"`, or null |
+| `patches[].origin_sha` | string or null | Commit SHA of the patch branch on the fork (`origin`) remote at last sync; null when unset |
+| `patches[].origin_synced_at` | string (RFC 3339) or null | Timestamp of the last fork-sync operation for this patch; null when unset |
 | `summary` | object | Aggregate counts derived from the patches array |
 | `summary.total_patches` | integer | Total number of non-deleted patches (equals length of `patches` array) |
 | `summary.active` | integer | Count of patches with status `active` |
@@ -1951,6 +1994,8 @@ Return a full status dashboard for the carry-patch stack.
 | `summary.conflict` | integer | Count of patches with status `conflict` |
 | `summary.disabled` | integer | Count of patches with status `disabled` |
 | `summary.total_rerere_resolutions` | integer | Total count of recorded rerere resolutions for the workspace; 0 if rr-cache is inaccessible |
+| `summary.patches_diverged` | integer | Count of patches with `origin_sync_state` = `"diverged"` |
+| `summary.patches_missing_on_origin` | integer | Count of patches with `origin_sync_state` = `"missing_on_origin"` |
 
 **Consistency invariant:** `summary.total_patches` equals `len(patches)`, and
 `summary.active + summary.merged_upstream + summary.conflict + summary.disabled`
