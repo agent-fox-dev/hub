@@ -26,11 +26,6 @@ lifetime of the sandbox. The outpost fetches everything else (code,
 variables, secrets, the workload command) from the hub and starts the
 workload.
 
-An earlier proposal, `docs/prd/prd15.md`, covered the same ground with a
-different model (one long-lived sandbox per workspace, the hub's clone
-bind-mounted into the container, control via `podman exec`). The PRDs below
-supersede it; the differences are listed under *Relationship to PRD 15*.
-
 ## Concepts
 
 - **Sandbox.** An ephemeral execution environment for one workspace on one
@@ -100,20 +95,6 @@ network egress enforcement through
 [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell), and a Kubernetes
 manifest for `af-gateway`. Interactive exec or shell through the hub is not
 planned.
-
-## Relationship to PRD 15
-
-| Topic | PRD 15 (`prd15.md`) | These PRDs |
-|---|---|---|
-| Cardinality | One sandbox per workspace, provisioned automatically when the clone is ready | Any number per workspace, launched on request, each pinned to a revision |
-| Lifetime | Long-lived; stopped on archive | Ephemeral; stopped on request, when the workload exits, on timeout, on lost liveness, on archive/delete |
-| Code inside the sandbox | The hub's workspace clone bind-mounted at `/workspace` | The outpost clones from the hub's git server at the pinned revision; no host mounts |
-| Secrets | Container environment variables set by the provider | Fetched by the outpost over HTTPS after boot, once; never in container metadata |
-| Control channel | `podman exec`, file read/write through the provider | NATS request/reply with the outpost; the provider only launches, inspects and stops |
-| Runtime abstraction | Provider interface with podman bindings in-process | Gateway interface (local in-process, remote over NATS) × provider (`container`, `microvm`, `pod`) |
-| Configuration | Hub-level defaults with per-org/per-workspace overrides in the DB | One `sandbox.json` document: hub default file, optional workspace replacement via API, optional hub-level ceilings |
-| Token | Short-lived PAT with workspace read/write | Workspace-bound token (PRD 20) issued for the sandbox, revoked on stop |
-| podman integration | `containers/podman/v5` Go bindings over the socket | The `podman` CLI, driven like `git` is today |
 
 ## Cross-cutting decisions
 

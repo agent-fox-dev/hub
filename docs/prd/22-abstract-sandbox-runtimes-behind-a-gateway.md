@@ -215,8 +215,8 @@ what the hub started). A future `af-gateway` stays a static binary.
 
 ### 3. Launch, inspect, stop, list; nothing more
 
-Exec, logs and file access are what PRD 15 used the provider for. With the
-outpost as the in-sandbox agent of the hub, the gateway only needs
+A runtime abstraction could also offer exec, logs and file access. With
+the outpost as the in-sandbox agent of the hub, the gateway only needs
 lifecycle verbs, which keeps every implementation small and a remote
 protocol trivial.
 
