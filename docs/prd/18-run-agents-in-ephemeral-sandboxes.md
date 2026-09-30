@@ -1,9 +1,10 @@
 # Run Agents in Ephemeral Sandboxes
 
-> **Status: draft.** The first workshop round settled the configuration
+> **Status: draft.** Two workshop rounds settled the configuration
 > location, secrets delivery, the default branch, NATS exposure, limits,
-> sessions, exec and liveness; those decisions are folded into the text
-> below. The Open Questions at the end are what remains.
+> sessions, exec, liveness, telemetry collection, workload output, secret
+> refresh and the single-fetch bootstrap; those decisions are folded into
+> the text below. The Open Questions at the end are what remains.
 
 ## Intent
 
@@ -62,8 +63,9 @@ supersedes it; the differences are listed under *Relationship to PRD 15*.
   and agents images (`containers/sandbox`, `containers/agents`) need nothing
   new beyond the binary itself.
 - Embed a NATS server in the hub, reachable over WebSocket through the hub's
-  existing HTTP endpoint, and define the subjects, message envelope, command
-  set and telemetry channel the hub, outposts and agents use.
+  existing HTTP endpoint, and define the subjects, message envelope and
+  command set between hub and outpost, plus the telemetry the outpost
+  collects from agents inside the sandbox and forwards to the hub.
 - Define a gateway interface and ship the local gateway (podman) with two
   providers: `container` and `microvm`. Define how remote gateways attach.
 - Bind sandbox lifetime to workspace lifetime (archive and delete stop every
@@ -161,6 +163,10 @@ integration, security posture of the container) carries over in spirit.
   liveness.
 - **Workload.** The command the outpost starts after bootstrap, from the
   sandbox configuration: an agent, a script, or nothing.
+- **Collector.** The outpost's local endpoint inside the sandbox where
+  agents and tools hand over telemetry (events, token usage, metrics,
+  logs). The outpost batches it and forwards it to the hub over NATS, so
+  nothing but the outpost ever holds NATS credentials.
 - **Bootstrap document.** What the outpost fetches from the hub with the
   sandbox token: workspace, branch, revision, clone URL, NATS credentials,
   workload command, environment (plain values, variables and secrets).
@@ -403,13 +409,20 @@ integration, security posture of the container) carries over in spirit.
   `env`; `secret_keys` tells the outpost which values must never be logged.
   `nats.url` is computed per gateway like `AF_HUB_URL` (from
   `[sandbox.local] nats_url`, the gateway entry, or `[nats] external_url`).
-- **BS-2.** Every bootstrap fetch SHALL emit `hub.sandbox.bootstrap` (actor:
-  the sandbox) so that a second fetch from an unexpected place is visible.
-  A fetch against a terminal sandbox, or with any credential other than the
-  bound token, is `404`.
+- **BS-2.** The bootstrap document SHALL be fetchable exactly once. The
+  first successful response marks the sandbox `bootstrapped`; every later
+  request is `404`, as is a request against a terminal sandbox or with any
+  credential other than the bound token. Each fetch, successful or refused,
+  SHALL emit `hub.sandbox.bootstrap` (actor: the sandbox) with the outcome,
+  so that a second attempt from an unexpected place is visible. An outpost
+  that loses the response after the hub sent it cannot recover: it reports
+  `boot_failed`, the sandbox fails, and the caller launches a new one.
+  Configuration changes after launch are never picked up by a running
+  sandbox other than through `refresh` (RF-1); anything else means
+  re-creating the sandbox.
 - **BS-3.** Secret values SHALL be resolved at fetch time, not at launch
-  time, so the document always reflects the current secret; the set of
-  keys is fixed at launch (CFG-7).
+  time, so the document reflects the current secret when the outpost
+  boots; the set of keys is fixed at launch (CFG-7).
 
 ### Outpost
 
@@ -455,11 +468,14 @@ integration, security posture of the container) carries over in spirit.
 - **OP-6.** After `ready`, when `command` is set, the outpost SHALL start it
   as a child process in `workdir` with the process environment plus the
   bootstrap `env` plus `AF_HUB_URL`, `AF_HUB_TOKEN`, `AF_SANDBOX_ID`,
-  `AF_WORKSPACE`, `AF_WORKSPACE_BRANCH`, `AF_REVISION`, `AF_NATS_URL`,
-  `AF_NATS_USER`, `AF_NATS_PASSWORD`; forward its stdout and stderr to the
-  container's; and publish `command_exited` with the exit code when it
-  ends. Without `command` the outpost idles. The outpost SHALL NOT restart
-  the workload; `on_exit` decides what the hub does next (LC-8).
+  `AF_WORKSPACE`, `AF_WORKSPACE_BRANCH`, `AF_REVISION` and
+  `AF_COLLECTOR_URL` (OP-10); forward its stdout and stderr to the
+  container's own stdout and stderr, and nowhere else; and publish
+  `command_exited` with the exit code when it ends. Without `command` the
+  outpost idles. The NATS credentials SHALL NOT be passed to the workload.
+  The outpost SHALL NOT restart the workload on its own; `on_exit` decides
+  what the hub does next (LC-8), and `refresh` (RF-2) is the one command
+  that may restart it.
 - **OP-7.** Every 30s the outpost publishes `heartbeat`: an "I'm alive" with
   `{ "head_sha", "dirty", "uptime_s", "command_running", "stats": { "cpu_pct",
   "mem_bytes", "disk_bytes", "procs" } }`, where `stats` are read from the
@@ -469,8 +485,34 @@ integration, security posture of the container) carries over in spirit.
   `push: false` and a 10s budget, so that a gateway-initiated stop still
   produces an `exiting` event when NATS is reachable.
 - **OP-9.** `afc outpost emit --type <type> [--json <payload> | -]` SHALL
-  publish a telemetry event (TEL-1) from inside the sandbox using the
-  `AF_NATS_*` variables, for workloads that cannot speak NATS themselves.
+  hand a telemetry record (TEL-1) to the collector at `AF_COLLECTOR_URL`,
+  for shell scripts and agents without an HTTP client of their own.
+- **OP-10.** The outpost SHALL run a **collector**: an HTTP listener bound
+  to loopback inside the sandbox (`AF_COLLECTOR_URL`, default
+  `http://127.0.0.1:9911`) accepting `POST /v1/telemetry` with one record
+  or a JSON array of records in the TEL-1 shape. The collector validates
+  the shape, stamps `sandbox_id` and receipt time, buffers up to 1000
+  records or 5s, and publishes batches on `af.sbx.<id>.tel.<type>`. When
+  NATS is disconnected it buffers up to 10 MB and then drops the oldest,
+  counting drops in the next heartbeat (`telemetry_dropped`). It answers
+  `202` immediately; delivery is best-effort.
+- **RF-1.** `refresh` (hub → outpost) SHALL re-deliver a rotated
+  environment to a long-running sandbox. `POST …/sandboxes/:id/refresh`
+  arms exactly one additional bootstrap fetch (a nonce with a 60s life,
+  recorded on the record), then sends the `refresh` command with the
+  nonce. The outpost fetches `GET /api/v1/sandboxes/:id/bootstrap?nonce=…`
+  over HTTPS (secrets never travel over NATS), replaces its copy of `env`,
+  `secret_keys` and `timeouts`, ignores structural fields (`git_url`,
+  `branch`, `command`, `nats`), and replies with the set of keys whose
+  values changed. Only `env`, `vars` and `secrets` are refreshable;
+  anything else requires a new sandbox.
+- **RF-2.** `refresh` carries `restart_command: bool` (default `false`).
+  When `true` the outpost sends SIGTERM to the workload, waits up to the
+  grace period, then starts `command` again with the new environment, and
+  publishes `command_exited` followed by a heartbeat with
+  `command_running: true`. When `false` the new values apply only to
+  processes started after the refresh (for example a workload that re-reads
+  its environment, or the next `refresh` with a restart).
 
 ### Hub ↔ sandbox messaging
 
@@ -500,7 +542,7 @@ integration, security posture of the container) carries over in spirit.
   |---|---|---|
   | `af.sbx.<id>.cmd` | hub → outpost | request/reply |
   | `af.sbx.<id>.evt.<type>` | outpost → hub | publish |
-  | `af.sbx.<id>.tel.<type>` | anything inside the sandbox → hub | publish (TEL-1) |
+  | `af.sbx.<id>.tel.<type>` | outpost collector → hub | publish (TEL-1) |
   | `af.gw.<name>.cmd` | hub → remote gateway | request/reply |
   | `af.gw.<name>.evt.<type>` | remote gateway → hub | publish |
 
@@ -518,7 +560,8 @@ integration, security posture of the container) carries over in spirit.
   `{ "id": "uuid", "type": "sync", "sent_at": "…", "sandbox_id": "…", "payload": {} }`.
   Replies reuse `id` and carry `{ "ok": true, "payload": {} }` or
   `{ "ok": false, "error": { "code": "dirty_worktree", "message": "…" } }`.
-  Command types in this PRD: `ping`, `sync`, `shutdown`. Event types:
+  Command types in this PRD: `ping`, `sync`, `shutdown`, `refresh`. Event
+  types:
   `ready`, `boot_failed`, `heartbeat`, `command_exited`, `exiting`. Unknown
   command types are answered with `unsupported`; unknown event types are
   logged and dropped. A command that receives no reply within its timeout
@@ -530,26 +573,29 @@ integration, security posture of the container) carries over in spirit.
 
 ### Telemetry from inside the sandbox
 
-- **TEL-1.** Agents and tools running in a sandbox MAY publish telemetry on
-  `af.sbx.<id>.tel.<type>` using the sandbox's NATS credentials (inherited
-  from the outpost, OP-6, or via `afc outpost emit`, OP-9). Types in this
-  PRD:
+- **TEL-1.** Agents and tools running in a sandbox report telemetry to the
+  outpost's collector (OP-10), never to the hub directly. Each record is
+  `{ "type": "...", "at": "...", "payload": {} }` with these types:
 
   | Type | Payload | Stored as |
   |---|---|---|
-  | `event` | an agent audit event in the format `POST /workspaces/:slug/runs/:run_id/events` accepts | agent audit event, workspace and sandbox id attached by the hub |
+  | `event` | an agent audit event in the format `POST /workspaces/:slug/runs/:run_id/events` accepts | agent audit event in the audit store, workspace and sandbox id attached by the hub |
   | `usage` | `{ "session_id", "model", "input_tokens", "output_tokens", … }` as `POST /sessions/:id/usage` accepts | token usage row |
-  | `metrics` | `{ "name", "value", "labels": {} }` samples | Prometheus gauge `af_sandbox_metric{name,workspace,sandbox,…}`, latest value, dropped when the sandbox ends |
-  | `log` | `{ "level", "message", "fields": {} }` | hub log line tagged with the sandbox id; not persisted |
+  | `metrics` | `{ "name", "value", "labels": {} }` samples | persisted in the audit store as sandbox metric samples, and the latest value per name kept on the sandbox record next to `stats` |
+  | `log` | `{ "level", "message", "fields": {} }` | persisted in the audit store alongside agent events, queryable through the unified audit query with `sandbox_id` as a filter |
 
   The hub SHALL ingest `event` and `usage` through the same validation and
   storage paths as their HTTP counterparts, attributing them to the sandbox
-  token's identity, so that an agent inside a sandbox can report over NATS
-  or over HTTPS interchangeably. Telemetry is fire-and-forget: malformed
-  payloads are counted (`af_sandbox_telemetry_rejected_total{type}`) and
-  dropped, never acknowledged.
+  token's identity, so that an agent can report through the collector or
+  over HTTPS interchangeably. Malformed records are counted
+  (`af_sandbox_telemetry_rejected_total{type}`) and dropped. Persisted
+  telemetry follows the existing audit retention settings.
 - **TEL-2.** Telemetry SHALL NOT influence lifecycle; only `evt` messages
   from the outpost do.
+- **TEL-3.** Only what an agent deliberately hands to the collector reaches
+  the hub. The outpost SHALL NOT capture, tail or stream the workload's
+  stdout or stderr, files in `workdir`, or shell history as telemetry;
+  those stay in the container and are the gateway host's to inspect.
 
 ### Gateway interface
 
@@ -644,8 +690,9 @@ integration, security posture of the container) carries over in spirit.
   | `GET /api/v1/workspaces/:slug/sandboxes/:id` | `sandboxes:read` | record |
   | `POST /api/v1/workspaces/:slug/sandboxes/:id/sync` | `sandboxes:write` | `sync` command; `200` with the reply, or `409 sandbox_not_ready` |
   | `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | `sandboxes:write` | graceful stop, body `{ "push": bool, "grace": "30s" }`, `202` |
+  | `POST /api/v1/workspaces/:slug/sandboxes/:id/refresh` | `sandboxes:write` | `refresh` command (RF-1), body `{ "restart_command": bool }`; `200` with the changed keys, or `409 sandbox_not_ready` |
   | `GET/PUT/DELETE /api/v1/workspaces/:slug/sandbox-config` | `sandboxes:read` / `sandboxes:write` | CFG-3 |
-  | `GET /api/v1/sandboxes/:id/bootstrap` | bound sandbox token only | BS-1 |
+  | `GET /api/v1/sandboxes/:id/bootstrap` | bound sandbox token only | BS-1, once (BS-2) or with a `refresh` nonce (RF-1) |
   | `GET /api/v1/sandboxes` | admin | all sandboxes across workspaces |
   | `GET /api/v1/gateways` | admin | gateways, connection state, capabilities |
 
@@ -662,7 +709,8 @@ integration, security posture of the container) carries over in spirit.
   [--image] [--cpu] [--memory] [--env K=V]... [--command "..."] [--wait]`,
   `afc sandbox list <slug> [--status]`, `afc sandbox get <slug> <id>
   [--wait-for ready]`, `afc sandbox sync <slug> <id> --pull|--push [--ref]
-  [--force]`, `afc sandbox stop <slug> <id> [--no-push] [--grace] [--wait]`,
+  [--force]`, `afc sandbox refresh <slug> <id> [--restart]`,
+  `afc sandbox stop <slug> <id> [--no-push] [--grace] [--wait]`,
   `afc sandbox config get|set|delete <slug> [--file sandbox.json]`,
   `afc sandbox gateways` (admin). `--wait` variants exit non-zero on
   `failed`, as `afc rebuild wait` does.
@@ -684,24 +732,28 @@ integration, security posture of the container) carries over in spirit.
   sees only the sandbox token, and `podman inspect` reveals nothing an
   attacker could not already get by holding that token for the sandbox's
   lifetime. Secrets live in the outpost's memory and in the workload's
-  process environment inside the sandbox, and are re-read from the hub on
-  each bootstrap fetch (BS-3).
+  process environment inside the sandbox. They cross the network exactly
+  once per sandbox (BS-2), plus once per hub-initiated `refresh` (RF-1),
+  always over HTTPS and never over NATS.
 - **SEC-4.** The sandbox token's scopes (TK-1) do not include `secrets:*`,
   `tokens:*`, `workspaces:*`, `vars:*` or `sandboxes:write`. A compromised
   sandbox can push to its workspace, open sessions, ingest audit data, and
-  fetch its own bootstrap document (with exactly the secrets its
-  configuration names), nothing else, and only until it is stopped.
+  fetch its own bootstrap document once (with exactly the secrets its
+  configuration names), nothing else, and only until it is stopped. A
+  token stolen after boot cannot fetch the document again unless the hub
+  arms a `refresh`, which is audited.
 - **SEC-5.** Audit events and logs SHALL redact `AF_HUB_TOKEN`, NATS
-  passwords and every value listed in `secret_keys`. The outpost SHALL
-  apply the same redaction to the workload output it forwards when a
-  secret value appears verbatim.
+  passwords and every value listed in `secret_keys`. The collector SHALL
+  apply the same redaction to `log` and `event` records before forwarding
+  them, so a secret an agent prints never reaches the hub verbatim.
 
 ### Audit, sessions and metrics
 
 - **AU-1.** Events through the existing emitter: `hub.sandbox.launch`
   (actor, workspace, provider, gateway, image, branch, revision),
-  `hub.sandbox.bootstrap`, `hub.sandbox.ready`, `hub.sandbox.sync`
-  (direction, result), `hub.sandbox.command_exited` (code),
+  `hub.sandbox.bootstrap` (outcome), `hub.sandbox.ready`, `hub.sandbox.sync`
+  (direction, result), `hub.sandbox.refresh` (actor, changed keys,
+  restarted), `hub.sandbox.command_exited` (code),
   `hub.sandbox.stop` (reason, final push result), `hub.sandbox.failed`
   (reason, error). Timeouts and reconciliation use actor `system`.
 - **AU-2.** Metrics: `af_sandboxes{gateway,provider,status}` gauge,
@@ -738,16 +790,20 @@ integration, security posture of the container) carries over in spirit.
 
 - Unit: configuration validation and ceilings (CFG); status machine (LC-4,
   LC-8) with a fake gateway and injected events; token binding checks (TK)
-  in the workspace and git server authz tests; bootstrap document assembly
-  and access control (BS); envelope encode/decode; the outpost command
-  handlers and workload supervision against a temporary git repository;
-  telemetry ingestion parity with the HTTP endpoints (TEL-1).
+  in the workspace and git server authz tests; bootstrap document assembly,
+  single-fetch and nonce handling (BS, RF); envelope encode/decode; the
+  outpost command handlers, workload supervision and refresh against a
+  temporary git repository; collector batching, buffering and redaction
+  (OP-10, SEC-5); telemetry ingestion parity with the HTTP endpoints
+  (TEL-1).
 - Integration: an embedded `nats-server` on a random port in tests, reached
   both over TCP and through the `/nats` WebSocket proxy; the outpost run as
   a goroutine against a test hub with the existing git server test helpers,
-  covering bootstrap, `ready`, `sync` both ways, `dirty_worktree`,
-  `non_fast_forward`, workload exit with `on_exit: stop`, `shutdown` with
-  push, reconnect after the test server restarts.
+  covering bootstrap (and its refusal on a second fetch), `ready`, `sync`
+  both ways, `dirty_worktree`, `non_fast_forward`, workload exit with
+  `on_exit: stop`, `refresh` with and without restart, telemetry from a
+  workload through the collector to the audit store, `shutdown` with push,
+  reconnect after the test server restarts.
 - Manual/CI: `make hub-run` plus a local podman launching
   `quay.io/agentfox/agents` with a workload that commits and pushes, as the
   acceptance check for the local gateway.
@@ -811,12 +867,16 @@ sandbox self-contained and every gateway equal.
 Only what the outpost needs to reach the hub goes into the container
 (`AF_HUB_URL`, `AF_HUB_TOKEN`, `AF_SANDBOX_ID`). Secrets, variables, NATS
 credentials and the workload command come from the bootstrap document over
-HTTPS. This keeps secrets out of `podman inspect`, out of remote gateway
-hosts, out of the launch job's payload and out of the NATS protocol; a
-gateway is trusted with a token whose blast radius is one sandbox, not with
-an API key for an LLM provider. The cost is that the outpost, not the
-container runtime, has to start the workload with that environment, which
-is why the outpost supervises the workload (OP-6).
+HTTPS, exactly once. This keeps secrets out of `podman inspect`, out of
+remote gateway hosts, out of the launch job's payload and out of the NATS
+protocol; a gateway is trusted with a token whose blast radius is one
+sandbox, not with an API key for an LLM provider. Single fetch means a
+token captured after boot is worth a git push and some audit rows, not the
+secrets; the price is that anything structural that changes after launch
+means a new sandbox, which is what "ephemeral" was supposed to mean anyway.
+The cost is also that the outpost, not the container runtime, has to start
+the workload with that environment, which is why the outpost supervises
+the workload (OP-6).
 
 ### 4. The outpost supervises the workload
 
@@ -891,8 +951,9 @@ An earlier draft inferred idleness from working-tree changes, which
 misreads an agent that is thinking or reading. The outpost's heartbeat is
 an "I'm alive" with resource stats; lifetime is bounded by `timeouts.max`
 and by the workload's own exit. Anything richer (token usage, agent
-events, custom metrics) travels on the telemetry subjects so that the hub
-can show what a sandbox is doing without guessing.
+events, custom metrics, logs) is handed to the outpost's collector and
+forwarded on the telemetry subjects, so that the hub can show what a
+sandbox is doing without guessing.
 
 ### 13. No hard caps
 
@@ -912,7 +973,33 @@ A separate binary would need its own build, release and image plumbing. The
 outpost is small, needs the same HTTP client and credential helper `afc`
 already has, and `afc` is already a static binary.
 
-### 16. Network policy waits for OpenShell
+### 16. The outpost is the collector
+
+Agents could publish to NATS themselves, but then every agent would need
+the sandbox's NATS credentials, its own client library and its own
+reconnect logic, and a misbehaving agent could flood the hub. A loopback
+collector in the outpost gives agents a one-line HTTP call (or
+`afc outpost emit`), keeps NATS credentials in one process, and puts
+batching, buffering, redaction and back-pressure in one place. The hub
+sees one publisher per sandbox.
+
+### 17. Agent-provided telemetry only, no output capture
+
+The hub stores what an agent chose to report: events, usage, metrics and
+log lines. It does not tail stdout or stderr. Captured output is noisy,
+hard to attribute to an agent action, and the most likely place for a
+secret to leak; a person debugging a local sandbox has the container's
+own stdout on the gateway host.
+
+### 18. Secret refresh as an explicit, audited, one-shot re-fetch
+
+Long-running sandboxes will outlive a rotated key. Rather than weakening
+the single-fetch rule, `refresh` has the hub arm one more fetch with a
+short-lived nonce and tell the outpost to take it, over HTTPS, with an
+optional workload restart. The same mechanism covers changed variables.
+Everything structural still means a new sandbox.
+
+### 19. Network policy waits for OpenShell
 
 Enforcing egress on plain podman means firewall rules on the host or a
 proxy sidecar, both partial and both replaced the moment OpenShell lands.
@@ -924,20 +1011,11 @@ provider or gateway built on OpenShell.
 
 1. **NATS auth: per-user reload now, auth callout later, or callout from
    the start?** See decision 7.
-2. **Telemetry mapping.** TEL-1 reuses the HTTP ingestion formats for
-   `event` and `usage`. Should `metrics` also be persisted (for example
-   into the audit store) rather than exposed only as live Prometheus
-   gauges that vanish with the sandbox?
-3. **Workload output.** The outpost forwards workload stdout and stderr to
-   the container's, where only the gateway host can read them. Should it
-   also stream them as `tel.log` so that `afc sandbox get` or a future UI
-   can show agent output without gateway access, and if so with what
-   retention?
-4. **Secret refresh.** BS-3 resolves secrets at fetch time, but the outpost
-   fetches once. Should a `refresh` command exist so that the hub can push
-   a rotated secret into a long-running sandbox, given the workload would
-   still have to be restarted to see it?
-5. **Bootstrap fetch policy.** BS-1 allows repeated fetches while the
-   sandbox is non-terminal, for retry safety. Is a single successful fetch
-   followed by `404` (with an explicit `refresh` command for the rare case)
-   the safer default?
+2. **Collector transport.** OP-10 uses loopback HTTP because every agent
+   runtime can `POST` JSON. A Unix socket would stop other processes in a
+   shared-network sandbox from reaching it, at the cost of a less
+   universal client story. Loopback inside the sandbox's own network
+   namespace is proposed as good enough.
+3. **Log volume.** `log` telemetry is persisted with the audit retention
+   settings. Should the collector rate-limit or cap logs per sandbox (for
+   example 10 MB per sandbox lifetime) before the hub has to?
