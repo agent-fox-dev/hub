@@ -133,6 +133,16 @@ type SyncAPIConfig struct {
 	PatchStore        PatchStore
 }
 
+// PatchSyncEntry records the sync outcome for a single patch branch in origin mode.
+type PatchSyncEntry struct {
+	BranchName  string `json:"branch_name"`
+	Action      string `json:"action"` // none, created, fast_forwarded, replaced
+	State       string `json:"state"`  // in_sync, diverged, missing_on_origin
+	LocalSHA    string `json:"local_sha"`
+	OriginSHA   string `json:"origin_sha"`
+	ReplacedSHA string `json:"replaced_sha,omitempty"`
+}
+
 // CarryPatchSyncResponse extends the standard sync response with carry-patch fields.
 type CarryPatchSyncResponse struct {
 	PatchesMerged     []string         `json:"patches_merged"`
@@ -141,6 +151,29 @@ type CarryPatchSyncResponse struct {
 	ForcePushDetected bool             `json:"force_push_detected"`
 	OriginFetched     bool             `json:"origin_fetched"`
 	PatchesSynced     []PatchSyncEntry `json:"patches_synced,omitempty"`
+	PatchesDiverged   []string         `json:"patches_diverged,omitempty"`
+}
+
+// MarshalJSON customizes JSON serialization of CarryPatchSyncResponse so that
+// patches_synced and patches_diverged are omitted when nil (hub mode),
+// but included when non-nil (origin mode, including empty slices).
+func (r CarryPatchSyncResponse) MarshalJSON() ([]byte, error) {
+	m := map[string]any{
+		"patches_merged":      r.PatchesMerged,
+		"rebuild_triggered":   r.RebuildTriggered,
+		"force_push_detected": r.ForcePushDetected,
+		"origin_fetched":      r.OriginFetched,
+	}
+	if r.RebuildJobID != nil {
+		m["rebuild_job_id"] = *r.RebuildJobID
+	}
+	if r.PatchesSynced != nil {
+		m["patches_synced"] = r.PatchesSynced
+	}
+	if r.PatchesDiverged != nil {
+		m["patches_diverged"] = r.PatchesDiverged
+	}
+	return json.Marshal(m)
 }
 
 // PatchStatusAPIConfig holds dependencies for patch-status endpoint.

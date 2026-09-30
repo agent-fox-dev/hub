@@ -72,6 +72,9 @@ func (r *CarryPatchSyncResponse) asExtras() map[string]any {
 	if r.PatchesSynced != nil {
 		extras["patches_synced"] = r.PatchesSynced
 	}
+	if r.PatchesDiverged != nil {
+		extras["patches_diverged"] = r.PatchesDiverged
+	}
 	return extras
 }
 
@@ -279,7 +282,26 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		OriginFetched:     originFetched,
 	}
 	if patchBranchSource == "origin" {
-		resp.PatchesSynced = outcomes
+		synced := make([]PatchSyncEntry, len(outcomes))
+		diverged := make([]string, 0)
+		for i, o := range outcomes {
+			entry := PatchSyncEntry{
+				BranchName: o.BranchName,
+				Action:     o.Action,
+				State:      o.State,
+				LocalSHA:   o.LocalSHA,
+				OriginSHA:  o.OriginSHA,
+			}
+			if o.Action == "replaced" {
+				entry.ReplacedSHA = o.ReplacedSHA
+			}
+			synced[i] = entry
+			if divergencePolicy == "report" && o.State == "diverged" {
+				diverged = append(diverged, o.BranchName)
+			}
+		}
+		resp.PatchesSynced = synced
+		resp.PatchesDiverged = diverged
 	}
 
 	// Upstream has advanced OR a patch advanced — update the workspace record.

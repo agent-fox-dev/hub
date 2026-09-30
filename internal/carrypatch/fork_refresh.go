@@ -6,19 +6,9 @@ import (
 	"strings"
 )
 
-// PatchSyncOutcome records the outcome of refreshing a single patch branch
-// from the origin remote.
-type PatchSyncOutcome struct {
-	BranchName  string `json:"branch_name"`
-	Action      string `json:"action"` // none, created, fast_forwarded, replaced
-	State       string `json:"state"`  // in_sync, diverged, missing_on_origin
-	LocalSHA    string `json:"local_sha,omitempty"`
-	OriginSHA   string `json:"origin_sha,omitempty"`
-	ReplacedSHA string `json:"replaced_sha,omitempty"`
-}
-
+// PatchSyncOutcome is an alias for PatchSyncEntry.
+type PatchSyncOutcome = PatchSyncEntry
 type patchSyncOutcome = PatchSyncOutcome
-type PatchSyncEntry = PatchSyncOutcome
 
 // refreshPatchBranchesFromOrigin brings each registered patch branch to the fork's tip.
 // It considers, in position order, every patch of the workspace whose status is

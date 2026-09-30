@@ -3,8 +3,11 @@ package carrypatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -1632,4 +1635,404 @@ func TestCarryPatchSync_TS02_27_HubModeClearsOriginSyncState(t *testing.T) {
 		t.Errorf("p27-3 sha was modified; want %q, got %v", priorDeletedSHA, p3SHA)
 	}
 }
+
+// ===========================================================================
+// TS-02-21 (unit): origin_fetched is present as a boolean in every sync response
+// regardless of PATCH_BRANCH_SOURCE
+//
+// Verifies: 02-REQ-5.1
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_21_OriginFetchedPresentInEverySyncResponse(t *testing.T) {
+	// 1. Hub mode sync
+	envHub := newFullTestEnv(t)
+	slugHub := "ws-ts02-21-hub"
+	seedWorkspaceCarryPatch(t, envHub.db, slugHub, "alice",
+		"https://github.com/example/upstream", "upstream0", "integration", "upstream0")
+	envHub.getVariable = func(scope, scopeID, key string) (string, error) {
+		if key == "PATCH_BRANCH_SOURCE" {
+			return "hub", nil
+		}
+		return "", nil
+	}
+	envHub.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			return "upstream0", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	recHub := envHub.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slugHub+"/sync", "", auth)
+	if recHub.Code != http.StatusOK {
+		t.Fatalf("hub POST /sync failed: status=%d body=%s", recHub.Code, recHub.Body.String())
+	}
+	var hubMap map[string]any
+	if err := json.NewDecoder(recHub.Body).Decode(&hubMap); err != nil {
+		t.Fatalf("decode hub json failed: %v", err)
+	}
+	valHub, okHub := hubMap["origin_fetched"]
+	if !okHub {
+		t.Errorf("hub response missing origin_fetched key: %v", hubMap)
+	} else if _, isBool := valHub.(bool); !isBool {
+		t.Errorf("hub origin_fetched is not a boolean: %T (%v)", valHub, valHub)
+	}
+
+	// 2. Origin mode sync
+	envOrigin := newFullTestEnv(t)
+	slugOrigin := "ws-ts02-21-origin"
+	seedWorkspaceCarryPatch(t, envOrigin.db, slugOrigin, "alice",
+		"https://github.com/example/upstream", "upstream0", "integration", "upstream0")
+	envOrigin.getVariable = func(scope, scopeID, key string) (string, error) {
+		if key == "PATCH_BRANCH_SOURCE" {
+			return "origin", nil
+		}
+		return "", nil
+	}
+	envOrigin.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			return "upstream0", nil
+		}
+		return "", nil
+	}
+
+	recOrigin := envOrigin.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slugOrigin+"/sync", "", auth)
+	if recOrigin.Code != http.StatusOK {
+		t.Fatalf("origin POST /sync failed: status=%d body=%s", recOrigin.Code, recOrigin.Body.String())
+	}
+	var originMap map[string]any
+	if err := json.NewDecoder(recOrigin.Body).Decode(&originMap); err != nil {
+		t.Fatalf("decode origin json failed: %v", err)
+	}
+	valOrigin, okOrigin := originMap["origin_fetched"]
+	if !okOrigin {
+		t.Errorf("origin response missing origin_fetched key: %v", originMap)
+	} else if _, isBool := valOrigin.(bool); !isBool {
+		t.Errorf("origin origin_fetched is not a boolean: %T (%v)", valOrigin, valOrigin)
+	}
+}
+
+// ===========================================================================
+// TS-02-22 (unit): In origin mode, patches_synced has one shaped element per
+// considered patch with replaced_sha present only for a replaced action
+//
+// Verifies: 02-REQ-5.2
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_22_PatchesSyncedShapedElements(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-22"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream0", "integration", "upstream0")
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if key == "PATCH_BRANCH_SOURCE" {
+			return "origin", nil
+		}
+		if key == "PATCH_DIVERGENCE_POLICY" {
+			return "replace", nil
+		}
+		return "", nil
+	}
+
+	// 3 patches:
+	// 1. branch-created: missing locally, exists on origin -> action=created
+	// 2. branch-ff: exists locally & origin, local is ancestor -> action=fast_forwarded
+	// 3. branch-replaced: exists locally & origin, local is NOT ancestor -> action=replaced
+	patches := []Patch{
+		{ID: "p-created", WorkspaceID: slug, BranchName: "branch-created", Position: 1, Status: PatchStatusActive},
+		{ID: "p-ff", WorkspaceID: slug, BranchName: "branch-ff", Position: 2, Status: PatchStatusActive},
+		{ID: "p-replaced", WorkspaceID: slug, BranchName: "branch-replaced", Position: 3, Status: PatchStatusActive},
+	}
+	env.patchStore.Patches = patches
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			switch ref {
+			case "refs/remotes/upstream/HEAD":
+				return "upstream0", nil
+			case "refs/remotes/origin/branch-created":
+				return "orig-sha-created", nil
+			case "refs/heads/branch-created":
+				return "", errors.New("not found")
+			case "refs/remotes/origin/branch-ff":
+				return "orig-sha-ff", nil
+			case "refs/heads/branch-ff":
+				return "local-sha-ff", nil
+			case "refs/remotes/origin/branch-replaced":
+				return "orig-sha-replaced", nil
+			case "refs/heads/branch-replaced":
+				return "local-sha-replaced", nil
+			}
+		}
+		return "", nil
+	}
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, descendant string) (bool, error) {
+		if ancestor == "local-sha-ff" && descendant == "orig-sha-ff" {
+			return true, nil
+		}
+		if ancestor == "local-sha-replaced" && descendant == "orig-sha-replaced" {
+			return false, nil
+		}
+		return false, nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var rawResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("unmarshal json failed: %v", err)
+	}
+
+	rawSynced, ok := rawResp["patches_synced"].([]any)
+	if !ok {
+		t.Fatalf("expected patches_synced array in response, got: %v", rawResp["patches_synced"])
+	}
+	if len(rawSynced) != 3 {
+		t.Fatalf("expected 3 patches_synced elements, got %d: %v", len(rawSynced), rawSynced)
+	}
+
+	validActions := map[string]bool{"none": true, "created": true, "fast_forwarded": true, "replaced": true}
+	validStates := map[string]bool{"in_sync": true, "diverged": true, "missing_on_origin": true}
+
+	for _, item := range rawSynced {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("item is not a map: %v", item)
+		}
+		for _, requiredKey := range []string{"branch_name", "action", "state", "local_sha", "origin_sha"} {
+			if _, exists := entry[requiredKey]; !exists {
+				t.Errorf("entry missing required key %q: %v", requiredKey, entry)
+			}
+		}
+		action, _ := entry["action"].(string)
+		state, _ := entry["state"].(string)
+		if !validActions[action] {
+			t.Errorf("invalid action %q: %v", action, entry)
+		}
+		if !validStates[state] {
+			t.Errorf("invalid state %q: %v", state, entry)
+		}
+
+		if action == "replaced" {
+			if _, exists := entry["replaced_sha"]; !exists {
+				t.Errorf("expected replaced_sha in replaced entry: %v", entry)
+			}
+		} else {
+			if _, exists := entry["replaced_sha"]; exists {
+				t.Errorf("did not expect replaced_sha in non-replaced entry (%s): %v", action, entry)
+			}
+		}
+	}
+}
+
+// ===========================================================================
+// TS-02-23 (unit): In hub mode, the sync response omits patches_synced entirely
+//
+// Verifies: 02-REQ-5.3
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_23_HubModeOmitsPatchesSynced(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-23"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream0", "integration", "upstream0")
+
+	// PATCH_BRANCH_SOURCE unset
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		return "", nil
+	}
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			return "upstream0", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var rawResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("unmarshal json failed: %v", err)
+	}
+
+	if _, exists := rawResp["patches_synced"]; exists {
+		t.Errorf("expected patches_synced to be omitted in hub mode, but found: %v", rawResp["patches_synced"])
+	}
+	if _, exists := rawResp["patches_diverged"]; exists {
+		t.Errorf("expected patches_diverged to be omitted in hub mode, but found: %v", rawResp["patches_diverged"])
+	}
+}
+
+// ===========================================================================
+// TS-02-24 (unit): Under report policy, patches_diverged lists the branch names
+// recorded diverged during this sync
+//
+// Verifies: 02-REQ-5.4
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_24_ReportPolicyPatchesDiverged(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-24"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream0", "integration", "upstream0")
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if key == "PATCH_BRANCH_SOURCE" {
+			return "origin", nil
+		}
+		if key == "PATCH_DIVERGENCE_POLICY" {
+			return "report", nil
+		}
+		return "", nil
+	}
+
+	patches := []Patch{
+		{ID: "p-a", WorkspaceID: slug, BranchName: "branch-a", Position: 1, Status: PatchStatusActive},
+		{ID: "p-b", WorkspaceID: slug, BranchName: "branch-b", Position: 2, Status: PatchStatusActive},
+		{ID: "p-c", WorkspaceID: slug, BranchName: "branch-c", Position: 3, Status: PatchStatusActive},
+	}
+	env.patchStore.Patches = patches
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			switch ref {
+			case "refs/remotes/upstream/HEAD":
+				return "upstream0", nil
+			case "refs/remotes/origin/branch-a":
+				return "sha-a-orig", nil
+			case "refs/heads/branch-a":
+				return "sha-a-local", nil
+			case "refs/remotes/origin/branch-b":
+				return "sha-b-orig", nil
+			case "refs/heads/branch-b":
+				return "sha-b-local", nil
+			case "refs/remotes/origin/branch-c":
+				return "sha-c-same", nil
+			case "refs/heads/branch-c":
+				return "sha-c-same", nil
+			}
+		}
+		return "", nil
+	}
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, descendant string) (bool, error) {
+		// branch-a and branch-b are diverged (neither ancestor)
+		return false, nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal CarryPatchSyncResponse failed: %v", err)
+	}
+
+	var rawResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("unmarshal json map failed: %v", err)
+	}
+
+	if _, exists := rawResp["patches_diverged"]; !exists {
+		t.Fatalf("expected patches_diverged key in response, got: %v", rawResp)
+	}
+
+	sort.Strings(resp.PatchesDiverged)
+	expected := []string{"branch-a", "branch-b"}
+	if !slices.Equal(resp.PatchesDiverged, expected) {
+		t.Errorf("expected patches_diverged=%v, got: %v", expected, resp.PatchesDiverged)
+	}
+}
+
+// ===========================================================================
+// TS-02-25 (unit): Under replace policy, patches_diverged is present and empty
+// even when a divergence was resolved
+//
+// Verifies: 02-REQ-5.5
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_25_ReplacePolicyPatchesDivergedEmpty(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-25"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream", "upstream0", "integration", "upstream0")
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if key == "PATCH_BRANCH_SOURCE" {
+			return "origin", nil
+		}
+		if key == "PATCH_DIVERGENCE_POLICY" {
+			return "replace", nil
+		}
+		return "", nil
+	}
+
+	patches := []Patch{
+		{ID: "p-x", WorkspaceID: slug, BranchName: "branch-x", Position: 1, Status: PatchStatusActive},
+	}
+	env.patchStore.Patches = patches
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			switch ref {
+			case "refs/remotes/upstream/HEAD":
+				return "upstream0", nil
+			case "refs/remotes/origin/branch-x":
+				return "sha-x-orig", nil
+			case "refs/heads/branch-x":
+				return "sha-x-local", nil
+			}
+		}
+		return "", nil
+	}
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, descendant string) (bool, error) {
+		return false, nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var rawResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawResp); err != nil {
+		t.Fatalf("unmarshal json map failed: %v", err)
+	}
+
+	val, exists := rawResp["patches_diverged"]
+	if !exists {
+		t.Fatalf("expected patches_diverged key in response, got: %v", rawResp)
+	}
+	arr, ok := val.([]any)
+	if !ok {
+		t.Fatalf("expected patches_diverged to be an array, got %T: %v", val, val)
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected patches_diverged to be empty array under replace policy, got: %v", arr)
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal CarryPatchSyncResponse failed: %v", err)
+	}
+	if resp.PatchesDiverged == nil || len(resp.PatchesDiverged) != 0 {
+		t.Errorf("expected resp.PatchesDiverged to be empty slice, got: %v", resp.PatchesDiverged)
+	}
+}
+
 

@@ -571,6 +571,7 @@ or unexpected failures.
 | 404 | Workspace not found or not owned by the caller |
 | 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`); upstream history has diverged (force-push detected) |
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
+| 502 | Origin fetch failed (`502` with message `origin fetch failed` when `PATCH_BRANCH_SOURCE=origin` and origin fetch or credential resolution fails) |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
 #### Carry-Patch Sync Extension
@@ -617,7 +618,18 @@ reflect it:
   "patches_merged": ["feature/already-merged"],
   "rebuild_triggered": true,
   "rebuild_job_id": "d3b07384-d113-4ec5-8a4e-a12345678901",
-  "force_push_detected": false
+  "force_push_detected": false,
+  "origin_fetched": true,
+  "patches_synced": [
+    {
+      "branch_name": "feature/active-patch",
+      "action": "fast_forwarded",
+      "state": "in_sync",
+      "local_sha": "abc111...",
+      "origin_sha": "abc222..."
+    }
+  ],
+  "patches_diverged": []
 }
 ```
 
@@ -629,6 +641,9 @@ reflect it:
 | `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
 | `rebuild_job_id` | string | ID of the enqueued rebuild job. Omitted entirely when no rebuild was enqueued -- it is never `null`. |
 | `force_push_detected` | boolean | Whether the upstream HEAD is not a descendant of the previously stored upstream SHA, indicating a history rewrite. Informational only -- sync still proceeds. |
+| `origin_fetched` | boolean | Whether the `origin` remote was fetched during this sync (present in every carry-patch sync response) |
+| `patches_synced` | object[] | Array of sync outcomes for each considered patch branch, present only when `PATCH_BRANCH_SOURCE=origin`. Each object has: `branch_name` (string), `action` (string: `none`, `created`, `fast_forwarded`, `replaced`), `state` (string: `in_sync`, `diverged`, `missing_on_origin`), `local_sha` (string), `origin_sha` (string), and `replaced_sha` (string, present only when `action=replaced`). Omitted when `PATCH_BRANCH_SOURCE=hub`. |
+| `patches_diverged` | string[] | Array of branch names recorded with `state=diverged` during this sync when `PATCH_DIVERGENCE_POLICY=report`, or empty array `[]` when `PATCH_DIVERGENCE_POLICY=replace`. Omitted when `PATCH_BRANCH_SOURCE=hub`. |
 
 **Carry-Patch Sync Flow:**
 

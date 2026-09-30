@@ -610,6 +610,7 @@ paths:
                     rebuild_triggered: true
                     rebuild_job_id: d3b07384-d113-4ec5-8a4e-a12345678901
                     force_push_detected: false
+                    origin_fetched: false
         "400":
           description: The workspace is not active, the clone is not ready, or sync is disabled.
           content:
@@ -639,7 +640,9 @@ paths:
         "502":
           description: >-
             Upstream fetch failed (network, authentication, or repository
-            error), or credential resolution failed.
+            error), credential resolution failed, or origin fetch failed
+            (in origin mode, when fetching the origin remote or resolving origin
+            credentials fails).
           content:
             application/json:
               schema:
@@ -5358,7 +5361,7 @@ components:
         carry-patch fields as additional top-level keys (16-REQ-5.1).
       allOf:
         - $ref: "#/components/schemas/Workspace"
-      required: [patches_merged, rebuild_triggered, force_push_detected]
+      required: [patches_merged, rebuild_triggered, force_push_detected, origin_fetched]
       properties:
         patches_merged:
           type: array
@@ -5382,6 +5385,51 @@ components:
             Whether the new upstream HEAD is not a descendant of the previously
             stored one, indicating a history rewrite. Informational only -- the
             sync still proceeds.
+        origin_fetched:
+          type: boolean
+          description: Whether the origin remote was fetched during this sync.
+        patches_synced:
+          type: array
+          description: >-
+            Array of sync outcomes for each considered patch branch, present only
+            when PATCH_BRANCH_SOURCE is origin. Omitted when PATCH_BRANCH_SOURCE is hub.
+          items:
+            type: object
+            required:
+              - branch_name
+              - action
+              - state
+              - local_sha
+              - origin_sha
+            properties:
+              branch_name:
+                type: string
+                description: The name of the patch branch.
+              action:
+                type: string
+                enum: [none, created, fast_forwarded, replaced]
+                description: Action taken for this patch branch during fork-refresh.
+              state:
+                type: string
+                enum: [in_sync, diverged, missing_on_origin]
+                description: Fork-sync state of this patch branch after the sync.
+              local_sha:
+                type: string
+                description: Local commit SHA for this branch, or empty if missing locally prior to creation.
+              origin_sha:
+                type: string
+                description: Origin commit SHA for this branch, or empty if missing on origin.
+              replaced_sha:
+                type: string
+                description: The previous local commit SHA backed up before replacement. Present only when action is replaced.
+        patches_diverged:
+          type: array
+          description: >-
+            Branch names recorded with state diverged during this sync when
+            PATCH_DIVERGENCE_POLICY is report, or an empty array when
+            PATCH_DIVERGENCE_POLICY is replace. Omitted in hub mode.
+          items:
+            type: string
 
     # -- Patches ---------------------------------------------------------------
 
