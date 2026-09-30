@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -769,3 +770,866 @@ func TestCarryPatchSync_IsAncestorError_ForcePushFalse(t *testing.T) {
 		t.Error("expected rebuild_triggered=true even when IsAncestor errors for force-push check")
 	}
 }
+
+// ===========================================================================
+// TS-02-9 (unit): Only patches with status active, conflict or disabled are
+// considered, in position order, excluding merged_upstream, deleted and the
+// integration branch
+//
+// Verifies: 02-REQ-3.1
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_9_OnlyActiveConflictDisabledConsidered(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-9"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+		}
+		if key == "REBUILD_STRATEGY" {
+			return "rebase", nil
+		}
+		if key == "AUTO_REBUILD_AFTER_SYNC" {
+			return "true", nil
+		}
+		return "", nil
+	}
+
+	// 6 patches in specific order:
+	// pos 1: feat-active (active) -> considered
+	// pos 2: integration (active) -> skipped because branch_name == integration_branch
+	// pos 3: feat-conflict (conflict) -> considered
+	// pos 4: feat-merged (merged_upstream) -> skipped
+	// pos 5: feat-disabled (disabled) -> considered
+	// pos 6: feat-deleted (deleted) -> skipped
+	patches := []Patch{
+		{ID: "p1", WorkspaceID: slug, BranchName: "feat-active", Position: 1, Status: PatchStatusActive},
+		{ID: "p2", WorkspaceID: slug, BranchName: "integration", Position: 2, Status: PatchStatusActive},
+		{ID: "p3", WorkspaceID: slug, BranchName: "feat-conflict", Position: 3, Status: PatchStatusConflict},
+		{ID: "p4", WorkspaceID: slug, BranchName: "feat-merged", Position: 4, Status: PatchStatusMergedUpstream},
+		{ID: "p5", WorkspaceID: slug, BranchName: "feat-disabled", Position: 5, Status: PatchStatusDisabled},
+		{ID: "p6", WorkspaceID: slug, BranchName: "feat-deleted", Position: 6, Status: PatchStatusDeleted},
+	}
+	env.patchStore.Patches = patches
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			if args[2] == "refs/remotes/upstream/HEAD" {
+				return "upstream0", nil
+			}
+			return "c111", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	expectedBranches := []string{"feat-active", "feat-conflict", "feat-disabled"}
+	if len(resp.PatchesSynced) != len(expectedBranches) {
+		t.Fatalf("expected %d patches synced, got %d: %+v", len(expectedBranches), len(resp.PatchesSynced), resp.PatchesSynced)
+	}
+	for i, exp := range expectedBranches {
+		if resp.PatchesSynced[i].BranchName != exp {
+			t.Errorf("patches_synced[%d] branch_name = %q; want %q", i, resp.PatchesSynced[i].BranchName, exp)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-02-10 (unit): A patch missing on origin leaves the local branch untouched,
+// records missing_on_origin without changing status, and persists the state
+//
+// Verifies: 02-REQ-3.2, 02-REQ-6.2
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_10_MissingOnOrigin(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-10"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p10", WorkspaceID: slug, BranchName: "feature-missing", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+	seedPatch(t, env.db, "p10", slug, "feature-missing", 1, PatchStatusActive)
+
+	var updateRefCalledForMissing bool
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			if args[2] == "refs/remotes/upstream/HEAD" {
+				return "upstream0", nil
+			}
+			if args[2] == "refs/remotes/origin/feature-missing" {
+				return "", fmt.Errorf("fatal: Needed a single revision")
+			}
+			if args[2] == "refs/heads/feature-missing" {
+				return "local111", nil
+			}
+		}
+		if len(args) >= 2 && args[0] == "update-ref" && args[1] == "refs/heads/feature-missing" {
+			updateRefCalledForMissing = true
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if updateRefCalledForMissing {
+		t.Error("expected refs/heads/feature-missing not to be updated via update-ref")
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	var found *PatchSyncEntry
+	for i := range resp.PatchesSynced {
+		if resp.PatchesSynced[i].BranchName == "feature-missing" {
+			found = &resp.PatchesSynced[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected feature-missing in patches_synced: %+v", resp.PatchesSynced)
+	}
+	if found.State != "missing_on_origin" {
+		t.Errorf("entry.State = %q; want 'missing_on_origin'", found.State)
+	}
+
+	// Verify patch status stays active
+	dbPatches, _ := env.patchStore.ListPatches(context.Background(), slug)
+	if len(dbPatches) == 0 || dbPatches[0].Status != PatchStatusActive {
+		t.Errorf("patch status changed; want 'active', got %v", dbPatches)
+	}
+
+	// Verify persisted origin_sync_state, origin_sha, origin_synced_at
+	call, ok := env.patchStore.OriginSyncStates["p10"]
+	if !ok {
+		t.Fatal("expected SetOriginSyncState to be called for p10")
+	}
+	if call.State == nil || *call.State != "missing_on_origin" {
+		t.Errorf("persisted state = %v; want 'missing_on_origin'", call.State)
+	}
+	if call.SHA != nil {
+		t.Errorf("persisted sha = %v; want nil", call.SHA)
+	}
+	if call.SyncedAt == "" {
+		t.Error("persisted syncedAt is empty; want non-empty timestamp")
+	}
+}
+
+// ===========================================================================
+// TS-02-11 (unit): A patch branch missing locally but present on origin is
+// created at the origin tip via update-ref and counts as patch advanced
+//
+// Verifies: 02-REQ-3.3, 02-REQ-4.1
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_11_MissingLocallyCreated(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-11"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+		}
+		if key == "AUTO_REBUILD_AFTER_SYNC" {
+			return "true", nil
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p11", WorkspaceID: slug, BranchName: "feature-x", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+
+	originSHA := "originX111"
+	var createdWithUpdateRef bool
+	refs := map[string]string{
+		"refs/remotes/upstream/HEAD":      "upstream0",
+		"refs/remotes/origin/feature-x": originSHA,
+	}
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			if sha, ok := refs[ref]; ok {
+				return sha, nil
+			}
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
+		if len(args) >= 3 && args[0] == "update-ref" {
+			ref := args[1]
+			sha := args[2]
+			refs[ref] = sha
+			if ref == "refs/heads/feature-x" && sha == originSHA {
+				createdWithUpdateRef = true
+			}
+			return "", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if !createdWithUpdateRef {
+		t.Error("expected update-ref to create refs/heads/feature-x at origin tip")
+	}
+	if refs["refs/heads/feature-x"] != originSHA {
+		t.Errorf("refs/heads/feature-x = %q; want %q", refs["refs/heads/feature-x"], originSHA)
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	var found *PatchSyncEntry
+	for i := range resp.PatchesSynced {
+		if resp.PatchesSynced[i].BranchName == "feature-x" {
+			found = &resp.PatchesSynced[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected feature-x in patches_synced: %+v", resp.PatchesSynced)
+	}
+	if found.Action != "created" {
+		t.Errorf("entry.Action = %q; want 'created'", found.Action)
+	}
+	if !resp.RebuildTriggered {
+		t.Error("expected rebuild_triggered=true when branch is created (counts as patch advanced)")
+	}
+}
+
+// ===========================================================================
+// TS-02-12 (unit): A patch whose local and origin tips are the same commit is
+// recorded in_sync with no ref write
+//
+// Verifies: 02-REQ-3.4
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_12_InSyncNoRefWrite(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-12"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p12", WorkspaceID: slug, BranchName: "feature-y", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+
+	shaY := "shaY222"
+	var updateRefCalled bool
+	refs := map[string]string{
+		"refs/remotes/upstream/HEAD":      "upstream0",
+		"refs/remotes/origin/feature-y": shaY,
+		"refs/heads/feature-y":          shaY,
+	}
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			if sha, ok := refs[ref]; ok {
+				return sha, nil
+			}
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
+		if len(args) >= 2 && args[0] == "update-ref" && args[1] == "refs/heads/feature-y" {
+			updateRefCalled = true
+			return "", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if updateRefCalled {
+		t.Error("expected no update-ref call when local and origin tips match")
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	var found *PatchSyncEntry
+	for i := range resp.PatchesSynced {
+		if resp.PatchesSynced[i].BranchName == "feature-y" {
+			found = &resp.PatchesSynced[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected feature-y in patches_synced: %+v", resp.PatchesSynced)
+	}
+	if found.State != "in_sync" {
+		t.Errorf("entry.State = %q; want 'in_sync'", found.State)
+	}
+	if found.Action != "none" {
+		t.Errorf("entry.Action = %q; want 'none'", found.Action)
+	}
+}
+
+// ===========================================================================
+// TS-02-13 (unit): A local tip that is an ancestor of the origin tip is
+// fast-forwarded via update-ref using GitRunner.IsAncestor on resolved SHAs
+//
+// Verifies: 02-REQ-3.5, 02-REQ-4.1
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_13_FastForwardViaIsAncestor(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-13"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+		}
+		if key == "AUTO_REBUILD_AFTER_SYNC" {
+			return "true", nil
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p13", WorkspaceID: slug, BranchName: "feature-z", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+
+	shaA := "shaA333"
+	shaB := "shaB333"
+	refs := map[string]string{
+		"refs/remotes/upstream/HEAD":      "upstream0",
+		"refs/heads/feature-z":          shaA,
+		"refs/remotes/origin/feature-z": shaB,
+	}
+
+	var isAncestorCalledWithResolvedSHAs bool
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, descendant string) (bool, error) {
+		if ancestor == shaA && descendant == shaB {
+			isAncestorCalledWithResolvedSHAs = true
+			return true, nil
+		}
+		return false, nil
+	}
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			if sha, ok := refs[ref]; ok {
+				return sha, nil
+			}
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
+		if len(args) >= 3 && args[0] == "update-ref" {
+			refs[args[1]] = args[2]
+			return "", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if !isAncestorCalledWithResolvedSHAs {
+		t.Error("expected IsAncestor to be called with resolved SHAs shaA and shaB")
+	}
+	if refs["refs/heads/feature-z"] != shaB {
+		t.Errorf("refs/heads/feature-z = %q; want %q", refs["refs/heads/feature-z"], shaB)
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	var found *PatchSyncEntry
+	for i := range resp.PatchesSynced {
+		if resp.PatchesSynced[i].BranchName == "feature-z" {
+			found = &resp.PatchesSynced[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected feature-z in patches_synced: %+v", resp.PatchesSynced)
+	}
+	if found.Action != "fast_forwarded" {
+		t.Errorf("entry.Action = %q; want 'fast_forwarded'", found.Action)
+	}
+	if !resp.RebuildTriggered {
+		t.Error("expected rebuild_triggered=true when branch is fast-forwarded (counts as patch advanced)")
+	}
+}
+
+// ===========================================================================
+// TS-02-14 (unit): A diverged branch under replace policy is backed up to
+// refs/hub/replaced, moved to the origin tip, and recorded as replaced with both SHAs
+//
+// Verifies: 02-REQ-3.6, 02-REQ-4.1
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_14_DivergedReplacePolicy(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-14"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+			if key == "PATCH_DIVERGENCE_POLICY" {
+				return "replace", nil
+			}
+		}
+		if key == "AUTO_REBUILD_AFTER_SYNC" {
+			return "true", nil
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p14", WorkspaceID: slug, BranchName: "feature-w", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+
+	shaA := "shaA444"
+	shaB := "shaB444"
+	priorBackup := "priorOldBackup"
+	refs := map[string]string{
+		"refs/remotes/upstream/HEAD":         "upstream0",
+		"refs/heads/feature-w":             shaA,
+		"refs/remotes/origin/feature-w":    shaB,
+		"refs/hub/replaced/feature-w":      priorBackup,
+	}
+
+	// Neither is an ancestor of the other
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			if sha, ok := refs[ref]; ok {
+				return sha, nil
+			}
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
+		if len(args) >= 3 && args[0] == "update-ref" {
+			refs[args[1]] = args[2]
+			return "", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if refs["refs/hub/replaced/feature-w"] != shaA {
+		t.Errorf("refs/hub/replaced/feature-w = %q; want %q", refs["refs/hub/replaced/feature-w"], shaA)
+	}
+	if refs["refs/heads/feature-w"] != shaB {
+		t.Errorf("refs/heads/feature-w = %q; want %q", refs["refs/heads/feature-w"], shaB)
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	var found *PatchSyncEntry
+	for i := range resp.PatchesSynced {
+		if resp.PatchesSynced[i].BranchName == "feature-w" {
+			found = &resp.PatchesSynced[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected feature-w in patches_synced: %+v", resp.PatchesSynced)
+	}
+	if found.Action != "replaced" {
+		t.Errorf("entry.Action = %q; want 'replaced'", found.Action)
+	}
+	if found.LocalSHA != shaA {
+		t.Errorf("entry.LocalSHA = %q; want %q", found.LocalSHA, shaA)
+	}
+	if found.OriginSHA != shaB {
+		t.Errorf("entry.OriginSHA = %q; want %q", found.OriginSHA, shaB)
+	}
+	if found.ReplacedSHA != shaA {
+		t.Errorf("entry.ReplacedSHA = %q; want %q", found.ReplacedSHA, shaA)
+	}
+	if !resp.RebuildTriggered {
+		t.Error("expected rebuild_triggered=true when branch is replaced (counts as patch advanced)")
+	}
+}
+
+// ===========================================================================
+// TS-02-15 (unit): A diverged branch under report policy is left untouched
+// and recorded diverged with both SHAs
+//
+// Verifies: 02-REQ-3.7
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_15_DivergedReportPolicy(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-15"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+			if key == "PATCH_DIVERGENCE_POLICY" {
+				return "report", nil
+			}
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p15", WorkspaceID: slug, BranchName: "feature-v", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+
+	shaA := "shaA555"
+	shaB := "shaB555"
+	refs := map[string]string{
+		"refs/remotes/upstream/HEAD":      "upstream0",
+		"refs/heads/feature-v":          shaA,
+		"refs/remotes/origin/feature-v": shaB,
+	}
+
+	// Neither is ancestor of the other
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	var updateRefCalled bool
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			if sha, ok := refs[ref]; ok {
+				return sha, nil
+			}
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
+		if len(args) >= 2 && args[0] == "update-ref" {
+			updateRefCalled = true
+			return "", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if updateRefCalled {
+		t.Error("expected no update-ref call under report divergence policy")
+	}
+	if refs["refs/heads/feature-v"] != shaA {
+		t.Errorf("refs/heads/feature-v = %q; want %q", refs["refs/heads/feature-v"], shaA)
+	}
+	if _, ok := refs["refs/hub/replaced/feature-v"]; ok {
+		t.Error("expected no backup ref under report divergence policy")
+	}
+
+	var resp CarryPatchSyncResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	var found *PatchSyncEntry
+	for i := range resp.PatchesSynced {
+		if resp.PatchesSynced[i].BranchName == "feature-v" {
+			found = &resp.PatchesSynced[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected feature-v in patches_synced: %+v", resp.PatchesSynced)
+	}
+	if found.State != "diverged" {
+		t.Errorf("entry.State = %q; want 'diverged'", found.State)
+	}
+	if found.LocalSHA != shaA {
+		t.Errorf("entry.LocalSHA = %q; want %q", found.LocalSHA, shaA)
+	}
+	if found.OriginSHA != shaB {
+		t.Errorf("entry.OriginSHA = %q; want %q", found.OriginSHA, shaB)
+	}
+}
+
+// ===========================================================================
+// TS-02-16 (unit): Moving the branch that is the trunk's current checkout runs
+// git reset --hard to the new tip immediately after the ref move
+//
+// Verifies: 02-REQ-3.8
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_16_CheckedOutBranchResetHard(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-16"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		if scope == "workspace" && scopeID == slug {
+			if key == "PATCH_BRANCH_SOURCE" {
+				return "origin", nil
+			}
+		}
+		return "", nil
+	}
+
+	patch := Patch{ID: "p16", WorkspaceID: slug, BranchName: "feature-checked-out", Position: 1, Status: PatchStatusActive}
+	env.patchStore.Patches = []Patch{patch}
+
+	shaA := "shaA666"
+	shaB := "shaB666"
+	refs := map[string]string{
+		"refs/remotes/upstream/HEAD":                "upstream0",
+		"refs/heads/feature-checked-out":          shaA,
+		"refs/remotes/origin/feature-checked-out": shaB,
+	}
+
+	env.gitRunner.IsAncestorFunc = func(_ context.Context, ancestor, descendant string) (bool, error) {
+		if ancestor == shaA && descendant == shaB {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			ref := args[2]
+			if sha, ok := refs[ref]; ok {
+				return sha, nil
+			}
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
+		if len(args) >= 3 && args[0] == "update-ref" {
+			refs[args[1]] = args[2]
+			return "", nil
+		}
+		if len(args) >= 3 && args[0] == "symbolic-ref" && args[1] == "--short" {
+			return "feature-checked-out", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Verify that update-ref for feature-checked-out occurred before reset --hard shaB
+	updateRefIdx := -1
+	hardResetIdx := -1
+	for i, call := range env.gitRunner.AllCalls {
+		if strings.HasPrefix(call, "update-ref refs/heads/feature-checked-out "+shaB) {
+			updateRefIdx = i
+		}
+		if call == "reset --hard "+shaB {
+			hardResetIdx = i
+		}
+	}
+
+	if updateRefIdx == -1 {
+		t.Errorf("expected 'update-ref refs/heads/feature-checked-out %s' in calls, got: %v", shaB, env.gitRunner.AllCalls)
+	}
+	if hardResetIdx == -1 {
+		t.Errorf("expected 'reset --hard %s' in calls, got: %v", shaB, env.gitRunner.AllCalls)
+	}
+	if updateRefIdx != -1 && hardResetIdx != -1 && updateRefIdx >= hardResetIdx {
+		t.Errorf("expected update-ref (idx %d) to happen before reset --hard (idx %d)", updateRefIdx, hardResetIdx)
+	}
+}
+
+// ===========================================================================
+// TS-02-27 (unit): Switching to hub mode clears origin_sync_state, origin_sha
+// and origin_synced_at to null for every non-deleted patch of the workspace
+//
+// Verifies: 02-REQ-6.3
+// ===========================================================================
+
+func TestCarryPatchSync_TS02_27_HubModeClearsOriginSyncState(t *testing.T) {
+	env := newFullTestEnv(t)
+	slug := "ws-ts02-27"
+	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
+		"https://github.com/example/upstream",
+		"upstream0",
+		"integration",
+		"upstream0",
+	)
+
+	// PATCH_BRANCH_SOURCE is unset -> resolves to hub
+	env.getVariable = func(scope, scopeID, key string) (string, error) {
+		return "", nil
+	}
+
+	stateInSync := "in_sync"
+	sha1 := "sha111"
+	syncedAt1 := "2026-01-01T00:00:00Z"
+
+	stateDiverged := "diverged"
+	sha2 := "sha222"
+	syncedAt2 := "2026-01-01T00:00:00Z"
+
+	deletedAt := "2026-01-01T00:00:00Z"
+	priorDeletedState := "missing_on_origin"
+	priorDeletedSHA := "sha333"
+
+	// Seed patches in DB
+	seedPatch(t, env.db, "p27-1", slug, "branch-1", 1, PatchStatusActive)
+	seedPatch(t, env.db, "p27-2", slug, "branch-2", 2, PatchStatusConflict)
+	seedPatch(t, env.db, "p27-3", slug, "branch-3", 3, PatchStatusDeleted)
+
+	_, _ = env.db.Exec(`UPDATE patches SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ? WHERE id = 'p27-1'`, stateInSync, sha1, syncedAt1)
+	_, _ = env.db.Exec(`UPDATE patches SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ? WHERE id = 'p27-2'`, stateDiverged, sha2, syncedAt2)
+	_, _ = env.db.Exec(`UPDATE patches SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ? WHERE id = 'p27-3'`, priorDeletedState, priorDeletedSHA, syncedAt2)
+
+	// Update mock store
+	env.patchStore.Patches = []Patch{
+		{ID: "p27-1", WorkspaceID: slug, BranchName: "branch-1", Position: 1, Status: PatchStatusActive, OriginSyncState: &stateInSync, OriginSHA: &sha1, OriginSyncedAt: &syncedAt1},
+		{ID: "p27-2", WorkspaceID: slug, BranchName: "branch-2", Position: 2, Status: PatchStatusConflict, OriginSyncState: &stateDiverged, OriginSHA: &sha2, OriginSyncedAt: &syncedAt2},
+		{ID: "p27-3", WorkspaceID: slug, BranchName: "branch-3", Position: 3, Status: PatchStatusDeleted, DeletedAt: &deletedAt, OriginSyncState: &priorDeletedState, OriginSHA: &priorDeletedSHA, OriginSyncedAt: &syncedAt2},
+	}
+
+	env.gitRunner.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify" {
+			return "upstream0", nil
+		}
+		return "", nil
+	}
+
+	auth := rebuildUserAuth("alice")
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sync failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Verify in DB that non-deleted patches have origin columns cleared to NULL
+	var p1State, p1SHA, p1Synced *string
+	err := env.db.QueryRow("SELECT origin_sync_state, origin_sha, origin_synced_at FROM patches WHERE id = 'p27-1'").Scan(&p1State, &p1SHA, &p1Synced)
+	if err != nil {
+		t.Fatalf("query p27-1 failed: %v", err)
+	}
+	if p1State != nil || p1SHA != nil || p1Synced != nil {
+		t.Errorf("p27-1 not cleared: state=%v sha=%v syncedAt=%v", p1State, p1SHA, p1Synced)
+	}
+
+	var p2State, p2SHA, p2Synced *string
+	err = env.db.QueryRow("SELECT origin_sync_state, origin_sha, origin_synced_at FROM patches WHERE id = 'p27-2'").Scan(&p2State, &p2SHA, &p2Synced)
+	if err != nil {
+		t.Fatalf("query p27-2 failed: %v", err)
+	}
+	if p2State != nil || p2SHA != nil || p2Synced != nil {
+		t.Errorf("p27-2 not cleared: state=%v sha=%v syncedAt=%v", p2State, p2SHA, p2Synced)
+	}
+
+	// Verify soft-deleted patch p27-3 was left untouched
+	var p3State, p3SHA, p3Synced *string
+	err = env.db.QueryRow("SELECT origin_sync_state, origin_sha, origin_synced_at FROM patches WHERE id = 'p27-3'").Scan(&p3State, &p3SHA, &p3Synced)
+	if err != nil {
+		t.Fatalf("query p27-3 failed: %v", err)
+	}
+	if p3State == nil || *p3State != priorDeletedState {
+		t.Errorf("p27-3 state was modified; want %q, got %v", priorDeletedState, p3State)
+	}
+	if p3SHA == nil || *p3SHA != priorDeletedSHA {
+		t.Errorf("p27-3 sha was modified; want %q, got %v", priorDeletedSHA, p3SHA)
+	}
+}
+

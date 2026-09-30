@@ -216,6 +216,7 @@ type mergeTreeCall struct {
 type mockGitRunner struct {
 	mu sync.Mutex
 
+	AllCalls        []string
 	RunCalls        []runCall
 	RunFunc         func(ctx context.Context, args ...string) (string, error)
 	CherryPickCalls []cherryPickCall
@@ -226,6 +227,7 @@ type mockGitRunner struct {
 	MergeTreeFunc   func(ctx context.Context, base, head string) (string, error)
 	IsAncestorFunc  func(ctx context.Context, ancestor, descendant string) (bool, error)
 	CherryFunc      func(ctx context.Context, upstream, head string) ([]string, []string, error)
+	HardResetCalls  []string
 	HardResetFunc   func(ctx context.Context, ref string) error
 }
 
@@ -258,6 +260,7 @@ func newMockGitRunner() *mockGitRunner {
 func (m *mockGitRunner) Run(ctx context.Context, args ...string) (string, error) {
 	m.mu.Lock()
 	m.RunCalls = append(m.RunCalls, runCall{Args: args})
+	m.AllCalls = append(m.AllCalls, strings.Join(args, " "))
 	m.mu.Unlock()
 	return m.RunFunc(ctx, args...)
 }
@@ -292,6 +295,10 @@ func (m *mockGitRunner) Cherry(ctx context.Context, upstream, head string) ([]st
 }
 
 func (m *mockGitRunner) HardReset(ctx context.Context, ref string) error {
+	m.mu.Lock()
+	m.HardResetCalls = append(m.HardResetCalls, ref)
+	m.AllCalls = append(m.AllCalls, "reset --hard "+ref)
+	m.mu.Unlock()
 	return m.HardResetFunc(ctx, ref)
 }
 
@@ -309,6 +316,7 @@ type mockOriginSyncStateCall struct {
 // mockPatchStore is a recording mock for the PatchStore interface.
 type mockPatchStore struct {
 	mu                 sync.Mutex
+	db                 *sql.DB
 	Patches            []Patch
 	UpdatedPatches     map[string]Patch // id -> updated patch
 	DeletedPatches     []string
@@ -401,6 +409,14 @@ func (m *mockPatchStore) SetOriginSyncState(_ context.Context, patchID string, s
 			break
 		}
 	}
+	if m.db != nil {
+		_, _ = m.db.Exec(
+			`UPDATE patches
+			 SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ?
+			 WHERE id = ?`,
+			state, sha, syncedAt, patchID,
+		)
+	}
 	return nil
 }
 
@@ -409,11 +425,19 @@ func (m *mockPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug s
 	defer m.mu.Unlock()
 	m.ClearedOriginSync = append(m.ClearedOriginSync, workspaceSlug)
 	for i := range m.Patches {
-		if m.Patches[i].WorkspaceID == workspaceSlug {
+		if m.Patches[i].WorkspaceID == workspaceSlug && m.Patches[i].Status != PatchStatusDeleted {
 			m.Patches[i].OriginSyncState = nil
 			m.Patches[i].OriginSHA = nil
 			m.Patches[i].OriginSyncedAt = nil
 		}
+	}
+	if m.db != nil {
+		_, _ = m.db.Exec(
+			`UPDATE patches
+			 SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL
+			 WHERE workspace_slug = ? AND status != 'deleted'`,
+			workspaceSlug,
+		)
 	}
 	return nil
 }
@@ -759,6 +783,7 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	workspaceRoot := t.TempDir()
 	mock := newMockGitRunner()
 	patches := newMockPatchStore(nil)
+	patches.db = db
 
 	var env *fullTestEnv
 	getVar := func(scope, slug, key string) (string, error) {
@@ -888,6 +913,7 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	workspaceRoot := t.TempDir()
 	mock := newMockGitRunner()
 	patches := newMockPatchStore(nil)
+	patches.db = db
 
 	var env *fullTestEnv
 	baseGetVar := getVar

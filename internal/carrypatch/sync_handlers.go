@@ -69,6 +69,9 @@ func (r *CarryPatchSyncResponse) asExtras() map[string]any {
 	if r.RebuildJobID != nil {
 		extras["rebuild_job_id"] = *r.RebuildJobID
 	}
+	if r.PatchesSynced != nil {
+		extras["patches_synced"] = r.PatchesSynced
+	}
 	return extras
 }
 
@@ -172,6 +175,13 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		}
 	}
 
+	// 02-REQ-6.3: Clear origin sync state when starting sync in hub mode.
+	if patchBranchSource == "hub" {
+		if cfg.PatchStore != nil {
+			_ = cfg.PatchStore.ClearOriginSyncState(ctx, slug)
+		}
+	}
+
 	originFetched := false
 	divergencePolicy := "replace"
 	if patchBranchSource == "origin" {
@@ -200,7 +210,38 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		}
 		originFetched = true
 	}
-	_ = divergencePolicy
+
+	// 02-REQ-3: Fork-refresh step in origin mode.
+	var outcomes []patchSyncOutcome
+	patchAdvanced := false
+	if patchBranchSource == "origin" && originFetched {
+		if cfg.PatchStore != nil {
+			patches, listErr := cfg.PatchStore.ListPatches(ctx, slug)
+			if listErr != nil {
+				return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
+			}
+			outcomes, patchAdvanced = refreshPatchBranchesFromOrigin(ctx, git, patches, integrationBranch, divergencePolicy)
+			now := apikit.NowUTC()
+			branchToPatch := make(map[string]Patch, len(patches))
+			for _, p := range patches {
+				branchToPatch[p.BranchName] = p
+			}
+			for _, o := range outcomes {
+				if p, ok := branchToPatch[o.BranchName]; ok {
+					var statePtr, shaPtr *string
+					if o.State != "" {
+						s := o.State
+						statePtr = &s
+					}
+					if o.OriginSHA != "" {
+						s := o.OriginSHA
+						shaPtr = &s
+					}
+					_ = cfg.PatchStore.SetOriginSyncState(ctx, p.ID, statePtr, shaPtr, now)
+				}
+			}
+		}
+	}
 
 	// Resolve the new upstream HEAD after fetch (the upstream default branch;
 	// see resolveUpstreamBase).
@@ -237,10 +278,13 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		ForcePushDetected: forcePushDetected,
 		OriginFetched:     originFetched,
 	}
+	if patchBranchSource == "origin" {
+		resp.PatchesSynced = outcomes
+	}
 
-	// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
+	// 16-REQ-5.E3: If upstream HEAD has not changed and no patch advanced, complete the sync
 	// with no patches_merged and no rebuild triggered.
-	if !upstreamAdvanced {
+	if !upstreamAdvanced && !patchAdvanced {
 		return &resp, nil
 	}
 

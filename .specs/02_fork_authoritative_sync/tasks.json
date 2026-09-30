@@ -115,7 +115,7 @@
         "internal/carrypatch/fork_refresh.go",
         "internal/carrypatch/sync_extension_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
