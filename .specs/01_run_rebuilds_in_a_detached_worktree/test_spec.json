@@ -1,0 +1,1019 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "01",
+  "spec_name": "run_rebuilds_in_a_detached_worktree",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-01-1",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.1"
+      ],
+      "title": "The rebuild creates a detached worktree at the deterministic per-job path with HEAD at the resolved upstream base",
+      "given": [
+        "a workspace \"acme\" with trunk at <root>/acme/trunk",
+        "the context carries job id \"job-42\"",
+        "the upstream base has resolved to SHA U"
+      ],
+      "when": "HandleRebuildJob begins patch application",
+      "then": [
+        "the trunk's GitRunner receives WorktreeAdd(\"<root>/acme/rebuild/job-42\", detached=true, U)",
+        "a directory exists at that path afterward",
+        "rev-parse HEAD run against the worktree's runner returns U"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctxWithJobID(\"job-42\"), payload); assert trunkRunner.WorktreeAddCalls[0] == {path: \"acme/rebuild/job-42\", detach:true, commitish:U}; assert dirExists(\"acme/rebuild/job-42\")"
+    },
+    {
+      "id": "TS-01-2",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.2"
+      ],
+      "title": "A context with no job ID falls back to a generated UUID for the worktree path and logs a warning",
+      "given": [
+        "a context that does not carry a job id (jobqueue.JobIDFromContext returns \"\")"
+      ],
+      "when": "HandleRebuildJob creates the worktree",
+      "then": [
+        "the worktree path's last segment is a valid UUID, not empty",
+        "a warn-level log line records the substitution"
+      ],
+      "pseudocode": "h.HandleRebuildJob(context.Background(), payload); path := trunkRunner.WorktreeAddCalls[0].path; assert isUUID(basename(path)); assert logger.WarnCalls contains substring(\"job id\")"
+    },
+    {
+      "id": "TS-01-3",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.3"
+      ],
+      "title": "Cherry-pick, merge, rerere, rev-parse, conflict-diff and abort/reset commands run against the worktree's GitRunner, not the trunk's",
+      "given": [
+        "a rebuild with one active patch that applies cleanly and one that conflicts"
+      ],
+      "when": "patch application runs",
+      "then": [
+        "CherryPick, MergeNoFF, rerere, rev-parse, `diff --name-only --diff-filter=U`, and the conflict abort/reset calls are all recorded on worktreeRunner",
+        "none of those calls appear on trunkRunner"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert worktreeRunner.CherryPickCalls non-empty; assert worktreeRunner.RunCalls contains \"rerere\"; assert trunkRunner.RunCalls does not contain \"cherry-pick\" or \"rerere\""
+    },
+    {
+      "id": "TS-01-4",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.4"
+      ],
+      "title": "The trunk's runner never receives checkout, reset, cherry-pick, merge, rebase, gc --prune=now or reflog expire, other than the one-time _rebuild_temp deletion",
+      "given": [
+        "a rebuild that hits a conflict, aborts, and a separate run where _rebuild_temp pre-exists"
+      ],
+      "when": "the rebuild executes end to end in each scenario",
+      "then": [
+        "trunkRunner.RunCalls contains no \"checkout\", \"reset\", \"cherry-pick\", \"merge\", \"rebase\", \"gc\" with \"--prune=now\", or \"reflog\" with \"expire\" arguments",
+        "the only trunk-mutating call besides ref reads is \"branch -D _rebuild_temp\" when that branch exists"
+      ],
+      "pseudocode": "for scenario in [conflict, rebuildTempPresent]: h.HandleRebuildJob(ctx, payload); assert none(trunkRunner.RunCalls, forbiddenVerbs)"
+    },
+    {
+      "id": "TS-01-5",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.5"
+      ],
+      "title": "A successful rebuild force-updates the integration branch from the worktree's final HEAD SHA without checking it out",
+      "given": [
+        "the trunk is currently checked out onto \"main\"",
+        "patch application in the worktree finishes at SHA F"
+      ],
+      "when": "the success path runs",
+      "then": [
+        "trunkRunner receives exactly \"branch -f deploy F\"",
+        "trunkRunner never receives a \"checkout\" of \"deploy\"",
+        "currentCheckout(trunk) is still \"main\" afterward"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert trunkRunner.RunCalls contains [\"branch\",\"-f\",\"deploy\",F]; assert currentCheckout(trunkRunner)==\"main\""
+    },
+    {
+      "id": "TS-01-6",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.6"
+      ],
+      "title": "rerere.enabled and rerere.autoupdate are configured on a runner backed by the shared .git config",
+      "given": [
+        "a fresh rebuild run"
+      ],
+      "when": "the executor configures rerere before applying patches",
+      "then": [
+        "a \"git config rerere.enabled true\" and a \"git config rerere.autoupdate true\" call are recorded on either the trunk or the worktree runner"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); calls := trunkRunner.RunCalls + worktreeRunner.RunCalls; assert calls contains [\"config\",\"rerere.enabled\",\"true\"]; assert calls contains [\"config\",\"rerere.autoupdate\",\"true\"]"
+    },
+    {
+      "id": "TS-01-7",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-1.7"
+      ],
+      "title": "The trunk's HEAD, index and working tree are byte-for-byte identical before and after any rebuild outcome",
+      "given": [
+        "a real trunk clone with a captured pre-run snapshot (HEAD sha, index digest, working-tree file hashes)"
+      ],
+      "when": "for any rebuild outcome in {success, unresolved-conflict-fail-fast, unresolved-conflict-continue, transient-error, cancellation}, the rebuild runs to completion",
+      "then": [
+        "the post-run HEAD sha, index digest and working-tree file hashes equal the pre-run snapshot in every case"
+      ],
+      "pseudocode": "for outcome in outcomes: before := snapshot(trunkDir); h.HandleRebuildJob(ctxFor(outcome), payload); after := snapshot(trunkDir); assert before == after"
+    },
+    {
+      "id": "TS-01-8",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.1"
+      ],
+      "title": "Every exit path removes the worktree with --force and then prunes, from the trunk's runner",
+      "given": [
+        "four scenarios: success, unresolved conflict under fail_fast, unresolved conflict under continue mode ending the run, transient error, and a cancelled context"
+      ],
+      "when": "each scenario runs to its exit",
+      "then": [
+        "trunkRunner receives WorktreeRemove(path, force=true) followed by WorktreePrune() in every scenario"
+      ],
+      "pseudocode": "for scenario in scenarios: h.HandleRebuildJob(ctxFor(scenario), payload); assert trunkRunner.WorktreeRemoveCalls[-1]=={path, force:true}; assert trunkRunner.WorktreePruneCalls non-empty"
+    },
+    {
+      "id": "TS-01-9",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.2"
+      ],
+      "title": "A failed worktree removal or prune is logged but does not change the job's recorded outcome",
+      "given": [
+        "trunkRunner.WorktreeRemove and WorktreePrune are stubbed to return errors",
+        "a rebuild that would otherwise succeed"
+      ],
+      "when": "the rebuild completes",
+      "then": [
+        "the returned result, retryable flag and error are identical to the same run with removal succeeding",
+        "a log line records the removal failure"
+      ],
+      "pseudocode": "resultA,_,errA := h.HandleRebuildJob(ctx, payload) // removal fails; resultB,_,errB := h.HandleRebuildJob(ctx, payload) // removal succeeds; assert resultA==resultB && errA==errB"
+    },
+    {
+      "id": "TS-01-10",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.3"
+      ],
+      "title": "Before creating its worktree, the rebuild removes every existing directory under <slug>/rebuild/ and prunes",
+      "given": [
+        "<root>/acme/rebuild/ already contains stale directories \"old-job-1\" and \"old-job-2\""
+      ],
+      "when": "a new rebuild job for \"acme\" starts",
+      "then": [
+        "\"old-job-1\" and \"old-job-2\" no longer exist once the new worktree is created",
+        "trunkRunner.WorktreePruneCalls includes a call preceding the WorktreeAdd call"
+      ],
+      "pseudocode": "makeDirs(\"acme/rebuild/old-job-1\",\"acme/rebuild/old-job-2\"); h.HandleRebuildJob(ctx, payload); assert !dirExists(\"acme/rebuild/old-job-1\"); assert !dirExists(\"acme/rebuild/old-job-2\")"
+    },
+    {
+      "id": "TS-01-11",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.4"
+      ],
+      "title": "Hub startup removes every workspace's rebuild directory and prunes its trunk before job dispatch begins",
+      "given": [
+        "two workspaces \"acme\" and \"beta\" each with a stale <slug>/rebuild/<job-id> directory"
+      ],
+      "when": "the startup cleanup routine runs, prior to mergeQueue.Start()",
+      "then": [
+        "neither stale directory exists afterward",
+        "each trunk's runner recorded a WorktreePrune call",
+        "the job queue had not yet dispatched any job when the cleanup ran"
+      ],
+      "pseudocode": "startupCleanup(workspaceRoot, workspaces); assert !dirExists(\"acme/rebuild\"); assert !dirExists(\"beta/rebuild\"); assert dispatchStartedAfter(cleanupTimestamp)"
+    },
+    {
+      "id": "TS-01-12",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-2.5"
+      ],
+      "title": "A rebuild started after a simulated crash begins cleanly with no trunk reset",
+      "given": [
+        "a prior rebuild left <slug>/rebuild/job-7 on disk with an in-progress cherry-pick state and no guard/lock held (simulating a crash)"
+      ],
+      "when": "a fresh rebuild job for the same workspace is dispatched",
+      "then": [
+        "the stale directory is removed before the new worktree is created",
+        "the trunk's runner never receives checkout, reset or cherry-pick calls",
+        "the rebuild completes successfully"
+      ],
+      "pseudocode": "seedStaleWorktree(\"acme\",\"job-7\"); result,_,err := h.HandleRebuildJob(ctx, payload); assert err==nil; assert !dirExists(\"acme/rebuild/job-7\"); assert trunkRunner.RunCalls has no \"reset\" or \"cherry-pick\""
+    },
+    {
+      "id": "TS-01-13",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.1"
+      ],
+      "title": "After resolving the upstream base under the fetch-phase lock, the executor checks for a local _rebuild_temp branch",
+      "given": [
+        "the fetch-phase lock has just been acquired and resolveUpstreamBase has returned"
+      ],
+      "when": "the executor proceeds",
+      "then": [
+        "trunkRunner receives \"rev-parse --verify refs/heads/_rebuild_temp\" before the fetch-phase lock is released"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); idx := indexOf(trunkRunner.RunCalls, [\"rev-parse\",\"--verify\",\"refs/heads/_rebuild_temp\"]); assert idx >= 0 && idx < indexOfUnlock"
+    },
+    {
+      "id": "TS-01-14",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.2"
+      ],
+      "title": "When _rebuild_temp is the currently checked-out branch, the trunk is checked out onto the configured branch, or left detached, before deletion",
+      "given": [
+        "scenario A: _rebuild_temp exists, is currently checked out, and the workspace branch is \"main\"",
+        "scenario B: same but the workspace has no configured branch"
+      ],
+      "when": "the one-time cleanup runs",
+      "then": [
+        "in scenario A, trunkRunner receives \"checkout main\" before \"branch -D _rebuild_temp\"",
+        "in scenario B, trunkRunner receives \"checkout --detach\" at _rebuild_temp's tip before \"branch -D _rebuild_temp\""
+      ],
+      "pseudocode": "for scenario in [A,B]: h.HandleRebuildJob(ctx, payload); assert order(trunkRunner.RunCalls, expectedCheckout(scenario), [\"branch\",\"-D\",\"_rebuild_temp\"])"
+    },
+    {
+      "id": "TS-01-15",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.3"
+      ],
+      "title": "An existing _rebuild_temp branch is deleted with branch -D and the deletion is logged at info with the workspace slug",
+      "given": [
+        "_rebuild_temp exists in the trunk but is not currently checked out"
+      ],
+      "when": "the one-time cleanup runs",
+      "then": [
+        "trunkRunner receives \"branch -D _rebuild_temp\"",
+        "an info-level log line names workspace slug \"acme\" and mentions _rebuild_temp"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert trunkRunner.RunCalls contains [\"branch\",\"-D\",\"_rebuild_temp\"]; assert logger.InfoCalls contains substring(\"acme\") && substring(\"_rebuild_temp\")"
+    },
+    {
+      "id": "TS-01-16",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.4"
+      ],
+      "title": "When no _rebuild_temp branch exists, the executor skips checkout and deletion and leaves the trunk's HEAD and branch unchanged",
+      "given": [
+        "no local branch named _rebuild_temp exists in the trunk",
+        "the trunk is checked out onto \"main\" at SHA M"
+      ],
+      "when": "the fetch phase runs",
+      "then": [
+        "trunkRunner never receives a \"checkout\" or \"branch -D _rebuild_temp\" call",
+        "currentCheckout(trunk) is still \"main\" at SHA M after the fetch phase"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert trunkRunner.RunCalls has no \"checkout\" call and no [\"branch\",\"-D\",\"_rebuild_temp\"]; assert currentCheckout(trunkRunner)==(\"main\",M)"
+    },
+    {
+      "id": "TS-01-17",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.1"
+      ],
+      "title": "The rebuild-active guard is set before the fetch-phase TryLock is attempted",
+      "given": [
+        "a fresh rebuild job for \"acme\""
+      ],
+      "when": "the executor begins",
+      "then": [
+        "the guard-set call for \"acme\" is recorded strictly before the wslock.TryLock(\"acme\") call"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert order(callLog, [\"guard.Set\",\"acme\"], [\"wslock.TryLock\",\"acme\"])"
+    },
+    {
+      "id": "TS-01-18",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.2"
+      ],
+      "title": "A failed fetch-phase TryLock returns a retryable TransientError without doing any fetch-phase work",
+      "given": [
+        "wslock.TryLock(\"acme\") is stubbed to fail because another operation holds the lock"
+      ],
+      "when": "HandleRebuildJob runs",
+      "then": [
+        "the returned error is a *TransientError",
+        "the retryable flag is true",
+        "no Fetch call, resolveUpstreamBase call, or _rebuild_temp rev-parse call was made"
+      ],
+      "pseudocode": "_, retryable, err := h.HandleRebuildJob(ctx, payload); assert retryable==true; assert errors.As(err,&TransientError{}); assert fetchCalls==0 && trunkRunner.RunCalls has no \"_rebuild_temp\" rev-parse"
+    },
+    {
+      "id": "TS-01-19",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.3"
+      ],
+      "title": "Once the fetch-phase lock is acquired, fetch, upstream-base resolution and _rebuild_temp cleanup run, then the lock is released before the worktree is created",
+      "given": [
+        "wslock.TryLock(\"acme\") succeeds"
+      ],
+      "when": "the fetch phase runs",
+      "then": [
+        "Fetch, resolveUpstreamBase and the _rebuild_temp check all complete before the unlock call",
+        "the unlock call happens before WorktreeAdd is called"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert order(callLog, fetchCall, resolveBaseCall, rebuildTempCheck, unlockCall, worktreeAddCall)"
+    },
+    {
+      "id": "TS-01-20",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-4.4"
+      ],
+      "title": "Archive and reclone answer 409 workspace_busy while the rebuild-active guard is set, and leave the workspace directory untouched",
+      "given": [
+        "a rebuild for \"acme\" has set the rebuild-active guard and is applying patches"
+      ],
+      "when": "POST /workspaces/acme/archive and POST /workspaces/acme/reclone are each called",
+      "then": [
+        "both respond 409 with error type workspace_busy",
+        "the workspace directory <root>/acme still exists with its trunk intact"
+      ],
+      "pseudocode": "recArchive := doRequest(POST,'/workspaces/acme/archive'); recReclone := doRequest(POST,'/workspaces/acme/reclone'); assert recArchive.Code==409 && recArchive.json.error_type==\"workspace_busy\"; assert recReclone.Code==409; assert dirExists(\"acme/trunk\")"
+    },
+    {
+      "id": "TS-01-21",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.5"
+      ],
+      "title": "The rebuild-active guard is cleared unconditionally, via defer, once the worktree has been removed on any exit path",
+      "given": [
+        "scenarios: success, conflict, transient error, cancellation"
+      ],
+      "when": "each scenario runs to completion",
+      "then": [
+        "the guard for \"acme\" is unset after the run in every scenario",
+        "the guard-clear call happens after the WorktreeRemove call in each scenario"
+      ],
+      "pseudocode": "for scenario in scenarios: h.HandleRebuildJob(ctxFor(scenario), payload); assert guard.IsSet(\"acme\")==false; assert order(callLog,[\"WorktreeRemove\"],[\"guard.Clear\",\"acme\"])"
+    },
+    {
+      "id": "TS-01-22",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-4.6"
+      ],
+      "title": "No rebuild worktree is created while archive or reclone holds the workspace lock",
+      "given": [
+        "archive is mid-run and holds wslock.Lock(\"acme\") (not yet released)"
+      ],
+      "when": "a rebuild job for \"acme\" is dispatched",
+      "then": [
+        "the fetch-phase TryLock fails",
+        "the rebuild returns a retryable error",
+        "no <root>/acme/rebuild/* directory is created"
+      ],
+      "pseudocode": "unlock := wslock.Lock(\"acme\"); _, retryable, err := h.HandleRebuildJob(ctx, payload); assert retryable==true; assert !dirExists(\"acme/rebuild\"); unlock()"
+    },
+    {
+      "id": "TS-01-23",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-5.1"
+      ],
+      "title": "Sync, rollback, rerere forget, batch rebase and merge jobs proceed for a workspace whose rebuild is applying patches",
+      "given": [
+        "a rebuild for \"acme\" has released the fetch-phase lock and is applying patches, before the final-phase lock is taken"
+      ],
+      "when": "POST /sync, a rollback request, a rerere-forget request, a batch-rebase request and a merge job for \"acme\" are each attempted",
+      "then": [
+        "none of them respond 409 workspace_busy or are blocked by the merge job's queue"
+      ],
+      "pseudocode": "assert doRequest(POST,'/workspaces/acme/sync').Code != 409; assert doRequest(POST,'/rollback').Code != 409; assert doRequest(DELETE,'/rerere/x').Code != 409"
+    },
+    {
+      "id": "TS-01-24",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-5.2"
+      ],
+      "title": "The git server's post-push handler resets the trunk's working tree normally while a rebuild is applying patches",
+      "given": [
+        "a rebuild for \"acme\" is between its fetch and final phases, applying patches",
+        "a client pushes a new commit to the trunk via the hub's git server"
+      ],
+      "when": "updateHeadSHA runs after the push",
+      "then": [
+        "wslock.TryLock(\"acme\") succeeds for the post-push handler",
+        "the trunk's working tree is reset to the newly pushed commit",
+        "no \"workspace busy; skipping worktree reset\" log line is produced"
+      ],
+      "pseudocode": "push(\"acme\", newCommit); assert trunkWorkingTreeHEAD()==newCommit; assert logger.WarnCalls does not contain \"skipping worktree reset\""
+    },
+    {
+      "id": "TS-01-25",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.3"
+      ],
+      "title": "A concurrent sync that advances upstream does not change the upstream base an in-flight rebuild is using",
+      "given": [
+        "a rebuild resolved upstream base U during its fetch phase and released the lock"
+      ],
+      "when": "POST /sync fetches upstream and updates upstream_head_sha to a newer commit V while patches are still being applied",
+      "then": [
+        "the rebuild's remaining cherry-pick/merge calls still target commits derived from U, never V"
+      ],
+      "pseudocode": "captured := rebuildState.upstreamBase; triggerConcurrentSync(newUpstream=V); assert rebuildState.upstreamBase==captured && captured!=V"
+    },
+    {
+      "id": "TS-01-26",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.4"
+      ],
+      "title": "Sync's auto-rebuild enqueue is deduplicated against an already-active rebuild job for the same (type, key)",
+      "given": [
+        "a rebuild job for \"acme\" is already queued/running with key \"acme:deploy\""
+      ],
+      "when": "POST /sync triggers its own auto-rebuild enqueue for the same key",
+      "then": [
+        "no second row is inserted into the jobs table for (type=rebuild, key=acme:deploy)"
+      ],
+      "pseudocode": "before := countJobs(\"rebuild\",\"acme:deploy\"); doRequest(POST,'/workspaces/acme/sync'); after := countJobs(\"rebuild\",\"acme:deploy\"); assert after==before"
+    },
+    {
+      "id": "TS-01-27",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-5.5"
+      ],
+      "title": "Objects reachable only from a worktree's HEAD survive a git gc run by another operation against the trunk",
+      "given": [
+        "a real git repository with a worktree whose HEAD points at a commit not reachable from any trunk ref"
+      ],
+      "when": "for any such dangling-from-trunk commit made reachable solely via a worktree's HEAD, `git gc --prune=now` is run in the trunk",
+      "then": [
+        "the commit and its tree/blobs are still present and readable after gc"
+      ],
+      "pseudocode": "for commit in gen_commits(): addWorktreeAtDetached(commit); run(trunk, \"gc\",\"--prune=now\"); assert objectExists(trunk, commit)"
+    },
+    {
+      "id": "TS-01-28",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.1"
+      ],
+      "title": "The blocking workspace lock is reacquired before the integration-branch ref update, on both success and a fail_fast abort after cleanup",
+      "given": [
+        "scenario A: patch application succeeds",
+        "scenario B: patch application hits an unresolved conflict under fail_fast"
+      ],
+      "when": "each scenario reaches its post-patch-application step",
+      "then": [
+        "wslock.Lock(\"acme\") is called before any \"branch -f\"/ref-update call in scenario A",
+        "in scenario B, the lock is still (re)acquired for the equivalent bookkeeping before the run exits"
+      ],
+      "pseudocode": "for scenario in [A,B]: h.HandleRebuildJob(ctxFor(scenario), payload); assert order(callLog, [\"wslock.Lock\",\"acme\"], refUpdateOrEquivalent(scenario))"
+    },
+    {
+      "id": "TS-01-29",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.2"
+      ],
+      "title": "While the final-phase lock is held, only the ref update, stale-patch comparison, soft-deletion, compaction and optional push run",
+      "given": [
+        "a successful rebuild with one merged_upstream patch and REBUILD_PUSH_INTEGRATION_BRANCH=true"
+      ],
+      "when": "the final phase executes",
+      "then": [
+        "the operations performed between Lock and Unlock are exactly: branch -f, SoftDeletePatch, CompactPositions, and PushIntegration",
+        "no patch application command appears in that window"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); ops := callLog.between(\"wslock.Lock\",\"wslock.Unlock\"); assert set(ops) subsetOf {\"branch-f\",\"SoftDeletePatch\",\"CompactPositions\",\"PushIntegration\",\"revParseVerify\"}"
+    },
+    {
+      "id": "TS-01-30",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.3"
+      ],
+      "title": "The final-phase lock is released before the worktree is removed",
+      "given": [
+        "a successful rebuild run"
+      ],
+      "when": "the final phase completes",
+      "then": [
+        "the wslock.Unlock call for \"acme\" happens before the WorktreeRemove call"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert order(callLog, [\"wslock.Unlock\",\"acme\"], [\"WorktreeRemove\"])"
+    },
+    {
+      "id": "TS-01-31",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-6.4"
+      ],
+      "title": "The rebuild's integration-branch update wins over an interleaved rollback",
+      "given": [
+        "a rollback for \"acme\" acquires wslock while the rebuild is still applying patches and force-updates the integration branch to an older SHA, then releases the lock"
+      ],
+      "when": "the rebuild's final phase subsequently reacquires the lock and runs its own branch -f to its final HEAD SHA F",
+      "then": [
+        "once both operations have completed, the integration branch points at F, not the rollback's SHA"
+      ],
+      "pseudocode": "runRollbackConcurrently(\"acme\"); h.HandleRebuildJob(ctx, payload); assert revParse(trunk,\"deploy\")==F"
+    },
+    {
+      "id": "TS-01-32",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.5"
+      ],
+      "title": "The final phase always uses the blocking Lock, never TryLock, even when the lock is already held by another operation",
+      "given": [
+        "wslock is held by a merge job for \"acme\" when the rebuild's patch application finishes"
+      ],
+      "when": "the rebuild reaches its final phase",
+      "then": [
+        "the rebuild calls wslock.Lock (blocking), not wslock.TryLock",
+        "the rebuild's final phase proceeds only after the merge job releases the lock, without returning an error for lock contention"
+      ],
+      "pseudocode": "unlock := wslock.Lock(\"acme\"); go func(){ time.Sleep(d); unlock() }(); _, _, err := h.HandleRebuildJob(ctx, payload); assert err==nil; assert calledBlockingLockNotTryLock"
+    },
+    {
+      "id": "TS-01-33",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.1"
+      ],
+      "title": "Patch branches are resolved to SHAs before applying the first patch, and those SHAs, not branch names, drive commit selection and application",
+      "given": [
+        "two active patches on branches \"feature/a\" and \"feature/b\" at SHAs A and B"
+      ],
+      "when": "patch application begins",
+      "then": [
+        "rev-parse --verify refs/heads/feature/a and .../feature/b both run before any cherry-pick/merge call",
+        "the subsequent git log / CherryPick / MergeNoFF calls reference A and B, not the branch names"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert order(callLog, snapshotCalls, firstApplyCall); assert applyCalls reference {A,B} not {\"feature/a\",\"feature/b\"}"
+    },
+    {
+      "id": "TS-01-34",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.2"
+      ],
+      "title": "A merge-strategy commit message names the source branch, not its snapshot SHA",
+      "given": [
+        "strategy is merge, patch branch \"feature/a\" snapshotted at SHA A"
+      ],
+      "when": "the merge --no-ff for that patch runs",
+      "then": [
+        "the resulting commit message contains \"feature/a\"",
+        "the commit message does not contain the raw SHA A"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); msg := worktreeRunner.lastMergeCommitMessage; assert contains(msg,\"feature/a\") && !contains(msg,A)"
+    },
+    {
+      "id": "TS-01-35",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.3"
+      ],
+      "title": "A patch branch that fails to resolve at snapshot time is recorded as skipped/branch_not_found and the run continues",
+      "given": [
+        "a patch record whose branch_name does not exist as a ref",
+        "another active patch that resolves fine"
+      ],
+      "when": "snapshotting runs",
+      "then": [
+        "that patch's PatchResult has status \"skipped\" and skipped_reason \"branch_not_found\"",
+        "the other patch is still processed and appears with its own result"
+      ],
+      "pseudocode": "result,_,_ := h.HandleRebuildJob(ctx, payload); pr := findResult(result.PatchResults, missingPatchID); assert pr.Status==\"skipped\" && pr.SkippedReason==\"branch_not_found\"; assert len(result.PatchResults)==2"
+    },
+    {
+      "id": "TS-01-36",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.4"
+      ],
+      "title": "After the final-phase lock is released, active-at-snapshot patch tips are re-read against the trunk's runner without holding a lock",
+      "given": [
+        "two patches were 'active' at snapshot time",
+        "the final phase has just released wslock"
+      ],
+      "when": "the stale-tip comparison runs",
+      "then": [
+        "rev-parse --verify refs/heads/<branch> is called for each of those two patches after the unlock call and while no lock is held"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert order(callLog, [\"wslock.Unlock\"], compareCalls); assert lockHeldDuring(compareCalls)==false"
+    },
+    {
+      "id": "TS-01-37",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.5"
+      ],
+      "title": "A moved active-patch tip enqueues a follow-up rebuild job with the expected payload shape when AUTO_REBUILD_AFTER_PUSH is not \"false\"",
+      "given": [
+        "patch \"feature/a\" was snapshotted at SHA A but now resolves to SHA A2",
+        "AUTO_REBUILD_AFTER_PUSH is unset (default, not \"false\")",
+        "the current job's Group/Key are \"acme\"/\"acme:deploy\""
+      ],
+      "when": "the stale-tip comparison finds the moved tip",
+      "then": [
+        "a new job row exists with type rebuild, SubmittedBy \"system:stale-snapshot\", the same Group/Key \"acme:deploy\", and a nonce different from the current job's"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); job := findLatestJob(\"rebuild\",\"acme:deploy\"); assert job.SubmittedBy==\"system:stale-snapshot\"; assert job.Nonce != currentJob.Nonce"
+    },
+    {
+      "id": "TS-01-38",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.6"
+      ],
+      "title": "Skipped, disabled, conflicted, merged and deleted patches are excluded from the stale-tip comparison",
+      "given": [
+        "one active patch unchanged",
+        "one disabled patch whose branch was pushed to during the run",
+        "one merged_upstream patch also pushed to"
+      ],
+      "when": "the stale-tip comparison runs",
+      "then": [
+        "no follow-up job is enqueued as a result of the disabled or merged_upstream patches' movement"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert countJobs(\"rebuild\", groupKey) == before"
+    },
+    {
+      "id": "TS-01-39",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.7"
+      ],
+      "title": "Each patch result records its snapshot SHA as source_sha alongside new_head_sha",
+      "given": [
+        "a patch snapshotted at SHA A that applies successfully to new HEAD SHA F"
+      ],
+      "when": "the rebuild completes",
+      "then": [
+        "that patch's PatchResult has source_sha == A and new_head_sha == F"
+      ],
+      "pseudocode": "result,_,_ := h.HandleRebuildJob(ctx, payload); pr := findResult(result.PatchResults, patchID); assert pr.SourceSHA==A && *pr.NewHeadSHA==F"
+    },
+    {
+      "id": "TS-01-40",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.8"
+      ],
+      "title": "Enqueuing a follow-up rebuild emits a hub.rebuild.followup audit event listing the stale patch branch names",
+      "given": [
+        "patches \"feature/a\" and \"feature/c\" both moved past their snapshot SHAs",
+        "AUTO_REBUILD_AFTER_PUSH is not \"false\""
+      ],
+      "when": "the follow-up rebuild is enqueued",
+      "then": [
+        "a hub.rebuild.followup audit event is emitted whose metadata lists [\"feature/a\",\"feature/c\"]"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); ev := findAuditEvent(\"hub.rebuild.followup\"); assert set(ev.Metadata[\"stale_branches\"]) == {\"feature/a\",\"feature/c\"}"
+    },
+    {
+      "id": "TS-01-41",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.1",
+        "01-REQ-8.2"
+      ],
+      "title": "Cancellation during patch application aborts the in-progress operation in the worktree, removes it, clears the guard, and returns the trunk-era retryable error shape scoped to the worktree",
+      "given": [
+        "a rebuild is mid cherry-pick in its worktree",
+        "the job context is cancelled"
+      ],
+      "when": "the executor observes the cancellation",
+      "then": [
+        "worktreeRunner receives a \"cherry-pick --abort\" (or \"merge --abort\") call",
+        "the worktree directory no longer exists afterward",
+        "the rebuild-active guard for the workspace is cleared",
+        "the returned error is retryable and of the same type the trunk-based cancellation path returned"
+      ],
+      "pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); _, retryable, err := h.HandleRebuildJob(ctx, payload); assert retryable==true; assert !dirExists(worktreePath); assert guard.IsSet(\"acme\")==false; assert sameErrorShape(err, legacyCancellationError)"
+    },
+    {
+      "id": "TS-01-42",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.3"
+      ],
+      "title": "A failed abort during cancellation still results in the worktree being removed and the guard being cleared",
+      "given": [
+        "cancellation occurs mid cherry-pick",
+        "worktreeRunner's abort call is stubbed to fail"
+      ],
+      "when": "the executor handles the cancellation",
+      "then": [
+        "a log line records the abort failure",
+        "the worktree directory no longer exists",
+        "the rebuild-active guard is cleared"
+      ],
+      "pseudocode": "_, _, err := h.HandleRebuildJob(cancelledCtx, payload); assert logger.WarnCalls contains substring(\"abort\"); assert !dirExists(worktreePath); assert guard.IsSet(\"acme\")==false"
+    },
+    {
+      "id": "TS-01-43",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.4"
+      ],
+      "title": "Cancellation during the fetch phase, before the worktree exists, releases the lock, clears the guard and returns a retryable error without creating a worktree",
+      "given": [
+        "a rebuild job's context is cancelled while wslock.TryLock is held during the fetch phase, before WorktreeAdd is called"
+      ],
+      "when": "the executor observes the cancellation",
+      "then": [
+        "wslock is released for the workspace",
+        "the rebuild-active guard is cleared",
+        "the returned error is retryable",
+        "no worktree directory was ever created"
+      ],
+      "pseudocode": "_, retryable, err := h.HandleRebuildJob(cancelledDuringFetchCtx, payload); assert retryable==true; assert !wslock.IsLocked(\"acme\"); assert guard.IsSet(\"acme\")==false; assert trunkRunner.WorktreeAddCalls==empty"
+    },
+    {
+      "id": "TS-01-44",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-9.1"
+      ],
+      "title": "hub.rebuild.complete and hub.rebuild.fail keep the same fields as before this change",
+      "given": [
+        "one scenario that succeeds and one that errors transiently"
+      ],
+      "when": "each scenario runs",
+      "then": [
+        "a hub.rebuild.complete event with a patches_applied field is emitted on success",
+        "a hub.rebuild.fail event with a reason field is emitted on the error path"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, successPayload); assert findAuditEvent(\"hub.rebuild.complete\").Metadata[\"patches_applied\"] != nil; h.HandleRebuildJob(ctx, failingPayload); assert findAuditEvent(\"hub.rebuild.fail\").Metadata[\"reason\"] != nil"
+    },
+    {
+      "id": "TS-01-45",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-9.2"
+      ],
+      "title": "Worktree creation and removal are each logged at info level with the workspace slug and worktree path",
+      "given": [
+        "a successful rebuild run for \"acme\""
+      ],
+      "when": "the run completes",
+      "then": [
+        "an info log line for creation names \"acme\" and the worktree path",
+        "an info log line for removal names \"acme\" and the same path"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert logger.InfoCalls contains substring(\"acme\") && substring(worktreePath); assert logger.InfoCalls contains a second entry with same slug/path for removal"
+    },
+    {
+      "id": "TS-01-46",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-9.3"
+      ],
+      "title": "Per-rebuild and hub-startup stale-worktree cleanups each log every removal at info level with the workspace slug and path",
+      "given": [
+        "a stale directory <root>/acme/rebuild/old-job exists at rebuild time, and another at hub startup"
+      ],
+      "when": "the per-rebuild cleanup runs, then separately the startup cleanup runs",
+      "then": [
+        "both log an info line naming \"acme\" and the removed path"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert logger.InfoCalls contains substring(\"acme/rebuild/old-job\"); startupCleanup(root, [\"acme\"]); assert logger.InfoCalls contains substring(\"acme/rebuild\")"
+    },
+    {
+      "id": "TS-01-47",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-9.4"
+      ],
+      "title": "The one-time _rebuild_temp deletion is logged at info level with the workspace slug",
+      "given": [
+        "_rebuild_temp exists in the trunk for \"acme\""
+      ],
+      "when": "the fetch phase deletes it",
+      "then": [
+        "an info log line names \"acme\" and mentions the deletion"
+      ],
+      "pseudocode": "h.HandleRebuildJob(ctx, payload); assert logger.InfoCalls contains substring(\"acme\") && substring(\"_rebuild_temp\")"
+    },
+    {
+      "id": "TS-01-48",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-9.5"
+      ],
+      "title": "Rebuild status responses, job records and audit event types are unchanged except for the addition of source_sha and hub.rebuild.followup",
+      "given": [
+        "a completed rebuild with a stale patch tip triggering a follow-up"
+      ],
+      "when": "GET /rebuilds/:id is called",
+      "then": [
+        "every field present before this change is still present with the same name and type",
+        "patch_results[] now also carries source_sha",
+        "the only new audit event type observed is hub.rebuild.followup"
+      ],
+      "pseudocode": "rec := doRequest(GET,'/rebuilds/'+jobID); resp := decode(rec.Body); assert hasAllLegacyFields(resp); assert resp.PatchResults[0].SourceSHA != \"\"; assert newAuditTypes(before,after) == {\"hub.rebuild.followup\"}"
+    },
+    {
+      "id": "TS-01-49",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-9.6"
+      ],
+      "title": "Sync, rollback and rerere forget return 409 workspace_busy only during a rebuild's fetch and final phases, and succeed outside them",
+      "given": [
+        "a rebuild for \"acme\" progressing through fetch phase, then patch application, then final phase"
+      ],
+      "when": "POST /sync is attempted during each of the three windows",
+      "then": [
+        "it responds 409 workspace_busy during the fetch phase",
+        "it responds without 409 during patch application",
+        "it responds 409 workspace_busy during the final phase"
+      ],
+      "pseudocode": "assert doRequest(POST,'/sync').Code==409; assert doRequest(POST,'/sync').Code!=409; assert doRequest(POST,'/sync').Code==409"
+    },
+    {
+      "id": "TS-01-50",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.1"
+      ],
+      "title": "docs/api.md describes the narrowed workspace_busy window for sync, rollback and rerere forget, and the whole-rebuild window for archive/reclone",
+      "given": [
+        "the repository's docs/api.md file"
+      ],
+      "when": "the \"Workspace Lock\" section and workspace_busy error-type row are read",
+      "then": [
+        "the text states sync, rollback and rerere forget are rejected only during a rebuild's fetch and final phases",
+        "the text states archive and reclone are rejected for the whole rebuild via the rebuild-active guard"
+      ],
+      "pseudocode": "doc := readFile(\"docs/api.md\"); assert contains(doc,\"fetch\") && contains(doc,\"final\") && contains(doc,\"rebuild-active guard\")"
+    },
+    {
+      "id": "TS-01-51",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.2"
+      ],
+      "title": "docs/carry_patch_workflow.md's rebuild algorithm section describes the worktree-based flow and pre-rebuild integration-branch visibility",
+      "given": [
+        "the repository's docs/carry_patch_workflow.md file"
+      ],
+      "when": "the \"Rebuild algorithm\" section is read",
+      "then": [
+        "it no longer describes creating a _rebuild_temp branch or checking out the trunk",
+        "it states that clones served by the hub's git server during a rebuild see the pre-rebuild integration branch until the run's final phase completes"
+      ],
+      "pseudocode": "doc := readSection(\"docs/carry_patch_workflow.md\",\"Rebuild algorithm\"); assert !contains(doc,\"_rebuild_temp\"); assert contains(doc,\"pre-rebuild\")"
+    },
+    {
+      "id": "TS-01-52",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.3"
+      ],
+      "title": "docs/prd/review_2026_09_codebase.md notes that preflightCleanup/_rebuild_temp is superseded by this spec",
+      "given": [
+        "the repository's docs/prd/review_2026_09_codebase.md file"
+      ],
+      "when": "the paragraph describing preflightCleanup and _rebuild_temp is read",
+      "then": [
+        "it carries a note referencing this spec (run_rebuilds_in_a_detached_worktree / 01) as superseding that behaviour"
+      ],
+      "pseudocode": "doc := readFile(\"docs/prd/review_2026_09_codebase.md\"); para := findParagraph(doc,\"preflightCleanup\"); assert contains(para,\"superseded\")"
+    },
+    {
+      "id": "TS-01-53",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-1",
+        "01-REQ-5.1",
+        "01-REQ-1.5"
+      ],
+      "title": "A rebuild applies patches in its own worktree while a concurrent sync request completes unaffected, and the integration branch updates at the end",
+      "given": [
+        "a running hub with a real carry_patch workspace \"acme\" carrying two active patches",
+        "job queue dispatches a rebuild job carrying job id \"job-42\""
+      ],
+      "when": "the rebuild reaches patch application and, concurrently, POST /workspaces/acme/sync is called before the final phase starts",
+      "then": [
+        "the sync call returns 200 without waiting for the rebuild",
+        "upstream_head_sha is updated by the sync",
+        "the rebuild subsequently reacquires the lock, force-updates the \"deploy\" branch to its worktree's final HEAD SHA, releases the lock, and removes acme/rebuild/job-42"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "rebuild job executor",
+        "GitRunner",
+        "wslock",
+        "job queue worker",
+        "workspace database (SQLite)",
+        "real git repositories"
+      ]
+    },
+    {
+      "id": "TS-01-54",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-2",
+        "01-REQ-7.1",
+        "01-REQ-7.5",
+        "01-REQ-7.8"
+      ],
+      "title": "A push to an active patch branch mid-rebuild produces a follow-up rebuild that applies the new commit",
+      "given": [
+        "a running hub with workspace \"acme\" and active patch branch \"feature/a\" at SHA A",
+        "a rebuild job is dispatched and has snapshotted \"feature/a\" at A"
+      ],
+      "when": "a new commit A2 is pushed to \"feature/a\" while the rebuild is still applying patches, and the rebuild subsequently finishes and releases its final-phase lock",
+      "then": [
+        "the completed rebuild's patch_results record source_sha A for that patch, unaffected by the push",
+        "a hub.rebuild.followup audit event is emitted naming \"feature/a\"",
+        "a new rebuild job with SubmittedBy \"system:stale-snapshot\" is enqueued and, once dispatched, applies A2"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "rebuild job executor",
+        "GitRunner",
+        "job queue worker",
+        "audit event store",
+        "workspace database (SQLite)",
+        "real git repositories"
+      ]
+    },
+    {
+      "id": "TS-01-55",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-3",
+        "01-REQ-2.3",
+        "01-REQ-2.4",
+        "01-REQ-2.5"
+      ],
+      "title": "A crashed rebuild's leftover worktree is reclaimed at hub startup and at the next rebuild, with no operator action needed",
+      "given": [
+        "workspace \"acme\" has a leftover acme/rebuild/job-7 directory and in-progress cherry-pick state left by a simulated crash"
+      ],
+      "when": "the hub process starts up and runs its startup cleanup, and a subsequent rebuild job for \"acme\" is dispatched",
+      "then": [
+        "acme/rebuild/job-7 no longer exists once startup cleanup completes",
+        "the new rebuild job creates a fresh worktree and completes successfully without any trunk reset"
+      ],
+      "real_components": [
+        "hub startup routine",
+        "rebuild job executor",
+        "GitRunner",
+        "job queue worker",
+        "real git repositories",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-01-56",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-4",
+        "01-REQ-4.1",
+        "01-REQ-4.4",
+        "01-REQ-4.5"
+      ],
+      "title": "Archive is rejected with workspace_busy while a rebuild runs and succeeds once the rebuild finishes and clears its guard",
+      "given": [
+        "a running hub with workspace \"acme\"",
+        "a rebuild job for \"acme\" is dispatched and sets the rebuild-active guard"
+      ],
+      "when": "POST /workspaces/acme/archive is called while the rebuild is applying patches, then retried after the rebuild completes",
+      "then": [
+        "the first call returns 409 workspace_busy and the workspace directory still exists",
+        "the retried call succeeds and the workspace directory is deleted"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "rebuild job executor",
+        "wslock",
+        "job queue worker",
+        "workspace database (SQLite)",
+        "filesystem"
+      ]
+    }
+  ]
+}

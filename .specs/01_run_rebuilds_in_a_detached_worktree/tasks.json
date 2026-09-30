@@ -1,0 +1,361 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "01",
+  "spec_name": "run_rebuilds_in_a_detached_worktree",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./...",
+    "spec_tests": "go test -tags smoke ./internal/carrypatch/... ./internal/wslock/... ./internal/gitcmd/... ./internal/workspace/... -count=1"
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Give the rebuild its own detached worktree runner and stop mutating the trunk",
+      "criteria": [
+        "01-REQ-1"
+      ],
+      "tests": [
+        "TS-01-1",
+        "TS-01-2",
+        "TS-01-3",
+        "TS-01-4",
+        "TS-01-5",
+        "TS-01-6",
+        "TS-01-7"
+      ],
+      "steps": [
+        "Write TS-01-1..TS-01-7, extending mockGitRunner in internal/carrypatch/testhelpers_test.go with WorktreeAddCalls/Func, WorktreeRemoveCalls/Func, WorktreePruneCalls/Func, and giving tests a way to make h.NewGitRunner return distinct mock instances keyed by the requested path (trunk vs worktree); confirm all new tests fail",
+        "Add internal/gitcmd/worktree.go with (*GitRunner) WorktreeAdd(ctx, path string, detach bool, commitish string) (string, error), WorktreeRemove(ctx, path string, force bool) error and WorktreePrune(ctx context.Context) error, each delegating to Run with the corresponding `git worktree ...` args",
+        "Add the same three method signatures to the carrypatch.GitRunner interface in carrypatch.go and implement them on GitRunnerAdapter in wire.go, delegating to the wrapped *gitcmd.GitRunner",
+        "In rebuild_executor.go, after resolving upstreamHead, compute jobID := jobqueue.JobIDFromContext(ctx); when empty, generate uuid.New().String() and log a warn-level message that a job id was substituted",
+        "Compute worktreePath := filepath.Join(h.WorkspaceRoot, payload.WorkspaceSlug, \"rebuild\", jobID), call trunkGit.WorktreeAdd(ctx, worktreePath, true, upstreamHead) in place of `checkout -B _rebuild_temp`, and build a second runner worktreeGit via h.NewGitRunner(worktreePath)",
+        "Remove the per-run currentCheckout/preflightCleanup/restoreCheckout/_rebuild_temp-branch calls from the hot path (keep the helper functions themselves for reuse by the one-time cleanup added later)",
+        "Redirect every patch-application command (rerere config, applyRebasePatch, applyMergePatch, handleConflictWithRerere, the pre/post-patch rev-parse HEAD calls, `diff --name-only --diff-filter=U`, and conflict abort/reset) onto worktreeGit instead of trunkGit",
+        "Replace the success-path integration-branch update: read finalHead via worktreeGit.Run(ctx, \"rev-parse\", \"HEAD\") and call trunkGit.Run(ctx, \"branch\", \"-f\", integrationBranch, finalHead) without ever checking out the integration branch",
+        "Audit every remaining trunkGit.Run call in the changed code path and confirm none of them is checkout, reset, cherry-pick, merge, rebase, `gc --prune=now` or `reflog expire`",
+        "Add TS-01-7 as a property test driving HandleRebuildJob against a real temporary git repository and the real gitcmd/carrypatch GitRunnerAdapter (no mocks) through success, unresolved-conflict-fail-fast, unresolved-conflict-continue, transient-error and cancellation outcomes, snapshotting the trunk's HEAD SHA, index digest and working-tree file hashes before and after each",
+        "Run `go test ./internal/gitcmd/... ./internal/carrypatch/... -count=1` and `go vet ./...` until green"
+      ],
+      "touches": [
+        "internal/gitcmd/worktree.go",
+        "internal/gitcmd/worktree_test.go",
+        "internal/carrypatch/carrypatch.go",
+        "internal/carrypatch/wire.go",
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/testhelpers_test.go",
+        "internal/carrypatch/rebuild_executor_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Remove the worktree on every exit path and reclaim stale ones per-run and at hub startup",
+      "criteria": [
+        "01-REQ-2"
+      ],
+      "tests": [
+        "TS-01-8",
+        "TS-01-9",
+        "TS-01-10",
+        "TS-01-11",
+        "TS-01-12"
+      ],
+      "steps": [
+        "Write TS-01-8..TS-01-12 and confirm they fail",
+        "Before worktree creation in rebuild_executor.go, list entries directly under filepath.Join(h.WorkspaceRoot, slug, \"rebuild\") with os.ReadDir, os.RemoveAll each one, then call trunkGit.WorktreePrune(ctx), logging each removal",
+        "Wrap worktree-creation-through-completion in a deferred cleanup that unconditionally calls trunkGit.WorktreeRemove(ctx, worktreePath, true) then trunkGit.WorktreePrune(ctx) on every return path, guarded by a bool so it only fires once a worktree actually exists",
+        "Make the deferred removal best-effort: log a failure via h.logf but never alter the named return values (retResult, retRetryable, retErr) so the job's recorded outcome is unaffected",
+        "Add internal/carrypatch/startup.go exporting CleanupStaleRebuildWorktrees(ctx context.Context, workspaceRoot string, newGitRunner func(string) (GitRunner, error), logger *slog.Logger) error: for each workspace subdirectory, os.RemoveAll its \"rebuild\" child directory and run WorktreePrune against a runner rooted at \"<slug>/trunk\", logging each removal with the slug and path",
+        "Wire carrypatch.CleanupStaleRebuildWorktrees into cmd/af-hub/main.go, calling it with cfg.Workspace.Path and cpGitRunnerFactory right after workspace.EnsureWorkspaceRoot and before mergeQueue.Start()",
+        "Write TS-01-12 to seed a stale <slug>/rebuild/job-7 directory with an in-progress cherry-pick state before invoking HandleRebuildJob, and assert the run completes cleanly with no reset/checkout/cherry-pick issued against trunkGit",
+        "Run `go test ./internal/carrypatch/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/startup.go",
+        "internal/carrypatch/startup_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Split the workspace lock into a TryLock fetch phase guarded by a rebuild-active flag",
+      "criteria": [
+        "01-REQ-4"
+      ],
+      "tests": [
+        "TS-01-17",
+        "TS-01-18",
+        "TS-01-19",
+        "TS-01-20",
+        "TS-01-21",
+        "TS-01-22"
+      ],
+      "steps": [
+        "Write TS-01-17..TS-01-22 and confirm they fail",
+        "Add internal/wslock/guard.go: a package-level mutex-guarded map[string]bool with SetRebuildActive(slug string), ClearRebuildActive(slug string) and IsRebuildActive(slug string) bool",
+        "In rebuild_executor.go, call wslock.SetRebuildActive(slug) immediately before attempting the fetch-phase lock, and make its clearing part of the same deferred cleanup that removes the worktree (Task 2), so the guard clears strictly after worktree removal on every exit path, or immediately when no worktree was ever created",
+        "Replace the fetch-phase wslock.Lock(slug) with unlock, locked := wslock.TryLock(slug); on failure, clear the guard and return nil, true, &TransientError{...} without calling Fetch, resolveUpstreamBase or touching _rebuild_temp",
+        "On success, keep fetch + resolveUpstreamBase inside the locked region and release the fetch-phase lock (call unlock()) before worktree creation",
+        "In internal/workspace/handlers.go's handleArchiveWorkspace (case \"ready\") and internal/workspace/reclone_handler.go's handleRecloneWorkspace, add a check for wslock.IsRebuildActive(slug) alongside the existing wslock.TryLock check, responding 409 workspace_busy without deleting the workspace directory when set",
+        "Run `go test ./internal/wslock/... ./internal/carrypatch/... ./internal/workspace/... -count=1`"
+      ],
+      "touches": [
+        "internal/wslock/guard.go",
+        "internal/wslock/guard_test.go",
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/workspace/handlers.go",
+        "internal/workspace/reclone_handler.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Delete a leftover _rebuild_temp branch exactly once, inside the fetch-phase lock",
+      "criteria": [
+        "01-REQ-3"
+      ],
+      "tests": [
+        "TS-01-13",
+        "TS-01-14",
+        "TS-01-15",
+        "TS-01-16"
+      ],
+      "steps": [
+        "Write TS-01-13..TS-01-16 and confirm they fail",
+        "Inside the fetch-phase locked region, after resolveUpstreamBase succeeds and before releasing the lock, check `trunkGit.Run(ctx, \"rev-parse\", \"--verify\", \"refs/heads/_rebuild_temp\")`",
+        "When it exists and currentCheckout(ctx, trunkGit) == \"_rebuild_temp\": look up branch := workspaceBranch(h.DB, slug); if branch != \"\", checkout it (`checkout <branch> --`), otherwise leave the trunk detached at _rebuild_temp's own tip (`checkout --detach _rebuild_temp --`)",
+        "Delete the branch with `branch -D _rebuild_temp` and log the deletion at info level with the workspace slug",
+        "When the rev-parse fails (branch absent), skip both the checkout and deletion steps entirely, leaving the trunk's HEAD and checked-out branch untouched",
+        "Run `go test ./internal/carrypatch/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/rebuild_executor_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Reacquire the workspace lock, blocking, only for the final ref-update and bookkeeping phase",
+      "criteria": [
+        "01-REQ-6"
+      ],
+      "tests": [
+        "TS-01-28",
+        "TS-01-29",
+        "TS-01-30",
+        "TS-01-31",
+        "TS-01-32"
+      ],
+      "steps": [
+        "Write TS-01-28..TS-01-32 and confirm they fail",
+        "After patch application completes (success, or a fail_fast abort after its own cleanup), acquire finalUnlock := wslock.Lock(slug) (blocking, never TryLock) before any integration-branch mutation",
+        "Move exactly these steps inside the locked region: reading finalHead from worktreeGit, capturing previousHead via trunkGit, `branch -f <integration> <finalHead>` via trunkGit, soft-deleting merged_upstream patches, CompactPositions, and (when REBUILD_PUSH_INTEGRATION_BRANCH is \"true\") the push of the integration branch to origin",
+        "Release finalUnlock() immediately after those steps complete, before the deferred worktree-removal from Task 2 runs",
+        "Keep the lock/unlock symmetric on the fail_fast conflict path too, even though soft-delete/compaction/push do not apply there",
+        "Add an integration test (TS-01-31) using real wslock and a real trunk repo where a concurrent rollback force-updates the integration branch to an older SHA while patches are still being applied, then asserts the rebuild's later `branch -f` wins once both complete",
+        "Run `go test ./internal/carrypatch/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/rebuild_executor_test.go",
+        "internal/carrypatch/rebuild_integration_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Snapshot patch tips to SHAs and enqueue a follow-up rebuild for any that moved",
+      "criteria": [
+        "01-REQ-7"
+      ],
+      "tests": [
+        "TS-01-33",
+        "TS-01-34",
+        "TS-01-35",
+        "TS-01-36",
+        "TS-01-37",
+        "TS-01-38",
+        "TS-01-39",
+        "TS-01-40"
+      ],
+      "steps": [
+        "Write TS-01-33..TS-01-40 and confirm they fail",
+        "Add `SourceSHA string \\`json:\"source_sha\"\\`` to PatchResult in carrypatch.go",
+        "Before the patch-processing loop, for every patch not already skipped for being disabled/merged_upstream/deleted, resolve sha, err := worktreeGit.Run(ctx, \"rev-parse\", \"--verify\", \"refs/heads/\"+patch.BranchName); on error set pr.Status=\"skipped\", pr.SkippedReason=\"branch_not_found\" and continue; on success record the SHA in a per-patch snapshot map and set pr.SourceSHA",
+        "Change applyRebasePatch/applyMergePatch to take the snapshot SHA (not the branch name) for `git log`/cherry-pick/merge selection, while still passing the branch name for the merge commit message",
+        "After the final phase's lock (Task 5) is released and before the worktree is removed, iterate the snapshot map restricted to patches whose status was `active` at snapshot time; for each, read the current tip via trunkGit.Run(ctx, \"rev-parse\", \"--verify\", \"refs/heads/\"+branch) and compare to its snapshot SHA",
+        "When at least one active patch moved and GetVariable(\"workspace\", slug, \"AUTO_REBUILD_AFTER_PUSH\") is not \"false\", build a payload via BuildRebuildPayload, set SubmittedBy: \"system:stale-snapshot\", recompute the same Key (slug) and Group (FormatGroupKey) as the current job, use a fresh uuid nonce, and call h.Queue.Enqueue",
+        "Emit hub.rebuild.followup via h.emitRebuildAudit with metadata[\"stale_branches\"] listing the moved branch names",
+        "Exclude patches that were skipped, disabled, in conflict, merged_upstream or deleted at snapshot time from the comparison entirely",
+        "Run `go test ./internal/carrypatch/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/carrypatch.go",
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/rebuild_executor_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Prove sync, rollback, rerere forget, batch rebase, merges, pushes and gc proceed unaffected during patch application",
+      "criteria": [
+        "01-REQ-5"
+      ],
+      "tests": [
+        "TS-01-23",
+        "TS-01-24",
+        "TS-01-25",
+        "TS-01-26",
+        "TS-01-27"
+      ],
+      "steps": [
+        "Write TS-01-23..TS-01-27 and confirm they fail",
+        "Extend internal/carrypatch/rebuild_integration_test.go with a harness that runs a real HandleRebuildJob in a goroutine against a real git repo with a deliberately slow patch application step, so the test can issue concurrent POST /sync, rollback and DELETE /rerere/* HTTP requests while it runs and assert none return 409",
+        "Reuse the newFullTestEnv-style helpers to share one WorkspaceRoot/DB between the rebuild handler and the sync/rerere/rollback route configs under test",
+        "For TS-01-24, drive internal/gitserver's updateHeadSHA (or an equivalent wslock.TryLock-based harness mirroring it) concurrently with the running rebuild and assert the trunk's working tree resets to the pushed commit with no \"skipping worktree reset\" log line",
+        "For TS-01-25, assert the rebuild's captured upstreamHead is unchanged by a concurrent update to refs/remotes/upstream/HEAD performed mid-run",
+        "For TS-01-26, enqueue a rebuild job then invoke the sync auto-rebuild enqueue path with the same (type, key) and assert jobqueue.Queue.Enqueue reports duplicate=true",
+        "For TS-01-27, add a property test that creates a real repo, adds a worktree detached at a commit unreachable from any branch, runs `git gc --prune=now` in the trunk, and asserts the object is still present, across several generated commits",
+        "Run `go test ./internal/carrypatch/... ./internal/gitserver/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/rebuild_integration_test.go",
+        "internal/carrypatch/rebuild_executor_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Handle context cancellation cleanly in both the fetch phase and patch application",
+      "criteria": [
+        "01-REQ-8"
+      ],
+      "tests": [
+        "TS-01-41",
+        "TS-01-42",
+        "TS-01-43"
+      ],
+      "steps": [
+        "Write TS-01-41..TS-01-43 and confirm they fail",
+        "At the top of each patch-processing iteration (and once before entering the loop), check ctx.Err(); on cancellation, abort any in-progress cherry-pick/merge in the worktree using a background context (not the cancelled one) so the abort itself is not also cancelled",
+        "Log a warning if the abort fails, but continue regardless: the shared deferred worktree-removal and guard-clear (Tasks 2 and 3) must still run",
+        "Return nil, true, &TransientError{Err: ctx.Err()} from the cancellation branch — the same error shape the historical trunk-based cancellation path returned",
+        "Handle cancellation observed during the fetch phase (before the worktree exists) the same way: release the fetch-phase lock, let the guard clear via the shared defer, and return the retryable error without ever calling WorktreeAdd",
+        "Run `go test ./internal/carrypatch/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/rebuild_executor_test.go",
+        "internal/carrypatch/rebuild_cancel_requeue_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Log worktree lifecycle events at info level and confirm the public API/audit shape is unchanged",
+      "criteria": [
+        "01-REQ-9"
+      ],
+      "tests": [
+        "TS-01-44",
+        "TS-01-45",
+        "TS-01-46",
+        "TS-01-47",
+        "TS-01-48",
+        "TS-01-49"
+      ],
+      "steps": [
+        "Write TS-01-44..TS-01-49 and confirm they fail",
+        "Add a nil-safe h.Logger.Info helper (mirroring the existing logf/Warn helper) and call it at: worktree creation (slug+path), worktree removal (slug+path), each stale-directory removal in both the per-rebuild cleanup and CleanupStaleRebuildWorktrees (slug+path), and the one-time _rebuild_temp deletion (slug)",
+        "Confirm hub.rebuild.complete and hub.rebuild.fail still carry patches_applied and reason respectively after the Task 1-8 refactors; add a regression test if any field was dropped",
+        "Add an integration test hitting GET /workspaces/:slug/rebuilds/:id after a completed rebuild with a stale patch tip, asserting every previously-existing field is present, patch_results[].source_sha is populated, and the only new audit event type observed is hub.rebuild.followup",
+        "Reuse the concurrent-request harness from Task 7 to assert POST /sync, rollback and rerere forget return 409 workspace_busy only while wslock is held during the fetch and final phases, never during patch application",
+        "Run `go test ./internal/carrypatch/... -count=1`"
+      ],
+      "touches": [
+        "internal/carrypatch/rebuild_executor.go",
+        "internal/carrypatch/handlers_audit_test.go",
+        "internal/carrypatch/rebuild_api_test.go",
+        "internal/carrypatch/rebuild_executor_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update docs/api.md, docs/carry_patch_workflow.md and the codebase review note for the worktree-based flow",
+      "criteria": [
+        "01-REQ-10"
+      ],
+      "tests": [
+        "TS-01-50",
+        "TS-01-51",
+        "TS-01-52"
+      ],
+      "steps": [
+        "Write TS-01-50..TS-01-52 as Go tests reading the doc files (following the docs_spec03_test.go pattern of walking up to the project root and reading docs/* as plain text) in a new internal/carrypatch/docs_spec01_test.go, confirming they fail",
+        "Update docs/api.md's \"Workspace Lock\" section and the workspace_busy row of the error-type table so sync, rollback and rerere forget are described as rejected only during a rebuild's fetch and final phases, while archive and reclone are described as rejected for the whole rebuild via the rebuild-active guard",
+        "Rewrite docs/carry_patch_workflow.md's \"Rebuild algorithm\" section (its \"Create a temporary branch\" and \"Finalize on success\" steps) to describe creating a detached worktree at <slug>/rebuild/<job id>, applying patches there without ever checking out the trunk, and updating the integration branch by ref from the worktree's final HEAD; state that clones served by the hub's git server during a rebuild see the pre-rebuild integration branch until the run's final phase completes",
+        "Add a note to the \"Rebuild left the trunk detached and could never recover from a crash\" paragraph in docs/prd/review_2026_09_codebase.md stating this preflightCleanup/_rebuild_temp behaviour is superseded by spec 01 (run_rebuilds_in_a_detached_worktree)",
+        "Run `go test ./internal/carrypatch/... -run DocSpec01 -count=1` to confirm the new doc tests pass"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/carry_patch_workflow.md",
+        "docs/prd/review_2026_09_codebase.md",
+        "internal/carrypatch/docs_spec01_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the worktree-based rebuild end to end: concurrent sync, follow-up rebuilds, crash recovery and the archive guard",
+      "tests": [
+        "TS-01-53",
+        "TS-01-54",
+        "TS-01-55",
+        "TS-01-56"
+      ],
+      "steps": [
+        "Write TS-01-53..TS-01-56 as smoke tests against the real wiring listed in each test's real_components (HTTP handlers, the rebuild job executor, GitRunner, wslock, the job queue worker, SQLite, audit store, real git repositories, filesystem) and confirm they pass",
+        "Trace 01-PATH-1 through internal/carrypatch/rebuild_executor.go: job dispatch -> fetch-phase TryLock/fetch/resolveUpstreamBase/_rebuild_temp check -> worktree creation -> patch application against worktreeGit while a concurrent POST /sync is served -> final-phase Lock/branch-f/compaction -> worktree removal; confirm each step calls the next with no stub remaining",
+        "Trace 01-PATH-2: snapshot resolution -> concurrent push to a patch branch -> patches applied from snapshot SHAs -> post-final-phase tip comparison -> hub.rebuild.followup audit emission -> follow-up job enqueue -> the follow-up job actually dispatched and consumed by RegisterRebuildJob's registered handler in production code",
+        "Trace 01-PATH-3: crash simulation -> cmd/af-hub/main.go's call to carrypatch.CleanupStaleRebuildWorktrees before mergeQueue.Start() -> the next rebuild's own per-run stale cleanup -> a clean run with no trunk reset; confirm the main.go wiring is real, not just defined",
+        "Trace 01-PATH-4: rebuild sets the guard -> archive's wslock.IsRebuildActive check in internal/workspace/handlers.go -> 409 workspace_busy -> guard cleared by the rebuild's deferred cleanup -> archive retried and succeeds; confirm the guard check reads the same internal/wslock state the rebuild writes",
+        "For every criterion carrying a contract (01-REQ-1.1, 1.5, 1.7; 01-REQ-2.2, 2.4; 01-REQ-3.4; 01-REQ-4.2, 4.4, 4.6; 01-REQ-6.4; 01-REQ-7.3, 7.5, 7.7; 01-REQ-8.1, 8.4), confirm its producer's result is consumed by a caller in production code, not only asserted in tests",
+        "Grep internal/carrypatch, internal/wslock, internal/gitcmd, internal/workspace and cmd/af-hub for panic(\"not implemented\"), TODO markers and bare stub returns; resolve any that remain",
+        "Run `make test` and `make lint` and confirm both pass"
+      ],
+      "touches": [
+        "internal/carrypatch/smoke_test.go",
+        "cmd/af-hub/main.go",
+        "internal/workspace/handlers.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`go test -tags smoke ./internal/carrypatch/... -count=1` passes against real git repositories",
+        "`make test` passes",
+        "`make lint` passes"
+      ],
+      "state": "pending"
+    }
+  ]
+}
