@@ -1,0 +1,299 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "04",
+  "spec_name": "patch_branch_push_protection",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./...",
+    "spec_tests": "go test ./internal/gitserver/... ./internal/carrypatch/... ./internal/docscheck/... -tags=smoke -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "02",
+      "reason": "Delivers the PATCH_BRANCH_SOURCE workspace variable this spec reads to decide whether a push is guarded at all, and establishes the fork-credential and go-git push/fetch conventions (workspace.ResolveCloneAuth, the git.PushOptions{RemoteName, RefSpecs, Auth, Force} shape) this spec's forward and mirror pushes reuse."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Implement carry-patch guard-candidate classification helpers",
+      "criteria": [
+        "04-REQ-2"
+      ],
+      "tests": [
+        "TS-04-4",
+        "TS-04-6",
+        "TS-04-7"
+      ],
+      "steps": [
+        "Write TS-04-4, TS-04-6 and TS-04-7 in internal/carrypatch/push_guard_test.go using the sqlite test harness in internal/carrypatch/testhelpers_test.go, seeding a workspace row with integration_branch='main' and patches rows branch_name='patch/foo' status='active', branch_name='main' status='active', branch_name='patch/gone' status='deleted'; confirm they fail.",
+        "Add internal/carrypatch/push_guard.go with isRegisteredPatchBranch(db *sql.DB, slug, branchName string) (bool, error) that runs 'SELECT status FROM patches WHERE workspace_slug = ? AND branch_name = ?' and reports true only when a row exists whose status is not 'deleted'.",
+        "Add isGuardCandidateBranch(integrationBranch, branchName string, registered bool) bool implementing 04-REQ-2.1/2.3/2.4: false when branchName equals integrationBranch (even if registered), false when not registered, true otherwise; the refs/heads/ prefix check and the zero-hash (delete) check are the caller's responsibility, built in task 2, since they need no patches lookup.",
+        "Add readPushPatchesToOrigin(getVariable GetVariableFunc, slug string) bool implementing 04-REQ-1.1/1.2/1.3: calls getVariable(\"workspace\", slug, \"PUSH_PATCHES_TO_ORIGIN\") fresh on every call (no caching), returns true only for the exact string \"true\", and returns false without propagating the error when getVariable returns a non-nil error.",
+        "Run go test ./internal/carrypatch/... -run PushGuard -count=1 and confirm TS-04-4, TS-04-6 and TS-04-7 pass.",
+        "Run go vet ./internal/carrypatch/..."
+      ],
+      "touches": [
+        "internal/carrypatch/push_guard.go",
+        "internal/carrypatch/push_guard_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add gitserver-side mechanical push-candidate filtering and the push-guard/mirror hook registration points",
+      "criteria": [
+        "04-REQ-6"
+      ],
+      "tests": [
+        "TS-04-5",
+        "TS-04-8",
+        "TS-04-21",
+        "TS-04-22"
+      ],
+      "steps": [
+        "Write TS-04-5, TS-04-8, TS-04-21 and TS-04-22 in internal/gitserver/push_guard_test.go; confirm they fail.",
+        "In internal/gitserver/push_guard.go define type PushGuardFunc func(db *sql.DB, slug, trunkPath string, branches, oldSHAs, newSHAs []string) map[string]string (branch name -> non-empty rejection message; a branch absent from the map is allowed to write) and type MirrorFunc func(db *sql.DB, slug, trunkPath string, branches []string); add package-level vars pushGuardFunc/mirrorFunc and RegisterPushGuardFunc/RegisterMirrorFunc setter functions, mirroring RegisterPostPushHook's exact pattern in handlers.go.",
+        "Add a pure helper mechanicalPushCandidates(commands []*packp.Command) (branches, oldSHAs, newSHAs []string) that keeps only commands whose Name has the refs/heads/ prefix and whose New is not plumbing.ZeroHash, stripping the prefix (04-REQ-2.2, 04-REQ-2.5); this is the only filtering gitserver performs before ever calling pushGuardFunc, at no cost for anything else.",
+        "Confirm against the installed go-git/v5 module source (module cache path from 'go env GOMODCACHE', plumbing/transport/server and plumbing/storer) whether a storer.ReferenceStorer error returned for one command's write surfaces as that command's own failed status in the *packp.ReportStatus from server.Session.ReceivePack, rather than failing the whole call (Design Decision 1, Verified External API); record the finding as a comment above the wrapper added next.",
+        "In internal/gitserver/resolver.go, add a second storer wrapper (e.g. guardedStorer wrapping thinPackSafeStorer) that WorkspaceLoader.Load returns, holding the in-flight push's mechanicalPushCandidates() result (set by handleReceivePack before calling sess.ReceivePack) so its reference-write method(s) can recognize a guarded candidate ref by name; if the previous step finds go-git does not isolate per-command failures this way, instead have handleReceivePack split req.Commands into a guarded batch and an unguarded batch, run sess.ReceivePack per batch, and merge the two *packp.ReportStatus results (preserving command order) into one response — implement only whichever approach the confirmation supports.",
+        "Wire handleReceivePack so that, when pushGuardFunc is registered and mechanicalPushCandidates(req.Commands) is non-empty, it invokes pushGuardFunc(db, slug, trunkPath, branches, oldSHAs, newSHAs) exactly once per push, synchronously, before the wrapped storer would write those refs, passing only these primitive arguments (04-REQ-6.2); when pushGuardFunc is nil, the push is byte-for-byte identical to before this spec (04-REQ-6.1).",
+        "For this task, do not yet consume the returned rejection map to change any ref's outcome (that lands in task 3) — every ref, including guard candidates, is still written and reported ok exactly as before this spec.",
+        "Confirm TS-04-5, TS-04-8, TS-04-21 and TS-04-22 pass.",
+        "Run go vet ./internal/gitserver/..."
+      ],
+      "touches": [
+        "internal/gitserver/push_guard.go",
+        "internal/gitserver/push_guard_test.go",
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/resolver.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Refuse a direct push to a fork-synced patch branch",
+      "criteria": [
+        "04-REQ-3",
+        "04-REQ-1"
+      ],
+      "tests": [
+        "TS-04-9",
+        "TS-04-10",
+        "TS-04-2",
+        "TS-04-3",
+        "TS-04-23"
+      ],
+      "steps": [
+        "Write TS-04-9 and TS-04-10 in internal/gitserver using the gitTestEnv/doRequest helpers from push_test.go (seed PATCH_BRANCH_SOURCE='origin' via the variable store, PUSH_PATCHES_TO_ORIGIN unset, and a patches row for patch/foo); write TS-04-2 and TS-04-3 the same way (property test over non-'true' values, and a variable-store stub that returns an error); write TS-04-23 in internal/carrypatch calling the production guard function directly against a real sqlite db; confirm all five fail.",
+        "In internal/carrypatch/push_guard.go add NewPushGuardFunc(getVariable GetVariableFunc, resolveAuth func(slug string) (transport.AuthMethod, error)) returning a func(db *sql.DB, slug, trunkPath string, branches, oldSHAs, newSHAs []string) map[string]string matching gitserver.PushGuardFunc's shape structurally, with no import of internal/gitserver (same convention as NewPostPushRebuildHook).",
+        "Inside it, query workspace_mode, integration_branch and git_url from the workspaces table; if workspace_mode != 'carry_patch', return nil immediately with no further query (04-REQ-7.1); otherwise use isRegisteredPatchBranch and isGuardCandidateBranch (task 1) to narrow the input branches to true guard candidates.",
+        "For each true candidate, read PATCH_BRANCH_SOURCE via getVariable('workspace', slug, 'PATCH_BRANCH_SOURCE') fresh; when it is 'origin', call readPushPatchesToOrigin (task 1); when that is false, set the branch's rejection message to 'branch is synced from origin; push to <git_url> instead' using the workspace's own git_url (04-REQ-3.1); leave the PUSH_PATCHES_TO_ORIGIN=true (forwarding) branch producing no rejection for now (task 4 completes it); when PATCH_BRANCH_SOURCE is anything other than 'origin', produce no rejection here.",
+        "In the storer wrapper / merge point built in task 2, consume pushGuardFunc's returned map: for a candidate branch present in the map, refuse only that ref's write, report 'ng <message>' for it in the final *packp.ReportStatus, and leave its on-disk ref completely unchanged; every other ref (non-candidates and candidates absent from the map) is written and reported ok normally, and the packfile is unpacked regardless (04-REQ-3.2, 04-REQ-3.3).",
+        "In cmd/af-hub/main.go, call gitserver.RegisterPushGuardFunc(carrypatch.NewPushGuardFunc(store.GetVariableValue, func(slug string) (transport.AuthMethod, error) { return workspace.ResolveCloneAuth(store, slug) })) alongside the existing RegisterPostPushHook call.",
+        "Confirm TS-04-9, TS-04-10, TS-04-2, TS-04-3 and TS-04-23 pass."
+      ],
+      "touches": [
+        "internal/carrypatch/push_guard.go",
+        "internal/carrypatch/push_guard_test.go",
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/resolver.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Forward a push to a fork-synced patch branch before accepting it locally",
+      "criteria": [
+        "04-REQ-4",
+        "04-REQ-1"
+      ],
+      "tests": [
+        "TS-04-11",
+        "TS-04-12",
+        "TS-04-13",
+        "TS-04-14",
+        "TS-04-15",
+        "TS-04-1"
+      ],
+      "steps": [
+        "Write TS-04-11 through TS-04-15 against carrypatch.NewPushGuardFunc using a real local bare repository standing in for 'origin', and TS-04-1 as two successive real pushes through the gitTestEnv HTTP endpoint with PUSH_PATCHES_TO_ORIGIN flipped between 'true' and a non-true value via the variable store between them; confirm all six fail.",
+        "Extend NewPushGuardFunc's 'PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN=true' branch (left open by task 3): for each true candidate, attempt wslock.TryLock(slug); if not acquired, set the branch's rejection message to 'workspace busy; try again' and do not attempt a push (04-REQ-4.4).",
+        "When the lock is acquired, open the trunk repository via git.PlainOpen(trunkPath), resolve its 'origin' remote, and PushContext a non-force refspec 'refs/heads/<name>:refs/heads/<name>' with Auth from resolveAuth(slug) (04-REQ-4.1, 04-REQ-4.6); always release the lock afterward via the TryLock unlock function.",
+        "On push success (including errors.Is(err, git.NoErrAlreadyUpToDate)), leave the branch absent from the returned rejection map so the storer wrapper from task 2/3 proceeds to write the local ref to the new SHA as part of the same push (04-REQ-4.2).",
+        "On push failure, set the branch's rejection message to 'push to origin rejected: <err>' using the forward attempt's own error text verbatim (04-REQ-4.3).",
+        "Ensure each candidate branch is processed independently within the same call: one branch's busy lock or forward failure must never change another branch's accept/reject outcome in the same push (04-REQ-4.5).",
+        "Confirm TS-04-11 through TS-04-15 and TS-04-1 pass.",
+        "Run go vet ./internal/carrypatch/... ./internal/gitserver/..."
+      ],
+      "touches": [
+        "internal/carrypatch/push_guard.go",
+        "internal/carrypatch/push_guard_test.go",
+        "internal/gitserver/push_guard_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Best-effort mirror an accepted hub-authoritative push to the fork",
+      "criteria": [
+        "04-REQ-5"
+      ],
+      "tests": [
+        "TS-04-16",
+        "TS-04-17",
+        "TS-04-18",
+        "TS-04-19",
+        "TS-04-20"
+      ],
+      "steps": [
+        "Write TS-04-16 through TS-04-20: seed PATCH_BRANCH_SOURCE='hub', PUSH_PATCHES_TO_ORIGIN='true', a registered patch branch, a local bare repo standing in for 'origin', and (for TS-04-18/19/20) an audit.Emitter test double capturing HubEvent calls; confirm they fail.",
+        "In internal/carrypatch/push_guard.go add NewMirrorFunc(getVariable GetVariableFunc, resolveAuth func(slug string) (transport.AuthMethod, error), auditEmitter audit.Emitter) returning a func(db *sql.DB, slug, trunkPath string, branches []string) matching gitserver.MirrorFunc's shape structurally.",
+        "Inside it, query workspace_mode and integration_branch; return immediately if not carry_patch; read PATCH_BRANCH_SOURCE and PUSH_PATCHES_TO_ORIGIN fresh; return immediately unless PATCH_BRANCH_SOURCE=='hub' and PUSH_PATCHES_TO_ORIGIN=='true' (04-REQ-5.1: no pre-receive guard ever runs in this mode; this function only mirrors after the push already succeeded).",
+        "For each input branch that is not the integration_branch and matches a non-deleted patches row, attempt wslock.TryLock(slug) non-blocking; on failure, log the skip and emit a hub.patch.mirror_failed audit event (EventType 'hub.patch.mirror_failed', ResourceType 'patch', ActorType 'system', Workspace slug, Metadata{branch_name, error}) describing the busy lock, then move to the next branch (04-REQ-5.3).",
+        "When the lock is acquired, force-push 'refs/heads/<name>:refs/heads/<name>' to origin using resolveAuth(slug) credentials; on failure, log it and emit the same event shape with the push error in Metadata.error (04-REQ-5.4); always release the lock afterward.",
+        "In internal/gitserver/handlers.go, after the existing 'go postPushHook(db, slug, branches)' dispatch in handleReceivePack, extend that goroutine so that, when mirrorFunc is registered, it calls mirrorFunc(db, slug, trunkPath, branches) after postPushHook returns, inside the same goroutine, so mirroring never blocks the HTTP response and never delays or fails the rebuild the hook may enqueue (04-REQ-5.2, 04-REQ-5.5).",
+        "In cmd/af-hub/main.go, call gitserver.RegisterMirrorFunc(carrypatch.NewMirrorFunc(store.GetVariableValue, func(slug string) (transport.AuthMethod, error) { return workspace.ResolveCloneAuth(store, slug) }, auditEmitter)) near the existing RegisterPostPushHook/SetAuditEmitter calls.",
+        "Confirm TS-04-16 through TS-04-20 pass."
+      ],
+      "touches": [
+        "internal/carrypatch/push_guard.go",
+        "internal/carrypatch/push_guard_test.go",
+        "internal/gitserver/handlers.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Correct auto-rebuild input and hub.git.push audit metadata under partial acceptance; verify standard workspaces stay untouched",
+      "criteria": [
+        "04-REQ-7",
+        "04-REQ-8"
+      ],
+      "tests": [
+        "TS-04-24",
+        "TS-04-25",
+        "TS-04-26",
+        "TS-04-27",
+        "TS-04-28"
+      ],
+      "steps": [
+        "Write TS-04-24 and TS-04-25 (a standard workspace and a carry_patch workspace push touching only non-candidate refs, with counting stand-ins for the variable store and db query count) and TS-04-26, TS-04-27, TS-04-28 (a single push with one rejected candidate and one accepted ref, inspecting the post-push hook's branch argument and the emitted hub.git.push audit event); confirm all five fail.",
+        "In handleReceivePack, compute the 'actually written' branch list after pushGuardFunc's decisions are applied: mechanicalPushCandidates(req.Commands) minus any branch present in the guard's rejection map, plus every non-candidate ref that was written; replace the extractPushedBranches(req.Commands) call that currently feeds postPushHook with this corrected list (04-REQ-8.1, 04-REQ-8.2).",
+        "Update emitGitPushAudit (internal/gitserver/audit_emit.go) to accept and use this same corrected list (and its derived head_sha) for the refs_updated/head_sha metadata, leaving every other field of the hub.git.push event unchanged (04-REQ-8.3).",
+        "Confirm the mirroring call added in task 5 also receives this corrected list rather than the raw client-requested list, so a rejected branch is never mirrored (04-REQ-8.2).",
+        "Confirm that for a workspace whose workspace_mode is not carry_patch, or for a carry_patch push with zero mechanical candidates, pushGuardFunc (when registered) still runs but returns after at most one workspace_mode query, with no PUSH_PATCHES_TO_ORIGIN lookup and no patches-table query, and the push's outcome and timing are otherwise identical to before this spec (04-REQ-7.1, 04-REQ-7.2).",
+        "Confirm TS-04-24 through TS-04-28 pass.",
+        "Run go vet ./internal/gitserver/..."
+      ],
+      "touches": [
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/audit_emit.go",
+        "internal/gitserver/push_guard.go",
+        "internal/gitserver/push_guard_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Log rejections and forward failures with the acting fields only",
+      "criteria": [
+        "04-REQ-9"
+      ],
+      "tests": [
+        "TS-04-29",
+        "TS-04-30",
+        "TS-04-31"
+      ],
+      "steps": [
+        "Write TS-04-29, TS-04-30 and TS-04-31, capturing log output the same way other gitserver tests do (redirect the standard logger via log.SetOutput to a buffer for the duration of the test); confirm they fail.",
+        "Where the rejection applied under task 3 (message not starting with 'push to origin rejected:' or 'workspace busy') is being reported, log at info level (matching the file's existing log.Printf style) including the workspace slug, the branch name, and apikit.GetAuthInfo(c).UserID (04-REQ-9.1).",
+        "Where the rejection message starts with 'push to origin rejected:' (a forward failure from task 4), log at warn level with the same three fields plus the forward error text (04-REQ-9.2).",
+        "Ensure neither log line includes a stack trace or any packfile bytes, only the fields listed in the two previous steps (04-REQ-9.3).",
+        "Confirm TS-04-29, TS-04-30 and TS-04-31 pass."
+      ],
+      "touches": [
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/push_guard.go",
+        "internal/gitserver/push_guard_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Document PUSH_PATCHES_TO_ORIGIN and rewrite the agent push-target instructions",
+      "criteria": [
+        "04-REQ-10"
+      ],
+      "tests": [
+        "TS-04-32",
+        "TS-04-33",
+        "TS-04-34"
+      ],
+      "steps": [
+        "Create internal/docscheck/docs_test.go (new package internal/docscheck) with TS-04-32, TS-04-33 and TS-04-34, reading docs/carry_patch_workflow.md and docs/examples/AGENTS_carry_patch.md relative to the repository root; confirm they fail.",
+        "In docs/carry_patch_workflow.md's Configuration section, add a '### PUSH_PATCHES_TO_ORIGIN' subsection immediately after '### AUTO_REBUILD_AFTER_PUSH', modelled on that subsection's format (value/behavior table and an afc vars create example), describing: in origin mode a direct push to a registered patch branch is rejected unless this variable is \"true\", in which case it is forwarded to the fork before being accepted; in hub mode an accepted push is best-effort mirrored to the fork.",
+        "In the 'How it works' section's 'Auto-rebuild on push' subsection, add a short paragraph describing the pre-receive refusal and forward (fork-authoritative mode) and the mirror (hub-authoritative mode), including the exact string 'branch is synced from origin; push to <git_url> instead'.",
+        "Rewrite docs/examples/AGENTS_carry_patch.md's 'Step 4: Push to the Hub' to instruct checking PATCH_BRANCH_SOURCE before pushing (e.g. afc vars list --workspace <workspace-slug>); in hub mode, push to the hub's git server as today; in origin mode, push the patch branch directly to the fork's own URL instead, unless PUSH_PATCHES_TO_ORIGIN=true, in which case pushing to the hub still works but is forwarded.",
+        "Confirm TS-04-32, TS-04-33 and TS-04-34 pass."
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "docs/examples/AGENTS_carry_patch.md",
+        "internal/docscheck/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify push refusal, forwarding, mirroring and partial-acceptance end to end against a real git server and fork",
+      "tests": [
+        "TS-04-35",
+        "TS-04-36",
+        "TS-04-37",
+        "TS-04-38"
+      ],
+      "steps": [
+        "Write TS-04-35 through TS-04-38 in internal/gitserver/push_guard_smoke_test.go behind //go:build smoke, using real git pushes (exec.Command git push or the bare-repo helpers already used in push_test.go) against a running Echo test server, a real sqlite db, a real trunk repository, and — for TS-04-36/37 — a real local bare repository standing in for the fork, wired exactly as cmd/af-hub/main.go wires gitserver.RegisterPushGuardFunc(carrypatch.NewPushGuardFunc(...)) and gitserver.RegisterMirrorFunc(carrypatch.NewMirrorFunc(...)); confirm they pass.",
+        "Trace 04-PATH-1 through the real code: POST .../git-receive-pack -> handleReceivePack -> mechanicalPushCandidates -> pushGuardFunc (carrypatch.NewPushGuardFunc) -> storer wrapper rejection -> ng in ReportStatus -> info log; confirm each step calls the next with no stub left (no panic(\"not implemented\"), no TODO, no bare return nil on a non-trivial branch) in internal/gitserver/push_guard.go, internal/gitserver/handlers.go, internal/gitserver/resolver.go and internal/carrypatch/push_guard.go.",
+        "Trace 04-PATH-2 (forward) and 04-PATH-4 (partial acceptance) the same way, confirming in production code (not only in a test double) that the forward push to origin genuinely precedes the local ref write, and that the corrected 'actually written' branch list from task 6 is what reaches postPushHook and emitGitPushAudit.",
+        "Trace 04-PATH-3 (mirror), confirming NewMirrorFunc is actually invoked from handleReceivePack's post-push goroutine in production code and that its audit event reaches the real audit.Emitter wired in cmd/af-hub/main.go.",
+        "For every criterion with a contract (04-REQ-3.1, 04-REQ-4.2, 04-REQ-4.3, 04-REQ-4.4, 04-REQ-5.3, 04-REQ-5.4), confirm the producer's result (the rejection map entry, the written ref, the audit event) is consumed by a caller in production code — the storer wrapper, handleReceivePack, or the mirror goroutine — not only asserted by a test.",
+        "Confirm cmd/af-hub/main.go actually calls RegisterPushGuardFunc and RegisterMirrorFunc so both execution paths are live in the running server, not just under test.",
+        "Grep internal/gitserver and internal/carrypatch for TODO and panic(\"not implemented\") introduced while implementing this spec and remove any that remain.",
+        "Run go test ./... -count=1 and go test ./internal/gitserver/... ./internal/carrypatch/... ./internal/docscheck/... -tags=smoke -count=1 and confirm both succeed.",
+        "Run go vet ./..."
+      ],
+      "touches": [
+        "internal/gitserver/push_guard_smoke_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "go test ./internal/gitserver/... ./internal/carrypatch/... -tags=smoke -count=1 passes against real git pushes and a real fork bare repository"
+      ],
+      "state": "pending"
+    }
+  ]
+}

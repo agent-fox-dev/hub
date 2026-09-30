@@ -1,0 +1,414 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "05",
+  "spec_name": "patch_divergence_recovery",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./...",
+    "spec_tests": "go test ./internal/carrypatch/... ./internal/workspace/... ./internal/cli/... ./internal/gitserver/... ./internal/docscheck/... -tags=smoke -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "02",
+      "reason": "Provides PATCH_BRANCH_SOURCE (read to gate the endpoint), the refs/hub/replaced/<branch> backup-ref convention this endpoint reuses, the origin_sync_state/origin_sha/origin_synced_at patch columns and PatchStore.SetOriginSyncState method this endpoint writes through, and the patch-status dashboard this spec extends with replaced_sha."
+    },
+    {
+      "spec": "04",
+      "reason": "Provides the git server's per-ref pre-receive interception mechanism (the guarded storer wrapper / batch-split merge around git-receive-pack and its rejection-map shape) that this spec reuses, unconditionally, to reject pushes into refs/hub/replaced/*."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Gate reset-to-origin on auth, workspace mode/state and PATCH_BRANCH_SOURCE",
+      "criteria": [
+        "05-REQ-1.1",
+        "05-REQ-1.2",
+        "05-REQ-1.3",
+        "05-REQ-1.4",
+        "05-REQ-1.5",
+        "05-REQ-1.6",
+        "05-REQ-1.7"
+      ],
+      "tests": [
+        "TS-05-1",
+        "TS-05-2",
+        "TS-05-3",
+        "TS-05-4",
+        "TS-05-5",
+        "TS-05-6",
+        "TS-05-7"
+      ],
+      "steps": [
+        "Write TS-05-1 through TS-05-7 in a new internal/carrypatch/reset_to_origin_test.go, reusing testhelpers_test.go's createWorkspacesTable/createPatchesTable/seedWorkspace and the rebuildTestAuthMiddleware/rebuildUserAuth/rebuildPATAuth helpers to stand up an echo group with the new route mounted; confirm all seven fail because the route does not exist yet",
+        "Create internal/carrypatch/reset_to_origin.go defining ResetToOriginAPIConfig{DB *sql.DB; WorkspaceRoot string; NewGitRunner func(repoPath string) (GitRunner, error); GetVariable GetVariableFunc; PatchStore PatchStore; Audit audit.Emitter} and RegisterResetToOriginRoutes(api *echo.Group, cfg ResetToOriginAPIConfig) mounting api.POST(\"/workspaces/:slug/patches/:id/reset-to-origin\", handleResetToOrigin(cfg))",
+        "Implement handleResetToOrigin(cfg) following handleRollbackRebuild's structure: 401 'authentication required' when apikit.GetAuthInfo(c) is nil; 403 'missing required scope: patches:write' when isPAT(auth) && !hasScope(auth, \"patches:write\"); 404 via authorizeWorkspace(c, cfg.DB, auth, slug), identical for a nonexistent workspace and a non-owner's",
+        "Query `SELECT workspace_mode, status, clone_status, integration_branch FROM workspaces WHERE slug = ?`; return 400 'reset-to-origin is only supported for carry_patch workspaces' when mode != carry_patch, 400 'workspace is not active' when status != active, 400 'workspace clone is not ready' when cloneStatus != ready",
+        "Read cfg.GetVariable(\"workspace\", slug, \"PATCH_BRANCH_SOURCE\"); when the value (treating an error as unset) is not exactly \"origin\", call apikit.WriteAPIErrorWithType(c, http.StatusBadRequest, \"reset-to-origin requires PATCH_BRANCH_SOURCE=origin\", \"patch_branch_source_mismatch\") and return nil",
+        "After the PATCH_BRANCH_SOURCE gate passes, temporarily return c.JSON(http.StatusOK, map[string]any{\"status\": \"gate_passed\"}) with a comment marking it as a placeholder that Task 2 replaces with the patch lookup and eligibility gate, and Task 3 replaces again with the real reset -- not a panic or TODO",
+        "Confirm TS-05-1 through TS-05-7 pass; run go vet ./internal/carrypatch/..."
+      ],
+      "touches": [
+        "internal/carrypatch/reset_to_origin.go",
+        "internal/carrypatch/reset_to_origin_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Look up the patch and reject soft-deleted or integration-branch targets",
+      "criteria": [
+        "05-REQ-2.1",
+        "05-REQ-2.2",
+        "05-REQ-2.3"
+      ],
+      "tests": [
+        "TS-05-9",
+        "TS-05-10",
+        "TS-05-11"
+      ],
+      "steps": [
+        "Write TS-05-9, TS-05-10 and TS-05-11 in reset_to_origin_test.go, seeding via seedPatch a cross-workspace patch id (TS-05-9), a status='deleted' patch (TS-05-10), and a patch whose branch_name equals the workspace's integration_branch (TS-05-11); confirm they fail",
+        "In handleResetToOrigin, replace Task 1's placeholder with: query `SELECT id, branch_name, status FROM patches WHERE workspace_slug = ? AND id = ?` scoped to :slug and :id; on sql.ErrNoRows return 404 'patch not found' (this also covers a patch id belonging to a different workspace, since the query is scoped by workspace_slug)",
+        "When the patch's status is 'deleted', return 409 'patch is soft-deleted; restore it first', matching PATCH .../patches/:id's exact message for the same condition",
+        "When the patch's branch_name equals the integration_branch already fetched in Task 1's workspace query, return 400 'cannot reset the integration branch'",
+        "Leave a new placeholder success return (e.g. c.JSON(http.StatusOK, map[string]any{\"status\": \"eligible\", \"branch_name\": branchName})) for every other status (active, conflict, disabled, merged_upstream), to be replaced by Task 3's real reset",
+        "Confirm TS-05-9, TS-05-10 and TS-05-11 pass; run go vet ./internal/carrypatch/..."
+      ],
+      "touches": [
+        "internal/carrypatch/reset_to_origin.go",
+        "internal/carrypatch/reset_to_origin_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Perform the backup-then-move reset under the workspace lock",
+      "criteria": [
+        "05-REQ-1.8",
+        "05-REQ-2.4",
+        "05-REQ-3.1",
+        "05-REQ-3.2",
+        "05-REQ-3.3",
+        "05-REQ-3.4",
+        "05-REQ-3.5",
+        "05-REQ-3.6"
+      ],
+      "tests": [
+        "TS-05-8",
+        "TS-05-12",
+        "TS-05-13",
+        "TS-05-14",
+        "TS-05-15",
+        "TS-05-16",
+        "TS-05-17",
+        "TS-05-18",
+        "TS-05-19"
+      ],
+      "steps": [
+        "Write TS-05-8, TS-05-12 and TS-05-13 through TS-05-19 in reset_to_origin_test.go, supplying cfg.NewGitRunner with the mockGitRunner from testhelpers_test.go whose RunFunc branches on args to simulate `rev-parse --verify refs/remotes/origin/<branch>`, `rev-parse --verify refs/heads/<branch>`, `symbolic-ref --short -q HEAD`, and records `update-ref` calls; confirm they fail",
+        "Replace Task 2's placeholder with: acquire `unlock, locked := wslock.TryLock(slug)`; on !locked return 409 with message text exactly 'workspace_busy' (per 05-REQ-3.1's contract) without reading or writing any ref, and `defer unlock()` once acquired",
+        "Open `git, err := cfg.NewGitRunner(filepath.Join(cfg.WorkspaceRoot, slug, \"trunk\"))`; resolve `originSHA, err := git.Run(ctx, \"rev-parse\", \"--verify\", \"refs/remotes/origin/\"+branchName)`; on error return 400 'branch not found on origin; sync the workspace first' without fetching and without any update-ref call",
+        "Resolve `localSHA, localErr := git.Run(ctx, \"rev-parse\", \"--verify\", \"refs/heads/\"+branchName)`; when localErr == nil, run `git.Run(ctx, \"update-ref\", \"refs/hub/replaced/\"+branchName, localSHA)` before moving the branch, unconditionally (even when localSHA == originSHA); when localErr != nil, skip the backup call entirely",
+        "In both cases move the branch with `git.Run(ctx, \"update-ref\", \"refs/heads/\"+branchName, originSHA)`, never checkout or reset",
+        "Call `checkedOut, _ := git.Run(ctx, \"symbolic-ref\", \"--short\", \"-q\", \"HEAD\")`; when it equals branchName, call `git.HardReset(ctx, originSHA)` immediately after the ref move",
+        "Keep the backup-written flag and both SHAs in local variables for Task 4 to persist and report; for now return `c.JSON(http.StatusOK, map[string]any{\"status\": \"reset\", \"branch_name\": branchName, \"origin_sha\": originSHA})` as a placeholder Task 4 replaces with the full persisted response",
+        "Confirm TS-05-8 (loop over PATCH_DIVERGENCE_POLICY values, asserting 200 and that GetVariable is never called with \"PATCH_DIVERGENCE_POLICY\"), TS-05-12 (loop over eligible statuses, asserting 200), and TS-05-13 through TS-05-19 all pass",
+        "Run go vet ./internal/carrypatch/..."
+      ],
+      "touches": [
+        "internal/carrypatch/reset_to_origin.go",
+        "internal/carrypatch/reset_to_origin_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Persist fork-sync fields, emit the replace audit event, and return the full patch record",
+      "criteria": [
+        "05-REQ-3.7",
+        "05-REQ-3.8",
+        "05-REQ-4.1",
+        "05-REQ-4.2",
+        "05-REQ-4.3",
+        "05-REQ-4.4"
+      ],
+      "tests": [
+        "TS-05-20",
+        "TS-05-21",
+        "TS-05-22",
+        "TS-05-23"
+      ],
+      "steps": [
+        "Write TS-05-20 through TS-05-23 in reset_to_origin_test.go, seeding a patch with non-default status/position/description/upstream_pr_url and a fake audit.Emitter test double recording Emit calls (mirroring handlers_audit_test.go's pattern); confirm they fail",
+        "Replace Task 3's placeholder with a call to `cfg.PatchStore.SetOriginSyncState(ctx, patchID, ptrTo(\"in_sync\"), ptrTo(originSHA), apikit.NowUTC())` (the same method 02_fork_authoritative_sync's fork-refresh step uses), leaving status/position/description/upstream_pr_url untouched",
+        "Emit one hub.patch.replace audit event via cfg.Audit (nil-safe, log-and-swallow on Emit error, mirroring RebuildHandler.emitRebuildAudit) with EventType 'hub.patch.replace', ResourceType 'patch', ResourceID branchName, Workspace slug, ActorID/ActorType taken from apikit.GetAuthInfo(c) (not 'system'), and Metadata {\"branch_name\": branchName, \"new_sha\": originSHA} plus \"old_sha\": localSHA only when a backup was written this call",
+        "Build the response from a fresh, direct `SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url, description, deleted_at, added_at, updated_at, origin_sync_state, origin_sha, origin_synced_at FROM patches WHERE workspace_slug = ? AND id = ?` against cfg.DB (never internal/workspace's patchResponse or Patch type), matching the field names and null conventions GET/PATCH .../patches already use",
+        "Add `replaced_sha` to that response map only when Task 3's backup step ran (the local branch existed before this call), set to the SHA written to refs/hub/replaced/<branch>; omit the key entirely otherwise; return c.JSON(http.StatusOK, response)",
+        "Wire carrypatch.RegisterResetToOriginRoutes into cmd/af-hub/main.go's cpAPI group, mirroring RegisterRebuildRollbackRoutes's registration: DB: database.SqlDB, WorkspaceRoot: cfg.Workspace.Path, NewGitRunner: cpGitRunnerFactory, GetVariable: store.GetVariableValue, PatchStore: cpPatchStore, Audit: auditEmitter",
+        "Confirm TS-05-20 through TS-05-23 pass",
+        "Run go vet ./..."
+      ],
+      "touches": [
+        "internal/carrypatch/reset_to_origin.go",
+        "internal/carrypatch/reset_to_origin_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Add the afc patch reset-to-origin CLI command",
+      "criteria": [
+        "05-REQ-5.1",
+        "05-REQ-5.2",
+        "05-REQ-5.3"
+      ],
+      "tests": [
+        "TS-05-24",
+        "TS-05-25",
+        "TS-05-26"
+      ],
+      "steps": [
+        "Write TS-05-24 through TS-05-26 in internal/cli/patch_cmd_test.go, extending the existing mockPatchAPIServer pattern with a POST .../patches/:id/reset-to-origin handler returning 200 with a patch body for the happy path and, for the error tests, 404/400/409 error bodies and a simulated network failure; confirm they fail",
+        "Add newPatchResetToOriginCmd() to internal/cli/patch_cmd.go modelled exactly on newPatchRestoreCmd: Use \"reset-to-origin <workspace-slug> <patch-id>\", Args: cobra.ExactArgs(2), no request-body flags, sending POST with a nil body to apiPath(\"workspaces\", args[0], \"patches\", args[1], \"reset-to-origin\") and printing the result via apikit.CLIPrintResult",
+        "Register it in PatchCmd()'s cmd.AddCommand(...) list alongside newPatchRestoreCmd()",
+        "Confirm apikit.CLIHandleError maps every non-2xx response (404 patch/workspace not found, 400 PATCH_BRANCH_SOURCE mismatch or branch missing on origin, 409 soft-deleted or workspace busy, and a network error) to process exit code 1, matching every other patch subcommand's error handling -- no new logic is needed here beyond what apikit.CLIClient already does uniformly",
+        "Confirm TS-05-24, TS-05-25 and TS-05-26 pass; run go vet ./internal/cli/..."
+      ],
+      "touches": [
+        "internal/cli/patch_cmd.go",
+        "internal/cli/patch_cmd_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Reject pushes into refs/hub/replaced/* unconditionally at the hub's git server",
+      "criteria": [
+        "05-REQ-6.1",
+        "05-REQ-6.2",
+        "05-REQ-6.3"
+      ],
+      "tests": [
+        "TS-05-27",
+        "TS-05-28",
+        "TS-05-29"
+      ],
+      "steps": [
+        "Write TS-05-27 in internal/gitserver as a characterization test confirming a refs/hub/replaced/<branch> ref already appears in writeRefAdvertisement's output with no code change, using the same AdvRefs fixtures as resolver_test.go/loader_test.go; write TS-05-28 and TS-05-29 using the push-test harness 04_patch_branch_push_protection introduced (its gitTestEnv/doRequest helpers and real git pushes against a running Echo test server), seeding workspaces across workspace_mode/PATCH_BRANCH_SOURCE combinations and pushing `HEAD:refs/hub/replaced/<branch>` alongside a legitimate ref update; confirm TS-05-28 and TS-05-29 fail",
+        "At the per-ref pre-receive interception point 04_patch_branch_push_protection added (the guarded-storer wrapper or split-batch merge in internal/gitserver/handlers.go / resolver.go and its rejection-map shape), add an unconditional, hardcoded rule -- independent of any registered PushGuardFunc and requiring no workspace_mode, PATCH_BRANCH_SOURCE, or patches-table lookup -- that classifies any command whose ref name has the prefix \"refs/hub/replaced/\" as rejected with message 'refs/hub/replaced/* is a hub-managed backup namespace and cannot be pushed to'",
+        "Merge this rejection into the same *packp.ReportStatus construction 04 already built so it participates in the same partial-acceptance handling: the packfile is still unpacked, and every other ref in the same push (including a PushGuardFunc-approved candidate) is written and reported ok",
+        "Apply this rule even when no PushGuardFunc is registered at all (a workspace whose workspace_mode is not carry_patch, or a carry_patch workspace with no patches), so a standard workspace's git server still refuses a refs/hub/replaced/* push",
+        "Confirm TS-05-27, TS-05-28 and TS-05-29 pass; run go vet ./internal/gitserver/..."
+      ],
+      "touches": [
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/resolver.go",
+        "internal/gitserver/push_guard_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Delete a patch's backup ref when it is hard-deleted or purged",
+      "criteria": [
+        "05-REQ-7.1",
+        "05-REQ-7.2",
+        "05-REQ-7.3",
+        "05-REQ-7.4"
+      ],
+      "tests": [
+        "TS-05-30",
+        "TS-05-31",
+        "TS-05-32",
+        "TS-05-33"
+      ],
+      "steps": [
+        "Write TS-05-30 and TS-05-31 in internal/workspace (following branch_check_hook's RegisterBranchCheckHook(nil)/t.Cleanup pattern) and TS-05-32 and TS-05-33 in internal/carrypatch (using real temporary git trunks per workspace, a mockPatchStore extended with pending-purge fixtures, and a real NewGitRunner factory); confirm all four fail",
+        "Add internal/workspace/patch_removed_hook.go: `type PatchRemovedFunc func(slug, branchName string) error`, a package-level `patchRemovedHook PatchRemovedFunc`, and `RegisterPatchRemovedHook(fn PatchRemovedFunc)`, mirroring branch_check_hook.go exactly",
+        "In patch_handlers.go's handleRemovePatch, after deletePatchAndCompact succeeds and patchInfo != nil, call patchRemovedHook(slug, patchInfo.BranchName) when non-nil and log (via log/slog) any non-nil error rather than failing the request, before returning c.NoContent(http.StatusNoContent)",
+        "In internal/carrypatch/carrypatch.go add `PurgeCandidate{ID, WorkspaceSlug, BranchName string}` and a new PatchStore interface method `PatchesPendingPurge(ctx context.Context, olderThan string) ([]PurgeCandidate, error)`; implement it on SQLPatchStore in wire.go as `SELECT id, workspace_slug, branch_name FROM patches WHERE status = 'deleted' AND deleted_at IS NOT NULL AND deleted_at < ?`; add a matching implementation to mockPatchStore in testhelpers_test.go",
+        "Add a shared helper in a new internal/carrypatch/backup_ref.go: `bestEffortDeleteBackupRef(ctx context.Context, workspaceRoot string, newGitRunner func(string) (GitRunner, error), slug, branchName string)` that opens a GitRunner on filepath.Join(workspaceRoot, slug, \"trunk\"), runs `git.Run(ctx, \"update-ref\", \"-d\", \"refs/hub/replaced/\"+branchName)`, and logs (never returns) any error from either step",
+        "Add `NewPatchRemovedHook(workspaceRoot string, newGitRunner func(string) (GitRunner, error)) func(slug, branchName string) error` in a new internal/carrypatch/patch_removed_hook.go (structurally matching workspace.PatchRemovedFunc, no import of internal/workspace, mirroring NewPostPushRebuildHook's convention) that calls bestEffortDeleteBackupRef and always returns nil",
+        "Change PurgeExpiredDeletedPatches's signature in wire.go to `(ctx context.Context, store PatchStore, workspaceRoot string, newGitRunner func(string) (GitRunner, error)) (int64, error)`: call store.PatchesPendingPurge(ctx, cutoff) first, then store.PurgeDeletedPatches(ctx, cutoff) exactly as before, then loop over the candidates calling bestEffortDeleteBackupRef, returning the purge count from PurgeDeletedPatches unchanged by any git-side failure",
+        "Update TestPurgeExpiredDeletedPatches_Integration in soft_delete_test.go to pass a workspaceRoot and a newGitRunner factory backed by a real temp-dir trunk with refs/hub/replaced/<branch> pre-created via git update-ref, verifying it is gone afterward",
+        "Wire workspace.RegisterPatchRemovedHook(carrypatch.NewPatchRemovedHook(cfg.Workspace.Path, cpGitRunnerFactory)) into cmd/af-hub/main.go alongside the existing RegisterBranchCheckHook call",
+        "Confirm TS-05-30 through TS-05-33 pass; run go vet ./..."
+      ],
+      "touches": [
+        "internal/workspace/patch_removed_hook.go",
+        "internal/workspace/patch_handlers.go",
+        "internal/carrypatch/carrypatch.go",
+        "internal/carrypatch/wire.go",
+        "internal/carrypatch/backup_ref.go",
+        "internal/carrypatch/patch_removed_hook.go",
+        "internal/carrypatch/testhelpers_test.go",
+        "internal/carrypatch/soft_delete_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Expose replaced_sha on the patch-status dashboard",
+      "criteria": [
+        "05-REQ-8.1",
+        "05-REQ-8.2",
+        "05-REQ-8.3",
+        "05-REQ-8.4"
+      ],
+      "tests": [
+        "TS-05-34",
+        "TS-05-35",
+        "TS-05-36",
+        "TS-05-37",
+        "TS-05-38"
+      ],
+      "steps": [
+        "Write TS-05-34 through TS-05-38 in internal/carrypatch/patch_status_test.go, using the fullTestEnv/mockGitRunner harness (RunFunc branching on \"rev-parse\"/\"--verify\"/\"refs/hub/replaced/...\" args) and configs both with and without NewGitRunner set, and one whose NewGitRunner returns an error; confirm they fail",
+        "Add `NewGitRunner func(repoPath string) (GitRunner, error)` to PatchStatusAPIConfig in api.go",
+        "Add a `ReplacedSHA string` field with json tag `replaced_sha,omitempty` to PatchStatusEntry",
+        "In handlePatchStatus, after building patchEntries, when cfg.NewGitRunner != nil open a runner on filepath.Join(cfg.WorkspaceRoot, slug, \"trunk\"); on success, for each patch entry call git.Run(ctx, \"rev-parse\", \"--verify\", \"refs/hub/replaced/\"+entry.BranchName) and set entry.ReplacedSHA to the trimmed result when it succeeds and is non-empty, leaving it empty (and therefore omitted by omitempty) otherwise",
+        "When cfg.NewGitRunner is nil or opening the runner errors, skip the replaced_sha computation for every patch and still return 200 with every other field populated as before",
+        "Wire NewGitRunner: cpGitRunnerFactory into cmd/af-hub/main.go's existing carrypatch.RegisterPatchStatusRoutes(cpAPI, carrypatch.PatchStatusAPIConfig{...}) literal",
+        "Confirm TS-05-34 through TS-05-38 pass; run go vet ./internal/carrypatch/..."
+      ],
+      "touches": [
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/patch_status_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add --fail-on-diverged to afc workspace sync",
+      "criteria": [
+        "05-REQ-9.1",
+        "05-REQ-9.2",
+        "05-REQ-9.3",
+        "05-REQ-9.4"
+      ],
+      "tests": [
+        "TS-05-39",
+        "TS-05-40",
+        "TS-05-41",
+        "TS-05-42"
+      ],
+      "steps": [
+        "Write TS-05-39 through TS-05-42 in internal/cli/workspace_sync_test.go, stubbing sync responses with and without a non-empty patches_diverged array (and, for TS-05-40, a rebuild_job_id present to prove no poll request follows) and an unrelated-failure stub for TS-05-42; confirm they fail",
+        "Add `extractPatchesDiverged(result any) []string` to wait.go, mirroring extractRebuildJobID, reading the \"patches_diverged\" field as a []any and converting to []string (nil/absent/non-array yields an empty slice)",
+        "Add a `failOnDiverged bool` flag to newSyncCmd in workspace_cmd.go: cmd.Flags().BoolVar(&failOnDiverged, \"fail-on-diverged\", false, \"Exit 3 when the sync left one or more patches diverged from origin\")",
+        "In the non---wait branch, after apikit.CLIPrintResult(cmd, result) succeeds, check failOnDiverged && len(extractPatchesDiverged(result)) > 0; if true return apikit.CLIHandleError(cmd, apikit.NewCLIError(3, \"sync left one or more patches diverged from origin\")) instead of nil",
+        "In the --wait branch, insert the same check immediately after printJSON(cmd, result) and before computing rebuildJobID/polling, so a diverged sync exits 3 without ever issuing a rebuild-status poll request",
+        "Confirm the flag has no effect (exit 0 as before) whenever it is unset or patches_diverged is absent/empty, and that an unrelated error path still exits 1, never 3",
+        "Confirm TS-05-39 through TS-05-42 pass; run go vet ./internal/cli/..."
+      ],
+      "touches": [
+        "internal/cli/workspace_cmd.go",
+        "internal/cli/wait.go",
+        "internal/cli/workspace_sync_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Document reset-to-origin, the backup namespace, --fail-on-diverged, and accept ADR 01",
+      "criteria": [
+        "05-REQ-10.1",
+        "05-REQ-10.2",
+        "05-REQ-10.3",
+        "05-REQ-10.4",
+        "05-REQ-10.5",
+        "05-REQ-10.6",
+        "05-REQ-10.7"
+      ],
+      "tests": [
+        "TS-05-43",
+        "TS-05-44",
+        "TS-05-45",
+        "TS-05-46",
+        "TS-05-47"
+      ],
+      "steps": [
+        "Write TS-05-43 through TS-05-47 (extending or creating the internal/docscheck package 04_patch_branch_push_protection introduced, reading the doc files relative to the repository root) asserting the specific strings each requirement calls for; confirm they fail",
+        "In docs/carry_patch_workflow.md's 'Getting started' walkthrough, reorder/relabel steps so PATCH_BRANCH_SOURCE=origin + push-to-fork + afc patch add + afc workspace sync is the primary path, keeping the current hub-push flow as a clearly labelled 'Alternative: agent-driven workspaces (hub-authoritative)' subsection",
+        "In 'Resolving conflicts after a failed rebuild', add an origin-mode subsection: fix the branch in a local clone of the fork, push to the fork, run afc workspace sync or afc patch reset-to-origin <slug> <patch-id>, then afc patch update <slug> <patch-id> --status active and rebuild, noting rerere will not have recorded a resolution made outside the trunk",
+        "In 'Day-to-day operations', add a subsection documenting afc patch reset-to-origin and the refs/hub/replaced/<branch> recovery path (git fetch <hub-url> refs/hub/replaced/<branch>); in the 'API reference summary' Patch endpoints table, add a row for POST /workspaces/:slug/patches/:id/reset-to-origin",
+        "In docs/cli.md, correct the afc workspace sync section's \"Your fork (origin) is never fetched by sync\" note to describe both PATCH_BRANCH_SOURCE modes, add --fail-on-diverged to its Flags table and exit code 3 to its Exit Codes table, and add a new 'afc patch reset-to-origin' section modelled on the existing 'afc patch restore' section",
+        "In docs/api.md's Patch Endpoints section, add a POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin subsection (request/response/error codes, replaced_sha in the response) and document replaced_sha on the patch-status dashboard entry",
+        "In docs/openapi.yaml, add the /api/v1/workspaces/{slug}/patches/{id}/reset-to-origin path (POST, 200/400/404/409 responses reusing the Patch and Error schemas), add a replaced_sha property to the Patch schema (documented as populated only by this endpoint and the patch-status dashboard), and add replaced_sha to the patch-status per-patch entry schema",
+        "Change docs/adr/01-choose-the-authority-for-patch-branches.md's '- **Status:** Proposed' line to '- **Status:** Accepted'",
+        "Add docs/errata/05_reset_to_origin_scope.md recording that no dedicated GET /workspaces/:slug/patches/:id endpoint was added (Non-goals) and that reset-to-origin requires PATCH_BRANCH_SOURCE=origin rather than also working in hub mode (Design Decision 3), modelled on the existing errata files' Spec Expectation / Implementation Reality / Resolution structure",
+        "Confirm TS-05-43 through TS-05-47 pass"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "docs/cli.md",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/adr/01-choose-the-authority-for-patch-branches.md",
+        "docs/errata/05_reset_to_origin_scope.md",
+        "internal/docscheck"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify manual reset, CLI recovery, namespace protection, and scripted divergence detection end to end",
+      "tests": [
+        "TS-05-48",
+        "TS-05-49",
+        "TS-05-50",
+        "TS-05-51"
+      ],
+      "steps": [
+        "Write TS-05-48 through TS-05-51 as smoke tests (behind the project's existing smoke build convention, e.g. //go:build smoke matching internal/carrypatch/smoke_test.go) against a real SQLite DB, real git trunk repositories with an origin remote, the real job queue, the real audit emitter, the real hub git server, and the real afc CLI wired exactly as cmd/af-hub/main.go and cmd/afc/main.go wire it; confirm they pass",
+        "Trace 05-PATH-1 through the real code: the CLI/HTTP client -> POST .../reset-to-origin -> handleResetToOrigin -> wslock.TryLock -> NewGitRunner on the real trunk -> backup update-ref -> move update-ref -> SetOriginSyncState -> hub.patch.replace audit emission -> the 200 response's replaced_sha -> a real git fetch <hub-url> refs/hub/replaced/<branch> recovering the discarded commit; confirm no placeholder from Tasks 1-4 remains",
+        "Trace 05-PATH-2: afc patch reset-to-origin -> the same endpoint -> GET /workspaces/:slug/patch-status -> handlePatchStatus's NewGitRunner-backed rev-parse --verify refs/hub/replaced/<branch> -> replaced_sha in the dashboard entry",
+        "Trace 05-PATH-3: a real git push targeting refs/hub/replaced/<branch> is rejected by the interception point built in Task 6 with the exact message, while a normal ref in the same push still succeeds; then afc patch remove hard-deletes the owning patch and the registered patchRemovedHook from Task 7 removes the backup ref from the real trunk",
+        "Trace 05-PATH-4: afc workspace sync --fail-on-diverged against a real diverged patch branch exits 3 without issuing a rebuild-status poll, then afc patch reset-to-origin clears the divergence so a subsequent sync reports it in sync",
+        "For every criterion carrying a contract (05-REQ-1.3, 05-REQ-1.7, 05-REQ-3.1, 05-REQ-3.2, 05-REQ-4.1, 05-REQ-6.2, 05-REQ-6.3, 05-REQ-7.3, 05-REQ-8.3, 05-REQ-8.4, 05-REQ-9.2), confirm the producer's result is actually consumed by production code (the CLI's exit-code handling, the git server's ReportStatus, the purge routine's returned count, the dashboard's JSON body) and not only asserted by a test",
+        "Confirm cmd/af-hub/main.go really registers RegisterResetToOriginRoutes, the refs/hub/replaced/* rejection, RegisterPatchRemovedHook, and the patch-status NewGitRunner, and that cmd/afc/main.go's command tree really includes patch reset-to-origin and workspace sync --fail-on-diverged, in the running binaries, not just in tests",
+        "Grep every file listed in this spec's touches fields (internal/carrypatch, internal/workspace, internal/cli, internal/gitserver, cmd/af-hub/main.go) for TODO and panic(\"not implemented\") introduced while implementing this spec, including the Task 1-3 placeholders, and remove any that remain",
+        "Run make test and make lint, then the smoke-tagged spec_tests command, and confirm all succeed"
+      ],
+      "touches": [
+        "internal/carrypatch/smoke_test.go",
+        "cmd/af-hub/main.go",
+        "cmd/afc/main.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "go test ./internal/carrypatch/... ./internal/workspace/... ./internal/cli/... ./internal/gitserver/... -tags=smoke -count=1 passes against real git repositories and a real hub git server",
+        "make test passes",
+        "make lint passes"
+      ],
+      "state": "pending"
+    }
+  ]
+}

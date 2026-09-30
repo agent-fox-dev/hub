@@ -1,0 +1,935 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "05",
+  "spec_name": "patch_divergence_recovery",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-05-1",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.1"
+      ],
+      "title": "reset-to-origin rejects a request with no credential before touching git or the database",
+      "given": [
+        "a registered carry_patch workspace and patch"
+      ],
+      "when": "POST /workspaces/:slug/patches/:id/reset-to-origin is called with no Authorization header",
+      "then": [
+        "the status is 401",
+        "the body carries an authentication-required error",
+        "no git command is invoked and no row is updated"
+      ],
+      "pseudocode": "r = post(url, auth=nil); assert r.status == 401; assert gitRunner.calls == 0"
+    },
+    {
+      "id": "TS-05-2",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.2"
+      ],
+      "title": "reset-to-origin rejects a PAT lacking patches:write before touching git or the database",
+      "given": [
+        "a PAT credential with scopes not including patches:write"
+      ],
+      "when": "POST /workspaces/:slug/patches/:id/reset-to-origin is called with that PAT",
+      "then": [
+        "the status is 403",
+        "the body carries a missing-scope error",
+        "no git command is invoked and no row is updated"
+      ],
+      "pseudocode": "r = post(url, auth=patWithoutScope); assert r.status == 403; assert gitRunner.calls == 0"
+    },
+    {
+      "id": "TS-05-3",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.3"
+      ],
+      "title": "reset-to-origin returns the same 404 for a nonexistent workspace and a non-owner's workspace",
+      "given": [
+        "workspace A owned by user 1",
+        "an authenticated user 2 with no admin token"
+      ],
+      "when": "user 2 calls reset-to-origin on workspace A's slug, and separately on a slug that does not exist",
+      "then": [
+        "both responses are 404 with the identical body shape",
+        "no patch or git state changes"
+      ],
+      "pseudocode": "r1 = post(urlFor('workspace-a'), auth=user2); r2 = post(urlFor('no-such-slug'), auth=user2); assert r1.status == r2.status == 404; assert r1.body == r2.body_shape"
+    },
+    {
+      "id": "TS-05-4",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.4"
+      ],
+      "title": "reset-to-origin refuses a non-carry_patch workspace",
+      "given": [
+        "a hub-mode (non carry_patch) workspace owned by the caller"
+      ],
+      "when": "POST reset-to-origin is called against it",
+      "then": [
+        "the status is 400",
+        "the message is 'reset-to-origin is only supported for carry_patch workspaces'"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 400; assert r.body.error == 'reset-to-origin is only supported for carry_patch workspaces'"
+    },
+    {
+      "id": "TS-05-5",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.5"
+      ],
+      "title": "reset-to-origin refuses a workspace that is not active",
+      "given": [
+        "a carry_patch workspace with status archived"
+      ],
+      "when": "POST reset-to-origin is called against it",
+      "then": [
+        "the status is 400",
+        "the message is 'workspace is not active'"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 400; assert r.body.error == 'workspace is not active'"
+    },
+    {
+      "id": "TS-05-6",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.6"
+      ],
+      "title": "reset-to-origin refuses a workspace whose clone is not ready",
+      "given": [
+        "a carry_patch, active workspace with clone_status 'cloning'"
+      ],
+      "when": "POST reset-to-origin is called against it",
+      "then": [
+        "the status is 400",
+        "the message is 'workspace clone is not ready'"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 400; assert r.body.error == 'workspace clone is not ready'"
+    },
+    {
+      "id": "TS-05-7",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.7"
+      ],
+      "title": "reset-to-origin refuses a workspace whose PATCH_BRANCH_SOURCE is not 'origin'",
+      "given": [
+        "a carry_patch, active, ready workspace with PATCH_BRANCH_SOURCE unset (defaulting to hub)"
+      ],
+      "when": "POST reset-to-origin is called against it",
+      "then": [
+        "the status is 400",
+        "the message is 'reset-to-origin requires PATCH_BRANCH_SOURCE=origin'",
+        "the error type is patch_branch_source_mismatch"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 400; assert r.body.error == 'reset-to-origin requires PATCH_BRANCH_SOURCE=origin'; assert r.body.type == 'patch_branch_source_mismatch'"
+    },
+    {
+      "id": "TS-05-8",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-1.8"
+      ],
+      "title": "reset-to-origin proceeds identically regardless of PATCH_DIVERGENCE_POLICY value",
+      "given": [
+        "a workspace with PATCH_BRANCH_SOURCE=origin passing every other gate"
+      ],
+      "when": "for any value of PATCH_DIVERGENCE_POLICY (replace, report, unset)",
+      "then": [
+        "the endpoint proceeds to perform the same replace and never reads or branches on PATCH_DIVERGENCE_POLICY"
+      ],
+      "pseudocode": "for policy in ['replace','report','']: setVar('PATCH_DIVERGENCE_POLICY', policy); r = post(url); assert r.status == 200; assert getVariableCalls.excludes('PATCH_DIVERGENCE_POLICY')"
+    },
+    {
+      "id": "TS-05-9",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.1"
+      ],
+      "title": "reset-to-origin returns 404 for a patch id not found in the given slug's workspace, including cross-workspace ids",
+      "given": [
+        "a patch belonging to workspace B"
+      ],
+      "when": "POST /workspaces/A/patches/:id/reset-to-origin is called using workspace B's patch id under slug A",
+      "then": [
+        "the status is 404",
+        "the message is 'patch not found'"
+      ],
+      "pseudocode": "r = post('/workspaces/A/patches/' + patchOfB.id + '/reset-to-origin'); assert r.status == 404; assert r.body.error == 'patch not found'"
+    },
+    {
+      "id": "TS-05-10",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.2"
+      ],
+      "title": "reset-to-origin refuses a soft-deleted patch",
+      "given": [
+        "a patch with status 'deleted'"
+      ],
+      "when": "POST reset-to-origin is called for that patch",
+      "then": [
+        "the status is 409",
+        "the message is 'patch is soft-deleted; restore it first'"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 409; assert r.body.error == 'patch is soft-deleted; restore it first'"
+    },
+    {
+      "id": "TS-05-11",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.3"
+      ],
+      "title": "reset-to-origin refuses a patch whose branch_name equals the integration branch",
+      "given": [
+        "a patch row whose branch_name has been made equal to the workspace's integration_branch"
+      ],
+      "when": "POST reset-to-origin is called for that patch",
+      "then": [
+        "the status is 400",
+        "the message is 'cannot reset the integration branch'"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 400; assert r.body.error == 'cannot reset the integration branch'"
+    },
+    {
+      "id": "TS-05-12",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-2.4"
+      ],
+      "title": "reset-to-origin proceeds to the reset for any eligible patch status",
+      "given": [
+        "a patch whose local and origin branches both exist and differ"
+      ],
+      "when": "for any status in {active, conflict, disabled, merged_upstream}",
+      "then": [
+        "the endpoint proceeds to the reset operation and returns 200"
+      ],
+      "pseudocode": "for st in ['active','conflict','disabled','merged_upstream']: setStatus(patch, st); r = post(url); assert r.status == 200"
+    },
+    {
+      "id": "TS-05-13",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.1"
+      ],
+      "title": "reset-to-origin returns workspace_busy when the workspace lock is held and touches no ref",
+      "given": [
+        "wslock.TryLock(slug) is made to fail by holding the lock externally"
+      ],
+      "when": "POST reset-to-origin is called",
+      "then": [
+        "the status is 409",
+        "the message is 'workspace_busy'",
+        "no ref is read or written"
+      ],
+      "pseudocode": "wslock.hold(slug); r = post(url); assert r.status == 409; assert r.body.error == 'workspace_busy'; assert gitRunner.refCalls == 0"
+    },
+    {
+      "id": "TS-05-14",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.2"
+      ],
+      "title": "reset-to-origin fails with a clear message when refs/remotes/origin/<branch> is missing, without fetching or writing",
+      "given": [
+        "a trunk with no refs/remotes/origin/<branch> for the patch's branch"
+      ],
+      "when": "POST reset-to-origin is called",
+      "then": [
+        "the status is 400",
+        "the message is 'branch not found on origin; sync the workspace first'",
+        "no fetch command and no update-ref call occurred"
+      ],
+      "pseudocode": "r = post(url); assert r.status == 400; assert r.body.error == 'branch not found on origin; sync the workspace first'; assert gitRunner.notCalled('fetch'); assert gitRunner.notCalled('update-ref')"
+    },
+    {
+      "id": "TS-05-15",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.3",
+        "05-REQ-4.2"
+      ],
+      "title": "reset-to-origin backs up the existing local tip to refs/hub/replaced/<branch> before moving it, overwriting an earlier backup",
+      "given": [
+        "refs/heads/<branch> exists at SHA old1",
+        "refs/hub/replaced/<branch> already exists at some earlier SHA",
+        "refs/remotes/origin/<branch> exists at SHA new1"
+      ],
+      "when": "POST reset-to-origin is called",
+      "then": [
+        "refs/hub/replaced/<branch> now reads old1 (overwriting the earlier value)",
+        "the response body includes replaced_sha == old1"
+      ],
+      "pseudocode": "r = post(url); assert git.revParse('refs/hub/replaced/'+branch) == old1; assert r.body.replaced_sha == old1"
+    },
+    {
+      "id": "TS-05-16",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.4",
+        "05-REQ-4.3"
+      ],
+      "title": "reset-to-origin skips the backup and creates the local branch directly at the origin tip when no local branch exists",
+      "given": [
+        "refs/heads/<branch> does not exist in the trunk",
+        "refs/remotes/origin/<branch> exists at SHA new1"
+      ],
+      "when": "POST reset-to-origin is called",
+      "then": [
+        "refs/hub/replaced/<branch> is not written",
+        "refs/heads/<branch> now exists at new1",
+        "the response body omits replaced_sha entirely"
+      ],
+      "pseudocode": "r = post(url); assert not git.refExists('refs/hub/replaced/'+branch); assert git.revParse(branch) == new1; assert 'replaced_sha' not in r.body"
+    },
+    {
+      "id": "TS-05-17",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-3.5"
+      ],
+      "title": "reset-to-origin always moves the local branch to the origin tip via update-ref, even when already equal",
+      "given": [
+        "refs/remotes/origin/<branch> exists at SHA new1"
+      ],
+      "when": "for any starting value of refs/heads/<branch> (absent, equal to new1, or different from new1)",
+      "then": [
+        "after the call refs/heads/<branch> equals new1",
+        "the move was performed with update-ref and never with checkout or reset"
+      ],
+      "pseudocode": "for start in [None, new1, old1]: setLocalBranch(branch, start); r = post(url); assert git.revParse(branch) == new1; assert gitRunner.notCalled('checkout'); assert gitRunner.notCalled('reset', excluding='HardReset-when-checked-out')"
+    },
+    {
+      "id": "TS-05-18",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.6"
+      ],
+      "title": "reset-to-origin hard-resets the working tree when the reset branch is the trunk's current checkout",
+      "given": [
+        "git symbolic-ref --short -q HEAD in the trunk reports <branch>"
+      ],
+      "when": "POST reset-to-origin is called and moves <branch> to the origin tip",
+      "then": [
+        "HardReset is invoked on the trunk with the new tip immediately after the ref move"
+      ],
+      "pseudocode": "r = post(url); assert gitRunner.hardResetCalls == [newTip]"
+    },
+    {
+      "id": "TS-05-19",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.6"
+      ],
+      "title": "reset-to-origin does not hard-reset the working tree when a different branch is checked out",
+      "given": [
+        "git symbolic-ref --short -q HEAD in the trunk reports a branch other than <branch>"
+      ],
+      "when": "POST reset-to-origin is called and moves <branch> to the origin tip",
+      "then": [
+        "HardReset is not invoked"
+      ],
+      "pseudocode": "r = post(url); assert gitRunner.hardResetCalls == []"
+    },
+    {
+      "id": "TS-05-20",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.7"
+      ],
+      "title": "reset-to-origin updates origin_sync_state, origin_sha, and origin_synced_at while leaving other patch fields untouched",
+      "given": [
+        "a patch row with status conflict, position 2, description 'x', upstream_pr_url 'y'"
+      ],
+      "when": "POST reset-to-origin completes successfully",
+      "then": [
+        "origin_sync_state is 'in_sync'",
+        "origin_sha equals the origin tip",
+        "origin_synced_at is set to a recent timestamp",
+        "status remains conflict, position remains 2, description remains 'x', upstream_pr_url remains 'y'"
+      ],
+      "pseudocode": "r = post(url); row = readPatchRow(id); assert row.origin_sync_state=='in_sync'; assert row.origin_sha==newTip; assert row.status=='conflict'; assert row.position==2; assert row.description=='x'"
+    },
+    {
+      "id": "TS-05-21",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.8"
+      ],
+      "title": "reset-to-origin emits one hub.patch.replace audit event attributed to the calling credential",
+      "given": [
+        "a patch with a preexisting local branch, called by API key user 'alice'"
+      ],
+      "when": "POST reset-to-origin completes successfully",
+      "then": [
+        "exactly one hub.patch.replace audit event is emitted",
+        "it carries the branch name, the discarded local SHA, and the new origin SHA",
+        "its actor is 'alice', not 'system'"
+      ],
+      "pseudocode": "r = post(url, auth=alice); events = audit.emitted('hub.patch.replace'); assert len(events)==1; assert events[0].actor=='alice'; assert events[0].metadata.old_sha==old1; assert events[0].metadata.new_sha==newTip"
+    },
+    {
+      "id": "TS-05-22",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.1"
+      ],
+      "title": "reset-to-origin responds with the patch record in the shared JSON shape including origin_sync fields",
+      "given": [
+        "a patch eligible for reset"
+      ],
+      "when": "POST reset-to-origin succeeds",
+      "then": [
+        "the status is 200",
+        "the body includes id, branch_name, status, origin_sync_state, origin_sha, origin_synced_at matching what GET and PATCH .../patches already return"
+      ],
+      "pseudocode": "r = post(url); assert r.status==200; assert set(['id','branch_name','status','origin_sync_state','origin_sha','origin_synced_at']).issubset(r.body.keys())"
+    },
+    {
+      "id": "TS-05-23",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.4"
+      ],
+      "title": "reset-to-origin's response is built from a direct query against the patches table, not from internal/workspace's response helper",
+      "given": [
+        "a mock DB and no dependency on internal/workspace's patchResponse"
+      ],
+      "when": "handleResetToOrigin builds the response body",
+      "then": [
+        "the handler issues a SELECT against the patches table itself and does not call any exported/unexported function from internal/workspace"
+      ],
+      "pseudocode": "assert callGraph(handleResetToOrigin).doesNotCall('workspace.patchResponse'); assert db.queriesExecuted.includes('SELECT * FROM patches WHERE id = ?')"
+    },
+    {
+      "id": "TS-05-24",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.1"
+      ],
+      "title": "afc patch reset-to-origin sends the endpoint with no body and prints the returned patch JSON, exiting 0",
+      "given": [
+        "a running hub API returning 200 with a patch body for reset-to-origin"
+      ],
+      "when": "afc patch reset-to-origin ws-slug patch-id is run",
+      "then": [
+        "the HTTP request body is empty",
+        "stdout carries the patch JSON in the same shape as afc patch restore",
+        "the process exits 0"
+      ],
+      "pseudocode": "result = runCLI(['patch','reset-to-origin','ws-slug','patch-id']); assert result.exitCode==0; assert json.loads(result.stdout)['id']=='patch-id'; assert lastRequest.body==''"
+    },
+    {
+      "id": "TS-05-25",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.2"
+      ],
+      "title": "afc patch reset-to-origin exits 1 on any non-2xx response",
+      "given": [
+        "a running hub API stubbed to return each of: 404 patch not found, 404 workspace not found, 400 patch_branch_source_mismatch, 400 branch not found on origin, 409 soft-deleted patch, 409 workspace_busy, and a network error"
+      ],
+      "when": "afc patch reset-to-origin ws-slug patch-id is run against each",
+      "then": [
+        "every invocation prints the error and exits 1"
+      ],
+      "pseudocode": "for resp in responses: result = runCLI(['patch','reset-to-origin','ws-slug','patch-id'], stub=resp); assert result.exitCode==1"
+    },
+    {
+      "id": "TS-05-26",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.3"
+      ],
+      "title": "afc patch reset-to-origin accepts exactly two positional args and no request-body flags",
+      "given": [
+        "the afc CLI command tree"
+      ],
+      "when": "the reset-to-origin subcommand's flag set and argument arity are inspected",
+      "then": [
+        "exactly two positional arguments are required (workspace-slug, patch-id)",
+        "no body-carrying flags are defined, matching afc patch restore's shape"
+      ],
+      "pseudocode": "cmd = findCommand('patch','reset-to-origin'); assert cmd.Args == cobra.ExactArgs(2); assert cmd.Flags().bodyFlags == []"
+    },
+    {
+      "id": "TS-05-27",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-6.1"
+      ],
+      "title": "an existing refs/hub/replaced/<branch> ref is advertised and fetchable like any other ref",
+      "given": [
+        "a trunk containing refs/hub/replaced/feature-x at some SHA"
+      ],
+      "when": "a client performs git fetch <hub-url> refs/hub/replaced/feature-x",
+      "then": [
+        "the ref is present in the advertisement",
+        "the fetch succeeds and yields the backed-up SHA, with no API or shell access used"
+      ],
+      "pseudocode": "adv = writeRefAdvertisement(trunk); assert 'refs/hub/replaced/feature-x' in adv.References; fetched = gitFetch(hubURL, 'refs/hub/replaced/feature-x'); assert fetched == expectedSHA"
+    },
+    {
+      "id": "TS-05-28",
+      "kind": "integration",
+      "verifies": [
+        "05-REQ-6.2"
+      ],
+      "title": "the git server rejects any push whose target ref matches refs/hub/replaced/*, unconditionally",
+      "given": [
+        "a workspace in each combination of workspace_mode and PATCH_BRANCH_SOURCE",
+        "a client attempting git push <hub-url> HEAD:refs/hub/replaced/feature-x"
+      ],
+      "when": "the push is executed against the receive-pack endpoint",
+      "then": [
+        "the ref update is rejected (reported ng) with message 'refs/hub/replaced/* is a hub-managed backup namespace and cannot be pushed to'",
+        "the ref's value in the trunk is unchanged"
+      ],
+      "pseudocode": "for mode,src in combos: result = gitPush(hubURL, 'HEAD:refs/hub/replaced/feature-x'); assert result.refStatus('refs/hub/replaced/feature-x') == ('ng', 'refs/hub/replaced/* is a hub-managed backup namespace and cannot be pushed to'); assert git.revParse('refs/hub/replaced/feature-x') == before"
+    },
+    {
+      "id": "TS-05-29",
+      "kind": "integration",
+      "verifies": [
+        "05-REQ-6.3"
+      ],
+      "title": "a push containing both a rejected backup-ref target and other legitimate ref updates applies the other updates",
+      "given": [
+        "a push updating both refs/hub/replaced/feature-x and refs/heads/other-branch"
+      ],
+      "when": "the push is executed",
+      "then": [
+        "refs/hub/replaced/feature-x is rejected",
+        "refs/heads/other-branch is updated normally in the same push"
+      ],
+      "pseudocode": "result = gitPush(hubURL, ['HEAD:refs/hub/replaced/feature-x', 'HEAD:refs/heads/other-branch']); assert result.refStatus('refs/hub/replaced/feature-x')[0]=='ng'; assert result.refStatus('refs/heads/other-branch')[0]=='ok'; assert git.revParse('other-branch')==pushedSHA"
+    },
+    {
+      "id": "TS-05-30",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.1"
+      ],
+      "title": "hard-deleting a patch calls the registered backup-ref cleanup hook which best-effort deletes the backup ref",
+      "given": [
+        "a patch with an existing refs/hub/replaced/<branch> ref",
+        "a registered cleanup hook via the same style as RegisterBranchCheckHook"
+      ],
+      "when": "DELETE /workspaces/:slug/patches/:id (and afc patch remove) hard-deletes the row",
+      "then": [
+        "the cleanup hook is invoked with (slug, branchName) after the row is removed",
+        "refs/hub/replaced/<branch> no longer exists",
+        "the delete response is unaffected by the hook's outcome"
+      ],
+      "pseudocode": "hookCalls=[]; RegisterCleanupHook(lambda s,b: hookCalls.append((s,b)) or deleteRef(s,b)); r = deletePatch(slug, id); assert r.status==200; assert hookCalls==[(slug, branch)]; assert not git.refExists('refs/hub/replaced/'+branch)"
+    },
+    {
+      "id": "TS-05-31",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.1"
+      ],
+      "title": "a cleanup hook error during hard-delete is logged, not raised, and the delete still succeeds",
+      "given": [
+        "a registered cleanup hook that returns an error (e.g. trunk missing)"
+      ],
+      "when": "DELETE /workspaces/:slug/patches/:id is called",
+      "then": [
+        "the delete response is still 200",
+        "the error is logged, not propagated to the caller"
+      ],
+      "pseudocode": "RegisterCleanupHook(lambda s,b: raise Error('no trunk')); r = deletePatch(slug, id); assert r.status==200; assert logContains('no trunk')"
+    },
+    {
+      "id": "TS-05-32",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.2"
+      ],
+      "title": "PurgeExpiredDeletedPatches resolves workspace slug and branch name before removing each row and deletes the corresponding backup ref",
+      "given": [
+        "two soft-deleted patch rows past retention, each with a refs/hub/replaced/<branch> ref in their workspace's trunk",
+        "a WorkspaceRoot and NewGitRunner factory threaded through"
+      ],
+      "when": "PurgeExpiredDeletedPatches(ctx, store, workspaceRoot, newGitRunner) runs",
+      "then": [
+        "both rows are purged from the database",
+        "both corresponding refs/hub/replaced/<branch> refs are deleted from their trunks"
+      ],
+      "pseudocode": "count, err = PurgeExpiredDeletedPatches(ctx, store, root, newGitRunner); assert err==nil; assert count==2; for row in rows: assert not git.refExists(root, row.slug, 'refs/hub/replaced/'+row.branch)"
+    },
+    {
+      "id": "TS-05-33",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.3",
+        "05-REQ-7.4"
+      ],
+      "title": "PurgeExpiredDeletedPatches continues purging remaining rows and returns an unaffected count when a trunk cannot be opened",
+      "given": [
+        "two purge-eligible rows, one whose workspace trunk directory has been removed (archived), one with a normal trunk"
+      ],
+      "when": "PurgeExpiredDeletedPatches runs",
+      "then": [
+        "the error opening the archived workspace's trunk is logged, not raised",
+        "both database rows are still purged (count == 2)",
+        "the healthy row's backup ref is still deleted"
+      ],
+      "pseudocode": "count, err = PurgeExpiredDeletedPatches(ctx, store, root, newGitRunner); assert err==nil; assert count==2; assert logContains('trunk'); assert not git.refExists(root, healthyRow.slug, 'refs/hub/replaced/'+healthyRow.branch)"
+    },
+    {
+      "id": "TS-05-34",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.1"
+      ],
+      "title": "patch-status computes replaced_sha per patch via one rev-parse --verify when NewGitRunner opens successfully",
+      "given": [
+        "a workspace with two patches, one with an existing refs/hub/replaced/<branch> ref and one without",
+        "PatchStatusAPIConfig.NewGitRunner set to a working factory"
+      ],
+      "when": "GET /workspaces/:slug/patch-status is called",
+      "then": [
+        "the patch with the backup ref carries replaced_sha equal to that ref's tip",
+        "exactly one rev-parse --verify call was made per patch"
+      ],
+      "pseudocode": "r = get('/patch-status'); entry = findEntry(r.body.patches, patchWithBackup.id); assert entry.replaced_sha == backupSHA; assert gitRunner.revParseCalls == len(patches)"
+    },
+    {
+      "id": "TS-05-35",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.2"
+      ],
+      "title": "PatchStatusAPIConfig exposes a NewGitRunner field wired to the shared carry-patch git runner factory in main.go",
+      "given": [
+        "main.go's wiring of RegisterPatchStatusRoutes"
+      ],
+      "when": "the PatchStatusAPIConfig passed to RegisterPatchStatusRoutes is inspected",
+      "then": [
+        "its NewGitRunner field is set to the same cpGitRunnerFactory used by every other carry-patch endpoint"
+      ],
+      "pseudocode": "cfg = wiredPatchStatusConfig(); assert cfg.NewGitRunner == cpGitRunnerFactory"
+    },
+    {
+      "id": "TS-05-36",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.3"
+      ],
+      "title": "patch-status leaves replaced_sha absent for every patch and still returns 200 when NewGitRunner is nil",
+      "given": [
+        "a PatchStatusAPIConfig with NewGitRunner left nil, as existing tests construct it"
+      ],
+      "when": "GET /workspaces/:slug/patch-status is called",
+      "then": [
+        "the status is 200",
+        "every other dashboard field is populated as before",
+        "no patch entry carries replaced_sha"
+      ],
+      "pseudocode": "cfg.NewGitRunner = nil; r = get('/patch-status'); assert r.status==200; assert all('replaced_sha' not in p for p in r.body.patches)"
+    },
+    {
+      "id": "TS-05-37",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.3"
+      ],
+      "title": "patch-status leaves replaced_sha absent for every patch and still returns 200 when opening the runner fails",
+      "given": [
+        "a PatchStatusAPIConfig with NewGitRunner returning an error (e.g. clone not ready)"
+      ],
+      "when": "GET /workspaces/:slug/patch-status is called",
+      "then": [
+        "the status is 200",
+        "no patch entry carries replaced_sha"
+      ],
+      "pseudocode": "cfg.NewGitRunner = failingFactory; r = get('/patch-status'); assert r.status==200; assert all('replaced_sha' not in p for p in r.body.patches)"
+    },
+    {
+      "id": "TS-05-38",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.4"
+      ],
+      "title": "patch-status omits replaced_sha entirely for a patch with no backup ref",
+      "given": [
+        "a patch with no refs/hub/replaced/<branch> ref in the trunk",
+        "a working NewGitRunner"
+      ],
+      "when": "GET /workspaces/:slug/patch-status is called",
+      "then": [
+        "that patch's JSON object carries no replaced_sha key"
+      ],
+      "pseudocode": "r = get('/patch-status'); entry = findEntry(r.body.patches, patch.id); assert 'replaced_sha' not in entry"
+    },
+    {
+      "id": "TS-05-39",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.1"
+      ],
+      "title": "afc workspace sync exposes a --fail-on-diverged boolean flag defaulting to false",
+      "given": [
+        "the afc workspace sync command tree"
+      ],
+      "when": "the command's flag set is inspected without passing --fail-on-diverged",
+      "then": [
+        "a boolean flag named fail-on-diverged exists and defaults to false"
+      ],
+      "pseudocode": "cmd = findCommand('workspace','sync'); flag = cmd.Flags().Lookup('fail-on-diverged'); assert flag.Type=='bool'; assert flag.DefValue=='false'"
+    },
+    {
+      "id": "TS-05-40",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.2"
+      ],
+      "title": "afc workspace sync --fail-on-diverged exits 3 immediately after printing the response, before any --wait polling",
+      "given": [
+        "a stubbed sync response with a non-empty patches_diverged array and a rebuild_job_id present"
+      ],
+      "when": "afc workspace sync <slug> --fail-on-diverged --wait is run",
+      "then": [
+        "the sync response is printed",
+        "the process exits with code 3",
+        "no rebuild-status poll request is issued"
+      ],
+      "pseudocode": "result = runCLI(['workspace','sync','slug','--fail-on-diverged','--wait']); assert result.exitCode==3; assert pollRequests==0"
+    },
+    {
+      "id": "TS-05-41",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.3"
+      ],
+      "title": "afc workspace sync exits 0 when --fail-on-diverged is absent, or patches_diverged is absent or empty",
+      "given": [
+        "stubbed sync responses: (a) no --fail-on-diverged flag with patches_diverged non-empty, (b) --fail-on-diverged with patches_diverged absent, (c) --fail-on-diverged with patches_diverged empty"
+      ],
+      "when": "afc workspace sync <slug> [--fail-on-diverged] is run for each case",
+      "then": [
+        "all three cases exit 0"
+      ],
+      "pseudocode": "for case in cases: result = runCLI(case.args, stub=case.resp); assert result.exitCode==0"
+    },
+    {
+      "id": "TS-05-42",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.4"
+      ],
+      "title": "exit code 3 from afc workspace sync is reserved exclusively for the diverged-patches case",
+      "given": [
+        "a stubbed sync failure response unrelated to divergence (e.g. workspace not found)"
+      ],
+      "when": "afc workspace sync <slug> --fail-on-diverged is run against that failure",
+      "then": [
+        "the process exits 1, not 3"
+      ],
+      "pseudocode": "result = runCLI(['workspace','sync','slug','--fail-on-diverged'], stub=notFoundResp); assert result.exitCode==1"
+    },
+    {
+      "id": "TS-05-43",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.1",
+        "05-REQ-10.2",
+        "05-REQ-10.3"
+      ],
+      "title": "the workflow guide's Getting Started, conflict-resolution, Day-to-day, and API reference sections describe the new fork-authoritative-first flow and recovery surface",
+      "given": [
+        "docs/carry_patch_workflow.md"
+      ],
+      "when": "the document is parsed for its Getting Started, 'Resolving conflicts after a failed rebuild', Day-to-day operations, and API reference summary table sections",
+      "then": [
+        "Getting Started presents PATCH_BRANCH_SOURCE=origin + push-to-fork + afc patch add + afc workspace sync as the primary path with hub-push labelled as the alternative",
+        "the conflict-resolution section documents an origin-mode variant noting rerere will not record fixes made outside the trunk",
+        "Day-to-day operations documents afc patch reset-to-origin and refs/hub/replaced/*",
+        "the API reference summary table lists the reset-to-origin endpoint",
+        "the afc workspace sync CLI reference no longer claims origin is never fetched by sync"
+      ],
+      "pseudocode": "doc = readFile('docs/carry_patch_workflow.md'); assert 'PATCH_BRANCH_SOURCE=origin' in section('Getting Started'); assert 'reset-to-origin' in section('Resolving conflicts after a failed rebuild'); assert 'reset-to-origin' in section('Day-to-day operations'); assert 'reset-to-origin' in section('API reference'); assert 'never fetched by sync' not in doc"
+    },
+    {
+      "id": "TS-05-44",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.4"
+      ],
+      "title": "docs/cli.md documents --fail-on-diverged/exit code 3 and a new afc patch reset-to-origin section",
+      "given": [
+        "docs/cli.md"
+      ],
+      "when": "the afc workspace sync and afc patch sections are parsed",
+      "then": [
+        "the workspace sync section documents --fail-on-diverged and exit code 3",
+        "a new 'afc patch reset-to-origin' section exists modelled on the 'afc patch restore' section"
+      ],
+      "pseudocode": "doc = readFile('docs/cli.md'); assert '--fail-on-diverged' in doc; assert 'exit code' in section('afc workspace sync') and '3' in section('afc workspace sync'); assert section('afc patch reset-to-origin') is not None"
+    },
+    {
+      "id": "TS-05-45",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.5"
+      ],
+      "title": "docs/api.md and docs/openapi.yaml describe reset-to-origin and replaced_sha",
+      "given": [
+        "docs/api.md and docs/openapi.yaml"
+      ],
+      "when": "the Patch Endpoints section and the OpenAPI paths/schemas are parsed",
+      "then": [
+        "docs/api.md documents the reset-to-origin endpoint and the patch-status replaced_sha field",
+        "docs/openapi.yaml has a path for POST /workspaces/{slug}/patches/{id}/reset-to-origin and a replaced_sha property on the Patch schema, noted as populated only by this endpoint and the patch-status dashboard"
+      ],
+      "pseudocode": "api = readFile('docs/api.md'); assert 'reset-to-origin' in api and 'replaced_sha' in api; spec = yaml.load('docs/openapi.yaml'); assert '/workspaces/{slug}/patches/{id}/reset-to-origin' in spec['paths']; assert 'replaced_sha' in spec['components']['schemas']['Patch']['properties']"
+    },
+    {
+      "id": "TS-05-46",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.6"
+      ],
+      "title": "ADR 01's status is Accepted",
+      "given": [
+        "docs/adr/01-choose-the-authority-for-patch-branches.md"
+      ],
+      "when": "the document's status field is parsed",
+      "then": [
+        "the status reads Accepted, not Proposed"
+      ],
+      "pseudocode": "doc = readFile('docs/adr/01-choose-the-authority-for-patch-branches.md'); assert 'Status: Accepted' in doc; assert 'Status: Proposed' not in doc"
+    },
+    {
+      "id": "TS-05-47",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.7"
+      ],
+      "title": "an erratum file records the two design departures from the literal input",
+      "given": [
+        "docs/errata/"
+      ],
+      "when": "the directory is searched for an erratum filed by this spec",
+      "then": [
+        "an erratum exists recording that no GET /workspaces/:slug/patches/:id endpoint was added and that reset-to-origin requires PATCH_BRANCH_SOURCE=origin rather than also working in hub mode"
+      ],
+      "pseudocode": "files = listFiles('docs/errata/'); erratum = findMatching(files, ['reset-to-origin', 'PATCH_BRANCH_SOURCE=origin']); assert erratum is not None; assert 'GET /workspaces/:slug/patches/:id' in readFile(erratum)"
+    },
+    {
+      "id": "TS-05-48",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-1",
+        "05-REQ-3.3",
+        "05-REQ-4.2"
+      ],
+      "title": "an operator recovers a discarded tip after manually resetting a diverged patch branch to the fork's tip",
+      "given": [
+        "a running hub API and git server backed by a real database and real git repositories",
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and PATCH_DIVERGENCE_POLICY=report, synced once and reporting the patch branch in patches_diverged"
+      ],
+      "when": "an operator calls POST /workspaces/:slug/patches/:id/reset-to-origin, then runs a plain git fetch against refs/hub/replaced/<branch>",
+      "then": [
+        "the endpoint returns 200 with replaced_sha set to the discarded local tip",
+        "refs/heads/<branch> now equals the origin tip",
+        "origin_sync_state/origin_sha/origin_synced_at are updated",
+        "a hub.patch.replace audit event was emitted",
+        "the plain git fetch retrieves the discarded commits without any database or shell access to the hub host"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "wslock",
+        "GitRunner",
+        "trunk git repository",
+        "patches table",
+        "audit emitter",
+        "git server ref advertisement"
+      ]
+    },
+    {
+      "id": "TS-05-49",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-2",
+        "05-REQ-5.1",
+        "05-REQ-8.1"
+      ],
+      "title": "an operator resets a patch via the CLI and confirms the backup is visible on the patch-status dashboard",
+      "given": [
+        "a running hub API and CLI binary",
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and a diverged patch branch"
+      ],
+      "when": "the operator runs afc patch reset-to-origin <workspace-slug> <patch-id>, then calls GET /workspaces/:slug/patch-status",
+      "then": [
+        "the CLI exits 0 and prints the returned patch JSON",
+        "the dashboard entry for that patch carries replaced_sha equal to the tip of refs/hub/replaced/<branch>"
+      ],
+      "real_components": [
+        "afc CLI",
+        "HTTP handler",
+        "GitRunner",
+        "trunk git repository",
+        "patches table"
+      ]
+    },
+    {
+      "id": "TS-05-50",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-3",
+        "05-REQ-6.2",
+        "05-REQ-7.1"
+      ],
+      "title": "the backup namespace refuses a push and is cleaned up when its owning patch is removed",
+      "given": [
+        "a running hub git server",
+        "a workspace with an existing refs/hub/replaced/<branch> ref belonging to a registered patch"
+      ],
+      "when": "a developer attempts to push a ref under refs/hub/replaced/* directly, then an operator runs afc patch remove <workspace-slug> <patch-id> to hard-delete the owning patch",
+      "then": [
+        "the push is rejected (ng) naming the hub-managed backup namespace, and the ref's prior value is unchanged",
+        "after the removal, the patch row no longer exists and refs/hub/replaced/<branch> no longer exists in the trunk"
+      ],
+      "real_components": [
+        "hub git server",
+        "receive-pack pre-receive interception",
+        "afc CLI",
+        "patches table",
+        "trunk git repository"
+      ]
+    },
+    {
+      "id": "TS-05-51",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-4",
+        "05-REQ-9.2",
+        "05-REQ-5.1"
+      ],
+      "title": "a scheduler detects a diverged sync via exit code 3 and an operator resolves it with reset-to-origin",
+      "given": [
+        "a running hub API and CLI binary",
+        "a carry_patch workspace under PATCH_DIVERGENCE_POLICY=report with a patch branch that has diverged from origin"
+      ],
+      "when": "a scheduler runs afc workspace sync <slug> --fail-on-diverged, observes exit code 3, and an operator then runs afc patch reset-to-origin <slug> <patch-id>",
+      "then": [
+        "the sync command exits 3 and the sync response's patches_diverged array names the branch",
+        "the follow-up reset-to-origin call returns 200 and the branch is no longer diverged from origin on a subsequent sync"
+      ],
+      "real_components": [
+        "afc CLI",
+        "HTTP handler",
+        "carry-patch sync",
+        "GitRunner",
+        "trunk git repository",
+        "patches table"
+      ]
+    }
+  ]
+}

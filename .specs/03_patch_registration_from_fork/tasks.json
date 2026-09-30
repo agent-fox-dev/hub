@@ -1,0 +1,203 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "03",
+  "spec_name": "patch_registration_from_fork",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./...",
+    "spec_tests": "go test ./internal/workspace/... ./internal/carrypatch/... ./cmd/af-hub/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "02",
+      "reason": "Delivers the PATCH_BRANCH_SOURCE workspace variable this spec reads to decide whether to attempt the single-branch fetch, and establishes the origin-remote credential and go-git fetch conventions (workspace.ResolveCloneAuth, the fetch call shape verified against internal/upstream, treating git.NoErrAlreadyUpToDate as success) that this spec's single-branch fetch reuses rather than re-deriving."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Implement the three-step branch resolution engine (local, origin tracking, origin fetch)",
+      "criteria": [
+        "03-REQ-1",
+        "03-REQ-7.2",
+        "03-REQ-7.3"
+      ],
+      "tests": [
+        "TS-03-1",
+        "TS-03-2",
+        "TS-03-3",
+        "TS-03-4",
+        "TS-03-5",
+        "TS-03-6",
+        "TS-03-25",
+        "TS-03-26"
+      ],
+      "steps": [
+        "In internal/workspace/branch_check_hook.go, add a BranchResolution string type with constants BranchResolutionLocal, BranchResolutionOriginTracking, BranchResolutionOriginFetch, and an ErrCredentialResolutionFailed sentinel error; change BranchCheckFunc to func(slug, branchName string, attemptMutation bool) (BranchResolution, error), documenting that attemptMutation=false must perform only the read-only refs/heads/<name> check (no ref write, no fetch, no wslock call), and attemptMutation=true means the caller already holds the workspace's wslock for the duration of the call, so the hook performs ref writes/fetch but must never call wslock itself",
+        "In internal/carrypatch, add branch_resolution.go defining BranchResolutionConfig{WorkspaceRoot string, NewGitRunner func(repoPath string) (GitRunner, error), GetVariable GetVariableFunc, ResolveOriginAuth func(slug string) (transport.AuthMethod, error)} and NewBranchResolutionHook(cfg BranchResolutionConfig) workspace.BranchCheckFunc",
+        "Implement step (a): rev-parse --verify refs/heads/<name> via the GitRunner; return workspace.BranchResolutionLocal on success; when attemptMutation is false and this fails, return a distinct not-found error without doing anything else",
+        "Implement step (b), reached only when attemptMutation is true: rev-parse --verify refs/remotes/origin/<name>; on success run update-ref refs/heads/<name> <sha> and return workspace.BranchResolutionOriginTracking",
+        "Read PATCH_BRANCH_SOURCE via cfg.GetVariable(\"workspace\", slug, \"PATCH_BRANCH_SOURCE\") fresh on every call (never cached); treat an empty value, a read error, or any value other than \"origin\" as hub, returning the not-found error without fetching",
+        "Implement step (c): resolve fork credentials via cfg.ResolveOriginAuth(slug); wrap a non-nil error as fmt.Errorf(\"%w: %v\", workspace.ErrCredentialResolutionFailed, err); otherwise perform a go-git single-branch fetch of +refs/heads/<name>:refs/remotes/origin/<name> against the \"origin\" remote (git.PlainOpen + repo.Remote(\"origin\") + FetchContext with git.NoTags, matching internal/upstream.Fetch's call shape and treating errors.Is(err, git.NoErrAlreadyUpToDate) as success); any other fetch error folds into the not-found error (Design Decision 5); on success re-check the tracking ref and, if present, update-ref + return workspace.BranchResolutionOriginFetch",
+        "Write TS-03-1 through TS-03-6 as white-box tests in internal/carrypatch against real temporary git repositories built with the runGitCmd/setupCarryPatchRepo-style helpers already in internal/carrypatch/testhelpers_test.go, using a stub GetVariable and a second temp repo added as the \"origin\" remote for the fetch case; confirm they fail before the implementation and pass after",
+        "Write TS-03-25 (no fork credentials configured resolves to nil auth and the fetch still proceeds) and TS-03-26 (a non-credential fetch failure, e.g. the requested branch absent on the fake origin, folds into the same not-found error rather than being classified as a credential failure)",
+        "Run go test ./internal/carrypatch/... and go vet ./... and fix any issues"
+      ],
+      "touches": [
+        "internal/carrypatch/branch_resolution.go",
+        "internal/carrypatch/branch_resolution_test.go",
+        "internal/workspace/branch_check_hook.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Wire single-patch registration to the resolution engine with lock orchestration, 400/409/502 mapping and audit metadata",
+      "criteria": [
+        "03-REQ-2.1",
+        "03-REQ-3.1",
+        "03-REQ-3.2",
+        "03-REQ-4.1",
+        "03-REQ-4.2",
+        "03-REQ-4.3",
+        "03-REQ-4.4",
+        "03-REQ-6.1",
+        "03-REQ-6.3",
+        "03-REQ-7.1"
+      ],
+      "tests": [
+        "TS-03-7",
+        "TS-03-9",
+        "TS-03-11",
+        "TS-03-12",
+        "TS-03-13",
+        "TS-03-14",
+        "TS-03-19",
+        "TS-03-21",
+        "TS-03-22",
+        "TS-03-23"
+      ],
+      "steps": [
+        "In internal/workspace, add a resolveBranches(slug string, items []branchResolveItem) helper (branchResolveItem{branchName string; skip bool}) plus an injectable package var wsLockTryLock = wslock.TryLock for testability: for each item in submitted order, when item.skip or branchCheckHook==nil resolve to \"\" (no attempt, no lock, no read/write); otherwise call branchCheckHook(slug, branchName, false); on success record the resolution and continue; on failure, lazily call wsLockTryLock(slug) at most once for the whole resolveBranches call (reusing an already-acquired lock for later items), returning a workspace-busy result immediately if it fails; while holding the lock, call branchCheckHook(slug, branchName, true) and record its resolution or propagate its error; release the lock (if acquired) before returning, and report the index of the first failing item (-1 if none)",
+        "In handleAddPatchSingle, replace the direct branchCheckHook(slug, branchName) call with resolveBranches(slug, a one-item slice); map its outcome to: workspace-busy -> HTTP 409 with error_type \"workspace_busy\" (reuse the \"another operation is running on this workspace; retry later\" message already used by sync/reclone/rebuild); workspace.ErrCredentialResolutionFailed -> HTTP 502 \"credential resolution failed\"; any other error -> HTTP 400 \"branch does not exist in repository or on origin\" (replacing the old \"branch does not exist in repository\" text)",
+        "Include the resolved BranchResolution in the hub.patch.create metadata map under \"branch_resolution\", omitted when the resolution is \"\" (skip_branch_check bypass or no hook registered)",
+        "Update cmd/af-hub/main.go's workspace.RegisterBranchCheckHook call to register carrypatch.NewBranchResolutionHook(carrypatch.BranchResolutionConfig{WorkspaceRoot: cfg.Workspace.Path, NewGitRunner: cpGitRunnerFactory, GetVariable: store.GetVariableValue, ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) { return workspace.ResolveCloneAuth(store, slug) }}), removing the old one-line rev-parse closure",
+        "Update internal/workspace/carry_patch_patches_test.go's existing RegisterBranchCheckHook(...) stub closures to the new three-argument, two-return signature so the package keeps compiling, preserving each stub's existing pass/fail intent",
+        "Write TS-03-7 (400 not-found, single request), TS-03-9 (skip_branch_check bypass leaves the hook uncalled, single), TS-03-11 (wslock acquired before the update-ref/fetch of a mutating resolution) and TS-03-14 (no wslock call for the already-local fast path)",
+        "Write TS-03-12 (lock already held by another operation -> 409 workspace_busy, no ref or row written) and TS-03-13 (lock released before addPatchWithPosition runs; the request still succeeds)",
+        "Write TS-03-19 (audit metadata carries branch_resolution), TS-03-21 (skip_branch_check omits branch_resolution) and TS-03-22 (property: recorded branch_resolution always equals the actual resolving placement across local/origin_tracking/origin_fetch)",
+        "Write TS-03-23 (single-request credential-resolution failure aborts with 502 \"credential resolution failed\", writing no ref and no row)",
+        "Run go test ./internal/workspace/... ./cmd/... and go vet ./... and fix any issues"
+      ],
+      "touches": [
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/branch_check_hook.go",
+        "internal/workspace/carry_patch_patches_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Wire batch patch registration to the shared-lock resolution and per-patch audit emission",
+      "criteria": [
+        "03-REQ-2.2",
+        "03-REQ-5",
+        "03-REQ-6.2",
+        "03-REQ-6.4",
+        "03-REQ-3.2"
+      ],
+      "tests": [
+        "TS-03-8",
+        "TS-03-10",
+        "TS-03-15",
+        "TS-03-16",
+        "TS-03-17",
+        "TS-03-18",
+        "TS-03-20",
+        "TS-03-24"
+      ],
+      "steps": [
+        "In handleAddPatchBatch, remove the per-element branchCheckHook call from the existing syntactic-validation loop (branch_name required, valid ref, not-integration-branch, position >= 1 stay unchanged) and, after that loop, call resolveBranches(slug, items) once for the whole submitted array (one item per element, carrying each element's skip_branch_check), before the duplicate-name-in-batch and already-registered-in-db checks",
+        "Map a resolveBranches failure to the batch's existing \"patch[<i>]: ...\" response shape: workspace-busy -> 409 workspace_busy; workspace.ErrCredentialResolutionFailed -> 502 \"patch[<i>]: credential resolution failed\"; any other error -> 400 \"patch[<i>]: branch does not exist in repository or on origin\" (replacing the old text), where <i> is the returned failIndex",
+        "After the existing atomic addPatchesBatch insert succeeds, emit one hub.patch.create audit event per inserted patch, in insertion order, each carrying branch_name, position, and branch_resolution (omitted when that element's resolution is \"\")",
+        "Write TS-03-8 (batch 400 naming the failing index, no row inserted) and TS-03-16 (stops at the first failing element; later elements are never resolved)",
+        "Write TS-03-15 (exactly one wslock acquisition for a batch mixing local, origin_tracking, and origin_fetch elements) and TS-03-18 (lock released before the atomic insert when every element resolves)",
+        "Write TS-03-17 (a local branch created for an earlier successful element stays in place after a later element fails the batch)",
+        "Write TS-03-20 (one hub.patch.create event per inserted patch, each with its own branch_resolution) and TS-03-24 (batch credential-resolution failure aborts with 502 naming the failing index)",
+        "Write TS-03-10 (property: skip_branch_check=true never invokes the hook and never records branch_resolution, checked across both PATCH_BRANCH_SOURCE modes and both single and batch request shapes)",
+        "Run go test ./internal/workspace/... and go vet ./... and fix any issues"
+      ],
+      "touches": [
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/carry_patch_patches_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Document the three-step resolution order and the new failure message",
+      "criteria": [
+        "03-REQ-8"
+      ],
+      "tests": [
+        "TS-03-27",
+        "TS-03-28",
+        "TS-03-29"
+      ],
+      "steps": [
+        "Update docs/api.md's \"POST /api/v1/workspaces/:slug/patches\" section: describe the three-step resolution order (local branch, the fork's tracking ref promoted via update-ref, and in PATCH_BRANCH_SOURCE=origin mode a single-branch fetch retry) in its Behavior list, and replace the \"Branch does not exist in repository\" error-code row with the new message \"branch does not exist in repository or on origin\"",
+        "Update docs/openapi.yaml's addPatches operation description with the same three-step order and the same 400 message text as docs/api.md",
+        "Update docs/carry_patch_workflow.md's \"3. Add patches\" step: remove the sentence stating branches are \"validated against the workspace repository at add time\" and replace it with one or two sentences describing tracking-ref promotion and, in origin mode, the single-branch fetch fallback, without restructuring the surrounding Getting Started walkthrough (that restructuring is patch_divergence_recovery's work)",
+        "Write TS-03-27, TS-03-28 and TS-03-29 as content-assertion tests reusing the existing readDocFile/projectRoot helpers in internal/workspace/docs_spec03_test.go, confirming they fail before the doc edits and pass after",
+        "Run go test ./internal/workspace/... and go vet ./... to confirm the new doc-content tests pass with no regressions"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/carry_patch_workflow.md",
+        "internal/workspace/docs_branch_resolution_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "integration",
+      "title": "Verify the fork-branch registration paths end to end against real git repositories",
+      "tests": [
+        "TS-03-30",
+        "TS-03-31",
+        "TS-03-32",
+        "TS-03-33"
+      ],
+      "steps": [
+        "Write TS-03-30 as a real-component test: wire workspace.RegisterBranchCheckHook(carrypatch.NewBranchResolutionHook(...)) exactly as cmd/af-hub/main.go does, against a real temporary trunk git repository whose \"origin\" remote already carries the branch as a tracking ref, and confirm afc-equivalent POST /workspaces/:slug/patches creates refs/heads/<name> and records branch_resolution=origin_tracking",
+        "Write TS-03-31 against a real local \"fork\" remote (a second temp git repository added as the origin remote) reachable for a real go-git fetch, with the workspace's PATCH_BRANCH_SOURCE variable resolving to origin, confirming refs/remotes/origin/<name> and refs/heads/<name> are created and branch_resolution=origin_fetch is recorded",
+        "Write TS-03-32: a batch of three elements where the first attempt fails at index 2, confirming the local branch created for element 1 is left in place, then a corrected retry inserts all three rows and emits three hub.patch.create events each with its own branch_resolution",
+        "Write TS-03-33: a goroutine or a directly-held wslock.TryLock(slug) simulates a concurrent sync; confirm registration returns 409 workspace_busy while it is held and succeeds with resolution origin_tracking once released",
+        "Trace 03-PATH-1 through 03-PATH-4 against the real code: confirm handleAddPatchSingle/handleAddPatchBatch call branchCheckHook exactly as registered in cmd/af-hub/main.go, that resolveBranches acquires wsLockTryLock before any mutating hook call and releases it before addPatchWithPosition/addPatchesBatch runs, and that carrypatch.NewBranchResolutionHook's fetch step is reached only in PATCH_BRANCH_SOURCE=origin mode",
+        "For every criterion carrying a contract in 03-REQ-1, 03-REQ-2, 03-REQ-4, 03-REQ-5, 03-REQ-6 and 03-REQ-7, confirm the producing value (BranchResolution, or the not-found/workspace-busy/credential-resolution-failed outcomes) is consumed by handleAddPatchSingle/handleAddPatchBatch in production code (HTTP status, error body, audit metadata), not only by a test double",
+        "Grep internal/workspace, internal/carrypatch and cmd/af-hub for TODO and panic(\"not implemented\") introduced while building this spec and confirm none remain",
+        "Confirm cmd/af-hub/main.go's RegisterBranchCheckHook call is the sole production wiring point (no leftover one-line rev-parse closure) and is reachable from server startup",
+        "Run make test and make lint and confirm both pass"
+      ],
+      "touches": [
+        "internal/workspace/carry_patch_patches_test.go",
+        "internal/carrypatch/branch_resolution_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "go test ./... -count=1 passes with TS-03-30 through TS-03-33 exercising real git repositories, a real wslock, and a real audit emitter rather than test doubles"
+      ],
+      "state": "pending"
+    }
+  ]
+}

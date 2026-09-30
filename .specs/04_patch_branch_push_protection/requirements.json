@@ -1,0 +1,425 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "04",
+  "spec_name": "patch_branch_push_protection",
+  "schema_version": 2,
+  "introduction": "This spec makes the hub's git server (internal/gitserver) enforce the single-writer authority that PATCH_BRANCH_SOURCE declares for a carry_patch workspace's registered patch branches: refusing or forwarding a direct push in fork-authoritative mode, and offering an opt-in best-effort mirror of accepted pushes to the fork in hub-authoritative mode, without internal/gitserver importing carry-patch code.",
+  "glossary": {
+    "PATCH_BRANCH_SOURCE": "Workspace variable delivered by 02_fork_authoritative_sync; 'hub' means the hub is the single writer for registered patch branches, 'origin' means the fork is.",
+    "PUSH_PATCHES_TO_ORIGIN": "Workspace variable this spec adds; enabled only by the exact string \"true\", it controls whether the hub's git server forwards (origin mode) or mirrors (hub mode) patch-branch pushes to the fork.",
+    "fork-authoritative mode": "The state where a carry_patch workspace's PATCH_BRANCH_SOURCE is 'origin'.",
+    "forward": "A non-force push of a candidate ref to the fork (origin), performed before the hub's local ref is written, in fork-authoritative mode with PUSH_PATCHES_TO_ORIGIN=true.",
+    "guard candidate": "A ref update in an incoming push that is examined by requirements 3-5: a refs/heads/<name> update, not the integration_branch, matching a non-deleted patches row, and not a delete.",
+    "hub-authoritative mode": "The state where a carry_patch workspace's PATCH_BRANCH_SOURCE is 'hub'.",
+    "integration branch": "The workspace's configured integration_branch column value; never a guard candidate even if a patches row shares its name.",
+    "mirror": "A best-effort, asynchronous force push of an already-accepted branch update to the fork (origin), performed in hub-authoritative mode with PUSH_PATCHES_TO_ORIGIN=true.",
+    "registered patch branch": "A branch whose name matches the branch_name of a row in the patches table."
+  },
+  "requirements": [
+    {
+      "id": "04-REQ-1",
+      "title": "PUSH_PATCHES_TO_ORIGIN workspace variable",
+      "rationale": "The forward/mirror decision must be driven by a live, per-push read of an opt-in variable, matching every other carry-patch on/off variable's fail-open convention.",
+      "criteria": [
+        {
+          "id": "04-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a push targets a carry_patch workspace",
+          "system": "hub git server",
+          "action": "read PUSH_PATCHES_TO_ORIGIN fresh via GetVariableFunc(\"workspace\", slug, \"PUSH_PATCHES_TO_ORIGIN\") for that push rather than reusing any previously read value"
+        },
+        {
+          "id": "04-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "treat only the exact string \"true\" as enabling PUSH_PATCHES_TO_ORIGIN, treating an unset variable, an empty string, or any other value as disabled"
+        },
+        {
+          "id": "04-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the variable store read for PUSH_PATCHES_TO_ORIGIN returns an error",
+          "system": "hub git server",
+          "action": "treat PUSH_PATCHES_TO_ORIGIN as disabled for that push and continue evaluating the push under the disabled-forwarding rules",
+          "contract": "the push is processed exactly as if PUSH_PATCHES_TO_ORIGIN were absent; the store error is not surfaced to the pushing git client"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-2",
+      "title": "Guard candidacy classification",
+      "rationale": "Requirements 3-5 must only examine the narrow set of ref updates the PRD scopes them to, at no extra cost for anything outside that set.",
+      "criteria": [
+        {
+          "id": "04-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "for any incoming push to a carry_patch workspace, classify a ref update as a guard candidate if and only if its name is refs/heads/<name>, <name> matches the branch_name of a patches row whose status is not 'deleted', <name> is not the workspace's integration_branch, and the update's New hash is not the zero hash"
+        },
+        {
+          "id": "04-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "a pushed ref's name does not have the refs/heads/ prefix (a tag ref or any other namespace)",
+          "system": "hub git server",
+          "action": "exclude that ref from guard candidacy without querying the patches table"
+        },
+        {
+          "id": "04-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "a pushed branch name equals the workspace's integration_branch",
+          "system": "hub git server",
+          "action": "exclude that ref from guard candidacy even when a patches row shares that branch name"
+        },
+        {
+          "id": "04-REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "a pushed branch matches a patches row whose status is 'deleted'",
+          "system": "hub git server",
+          "action": "exclude that ref from guard candidacy"
+        },
+        {
+          "id": "04-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "a ref update's New hash is the zero hash",
+          "system": "hub git server",
+          "action": "exclude that ref from guard candidacy regardless of the branch's registration status, and accept the delete exactly as before this spec"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-3",
+      "title": "Refusal in fork-authoritative mode",
+      "rationale": "When the fork is the sole writer and forwarding is off, a direct hub push to a registered patch branch must be refused per-ref without disturbing the rest of the push.",
+      "criteria": [
+        {
+          "id": "04-REQ-3.1",
+          "pattern": "unwanted",
+          "condition": "PATCH_BRANCH_SOURCE is 'origin', PUSH_PATCHES_TO_ORIGIN is not \"true\", and a ref update is a guard candidate under 04-REQ-2",
+          "system": "hub git server",
+          "action": "reject that ref's update with the per-ref message 'branch is synced from origin; push to <git_url> instead', where <git_url> is the workspace's git_url column, leaving the branch's local ref completely unchanged",
+          "contract": "the client's report-status response marks that ref ng with the given message; the ref's SHA in the workspace repository is byte-identical to its value before the push"
+        },
+        {
+          "id": "04-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "unpack the incoming packfile and apply every non-rejected ref update normally even when one or more candidate refs in the same push are rejected under 04-REQ-3.1"
+        },
+        {
+          "id": "04-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "a push contains both a candidate ref rejected under 04-REQ-3.1 and other refs (the integration branch, unregistered branches, or other candidates)",
+          "system": "hub git server",
+          "action": "report ok for every non-rejected ref in the same report-status response that carries the ng status for the rejected ref"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-4",
+      "title": "Forwarding in fork-authoritative mode",
+      "rationale": "When forwarding is on, a candidate ref's local write must only happen after the fork already has the content, so the hub and fork never disagree because of a hub push.",
+      "criteria": [
+        {
+          "id": "04-REQ-4.1",
+          "pattern": "complex_event",
+          "condition": "PATCH_BRANCH_SOURCE is 'origin', PUSH_PATCHES_TO_ORIGIN is \"true\", and a ref update is a guard candidate under 04-REQ-2",
+          "guard": "the per-workspace lock for that one ref is acquired via wslock.TryLock",
+          "system": "carry-patch push guard",
+          "action": "push refs/heads/<name>:refs/heads/<name> to origin as a non-force push using credentials from workspace.ResolveCloneAuth, before the candidate's local ref is written"
+        },
+        {
+          "id": "04-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "the forward push attempted under 04-REQ-4.1 succeeds",
+          "system": "hub git server",
+          "action": "write the candidate ref to the pushed New SHA as part of the same push, report ok for that ref, and release the per-workspace lock",
+          "contract": "the client's report-status marks the ref ok; the local ref and the fork's ref both equal the new SHA"
+        },
+        {
+          "id": "04-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "the forward push attempted under 04-REQ-4.1 fails with a non-fast-forward, authentication, network, or any other error",
+          "system": "hub git server",
+          "action": "leave the candidate's local ref unchanged and reject it with the per-ref message 'push to origin rejected: <error>', using the forward attempt's own error text",
+          "contract": "the client's report-status marks the ref ng with that message; the local ref's SHA is unchanged from before the push"
+        },
+        {
+          "id": "04-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "the per-workspace lock cannot be acquired for a candidate ref under 04-REQ-4.1",
+          "system": "hub git server",
+          "action": "reject that ref with the message 'workspace busy; try again' without attempting a forward push",
+          "contract": "the client's report-status marks the ref ng with that message; no push to origin occurs for that ref"
+        },
+        {
+          "id": "04-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "for any push, process each candidate ref's lock acquisition and forward attempt independently, so a forward failure or a busy lock on one candidate ref never changes the accept/reject outcome of any other ref in the same push"
+        },
+        {
+          "id": "04-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "carry-patch push guard",
+          "action": "resolve the fork credentials used for every forward push attempt via workspace.ResolveCloneAuth"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-5",
+      "title": "Mirroring in hub-authoritative mode",
+      "rationale": "When the hub is the sole writer, an accepted push should be durably copied to the fork best-effort, without the mirror ever being able to fail the push or the rebuild it triggers.",
+      "criteria": [
+        {
+          "id": "04-REQ-5.1",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE is 'hub'",
+          "system": "hub git server",
+          "action": "run no pre-receive guard on any ref update, accepting every push exactly as it would without this spec"
+        },
+        {
+          "id": "04-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "PATCH_BRANCH_SOURCE is 'hub', PUSH_PATCHES_TO_ORIGIN is \"true\", and the push has been accepted",
+          "guard": "the post-push hook has finished running for the push's actually-updated branches",
+          "system": "carry-patch mirror function",
+          "action": "for every actually-updated branch that also matches a patches row whose status is not 'deleted' and is not the workspace's integration_branch, force-push refs/heads/<name>:refs/heads/<name> to origin using the workspace's fork credentials, attempted in the same goroutine as the post-push hook while holding the per-workspace lock via a non-blocking TryLock"
+        },
+        {
+          "id": "04-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "the non-blocking lock cannot be acquired for a mirror attempt under 04-REQ-5.2",
+          "system": "carry-patch mirror function",
+          "action": "skip that branch's mirror, log the skip, and emit a hub.patch.mirror_failed audit event (EventType 'hub.patch.mirror_failed', ResourceType 'patch', ActorType 'system', Workspace slug, Metadata {branch_name, error}) describing the busy lock",
+          "contract": "the audit event is recorded with those fields; the already-accepted push response and any triggered rebuild are unaffected"
+        },
+        {
+          "id": "04-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "the force-push to origin fails for a mirror attempt under 04-REQ-5.2",
+          "system": "carry-patch mirror function",
+          "action": "log the failure and emit a hub.patch.mirror_failed audit event with the same shape, carrying the forward push's error text in Metadata.error",
+          "contract": "the audit event is recorded with branch_name and error metadata; the already-accepted push response and any triggered rebuild are unaffected"
+        },
+        {
+          "id": "04-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "carry-patch mirror function",
+          "action": "never allow a mirror attempt's outcome to fail the push response or to block or delay the AUTO_REBUILD_AFTER_PUSH rebuild it may have triggered"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-6",
+      "title": "Hook registration boundary",
+      "rationale": "The pre-receive decision and mirror must reach internal/gitserver the same way the existing post-push hook does, so the git server stays ignorant of carry-patch concepts.",
+      "criteria": [
+        {
+          "id": "04-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "internal/gitserver",
+          "action": "obtain the pre-receive decision function and the mirror function only through package-level registration functions, in the style of RegisterPostPushHook, never by importing internal/carrypatch"
+        },
+        {
+          "id": "04-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "internal/gitserver",
+          "action": "invoke the registered pre-receive decision function with only the workspace's db, slug, trunk repo path, and the candidate ref updates, and use only the returned per-branch-name decision, without referencing PATCH_BRANCH_SOURCE, PUSH_PATCHES_TO_ORIGIN, or the patches table anywhere in its own source"
+        },
+        {
+          "id": "04-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "internal/carrypatch",
+          "action": "provide the production implementation of the registered pre-receive decision and mirror functions, reading the workspace row, the variable store, and the patches table itself"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-7",
+      "title": "Standard workspaces and unrelated pushes are untouched",
+      "rationale": "Nothing in this spec may add cost or change behavior for a push that is not a carry_patch patch-branch push.",
+      "criteria": [
+        {
+          "id": "04-REQ-7.1",
+          "pattern": "state_driven",
+          "condition": "a workspace's workspace_mode is not carry_patch",
+          "system": "hub git server",
+          "action": "classify every ref update in its pushes as ineligible for guard candidacy without any PUSH_PATCHES_TO_ORIGIN lookup or patches table query, and process the push identically to before this spec"
+        },
+        {
+          "id": "04-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "for any push to a carry_patch workspace that contains no guard candidate under 04-REQ-2, apply no refusal, forward, or mirror behavior beyond the classification of 04-REQ-2 itself"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-8",
+      "title": "Auto-rebuild and audit correctness under partial acceptance",
+      "rationale": "Introducing per-ref rejection means the 'branches this push updated' list must now be computed from what was actually written, not from every ref the client attempted.",
+      "criteria": [
+        {
+          "id": "04-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "compute the list of branches a push updated, used by both the post-push hook and the hub.git.push audit event's refs_updated and head_sha metadata, from only the refs actually written by that push, excluding any ref rejected under 04-REQ-3 or 04-REQ-4"
+        },
+        {
+          "id": "04-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a candidate ref is rejected under 04-REQ-3 or 04-REQ-4",
+          "system": "hub git server",
+          "action": "exclude that branch from the branches passed to the post-push hook and from the mirroring of 04-REQ-5, so it cannot trigger a rebuild or a mirror of content the hub never accepted"
+        },
+        {
+          "id": "04-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "populate the hub.git.push audit event's refs_updated and head_sha metadata from only the refs actually written by the push, leaving every other field of that event unchanged from before this spec"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-9",
+      "title": "Logging",
+      "rationale": "An operator diagnosing a rejected or failed-forward push needs the acting fields, not a dump of internals.",
+      "criteria": [
+        {
+          "id": "04-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "a candidate ref is rejected under 04-REQ-3",
+          "system": "hub git server",
+          "action": "log at info level the workspace slug, the branch name, and the pushing user's UserID from apikit.GetAuthInfo"
+        },
+        {
+          "id": "04-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "a forward attempt fails under 04-REQ-4",
+          "system": "hub git server",
+          "action": "log at warn level the workspace slug, the branch name, the pushing user's UserID from apikit.GetAuthInfo, and the forward attempt's error text"
+        },
+        {
+          "id": "04-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "log only the fields listed in 04-REQ-9.1 and 04-REQ-9.2 for a rejection or forward-failure log entry, never a full stack trace or the packfile contents"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-10",
+      "title": "Documentation",
+      "rationale": "An operator or agent must know, before pushing, whether the hub or the fork is the place to push a patch branch.",
+      "criteria": [
+        {
+          "id": "04-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "add a PUSH_PATCHES_TO_ORIGIN subsection to docs/carry_patch_workflow.md's Configuration section, modelled on the existing AUTO_REBUILD_AFTER_PUSH subsection, describing both the origin-mode reject-unless-forwarded meaning and the hub-mode best-effort-mirror meaning"
+        },
+        {
+          "id": "04-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "add to docs/carry_patch_workflow.md's How it works / Auto-rebuild on push area a description of the pre-receive refusal and forward and the mirror, including the exact rejection message text 'branch is synced from origin; push to <git_url> instead'"
+        },
+        {
+          "id": "04-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "rewrite docs/examples/AGENTS_carry_patch.md's Step 4 ('Push to the Hub') to tell the agent to check PATCH_BRANCH_SOURCE before pushing, push to the hub's git server in hub mode, and push directly to the fork's own URL in origin mode unless PUSH_PATCHES_TO_ORIGIN=true"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "04-PATH-1",
+      "title": "Direct push to a fork-synced patch branch is refused",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs git push against the hub's git server for patch/foo on a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and PUSH_PATCHES_TO_ORIGIN unset"
+        },
+        {
+          "actor": "hub git server",
+          "action": "classifies patch/foo as a guard candidate and rejects it with the per-ref message 'branch is synced from origin; push to <git_url> instead'"
+        },
+        {
+          "actor": "hub git server",
+          "action": "logs the rejection at info level with the workspace slug, branch name, and pushing user"
+        },
+        {
+          "actor": "developer",
+          "action": "sees the ng status for patch/foo and pushes directly to the fork's own URL instead"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-2",
+      "title": "Forwarded push to a fork-synced patch branch succeeds and triggers a rebuild",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs git push against the hub's git server for patch/foo on a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and PUSH_PATCHES_TO_ORIGIN=true"
+        },
+        {
+          "actor": "hub git server",
+          "action": "acquires the per-workspace lock and forwards the patch/foo update to origin with a non-force push before writing the local ref"
+        },
+        {
+          "actor": "hub git server",
+          "action": "on forward success, writes the local ref to the new SHA, reports ok for patch/foo, and releases the lock"
+        },
+        {
+          "actor": "carry-patch post-push hook",
+          "action": "runs asynchronously, matches patch/foo against the patches table, and enqueues an auto-rebuild job"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-3",
+      "title": "Hub-authoritative push is mirrored to the fork best-effort",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs git push against the hub's git server for patch/foo on a carry_patch workspace with PATCH_BRANCH_SOURCE=hub and PUSH_PATCHES_TO_ORIGIN=true"
+        },
+        {
+          "actor": "hub git server",
+          "action": "accepts the push unconditionally and writes the local ref, exactly as before this spec"
+        },
+        {
+          "actor": "carry-patch mirror function",
+          "action": "runs after the post-push hook in the same goroutine and force-pushes patch/foo to origin using the workspace's fork credentials"
+        },
+        {
+          "actor": "carry-patch mirror function",
+          "action": "on failure, logs it and emits a hub.patch.mirror_failed audit event without affecting the already-accepted push or its rebuild"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-4",
+      "title": "A single push partially accepted reports per-ref status and corrected audit metadata",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs a single git push updating both the registered patch branch patch/foo and the integration branch main on a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and PUSH_PATCHES_TO_ORIGIN unset"
+        },
+        {
+          "actor": "hub git server",
+          "action": "rejects patch/foo with ng and the fork-push message while writing main's ref normally and reporting ok for it"
+        },
+        {
+          "actor": "hub git server",
+          "action": "emits a hub.git.push audit event whose refs_updated and head_sha reflect only main, the ref actually written"
+        },
+        {
+          "actor": "carry-patch post-push hook",
+          "action": "receives only main in its branch list and does not consider patch/foo for auto-rebuild"
+        }
+      ]
+    }
+  ]
+}

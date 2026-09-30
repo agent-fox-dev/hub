@@ -1,0 +1,649 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "03",
+  "spec_name": "patch_registration_from_fork",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-03-1",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.1"
+      ],
+      "title": "A branch that already exists as refs/heads/<name> resolves as local without any ref write, lock, or fetch",
+      "given": [
+        "a trunk clone with refs/heads/feature-x already present",
+        "skip_branch_check is not set"
+      ],
+      "when": "the branch-check hook resolves branch_name=feature-x for the workspace",
+      "then": [
+        "resolution is local",
+        "no ref is written",
+        "wslock.TryLock is never called for this resolution",
+        "no network fetch occurs"
+      ],
+      "pseudocode": "runner.Run('branch','feature-x'); res := resolveBranch(trunkPath, 'feature-x', mode, false); assert res.path=='local'; assert spyLock.calls==0; assert spyFetch.calls==0"
+    },
+    {
+      "id": "TS-03-2",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.2"
+      ],
+      "title": "A branch present only as refs/remotes/origin/<name> is promoted to a local branch via update-ref, leaving the working tree untouched",
+      "given": [
+        "a trunk clone with refs/remotes/origin/feature-y but no refs/heads/feature-y",
+        "the clone's current HEAD is main with a clean working tree"
+      ],
+      "when": "the branch-check hook resolves branch_name=feature-y",
+      "then": [
+        "resolution is origin_tracking",
+        "refs/heads/feature-y points at the same commit as refs/remotes/origin/feature-y",
+        "HEAD is still main and the working tree is unchanged",
+        "no checkout or git branch command was run"
+      ],
+      "pseudocode": "before := rev_parse('HEAD'); res := resolveBranch(trunkPath, 'feature-y', mode, false); assert res.path=='origin_tracking'; assert rev_parse('refs/heads/feature-y')==rev_parse('refs/remotes/origin/feature-y'); assert rev_parse('HEAD')==before; assert !gitLog.contains('checkout') && !gitLog.contains('branch')"
+    },
+    {
+      "id": "TS-03-3",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.3"
+      ],
+      "title": "In origin mode, a branch absent from both refs/heads and refs/remotes/origin is found via a single-branch fetch and then promoted",
+      "given": [
+        "PATCH_BRANCH_SOURCE resolves to origin for the workspace",
+        "a bare fork repository serving refs/heads/feature-z reachable over the origin remote",
+        "the trunk clone has neither refs/heads/feature-z nor refs/remotes/origin/feature-z"
+      ],
+      "when": "the branch-check hook resolves branch_name=feature-z",
+      "then": [
+        "exactly one fetch of +refs/heads/feature-z:refs/remotes/origin/feature-z is performed against origin using ResolveCloneAuth's credentials",
+        "refs/remotes/origin/feature-z exists afterward",
+        "refs/heads/feature-z is created at the fetched commit",
+        "resolution is origin_fetch"
+      ],
+      "pseudocode": "res := resolveBranch(trunkPath, 'feature-z', 'origin', false); assert fetchSpy.refspecs==['+refs/heads/feature-z:refs/remotes/origin/feature-z']; assert res.path=='origin_fetch'; assert rev_parse('refs/heads/feature-z')==rev_parse('refs/remotes/origin/feature-z')"
+    },
+    {
+      "id": "TS-03-4",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.4"
+      ],
+      "title": "PATCH_BRANCH_SOURCE is re-read on every request rather than cached between registration calls",
+      "given": [
+        "a workspace whose PATCH_BRANCH_SOURCE is hub",
+        "branch_name has neither refs/heads nor refs/remotes/origin locally"
+      ],
+      "when": "registration is attempted, PATCH_BRANCH_SOURCE is then changed to origin, and registration for the same branch_name is attempted again",
+      "then": [
+        "the first attempt does not fetch and fails not-found",
+        "the second attempt fetches from origin and can resolve origin_fetch"
+      ],
+      "pseudocode": "setVar('PATCH_BRANCH_SOURCE','hub'); r1 := post(patches, {branch_name:'w'}); assert r1.status==400; setVar('PATCH_BRANCH_SOURCE','origin'); r2 := post(patches, {branch_name:'w'}); assert fetchSpy.calls==1"
+    },
+    {
+      "id": "TS-03-5",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.5"
+      ],
+      "title": "An unset or failing PATCH_BRANCH_SOURCE read defaults resolution to hub mode, skipping the fetch",
+      "given": [
+        "the workspace variable store returns an error (or no row) when asked for PATCH_BRANCH_SOURCE",
+        "branch_name has neither refs/heads nor refs/remotes/origin locally"
+      ],
+      "when": "the branch-check hook resolves branch_name",
+      "then": [
+        "no fetch is attempted",
+        "resolution fails to find the branch through local and origin_tracking only",
+        "the registration request ultimately fails with the not-found outcome, not a variable-read error"
+      ],
+      "pseudocode": "store.GetVariableValue = stubError; res, err := resolveBranch(trunkPath, 'w', undefinedMode, false); assert fetchSpy.calls==0; assert err != nil"
+    },
+    {
+      "id": "TS-03-6",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.6"
+      ],
+      "title": "Hub mode never attempts the single-branch fetch even when neither local ref exists",
+      "given": [
+        "PATCH_BRANCH_SOURCE resolves to hub for the workspace",
+        "branch_name has neither refs/heads/<name> nor refs/remotes/origin/<name>"
+      ],
+      "when": "the branch-check hook resolves branch_name",
+      "then": [
+        "no network call is made",
+        "no refs/remotes/origin/<name> is created",
+        "resolution reports not found"
+      ],
+      "pseudocode": "res, err := resolveBranch(trunkPath, 'missing', 'hub', false); assert fetchSpy.calls==0; assert err != nil"
+    },
+    {
+      "id": "TS-03-7",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-2.1"
+      ],
+      "title": "A single registration request fails with 400 and the combined message when none of the three attempts find the branch",
+      "given": [
+        "a carry_patch workspace",
+        "branch_name has no refs/heads, no refs/remotes/origin, and (if origin mode) the fetch does not surface it"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with that branch_name and skip_branch_check unset",
+      "then": [
+        "the status is 400",
+        "the body error is 'branch does not exist in repository or on origin'",
+        "no patches row is inserted"
+      ],
+      "pseudocode": "r := post(patchesURL, {branch_name:'ghost'}); assert r.status==400; assert r.json.error=='branch does not exist in repository or on origin'; assert patchCount(db,slug)==0"
+    },
+    {
+      "id": "TS-03-8",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-2.2"
+      ],
+      "title": "A batch registration request fails with 400 naming the failing element's index when its branch cannot be found anywhere",
+      "given": [
+        "a carry_patch workspace",
+        "a batch array where element 2's branch_name resolves under none of the three attempts"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array",
+      "then": [
+        "the status is 400",
+        "the body error is 'patch[2]: branch does not exist in repository or on origin'",
+        "no row from the batch is inserted"
+      ],
+      "pseudocode": "r := post(patchesURL, [ok0, ok1, ghost2]); assert r.status==400; assert r.json.error=='patch[2]: branch does not exist in repository or on origin'; assert patchCount(db,slug)==0"
+    },
+    {
+      "id": "TS-03-9",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-3.1"
+      ],
+      "title": "skip_branch_check true performs none of the resolution reads, writes, or fetches for a single request",
+      "given": [
+        "a spy branch-check hook that records every invocation and every simulated ref/fetch operation"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with skip_branch_check=true for a branch_name with no local ref at all",
+      "then": [
+        "the branch-check hook is never invoked",
+        "no ref is read or written",
+        "no network call is made",
+        "validation proceeds to duplicate and position checks"
+      ],
+      "pseudocode": "req := {branch_name:'x', skip_branch_check:true}; r := handleAddPatchSingle(req); assert spyHook.calls==0"
+    },
+    {
+      "id": "TS-03-10",
+      "kind": "property",
+      "verifies": [
+        "03-REQ-3.2"
+      ],
+      "title": "skip_branch_check true always yields the same 'no resolution attempted' outcome regardless of authority mode or request shape",
+      "given": [
+        "a spy branch-check hook"
+      ],
+      "when": "for any combination of PATCH_BRANCH_SOURCE in {hub, origin} and request shape in {single, batch element}, a request is sent with skip_branch_check=true",
+      "then": [
+        "the spy branch-check hook is never invoked",
+        "the inserted patch's audit metadata has no branch_resolution key",
+        "the outcome is identical across all combinations"
+      ],
+      "pseudocode": "for mode in ['hub','origin']: for shape in ['single','batch']: setVar('PATCH_BRANCH_SOURCE', mode); r := send(shape, skip_branch_check=true); assert spyHook.calls==0; assert 'branch_resolution' not in lastAuditEvent.metadata"
+    },
+    {
+      "id": "TS-03-11",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.1"
+      ],
+      "title": "The workspace lock is acquired before the first ref write or fetch of a mutating resolution step",
+      "given": [
+        "a branch_name resolvable only via origin_tracking (needs a local branch created)",
+        "a wslock spy recording acquisition order relative to git operations"
+      ],
+      "when": "the branch-check hook resolves that branch_name",
+      "then": [
+        "wslock.TryLock is called before update-ref runs",
+        "for an origin_fetch case, wslock.TryLock is called before the fetch starts"
+      ],
+      "pseudocode": "resolveBranch(trunkPath,'y','hub',false); assert lockSpy.acquiredAt < updateRefSpy.calledAt"
+    },
+    {
+      "id": "TS-03-12",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.2"
+      ],
+      "title": "Registration fails with 409 workspace_busy when the workspace lock is already held, writing no ref and no row",
+      "given": [
+        "a branch_name that requires promoting refs/remotes/origin/<name> to a local branch",
+        "the workspace's wslock is already held by a concurrent operation"
+      ],
+      "when": "POST /workspaces/:slug/patches is called for that branch_name",
+      "then": [
+        "the status is 409",
+        "the error_type is workspace_busy",
+        "no ref is written in the trunk clone",
+        "no patches row is inserted"
+      ],
+      "pseudocode": "unlock,_ := wslock.TryLock(slug); r := post(patchesURL,{branch_name:'y'}); assert r.status==409; assert r.json.error_type=='workspace_busy'; assert patchCount(db,slug)==0; unlock()"
+    },
+    {
+      "id": "TS-03-13",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.3"
+      ],
+      "title": "The workspace lock is released before the patch row is inserted",
+      "given": [
+        "a branch_name resolvable via origin_tracking"
+      ],
+      "when": "the full registration request runs to completion",
+      "then": [
+        "the lock is not held while addPatchWithPosition executes",
+        "the request still succeeds with 201"
+      ],
+      "pseudocode": "r := post(patchesURL,{branch_name:'y'}); assert insertSpy.lockHeldDuringCall==false; assert r.status==201"
+    },
+    {
+      "id": "TS-03-14",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.4"
+      ],
+      "title": "The rev-parse --verify fast path for an already-local branch takes no workspace lock",
+      "given": [
+        "refs/heads/feature-x already exists locally"
+      ],
+      "when": "the branch-check hook resolves branch_name=feature-x",
+      "then": [
+        "wslock.TryLock is never called for this resolution"
+      ],
+      "pseudocode": "resolveBranch(trunkPath,'feature-x','hub',false); assert lockSpy.calls==0"
+    },
+    {
+      "id": "TS-03-15",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.1"
+      ],
+      "title": "Batch resolution applies to every element under exactly one workspace-lock acquisition before any row is built",
+      "given": [
+        "a batch of three elements, one resolvable as local, one as origin_tracking, one as origin_fetch in origin mode"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array",
+      "then": [
+        "wslock.TryLock is called exactly once for the whole batch's resolution phase",
+        "all three elements are resolved before addPatchesBatch is invoked"
+      ],
+      "pseudocode": "r := post(patchesURL,[e0,e1,e2]); assert lockSpy.calls==1; assert resolveOrder==['e0','e1','e2']; assert insertSpy.calledAfter(resolveOrder)"
+    },
+    {
+      "id": "TS-03-16",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.2"
+      ],
+      "title": "Batch resolution stops at the first element that cannot be found, resolving no later element",
+      "given": [
+        "a batch of three elements where element 1's branch cannot be found anywhere"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array",
+      "then": [
+        "the 400 response names patch[1]",
+        "element 2 is never resolved",
+        "no row from the batch is inserted"
+      ],
+      "pseudocode": "r := post(patchesURL,[ok0,ghost1,ok2]); assert r.status==400; assert r.json.error=='patch[1]: branch does not exist in repository or on origin'; assert resolveSpy.calledFor.contains('ok2')==false"
+    },
+    {
+      "id": "TS-03-17",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.3"
+      ],
+      "title": "A local branch created for an earlier batch element is left in place after a later element fails the batch",
+      "given": [
+        "a batch of three elements where element 0 resolves origin_tracking (creating refs/heads/e0) and element 2's branch cannot be found"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array and fails at element 2",
+      "then": [
+        "the batch response is 400 naming patch[2]",
+        "no patches row is inserted for any element",
+        "refs/heads/e0 still exists in the trunk clone"
+      ],
+      "pseudocode": "r := post(patchesURL,[e0_tracking,e1_local,ghost2]); assert r.status==400; assert patchCount(db,slug)==0; assert rev_parse('refs/heads/e0') succeeds"
+    },
+    {
+      "id": "TS-03-18",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.4"
+      ],
+      "title": "The workspace lock is released before the batch's atomic insert runs when every element resolves",
+      "given": [
+        "a batch of three elements that all resolve successfully"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array",
+      "then": [
+        "the status is 201 with three created patches",
+        "addPatchesBatch runs without the workspace lock held"
+      ],
+      "pseudocode": "r := post(patchesURL,[e0,e1,e2]); assert r.status==201; assert insertSpy.lockHeldDuringCall==false"
+    },
+    {
+      "id": "TS-03-19",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.1"
+      ],
+      "title": "handleAddPatchSingle's hub.patch.create event carries branch_resolution alongside branch_name and position",
+      "given": [
+        "a branch_name resolvable via origin_tracking"
+      ],
+      "when": "POST /workspaces/:slug/patches is called for that branch_name without skip_branch_check",
+      "then": [
+        "exactly one hub.patch.create event is emitted",
+        "its metadata contains branch_name, position, and branch_resolution='origin_tracking'"
+      ],
+      "pseudocode": "r := post(patchesURL,{branch_name:'y'}); ev := lastAuditEvent(); assert ev.event_type=='hub.patch.create'; assert ev.metadata.branch_resolution=='origin_tracking'; assert ev.metadata.branch_name=='y'"
+    },
+    {
+      "id": "TS-03-20",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.2"
+      ],
+      "title": "handleAddPatchBatch emits one hub.patch.create event per inserted patch, each with its own branch_resolution",
+      "given": [
+        "a batch of three elements resolving to local, origin_tracking, and origin_fetch respectively (origin mode)"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array and all three rows are inserted",
+      "then": [
+        "exactly three hub.patch.create events are emitted",
+        "their branch_resolution values are local, origin_tracking, origin_fetch respectively, matching each element's branch_name and position"
+      ],
+      "pseudocode": "r := post(patchesURL,[e0,e1,e2]); events := auditEventsOfType('hub.patch.create'); assert len(events)==3; assert [e.metadata.branch_resolution for e in events]==['local','origin_tracking','origin_fetch']"
+    },
+    {
+      "id": "TS-03-21",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.3"
+      ],
+      "title": "branch_resolution is omitted from hub.patch.create metadata when skip_branch_check bypassed resolution",
+      "given": [
+        "a branch_name with no local ref at all"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with skip_branch_check=true for that branch_name",
+      "then": [
+        "the request succeeds",
+        "the emitted hub.patch.create event's metadata has no branch_resolution key"
+      ],
+      "pseudocode": "r := post(patchesURL,{branch_name:'z', skip_branch_check:true}); ev := lastAuditEvent(); assert 'branch_resolution' not in ev.metadata"
+    },
+    {
+      "id": "TS-03-22",
+      "kind": "property",
+      "verifies": [
+        "03-REQ-6.4"
+      ],
+      "title": "The recorded branch_resolution always equals the specific path that actually found the branch",
+      "given": [
+        "a workspace where a branch_name can be independently placed at local, origin_tracking, or origin_fetch by test setup"
+      ],
+      "when": "for any of the three placements, a patch is registered for that branch_name and inserted",
+      "then": [
+        "the hub.patch.create event's branch_resolution equals the placement used, never one of the other two values"
+      ],
+      "pseudocode": "for placement in ['local','origin_tracking','origin_fetch']: setupBranch(placement); r := post(patchesURL,{branch_name:'b_'+placement}); ev := lastAuditEvent(); assert ev.metadata.branch_resolution == placement"
+    },
+    {
+      "id": "TS-03-23",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.1"
+      ],
+      "title": "A genuine secrets-store failure resolving fork credentials for a single registration aborts with 502 and writes no ref or row",
+      "given": [
+        "PATCH_BRANCH_SOURCE resolves to origin",
+        "branch_name has neither refs/heads nor refs/remotes/origin locally",
+        "the secrets store returns a genuine error (not 'not configured') when asked for GIT_PAT"
+      ],
+      "when": "POST /workspaces/:slug/patches is called for that branch_name",
+      "then": [
+        "the status is 502",
+        "the body error is 'credential resolution failed'",
+        "no ref is written in the trunk clone",
+        "no patches row is inserted"
+      ],
+      "pseudocode": "store.GetSecretValue = stubGenuineError; r := post(patchesURL,{branch_name:'w'}); assert r.status==502; assert r.json.error=='credential resolution failed'; assert patchCount(db,slug)==0"
+    },
+    {
+      "id": "TS-03-24",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.1"
+      ],
+      "title": "A genuine credential-resolution failure during batch resolution aborts with 502 naming the failing element's index",
+      "given": [
+        "PATCH_BRANCH_SOURCE resolves to origin",
+        "a batch where element 1's branch requires a fetch and the secrets store fails genuinely for that lookup"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch array",
+      "then": [
+        "the status is 502",
+        "the body error identifies patch[1] and states credential resolution failed",
+        "no row from the batch is inserted"
+      ],
+      "pseudocode": "store.GetSecretValue = stubGenuineError; r := post(patchesURL,[ok0, needsFetch1, ok2]); assert r.status==502; assert '1' in r.json.error; assert patchCount(db,slug)==0"
+    },
+    {
+      "id": "TS-03-25",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.2"
+      ],
+      "title": "Absent fork credentials resolve to no auth for the fetch rather than a credential-resolution failure",
+      "given": [
+        "no GIT_PAT and no GIT_USERNAME/GIT_PASSWORD configured for the workspace",
+        "PATCH_BRANCH_SOURCE resolves to origin",
+        "the fork's fetch endpoint accepts unauthenticated requests in the test setup"
+      ],
+      "when": "the branch-check hook performs the single-branch fetch step for a branch present on the fork",
+      "then": [
+        "the fetch is attempted with nil auth",
+        "resolution succeeds as origin_fetch rather than failing with 502"
+      ],
+      "pseudocode": "res, err := resolveBranch(trunkPath,'z','origin',false); assert fetchSpy.auth==nil; assert res.path=='origin_fetch'; assert err==nil"
+    },
+    {
+      "id": "TS-03-26",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.3"
+      ],
+      "title": "A single-branch fetch failure that is not a credential failure folds into the ordinary 400 not-found outcome",
+      "given": [
+        "PATCH_BRANCH_SOURCE resolves to origin",
+        "credentials resolve successfully",
+        "the fetch fails because the branch does not exist on the fork"
+      ],
+      "when": "POST /workspaces/:slug/patches is called for that branch_name",
+      "then": [
+        "the status is 400, never 502",
+        "the body error is 'branch does not exist in repository or on origin'"
+      ],
+      "pseudocode": "fetchStub.error = errNoSuchBranchOnRemote; r := post(patchesURL,{branch_name:'ghost'}); assert r.status==400; assert r.json.error=='branch does not exist in repository or on origin'"
+    },
+    {
+      "id": "TS-03-27",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-8.1"
+      ],
+      "title": "docs/api.md's POST /api/v1/workspaces/:slug/patches section documents the three-step resolution order and the new 400 message",
+      "given": [
+        "the repository's docs/api.md file"
+      ],
+      "when": "the patches add section is read",
+      "then": [
+        "it describes checking a local branch, the origin tracking ref, and (origin mode) a single-branch fetch, in that order",
+        "it states the exact 400 message 'branch does not exist in repository or on origin'"
+      ],
+      "pseudocode": "content := readFile('docs/api.md'); assert content.contains('tracking'); assert content.contains('branch does not exist in repository or on origin')"
+    },
+    {
+      "id": "TS-03-28",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-8.2"
+      ],
+      "title": "docs/openapi.yaml's addPatches operation documents the same three-step resolution order and 400 message text as docs/api.md",
+      "given": [
+        "the repository's docs/openapi.yaml file"
+      ],
+      "when": "the addPatches operation description is read",
+      "then": [
+        "it describes the same three-step order as docs/api.md",
+        "it states the same 400 message text"
+      ],
+      "pseudocode": "content := readFile('docs/openapi.yaml'); assert content.contains('branch does not exist in repository or on origin')"
+    },
+    {
+      "id": "TS-03-29",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-8.3"
+      ],
+      "title": "docs/carry_patch_workflow.md's '3. Add patches' step describes tracking-ref promotion and the origin-mode fetch fallback instead of the retired single-check wording",
+      "given": [
+        "the repository's docs/carry_patch_workflow.md file"
+      ],
+      "when": "the '3. Add patches' section is read",
+      "then": [
+        "it no longer states branches are 'validated against the workspace repository at add time'",
+        "it describes promotion from the fork's tracking ref and, for origin mode, the single-branch fetch fallback"
+      ],
+      "pseudocode": "content := readFile('docs/carry_patch_workflow.md'); assert !content.contains('validated against the workspace repository at add time'); assert content.contains('tracking') "
+    },
+    {
+      "id": "TS-03-30",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-1",
+        "03-REQ-1.2",
+        "03-REQ-6.1"
+      ],
+      "title": "afc patch add registers a branch that exists only as the fork's tracking ref, creating a local branch and recording origin_tracking",
+      "given": [
+        "a running hub server with a real carry_patch workspace trunk clone",
+        "branch_name was fetched into refs/remotes/origin/<name> by the initial clone but never became a local branch"
+      ],
+      "when": "afc patch add is run with that branch_name and no --skip-branch-check",
+      "then": [
+        "the CLI reports HTTP 201 with the created patch",
+        "refs/heads/<name> now exists in the trunk clone at the tracking ref's commit",
+        "a hub.patch.create audit event was emitted with branch_resolution=origin_tracking"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "branch-check hook",
+        "trunk git repository",
+        "wslock",
+        "patch store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-03-31",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-2",
+        "03-REQ-1.3",
+        "03-REQ-6.1"
+      ],
+      "title": "A branch pushed to the fork moments ago is resolved and registered via a single-branch fetch in origin mode",
+      "given": [
+        "a running hub server with PATCH_BRANCH_SOURCE=origin for the workspace",
+        "a real fork remote holding a branch never fetched by the hub before"
+      ],
+      "when": "POST /workspaces/:slug/patches is called for that branch_name",
+      "then": [
+        "the response is HTTP 201",
+        "refs/remotes/origin/<name> and refs/heads/<name> both now exist in the trunk clone",
+        "the hub.patch.create audit event records branch_resolution=origin_fetch"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "branch-check hook",
+        "trunk git repository",
+        "go-git fetch against a real fork remote",
+        "credential resolution",
+        "wslock",
+        "patch store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-03-32",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-3",
+        "03-REQ-5.2",
+        "03-REQ-5.3"
+      ],
+      "title": "Batch registration is all-or-nothing but leaves a harmless local branch behind when a later element fails",
+      "given": [
+        "a running hub server with a real carry_patch workspace trunk clone",
+        "a batch of three patch objects where element 2's branch cannot be found anywhere"
+      ],
+      "when": "POST /workspaces/:slug/patches is called with the batch, fails, and is then retried with element 2 corrected",
+      "then": [
+        "the first call returns HTTP 400 naming patch[2] and inserts no row",
+        "the local branch created for element 1 during the failed attempt is still present",
+        "the retried batch returns HTTP 201 with three created patches and three hub.patch.create audit events, each carrying its own branch_resolution"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "branch-check hook",
+        "trunk git repository",
+        "wslock",
+        "patch store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-03-33",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-4",
+        "03-REQ-4.2"
+      ],
+      "title": "A concurrent sync holding the workspace lock defers a registration that would otherwise create a local branch",
+      "given": [
+        "a running hub server",
+        "a scheduled sync currently holding the workspace's wslock",
+        "a branch_name resolvable via origin_tracking once the lock is free"
+      ],
+      "when": "POST /workspaces/:slug/patches is called for that branch_name while sync holds the lock, then retried after sync completes",
+      "then": [
+        "the first call returns HTTP 409 with error_type workspace_busy, writing no ref and inserting no row",
+        "the retried call succeeds with HTTP 201 and resolution origin_tracking"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "branch-check hook",
+        "wslock",
+        "trunk git repository",
+        "patch store"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,666 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "02",
+  "spec_name": "fork_authoritative_sync",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-02-1",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-1.1"
+      ],
+      "title": "PATCH_BRANCH_SOURCE is read fresh from GetVariableFunc on every sync and any value other than the exact string origin resolves to hub",
+      "given": [
+        "a carry_patch workspace",
+        "a GetVariableFunc stub that records each call and returns a configurable value"
+      ],
+      "when": "runCarryPatchSync is called twice in a row, first with the variable returning 'origin' then with it returning '' (unset)",
+      "then": [
+        "GetVariable is called with (\"workspace\", slug, \"PATCH_BRANCH_SOURCE\") on both calls",
+        "the first sync resolves to origin mode (fetches origin)",
+        "the second sync resolves to hub mode (no origin fetch) even though the first sync ran in origin mode"
+      ],
+      "pseudocode": "cfg.GetVariable = recordingVar({\"PATCH_BRANCH_SOURCE\":\"origin\"}); runCarryPatchSync(cfg,ctx1); assert originFetchCalled; cfg.GetVariable = recordingVar({\"PATCH_BRANCH_SOURCE\":\"weird\"}); runCarryPatchSync(cfg,ctx2); assert !originFetchCalled"
+    },
+    {
+      "id": "TS-02-2",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-1.2"
+      ],
+      "title": "PATCH_DIVERGENCE_POLICY is read only when PATCH_BRANCH_SOURCE is origin and any value other than the exact string report resolves to replace",
+      "given": [
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin",
+        "a diverged patch branch on origin"
+      ],
+      "when": "sync runs with PATCH_DIVERGENCE_POLICY unset, then with it set to 'weird'",
+      "then": [
+        "GetVariable is called for PATCH_DIVERGENCE_POLICY",
+        "the divergence is resolved by replace in both cases"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert patchesSynced[0].action == \"replaced\""
+    },
+    {
+      "id": "TS-02-3",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-1.3"
+      ],
+      "title": "Hub mode skips reading PATCH_DIVERGENCE_POLICY and runs the origin fetch and fork-refresh as no-ops",
+      "given": [
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE unset"
+      ],
+      "when": "sync runs",
+      "then": [
+        "GetVariable is never called for PATCH_DIVERGENCE_POLICY",
+        "no origin fetch call is made",
+        "the fork-refresh step performs no ref writes"
+      ],
+      "pseudocode": "runCarryPatchSync(cfg); assert !calledWith(cfg.GetVariable, \"PATCH_DIVERGENCE_POLICY\"); assert originFetchCallCount == 0"
+    },
+    {
+      "id": "TS-02-4",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-1.4"
+      ],
+      "title": "A workspace that previously ran in origin mode reproduces the pre-spec sync behaviour and response shape once PATCH_BRANCH_SOURCE is hub",
+      "given": [
+        "a workspace whose last sync ran with PATCH_BRANCH_SOURCE=origin and left patches_synced state on disk",
+        "PATCH_BRANCH_SOURCE now unset"
+      ],
+      "when": "sync runs",
+      "then": [
+        "the response has no patches_synced field",
+        "origin_fetched is false",
+        "patches_merged and rebuild_triggered behave exactly as before this spec"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert resp.OriginFetched == false; assert !hasKey(resp,\"patches_synced\")"
+    },
+    {
+      "id": "TS-02-5",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-2.1"
+      ],
+      "title": "Origin mode fetches the origin remote with the correct refspec, no tags, resolved auth, and the sync's wslock held",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "a successful upstream fetch",
+        "wslock held for the workspace slug"
+      ],
+      "when": "sync proceeds past the upstream fetch",
+      "then": [
+        "origin is fetched with refspec +refs/heads/*:refs/remotes/origin/* and git.NoTags",
+        "the auth passed matches workspace.ResolveCloneAuth's resolution order",
+        "the fetch happens while wslock.TryLock's unlock has not yet been called"
+      ],
+      "pseudocode": "spyFetch := recordingOriginFetch(); cfg.OriginFetch = spyFetch; runCarryPatchSync(cfg); assert spyFetch.refspec == \"+refs/heads/*:refs/remotes/origin/*\"; assert spyFetch.tags == NoTags; assert spyFetch.calledUnderLock"
+    },
+    {
+      "id": "TS-02-6",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-2.2"
+      ],
+      "title": "A failing origin fetch aborts the sync with 502 and leaves the workspace row and every patches row unchanged",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "a stored upstream_head_sha, patch statuses and patch refs",
+        "an origin fetch stub that returns an error"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "the response status is 502",
+        "the error message is \"origin fetch failed\"",
+        "upstream_head_sha, last_sync_at, every patch's status and every patch ref are byte-for-byte identical to before the call"
+      ],
+      "pseudocode": "before := snapshot(db, refs); r := post('/sync'); assert r.status == 502; assert r.json.message == \"origin fetch failed\"; assert snapshot(db, refs) == before"
+    },
+    {
+      "id": "TS-02-7",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-2.3"
+      ],
+      "title": "An origin fetch error satisfying errors.Is(err, git.NoErrAlreadyUpToDate) is treated as success",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "an origin fetch stub returning git.NoErrAlreadyUpToDate"
+      ],
+      "when": "sync runs",
+      "then": [
+        "the sync proceeds to the fork-refresh step instead of aborting",
+        "the response is not a 502"
+      ],
+      "pseudocode": "cfg.OriginFetch = func(...) error { return git.NoErrAlreadyUpToDate }; resp,err := runCarryPatchSync(cfg); assert err == nil; assert forkRefreshRan"
+    },
+    {
+      "id": "TS-02-8",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-2.4"
+      ],
+      "title": "origin_fetched is true only when the origin fetch was attempted and succeeded, false in hub mode and on fetch failure",
+      "given": [
+        "three syncs: hub mode, origin mode with success, origin mode with failure"
+      ],
+      "when": "each sync runs",
+      "then": [
+        "hub-mode response has origin_fetched=false",
+        "successful origin-mode response has origin_fetched=true",
+        "the failing sync returns 502 (no response body to check but state unaffected)"
+      ],
+      "pseudocode": "assert hubResp.OriginFetched == false; assert originResp.OriginFetched == true"
+    },
+    {
+      "id": "TS-02-9",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.1"
+      ],
+      "title": "Only patches with status active, conflict or disabled are considered, in position order, excluding merged_upstream, deleted and the integration branch",
+      "given": [
+        "patches with statuses active, conflict, disabled, merged_upstream, deleted, and one row whose branch_name equals the integration branch"
+      ],
+      "when": "the fork-refresh step runs in origin mode",
+      "then": [
+        "patches_synced contains an entry for each active/conflict/disabled patch in position order",
+        "no entry exists for the merged_upstream, deleted or integration-branch-named rows"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert [e.branch_name for e in resp.patches_synced] == expectedOrderedBranches"
+    },
+    {
+      "id": "TS-02-10",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.2",
+        "02-REQ-6.2"
+      ],
+      "title": "A patch missing on origin leaves the local branch untouched, records missing_on_origin without changing status, and persists the state",
+      "given": [
+        "an active patch whose refs/remotes/origin/<branch> does not exist after fetch"
+      ],
+      "when": "the fork-refresh step considers it",
+      "then": [
+        "refs/heads/<branch> is not written",
+        "patches_synced has state missing_on_origin for that branch",
+        "the patch's status stays active",
+        "the patches row has origin_sync_state='missing_on_origin', origin_sha=null, origin_synced_at set"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); entry := findByBranch(resp.patches_synced, branch); assert entry.state == \"missing_on_origin\"; assert dbPatchStatus(branch) == \"active\"; assert dbPatch(branch).origin_sync_state == \"missing_on_origin\""
+    },
+    {
+      "id": "TS-02-11",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.3",
+        "02-REQ-4.1"
+      ],
+      "title": "A patch branch missing locally but present on origin is created at the origin tip via update-ref and counts as patch advanced",
+      "given": [
+        "refs/remotes/origin/feature-x exists at SHA X",
+        "refs/heads/feature-x does not exist locally"
+      ],
+      "when": "the fork-refresh step runs",
+      "then": [
+        "update-ref creates refs/heads/feature-x at X, not checkout or reset",
+        "patches_synced records action created for feature-x",
+        "the branch counts as patch advanced for the rebuild decision"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert git.rev_parse(\"refs/heads/feature-x\") == X; entry := findByBranch(resp.patches_synced,\"feature-x\"); assert entry.action == \"created\"; assert resp.RebuildTriggered == true"
+    },
+    {
+      "id": "TS-02-12",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.4"
+      ],
+      "title": "A patch whose local and origin tips are the same commit is recorded in_sync with no ref write",
+      "given": [
+        "refs/heads/feature-y and refs/remotes/origin/feature-y both point at SHA Y"
+      ],
+      "when": "the fork-refresh step considers feature-y",
+      "then": [
+        "no update-ref call is made for feature-y",
+        "patches_synced records state in_sync for feature-y"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert refUnchanged(\"refs/heads/feature-y\"); entry := findByBranch(resp.patches_synced,\"feature-y\"); assert entry.state == \"in_sync\""
+    },
+    {
+      "id": "TS-02-13",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.5",
+        "02-REQ-4.1"
+      ],
+      "title": "A local tip that is an ancestor of the origin tip is fast-forwarded via update-ref using GitRunner.IsAncestor on resolved SHAs",
+      "given": [
+        "refs/heads/feature-z at SHA A, refs/remotes/origin/feature-z at SHA B, A is an ancestor of B"
+      ],
+      "when": "the fork-refresh step considers feature-z",
+      "then": [
+        "IsAncestor is called with the resolved SHAs A and B, not branch names",
+        "update-ref moves refs/heads/feature-z to B",
+        "action fast_forwarded is recorded",
+        "the branch counts as patch advanced"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert git.rev_parse(\"refs/heads/feature-z\") == B; entry := findByBranch(resp.patches_synced,\"feature-z\"); assert entry.action == \"fast_forwarded\""
+    },
+    {
+      "id": "TS-02-14",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.6",
+        "02-REQ-4.1"
+      ],
+      "title": "A diverged branch under replace policy is backed up to refs/hub/replaced, moved to the origin tip, and recorded as replaced with both SHAs",
+      "given": [
+        "refs/heads/feature-w at SHA A, refs/remotes/origin/feature-w at SHA B, neither an ancestor of the other",
+        "PATCH_DIVERGENCE_POLICY=replace (default)",
+        "an existing refs/hub/replaced/feature-w from a prior replacement"
+      ],
+      "when": "the fork-refresh step considers feature-w",
+      "then": [
+        "refs/hub/replaced/feature-w is overwritten with A",
+        "refs/heads/feature-w is moved to B via update-ref",
+        "patches_synced records action replaced with local_sha=A, origin_sha=B, replaced_sha=A",
+        "the branch counts as patch advanced"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert git.rev_parse(\"refs/hub/replaced/feature-w\") == A; assert git.rev_parse(\"refs/heads/feature-w\") == B; entry := findByBranch(resp.patches_synced,\"feature-w\"); assert entry == {action:\"replaced\", local_sha:A, origin_sha:B, replaced_sha:A}"
+    },
+    {
+      "id": "TS-02-15",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.7"
+      ],
+      "title": "A diverged branch under report policy is left untouched and recorded diverged with both SHAs",
+      "given": [
+        "refs/heads/feature-v at SHA A, refs/remotes/origin/feature-v at SHA B, neither an ancestor of the other",
+        "PATCH_DIVERGENCE_POLICY=report"
+      ],
+      "when": "the fork-refresh step considers feature-v",
+      "then": [
+        "refs/heads/feature-v is unchanged at A",
+        "no refs/hub/replaced ref is written",
+        "patches_synced records state diverged with local_sha=A and origin_sha=B"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert git.rev_parse(\"refs/heads/feature-v\") == A; entry := findByBranch(resp.patches_synced,\"feature-v\"); assert entry.state == \"diverged\" and entry.local_sha==A and entry.origin_sha==B"
+    },
+    {
+      "id": "TS-02-16",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-3.8"
+      ],
+      "title": "Moving the branch that is the trunk's current checkout runs git reset --hard to the new tip immediately after the ref move",
+      "given": [
+        "the trunk clone's checked-out branch is feature-checked-out",
+        "its origin tip is ahead and fast-forwardable"
+      ],
+      "when": "the fork-refresh step fast-forwards feature-checked-out",
+      "then": [
+        "update-ref moves the ref first",
+        "git reset --hard to the new tip runs immediately after",
+        "the working tree matches the new HEAD"
+      ],
+      "pseudocode": "runCarryPatchSync(cfg); assert git.calls contains ordered [\"update-ref refs/heads/feature-checked-out <newsha>\", \"reset --hard <newsha>\"]"
+    },
+    {
+      "id": "TS-02-17",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-4.2"
+      ],
+      "title": "Sync returns early with empty patches_merged and rebuild_triggered false when upstream did not advance and no patch advanced",
+      "given": [
+        "upstream fetch yields the same SHA as stored",
+        "origin mode with every patch already in_sync"
+      ],
+      "when": "sync runs",
+      "then": [
+        "patches_merged is empty",
+        "rebuild_triggered is false",
+        "no rebuild is enqueued"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert resp.PatchesMerged == []; assert resp.RebuildTriggered == false; assert queue.EnqueueCallCount == 0"
+    },
+    {
+      "id": "TS-02-18",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-4.3"
+      ],
+      "title": "last_sync_at is updated on every error-free sync including the early-return no-op case",
+      "given": [
+        "a workspace with an old last_sync_at",
+        "upstream unchanged and, in origin mode, no patch advanced"
+      ],
+      "when": "sync runs and returns early",
+      "then": [
+        "the workspace's last_sync_at in the database is updated to the current time"
+      ],
+      "pseudocode": "before := dbLastSyncAt(slug); runCarryPatchSync(cfg); after := dbLastSyncAt(slug); assert after > before"
+    },
+    {
+      "id": "TS-02-19",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-4.4"
+      ],
+      "title": "An auto-rebuild is enqueued with the existing group key and duplicate suppression when the sync did not return early and AUTO_REBUILD_AFTER_SYNC is not the string false",
+      "given": [
+        "a patch advanced under the fork-refresh step and upstream did not advance",
+        "AUTO_REBUILD_AFTER_SYNC unset"
+      ],
+      "when": "sync completes",
+      "then": [
+        "a rebuild job is enqueued with group key slug+\":\"+integrationBranch",
+        "rebuild_triggered is true",
+        "a duplicate queued job for the same group is silently ignored on a second sync"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert resp.RebuildTriggered == true; assert queue.lastEnqueue.Group == slug+\":\"+integrationBranch"
+    },
+    {
+      "id": "TS-02-20",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-4.5"
+      ],
+      "title": "Merge-upstream detection runs over branch tips as refreshed by the fork-refresh step, not their pre-sync tips",
+      "given": [
+        "a patch branch that was fast-forwarded to a tip that is now an ancestor of the new upstream HEAD, but whose pre-sync tip was not"
+      ],
+      "when": "sync runs in origin mode",
+      "then": [
+        "the merge-upstream detection loop reports this patch as merged, because it checks the post-refresh tip"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert branch in resp.PatchesMerged"
+    },
+    {
+      "id": "TS-02-21",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-5.1"
+      ],
+      "title": "origin_fetched is present as a boolean in every sync response regardless of PATCH_BRANCH_SOURCE",
+      "given": [
+        "a hub-mode sync and an origin-mode sync"
+      ],
+      "when": "each completes",
+      "then": [
+        "both response bodies include an origin_fetched boolean field"
+      ],
+      "pseudocode": "assert typeof(hubResp.OriginFetched) == bool; assert typeof(originResp.OriginFetched) == bool"
+    },
+    {
+      "id": "TS-02-22",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-5.2"
+      ],
+      "title": "In origin mode, patches_synced has one shaped element per considered patch with replaced_sha present only for a replaced action",
+      "given": [
+        "origin mode with one created, one fast_forwarded and one replaced patch"
+      ],
+      "when": "sync completes",
+      "then": [
+        "patches_synced has exactly three elements",
+        "each element has branch_name, action, state, local_sha, origin_sha",
+        "only the replaced element carries replaced_sha",
+        "action values are drawn from {none, created, fast_forwarded, replaced} and state from {in_sync, diverged, missing_on_origin}"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert len(resp.patches_synced) == 3; for e in resp.patches_synced: assert hasKey(e,\"branch_name\") and hasKey(e,\"action\") and hasKey(e,\"state\"); assert hasKey(replacedEntry, \"replaced_sha\"); assert !hasKey(createdEntry, \"replaced_sha\")"
+    },
+    {
+      "id": "TS-02-23",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-5.3"
+      ],
+      "title": "In hub mode, the sync response omits patches_synced entirely",
+      "given": [
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE unset"
+      ],
+      "when": "sync completes",
+      "then": [
+        "the response body has no patches_synced key at all"
+      ],
+      "pseudocode": "resp := post('/sync'); assert !hasKey(resp.json, \"patches_synced\")"
+    },
+    {
+      "id": "TS-02-24",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-5.4"
+      ],
+      "title": "Under report policy, patches_diverged lists the branch names recorded diverged during this sync",
+      "given": [
+        "PATCH_DIVERGENCE_POLICY=report",
+        "two branches diverge and one is in_sync"
+      ],
+      "when": "sync completes",
+      "then": [
+        "patches_diverged contains exactly the two diverged branch names and no others"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert sorted(resp.patches_diverged) == sorted([\"branch-a\",\"branch-b\"])"
+    },
+    {
+      "id": "TS-02-25",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-5.5"
+      ],
+      "title": "Under replace policy, patches_diverged is present and empty even when a divergence was resolved",
+      "given": [
+        "PATCH_DIVERGENCE_POLICY=replace (default)",
+        "one branch diverges and is replaced"
+      ],
+      "when": "sync completes",
+      "then": [
+        "the response includes patches_diverged as an array",
+        "the array is empty",
+        "the replaced branch's name is not present in it"
+      ],
+      "pseudocode": "resp := runCarryPatchSync(cfg); assert resp.patches_diverged == []"
+    },
+    {
+      "id": "TS-02-26",
+      "kind": "integration",
+      "verifies": [
+        "02-REQ-6.1"
+      ],
+      "title": "Schema migration adds nullable origin_sync_state, origin_sha and origin_synced_at columns to the patches table idempotently",
+      "given": [
+        "a patches table without the new columns",
+        "a second database that already has them"
+      ],
+      "when": "initSchema (or the equivalent migration entrypoint) runs against both",
+      "then": [
+        "the first database gains the three nullable columns",
+        "the second database's migration is a no-op and does not error",
+        "existing rows keep the three new columns null"
+      ],
+      "pseudocode": "initSchema(dbWithout); assert columnsOf(dbWithout,\"patches\") contains [\"origin_sync_state\",\"origin_sha\",\"origin_synced_at\"]; initSchema(dbWith); assert noError"
+    },
+    {
+      "id": "TS-02-27",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-6.3"
+      ],
+      "title": "Switching to hub mode clears origin_sync_state, origin_sha and origin_synced_at to null for every non-deleted patch of the workspace",
+      "given": [
+        "a workspace with PATCH_BRANCH_SOURCE now unset",
+        "several non-deleted patches carrying non-null origin_sync_state/origin_sha/origin_synced_at from a prior origin-mode sync",
+        "one soft-deleted patch also carrying stale fork state"
+      ],
+      "when": "sync runs",
+      "then": [
+        "every non-deleted patch's three fork-sync columns are null after the sync",
+        "the soft-deleted patch's columns are left untouched"
+      ],
+      "pseudocode": "runCarryPatchSync(cfg); for p in nonDeletedPatches(slug): assert p.origin_sync_state == nil and p.origin_sha == nil and p.origin_synced_at == nil; assert deletedPatch.origin_sync_state == priorValue"
+    },
+    {
+      "id": "TS-02-28",
+      "kind": "integration",
+      "verifies": [
+        "02-REQ-6.4"
+      ],
+      "title": "GET and PATCH patch endpoints expose the three fork-sync fields, null when unset, matching the upstream_pr_url convention",
+      "given": [
+        "one patch with origin_sync_state/origin_sha/origin_synced_at set and one with them unset"
+      ],
+      "when": "GET /workspaces/:slug/patches, GET /workspaces/:slug/patches/:id and PATCH /workspaces/:slug/patches/:id are called for both patches",
+      "then": [
+        "the set patch's response carries the three fields with their stored values",
+        "the unset patch's response carries the three fields as null (or omitted), matching how upstream_pr_url is represented when unset"
+      ],
+      "pseudocode": "r1 := get('/patches/'+setPatchID); assert r1.json.origin_sync_state == \"in_sync\"; r2 := get('/patches/'+unsetPatchID); assert r2.json.origin_sync_state == nil"
+    },
+    {
+      "id": "TS-02-29",
+      "kind": "integration",
+      "verifies": [
+        "02-REQ-6.5"
+      ],
+      "title": "GET /workspaces/:slug/patch-status includes the three fork-sync fields per patch and adds patches_diverged and patches_missing_on_origin summary counts",
+      "given": [
+        "patches with origin_sync_state values in_sync, diverged, diverged, missing_on_origin, and null"
+      ],
+      "when": "GET /workspaces/:slug/patch-status is called",
+      "then": [
+        "each patch entry in the response carries origin_sync_state, origin_sha and origin_synced_at",
+        "summary.patches_diverged equals 2",
+        "summary.patches_missing_on_origin equals 1"
+      ],
+      "pseudocode": "r := get('/patch-status'); assert r.json.summary.patches_diverged == 2; assert r.json.summary.patches_missing_on_origin == 1"
+    },
+    {
+      "id": "TS-02-30",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-7.1",
+        "02-REQ-7.2"
+      ],
+      "title": "A sync in origin mode emits one hub.patch.sync event with per-category branch lists, plus one hub.patch.replace event per replaced branch",
+      "given": [
+        "a fake audit.Emitter",
+        "an origin-mode sync producing one created, one fast_forwarded and one replaced branch"
+      ],
+      "when": "sync completes",
+      "then": [
+        "exactly one hub.patch.sync event is emitted with actor type system, resource type patch, and metadata created/fast_forwarded/replaced/diverged/missing_on_origin listing the right branch names",
+        "exactly one hub.patch.replace event is emitted for the replaced branch, carrying its name and both SHAs"
+      ],
+      "pseudocode": "runCarryPatchSync(cfg); events := fakeEmitter.Events; syncEvt := find(events,\"hub.patch.sync\"); assert syncEvt.ActorType==\"system\" and syncEvt.ResourceType==\"patch\" and syncEvt.Metadata.created==[...]; replaceEvt := find(events,\"hub.patch.replace\"); assert replaceEvt.Metadata.branch_name==\"feature-w\""
+    },
+    {
+      "id": "TS-02-31",
+      "kind": "unit",
+      "verifies": [
+        "02-REQ-7.3"
+      ],
+      "title": "A nil audit emitter or a failing Emit call does not affect the sync's response or state changes",
+      "given": [
+        "two syncs identical except Audit is nil in one and an Emit-erroring fake in the other"
+      ],
+      "when": "each sync runs",
+      "then": [
+        "both complete with the same HTTP status and response body content aside from timestamps/ids",
+        "both leave the same patch and workspace state",
+        "the erroring emitter's error is only logged, not surfaced to the caller"
+      ],
+      "pseudocode": "r1 := runCarryPatchSync(cfgNilAudit); r2 := runCarryPatchSync(cfgErrAudit); assert r1.err == nil and r2.err == nil; assert responsesEquivalent(r1,r2)"
+    },
+    {
+      "id": "TS-02-32",
+      "kind": "smoke",
+      "verifies": [
+        "02-PATH-1",
+        "02-REQ-3.3",
+        "02-REQ-4.1"
+      ],
+      "title": "A fork-only patch branch is created by sync, triggers a rebuild, and shows up on the patch-status dashboard",
+      "given": [
+        "a real carry-patch workspace with a trunk clone, origin and upstream remotes",
+        "PATCH_BRANCH_SOURCE=origin set as a workspace variable",
+        "a new patch branch pushed to the fork only, registered as a patch row"
+      ],
+      "when": "POST /workspaces/:slug/sync is called, then GET /workspaces/:slug/patch-status",
+      "then": [
+        "the sync response has origin_fetched=true, patches_synced containing the branch with action created, and rebuild_triggered=true",
+        "refs/heads/<branch> now exists locally at the fork's tip",
+        "a hub.patch.sync audit event was recorded",
+        "the patch-status response shows the patch's origin_sync_state and updated summary counts"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "carrypatch sync handler",
+        "git runner against a real repository",
+        "patches table",
+        "job queue",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-02-33",
+      "kind": "smoke",
+      "verifies": [
+        "02-PATH-2",
+        "02-REQ-3.6"
+      ],
+      "title": "A diverged patch branch is replaced under the default divergence policy, backing up the hub's tip and triggering a rebuild",
+      "given": [
+        "a real carry-patch workspace in origin mode",
+        "a registered patch branch whose hub copy and force-pushed fork copy have diverged",
+        "PATCH_DIVERGENCE_POLICY left at its default"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "refs/hub/replaced/<branch> now holds the old local tip",
+        "refs/heads/<branch> now points at the fork's tip",
+        "hub.patch.replace and hub.patch.sync audit events were recorded",
+        "the sync response's patches_synced has the replaced entry and rebuild_triggered=true",
+        "the patches row persists origin_sync_state/origin_sha/origin_synced_at"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "carrypatch sync handler",
+        "git runner against a real repository",
+        "patches table",
+        "job queue",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-02-34",
+      "kind": "smoke",
+      "verifies": [
+        "02-PATH-3",
+        "02-REQ-6.3",
+        "02-REQ-4.3"
+      ],
+      "title": "A hub-mode workspace is unaffected by this spec and clears stale fork-sync state left from a prior origin-mode run",
+      "given": [
+        "a real carry-patch workspace that previously synced with PATCH_BRANCH_SOURCE=origin and has patches carrying non-null origin_sync_state",
+        "PATCH_BRANCH_SOURCE now left unset"
+      ],
+      "when": "POST /workspaces/:slug/sync is called, then GET /workspaces/:slug/patches",
+      "then": [
+        "the sync response has origin_fetched=false and no patches_synced field",
+        "last_sync_at is updated even though upstream did not advance",
+        "every patch's origin_sync_state, origin_sha and origin_synced_at are null in the GET response"
+      ],
+      "real_components": [
+        "HTTP handler",
+        "carrypatch sync handler",
+        "git runner against a real repository",
+        "patches table"
+      ]
+    }
+  ]
+}

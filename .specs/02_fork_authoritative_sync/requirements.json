@@ -1,0 +1,396 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "02",
+  "spec_name": "fork_authoritative_sync",
+  "schema_version": 2,
+  "introduction": "Fork-authoritative sync lets a carry-patch workspace declare its fork (origin) rather than the hub as the authority for patch branches, so that POST /workspaces/:slug/sync brings every registered patch branch to the fork's tip, triggers a rebuild when one does, and records per-patch fork-sync state.",
+  "glossary": {
+    "PATCH_BRANCH_SOURCE": "Workspace variable selecting the authority for patch branches: 'hub' (default) or 'origin'.",
+    "PATCH_DIVERGENCE_POLICY": "Workspace variable selecting how a diverged patch branch is handled in origin mode: 'replace' (default) or 'report'.",
+    "backup ref": "refs/hub/replaced/<branch>, written with the pre-replacement local tip before a diverged branch is replaced.",
+    "carry-patch workspace": "A workspace in workspace_mode 'carry_patch', with a trunk clone holding an 'origin' remote (the fork) and an 'upstream' remote.",
+    "fork-refresh step": "The per-patch loop, run in origin mode after the origin fetch, that brings refs/heads/<branch> to the fork's tip for every active, conflict or disabled patch.",
+    "patch advanced": "A patch branch that was created, fast-forwarded or replaced during the fork-refresh step."
+  },
+  "requirements": [
+    {
+      "id": "02-REQ-1",
+      "title": "PATCH_BRANCH_SOURCE and PATCH_DIVERGENCE_POLICY workspace variables",
+      "rationale": "The authority for patch branches and the divergence handling must be an explicit, per-workspace, re-read choice, not a hard-coded or cached one, so existing workspaces are unaffected by default.",
+      "criteria": [
+        {
+          "id": "02-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a sync starts for a carry_patch workspace",
+          "system": "carry-patch sync",
+          "action": "read PATCH_BRANCH_SOURCE via GetVariableFunc(\"workspace\", slug, \"PATCH_BRANCH_SOURCE\") and treat any value other than the exact string \"origin\" (including unset) as \"hub\"",
+          "contract": "the resolved mode ('hub' or 'origin') is computed fresh from the current variable value on every sync call, never cached across syncs"
+        },
+        {
+          "id": "02-REQ-1.2",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE resolves to 'origin' for the sync",
+          "system": "carry-patch sync",
+          "action": "read PATCH_DIVERGENCE_POLICY via GetVariableFunc(\"workspace\", slug, \"PATCH_DIVERGENCE_POLICY\") and treat any value other than the exact string \"report\" (including unset) as \"replace\""
+        },
+        {
+          "id": "02-REQ-1.3",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE resolves to 'hub' for the sync",
+          "system": "carry-patch sync",
+          "action": "skip reading PATCH_DIVERGENCE_POLICY and run the origin fetch and fork-refresh step of requirements 2 and 3 as no-ops"
+        },
+        {
+          "id": "02-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "carry-patch sync",
+          "action": "for any workspace, produce the same sync behaviour and response shape as before this spec when PATCH_BRANCH_SOURCE is unset or 'hub', regardless of whether that workspace previously ran a sync in 'origin' mode"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-2",
+      "title": "Fetching the origin remote during sync",
+      "rationale": "Bringing patch branches to the fork's tip requires an up-to-date view of the fork, fetched under the same lock and credentials as every other trunk git operation.",
+      "criteria": [
+        {
+          "id": "02-REQ-2.1",
+          "pattern": "complex_event",
+          "condition": "PATCH_BRANCH_SOURCE resolves to 'origin' for the sync",
+          "guard": "the upstream fetch of the sync has already completed successfully",
+          "system": "carry-patch sync",
+          "action": "fetch the 'origin' remote of the trunk clone with refspec +refs/heads/*:refs/remotes/origin/* and git.NoTags, using the auth resolved by workspace.ResolveCloneAuth (GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then no auth), while still holding the sync's wslock"
+        },
+        {
+          "id": "02-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the origin fetch fails",
+          "system": "carry-patch sync",
+          "action": "abort the sync without writing upstream_head_sha, last_sync_at, any patch status, or any patch ref from this sync attempt",
+          "contract": "HTTP 502 with message \"origin fetch failed\"; the workspace row and every patches row are byte-for-byte unchanged from before the sync started"
+        },
+        {
+          "id": "02-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "errors.Is reports the origin fetch error as git.NoErrAlreadyUpToDate",
+          "system": "carry-patch sync",
+          "action": "treat the fetch as successful and proceed to the fork-refresh step"
+        },
+        {
+          "id": "02-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "carry-patch sync",
+          "action": "set the sync response field origin_fetched to true only on a sync where the origin fetch of criterion 02-REQ-2.1 was attempted and succeeded, and to false in every other case including hub mode"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-3",
+      "title": "Bringing each registered patch branch to the fork's tip",
+      "rationale": "The fork-refresh step is the mechanism that makes origin mode true: every eligible patch branch is brought to the fork's tip deterministically, with divergence handled by policy and without racing a concurrent push.",
+      "criteria": [
+        {
+          "id": "02-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "the origin fetch of requirement 2 succeeds in a sync where PATCH_BRANCH_SOURCE is 'origin'",
+          "system": "carry-patch sync",
+          "action": "consider, in position order, every patch of the workspace whose status is 'active', 'conflict' or 'disabled', excluding any patch with status 'merged_upstream' or 'deleted' and excluding the integration branch even if a patch row names it"
+        },
+        {
+          "id": "02-REQ-3.2",
+          "pattern": "complex_event",
+          "condition": "a considered patch's refs/remotes/origin/<branch> does not exist after the fetch",
+          "guard": "PATCH_BRANCH_SOURCE is 'origin' for this sync",
+          "system": "carry-patch sync",
+          "action": "leave refs/heads/<branch> untouched and record sync state missing_on_origin for that patch without changing its status"
+        },
+        {
+          "id": "02-REQ-3.3",
+          "pattern": "complex_event",
+          "condition": "a considered patch's refs/heads/<branch> does not exist locally but refs/remotes/origin/<branch> does",
+          "guard": "PATCH_BRANCH_SOURCE is 'origin' for this sync",
+          "system": "carry-patch sync",
+          "action": "create refs/heads/<branch> at the origin tip using update-ref and record action created"
+        },
+        {
+          "id": "02-REQ-3.4",
+          "pattern": "complex_event",
+          "condition": "a considered patch's local and origin tips resolve to the same commit",
+          "guard": "PATCH_BRANCH_SOURCE is 'origin' for this sync",
+          "system": "carry-patch sync",
+          "action": "record sync state in_sync for that patch and write no ref"
+        },
+        {
+          "id": "02-REQ-3.5",
+          "pattern": "complex_event",
+          "condition": "a considered patch's local tip and origin tip differ and GitRunner.IsAncestor reports the resolved local tip SHA is an ancestor of the resolved origin tip SHA",
+          "guard": "PATCH_BRANCH_SOURCE is 'origin' for this sync",
+          "system": "carry-patch sync",
+          "action": "move refs/heads/<branch> to the origin tip using update-ref and record action fast_forwarded"
+        },
+        {
+          "id": "02-REQ-3.6",
+          "pattern": "complex_event",
+          "condition": "a considered patch's local tip and origin tip differ and neither resolved SHA is an ancestor of the other, or the origin tip is an ancestor of the local tip",
+          "guard": "PATCH_DIVERGENCE_POLICY resolves to 'replace' for this sync",
+          "system": "carry-patch sync",
+          "action": "write the current local tip to refs/hub/replaced/<branch> (overwriting any prior value), then move refs/heads/<branch> to the origin tip using update-ref, and record action replaced with both the replaced local SHA and the new origin SHA"
+        },
+        {
+          "id": "02-REQ-3.7",
+          "pattern": "complex_event",
+          "condition": "a considered patch's local tip and origin tip differ and neither resolved SHA is an ancestor of the other, or the origin tip is an ancestor of the local tip",
+          "guard": "PATCH_DIVERGENCE_POLICY resolves to 'report' for this sync",
+          "system": "carry-patch sync",
+          "action": "leave refs/heads/<branch> untouched and record sync state diverged with both the local SHA and the origin SHA"
+        },
+        {
+          "id": "02-REQ-3.8",
+          "pattern": "complex_event",
+          "condition": "the fork-refresh step moves refs/heads/<branch> for a branch that is the trunk clone's currently checked-out branch",
+          "guard": "PATCH_BRANCH_SOURCE is 'origin' for this sync",
+          "system": "carry-patch sync",
+          "action": "run git reset --hard to the branch's new tip immediately after the ref move, so the trunk's working tree matches its HEAD"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-4",
+      "title": "Rebuild trigger, early return, and last_sync_at",
+      "rationale": "A patch-only change under origin mode must be able to trigger a rebuild exactly as an upstream advance does, and the dashboard must be able to show when a workspace was last checked even when nothing changed.",
+      "criteria": [
+        {
+          "id": "02-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "carry-patch sync",
+          "action": "treat every patch branch created, fast-forwarded or replaced under requirement 3 as \"patch advanced\" for the purpose of the early-return and auto-rebuild decisions"
+        },
+        {
+          "id": "02-REQ-4.2",
+          "pattern": "complex_event",
+          "condition": "a sync completes its upstream fetch and, in origin mode, its fork-refresh step",
+          "guard": "upstream did not advance and no patch advanced",
+          "system": "carry-patch sync",
+          "action": "return early with an empty patches_merged array and rebuild_triggered false, without enqueuing a rebuild"
+        },
+        {
+          "id": "02-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "a sync completes without error, whether or not it returned early under 02-REQ-4.2",
+          "system": "carry-patch sync",
+          "action": "update the workspace's last_sync_at to the current time"
+        },
+        {
+          "id": "02-REQ-4.4",
+          "pattern": "complex_event",
+          "condition": "a sync does not return early under 02-REQ-4.2",
+          "guard": "the AUTO_REBUILD_AFTER_SYNC workspace variable is not the exact string \"false\"",
+          "system": "carry-patch sync",
+          "action": "enqueue an auto-rebuild using the existing group key slug + \":\" + integrationBranch and duplicate suppression, exactly as when only upstream had advanced"
+        },
+        {
+          "id": "02-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "carry-patch sync",
+          "action": "run the existing merge-upstream detection loop over the branch tips as they stand after the fork-refresh step, so a branch fast-forwarded or replaced in this sync is checked against its refreshed tip"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-5",
+      "title": "Sync response additions",
+      "rationale": "Callers scripting against sync need a reliable signal that the fork was consulted, a per-branch account of what happened, and a quick list of anything left diverged.",
+      "criteria": [
+        {
+          "id": "02-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "carry-patch sync",
+          "action": "include origin_fetched as a boolean field in every sync response, present regardless of PATCH_BRANCH_SOURCE"
+        },
+        {
+          "id": "02-REQ-5.2",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE resolves to 'origin' for the sync",
+          "system": "carry-patch sync",
+          "action": "include patches_synced as an array with one element per patch considered under requirement 3, each shaped {branch_name, action, state, local_sha, origin_sha, replaced_sha}, where action is one of none, created, fast_forwarded, replaced and state is one of in_sync, diverged, missing_on_origin, and replaced_sha is present only when action is replaced"
+        },
+        {
+          "id": "02-REQ-5.3",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE resolves to 'hub' for the sync",
+          "system": "carry-patch sync",
+          "action": "omit patches_synced from the response"
+        },
+        {
+          "id": "02-REQ-5.4",
+          "pattern": "state_driven",
+          "condition": "PATCH_DIVERGENCE_POLICY resolves to 'report' for the sync",
+          "system": "carry-patch sync",
+          "action": "include patches_diverged as an array of the branch names recorded with state diverged during this sync, empty when none"
+        },
+        {
+          "id": "02-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "PATCH_DIVERGENCE_POLICY resolves to 'replace' for the sync",
+          "system": "carry-patch sync",
+          "action": "return patches_diverged as an empty array, since divergence under replace is resolved rather than reported",
+          "contract": "patches_diverged is present and empty; no branch name is added to it under replace"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-6",
+      "title": "Persisted per-patch fork-sync state",
+      "rationale": "The three new nullable columns give operators and API clients a durable, per-patch view of the last fork-sync outcome, and must be cleared when a workspace switches back to hub mode so stale fork state never lingers.",
+      "criteria": [
+        {
+          "id": "02-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "patches schema migration",
+          "action": "add nullable columns origin_sync_state, origin_sha and origin_synced_at to the patches table through an idempotent ALTER TABLE, skipping any column that already exists"
+        },
+        {
+          "id": "02-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "the fork-refresh step of requirement 3 considers a patch in a sync",
+          "system": "carry-patch sync",
+          "action": "write that patch's origin_sync_state (one of in_sync, diverged, missing_on_origin, or null when the branch was just created and is now in sync), origin_sha, and origin_synced_at"
+        },
+        {
+          "id": "02-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "PATCH_BRANCH_SOURCE resolves to 'hub' at the start of a sync",
+          "system": "carry-patch sync",
+          "action": "set origin_sync_state, origin_sha and origin_synced_at to null for every non-deleted patch of the workspace during that sync"
+        },
+        {
+          "id": "02-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "a client requests GET /workspaces/:slug/patches, GET /workspaces/:slug/patches/:id, or PATCH /workspaces/:slug/patches/:id",
+          "system": "patch API",
+          "action": "expose origin_sync_state, origin_sha and origin_synced_at on the patch record, using the existing null convention for unset nullable fields (matching upstream_pr_url)"
+        },
+        {
+          "id": "02-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "a client requests GET /workspaces/:slug/patch-status",
+          "system": "patch-status endpoint",
+          "action": "include origin_sync_state, origin_sha and origin_synced_at on each patch entry and add patches_diverged and patches_missing_on_origin counts to the summary, computed the same way as the existing status counts"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-7",
+      "title": "Audit events for fork-authoritative sync",
+      "rationale": "A replace outcome discards commits from the hub's copy and needs its own audit trail distinct from the batch-level record of what a sync did.",
+      "criteria": [
+        {
+          "id": "02-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a sync in origin mode completes its fork-refresh step",
+          "system": "carry-patch sync",
+          "action": "emit one hub.patch.sync audit event with actor type system, resource type patch, and metadata {origin_fetched, created, fast_forwarded, replaced, diverged, missing_on_origin} listing the branch names in each category"
+        },
+        {
+          "id": "02-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the fork-refresh step records a replaced outcome for a branch",
+          "system": "carry-patch sync",
+          "action": "emit a hub.patch.replace audit event carrying the branch name, the replaced local SHA and the new origin SHA, in addition to the hub.patch.sync event"
+        },
+        {
+          "id": "02-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "the configured audit.Emitter is nil, or Emit returns an error",
+          "system": "carry-patch sync",
+          "action": "skip emission silently when the emitter is nil, or log the error and continue when Emit fails",
+          "contract": "the sync's HTTP response and state changes are unaffected by a nil emitter or an audit emission failure"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "02-PATH-1",
+      "title": "Origin-mode sync creates a fork-only patch branch and triggers a rebuild",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "sets PATCH_BRANCH_SOURCE=origin on a carry-patch workspace and pushes a new patch branch to the fork only"
+        },
+        {
+          "actor": "client",
+          "action": "calls POST /workspaces/:slug/sync"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "fetches upstream, then fetches origin, and finds the patch branch missing locally but present on origin"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "creates refs/heads/<branch> at the origin tip, records action created and origin_sync_state in the patches table, and emits a hub.patch.sync audit event"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "treats the created branch as patch advanced, enqueues an auto-rebuild, and returns origin_fetched=true, patches_synced, rebuild_triggered=true"
+        },
+        {
+          "actor": "client",
+          "action": "calls GET /workspaces/:slug/patch-status and observes the patch's origin_sync_state and the updated summary counts"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-2",
+      "title": "Diverged patch branch is replaced under the default divergence policy",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "force-pushes a rewritten history for a registered patch branch to the fork while the hub still holds the old tip"
+        },
+        {
+          "actor": "client",
+          "action": "calls POST /workspaces/:slug/sync on a workspace with PATCH_BRANCH_SOURCE=origin and PATCH_DIVERGENCE_POLICY left at its default"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "fetches origin, resolves both tips, and determines via GitRunner.IsAncestor that the two have diverged"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "backs up the old local tip to refs/hub/replaced/<branch>, moves refs/heads/<branch> to the origin tip, resets the working tree if that branch was checked out, and emits hub.patch.replace and hub.patch.sync audit events"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "records action replaced and persists origin_sync_state/origin_sha/origin_synced_at on the patch row, then returns patches_synced with the replaced entry and rebuild_triggered=true"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-3",
+      "title": "Hub-mode workspace is unaffected and clears stale fork state after a mode switch",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "leaves PATCH_BRANCH_SOURCE unset on a carry-patch workspace that previously ran with PATCH_BRANCH_SOURCE=origin and has patches carrying origin_sync_state"
+        },
+        {
+          "actor": "client",
+          "action": "calls POST /workspaces/:slug/sync"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "re-reads PATCH_BRANCH_SOURCE as hub, skips the origin fetch and fork-refresh step, and clears origin_sync_state, origin_sha and origin_synced_at to null for every non-deleted patch"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "runs upstream fetch and merge detection exactly as before this spec, sets origin_fetched=false and omits patches_synced, and updates last_sync_at even when upstream has not advanced"
+        },
+        {
+          "actor": "client",
+          "action": "calls GET /workspaces/:slug/patches and observes the three fork-sync fields are null on every patch"
+        }
+      ]
+    }
+  ]
+}

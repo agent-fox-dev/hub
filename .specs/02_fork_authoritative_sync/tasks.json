@@ -1,0 +1,281 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "02",
+  "spec_name": "fork_authoritative_sync",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "go test ./... -count=1",
+    "linter": "go vet ./...",
+    "spec_tests": "go test -tags smoke ./internal/carrypatch/... ./internal/workspace/... -count=1"
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Read PATCH_BRANCH_SOURCE/PATCH_DIVERGENCE_POLICY and fetch the origin remote during sync",
+      "criteria": [
+        "02-REQ-1",
+        "02-REQ-2"
+      ],
+      "tests": [
+        "TS-02-1",
+        "TS-02-2",
+        "TS-02-3",
+        "TS-02-4",
+        "TS-02-5",
+        "TS-02-6",
+        "TS-02-7",
+        "TS-02-8"
+      ],
+      "steps": [
+        "Write TS-02-1..TS-02-8 in internal/carrypatch/sync_extension_test.go (or a new sync_origin_test.go), extending the mock env in testhelpers_test.go with a recording OriginFetch stub and a way to assert wslock is held while it runs; confirm all fail",
+        "Add a fetch helper in a new internal/carrypatch/origin_fetch.go: DefaultOriginFetchFunc() FetchFunc that opens the repo with git.PlainOpen, resolves the origin remote, and calls FetchContext with RefSpecs []config.RefSpec{\"+refs/heads/*:refs/remotes/origin/*\"} and Tags: git.NoTags, treating errors.Is(err, git.NoErrAlreadyUpToDate) as success -- mirror internal/upstream/upstream.go's Fetch exactly",
+        "Add OriginFetch FetchFunc and ResolveOriginAuth ResolveAuthFunc fields to SyncAPIConfig in api.go",
+        "Add OriginFetched bool (json origin_fetched) to CarryPatchSyncResponse in api.go and include it in asExtras() in sync_handlers.go",
+        "In runCarryPatchSync (sync_handlers.go), immediately after the existing upstream Fetch call succeeds, read patchBranchSource fresh via cfg.GetVariable(\"workspace\", slug, \"PATCH_BRANCH_SOURCE\") on every call (never cache across syncs); treat anything other than the exact string \"origin\" as \"hub\"",
+        "When patchBranchSource is origin: resolve origin auth via cfg.ResolveOriginAuth(slug) (skip if nil), then call cfg.OriginFetch(ctx, repoPath, auth) while still holding the sync's wslock; on error return apikit.WriteAPIError(c, http.StatusBadGateway, \"origin fetch failed\") without having written upstream_head_sha/last_sync_at/any patch row yet, and set resp.OriginFetched=true only once this call returns nil",
+        "Only when patchBranchSource is origin, read PATCH_DIVERGENCE_POLICY via cfg.GetVariable(\"workspace\", slug, \"PATCH_DIVERGENCE_POLICY\"); anything other than the exact string \"report\" resolves to \"replace\"; do not call GetVariable for it at all in hub mode",
+        "When patchBranchSource is hub, skip the origin fetch and divergence-policy read entirely and leave resp.OriginFetched=false",
+        "Update main.go's carrypatch.SyncAPIConfig{} literal to wire OriginFetch: carrypatch.DefaultOriginFetchFunc() and ResolveOriginAuth: a closure calling workspace.ResolveCloneAuth(store, slug)",
+        "In docs/carry_patch_workflow.md's Configuration section, add a PATCH_BRANCH_SOURCE and a PATCH_DIVERGENCE_POLICY subsection each with a value table, mirroring the existing AUTO_REBUILD_AFTER_SYNC subsection's style",
+        "Run go test ./internal/carrypatch/... -count=1 until TS-02-1..TS-02-8 pass"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/origin_fetch.go",
+        "internal/carrypatch/testhelpers_test.go",
+        "internal/carrypatch/sync_extension_test.go",
+        "cmd/af-hub/main.go",
+        "docs/carry_patch_workflow.md"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add the three fork-sync columns to the patches table and a write path on PatchStore",
+      "criteria": [
+        "02-REQ-6.1"
+      ],
+      "tests": [
+        "TS-02-26"
+      ],
+      "steps": [
+        "Write TS-02-26 in internal/workspace (a schema test calling initSchema against a patches table missing the columns, then again against one that already has them) and confirm it fails",
+        "In internal/workspace/schema.go's patchFieldDDL, append ALTER TABLE statements adding origin_sync_state TEXT, origin_sha TEXT and origin_synced_at TEXT, relying on the existing existingColumns/isDuplicateColumnError idempotency machinery already in initSchema",
+        "In internal/carrypatch/carrypatch.go, add OriginSyncState, OriginSHA, OriginSyncedAt (*string, json omitempty) to the Patch struct, and add two methods to the PatchStore interface: SetOriginSyncState(ctx, patchID string, state, sha *string, syncedAt string) error and ClearOriginSyncState(ctx, workspaceSlug string) error",
+        "In internal/carrypatch/wire.go's SQLPatchStore, extend ListPatches' SELECT and scan to include the three new columns, and implement SetOriginSyncState (UPDATE patches SET origin_sync_state=?, origin_sha=?, origin_synced_at=?, updated_at=? WHERE id=?) and ClearOriginSyncState (UPDATE patches SET origin_sync_state=NULL, origin_sha=NULL, origin_synced_at=NULL, updated_at=? WHERE workspace_slug=? AND (status != 'deleted' OR status IS NULL))",
+        "Update internal/carrypatch/testhelpers_test.go's mockPatchStore to implement the two new interface methods (recording calls for later assertions) so the package still compiles",
+        "Run go test ./internal/workspace/... ./internal/carrypatch/... -count=1 until TS-02-26 passes and the package builds"
+      ],
+      "touches": [
+        "internal/workspace/schema.go",
+        "internal/carrypatch/carrypatch.go",
+        "internal/carrypatch/wire.go",
+        "internal/carrypatch/testhelpers_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Bring each registered patch branch to the fork's tip and persist the outcome",
+      "criteria": [
+        "02-REQ-3",
+        "02-REQ-6.2",
+        "02-REQ-6.3"
+      ],
+      "tests": [
+        "TS-02-9",
+        "TS-02-10",
+        "TS-02-11",
+        "TS-02-12",
+        "TS-02-13",
+        "TS-02-14",
+        "TS-02-15",
+        "TS-02-16",
+        "TS-02-27"
+      ],
+      "steps": [
+        "Write TS-02-9..TS-02-16 and TS-02-27 and confirm they fail",
+        "Define a patchSyncOutcome struct in a new internal/carrypatch/fork_refresh.go: BranchName, Action (none|created|fast_forwarded|replaced), State (in_sync|diverged|missing_on_origin|empty), LocalSHA, OriginSHA, ReplacedSHA",
+        "Add refreshPatchBranchesFromOrigin(ctx, git GitRunner, patches []Patch, integrationBranch, divergencePolicy string) (outcomes []patchSyncOutcome, patchAdvanced bool) that, in position order, considers only patches with Status active/conflict/disabled (skip merged_upstream, deleted, and any patch whose BranchName equals integrationBranch)",
+        "For each considered patch: rev-parse --verify refs/remotes/origin/<branch> (missing -> record state missing_on_origin, no write); rev-parse --verify refs/heads/<branch> (missing locally -> git.Run(ctx, \"update-ref\", \"refs/heads/\"+branch, originSHA), action=created, patchAdvanced=true); when both exist and SHAs match -> state=in_sync; when they differ, call git.IsAncestor(ctx, localSHA, originSHA) -- true means fast-forward via update-ref, action=fast_forwarded, patchAdvanced=true",
+        "When neither IsAncestor(local,origin) holds nor the SHAs match (diverged): under divergencePolicy=='replace', git.Run(ctx, \"update-ref\", \"refs/hub/replaced/\"+branch, localSHA) then git.Run(ctx, \"update-ref\", \"refs/heads/\"+branch, originSHA), action=replaced, ReplacedSHA=localSHA, patchAdvanced=true; under 'report', leave the ref untouched and record state=diverged with both SHAs",
+        "After any ref move for a branch, call currentCheckout(ctx, git) and if it equals the branch's short name, call git.HardReset(ctx, newTip) immediately so the trunk's working tree matches the moved HEAD",
+        "In runCarryPatchSync, call refreshPatchBranchesFromOrigin only when patchBranchSource is origin and the origin fetch of Task 1 succeeded, using the patches already loaded via cfg.PatchStore.ListPatches; for each outcome, call cfg.PatchStore.SetOriginSyncState(ctx, patch.ID, outcomeStatePtr, outcomeSHAPtr, apikit.NowUTC())",
+        "When patchBranchSource is hub at the start of the sync, call cfg.PatchStore.ClearOriginSyncState(ctx, slug) once, regardless of whether the sync later returns early",
+        "Thread the resulting outcomes []patchSyncOutcome and patchAdvanced bool out of runCarryPatchSync's local scope for use by the rebuild-trigger and response-assembly logic added in Tasks 4 and 5",
+        "Run go test ./internal/carrypatch/... -count=1 until TS-02-9..TS-02-16 and TS-02-27 pass"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/fork_refresh.go",
+        "internal/carrypatch/sync_extension_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Move the early return past the fork-refresh step and always update last_sync_at",
+      "criteria": [
+        "02-REQ-4"
+      ],
+      "tests": [
+        "TS-02-17",
+        "TS-02-18",
+        "TS-02-19",
+        "TS-02-20"
+      ],
+      "steps": [
+        "Write TS-02-17..TS-02-20 and confirm they fail",
+        "In runCarryPatchSync, delete the old early return that fires right after computing upstreamAdvanced (\"if !upstreamAdvanced { return &resp, nil }\")",
+        "After the Task 3 fork-refresh call returns (outcomes, patchAdvanced), compute the single early-return condition: upstream did not advance AND no patch advanced",
+        "Move the UPDATE workspaces SET upstream_head_sha=?, last_sync_at=?, updated_at=? WHERE slug=? write so it always executes once sync reaches this point (both the early-return and continue paths), so last_sync_at advances even on a no-op sync",
+        "When the early-return condition holds, return the response immediately after that write with PatchesMerged=[] and RebuildTriggered=false, still carrying OriginFetched/patches_synced/patches_diverged as already computed",
+        "When it does not hold, fall through to the existing ListPatches + merge-upstream-detection loop unchanged in logic; add TS-02-20 to prove a branch fast-forwarded this sync is detected merged when its new tip is now an ancestor of upstream",
+        "Change the auto-rebuild gate from the old implicit always-true condition to enqueue whenever upstream advanced OR at least one patch advanced, keeping the existing AUTO_REBUILD_AFTER_SYNC check, group key and duplicate-suppression logic exactly as-is",
+        "Run go test ./internal/carrypatch/... -count=1 until TS-02-17..TS-02-20 pass and the existing pre-spec sync tests in sync_extension_test.go still pass"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/sync_extension_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Add origin_fetched, patches_synced and patches_diverged to the sync response",
+      "criteria": [
+        "02-REQ-5"
+      ],
+      "tests": [
+        "TS-02-21",
+        "TS-02-22",
+        "TS-02-23",
+        "TS-02-24",
+        "TS-02-25"
+      ],
+      "steps": [
+        "Write TS-02-21..TS-02-25 and confirm they fail",
+        "Add to api.go: PatchesSynced []PatchSyncEntry (json patches_synced, omitempty) and PatchesDiverged []string (json patches_diverged, omitempty) on CarryPatchSyncResponse, plus a PatchSyncEntry struct with BranchName, Action, State, LocalSHA, OriginSHA, and ReplacedSHA (json replaced_sha, omitempty)",
+        "In sync_handlers.go, when patchBranchSource is origin, map the Task 3 []patchSyncOutcome into resp.PatchesSynced (one entry per considered patch, replaced_sha set only when Action=='replaced'); when patchBranchSource is hub, leave resp.PatchesSynced nil so the omitempty tag drops the key entirely",
+        "Populate resp.PatchesDiverged: under both divergence policies in origin mode, set it to an empty (non-nil) slice by default; under 'report', add the branch name of every outcome recorded diverged this sync so the array is populated while remaining empty under 'replace'; leave it unset (nil) only in hub mode where patches_synced is also absent",
+        "Update asExtras() in sync_handlers.go to include origin_fetched always, and patches_synced/patches_diverged only when non-nil, so NewCarryPatchSyncHook's callers see the same shape as handleCarryPatchSyncEndpoint's direct JSON response",
+        "In docs/api.md's carry-patch sync section, add rows for origin_fetched, patches_synced (with its object shape) and patches_diverged, and add a 502 origin fetch failed row next to the existing error conditions",
+        "In docs/openapi.yaml's CarryPatchSyncResponse schema, add origin_fetched (boolean), patches_synced (array of objects: branch_name, action, state, local_sha, origin_sha, replaced_sha), and patches_diverged (array of strings), and document the 502 response for the sync path",
+        "Run go test ./internal/carrypatch/... -count=1 until TS-02-21..TS-02-25 pass"
+      ],
+      "touches": [
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/sync_extension_test.go",
+        "docs/api.md",
+        "docs/openapi.yaml"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Expose the three fork-sync fields on the patch API and patch-status dashboard",
+      "criteria": [
+        "02-REQ-6.4",
+        "02-REQ-6.5"
+      ],
+      "tests": [
+        "TS-02-28",
+        "TS-02-29"
+      ],
+      "steps": [
+        "Write TS-02-28 and TS-02-29 and confirm they fail",
+        "In internal/workspace/patch_store.go, add OriginSyncState, OriginSHA, OriginSyncedAt (*string) to the Patch struct, extend patchSelectColumns and scanPatch to read them, and extend patchResponse to emit origin_sync_state/origin_sha/origin_synced_at as their string value or null, matching the existing upstream_pr_url null convention",
+        "Add handleGetPatch(db *sql.DB) echo.HandlerFunc to internal/workspace/patch_handlers.go mirroring handleUpdatePatch's auth/lookup/getPatch pattern, returning 404 when getPatch returns nil and patchResponse(p) with 200 otherwise",
+        "Register api.GET(\"/workspaces/:slug/patches/:id\", handleGetPatch(db)) in internal/workspace/routes.go's RegisterRoutes, alongside the existing PATCH/DELETE patch routes",
+        "In internal/carrypatch/api.go's handlePatchStatus, extend the patches SELECT query and its Patch scan to also select origin_sync_state, origin_sha, origin_synced_at; add the same three fields to PatchStatusEntry and populate them per patch",
+        "Add PatchesDiverged int and PatchesMissingOnOrigin int to PatchStatusSummary and compute them in the same summary-building loop as Active/Conflict/Disabled, counting entries whose OriginSyncState is diverged or missing_on_origin respectively",
+        "In docs/api.md's Patch Response Schema table and the GET /patch-status response section, add rows for origin_sync_state, origin_sha, origin_synced_at, patches_diverged and patches_missing_on_origin",
+        "In docs/openapi.yaml, add the same three fields to the Patch schema and to the patch-status per-patch entry schema, and the two new counts to the patch-status summary schema",
+        "Run go test ./internal/workspace/... ./internal/carrypatch/... -count=1 until TS-02-28 and TS-02-29 pass"
+      ],
+      "touches": [
+        "internal/workspace/patch_store.go",
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/routes.go",
+        "internal/carrypatch/api.go",
+        "docs/api.md",
+        "docs/openapi.yaml"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Emit hub.patch.sync and hub.patch.replace audit events for fork-authoritative sync",
+      "criteria": [
+        "02-REQ-7"
+      ],
+      "tests": [
+        "TS-02-30",
+        "TS-02-31"
+      ],
+      "steps": [
+        "Write TS-02-30 and TS-02-31 (using a fake audit.Emitter recording Emit calls, and one whose Emit returns an error) and confirm they fail",
+        "Add Audit audit.Emitter to SyncAPIConfig in api.go, following the exact pattern of RebuildHandler.Audit/RebuildAPIConfig.Audit",
+        "Add an emitSyncAudit helper in sync_handlers.go mirroring RebuildHandler.emitRebuildAudit: nil-safe on cfg.Audit, logs and swallows any error from Emit",
+        "After the Task 3 fork-refresh step completes in origin mode, group the outcomes by category (created, fast_forwarded, replaced, diverged, missing_on_origin branch-name lists) and emit one hub.patch.sync event (actor type system, resource type patch, metadata origin_fetched/created/fast_forwarded/replaced/diverged/missing_on_origin)",
+        "For every outcome with Action=='replaced', additionally emit a hub.patch.replace event carrying branch_name, the replaced local SHA and the new origin SHA, before or alongside the batch event",
+        "Wire cfg.Audit through in cmd/af-hub/main.go's carrypatch.SyncAPIConfig{} literal (Audit: auditEmitter), matching how rebuildHandler.Audit and mergeCfg.Audit are wired",
+        "Confirm a nil cfg.Audit or an Emit error never changes the HTTP status, response body, or DB writes already produced by Tasks 1-5 (TS-02-31)",
+        "Run go test ./internal/carrypatch/... -count=1 until TS-02-30 and TS-02-31 pass"
+      ],
+      "touches": [
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/handlers_audit_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "integration",
+      "title": "Verify fork-authoritative sync end to end: creation, divergence-replace, and hub-mode unaffected",
+      "tests": [
+        "TS-02-32",
+        "TS-02-33",
+        "TS-02-34"
+      ],
+      "steps": [
+        "Write TS-02-32, TS-02-33 and TS-02-34 as //go:build smoke tests in internal/carrypatch (extending smoke_test.go or a new smoke_fork_sync_test.go) against real git repositories, the real jobqueue, real SQLite and the real audit emitter, per each test's real_components; confirm they pass",
+        "Trace 02-PATH-1 through the real code: POST /sync -> handleCarryPatchSyncEndpoint -> runCarryPatchSync -> upstream fetch -> PATCH_BRANCH_SOURCE=origin read -> DefaultOriginFetchFunc -> refreshPatchBranchesFromOrigin creates the branch -> SetOriginSyncState -> emitSyncAudit hub.patch.sync -> rebuild enqueue -> GET /patch-status reflects origin_sync_state and summary counts; confirm no stub remains on this path",
+        "Trace 02-PATH-2 the same way for the replace outcome: divergence detection via GitRunner.IsAncestor on resolved SHAs -> refs/hub/replaced/<branch> write -> refs/heads/<branch> move -> hub.patch.replace and hub.patch.sync audit events -> persisted origin_sync_state/origin_sha/origin_synced_at -> patches_synced in the response",
+        "Trace 02-PATH-3: PATCH_BRANCH_SOURCE left unset -> ClearOriginSyncState called for every non-deleted patch -> origin fetch and fork-refresh skipped -> last_sync_at updated on a no-op sync -> GET /workspaces/:slug/patches shows null fork-sync fields",
+        "For every criterion carrying a contract (02-REQ-2.2, 02-REQ-2.4, 02-REQ-5.5, 02-REQ-7.3), confirm the producer's result (the 502 response body/state snapshot, the OriginFetched flag, the empty patches_diverged array, the unaffected sync outcome under a nil/erroring emitter) is actually consumed by production code in sync_handlers.go and api.go, not only asserted in tests",
+        "Confirm cmd/af-hub/main.go's carrypatch.SyncAPIConfig{} literal really carries OriginFetch, ResolveOriginAuth and Audit in the running binary's wiring, not just in test helpers",
+        "Grep internal/carrypatch (sync_handlers.go, origin_fetch.go, fork_refresh.go, api.go, wire.go), internal/workspace (schema.go, patch_store.go, patch_handlers.go, routes.go) and cmd/af-hub/main.go for TODO and panic(\"not implemented\") and remove any that remain",
+        "Update docs/carry_patch_workflow.md's Remotes table row for origin to read as fork, push target, and also read from directly when PATCH_BRANCH_SOURCE=origin; add a new Where patch branches live section explaining PATCH_BRANCH_SOURCE/PATCH_DIVERGENCE_POLICY, and extend the Sync algorithm section with the fork-refresh step between upstream fetch and merge detection",
+        "Run make test and make lint, then go test -tags smoke ./internal/carrypatch/... -count=1 against real git repositories, and confirm all pass"
+      ],
+      "touches": [
+        "internal/carrypatch/smoke_test.go",
+        "internal/carrypatch/smoke_fork_sync_test.go",
+        "docs/carry_patch_workflow.md",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "go test -tags smoke ./internal/carrypatch/... -count=1 passes against real git repositories",
+        "make test passes",
+        "make lint passes"
+      ],
+      "state": "pending"
+    }
+  ]
+}

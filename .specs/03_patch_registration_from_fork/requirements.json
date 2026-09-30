@@ -1,0 +1,389 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "03",
+  "spec_name": "patch_registration_from_fork",
+  "schema_version": 2,
+  "introduction": "Patch registration (POST /workspaces/:slug/patches and afc patch add) resolves a submitted branch_name against a local branch, the fork's tracking ref, or a single-branch fetch from the fork, so a branch that exists on GitHub but has no local ref yet in the hub's trunk clone can be registered as a patch without --skip-branch-check, in either PATCH_BRANCH_SOURCE mode, with the resolving path recorded in the hub.patch.create audit event.",
+  "glossary": {
+    "PATCH_BRANCH_SOURCE": "Workspace variable, delivered by 02_fork_authoritative_sync, selecting the authority for patch branches: 'hub' (default) or 'origin'.",
+    "branch-check hook": "The BranchCheckFunc registered from main.go (internal/workspace/branch_check_hook.go) that internal/workspace calls to validate branch_name at registration time, extended by this spec from a single rev-parse into the three-step resolution.",
+    "branch_resolution": "The path that found a submitted branch_name during registration: local (already refs/heads/<name>), origin_tracking (promoted from refs/remotes/origin/<name>), or origin_fetch (found only after a single-branch fetch from the fork).",
+    "carry-patch workspace": "A workspace in workspace_mode 'carry_patch', with a trunk clone holding an 'origin' remote (the fork) and an 'upstream' remote.",
+    "single-branch fetch": "A go-git fetch of exactly one refspec, +refs/heads/<name>:refs/remotes/origin/<name>, from the origin remote, attempted only in PATCH_BRANCH_SOURCE=origin mode when neither ref exists locally.",
+    "tracking ref": "refs/remotes/origin/<name>, the fork's copy of a branch as last fetched into the trunk clone.",
+    "wslock": "The per-workspace mutual-exclusion lock (internal/wslock) that sync, reclone, rebuild and this spec's ref-writing resolution steps acquire before touching the trunk clone."
+  },
+  "requirements": [
+    {
+      "id": "03-REQ-1",
+      "title": "Three-step branch resolution order",
+      "rationale": "A branch that already exists on the fork must be registrable without first being pushed through the hub, in both authority modes, while the common already-local case stays exactly as fast and unlocked as it is today.",
+      "criteria": [
+        {
+          "id": "03-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a registration request's branch_name resolves refs/heads/<name> to an existing ref in the trunk clone and skip_branch_check is not true",
+          "system": "branch-check hook",
+          "action": "resolve the branch under resolution local without writing any ref, acquiring the workspace lock, or performing a fetch",
+          "contract": "the rev-parse --verify check succeeds and registration proceeds using resolution local"
+        },
+        {
+          "id": "03-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "a registration request's branch_name has no refs/heads/<name> but refs/remotes/origin/<name> exists in the trunk clone, and skip_branch_check is not true",
+          "system": "branch-check hook",
+          "action": "create refs/heads/<name> at the tracking ref's commit using git update-ref refs/heads/<name> <tracking-ref sha>, never checkout or git branch, and resolve the branch under resolution origin_tracking",
+          "contract": "refs/heads/<name> points at the same commit as refs/remotes/origin/<name>; the trunk's working tree and current HEAD are unchanged"
+        },
+        {
+          "id": "03-REQ-1.3",
+          "pattern": "complex_event",
+          "condition": "a registration request's branch_name has neither refs/heads/<name> nor refs/remotes/origin/<name> in the trunk clone and skip_branch_check is not true",
+          "guard": "PATCH_BRANCH_SOURCE resolves to origin for the request's workspace",
+          "system": "branch-check hook",
+          "action": "fetch +refs/heads/<name>:refs/remotes/origin/<name> from the origin remote using the credentials workspace.ResolveCloneAuth resolves, then repeat the refs/remotes/origin/<name> check and, when it now exists, create refs/heads/<name> as in 03-REQ-1.2 and resolve the branch under resolution origin_fetch",
+          "contract": "on success, refs/heads/<name> and refs/remotes/origin/<name> both exist at the fetched commit and registration proceeds using resolution origin_fetch"
+        },
+        {
+          "id": "03-REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "a registration request begins branch resolution and skip_branch_check is not true",
+          "system": "branch-check hook",
+          "action": "read PATCH_BRANCH_SOURCE fresh for that request rather than reusing a value read for an earlier request",
+          "contract": "two requests for the same workspace made after PATCH_BRANCH_SOURCE changes observe the new value on the later request"
+        },
+        {
+          "id": "03-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "reading PATCH_BRANCH_SOURCE for a registration request is unset or the read itself fails",
+          "system": "branch-check hook",
+          "action": "treat PATCH_BRANCH_SOURCE as hub for that request's resolution, matching how every other on/off carry-patch workspace variable in this codebase defaults on a read error",
+          "contract": "resolution proceeds through 03-REQ-1.1 and 03-REQ-1.2 only; 03-REQ-1.3's fetch is not attempted"
+        },
+        {
+          "id": "03-REQ-1.6",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE resolves to hub for the request",
+          "system": "branch-check hook",
+          "action": "skip the single-branch fetch of 03-REQ-1.3 even when neither refs/heads/<name> nor refs/remotes/origin/<name> exists locally",
+          "contract": "no network call is made and no refs/remotes/origin/<name> is created by registration in hub mode"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-2",
+      "title": "Combined not-found failure",
+      "rationale": "Callers need one predictable failure shape regardless of which of the three attempts ran, naming both places checked.",
+      "criteria": [
+        {
+          "id": "03-REQ-2.1",
+          "pattern": "unwanted",
+          "condition": "none of the local, origin_tracking, and (in origin mode) origin_fetch resolutions of 03-REQ-1 find a single-object request's branch_name",
+          "system": "hub API",
+          "action": "reject the request without inserting a patches row",
+          "contract": "HTTP 400 with body {\"error\": \"branch does not exist in repository or on origin\"}; any local branch created by an earlier successful step for this same request is not applicable since none succeeded"
+        },
+        {
+          "id": "03-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "none of the local, origin_tracking, and (in origin mode) origin_fetch resolutions of 03-REQ-1 find element i's branch_name during batch validation",
+          "system": "hub API",
+          "action": "reject the whole batch without inserting any row from it",
+          "contract": "HTTP 400 with body {\"error\": \"patch[<i>]: branch does not exist in repository or on origin\"}, where <i> is the failing element's index"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-3",
+      "title": "skip_branch_check bypasses all resolution",
+      "rationale": "skip_branch_check must keep its exact current meaning so existing callers relying on it are unaffected.",
+      "criteria": [
+        {
+          "id": "03-REQ-3.1",
+          "pattern": "state_driven",
+          "condition": "skip_branch_check is true on a registration request, single or batch element",
+          "system": "hub API",
+          "action": "perform none of 03-REQ-1's ref reads, branch creation, or fetch for that request or element",
+          "contract": "no ref is read or written, no network call is made, and validation proceeds directly to the existing duplicate and position checks"
+        },
+        {
+          "id": "03-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "for any request with skip_branch_check true, produce the same branch-resolution outcome (none attempted) regardless of PATCH_BRANCH_SOURCE and regardless of whether the request is a single object or a batch element"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-4",
+      "title": "Workspace lock around mutating resolution steps",
+      "rationale": "Creating a local branch or fetching from the fork writes refs and touches the network, so it needs the same per-workspace exclusion sync, reclone and rebuild already require, while the unchanged read-only fast path stays unlocked.",
+      "criteria": [
+        {
+          "id": "03-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "registration is about to perform 03-REQ-1.2's branch creation or 03-REQ-1.3's fetch and branch creation for a branch_name",
+          "system": "branch-check hook",
+          "action": "acquire the workspace's wslock before writing any ref or starting the fetch",
+          "contract": "wslock.TryLock is called before the first ref write or network call of the mutating step"
+        },
+        {
+          "id": "03-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "wslock.TryLock for the workspace fails because another operation already holds it",
+          "system": "hub API",
+          "action": "abort the registration request before any git write or database write",
+          "contract": "HTTP 409 with error_type workspace_busy; no ref is written and no patches row is inserted"
+        },
+        {
+          "id": "03-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "the resolution phase of a request or batch finishes, whether it found the branch or not",
+          "system": "branch-check hook",
+          "action": "release the workspace lock before the patches row is inserted",
+          "contract": "the lock is not held while addPatchWithPosition or addPatchesBatch runs"
+        },
+        {
+          "id": "03-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "branch-check hook",
+          "action": "take no workspace lock for 03-REQ-1.1's rev-parse --verify check, exactly as the pre-existing check does today"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-5",
+      "title": "Batch resolution semantics",
+      "rationale": "Batch registration must resolve every element before any row is inserted while keeping its existing fail-fast, all-or-nothing behaviour, and must not roll back a harmless local branch a successful earlier element left behind.",
+      "criteria": [
+        {
+          "id": "03-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "handleAddPatchBatch validates a submitted array of patch objects",
+          "system": "hub API",
+          "action": "apply 03-REQ-1's resolution to every element, in submitted order, under one workspace-lock acquisition, before building any row to insert",
+          "contract": "the lock from 03-REQ-4.1 is acquired at most once for the whole batch's resolution phase"
+        },
+        {
+          "id": "03-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "resolution under 03-REQ-2.2 fails for element i of a batch",
+          "system": "hub API",
+          "action": "stop resolving at element i without resolving or inserting any later element",
+          "contract": "the 400 response names index i; no row for any element of the batch is inserted"
+        },
+        {
+          "id": "03-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "leave in place any local branch that 03-REQ-1.2 or 03-REQ-1.3 created for an element earlier in the batch than one that later fails resolution"
+        },
+        {
+          "id": "03-REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "every element of a batch resolves successfully",
+          "system": "hub API",
+          "action": "release the workspace lock before performing the existing atomic insert of all rows",
+          "contract": "addPatchesBatch runs without the workspace lock held"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-6",
+      "title": "Audit metadata for the resolved branch path",
+      "rationale": "hub.patch.create must let an operator see which of the three paths, if any, resolved a registered patch's branch, in both the single and batch call sites.",
+      "criteria": [
+        {
+          "id": "03-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "handleAddPatchSingle inserts a patch whose branch was resolved by 03-REQ-1",
+          "system": "hub API",
+          "action": "include branch_resolution, one of local, origin_tracking or origin_fetch, in the hub.patch.create event's metadata alongside the existing branch_name and position",
+          "contract": "the emitted event's metadata contains all three keys"
+        },
+        {
+          "id": "03-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "handleAddPatchBatch inserts the rows of a resolved batch",
+          "system": "hub API",
+          "action": "emit one hub.patch.create event per inserted patch, each carrying that patch's branch_name, position and branch_resolution",
+          "contract": "the number of hub.patch.create events emitted equals the number of rows inserted by the batch"
+        },
+        {
+          "id": "03-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "skip_branch_check bypassed resolution for an inserted patch under 03-REQ-3",
+          "system": "hub API",
+          "action": "omit branch_resolution from that patch's hub.patch.create metadata",
+          "contract": "the metadata object has no branch_resolution key for that event"
+        },
+        {
+          "id": "03-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "for any inserted patch whose branch was resolved by 03-REQ-1, record a branch_resolution value equal to the specific one of local, origin_tracking or origin_fetch that found its branch_name"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-7",
+      "title": "Credential-resolution failure is distinct from not-found",
+      "rationale": "A secrets-store failure while resolving fork credentials for the single-branch fetch is an infrastructure error, not evidence the branch is missing, and must fail loudly the same way sync's equivalent failure already does.",
+      "criteria": [
+        {
+          "id": "03-REQ-7.1",
+          "pattern": "unwanted",
+          "condition": "resolving the fork's credentials for 03-REQ-1.3's fetch fails with a genuine secrets-store error, not the absence of configured credentials",
+          "system": "hub API",
+          "action": "abort the registration request without attempting the fetch and without inserting any patches row",
+          "contract": "HTTP 502 with message \"credential resolution failed\"; for a batch, the response also identifies the failing element's index; no ref is written"
+        },
+        {
+          "id": "03-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "branch-check hook",
+          "action": "treat the absence of configured fork credentials (no GIT_PAT and no GIT_USERNAME/GIT_PASSWORD) as resolving to no auth for the fetch, identically to workspace.ResolveCloneAuth's existing contract, rather than as a credential-resolution failure"
+        },
+        {
+          "id": "03-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "03-REQ-1.3's fetch itself fails for any reason other than credential resolution, including the branch being absent on the fork or a transient network error",
+          "system": "branch-check hook",
+          "action": "treat the failure as step origin_fetch not resolving the branch and continue to 03-REQ-2's not-found failure rather than returning 502",
+          "contract": "the request's eventual failure, if any, is the HTTP 400 of 03-REQ-2.1 or 03-REQ-2.2, never a 502"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-8",
+      "title": "Documentation of the resolution order and new failure message",
+      "rationale": "Callers reading the API and workflow docs must find the three-step resolution and the corrected 400 message rather than the retired single-check behaviour.",
+      "criteria": [
+        {
+          "id": "03-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "describe, in docs/api.md's POST /api/v1/workspaces/:slug/patches section, the three-step resolution order of 03-REQ-1 and the 400 message text of 03-REQ-2"
+        },
+        {
+          "id": "03-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "describe, in docs/openapi.yaml's addPatches operation, the same three-step resolution order and 400 message text as docs/api.md"
+        },
+        {
+          "id": "03-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "replace docs/carry_patch_workflow.md's \"3. Add patches\" statement that branches are validated against the workspace repository at add time with one or two sentences describing the tracking-ref promotion and, in origin mode, the single-branch fetch fallback"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "03-PATH-1",
+      "title": "Registering a patch whose branch exists only as the fork's tracking ref",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs afc patch add with a branch_name that was fetched into refs/remotes/origin/<name> by the initial clone but never became a local branch"
+        },
+        {
+          "actor": "hub API",
+          "action": "validates the carry_patch workspace and invokes the branch-check hook instead of the old rev-parse-only check"
+        },
+        {
+          "actor": "branch-check hook",
+          "action": "finds no refs/heads/<name>, finds refs/remotes/origin/<name>, acquires the workspace lock, and creates refs/heads/<name> at the tracking ref's commit via update-ref, resolution origin_tracking"
+        },
+        {
+          "actor": "hub API",
+          "action": "releases the lock, inserts the patch row, and emits a hub.patch.create audit event carrying branch_resolution=origin_tracking"
+        },
+        {
+          "actor": "developer",
+          "action": "receives HTTP 201 with the created patch from afc patch add"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-2",
+      "title": "Origin-mode single-branch fetch resolves a branch pushed to the fork moments ago",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "pushes a new branch directly to the GitHub fork without pushing it through the hub's git server"
+        },
+        {
+          "actor": "client",
+          "action": "calls POST /workspaces/:slug/patches with that branch_name on a workspace whose PATCH_BRANCH_SOURCE is origin"
+        },
+        {
+          "actor": "branch-check hook",
+          "action": "finds neither refs/heads/<name> nor refs/remotes/origin/<name>, acquires the workspace lock, and fetches +refs/heads/<name>:refs/remotes/origin/<name> from origin using the credentials workspace.ResolveCloneAuth resolves"
+        },
+        {
+          "actor": "branch-check hook",
+          "action": "re-checks the tracking ref, finds it now present, creates refs/heads/<name> via update-ref, resolution origin_fetch, and releases the lock"
+        },
+        {
+          "actor": "hub API",
+          "action": "inserts the patch row and returns HTTP 201, with the hub.patch.create audit event recording branch_resolution=origin_fetch"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-3",
+      "title": "Batch registration is all-or-nothing when one element's branch cannot be found anywhere",
+      "steps": [
+        {
+          "actor": "client",
+          "action": "calls POST /workspaces/:slug/patches with a batch array of three patch objects"
+        },
+        {
+          "actor": "hub API",
+          "action": "resolves element 0 as local (already a local branch) and element 1 as origin_tracking, creating a local branch for element 1 under the workspace lock"
+        },
+        {
+          "actor": "hub API",
+          "action": "fails to resolve element 2's branch under any of the three attempts and returns HTTP 400 naming patch[2], inserting no row for the batch"
+        },
+        {
+          "actor": "client",
+          "action": "observes that the local branch created for element 1 was left in place despite the batch failing"
+        },
+        {
+          "actor": "client",
+          "action": "retries the batch with element 2 corrected; the hub inserts all three rows atomically and emits three hub.patch.create audit events, each with its own branch_resolution"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-4",
+      "title": "A concurrent sync holding the workspace lock defers registration's mutation attempt",
+      "steps": [
+        {
+          "actor": "scheduled sync",
+          "action": "acquires the workspace's wslock while fetching upstream and, in origin mode, the fork"
+        },
+        {
+          "actor": "client",
+          "action": "calls POST /workspaces/:slug/patches for a branch that requires creating a local branch from the tracking ref"
+        },
+        {
+          "actor": "branch-check hook",
+          "action": "fails to acquire the workspace lock and returns without reading or writing any ref"
+        },
+        {
+          "actor": "hub API",
+          "action": "rejects the request with HTTP 409 and error_type workspace_busy, writing no ref and inserting no patch row"
+        },
+        {
+          "actor": "client",
+          "action": "retries after the sync completes, and the same request now succeeds with resolution origin_tracking"
+        }
+      ]
+    }
+  ]
+}

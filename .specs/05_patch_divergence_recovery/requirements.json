@@ -1,0 +1,532 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "05",
+  "spec_name": "patch_divergence_recovery",
+  "schema_version": 2,
+  "introduction": "Patch divergence recovery gives a fork-authoritative carry-patch workspace a manual, on-demand way to force a registered patch branch onto its fork's tip, backs up whatever it discards under a hub-protected git namespace so an operator can fetch it back, surfaces that backup on the patch-status dashboard, gives schedulers a distinct exit code when a sync left patches diverged, and updates the workflow docs and ADR to recommend the fork-authoritative model first.",
+  "glossary": {
+    "PATCH_BRANCH_SOURCE": "Workspace variable, delivered by 02_fork_authoritative_sync, selecting the authority for patch branches: 'hub' (default) or 'origin'.",
+    "PATCH_DIVERGENCE_POLICY": "Workspace variable, delivered by 02_fork_authoritative_sync, selecting how a diverged patch branch is handled during sync in origin mode: 'replace' (default) or 'report'.",
+    "backup ref": "refs/hub/replaced/<branch>, written with a patch branch's pre-replacement local tip before that branch is force-moved to the fork's tip, by either an automatic sync replace or this spec's reset-to-origin endpoint.",
+    "patches_diverged": "The sync response array, delivered by 02_fork_authoritative_sync, listing branch names left diverged under PATCH_DIVERGENCE_POLICY=report.",
+    "replaced_sha": "The current tip of a patch's refs/hub/replaced/<branch> backup ref, exposed on the reset-to-origin response and the patch-status dashboard.",
+    "reset-to-origin": "The manual recovery action this spec adds: force a registered patch branch's local ref to its refs/remotes/origin/<branch> tip on demand, regardless of PATCH_DIVERGENCE_POLICY.",
+    "trunk": "The hub-side git clone of a workspace, holding an 'origin' remote (the fork) and an 'upstream' remote, that every carry-patch git operation runs against.",
+    "wslock": "The per-workspace advisory lock (wslock.TryLock) that serializes git-mutating operations on a single workspace's trunk."
+  },
+  "requirements": [
+    {
+      "id": "05-REQ-1",
+      "title": "reset-to-origin request gating",
+      "rationale": "A manual, unconditional replace is destructive enough that it must be refused before touching any ref unless the caller is authorized and 'the fork's tip' is a meaningful target for this workspace.",
+      "criteria": [
+        {
+          "id": "05-REQ-1.1",
+          "pattern": "unwanted",
+          "condition": "the caller provides no valid API key, admin token, or PAT credential on POST /workspaces/:slug/patches/:id/reset-to-origin",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request without performing any git or database operation",
+          "contract": "HTTP 401 with an authentication-required error body"
+        },
+        {
+          "id": "05-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "the caller authenticates with a PAT lacking the patches:write scope",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request without performing any git or database operation",
+          "contract": "HTTP 403 with a missing-scope error body"
+        },
+        {
+          "id": "05-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the workspace slug does not exist or the caller is not its owner and is not using an admin token",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request the same way authorizeWorkspace already rejects it for every other carry-patch endpoint",
+          "contract": "HTTP 404, identical for a nonexistent workspace and a non-owner's workspace (anti-enumeration)"
+        },
+        {
+          "id": "05-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "the target workspace's workspace_mode is not carry_patch",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request",
+          "contract": "HTTP 400 with message 'reset-to-origin is only supported for carry_patch workspaces'"
+        },
+        {
+          "id": "05-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the target workspace's status is not active",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request",
+          "contract": "HTTP 400 with message 'workspace is not active'"
+        },
+        {
+          "id": "05-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the target workspace's clone_status is not ready",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request",
+          "contract": "HTTP 400 with message 'workspace clone is not ready'"
+        },
+        {
+          "id": "05-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "the workspace's PATCH_BRANCH_SOURCE variable does not currently read the exact string 'origin'",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request using apikit.WriteAPIErrorWithType with error type patch_branch_source_mismatch",
+          "contract": "HTTP 400 with message 'reset-to-origin requires PATCH_BRANCH_SOURCE=origin' and error type patch_branch_source_mismatch"
+        },
+        {
+          "id": "05-REQ-1.8",
+          "pattern": "ubiquitous",
+          "system": "reset-to-origin endpoint",
+          "action": "for any value of PATCH_DIVERGENCE_POLICY, proceed with the same unconditional replace once every other gate of this requirement passes, without reading PATCH_DIVERGENCE_POLICY at all"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-2",
+      "title": "Patch lookup and eligibility",
+      "rationale": "The patch being reset must be resolved unambiguously within its own workspace and must not be one that recovery would corrupt (soft-deleted) or that registration should never have allowed to exist (the integration branch).",
+      "criteria": [
+        {
+          "id": "05-REQ-2.1",
+          "pattern": "unwanted",
+          "condition": "no patch with the given :id exists in the given :slug's workspace, including when :id identifies a patch belonging to a different workspace",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request",
+          "contract": "HTTP 404 with message 'patch not found'"
+        },
+        {
+          "id": "05-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the looked-up patch's status is 'deleted'",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request",
+          "contract": "HTTP 409 with message 'patch is soft-deleted; restore it first', the same message PATCH .../patches/:id already uses for the same condition"
+        },
+        {
+          "id": "05-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the looked-up patch's branch_name equals the workspace's integration_branch",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request",
+          "contract": "HTTP 400 with message 'cannot reset the integration branch'"
+        },
+        {
+          "id": "05-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "reset-to-origin endpoint",
+          "action": "for any patch whose status is active, conflict, disabled, or merged_upstream, proceed to the reset operation"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-3",
+      "title": "The reset operation",
+      "rationale": "Discarding a branch's hub-side history must always back it up first, must never race a concurrent operation on the same workspace, and must leave the working tree and patch record consistent with the new tip.",
+      "criteria": [
+        {
+          "id": "05-REQ-3.1",
+          "pattern": "unwanted",
+          "condition": "wslock.TryLock(slug) fails to acquire the per-workspace lock",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request without reading or writing any ref",
+          "contract": "HTTP 409 with message 'workspace_busy', the same message handleRollbackRebuild already uses"
+        },
+        {
+          "id": "05-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "refs/remotes/origin/<branch> does not exist in the trunk once the lock is held",
+          "system": "reset-to-origin endpoint",
+          "action": "reject the request without fetching and without writing any ref",
+          "contract": "HTTP 400 with message 'branch not found on origin; sync the workspace first'"
+        },
+        {
+          "id": "05-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "refs/heads/<branch> exists in the trunk when a reset-to-origin call resolves refs/remotes/origin/<branch>",
+          "system": "reset-to-origin endpoint",
+          "action": "write refs/heads/<branch>'s current SHA to refs/hub/replaced/<branch> via update-ref, overwriting any earlier backup for that branch, before moving the local branch"
+        },
+        {
+          "id": "05-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "refs/heads/<branch> does not exist in the trunk when a reset-to-origin call resolves refs/remotes/origin/<branch>",
+          "system": "reset-to-origin endpoint",
+          "action": "skip writing a backup ref and create refs/heads/<branch> directly at the origin tip via update-ref"
+        },
+        {
+          "id": "05-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "reset-to-origin endpoint",
+          "action": "for any reset-to-origin call whose origin ref resolves, move refs/heads/<branch> to the origin tip using update-ref rather than checkout or reset, even when the local tip already equals the origin tip"
+        },
+        {
+          "id": "05-REQ-3.6",
+          "pattern": "event_driven",
+          "condition": "<branch> is the trunk's currently checked-out branch, per git symbolic-ref --short -q HEAD, when its ref is moved by a reset-to-origin call",
+          "system": "reset-to-origin endpoint",
+          "action": "run HardReset on the trunk's working tree to the branch's new tip immediately after the ref move"
+        },
+        {
+          "id": "05-REQ-3.7",
+          "pattern": "event_driven",
+          "condition": "a reset-to-origin call completes moving refs/heads/<branch> to the origin tip",
+          "system": "reset-to-origin endpoint",
+          "action": "update the patch row's origin_sync_state to in_sync, origin_sha to the origin tip, and origin_synced_at to the current time, leaving status, position, description, and upstream_pr_url unchanged"
+        },
+        {
+          "id": "05-REQ-3.8",
+          "pattern": "event_driven",
+          "condition": "a reset-to-origin call completes successfully",
+          "system": "reset-to-origin endpoint",
+          "action": "emit one hub.patch.replace audit event carrying the branch name, the discarded local SHA when a backup was written, and the new origin SHA, with the actor attributed to the calling credential rather than system"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-4",
+      "title": "reset-to-origin response shape",
+      "rationale": "The caller needs the patch record back in the same shape every other patch endpoint uses, plus enough information to know whether and where a backup was written, without internal/carrypatch depending on internal/workspace's response types.",
+      "criteria": [
+        {
+          "id": "05-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a reset-to-origin call completes successfully",
+          "system": "reset-to-origin endpoint",
+          "action": "respond with the patch record in the same JSON shape GET and PATCH .../patches already return, including origin_sync_state, origin_sha, and origin_synced_at",
+          "contract": "HTTP 200 OK"
+        },
+        {
+          "id": "05-REQ-4.2",
+          "pattern": "optional",
+          "condition": "a backup ref was written for this call, i.e. the local branch existed before the reset",
+          "system": "reset-to-origin endpoint",
+          "action": "include replaced_sha in the response body, set to the SHA written to refs/hub/replaced/<branch> in this call"
+        },
+        {
+          "id": "05-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "reset-to-origin endpoint",
+          "action": "for any reset-to-origin call where no backup ref was written, omit replaced_sha from the response body entirely rather than emitting it as null or empty"
+        },
+        {
+          "id": "05-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "reset-to-origin endpoint",
+          "action": "build its response from a direct query against the patches table inside internal/carrypatch, not from internal/workspace's patchResponse or any type shared between the two packages"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-5",
+      "title": "afc patch reset-to-origin CLI command",
+      "rationale": "An operator recovering from a divergence should not need to hand-craft an HTTP request; the command must behave like its closest sibling, afc patch restore.",
+      "criteria": [
+        {
+          "id": "05-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "an operator runs afc patch reset-to-origin <workspace-slug> <patch-id>",
+          "system": "afc CLI",
+          "action": "send POST /workspaces/:slug/patches/:id/reset-to-origin with no request body and print the returned patch JSON in the same shape afc patch restore prints",
+          "contract": "process exit code 0"
+        },
+        {
+          "id": "05-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "the reset-to-origin request returns any non-2xx response, including patch not found, workspace not found, a PATCH_BRANCH_SOURCE mismatch, a branch missing on origin, a soft-deleted patch, a busy workspace, or a network error",
+          "system": "afc CLI",
+          "action": "print the error and exit",
+          "contract": "process exit code 1"
+        },
+        {
+          "id": "05-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "for any invocation of afc patch reset-to-origin, accept exactly two positional arguments — workspace-slug and patch-id — and no request-body flags, matching afc patch restore's argument shape"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-6",
+      "title": "refs/hub/replaced/* backup namespace protection",
+      "rationale": "A backup an operator relies on to recover a discarded tip must be readable with a plain fetch and must never be writable by a client push, or it could be spoofed or overwritten before it is used.",
+      "criteria": [
+        {
+          "id": "05-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "for any ref under refs/hub/replaced/* that exists in a workspace's trunk, advertise and serve it to a plain git fetch exactly like any other ref, requiring no hub API or shell access to retrieve it"
+        },
+        {
+          "id": "05-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "an incoming push's target ref name matches the refs/hub/replaced/* prefix, for any workspace regardless of its workspace_mode or PATCH_BRANCH_SOURCE",
+          "system": "hub git server",
+          "action": "reject that ref's update using the same per-ref pre-receive interception 04_patch_branch_push_protection introduces, leaving the ref's current value in the trunk unchanged",
+          "contract": "the client's report-status marks that ref ng with the message 'refs/hub/replaced/* is a hub-managed backup namespace and cannot be pushed to'"
+        },
+        {
+          "id": "05-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "hub git server",
+          "action": "for any push containing both a refs/hub/replaced/* target and other ref updates, apply every non-rejected ref update normally in the same push, under the same partial-acceptance behavior as any other pre-receive rejection"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-7",
+      "title": "Backup ref retention",
+      "rationale": "A backup ref exists only to recover a patch that still exists; it must not outlive the patch row it belongs to, whether that row is hard-deleted or purged after soft-delete retention.",
+      "criteria": [
+        {
+          "id": "05-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "DELETE /workspaces/:slug/patches/:id, and so afc patch remove, hard-deletes a patch row",
+          "system": "patch removal",
+          "action": "call a registered cleanup hook, in the style of RegisterBranchCheckHook, that best-effort deletes refs/hub/replaced/<branch> for that branch via git update-ref -d in the workspace's trunk, logging rather than raising any error"
+        },
+        {
+          "id": "05-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "PurgeExpiredDeletedPatches purges a soft-deleted patch row after the retention period",
+          "system": "purge routine",
+          "action": "resolve that row's workspace slug and branch name before the row is removed and, given a WorkspaceRoot and a NewGitRunner factory now threaded through PurgeExpiredDeletedPatches, best-effort delete the corresponding refs/hub/replaced/<branch> in that workspace's trunk"
+        },
+        {
+          "id": "05-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "a workspace's trunk cannot be opened during a purge, for example because the workspace was archived, or the refs/hub/replaced/<branch> deletion itself errors",
+          "system": "purge routine",
+          "action": "log the error and continue purging the remaining rows",
+          "contract": "PurgeExpiredDeletedPatches's returned count of database rows purged is unaffected by a git-side failure on any single row"
+        },
+        {
+          "id": "05-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "purge routine",
+          "action": "for any hard-delete or purge of a patch row, treat refs/hub/replaced/<branch> deletion as best-effort only, never blocking or failing the row's database removal"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-8",
+      "title": "Patch-status dashboard gains replaced_sha",
+      "rationale": "The dashboard is the one existing place that already answers 'what is the state of my patch stack'; it should also answer whether a backup exists to recover, without adding a git call to every other patch read path.",
+      "criteria": [
+        {
+          "id": "05-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "a client requests GET /workspaces/:slug/patch-status and PatchStatusAPIConfig.NewGitRunner is non-nil and opens successfully on the trunk",
+          "system": "patch-status endpoint",
+          "action": "compute replaced_sha for each patch with one rev-parse --verify against refs/hub/replaced/<branch> and include it, as a string with omitempty, on that patch's dashboard entry when the ref exists"
+        },
+        {
+          "id": "05-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "patch-status endpoint",
+          "action": "expose a NewGitRunner func(repoPath string) (GitRunner, error) field on PatchStatusAPIConfig, wired in main.go to the same cpGitRunnerFactory every other carry-patch endpoint already uses"
+        },
+        {
+          "id": "05-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "PatchStatusAPIConfig.NewGitRunner is nil or opening the runner on the trunk fails",
+          "system": "patch-status endpoint",
+          "action": "leave replaced_sha absent for every patch in the response rather than failing the request",
+          "contract": "HTTP 200 OK with every other dashboard field populated as before"
+        },
+        {
+          "id": "05-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "refs/hub/replaced/<branch> does not exist for a given patch",
+          "system": "patch-status endpoint",
+          "action": "omit replaced_sha from that patch's dashboard entry",
+          "contract": "the patch's JSON object carries no replaced_sha key"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-9",
+      "title": "afc workspace sync --fail-on-diverged",
+      "rationale": "A scheduler running sync unattended needs a distinct, scriptable signal that a divergence was left unresolved, without changing the exit code anyone already depends on.",
+      "criteria": [
+        {
+          "id": "05-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "add a boolean --fail-on-diverged flag to afc workspace sync, defaulting to false"
+        },
+        {
+          "id": "05-REQ-9.2",
+          "pattern": "complex_event",
+          "condition": "the sync response's patches_diverged array is non-empty",
+          "guard": "--fail-on-diverged was passed on the command line",
+          "system": "afc CLI",
+          "action": "exit with code 3 instead of 0, checked immediately after the sync response is printed and before any --wait rebuild-status polling request is issued",
+          "contract": "process exit code 3; no rebuild-status poll request is sent for this invocation"
+        },
+        {
+          "id": "05-REQ-9.3",
+          "pattern": "state_driven",
+          "condition": "--fail-on-diverged was not passed, or the sync response's patches_diverged field is absent or empty",
+          "system": "afc CLI",
+          "action": "exit 0, unchanged from the command's behaviour before this spec"
+        },
+        {
+          "id": "05-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "for any afc workspace sync invocation, reserve exit code 3 exclusively for the diverged-patches case introduced by this spec"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-10",
+      "title": "Documentation and ADR",
+      "rationale": "The workflow guide, CLI reference, API reference, and ADR must all describe the recovery surface this spec adds and must finally recommend the fork-authoritative model the way ADR 01 promised once the whole split landed.",
+      "criteria": [
+        {
+          "id": "05-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "restructure docs/carry_patch_workflow.md's Getting Started walkthrough so the fork-authoritative flow (PATCH_BRANCH_SOURCE=origin, push to the fork, afc patch add, afc workspace sync) is the primary path, keeping the hub-push flow as a clearly labelled alternative for agent-driven workspaces"
+        },
+        {
+          "id": "05-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "add an origin-mode variant to docs/carry_patch_workflow.md's 'Resolving conflicts after a failed rebuild' section describing fixing the branch in a local clone of the fork, pushing to the fork, syncing or running afc patch reset-to-origin, then setting status active and rebuilding, noting that rerere will not have recorded a resolution made outside the trunk"
+        },
+        {
+          "id": "05-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "document afc patch reset-to-origin and the refs/hub/replaced/* recovery path in docs/carry_patch_workflow.md's Day-to-day operations section, add the new endpoint to the API reference summary table, and correct the afc workspace sync CLI reference's stale note about origin never being fetched to describe both PATCH_BRANCH_SOURCE modes"
+        },
+        {
+          "id": "05-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "document --fail-on-diverged and exit code 3 under afc workspace sync in docs/cli.md, and add a new afc patch reset-to-origin section modelled on the existing afc patch restore section"
+        },
+        {
+          "id": "05-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "document the reset-to-origin endpoint in docs/api.md's Patch Endpoints section and the patch-status replaced_sha field, and add the new path, its request/response schemas, and a replaced_sha property on the Patch schema to docs/openapi.yaml, documented as populated only by this endpoint and the patch-status dashboard"
+        },
+        {
+          "id": "05-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "change ADR 01's status from Proposed to Accepted"
+        },
+        {
+          "id": "05-REQ-10.7",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "file an erratum under docs/errata/ recording that no dedicated GET /workspaces/:slug/patches/:id endpoint was added and that reset-to-origin requires PATCH_BRANCH_SOURCE=origin rather than also working in hub mode"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "05-PATH-1",
+      "title": "Operator manually resets a diverged patch branch to the fork's tip and recovers the discarded commits",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "sets PATCH_BRANCH_SOURCE=origin and PATCH_DIVERGENCE_POLICY=report on a carry_patch workspace, syncs it, and sees the patch branch reported in patches_diverged"
+        },
+        {
+          "actor": "operator",
+          "action": "calls POST /workspaces/:slug/patches/:id/reset-to-origin without waiting for the next scheduled sync"
+        },
+        {
+          "actor": "reset-to-origin endpoint",
+          "action": "acquires the workspace lock, backs up the current local tip to refs/hub/replaced/<branch>, moves refs/heads/<branch> to the origin tip via update-ref, updates origin_sync_state/origin_sha/origin_synced_at, and emits a hub.patch.replace audit event"
+        },
+        {
+          "actor": "reset-to-origin endpoint",
+          "action": "returns HTTP 200 with the patch record including replaced_sha"
+        },
+        {
+          "actor": "operator",
+          "action": "runs a plain git fetch against refs/hub/replaced/<branch> and recovers the discarded commits without database or shell access to the hub host"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-2",
+      "title": "An operator resets a patch via the CLI and confirms the backup is visible on the dashboard",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc patch reset-to-origin <workspace-slug> <patch-id>"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends the reset-to-origin request with no body, prints the returned patch JSON, and exits 0"
+        },
+        {
+          "actor": "operator",
+          "action": "calls GET /workspaces/:slug/patch-status"
+        },
+        {
+          "actor": "patch-status endpoint",
+          "action": "opens a GitRunner on the trunk, resolves refs/hub/replaced/<branch> for the patch, and includes its tip as replaced_sha in the dashboard entry"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-3",
+      "title": "The backup namespace refuses a push and is cleaned up when its patch is removed",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "attempts to push a ref under refs/hub/replaced/* directly to the hub's git server"
+        },
+        {
+          "actor": "hub git server",
+          "action": "rejects the update via the same per-ref pre-receive interception 04_patch_branch_push_protection introduces, unconditionally and regardless of the workspace's PATCH_BRANCH_SOURCE or mode"
+        },
+        {
+          "actor": "operator",
+          "action": "runs afc patch remove <workspace-slug> <patch-id> to hard-delete the patch that owns that backup ref"
+        },
+        {
+          "actor": "hub",
+          "action": "hard-deletes the patch row and calls the registered cleanup hook, which best-effort deletes refs/hub/replaced/<branch> from the workspace's trunk"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-4",
+      "title": "A scheduler detects a diverged sync and an operator resolves it with reset-to-origin",
+      "steps": [
+        {
+          "actor": "scheduler",
+          "action": "runs afc workspace sync <slug> --fail-on-diverged on a workspace under PATCH_DIVERGENCE_POLICY=report"
+        },
+        {
+          "actor": "carry-patch sync",
+          "action": "fetches origin, finds a registered patch branch diverged, and returns it in the response's patches_diverged array"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "checks patches_diverged before any --wait rebuild-status polling and exits with code 3"
+        },
+        {
+          "actor": "scheduler",
+          "action": "scripts on exit code 3 to page an operator"
+        },
+        {
+          "actor": "operator",
+          "action": "runs afc patch reset-to-origin <slug> <patch-id> to force the branch onto the fork's tip and clear the divergence"
+        }
+      ]
+    }
+  ]
+}

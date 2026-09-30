@@ -1,0 +1,749 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "04",
+  "spec_name": "patch_branch_push_protection",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-04-1",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.1"
+      ],
+      "title": "PUSH_PATCHES_TO_ORIGIN is read fresh for each push rather than cached across pushes",
+      "given": [
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin",
+        "a registered active patch branch patch/foo"
+      ],
+      "when": "two successive pushes to patch/foo are made, the first with PUSH_PATCHES_TO_ORIGIN=\"true\" and the second with the variable changed to \"false\" in between",
+      "then": [
+        "the first push forwards and is accepted",
+        "the second push is rejected with the fork-push message",
+        "GetVariableFunc is invoked once per push rather than reused from a previously read value"
+      ],
+      "pseudocode": "setVar('PUSH_PATCHES_TO_ORIGIN','true'); p1=push(patchFoo); assert p1.status=='ok'; setVar('PUSH_PATCHES_TO_ORIGIN','false'); p2=push(patchFoo); assert p2.status=='ng'"
+    },
+    {
+      "id": "TS-04-2",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-1.2"
+      ],
+      "title": "Only the exact string \"true\" enables PUSH_PATCHES_TO_ORIGIN",
+      "given": [
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin",
+        "a registered active patch branch patch/foo"
+      ],
+      "when": "for any string value other than the exact literal \"true\" (unset, empty string, \"TRUE\", \"1\", \"false\", \"true \" with trailing space)",
+      "then": [
+        "PUSH_PATCHES_TO_ORIGIN is treated as disabled and the origin-mode refusal path (04-REQ-3) is taken instead of forwarding"
+      ],
+      "pseudocode": "for v in gen_non_true_strings(): setVar('PUSH_PATCHES_TO_ORIGIN', v); r=push(patchFoo); assert r.status=='ng'"
+    },
+    {
+      "id": "TS-04-3",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.3"
+      ],
+      "title": "A variable-store error reading PUSH_PATCHES_TO_ORIGIN is treated as disabled without surfacing the store error to the client",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "GetVariableFunc configured to return an error when reading PUSH_PATCHES_TO_ORIGIN"
+      ],
+      "when": "a push to the registered patch branch patch/foo is made",
+      "then": [
+        "the ref is rejected with the standard 'branch is synced from origin; push to <git_url> instead' message",
+        "the raw report-status response contains no store-error text or stack trace"
+      ],
+      "pseudocode": "getVar=errFunc; r=push(patchFoo); assert r.message=='branch is synced from origin; push to '+gitURL+' instead'; assert !contains(r.raw, storeErrText)"
+    },
+    {
+      "id": "TS-04-4",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.1"
+      ],
+      "title": "A refs/heads update to a non-deleted registered patch branch that is not the integration branch and not a delete is classified as a guard candidate",
+      "given": [
+        "a carry_patch workspace with integration_branch=main",
+        "a patches row with branch_name=patch/foo and status=active"
+      ],
+      "when": "the classifier evaluates a push command Name=refs/heads/patch/foo, New=<nonzero sha>",
+      "then": [
+        "the command is classified as a guard candidate"
+      ],
+      "pseudocode": "cmd={Name:'refs/heads/patch/foo', New: sha1}; assert classifyCandidate(ws, patches, cmd) == true"
+    },
+    {
+      "id": "TS-04-5",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.2"
+      ],
+      "title": "A tag ref update is excluded from guard candidacy without querying the patches table",
+      "given": [
+        "a carry_patch workspace"
+      ],
+      "when": "the classifier evaluates a push command Name=refs/tags/v1, New=<nonzero sha>",
+      "then": [
+        "the command is not a guard candidate",
+        "no patches table query is issued for this command"
+      ],
+      "pseudocode": "cmd={Name:'refs/tags/v1', New:sha1}; spyDB=countingDB(); classifyCandidate(ws, spyDB, cmd); assert spyDB.queryCount==0"
+    },
+    {
+      "id": "TS-04-6",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.3"
+      ],
+      "title": "The integration branch is never a guard candidate even when a patches row shares its name",
+      "given": [
+        "integration_branch=main",
+        "a patches row with branch_name=main and status=active"
+      ],
+      "when": "the classifier evaluates a push command Name=refs/heads/main, New=<nonzero sha>",
+      "then": [
+        "the command is not classified as a guard candidate"
+      ],
+      "pseudocode": "cmd={Name:'refs/heads/main', New:sha1}; assert classifyCandidate(ws, patches, cmd)==false"
+    },
+    {
+      "id": "TS-04-7",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.4"
+      ],
+      "title": "A branch matching a soft-deleted patches row is excluded from guard candidacy",
+      "given": [
+        "a patches row with branch_name=patch/gone and status=deleted"
+      ],
+      "when": "the classifier evaluates a push command Name=refs/heads/patch/gone, New=<nonzero sha>",
+      "then": [
+        "the command is not classified as a guard candidate"
+      ],
+      "pseudocode": "cmd={Name:'refs/heads/patch/gone', New:sha1}; assert classifyCandidate(ws, patches, cmd)==false"
+    },
+    {
+      "id": "TS-04-8",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.5"
+      ],
+      "title": "A delete update to a registered patch branch is excluded from guard candidacy and accepted as a delete",
+      "given": [
+        "a patches row with branch_name=patch/foo and status=active"
+      ],
+      "when": "a push contains command Name=refs/heads/patch/foo, New=zero hash (a delete)",
+      "then": [
+        "the command is not classified as a guard candidate",
+        "the delete is applied exactly as before this spec"
+      ],
+      "pseudocode": "cmd={Name:'refs/heads/patch/foo', New: zeroHash}; assert classifyCandidate(ws, patches, cmd)==false; r=push([cmd]); assert r.status=='ok'; assert refDeleted('patch/foo')"
+    },
+    {
+      "id": "TS-04-9",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.1"
+      ],
+      "title": "A direct push to a fork-synced patch branch is rejected per-ref leaving the local ref unchanged",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN unset",
+        "patch/foo is a guard candidate currently at sha_old"
+      ],
+      "when": "a push updates patch/foo to sha_new",
+      "then": [
+        "the report-status marks refs/heads/patch/foo ng with message 'branch is synced from origin; push to <git_url> instead'",
+        "the local ref for patch/foo is still sha_old"
+      ],
+      "pseudocode": "r=push({patch/foo: sha_new}); assert r.status['refs/heads/patch/foo']=='ng branch is synced from origin; push to '+gitURL+' instead'; assert repoRef('patch/foo')==sha_old"
+    },
+    {
+      "id": "TS-04-10",
+      "kind": "integration",
+      "verifies": [
+        "04-REQ-3.2",
+        "04-REQ-3.3"
+      ],
+      "title": "A rejected candidate ref does not prevent the packfile from being unpacked or other refs in the same push from being applied and reported ok",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN unset",
+        "patch/foo is a guard candidate",
+        "main is the integration branch"
+      ],
+      "when": "a single push updates both patch/foo (new commit) and main (new commit) in one packfile",
+      "then": [
+        "main's new commit object is unpacked into the object store",
+        "main's local ref is written to its new SHA and reported ok in the same report-status response",
+        "patch/foo is reported ng and left unchanged"
+      ],
+      "pseudocode": "r=push({patch/foo:sha_a, main:sha_b}); assert r.status['refs/heads/main']=='ok'; assert repoRef('main')==sha_b; assert r.status['refs/heads/patch/foo']=='ng ...'; assert objectExists(sha_b)"
+    },
+    {
+      "id": "TS-04-11",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.1",
+        "04-REQ-4.6"
+      ],
+      "title": "A forward attempt pushes the candidate ref to origin as a non-force push using ResolveCloneAuth credentials before the local ref is written",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "patch/foo is a guard candidate at sha_old locally",
+        "the per-workspace lock is free"
+      ],
+      "when": "a push updates patch/foo to sha_new",
+      "then": [
+        "a non-force push of refs/heads/patch/foo:refs/heads/patch/foo is attempted against origin using workspace.ResolveCloneAuth's resolved credentials",
+        "the forward attempt completes before the local ref is written to sha_new"
+      ],
+      "pseudocode": "spyPush=recordingRemote(); spyAuth=recordingResolveCloneAuth(); guard=NewPushGuardFunc(db,getVar,spyAuth); guard.forward('patch/foo', sha_new); assert spyPush.calls[0]=={remote:'origin', refspec:'refs/heads/patch/foo:refs/heads/patch/foo', force:false}; assert spyAuth.called"
+    },
+    {
+      "id": "TS-04-12",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.2"
+      ],
+      "title": "A successful forward writes the local ref to the new SHA, reports ok, and releases the lock",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "the forward push to origin will succeed"
+      ],
+      "when": "a push updates patch/foo to sha_new",
+      "then": [
+        "the report-status marks refs/heads/patch/foo ok",
+        "the local ref for patch/foo equals sha_new",
+        "the fork's ref for patch/foo equals sha_new",
+        "the per-workspace lock is released once the push completes"
+      ],
+      "pseudocode": "r=push({patch/foo:sha_new}); assert r.status['refs/heads/patch/foo']=='ok'; assert repoRef('patch/foo')==sha_new; assert forkRef('patch/foo')==sha_new; assert !wslock.isHeld(slug)"
+    },
+    {
+      "id": "TS-04-13",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.3"
+      ],
+      "title": "A failed forward leaves the local ref unchanged and rejects the ref with the forward's own error text",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "the forward push to origin will fail with error 'non-fast-forward update'"
+      ],
+      "when": "a push updates patch/foo to sha_new",
+      "then": [
+        "the report-status marks refs/heads/patch/foo ng with message 'push to origin rejected: non-fast-forward update'",
+        "the local ref for patch/foo is unchanged from before the push"
+      ],
+      "pseudocode": "r=push({patch/foo:sha_new}); assert r.status['refs/heads/patch/foo']=='ng push to origin rejected: non-fast-forward update'; assert repoRef('patch/foo')==sha_old"
+    },
+    {
+      "id": "TS-04-14",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.4"
+      ],
+      "title": "A candidate ref whose per-workspace lock cannot be acquired is rejected with a busy message and no forward is attempted",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "the workspace's lock is already held by a concurrent operation"
+      ],
+      "when": "a push updates patch/foo to sha_new",
+      "then": [
+        "the report-status marks refs/heads/patch/foo ng with message 'workspace busy; try again'",
+        "no push to origin is attempted for patch/foo"
+      ],
+      "pseudocode": "held,_=wslock.TryLock(slug); r=push({patch/foo:sha_new}); assert r.status['refs/heads/patch/foo']=='ng workspace busy; try again'; assert spyOriginPush.calls==0"
+    },
+    {
+      "id": "TS-04-15",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-4.5"
+      ],
+      "title": "A forward failure or busy lock on one candidate ref never changes the accept/reject outcome of any other ref in the same push",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "two guard candidates patch/foo and patch/bar in the same push"
+      ],
+      "when": "for any scenario where one candidate's lock acquisition or forward fails and the other candidate's forward succeeds, in either order",
+      "then": [
+        "the succeeding candidate's ref is written and reported ok regardless of the other candidate's outcome"
+      ],
+      "pseudocode": "for scenario in [busy_then_ok, ok_then_fail, fail_then_ok]: r=push(scenario); assert r.status[scenario.good_ref]=='ok'"
+    },
+    {
+      "id": "TS-04-16",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.1"
+      ],
+      "title": "In hub-authoritative mode no pre-receive guard runs and every push is accepted exactly as before this spec",
+      "given": [
+        "PATCH_BRANCH_SOURCE=hub",
+        "patch/foo is a registered, non-deleted patch branch",
+        "PUSH_PATCHES_TO_ORIGIN set to any value"
+      ],
+      "when": "a push updates patch/foo to sha_new",
+      "then": [
+        "the report-status marks refs/heads/patch/foo ok",
+        "the local ref for patch/foo equals sha_new",
+        "no lock acquisition or origin push attempt occurs synchronously while accepting the push"
+      ],
+      "pseudocode": "r=push({patch/foo:sha_new}); assert r.status['refs/heads/patch/foo']=='ok'; assert repoRef('patch/foo')==sha_new"
+    },
+    {
+      "id": "TS-04-17",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.2"
+      ],
+      "title": "An accepted push in hub mode with mirroring enabled force-pushes every actually-updated registered patch branch to origin after the post-push hook runs",
+      "given": [
+        "PATCH_BRANCH_SOURCE=hub",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "patch/foo is a registered active patch branch, main is the integration branch"
+      ],
+      "when": "a push updates both patch/foo and main and completes",
+      "then": [
+        "the mirror runs in the same goroutine as the post-push hook, after the hook finishes",
+        "a force-push of refs/heads/patch/foo:refs/heads/patch/foo is sent to origin using workspace.ResolveCloneAuth credentials while the per-workspace lock is held",
+        "main is not mirrored because it is the integration branch"
+      ],
+      "pseudocode": "order=[]; hook=spyHook(order); mirror=NewMirrorFunc(db,getVar,spyAuth,order); r=push({patch/foo:sha1, main:sha2}); assert order==['hook','mirror']; assert spyForkPush.calls==[{ref:'patch/foo', force:true}]"
+    },
+    {
+      "id": "TS-04-18",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.3"
+      ],
+      "title": "A busy lock during a mirror attempt skips that branch's mirror, logs it, and emits a hub.patch.mirror_failed audit event without affecting the push",
+      "given": [
+        "PATCH_BRANCH_SOURCE=hub",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "the per-workspace lock is held by a concurrent operation when the mirror runs"
+      ],
+      "when": "a push accepting an update to patch/foo triggers the mirror attempt",
+      "then": [
+        "the push response already returned ok is unaffected",
+        "a hub.patch.mirror_failed audit event is recorded with EventType 'hub.patch.mirror_failed', ResourceType 'patch', ActorType 'system', Workspace equal to the slug, Metadata.branch_name='patch/foo', and a non-empty Metadata.error describing the busy lock",
+        "a log entry records the skip"
+      ],
+      "pseudocode": "held,_=wslock.TryLock(slug); r=push({patch/foo:sha_new}); assert r.status=='ok'; ev=lastAuditEvent(); assert ev.EventType=='hub.patch.mirror_failed'; assert ev.Metadata['branch_name']=='patch/foo'; assert ev.Metadata['error']!=''"
+    },
+    {
+      "id": "TS-04-19",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.4"
+      ],
+      "title": "A failed force-push during mirroring is logged and recorded as a hub.patch.mirror_failed audit event without affecting the push",
+      "given": [
+        "PATCH_BRANCH_SOURCE=hub",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "the origin force-push for patch/foo will fail with 'connection reset'"
+      ],
+      "when": "a push accepting an update to patch/foo triggers the mirror attempt",
+      "then": [
+        "the push response already returned ok is unaffected",
+        "a hub.patch.mirror_failed audit event is recorded with Metadata.branch_name='patch/foo' and Metadata.error containing 'connection reset'"
+      ],
+      "pseudocode": "r=push({patch/foo:sha_new}); assert r.status=='ok'; ev=lastAuditEvent(); assert ev.Metadata['error']=='connection reset'"
+    },
+    {
+      "id": "TS-04-20",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-5.5"
+      ],
+      "title": "For any mirror attempt outcome, the push response and any triggered auto-rebuild are unaffected",
+      "given": [
+        "PATCH_BRANCH_SOURCE=hub",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "AUTO_REBUILD_AFTER_PUSH not disabled"
+      ],
+      "when": "for any combination of mirror outcomes (success, lock busy, force-push failure) across the branches a push updates",
+      "then": [
+        "the push's report-status and HTTP response are identical to the mirror-disabled case",
+        "the rebuild job triggered by AUTO_REBUILD_AFTER_PUSH is enqueued exactly as without mirroring, with no additional delay"
+      ],
+      "pseudocode": "for outcome in [success, busy, fail]: r=pushWithMirrorOutcome(outcome); assert r.status=='ok'; assert rebuildEnqueuedWithinSameLatency(r)"
+    },
+    {
+      "id": "TS-04-21",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-6.1"
+      ],
+      "title": "internal/gitserver applies no guard when no pre-receive decision or mirror function is registered, demonstrating control is by registration alone",
+      "given": [
+        "no pre-receive guard function or mirror function has been registered on gitserver"
+      ],
+      "when": "a push to a candidate patch branch is made",
+      "then": [
+        "the push is accepted exactly as before this spec (no guard applied), because the guard's behavior is entirely controlled by whether a function was registered, never by an internal/gitserver import of internal/carrypatch"
+      ],
+      "pseudocode": "assert !sourceImports('internal/gitserver', 'internal/carrypatch'); r=push(patchFoo); assert r.status['refs/heads/patch/foo']=='ok'"
+    },
+    {
+      "id": "TS-04-22",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-6.2"
+      ],
+      "title": "The registered pre-receive decision function is invoked with only the workspace's db, slug, trunk repo path, and candidate ref updates",
+      "given": [
+        "a spy pre-receive decision function registered via the gitserver registration function"
+      ],
+      "when": "a push containing one candidate ref and one non-candidate ref is made",
+      "then": [
+        "the spy is called exactly once with (db, slug, trunkPath, candidateRefs) where candidateRefs contains only the guard candidate",
+        "gitserver uses only the spy's returned per-branch decision to accept or reject that branch"
+      ],
+      "pseudocode": "spy=recordingGuard(); RegisterPushGuardFunc(spy); push({patchFoo, main}); assert spy.calls[0].args==(db, slug, trunkPath, ['patch/foo'])"
+    },
+    {
+      "id": "TS-04-23",
+      "kind": "integration",
+      "verifies": [
+        "04-REQ-6.3"
+      ],
+      "title": "internal/carrypatch's production pre-receive decision function reads the workspace row, the variable store, and the patches table to compute its decision",
+      "given": [
+        "a real database with a carry_patch workspace, PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN unset, and a patches row for patch/foo with status=active"
+      ],
+      "when": "the carrypatch production pre-receive decision function is invoked directly with the candidate ref update for patch/foo",
+      "then": [
+        "the returned decision is 'reject' carrying the origin-mode message, computed from the real workspace row, variable store, and patches table rather than from any caller-supplied override"
+      ],
+      "pseudocode": "guard=carrypatch.NewPushGuardFunc(realDB, realGetVariable); d=guard(realDB, slug, trunkPath, [candidate('patch/foo')]); assert d['patch/foo'].reject==true"
+    },
+    {
+      "id": "TS-04-24",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.1"
+      ],
+      "title": "A standard (non carry_patch) workspace's pushes never consult PUSH_PATCHES_TO_ORIGIN or the patches table",
+      "given": [
+        "a workspace with workspace_mode != 'carry_patch'",
+        "a branch name that happens to match a row in the patches table"
+      ],
+      "when": "a push updates that branch",
+      "then": [
+        "the push is accepted exactly as before this spec",
+        "no PUSH_PATCHES_TO_ORIGIN variable lookup and no patches table query is performed for this push"
+      ],
+      "pseudocode": "spyVar=countingVarFunc(); spyDB=countingDB(); r=push(standardWs, branch); assert r.status=='ok'; assert spyVar.calls==0; assert spyDB.patchesQueryCount==0"
+    },
+    {
+      "id": "TS-04-25",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.2"
+      ],
+      "title": "A push to a carry_patch workspace with no guard candidate applies no refusal, forward, or mirror behavior",
+      "given": [
+        "a carry_patch workspace",
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN unset",
+        "a push touching only the integration branch and an unregistered branch"
+      ],
+      "when": "the push is made",
+      "then": [
+        "every ref is reported ok",
+        "no origin push, lock acquisition, or rejection occurs for any ref"
+      ],
+      "pseudocode": "r=push({main:sha1, unregistered:sha2}); assert r.status['refs/heads/main']=='ok'; assert r.status['refs/heads/unregistered']=='ok'; assert spyOriginPush.calls==0"
+    },
+    {
+      "id": "TS-04-26",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.1"
+      ],
+      "title": "The branches list passed to the post-push hook and the audit event's refs_updated/head_sha reflects only refs actually written by the push",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN unset",
+        "a push updates patch/foo (rejected) and main (accepted)"
+      ],
+      "when": "the push completes",
+      "then": [
+        "the branches list passed to the post-push hook contains only 'main'",
+        "the hub.git.push audit event's refs_updated contains only refs/heads/main and head_sha is main's new SHA"
+      ],
+      "pseudocode": "hookCalls=[]; postPushHook=recordHook(hookCalls); r=push({patch/foo:sha_a, main:sha_b}); assert hookCalls[0].branches==['main']; ev=lastAuditEvent(); assert ev.Metadata['refs_updated']==['refs/heads/main']; assert ev.Metadata['head_sha']==sha_b"
+    },
+    {
+      "id": "TS-04-27",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.2"
+      ],
+      "title": "A rejected candidate ref is excluded from both the post-push hook's branch list and the mirror function's candidate branches",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN unset",
+        "patch/foo is rejected under 04-REQ-3 in the same push that accepts main"
+      ],
+      "when": "the push completes and the post-push hook and any mirror step run",
+      "then": [
+        "the post-push hook does not consider patch/foo for auto-rebuild",
+        "no mirror attempt is made for patch/foo"
+      ],
+      "pseudocode": "hookCalls=[]; postPushHook=recordHook(hookCalls); r=push({patch/foo:sha_a, main:sha_b}); assert 'patch/foo' not in hookCalls[0].branches; assert spyForkPush.calls==0"
+    },
+    {
+      "id": "TS-04-28",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.3"
+      ],
+      "title": "The hub.git.push audit event's refs_updated and head_sha are computed from actually-written refs while every other field is unchanged",
+      "given": [
+        "a push that partially rejects one candidate ref alongside an accepted ref"
+      ],
+      "when": "the audit event is emitted after the push",
+      "then": [
+        "refs_updated lists only the refs the push actually wrote",
+        "head_sha is the new SHA of an actually-written ref",
+        "EventType, ResourceType, Action, Workspace, ActorID, and ActorType are populated exactly as before this spec"
+      ],
+      "pseudocode": "ev=lastAuditEvent(); assert ev.Metadata['refs_updated']==writtenRefs; assert ev.EventType=='hub.git.push'; assert ev.ResourceType=='workspace'; assert ev.Action=='push'"
+    },
+    {
+      "id": "TS-04-29",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.1"
+      ],
+      "title": "A rejection under requirement 3 is logged at info level with the workspace slug, branch name, and pushing user's UserID",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN unset",
+        "the pushing credential resolves to UserID 'user-1'"
+      ],
+      "when": "a push to patch/foo is rejected",
+      "then": [
+        "a log entry at info level is recorded containing the workspace slug, 'patch/foo', and 'user-1'"
+      ],
+      "pseudocode": "logs=captureLogs(); push(patchFoo); entry=logs.find(level=='info'); assert entry.contains(slug); assert entry.contains('patch/foo'); assert entry.contains('user-1')"
+    },
+    {
+      "id": "TS-04-30",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.2"
+      ],
+      "title": "A forward failure under requirement 4 is logged at warn level with the workspace slug, branch name, pushing user's UserID, and the forward error text",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "the forward push to origin fails with 'auth failed'",
+        "the pushing credential resolves to UserID 'user-1'"
+      ],
+      "when": "a push to patch/foo is processed",
+      "then": [
+        "a log entry at warn level is recorded containing the workspace slug, 'patch/foo', 'user-1', and 'auth failed'"
+      ],
+      "pseudocode": "logs=captureLogs(); push(patchFoo); entry=logs.find(level=='warn'); assert entry.contains(slug); assert entry.contains('patch/foo'); assert entry.contains('user-1'); assert entry.contains('auth failed')"
+    },
+    {
+      "id": "TS-04-31",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-9.3"
+      ],
+      "title": "For any rejection or forward-failure log entry, only the slug, branch, user, and (for forwards) error text fields are logged",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin"
+      ],
+      "when": "for any combination of rejection (04-REQ-3) and forward-failure (04-REQ-4) scenarios",
+      "then": [
+        "the resulting log entry contains no stack trace marker and no packfile byte content"
+      ],
+      "pseudocode": "for scenario in [reject, forward_fail]: entry=captureLog(scenario); assert !contains(entry,'goroutine '); assert !contains(entry, packfileBytes)"
+    },
+    {
+      "id": "TS-04-32",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-10.1"
+      ],
+      "title": "docs/carry_patch_workflow.md's Configuration section documents PUSH_PATCHES_TO_ORIGIN's origin-mode and hub-mode meanings",
+      "given": [
+        "the repository's docs/carry_patch_workflow.md file"
+      ],
+      "when": "the Configuration section is inspected",
+      "then": [
+        "a PUSH_PATCHES_TO_ORIGIN subsection exists, modelled on the AUTO_REBUILD_AFTER_PUSH subsection, describing both the origin-mode reject-unless-forwarded meaning and the hub-mode best-effort-mirror meaning"
+      ],
+      "pseudocode": "doc=readFile('docs/carry_patch_workflow.md'); assert doc.contains('PUSH_PATCHES_TO_ORIGIN'); assert doc.section('Configuration').contains('reject'); assert doc.section('Configuration').contains('mirror')"
+    },
+    {
+      "id": "TS-04-33",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-10.2"
+      ],
+      "title": "docs/carry_patch_workflow.md's How it works / Auto-rebuild on push area describes the pre-receive refusal, forward, and mirror including the exact rejection message",
+      "given": [
+        "the repository's docs/carry_patch_workflow.md file"
+      ],
+      "when": "the How it works section is inspected",
+      "then": [
+        "it describes the pre-receive refusal and forward and the mirror",
+        "it contains the exact string 'branch is synced from origin; push to <git_url> instead'"
+      ],
+      "pseudocode": "doc=readFile('docs/carry_patch_workflow.md'); assert doc.contains('branch is synced from origin; push to <git_url> instead')"
+    },
+    {
+      "id": "TS-04-34",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-10.3"
+      ],
+      "title": "docs/examples/AGENTS_carry_patch.md's Step 4 tells the agent to check PATCH_BRANCH_SOURCE before pushing and push to the correct remote",
+      "given": [
+        "the repository's docs/examples/AGENTS_carry_patch.md file"
+      ],
+      "when": "Step 4 ('Push to the Hub') is inspected",
+      "then": [
+        "it instructs the agent to check PATCH_BRANCH_SOURCE before pushing",
+        "it instructs pushing to the hub's git server in hub mode",
+        "it instructs pushing directly to the fork's own URL in origin mode unless PUSH_PATCHES_TO_ORIGIN=true"
+      ],
+      "pseudocode": "doc=readFile('docs/examples/AGENTS_carry_patch.md'); step4=doc.section('Push to the Hub'); assert step4.contains('PATCH_BRANCH_SOURCE'); assert step4.contains('PUSH_PATCHES_TO_ORIGIN')"
+    },
+    {
+      "id": "TS-04-35",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-1",
+        "04-REQ-3.1",
+        "04-REQ-9.1"
+      ],
+      "title": "A developer's direct push to a fork-synced patch branch through the running hub git server is refused end to end",
+      "given": [
+        "a running hub with a real database and a real trunk git repository",
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and PUSH_PATCHES_TO_ORIGIN unset",
+        "a registered active patch branch patch/foo"
+      ],
+      "when": "a real git push (via git-receive-pack over the hub's git smart HTTP endpoint) attempts to update patch/foo",
+      "then": [
+        "the client receives an ng status for refs/heads/patch/foo carrying the fork-push message",
+        "the workspace's local ref for patch/foo is unchanged",
+        "an info-level log entry recording the rejection is produced"
+      ],
+      "real_components": [
+        "hub git server handleReceivePack",
+        "storer wrapper / guard classifier",
+        "carrypatch push guard function",
+        "SQLite patches table",
+        "real git repository"
+      ]
+    },
+    {
+      "id": "TS-04-36",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-2"
+      ],
+      "title": "A forwarded push to a fork-synced patch branch is accepted locally only after succeeding against the fork, and triggers an auto-rebuild",
+      "given": [
+        "a running hub with a real database, a real trunk git repository, and a real fork (a local bare repo standing in for origin)",
+        "PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "AUTO_REBUILD_AFTER_PUSH not disabled",
+        "a registered active patch branch patch/foo"
+      ],
+      "when": "a real git push updates patch/foo",
+      "then": [
+        "the fork's ref for patch/foo equals the new SHA before the local ref is written",
+        "the client receives ok for refs/heads/patch/foo",
+        "the local ref equals the new SHA",
+        "a rebuild job is enqueued for the workspace"
+      ],
+      "real_components": [
+        "hub git server handleReceivePack",
+        "storer wrapper / guard",
+        "carrypatch push guard function",
+        "wslock",
+        "workspace.ResolveCloneAuth",
+        "real fork repository",
+        "jobqueue",
+        "post-push hook"
+      ]
+    },
+    {
+      "id": "TS-04-37",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-3"
+      ],
+      "title": "An accepted hub-authoritative push is best-effort mirrored to a real fork without affecting the push or its rebuild",
+      "given": [
+        "a running hub with a real database, a real trunk git repository, and a real fork (a local bare repo standing in for origin)",
+        "PATCH_BRANCH_SOURCE=hub, PUSH_PATCHES_TO_ORIGIN=\"true\"",
+        "AUTO_REBUILD_AFTER_PUSH not disabled",
+        "a registered active patch branch patch/foo"
+      ],
+      "when": "a real git push updates patch/foo",
+      "then": [
+        "the client receives ok for refs/heads/patch/foo immediately",
+        "the local ref is updated",
+        "the auto-rebuild job is enqueued without waiting for the mirror",
+        "the fork's ref for patch/foo is eventually force-pushed to match the new SHA"
+      ],
+      "real_components": [
+        "hub git server handleReceivePack",
+        "post-push hook",
+        "carrypatch mirror function",
+        "wslock",
+        "workspace.ResolveCloneAuth",
+        "real fork repository",
+        "jobqueue",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-04-38",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-4"
+      ],
+      "title": "A single push updating both a fork-synced patch branch and the integration branch is partially accepted with corrected audit metadata and no rebuild for the rejected branch",
+      "given": [
+        "a running hub with a real database and a real trunk git repository",
+        "PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN unset",
+        "a registered active patch branch patch/foo and integration branch main"
+      ],
+      "when": "a single real git push updates both patch/foo and main",
+      "then": [
+        "the client receives ng for refs/heads/patch/foo and ok for refs/heads/main in the same report-status response",
+        "main's local ref is updated and patch/foo's is unchanged",
+        "the hub.git.push audit event's refs_updated contains only refs/heads/main and head_sha is main's new SHA",
+        "no rebuild job referencing patch/foo is enqueued from this push"
+      ],
+      "real_components": [
+        "hub git server handleReceivePack",
+        "storer wrapper / guard classifier",
+        "carrypatch push guard function",
+        "post-push hook",
+        "audit emitter",
+        "SQLite patches table",
+        "real git repository"
+      ]
+    }
+  ]
+}
