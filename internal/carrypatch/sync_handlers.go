@@ -282,13 +282,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		resp.PatchesSynced = outcomes
 	}
 
-	// 16-REQ-5.E3: If upstream HEAD has not changed and no patch advanced, complete the sync
-	// with no patches_merged and no rebuild triggered.
-	if !upstreamAdvanced && !patchAdvanced {
-		return &resp, nil
-	}
-
-	// Upstream has advanced — update the workspace record.
+	// Upstream has advanced OR a patch advanced — update the workspace record.
 	now := apikit.NowUTC()
 	_, err = cfg.DB.Exec(
 		`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
@@ -296,6 +290,13 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	)
 	if err != nil {
 		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
+	}
+
+	// 16-REQ-5.E3 / 02-REQ-4.2: If upstream HEAD has not changed and no patch advanced,
+	// complete the sync with no patches_merged and no rebuild triggered.
+	// Note: last_sync_at has been updated above (02-REQ-4.3).
+	if !upstreamAdvanced && !patchAdvanced {
+		return &resp, nil
 	}
 
 	// 16-REQ-5.1: Check each active patch for upstream merge via IsAncestor.
@@ -349,13 +350,12 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	// ===========================================================
-	// 16-REQ-5.3 / 16-REQ-5.4: Auto-rebuild trigger logic
+	// 16-REQ-5.3 / 16-REQ-5.4 / 02-REQ-4.4: Auto-rebuild trigger logic
 	// ===========================================================
 
-	// Since we already returned early when upstream hasn't advanced,
-	// shouldRebuild is always true here (upstream advanced OR patches
-	// merged). Check the AUTO_REBUILD_AFTER_SYNC workspace variable.
-	autoRebuild := true // default when unset (16-REQ-5.3)
+	// Trigger rebuild if upstream advanced OR at least one patch advanced.
+	// Check the AUTO_REBUILD_AFTER_SYNC workspace variable.
+	autoRebuild := (upstreamAdvanced || patchAdvanced) // default true when unset if advanced (16-REQ-5.3, 02-REQ-4.4)
 	if cfg.GetVariable != nil {
 		val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
 		if val == "false" {
