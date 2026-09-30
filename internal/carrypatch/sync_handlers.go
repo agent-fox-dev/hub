@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
@@ -244,6 +246,43 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 				}
 			}
 		}
+
+		// 02-REQ-7: Emit audit events for fork-authoritative sync.
+		created := make([]string, 0)
+		fastForwarded := make([]string, 0)
+		replaced := make([]string, 0)
+		diverged := make([]string, 0)
+		missingOnOrigin := make([]string, 0)
+
+		for _, o := range outcomes {
+			switch {
+			case o.Action == "created":
+				created = append(created, o.BranchName)
+			case o.Action == "fast_forwarded":
+				fastForwarded = append(fastForwarded, o.BranchName)
+			case o.Action == "replaced":
+				replaced = append(replaced, o.BranchName)
+				emitSyncAudit(ctx, cfg.Audit, slug, "hub.patch.replace", map[string]any{
+					"branch_name":  o.BranchName,
+					"local_sha":    o.LocalSHA,
+					"replaced_sha": o.ReplacedSHA,
+					"origin_sha":   o.OriginSHA,
+				})
+			case o.State == "diverged":
+				diverged = append(diverged, o.BranchName)
+			case o.State == "missing_on_origin":
+				missingOnOrigin = append(missingOnOrigin, o.BranchName)
+			}
+		}
+
+		emitSyncAudit(ctx, cfg.Audit, slug, "hub.patch.sync", map[string]any{
+			"origin_fetched":    originFetched,
+			"created":           created,
+			"fast_forwarded":    fastForwarded,
+			"replaced":          replaced,
+			"diverged":          diverged,
+			"missing_on_origin": missingOnOrigin,
+		})
 	}
 
 	// Resolve the new upstream HEAD after fetch (the upstream default branch;
@@ -549,4 +588,27 @@ func detectSquashMergeByPRNumber(ctx context.Context, git GitRunner, prNumber, o
 		}
 	}
 	return false
+}
+
+// emitSyncAudit emits a hub-internal audit event for fork-authoritative sync operations.
+// If the emitter is nil, emission is silently skipped (02-REQ-7.3). If Emit returns
+// an error, the error is logged and the caller is unaffected (02-REQ-7.3).
+func emitSyncAudit(ctx context.Context, emitter audit.Emitter, workspace, eventType string, metadata map[string]any) {
+	if emitter == nil {
+		return
+	}
+	event := audit.HubEvent{
+		EventType:    eventType,
+		ResourceType: "patch",
+		ActorType:    "system",
+		Workspace:    workspace,
+		Metadata:     metadata,
+	}
+	if err := emitter.Emit(ctx, event); err != nil {
+		slog.Error("audit: failed to emit sync event",
+			"event_type", eventType,
+			"workspace", workspace,
+			"error", err,
+		)
+	}
 }

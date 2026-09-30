@@ -131,6 +131,11 @@ type SyncAPIConfig struct {
 	ResolveOriginAuth ResolveAuthFunc
 	GetVariable       GetVariableFunc
 	PatchStore        PatchStore
+
+	// Audit is the optional audit event emitter. When non-nil, carry-patch sync
+	// emits structured audit events on origin sync. When nil,
+	// audit emission is silently skipped.
+	Audit audit.Emitter
 }
 
 // PatchSyncEntry records the sync outcome for a single patch branch in origin mode.

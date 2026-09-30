@@ -352,6 +352,7 @@ func main() {
 			},
 			GetVariable:   store.GetVariableValue,
 			PatchStore:  cpPatchStore,
+			Audit:       auditEmitter,
 		},
 	))
 
