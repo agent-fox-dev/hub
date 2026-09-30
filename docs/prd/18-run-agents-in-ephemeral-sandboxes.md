@@ -1,8 +1,9 @@
 # Run Agents in Ephemeral Sandboxes
 
-> **Status: draft for discussion.** This PRD is being workshopped. Sections
-> marked *Recommendation* record the option the draft is written against;
-> the Open Questions at the end list every decision that is still open.
+> **Status: draft.** The first workshop round settled the configuration
+> location, secrets delivery, the default branch, NATS exposure, limits,
+> sessions, exec and liveness; those decisions are folded into the text
+> below. The Open Questions at the end are what remains.
 
 ## Intent
 
@@ -17,10 +18,12 @@ This PRD adds the **sandbox** to the hub: an isolated, ephemeral execution
 environment that the hub launches for a workspace at a specific revision,
 that an agent (or a person with a shell) works inside, and that pushes its
 work back to the hub before it disappears. The hub does not run the agent
-itself. It provisions the environment, injects what the environment needs to
-bootstrap (hub endpoint, a workspace-scoped token, variables and secrets),
-and keeps a two-way control channel open to a small service inside the
-sandbox, the **outpost**, for the lifetime of the sandbox.
+itself. It provisions the environment, injects the minimum the environment
+needs to phone home (hub endpoint, a workspace-scoped token, the sandbox
+id), and keeps a two-way control channel open to a small service inside the
+sandbox, the **outpost**, for the lifetime of the sandbox. The outpost
+fetches everything else (code, variables, secrets, the workload command)
+from the hub and starts the workload.
 
 Three things make this more than "run a container":
 
@@ -30,11 +33,13 @@ Three things make this more than "run a container":
    the hub host; remote gateways implement the same interface for other
    machines and clusters.
 2. **Configuration is a document, not a pile of flags.** The hub ships a
-   default `sandbox.json`; a workspace can replace it with its own.
+   default `sandbox.json`; a workspace can replace it with its own through
+   the API.
 3. **The hub can talk to the sandbox, not only start it.** The hub embeds a
    NATS server. The outpost connects to it and receives commands (`sync`,
-   `shutdown`, ...) and reports state, so the hub can drive a sandbox session
-   without SSH, exec, or polling the container runtime.
+   `shutdown`, ...) and reports liveness, state and telemetry, so the hub can
+   drive a sandbox session without SSH, exec, or polling the container
+   runtime.
 
 An earlier proposal, `docs/prd/prd15.md`, covered the same ground with a
 different model (one long-lived sandbox per workspace, the hub's clone
@@ -43,48 +48,58 @@ supersedes it; the differences are listed under *Relationship to PRD 15*.
 
 ## Goals
 
-- Let a caller launch a sandbox for a workspace at a chosen revision, on a
-  chosen branch, and get back a record whose status the hub keeps current
-  until the sandbox is gone.
+- Let a caller launch a sandbox for a workspace on a branch (the workspace
+  branch by default), pinned to that branch's revision at launch time, and
+  get back a record whose status the hub keeps current until the sandbox is
+  gone.
 - Define one JSON sandbox configuration document used at every level: a
-  hub-wide default file, and an optional per-workspace document that
-  replaces it.
-- Inject a bootstrap environment into every sandbox: hub URL, a token scoped
-  to that workspace and that sandbox, the workspace's resolved variables, and
-  the secrets the configuration names.
+  hub-wide default file, and an optional per-workspace document, managed
+  through the API, that replaces it.
+- Inject a bootstrap environment of exactly three variables into every
+  sandbox (hub URL, sandbox token, sandbox id) and let the outpost fetch the
+  rest, including secrets, over HTTPS with that token.
 - Ship the outpost as part of the existing `afc` binary so that the sandbox
   and agents images (`containers/sandbox`, `containers/agents`) need nothing
   new beyond the binary itself.
-- Embed a NATS server in the hub and define the subjects, message envelope
-  and command set the hub and outpost use.
+- Embed a NATS server in the hub, reachable over WebSocket through the hub's
+  existing HTTP endpoint, and define the subjects, message envelope, command
+  set and telemetry channel the hub, outposts and agents use.
 - Define a gateway interface and ship the local gateway (podman) with two
   providers: `container` and `microvm`. Define how remote gateways attach.
 - Bind sandbox lifetime to workspace lifetime (archive and delete stop every
-  sandbox of the workspace), to explicit stop requests, and to time limits
-  (boot, idle, maximum lifetime).
+  sandbox of the workspace), to explicit stop requests, to the workload's
+  exit, to time limits (boot, maximum lifetime) and to liveness.
 - Expose the whole thing through the REST API and `afc`, with permission
   scopes and audit events in the existing style.
 
 ## Non-goals
 
-- **Running the agent.** The hub launches the environment and can tell it to
-  sync or shut down. Which agent runs inside, with which prompt, and when, is
-  the caller's business (a person, a campaign runner, a CI job).
-- **Interactive exec, shell or port forwarding through the hub** in this
-  iteration. `afc sandbox shell` and an `exec` command over NATS are natural
-  follow-ups; the message envelope leaves room for them.
+- **Running the agent.** The hub launches the environment, starts the
+  configured workload command through the outpost, and can tell the sandbox
+  to sync or shut down. Which agent runs, with which prompt, is the
+  caller's business (a person, a campaign runner, a CI job), expressed as
+  the workload command and its environment.
+- **Interactive exec, shell or port forwarding through the hub.** Not
+  planned. A person who needs a shell in a local sandbox uses `podman exec`
+  on the gateway host.
 - **Persistent sandbox storage.** A sandbox's filesystem dies with it. Work
   survives only by being pushed to the hub.
 - **Warm pools, snapshots, pause/resume.** Gateways may add them behind the
   capability report later.
-- **Layer-7 egress filtering and credential proxies.** Network policy in this
-  PRD is coarse (`all` or an allow-list of hosts) and only enforced by
-  gateways that report the capability. The hub never silently downgrades.
+- **Network egress enforcement.** The configuration carries a network policy
+  so that documents are forward-compatible, but no gateway in this PRD
+  enforces `restricted`. Enforcement is planned through
+  [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) (L7 egress
+  filtering, credential proxying) as a future provider or gateway; until
+  then the hub never silently downgrades a `restricted` request.
 - **A Kubernetes gateway implementation.** The `pod` provider and the remote
   gateway protocol are specified so that one can be written; shipping it is
   a separate PRD. The same holds for the `microvm` provider on hosts without
   libkrun.
 - **Sandbox-to-sandbox communication** and multi-container sandboxes.
+- **Hard caps on the number of sandboxes.** The hub does not limit how many
+  sandboxes a workspace, user or org may have. Capacity is the gateway's to
+  refuse (`ErrCapacity`).
 - **Billing.** Sandbox events feed the audit log; metering is out of scope.
 
 ## Current behaviour (for reference)
@@ -105,8 +120,9 @@ supersedes it; the differences are listed under *Relationship to PRD 15*.
 - `afc` already ships a git credential helper that reads `~/.af/config.toml`,
   so a process holding a hub token can clone and push through the hub's git
   server without further setup.
-- The durable job queue, the audit emitter, agent sessions and Prometheus
-  metrics are all in place and are the integration points this PRD uses.
+- The durable job queue, the audit emitter, agent sessions, audit event
+  ingestion and Prometheus metrics are all in place and are the integration
+  points this PRD uses.
 - The hub is a single process with an HTTP listener. There is no message
   broker.
 
@@ -114,12 +130,13 @@ supersedes it; the differences are listed under *Relationship to PRD 15*.
 
 | Topic | PRD 15 (`prd15.md`) | This PRD |
 |---|---|---|
-| Cardinality | One sandbox per workspace, provisioned automatically when the clone is ready | Any number per workspace (capped), launched on request, each pinned to a revision |
-| Lifetime | Long-lived; stopped on archive | Ephemeral; stopped on request, on timeout, on archive/delete |
+| Cardinality | One sandbox per workspace, provisioned automatically when the clone is ready | Any number per workspace, launched on request, each pinned to a revision |
+| Lifetime | Long-lived; stopped on archive | Ephemeral; stopped on request, when the workload exits, on timeout, on lost liveness, on archive/delete |
 | Code inside the sandbox | The hub's workspace clone bind-mounted at `/workspace` | The outpost clones from the hub's git server at the pinned revision; no host mounts |
+| Secrets | Container environment variables set by the provider | Fetched by the outpost over HTTPS after boot; never in container metadata |
 | Control channel | `podman exec`, file read/write through the provider | NATS request/reply with the outpost; the provider only launches, inspects and stops |
 | Runtime abstraction | Provider interface with podman bindings in-process | Gateway interface (local in-process, remote over NATS) × provider (`container`, `microvm`, `pod`) |
-| Configuration | Hub-level defaults with per-org/per-workspace overrides in the DB | One `sandbox.json` document: hub default file, optional workspace replacement, hub-level ceilings |
+| Configuration | Hub-level defaults with per-org/per-workspace overrides in the DB | One `sandbox.json` document: hub default file, optional workspace replacement via API, optional hub-level ceilings |
 | Token | Short-lived PAT with workspace read/write | PAT plus a hub-side binding to one sandbox and one workspace, revoked on stop |
 | podman integration | `containers/podman/v5` Go bindings over the socket | The `podman` CLI, driven like `git` is today |
 
@@ -139,11 +156,17 @@ integration, security posture of the container) carries over in spirit.
   gateway** is a separate process (`af-gateway`) on another host or in a
   cluster that speaks the same interface to the hub over NATS.
 - **Outpost.** The process that runs as the sandbox's entrypoint
-  (`afc outpost run`). It bootstraps the sandbox from the injected
-  environment, connects to the hub's NATS server, and executes commands.
+  (`afc outpost run`). It bootstraps the sandbox from the hub, connects to
+  the hub's NATS server, starts the workload, executes commands and reports
+  liveness.
+- **Workload.** The command the outpost starts after bootstrap, from the
+  sandbox configuration: an agent, a script, or nothing.
+- **Bootstrap document.** What the outpost fetches from the hub with the
+  sandbox token: workspace, branch, revision, clone URL, NATS credentials,
+  workload command, environment (plain values, variables and secrets).
 - **Sandbox configuration.** The JSON document (`sandbox.json`) that says
   which image, provider, gateway, resources, network policy, environment,
-  secrets and timeouts a sandbox is launched with.
+  secrets, workload and timeouts a sandbox is launched with.
 - **Sandbox token.** The hub credential injected into the sandbox. It is
   valid for exactly one workspace and one sandbox and dies with the sandbox.
 
@@ -156,8 +179,8 @@ integration, security posture of the container) carries over in spirit.
   `[sandbox] config_path` in `config.toml`. If the file is missing the hub
   SHALL use a built-in default (image `quay.io/agentfox/agents:latest`,
   provider `container`, gateway `local`, 2 CPU, 4 GiB, 512 pids, egress
-  `all`, boot 5m, idle 30m, max lifetime 8h) and log that it did so. A file
-  that exists but does not validate SHALL abort startup.
+  `all`, no workload, boot 5m, max lifetime 8h) and log that it did so. A
+  file that exists but does not validate SHALL abort startup.
 - **CFG-2.** The document schema, version 1:
 
   ```json
@@ -166,47 +189,54 @@ integration, security posture of the container) carries over in spirit.
     "provider": "container",
     "gateway": "local",
     "image": "quay.io/agentfox/agents:latest",
-    "command": ["afc", "outpost", "run"],
     "workdir": "/opt/app-root/workspace",
+    "command": ["claude", "-p", "Implement the spec in .specs/"],
+    "on_exit": "stop",
     "resources": { "cpu": "2", "memory": "4Gi", "pids": 512, "disk": "10Gi" },
     "network": { "egress": "all", "allow": [] },
     "env": { "AGENT_LOG_LEVEL": "info" },
     "vars": "all",
     "secrets": ["ANTHROPIC_API_KEY"],
-    "timeouts": { "boot": "5m", "idle": "30m", "max": "8h" }
+    "timeouts": { "boot": "5m", "max": "8h" }
   }
   ```
 
   `provider` is one of `container`, `microvm`, `pod`. `gateway` names the
   built-in `local` gateway or a gateway registered in `config.toml`.
-  `command` and `workdir` are optional and default to the image's. `cpu`
-  and `memory` use Kubernetes quantity syntax; `disk` is advisory for
-  gateways that can enforce it. `network.egress` is `all` or `restricted`;
-  with `restricted`, `allow` lists `host[:port]` entries, and the hub's own
-  HTTP and NATS endpoints are always implicitly allowed. `vars` is `"all"`
-  or a list of variable keys to inject from the workspace's resolved
-  variables. `secrets` is a list of secret keys resolved workspace > org >
-  user, the same order as variables. `env` holds plain values. Timeouts use
-  Go duration syntax.
+  `workdir` defaults to the image's working directory. `command` is the
+  workload the outpost starts after bootstrap (OP-6); when absent the
+  outpost idles and the sandbox stays up until stopped. `on_exit` is what
+  happens when the workload exits: `stop` (default, graceful stop with a
+  final push) or `keep`. `cpu` and `memory` use Kubernetes quantity syntax;
+  `disk` is advisory for gateways that can enforce it. `network.egress` is
+  `all` or `restricted`; with `restricted`, `allow` lists `host[:port]`
+  entries, and the hub's own endpoints are always implicitly allowed. `vars`
+  is `"all"` or a list of variable keys to take from the workspace's
+  resolved variables. `secrets` is a list of secret keys resolved workspace
+  > org > user, the same order as variables. `env` holds plain values.
+  Timeouts use Go duration syntax.
 - **CFG-3.** A workspace MAY store its own sandbox configuration through
   `PUT /api/v1/workspaces/:slug/sandbox-config`. When present it SHALL
-  replace the default document entirely; there is no field-level merge.
-  `GET` returns the effective document with `"origin": "workspace"` or
-  `"origin": "default"`; `DELETE` removes the workspace document.
-- **CFG-4.** Independently of which document applies, the hub SHALL enforce
-  ceilings from `config.toml` at launch time: `[sandbox.limits] max_cpu`,
+  replace the default document entirely; there is no field-level merge, and
+  the document is not read from the repository. `GET` returns the effective
+  document with `"origin": "workspace"` or `"origin": "default"`; `DELETE`
+  removes the workspace document.
+- **CFG-4.** Optionally, `config.toml` MAY set ceilings that apply
+  regardless of which document is in force: `[sandbox.limits] max_cpu`,
   `max_memory`, `max_pids`, `max_lifetime`, `allowed_images` (glob list),
-  `allowed_providers`, `allowed_gateways`. A configuration that exceeds a
-  ceiling is rejected at `PUT` time with `400 sandbox_config_invalid` naming
-  the field, and again at launch time if the ceilings changed since.
+  `allowed_providers`, `allowed_gateways`. None is set by default. A
+  configuration that exceeds a set ceiling is rejected at `PUT` time with
+  `400 sandbox_config_invalid` naming the field, and again at launch time if
+  the ceilings changed since.
 - **CFG-5.** Keys in `env` SHALL NOT start with `AF_`; `vars` and `secrets`
-  keys that collide with a reserved `AF_*` name are ignored with a warning in
-  the launch record. A `secrets` key that does not resolve at launch SHALL
-  fail the launch with `secret_not_found` naming the key (never launch with
-  a silently missing credential).
+  keys that collide with a reserved `AF_*` name are dropped with a warning
+  recorded on the launch. A `secrets` key that does not resolve at launch
+  SHALL fail the launch with `secret_not_found` naming the key (never launch
+  with a silently missing credential).
 - **CFG-6.** The launch request MAY override `image`, `resources`, `env`,
-  and `timeouts` for that one sandbox, subject to CFG-4. It MAY NOT override
-  `secrets`, `provider`, `gateway` or `network`.
+  `command`, `on_exit` and `timeouts` for that one sandbox, subject to
+  CFG-4. It MAY NOT override `secrets`, `vars`, `provider`, `gateway` or
+  `network`.
 - **CFG-7.** The hub SHALL store the configuration it actually launched with
   in the sandbox record, with secret values replaced by their key names, so
   that a record is self-describing after the workspace document changes.
@@ -216,22 +246,19 @@ integration, security posture of the container) carries over in spirit.
 - **LC-1.** `POST /api/v1/workspaces/:slug/sandboxes` SHALL create a sandbox
   record in status `pending` and enqueue a `sandbox_launch` job keyed by the
   sandbox id. The request body is
-  `{ "ref": "...", "branch": "...", "ttl": "...", "metadata": {}, "overrides": {} }`.
-  `ref` defaults to the workspace branch; `branch` defaults to
-  `sandbox/<short id>`; `ttl` caps `timeouts.max` for this sandbox.
+  `{ "branch": "...", "ref": "...", "ttl": "...", "metadata": {}, "overrides": {} }`.
+  `branch` defaults to the workspace branch; the sandbox works directly on
+  it. `ttl` caps `timeouts.max` for this sandbox.
 - **LC-2.** Before enqueueing, under the workspace lock, the hub SHALL
-  resolve `ref` to a commit SHA in the workspace trunk and store it as
-  `revision`. A `ref` that does not resolve fails with `404 ref_not_found`.
-  If `branch` does not exist the hub SHALL create it at `revision` in the
-  trunk so that the sandbox's first push is a plain fast-forward. If it
-  exists and is not at `revision`, the launch fails with
-  `409 branch_diverged` unless `"reset_branch": true` is passed.
+  resolve the tip of `branch` in the workspace trunk and store it as
+  `revision`. If `branch` does not exist it SHALL be created at `ref`
+  (default: the workspace branch tip); passing `ref` for a branch that
+  already exists is `400 ref_conflict`. A `ref` that does not resolve is
+  `404 ref_not_found`.
 - **LC-3.** The workspace SHALL be `active` with `clone_status = ready`;
-  otherwise `409 workspace_not_ready`. The number of sandboxes in a
-  non-terminal status per workspace SHALL NOT exceed
-  `[sandbox] max_per_workspace` (default 4) and the hub-wide total SHALL NOT
-  exceed `[sandbox] max_total` (default 32); exceeding either returns
-  `429 sandbox_limit`.
+  otherwise `409 workspace_not_ready`. There is no cap on concurrent
+  sandboxes; a gateway that is out of capacity fails the launch with
+  `ErrCapacity`, which surfaces as `failed` / `capacity` on the record.
 - **LC-4.** Statuses and transitions:
 
   | From | To | When |
@@ -240,30 +267,36 @@ integration, security posture of the container) carries over in spirit.
   | `starting` | `booting` | the gateway reports the sandbox running |
   | `starting` | `failed` | the gateway cannot launch (image pull, capacity, unsupported provider or policy) |
   | `booting` | `ready` | the outpost's `ready` event arrives |
-  | `booting` | `failed` | no `ready` within `timeouts.boot` (`exit_reason: boot_timeout`) |
-  | `ready` | `stopping` | stop request, idle timeout, max lifetime, workspace archive/delete |
-  | `ready` | `failed` | three consecutive missed heartbeats and the gateway reports the sandbox gone (`exit_reason: lost`), or the gateway reports an unexpected exit (`exit_reason: exited`, with exit code) |
+  | `booting` | `failed` | no `ready` within `timeouts.boot` (`exit_reason: boot_timeout`), or the outpost reports `boot_failed` |
+  | `ready` | `stopping` | stop request, workload exit with `on_exit: stop`, max lifetime, workspace archive/delete |
+  | `ready` | `failed` | three consecutive missed heartbeats and the gateway reports the sandbox gone (`exit_reason: lost`), or the gateway reports an unexpected container exit (`exit_reason: exited`, with exit code) |
   | `stopping` | `stopped` | the gateway confirms the sandbox is gone |
   | `stopping` | `failed` | the gateway cannot stop it after the grace period plus force |
 
   `stopped` and `failed` are terminal. Every terminal transition records
   `ended_at` and `exit_reason`.
 - **LC-5.** Stopping SHALL be graceful: the hub sends `shutdown` over NATS
-  with the requested grace (default 30s) and, if requested, `push: true`;
-  waits for the outpost's `exiting` reply or the grace period; then asks the
-  gateway to stop, which sends SIGTERM and then SIGKILL after 10s. A sandbox
-  whose outpost never connected skips the NATS step.
+  with the requested grace (default 30s) and `push: true` unless the caller
+  says otherwise; waits for the outpost's `exiting` reply or the grace
+  period; then asks the gateway to stop, which sends SIGTERM and then
+  SIGKILL after 10s. A sandbox whose outpost never connected skips the
+  NATS step.
 - **LC-6.** Workspace archive and delete SHALL stop every non-terminal
   sandbox of the workspace with `push: false` before proceeding, and SHALL
   wait for them to reach a terminal status (bounded by the grace period plus
   force). Reactivate and reclone do not launch anything.
-- **LC-7.** Time limits: `timeouts.boot` (LC-4), `timeouts.idle` (no
-  activity, see OP-7, for that long), `timeouts.max` (since `started_at`) and
-  the launch `ttl` all cause a graceful stop with the matching
-  `exit_reason`. A stop caused by a limit SHALL use `push: true` so that
-  work is not lost silently; the outcome of that push is recorded on the
-  record.
-- **LC-8.** The record exposed by the API:
+- **LC-7.** Time limits: `timeouts.boot` (LC-4), `timeouts.max` (since
+  `started_at`) and the launch `ttl` cause a graceful stop with the matching
+  `exit_reason`. There is no idle timeout; liveness comes from heartbeats
+  (OP-7), and a sandbox with a live outpost stays up until its workload
+  exits, it is stopped, or its lifetime ends. Every stop the hub initiates
+  on its own uses `push: true`, and the outcome of that push is recorded on
+  the record.
+- **LC-8.** When the outpost reports `command_exited` and the effective
+  `on_exit` is `stop`, the hub SHALL initiate a graceful stop with
+  `push: true` and `exit_reason: command_exited`; with `keep` it records the
+  exit code and leaves the sandbox running.
+- **LC-9.** The record exposed by the API:
 
   ```json
   {
@@ -273,12 +306,13 @@ integration, security posture of the container) carries over in spirit.
     "provider": "container",
     "gateway": "local",
     "image": "quay.io/agentfox/agents:latest",
-    "ref": "main",
+    "branch": "main",
     "revision": "abc123…",
-    "branch": "sandbox/1a2b3c",
     "head_sha": "def456…",
     "dirty": false,
+    "command_exit_code": null,
     "last_heartbeat_at": "…",
+    "stats": { "cpu_pct": 12.5, "mem_bytes": 734003200, "disk_bytes": 91000000, "procs": 14 },
     "created_by": "uuid",
     "created_at": "…", "started_at": "…", "ready_at": "…", "ended_at": null,
     "exit_reason": null, "error": null,
@@ -288,11 +322,11 @@ integration, security posture of the container) carries over in spirit.
   }
   ```
 
-  `head_sha` and `dirty` are the outpost's last reported working-tree state.
+  `head_sha`, `dirty` and `stats` are the outpost's last reported state.
   `final_push` records the result of a shutdown-time push (`{ "ok": true,
   "sha": "…" }` or `{ "ok": false, "error": "…" }`). The gateway's handle
   (container id, pod name) is visible to admin tokens only.
-- **LC-9.** Sandbox records SHALL be kept after they end, listable with
+- **LC-10.** Sandbox records SHALL be kept after they end, listable with
   `?status=`, and pruned by the existing retention worker after
   `AF_SANDBOX_MAX_AGE_DAYS` (default 30).
 
@@ -300,9 +334,10 @@ integration, security posture of the container) carries over in spirit.
 
 - **TK-1.** At launch the hub SHALL mint a PAT on behalf of the workspace
   owner with exactly the scopes `git:read`, `git:write`, `sessions:write`,
-  `audit:write`, `vars:read`, `sandboxes:read`, no expiry at the PAT level,
-  and SHALL record a binding `(token_id, sandbox_id, workspace_slug,
-  expires_at)` in a hub table. `expires_at` is `started_at + timeouts.max`.
+  `audit:write`, `sandboxes:read`, no expiry at the PAT level, and SHALL
+  record a binding `(token_id, sandbox_id, workspace_slug, expires_at)` in
+  a hub table. `expires_at` is `started_at + timeouts.max` (or the launch
+  `ttl` when shorter).
 - **TK-2.** Every hub handler that resolves a workspace from the path, and
   the git server's authorisation, SHALL consult the binding for the
   credential id in `AuthInfo`: a bound credential used against another
@@ -310,66 +345,91 @@ integration, security posture of the container) carries over in spirit.
   `404` (workspace endpoints, git server) or `403 token_scope` (session and
   audit ingestion endpoints), in line with the anti-enumeration policy.
   Session records opened with a bound token SHALL carry the sandbox id in
-  their metadata.
+  their metadata, added by the hub.
 - **TK-3.** The binding SHALL be revoked, and the PAT revoked best-effort,
   when the sandbox reaches a terminal status. A bound token SHALL NOT be
-  able to create PATs, list tokens, or read secrets, regardless of what the
-  underlying PAT could do.
+  able to create PATs, list tokens, or use the secrets endpoints,
+  regardless of what the underlying PAT could do. Its only route to secret
+  values is the bootstrap document (BS-1), which contains exactly the
+  secrets its configuration names.
 - **TK-4.** The plaintext token SHALL exist only in the launch job's
   in-memory payload and the sandbox's environment. It SHALL NOT be written
   to the job's persisted payload, the sandbox record, logs or audit events.
 
-### Bootstrap environment
+### Container environment and bootstrap document
 
-- **ENV-1.** The gateway SHALL inject, in this order with later entries
-  losing to earlier ones on collision: the reserved `AF_*` variables below;
-  the workspace's resolved variables selected by `vars`; the secrets named
-  in `secrets`; the `env` map.
+- **ENV-1.** The gateway SHALL set exactly three environment variables on
+  the sandbox and nothing else of the hub's:
 
   | Variable | Value |
   |---|---|
   | `AF_HUB_URL` | HTTP base URL of the hub as reachable from the gateway's network |
   | `AF_HUB_TOKEN` | the sandbox token |
-  | `AF_NATS_URL` | NATS URL as reachable from the gateway's network |
-  | `AF_NATS_USER`, `AF_NATS_PASSWORD` | per-sandbox NATS credentials (MSG-3) |
   | `AF_SANDBOX_ID` | sandbox id |
-  | `AF_WORKSPACE` | workspace slug |
-  | `AF_WORKSPACE_GIT_URL` | clone URL on the hub's git server (`hub_url`) |
-  | `AF_WORKSPACE_BRANCH` | the branch the sandbox works on |
-  | `AF_REVISION` | the pinned commit SHA |
-  | `AF_WORKDIR` | the checkout directory |
 
-- **ENV-2.** URLs in `AF_HUB_URL`, `AF_NATS_URL` and `AF_WORKSPACE_GIT_URL`
-  SHALL be computed per gateway: the local gateway uses
-  `[sandbox.local] hub_url` and `nats_url` when set (for example
-  `host.containers.internal` when the hub runs on the host) and falls back
-  to `[server] external_url` and `[nats] external_url`; a remote gateway
-  uses the values in its `[[sandbox.gateways]]` entry with the same
-  fallback. A launch with no usable URL fails with `hub_unreachable_config`
-  rather than launching a sandbox that cannot phone home.
-- **ENV-3.** Secrets are injected as environment variables at creation time,
-  as the brief specifies. They are visible to anyone who can inspect the
-  container on the gateway host; SEC-3 covers the consequences. Rotating a
-  secret does not affect running sandboxes.
+  Variables, secrets, the workload command, NATS credentials and everything
+  else arrive through the bootstrap document. Container metadata on the
+  gateway host therefore never carries a secret other than the token.
+- **ENV-2.** `AF_HUB_URL` SHALL be computed per gateway: the local gateway
+  uses `[sandbox.local] hub_url` when set (for example
+  `http://host.containers.internal:8080` when the hub runs on the host) and
+  falls back to `[server] external_url`; a remote gateway uses the
+  `hub_url` in its `[[sandbox.gateways]]` entry with the same fallback. A
+  launch with no usable URL fails with `hub_unreachable_config` rather than
+  launching a sandbox that cannot phone home.
+- **BS-1.** `GET /api/v1/sandboxes/:id/bootstrap` SHALL return, to the
+  sandbox token bound to `:id` and to nobody else, while the sandbox is
+  non-terminal:
+
+  ```json
+  {
+    "sandbox_id": "uuid",
+    "workspace": "my-project",
+    "git_url": "https://hub.example.com/git/org/my-project.git",
+    "branch": "main",
+    "revision": "abc123…",
+    "workdir": "/opt/app-root/workspace",
+    "command": ["claude", "-p", "…"],
+    "on_exit": "stop",
+    "nats": { "url": "wss://hub.example.com/nats", "user": "sbx-uuid", "password": "…" },
+    "env": { "AGENT_LOG_LEVEL": "info", "MY_VAR": "…", "ANTHROPIC_API_KEY": "…" },
+    "secret_keys": ["ANTHROPIC_API_KEY"],
+    "timeouts": { "boot": "5m", "max": "8h" }
+  }
+  ```
+
+  `env` is the merge of the configuration's `env`, the selected variables
+  and the named secrets, with secrets overriding variables overriding
+  `env`; `secret_keys` tells the outpost which values must never be logged.
+  `nats.url` is computed per gateway like `AF_HUB_URL` (from
+  `[sandbox.local] nats_url`, the gateway entry, or `[nats] external_url`).
+- **BS-2.** Every bootstrap fetch SHALL emit `hub.sandbox.bootstrap` (actor:
+  the sandbox) so that a second fetch from an unexpected place is visible.
+  A fetch against a terminal sandbox, or with any credential other than the
+  bound token, is `404`.
+- **BS-3.** Secret values SHALL be resolved at fetch time, not at launch
+  time, so the document always reflects the current secret; the set of
+  keys is fixed at launch (CFG-7).
 
 ### Outpost
 
-- **OP-1.** `afc outpost run` SHALL be the sandbox entrypoint. It reads the
-  `AF_*` environment, fails fast with a clear message if any required
-  variable is missing, and never reads `~/.af/config.toml` for its own
+- **OP-1.** `afc outpost run` SHALL be the sandbox entrypoint. It reads
+  `AF_HUB_URL`, `AF_HUB_TOKEN` and `AF_SANDBOX_ID`, fails fast with a clear
+  message if any is missing, and never reads `~/.af/config.toml` for its own
   credentials.
-- **OP-2.** Bootstrap: write `~/.af/config.toml` with `endpoint_url =
-  AF_HUB_URL` and `api_key = AF_HUB_TOKEN` (mode 0600) so that `afc` and
-  the existing credential helper work for agents and for git; configure
+- **OP-2.** Bootstrap: fetch BS-1 (retrying with backoff for up to
+  `timeouts.boot`); write `~/.af/config.toml` with `endpoint_url` and
+  `api_key = AF_HUB_TOKEN` (mode 0600) so that `afc` and the existing
+  credential helper work for the workload and for git; configure
   `credential.<AF_HUB_URL>.helper = "!afc credential-helper"` globally;
-  clone `AF_WORKSPACE_GIT_URL` into `AF_WORKDIR` with `--branch
-  AF_WORKSPACE_BRANCH`; verify `HEAD == AF_REVISION` (fail otherwise: the
-  branch moved between launch and boot, which LC-2 makes unlikely but not
-  impossible); set a commit identity from `AF_SANDBOX_ID` unless
-  `GIT_AUTHOR_*` is injected.
-- **OP-3.** Connect to `AF_NATS_URL` with the injected credentials, with
+  clone `git_url` into `workdir` with `--branch <branch>`; if the branch tip
+  is no longer `revision` (a push landed between launch and boot, which is
+  normal when sandboxes share the workspace branch) proceed on the new tip
+  and report both SHAs in `ready`; set a commit identity from the sandbox
+  id unless `GIT_AUTHOR_*` arrives in `env`.
+- **OP-3.** Connect to `nats.url` with the bootstrap credentials, with
   unlimited reconnect and exponential backoff capped at 30s. Publish `ready`
-  once the clone is verified and the subscription to the command subject is
+  once the clone is in place and the subscription to the command subject is
   live. A bootstrap failure before `ready` SHALL be published as
   `boot_failed` with the error when NATS is reachable, then the process
   exits non-zero.
@@ -379,28 +439,40 @@ integration, security posture of the container) carries over in spirit.
   working tree is dirty it replies `dirty_worktree` unless `force: true`, in
   which case it discards local changes. `sync` with `direction: push` runs
   `git push origin <branch>` (`--force-with-lease` when `force: true`) and
-  replies with the pushed SHA or the git error. `shutdown` performs the
-  push first when `push: true`, replies `exiting` with the push result,
-  and exits 0. `ping` replies with the status block of OP-7.
+  replies with the pushed SHA, or `non_fast_forward` / the git error.
+  `shutdown` performs the push first when `push: true`, sends SIGTERM to the
+  workload and waits up to the grace period, replies `exiting` with the push
+  result, and exits 0. `ping` replies with the heartbeat block of OP-7.
 - **OP-5.** The outpost does nothing else with the working tree: no
   automatic commits, no automatic pushes except at shutdown when asked.
-  Whatever runs inside the sandbox (an agent, a shell) commits and pushes
-  through the normal git remote; the hub's post-push hooks fire as for any
-  other push.
-- **OP-6.** The outpost SHALL keep running after `ready` for the life of the
-  sandbox. It SHALL NOT spawn the agent. A caller who wants a process
-  started at boot puts it in `command` (for example a wrapper that starts
-  `afc outpost run` in the background and then the agent).
-- **OP-7.** Every 30s the outpost publishes `heartbeat` with
-  `{ "head_sha", "dirty", "uptime_s", "last_activity_at" }`.
-  `last_activity_at` advances when a command is handled or when the
-  working-tree state (HEAD plus a hash of `git status --porcelain`) changed
-  since the previous heartbeat. The hub uses it for `timeouts.idle`.
+  Whatever runs inside the sandbox commits and pushes through the normal git
+  remote; the hub's post-push hooks fire as for any other push. Because
+  sandboxes work on the workspace branch by default, two sandboxes on the
+  same branch race at push time exactly as two developers would; the
+  `non_fast_forward` reply and `force: true` are the tools for it, and a
+  caller who wants isolation passes a different `branch` and merges through
+  the merge queue.
+- **OP-6.** After `ready`, when `command` is set, the outpost SHALL start it
+  as a child process in `workdir` with the process environment plus the
+  bootstrap `env` plus `AF_HUB_URL`, `AF_HUB_TOKEN`, `AF_SANDBOX_ID`,
+  `AF_WORKSPACE`, `AF_WORKSPACE_BRANCH`, `AF_REVISION`, `AF_NATS_URL`,
+  `AF_NATS_USER`, `AF_NATS_PASSWORD`; forward its stdout and stderr to the
+  container's; and publish `command_exited` with the exit code when it
+  ends. Without `command` the outpost idles. The outpost SHALL NOT restart
+  the workload; `on_exit` decides what the hub does next (LC-8).
+- **OP-7.** Every 30s the outpost publishes `heartbeat`: an "I'm alive" with
+  `{ "head_sha", "dirty", "uptime_s", "command_running", "stats": { "cpu_pct",
+  "mem_bytes", "disk_bytes", "procs" } }`, where `stats` are read from the
+  container's cgroup and `workdir`. The hub stores the latest heartbeat on
+  the record (LC-9) and uses missed heartbeats for liveness (LC-4).
 - **OP-8.** The outpost SHALL treat SIGTERM like a `shutdown` with
   `push: false` and a 10s budget, so that a gateway-initiated stop still
   produces an `exiting` event when NATS is reachable.
+- **OP-9.** `afc outpost emit --type <type> [--json <payload> | -]` SHALL
+  publish a telemetry event (TEL-1) from inside the sandbox using the
+  `AF_NATS_*` variables, for workloads that cannot speak NATS themselves.
 
-### Hub ↔ outpost messaging
+### Hub ↔ sandbox messaging
 
 - **MSG-1.** The hub SHALL embed `nats-server` (`github.com/nats-io/nats-server/v2`)
   in the `hub` process, started before the HTTP server and stopped after it.
@@ -409,45 +481,75 @@ integration, security posture of the container) carries over in spirit.
   ```toml
   [nats]
   enabled      = true
+  port         = 4222         # plain NATS TCP for clients on the hub's own network; 0 disables
   bind         = "0.0.0.0"
-  port         = 4222
-  external_url = "nats://hub.example.com:4222"
-  websocket_port = 0              # >0 enables a WebSocket listener for ingress-only deployments
-  tls_cert     = ""               # optional; when set, tls_key is required
-  tls_key      = ""
+  external_url = ""           # default: [server] external_url with ws/wss scheme and path /nats
   ```
 
-  With `enabled = false` the sandbox subsystem is off and its endpoints
-  return `404`.
+  The embedded server SHALL always run a WebSocket listener bound to
+  loopback, and the hub SHALL reverse-proxy `GET /nats` (WebSocket upgrade)
+  on its HTTP listener to it. Outposts and remote gateways therefore reach
+  NATS through the same host, port and TLS termination as the REST API
+  (`wss://hub.example.com/nats`), which is what passes firewalls and the
+  existing Kubernetes Route; the TCP port is a convenience for in-network
+  clients. With `enabled = false` the sandbox subsystem is off and its
+  endpoints return `404`.
 - **MSG-2.** Subjects:
 
   | Subject | Direction | Pattern |
   |---|---|---|
   | `af.sbx.<id>.cmd` | hub → outpost | request/reply |
   | `af.sbx.<id>.evt.<type>` | outpost → hub | publish |
+  | `af.sbx.<id>.tel.<type>` | anything inside the sandbox → hub | publish (TEL-1) |
   | `af.gw.<name>.cmd` | hub → remote gateway | request/reply |
   | `af.gw.<name>.evt.<type>` | remote gateway → hub | publish |
 
 - **MSG-3.** Each sandbox SHALL get its own NATS user (`sbx-<id>`, random
   password) with permissions: subscribe `af.sbx.<id>.cmd`, publish
-  `af.sbx.<id>.evt.>`, and `allow_responses` so it can answer requests
-  without a blanket `_INBOX.>` grant. Users are added at launch and removed
-  at terminal status through the embedded server's options reload. Remote
-  gateways get the same treatment on `af.gw.<name>.>` with a static token
-  from `config.toml`. The hub's own connection is an in-process client with
-  full permissions; nothing else can connect without credentials.
+  `af.sbx.<id>.evt.>` and `af.sbx.<id>.tel.>`, and `allow_responses` so it
+  can answer requests without a blanket `_INBOX.>` grant. The credentials
+  are delivered in the bootstrap document, never in container metadata.
+  Users are added at launch and removed at terminal status through the
+  embedded server's options reload. Remote gateways get the same treatment
+  on `af.gw.<name>.>` with a static token from `config.toml`. The hub's own
+  connection is an in-process client with full permissions; nothing else
+  can connect without credentials.
 - **MSG-4.** Every message is a JSON envelope
   `{ "id": "uuid", "type": "sync", "sent_at": "…", "sandbox_id": "…", "payload": {} }`.
   Replies reuse `id` and carry `{ "ok": true, "payload": {} }` or
   `{ "ok": false, "error": { "code": "dirty_worktree", "message": "…" } }`.
   Command types in this PRD: `ping`, `sync`, `shutdown`. Event types:
-  `ready`, `boot_failed`, `heartbeat`, `exiting`. Unknown command types are
-  answered with `unsupported`; unknown event types are logged and dropped.
-  A command that receives no reply within its timeout (`ping` 5s, `sync`
-  10m, `shutdown` grace + 5s) is reported to the caller as `timeout`.
-- **MSG-5.** The hub SHALL consume events on `af.sbx.>` from one durable
+  `ready`, `boot_failed`, `heartbeat`, `command_exited`, `exiting`. Unknown
+  command types are answered with `unsupported`; unknown event types are
+  logged and dropped. A command that receives no reply within its timeout
+  (`ping` 5s, `sync` 10m, `shutdown` grace + 5s) is reported to the caller
+  as `timeout`.
+- **MSG-5.** The hub SHALL consume events on `af.sbx.>` from one
   subscription and apply them to records idempotently, keyed by envelope
   id, so that a redelivered or reordered event cannot regress a status.
+
+### Telemetry from inside the sandbox
+
+- **TEL-1.** Agents and tools running in a sandbox MAY publish telemetry on
+  `af.sbx.<id>.tel.<type>` using the sandbox's NATS credentials (inherited
+  from the outpost, OP-6, or via `afc outpost emit`, OP-9). Types in this
+  PRD:
+
+  | Type | Payload | Stored as |
+  |---|---|---|
+  | `event` | an agent audit event in the format `POST /workspaces/:slug/runs/:run_id/events` accepts | agent audit event, workspace and sandbox id attached by the hub |
+  | `usage` | `{ "session_id", "model", "input_tokens", "output_tokens", … }` as `POST /sessions/:id/usage` accepts | token usage row |
+  | `metrics` | `{ "name", "value", "labels": {} }` samples | Prometheus gauge `af_sandbox_metric{name,workspace,sandbox,…}`, latest value, dropped when the sandbox ends |
+  | `log` | `{ "level", "message", "fields": {} }` | hub log line tagged with the sandbox id; not persisted |
+
+  The hub SHALL ingest `event` and `usage` through the same validation and
+  storage paths as their HTTP counterparts, attributing them to the sandbox
+  token's identity, so that an agent inside a sandbox can report over NATS
+  or over HTTPS interchangeably. Telemetry is fire-and-forget: malformed
+  payloads are counted (`af_sandbox_telemetry_rejected_total{type}`) and
+  dropped, never acknowledged.
+- **TEL-2.** Telemetry SHALL NOT influence lifecycle; only `evt` messages
+  from the outpost do.
 
 ### Gateway interface
 
@@ -465,8 +567,8 @@ integration, security posture of the container) carries over in spirit.
   }
   ```
 
-  `LaunchSpec` carries the sandbox id, provider, image, command, workdir,
-  resources, network policy, the full environment, and labels
+  `LaunchSpec` carries the sandbox id, provider, image, workdir, resources,
+  network policy, the three bootstrap variables (ENV-1) and labels
   (`af.sandbox=<id>`, `af.workspace=<slug>`). Errors are typed:
   `ErrUnsupportedProvider`, `ErrUnsupportedPolicy`, `ErrImagePull`,
   `ErrCapacity`, `ErrNotFound`, `ErrUnavailable`.
@@ -484,19 +586,19 @@ integration, security posture of the container) carries over in spirit.
   bounded deadlines, scrubbed environment). It SHALL be registered
   automatically when `podman` is on `PATH` (or at `[sandbox.local] podman`),
   and its `Health` runs `podman info`.
-- **LG-2.** `container` provider: `podman run --detach --rm=false
-  --name sbx-<id> --label … --cpus … --memory … --pids-limit …
-  --cap-drop ALL --security-opt no-new-privileges --read-only
-  --tmpfs /tmp --user 1001 …` with the working directory
-  as an anonymous volume so it is writable while the root filesystem is
-  not. Environment is passed with `--env-file` from a 0600 temp file
-  deleted after `run` returns, never on the command line.
+- **LG-2.** `container` provider: `podman run --detach --name sbx-<id>
+  --label … --cpus … --memory … --pids-limit … --cap-drop ALL
+  --security-opt no-new-privileges --read-only --tmpfs /tmp --user 1001 …`
+  with the working directory and `$HOME` as anonymous volumes so they are
+  writable while the root filesystem is not. The three environment
+  variables are passed with `--env-file` from a 0600 temp file deleted
+  after `run` returns, so the token never appears on a command line.
 - **LG-3.** `microvm` provider: the same invocation with
   `--runtime krun` (libkrun). `Capabilities` reports `microvm` only when
   `podman info` lists that runtime.
 - **LG-4.** Network policy: `all` uses podman's default network.
-  `restricted` is reported as unsupported by the local gateway in this
-  iteration (see Open Questions for the options).
+  `restricted` is reported as unsupported by the local gateway; enforcement
+  arrives with the OpenShell integration (Non-goals).
 - **LG-5.** `Inspect` maps `podman inspect` state to `running`, `exited`
   (with exit code) or `gone`; `Stop` runs `podman stop -t <grace>` then
   `podman rm -f`; `List` uses `podman ps -a --filter label=af.sandbox`.
@@ -514,7 +616,7 @@ integration, security posture of the container) carries over in spirit.
   name     = "cloud-1"
   token    = "${GW_CLOUD1_TOKEN}"   # NATS credential for af.gw.cloud-1.>
   hub_url  = "https://hub.example.com"
-  nats_url = "nats://hub.example.com:4222"
+  nats_url = "wss://hub.example.com/nats"
   ```
 
   It is `connected` when a client authenticated with its token has
@@ -527,9 +629,9 @@ integration, security posture of the container) carries over in spirit.
   `Gateway` for a remote entry is a thin NATS client.
 - **RG-3.** `af-gateway` SHALL be a new static binary (`cmd/af-gateway`)
   that hosts the same podman implementation the local gateway uses and, in a
-  later PRD, the Kubernetes one; it connects out to the hub's NATS server,
-  so a remote host needs no inbound ports. Sandboxes it launches reach the
-  hub through the URLs in the gateway's entry (ENV-2).
+  later PRD, the Kubernetes one; it connects out to the hub's NATS WebSocket
+  endpoint, so a remote host needs no inbound ports. Sandboxes it launches
+  reach the hub through the URLs in the gateway's entry (ENV-2, BS-1).
 
 ### HTTP API
 
@@ -543,6 +645,7 @@ integration, security posture of the container) carries over in spirit.
   | `POST /api/v1/workspaces/:slug/sandboxes/:id/sync` | `sandboxes:write` | `sync` command; `200` with the reply, or `409 sandbox_not_ready` |
   | `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | `sandboxes:write` | graceful stop, body `{ "push": bool, "grace": "30s" }`, `202` |
   | `GET/PUT/DELETE /api/v1/workspaces/:slug/sandbox-config` | `sandboxes:read` / `sandboxes:write` | CFG-3 |
+  | `GET /api/v1/sandboxes/:id/bootstrap` | bound sandbox token only | BS-1 |
   | `GET /api/v1/sandboxes` | admin | all sandboxes across workspaces |
   | `GET /api/v1/gateways` | admin | gateways, connection state, capabilities |
 
@@ -555,16 +658,17 @@ integration, security posture of the container) carries over in spirit.
 
 ### CLI
 
-- **CLI-1.** `afc sandbox launch <slug> [--ref] [--branch] [--ttl]
-  [--image] [--cpu] [--memory] [--env K=V]... [--wait]`, `afc sandbox list
-  <slug> [--status]`, `afc sandbox get <slug> <id> [--wait-for ready]`,
-  `afc sandbox sync <slug> <id> --pull|--push [--ref] [--force]`,
-  `afc sandbox stop <slug> <id> [--push] [--grace] [--wait]`,
+- **CLI-1.** `afc sandbox launch <slug> [--branch] [--ref] [--ttl]
+  [--image] [--cpu] [--memory] [--env K=V]... [--command "..."] [--wait]`,
+  `afc sandbox list <slug> [--status]`, `afc sandbox get <slug> <id>
+  [--wait-for ready]`, `afc sandbox sync <slug> <id> --pull|--push [--ref]
+  [--force]`, `afc sandbox stop <slug> <id> [--no-push] [--grace] [--wait]`,
   `afc sandbox config get|set|delete <slug> [--file sandbox.json]`,
   `afc sandbox gateways` (admin). `--wait` variants exit non-zero on
   `failed`, as `afc rebuild wait` does.
-- **CLI-2.** `afc outpost run` (OP-1). Hidden from the top-level help;
-  documented in `docs/cli.md` under a "Sandbox internals" heading.
+- **CLI-2.** `afc outpost run` (OP-1) and `afc outpost emit` (OP-9). Hidden
+  from the top-level help; documented in `docs/cli.md` under a "Sandbox
+  internals" heading.
 
 ### Security
 
@@ -576,31 +680,39 @@ integration, security posture of the container) carries over in spirit.
   (LG-2). The hub does not claim VM-level isolation from the `container`
   provider; operators who need it choose `microvm` or a `pod` provider with
   a hardened RuntimeClass.
-- **SEC-3.** Because secrets are container environment variables, anyone
-  with podman access on the gateway host can read them. The PRD accepts
-  this for the local gateway (the host already holds the hub's database).
-  Remote gateway hosts are trusted to the same degree; the alternative
-  (outpost fetches secrets over HTTPS after boot) is an open question.
-- **SEC-4.** The sandbox token's scopes (TK-1) do not include
-  `secrets:*`, `tokens:*`, `workspaces:*` or `sandboxes:write`; a
-  compromised sandbox can push to its workspace and open sessions, nothing
-  else, and only until it is stopped.
-- **SEC-5.** Audit events and logs SHALL redact `AF_HUB_TOKEN`,
-  `AF_NATS_PASSWORD` and every value injected from `secrets`.
+- **SEC-3.** Secrets are never part of container metadata: the gateway host
+  sees only the sandbox token, and `podman inspect` reveals nothing an
+  attacker could not already get by holding that token for the sandbox's
+  lifetime. Secrets live in the outpost's memory and in the workload's
+  process environment inside the sandbox, and are re-read from the hub on
+  each bootstrap fetch (BS-3).
+- **SEC-4.** The sandbox token's scopes (TK-1) do not include `secrets:*`,
+  `tokens:*`, `workspaces:*`, `vars:*` or `sandboxes:write`. A compromised
+  sandbox can push to its workspace, open sessions, ingest audit data, and
+  fetch its own bootstrap document (with exactly the secrets its
+  configuration names), nothing else, and only until it is stopped.
+- **SEC-5.** Audit events and logs SHALL redact `AF_HUB_TOKEN`, NATS
+  passwords and every value listed in `secret_keys`. The outpost SHALL
+  apply the same redaction to the workload output it forwards when a
+  secret value appears verbatim.
 
 ### Audit, sessions and metrics
 
 - **AU-1.** Events through the existing emitter: `hub.sandbox.launch`
-  (actor, workspace, provider, gateway, image, ref, revision, branch),
-  `hub.sandbox.ready`, `hub.sandbox.sync` (direction, result),
+  (actor, workspace, provider, gateway, image, branch, revision),
+  `hub.sandbox.bootstrap`, `hub.sandbox.ready`, `hub.sandbox.sync`
+  (direction, result), `hub.sandbox.command_exited` (code),
   `hub.sandbox.stop` (reason, final push result), `hub.sandbox.failed`
   (reason, error). Timeouts and reconciliation use actor `system`.
 - **AU-2.** Metrics: `af_sandboxes{gateway,provider,status}` gauge,
   `af_sandbox_launch_seconds` histogram (`pending` to `ready`),
-  `af_sandbox_ended_total{exit_reason}`, `af_nats_connections`.
-- **AU-3.** Sessions opened with a sandbox token carry
-  `metadata.sandbox_id` (TK-2); `GET /workspaces/:slug/cost` can therefore
-  be broken down per sandbox later without a schema change.
+  `af_sandbox_ended_total{exit_reason}`, `af_nats_connections`,
+  `af_sandbox_metric{…}` (TEL-1), `af_sandbox_telemetry_rejected_total{type}`.
+- **AU-3.** Sessions are opened by whatever runs inside the sandbox, not by
+  the hub at launch. Sessions and usage reported with a sandbox token, over
+  HTTPS or NATS, carry `metadata.sandbox_id` (TK-2), so
+  `GET /workspaces/:slug/cost` can be broken down per sandbox later without
+  a schema change.
 
 ### Operations
 
@@ -624,25 +736,30 @@ integration, security posture of the container) carries over in spirit.
 
 ### Testing
 
-- Unit: configuration validation and ceilings (CFG); status machine (LC-4)
-  with a fake gateway and injected events; token binding checks (TK) in
-  the workspace and git server authz tests; envelope encode/decode and the
-  outpost command handlers against a temporary git repository.
-- Integration: an embedded `nats-server` on a random port in tests; the
-  outpost run as a goroutine against a test hub with the existing git
-  server test helpers, covering `ready`, `sync` both ways, `dirty_worktree`,
-  `shutdown` with push, reconnect after the test server restarts.
+- Unit: configuration validation and ceilings (CFG); status machine (LC-4,
+  LC-8) with a fake gateway and injected events; token binding checks (TK)
+  in the workspace and git server authz tests; bootstrap document assembly
+  and access control (BS); envelope encode/decode; the outpost command
+  handlers and workload supervision against a temporary git repository;
+  telemetry ingestion parity with the HTTP endpoints (TEL-1).
+- Integration: an embedded `nats-server` on a random port in tests, reached
+  both over TCP and through the `/nats` WebSocket proxy; the outpost run as
+  a goroutine against a test hub with the existing git server test helpers,
+  covering bootstrap, `ready`, `sync` both ways, `dirty_worktree`,
+  `non_fast_forward`, workload exit with `on_exit: stop`, `shutdown` with
+  push, reconnect after the test server restarts.
 - Manual/CI: `make hub-run` plus a local podman launching
-  `quay.io/agentfox/agents` and pushing a commit back, as the acceptance
-  check for the local gateway.
+  `quay.io/agentfox/agents` with a workload that commits and pushes, as the
+  acceptance check for the local gateway.
 
 ## Technical Boundaries
 
 - Go, in the existing `hub` and `afc` binaries plus a new `af-gateway`
   binary. New packages: `internal/sandbox` (records, config, lifecycle,
-  API), `internal/sandbox/gateway` (interface, local podman implementation,
-  NATS remote client), `internal/outpost` (used by `afc`), `internal/nats`
-  (embedded server and hub client).
+  bootstrap, API), `internal/sandbox/gateway` (interface, local podman
+  implementation, NATS remote client), `internal/outpost` (used by `afc`),
+  `internal/nats` (embedded server, WebSocket proxy, hub client, telemetry
+  ingestion).
 - New dependencies: `github.com/nats-io/nats-server/v2` and
   `github.com/nats-io/nats.go`. No podman Go bindings; the CLI is driven as
   a subprocess like git.
@@ -651,8 +768,8 @@ integration, security posture of the container) carries over in spirit.
   for `sandbox_launch` and `sandbox_stop`, grouped by sandbox id.
 - Documentation to update when implementing: `docs/api.md`, `docs/cli.md`,
   `docs/configuration.md` (`[sandbox]`, `[nats]`, `AF_SANDBOX_MAX_AGE_DAYS`),
-  `docs/permissions.md`, `README.md` (third binary, NATS port),
-  `deploy/` (NATS port on the Service, and a Route or the WebSocket listener),
+  `docs/permissions.md`, `README.md` (third binary, `/nats` endpoint),
+  `deploy/` (nothing new to expose: NATS rides the existing Route),
   `containers/*/Containerfile`.
 
 ## Dependencies
@@ -664,7 +781,8 @@ integration, security posture of the container) carries over in spirit.
   present); TK-1 is written so that neither is required.
 - `internal/workspace` (lock, trunk rev-parse, archive/delete hooks),
   `internal/gitserver` (authz binding check), `internal/secrets` (resolved
-  variables and secret values), `internal/jobqueue`, `internal/audit`.
+  variables and secret values), `internal/jobqueue`, `internal/audit`
+  (event and usage ingestion reused by TEL-1).
 - podman 5 on the hub host for the local gateway; libkrun for `microvm`.
 - The `containers/sandbox` and `containers/agents` images gain `afc`.
 
@@ -688,107 +806,138 @@ the trunk that sync, rebuild and merge jobs operate on. Cloning at a pinned
 revision through the git server costs a clone per sandbox but makes every
 sandbox self-contained and every gateway equal.
 
-### 3. NATS as the only control channel, including for remote gateways
+### 3. Three variables in, everything else fetched
 
-*Recommendation.* The brief calls for NATS between hub and outpost. Using it
-for remote gateways too means remote hosts dial out and need no inbound
-ports, the hub needs one listener, and the same envelope and auth model
-cover both. The alternative, an HTTP API on each gateway, would need TLS and
-credentials per host and reachability from the hub.
+Only what the outpost needs to reach the hub goes into the container
+(`AF_HUB_URL`, `AF_HUB_TOKEN`, `AF_SANDBOX_ID`). Secrets, variables, NATS
+credentials and the workload command come from the bootstrap document over
+HTTPS. This keeps secrets out of `podman inspect`, out of remote gateway
+hosts, out of the launch job's payload and out of the NATS protocol; a
+gateway is trusted with a token whose blast radius is one sandbox, not with
+an API key for an LLM provider. The cost is that the outpost, not the
+container runtime, has to start the workload with that environment, which
+is why the outpost supervises the workload (OP-6).
 
-### 4. Per-sandbox NATS users through options reload
+### 4. The outpost supervises the workload
 
-*Recommendation.* Embedded `nats-server` supports per-user publish and
-subscribe permissions and `allow_responses`, and `ReloadOptions` adds and
-removes users at runtime. It is the simplest thing that gives each sandbox a
-credential that can only touch its own subjects. Auth callout (the hub
-validating the sandbox token itself when NATS asks) is cleaner in the long
-run, since one credential would serve both HTTP and NATS, but needs NKey
-signing and a callout service; it is deferred.
+A consequence of decision 3. The outpost starts `command` as a child,
+forwards signals and output, and reports the exit. It does not restart the
+workload; `on_exit` lets the hub decide between stopping the sandbox (the
+default for agent runs) and keeping it (for a sandbox someone will
+`podman exec` into). This also gives the hub a clean "the agent finished"
+signal that neither container exit codes nor heartbeats provide.
 
-### 5. Token binding in the hub instead of a new credential type
+### 5. NATS over WebSocket on the hub's own endpoint
 
-*Recommendation.* apikit owns credentials, and the steering rules forbid
-custom credential resolution. A PAT minted for the workspace owner plus a
-hub-side binding to one sandbox gives a workspace-scoped, sandbox-scoped,
-short-lived token without an apikit change; if apikit later grows
-resource-bound PATs, the binding table folds into it.
+NATS' native TCP port is one more thing to open in firewalls, Routes and
+ingress controllers, and PRD 15's deployment manifests only route HTTP.
+Serving the embedded server's WebSocket listener at `/nats` behind the
+hub's existing listener means one hostname, one port, one TLS certificate,
+and remote gateways that dial out. The TCP port stays available for
+clients on the hub's own network.
 
-### 6. The podman CLI, not the Go bindings
+### 6. NATS as the only control channel, including for remote gateways
+
+Using NATS for remote gateways as well as outposts means remote hosts dial
+out and need no inbound ports, the hub needs one listener, and the same
+envelope and auth model cover both. The alternative, an HTTP API on each
+gateway, would need TLS and credentials per host and reachability from the
+hub.
+
+### 7. Per-sandbox NATS users through options reload
+
+*Recommendation, still open (Open Question 1).* Embedded `nats-server`
+supports per-user publish and subscribe permissions and `allow_responses`,
+and `ReloadOptions` adds and removes users at runtime. It is the simplest
+thing that gives each sandbox a credential that can only touch its own
+subjects. Auth callout (the hub validating the sandbox token itself when
+NATS asks) is cleaner in the long run, since one credential would serve
+both HTTPS and NATS, but needs NKey signing and a callout service.
+
+### 8. Token binding in the hub instead of a new credential type
+
+apikit owns credentials, and the steering rules forbid custom credential
+resolution. A PAT minted for the workspace owner plus a hub-side binding to
+one sandbox gives a workspace-scoped, sandbox-scoped, short-lived token
+without an apikit change; if apikit later grows resource-bound PATs, the
+binding table folds into it.
+
+### 9. The podman CLI, not the Go bindings
 
 The hub already runs git as a hardened subprocess. The podman bindings
 module is large, and the CLI is what operators debug with (`podman ps`
 shows exactly what the hub started). `af-gateway` stays a static binary.
 
-### 7. Whole-document replacement for the workspace configuration
+### 10. Whole-document replacement, stored on the hub
 
-The brief says the workspace document "replaces" the default. A merge would
-be friendlier for one-field changes but makes the effective configuration
-hard to reason about and audit. Ceilings (CFG-4) are the one thing a
-workspace cannot escape.
+The workspace document "replaces" the default, as the brief says. A merge
+would be friendlier for one-field changes but makes the effective
+configuration hard to reason about and audit. Storing it on the hub rather
+than in the repository keeps a push from changing the next sandbox's image
+or resources and keeps secret names out of the code. Ceilings (CFG-4) are
+opt-in for operators who want a floor under that freedom.
 
-### 8. Secrets as environment variables
+### 11. Work on the workspace branch by default
 
-As the brief specifies. The trade-off (SEC-3) is accepted for now; the
-outpost-fetches-secrets alternative is listed under Open Questions because
-it also removes secrets from remote gateway hosts.
+A sandbox is a place to do the workspace's work, so it checks out the
+workspace branch and pushes back to it. Isolation per sandbox is one
+launch parameter away (`branch`) and the merge queue already exists for
+bringing such branches back. Concurrent sandboxes on one branch resolve
+their races the way git users do: `non_fast_forward`, pull, retry.
 
-### 9. Sandboxes outlive the hub process
+### 12. Liveness by heartbeat, not idleness by inference
+
+An earlier draft inferred idleness from working-tree changes, which
+misreads an agent that is thinking or reading. The outpost's heartbeat is
+an "I'm alive" with resource stats; lifetime is bounded by `timeouts.max`
+and by the workload's own exit. Anything richer (token usage, agent
+events, custom metrics) travels on the telemetry subjects so that the hub
+can show what a sandbox is doing without guessing.
+
+### 13. No hard caps
+
+No per-workspace, per-user or hub-wide sandbox count. The gateway is the
+authority on capacity and says so with `ErrCapacity`; operators who want a
+floor use the optional ceilings on resources.
+
+### 14. Sandboxes outlive the hub process
 
 Stopping every sandbox on hub shutdown (PRD 15's choice) makes a hub upgrade
 kill running agent work. Reconciliation on startup plus outpost reconnect is
 a small amount of code for a large operational win.
 
-### 10. The outpost is `afc`
+### 15. The outpost is `afc`
 
 A separate binary would need its own build, release and image plumbing. The
 outpost is small, needs the same HTTP client and credential helper `afc`
 already has, and `afc` is already a static binary.
 
+### 16. Network policy waits for OpenShell
+
+Enforcing egress on plain podman means firewall rules on the host or a
+proxy sidecar, both partial and both replaced the moment OpenShell lands.
+The configuration keeps a `network` block so documents are ready, the
+capability report keeps gateways honest, and enforcement is a future
+provider or gateway built on OpenShell.
+
 ## Open Questions
 
-1. **Workspace configuration: hub-stored or in-repo?** This draft stores it
-   on the hub (`PUT …/sandbox-config`). The alternative is
-   `.af/sandbox.json` at the pinned revision, versioned with the code and
-   visible to agents, at the cost of letting a push change the next
-   sandbox's image or resources (ceilings would still apply). Both could
-   coexist with the hub document winning.
-2. **Restricted egress on the local gateway.** Options: (a) a podman
-   internal network shared with a containerised hub, which only works when
-   the hub itself runs in podman; (b) `pasta`/`slirp4netns` with host
-   firewall rules, which needs root or nftables delegation; (c) an egress
-   proxy sidecar and `HTTPS_PROXY` in the sandbox, which only covers
-   well-behaved clients. The draft marks `restricted` unsupported locally
-   and honest about it (GW-2). Which, if any, is worth doing first?
-3. **Should the outpost fetch secrets after boot** instead of receiving them
-   as container env? It keeps secrets off the gateway host and out of
-   `podman inspect`, at the cost of an extra endpoint and a token scope
-   that can read secret values, which SEC-4 currently denies.
-4. **Default `branch` and push target.** The draft creates
-   `sandbox/<short id>` at the pinned revision and pushes there, leaving
-   merge to the merge queue. Should a launch be allowed to work directly on
-   the workspace branch?
-5. **NATS auth: per-user reload now, auth callout later, or callout from
-   the start?** See decision 4.
-6. **NATS exposure in Kubernetes.** `deploy/` only routes HTTP. Sandboxes in
-   the same cluster can use the Service; remote gateways and out-of-cluster
-   sandboxes need a TCP route or the WebSocket listener (`[nats]
-   websocket_port`) behind the existing edge-TLS Route. Is WebSocket the
-   default for anything outside the cluster?
-7. **Config file location.** The brief says "data/config folder". The draft
-   uses `$XDG_CONFIG_HOME/sandbox.json` because it is configuration, not
-   data, and lives next to `config.toml` in the container image and the
-   ConfigMap. Confirm.
-8. **Limits per workspace and hub-wide** (`max_per_workspace = 4`,
-   `max_total = 32`): right defaults? Should the limit be per user or per
-   org rather than per workspace?
-9. **Should a launch be able to open the agent session** (POST /sessions)
-   and pass `AF_SESSION_ID` in, so cost is attributed even if the agent
-   inside never opens one?
-10. **`exec` over NATS and `afc sandbox shell`.** Left out of this
-    iteration. If a shell is a day-one need for humans, the command set and
-    the token scopes need to grow now rather than later.
-11. **Idle detection** relies on working-tree changes and commands (OP-7).
-    An agent that only reads or only calls an LLM looks idle. Is a longer
-    default (`idle = 30m`) enough, or should the sandbox be able to declare
-    itself busy?
+1. **NATS auth: per-user reload now, auth callout later, or callout from
+   the start?** See decision 7.
+2. **Telemetry mapping.** TEL-1 reuses the HTTP ingestion formats for
+   `event` and `usage`. Should `metrics` also be persisted (for example
+   into the audit store) rather than exposed only as live Prometheus
+   gauges that vanish with the sandbox?
+3. **Workload output.** The outpost forwards workload stdout and stderr to
+   the container's, where only the gateway host can read them. Should it
+   also stream them as `tel.log` so that `afc sandbox get` or a future UI
+   can show agent output without gateway access, and if so with what
+   retention?
+4. **Secret refresh.** BS-3 resolves secrets at fetch time, but the outpost
+   fetches once. Should a `refresh` command exist so that the hub can push
+   a rotated secret into a long-running sandbox, given the workload would
+   still have to be restarted to see it?
+5. **Bootstrap fetch policy.** BS-1 allows repeated fetches while the
+   sandbox is non-terminal, for retry safety. Is a single successful fetch
+   followed by `404` (with an explicit `refresh` command for the rare case)
+   the safer default?
