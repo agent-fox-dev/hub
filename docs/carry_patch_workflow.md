@@ -61,8 +61,42 @@ repository:
 
 | Remote | Points to | Purpose |
 |--------|-----------|---------|
-| `origin` | Your fork (the `git_url` from workspace creation) | Where patch branches live; push target for local work |
+| `origin` | Your fork (the `git_url` from workspace creation) | Your fork; push target for local work, and also read from directly when `PATCH_BRANCH_SOURCE=origin` |
 | `upstream` | The upstream project (the `upstream_url` from workspace creation) | Source of truth for the base; fetched during sync and rebuild |
+
+### Where patch branches live
+
+A patch branch's `refs/heads/<name>` has to exist in the hub's trunk clone
+for a rebuild to apply it, but which side is *authoritative* for that ref —
+the hub or the fork — is a per-workspace choice, controlled by the
+`PATCH_BRANCH_SOURCE` workspace variable (`hub`, the default, or `origin`;
+see [Configuration](#patch_branch_source) below):
+
+- **`hub` (default).** Nothing changes from how carry-patch has always
+  worked: a patch branch exists locally only once it has been pushed to the
+  hub's own git server (or created manually on the host). Sync never touches
+  the `origin` remote for patch purposes.
+- **`origin`.** The fork is authoritative. Every sync additionally fetches
+  `origin` and brings each registered patch's `refs/heads/<name>` to the
+  fork's tip: creating it if it is missing locally, fast-forwarding it if the
+  fork is ahead, and applying `PATCH_DIVERGENCE_POLICY` (`replace`, the
+  default, or `report`; see [Configuration](#patch_divergence_policy) below)
+  when the two have diverged. Under `replace`, the hub's old tip is backed up
+  to `refs/hub/replaced/<branch>` before being overwritten, so it stays
+  reachable even though the patch record no longer points at it. A branch
+  created, fast-forwarded or replaced this way counts as a sync advance:
+  it triggers an auto-rebuild exactly like an upstream advance does (subject
+  to `AUTO_REBUILD_AFTER_SYNC`), and its outcome is reported per-branch in
+  the sync response's `patches_synced` field and persisted on the patch
+  record as `origin_sync_state` / `origin_sha` / `origin_synced_at`. A patch
+  whose branch has been deleted on the fork is reported as
+  `missing_on_origin` but is left `active`/`conflict`/`disabled` — the
+  rebuild keeps applying the hub's last-known copy until an operator
+  intervenes.
+
+Switching a workspace back to `hub` mode clears the three fork-sync fields on
+every non-deleted patch on the next sync, so the dashboard does not keep
+showing stale fork state from an earlier `origin`-mode run.
 
 ### Integration branch
 
@@ -910,15 +944,32 @@ The carry-patch sync differs from the standard workspace sync:
 1. **Resolve upstream credentials** and fetch from the `upstream` remote
    (same refspecs and credentials as the rebuild).
 
-2. **Detect upstream changes.** Compare the new upstream base
-   (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
-   with the stored `upstream_head_sha`. If unchanged, return immediately.
+2. **Refresh patch branches from the fork, when `PATCH_BRANCH_SOURCE=origin`.**
+   Read `PATCH_BRANCH_SOURCE` fresh (never cached). In `hub` mode, this step
+   and the `origin` fetch below are skipped entirely, and any fork-sync state
+   left over from an earlier `origin`-mode run is cleared on every patch. In
+   `origin` mode: fetch the `origin` remote, then for every patch whose
+   status is `active`, `conflict` or `disabled` (in position order), bring
+   `refs/heads/<branch>` to the fork's tip — create it if missing locally,
+   fast-forward it if the fork is ahead, or apply `PATCH_DIVERGENCE_POLICY`
+   (backing up the old tip to `refs/hub/replaced/<branch>` under `replace`)
+   if the two have diverged. A branch missing on the fork is reported as
+   `missing_on_origin` and left untouched. See
+   [Where patch branches live](#where-patch-branches-live) for the full
+   algorithm. A failed `origin` fetch aborts the sync with `502` and leaves
+   every ref and DB row exactly as they were before the sync started.
 
-3. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
+3. **Detect upstream changes.** Compare the new upstream base
+   (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
+   with the stored `upstream_head_sha`. If it is unchanged *and* no patch
+   branch was created, fast-forwarded or replaced in step 2, return
+   immediately — `last_sync_at` is still updated even on this no-op path.
+
+4. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
    the new upstream HEAD, set `force_push_detected` to true. This is
    informational and does not block the sync.
 
-4. **Detect merged patches.** For each `active` patch, apply the configured
+5. **Detect merged patches.** For each `active` patch, apply the configured
    detection strategy (see `SQUASH_MERGE_DETECTION`):
    - **Ancestry check:** `git merge-base --is-ancestor` to test whether the
      patch branch HEAD is an ancestor of the new upstream HEAD.
@@ -931,9 +982,10 @@ The carry-patch sync differs from the standard workspace sync:
    - If any signal detects the patch as merged, transition it to
      `merged_upstream`.
 
-5. **Auto-rebuild.** If `AUTO_REBUILD_AFTER_SYNC` is not `"false"`, enqueue
-   a rebuild job. If a rebuild job is already queued or running, the
-   duplicate is silently ignored.
+6. **Auto-rebuild.** If upstream advanced (step 3) or a patch branch was
+   created, fast-forwarded or replaced (step 2), and `AUTO_REBUILD_AFTER_SYNC`
+   is not `"false"`, enqueue a rebuild job. If a rebuild job is already
+   queued or running, the duplicate is silently ignored.
 
 ### Merge detection
 
