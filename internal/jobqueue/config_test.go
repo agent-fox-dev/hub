@@ -75,24 +75,19 @@ func TestConfig_WithWorkers(t *testing.T) {
 		t.Errorf("expected workerCount=7, got %d", q.workerCount)
 	}
 
-	baseline := runtime.NumGoroutine()
+	// Count this queue's worker goroutines rather than the process-wide
+	// runtime.NumGoroutine (see startedWorkerGoroutines).
+	baseline := startedWorkerGoroutines(t)
 
 	if err := q.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
 	defer q.Stop()
 
-	// Allow goroutines to be scheduled.
-	runtime.Gosched()
-	time.Sleep(100 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
-	delta := after - baseline
-
-	// Expect at least 7 new goroutines (the workers).
-	if delta < 7 {
-		t.Errorf("expected at least 7 new goroutines for WithWorkers(7), "+
-			"got delta=%d (before=%d, after=%d)", delta, baseline, after)
+	after := startedWorkerGoroutines(t)
+	if baseline != 0 || after != 7 {
+		t.Errorf("expected exactly 7 worker goroutines for WithWorkers(7), "+
+			"got before=%d, after=%d", baseline, after)
 	}
 }
 
