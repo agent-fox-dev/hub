@@ -137,11 +137,19 @@ type RebuildResult struct {
 type GitRunner interface {
 	Run(ctx context.Context, args ...string) (string, error)
 	CherryPick(ctx context.Context, commitSHA string) error
-	MergeNoFF(ctx context.Context, branch string) error
+	// MergeNoFF merges ref with --no-ff. An empty message keeps git's default
+	// merge message; otherwise message is used as the merge commit message.
+	MergeNoFF(ctx context.Context, ref, message string) error
 	MergeTree(ctx context.Context, base, head string) (string, error)
 	IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
 	Cherry(ctx context.Context, upstream, head string) (applied []string, pending []string, err error)
 	HardReset(ctx context.Context, ref string) error
+	// WorktreeAdd creates a detached linked worktree at path checked out at commit.
+	WorktreeAdd(ctx context.Context, path, commit string) error
+	// WorktreeRemove force-removes the linked worktree at path.
+	WorktreeRemove(ctx context.Context, path string) error
+	// WorktreePrune prunes stale linked-worktree registrations.
+	WorktreePrune(ctx context.Context) error
 }
 
 // PatchStore abstracts patch table operations for testing.

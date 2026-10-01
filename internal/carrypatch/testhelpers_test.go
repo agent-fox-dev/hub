@@ -194,7 +194,14 @@ type cherryPickCall struct {
 
 // mergeNoFFCall records a MergeNoFF invocation.
 type mergeNoFFCall struct {
-	Branch string
+	Branch  string
+	Message string
+}
+
+// worktreeAddCall records a WorktreeAdd invocation.
+type worktreeAddCall struct {
+	Path   string
+	Commit string
 }
 
 // runCall records a Run invocation.
@@ -218,11 +225,18 @@ type mockGitRunner struct {
 	CherryPickFunc  func(ctx context.Context, commitSHA string) error
 	MergeNoFFCalls  []mergeNoFFCall
 	MergeNoFFFunc   func(ctx context.Context, branch string) error
-	MergeTreeCalls  []mergeTreeCall
-	MergeTreeFunc   func(ctx context.Context, base, head string) (string, error)
-	IsAncestorFunc  func(ctx context.Context, ancestor, descendant string) (bool, error)
-	CherryFunc      func(ctx context.Context, upstream, head string) ([]string, []string, error)
-	HardResetFunc   func(ctx context.Context, ref string) error
+
+	WorktreeAddCalls    []worktreeAddCall
+	WorktreeAddErr      error
+	WorktreeRemoveCalls []string
+	WorktreeRemoveErr   error
+	WorktreePruneCalls  int
+	WorktreePruneErr    error
+	MergeTreeCalls      []mergeTreeCall
+	MergeTreeFunc       func(ctx context.Context, base, head string) (string, error)
+	IsAncestorFunc      func(ctx context.Context, ancestor, descendant string) (bool, error)
+	CherryFunc          func(ctx context.Context, upstream, head string) ([]string, []string, error)
+	HardResetFunc       func(ctx context.Context, ref string) error
 }
 
 func newMockGitRunner() *mockGitRunner {
@@ -265,12 +279,35 @@ func (m *mockGitRunner) CherryPick(ctx context.Context, commitSHA string) error 
 	return m.CherryPickFunc(ctx, commitSHA)
 }
 
-func (m *mockGitRunner) MergeNoFF(ctx context.Context, branch string) error {
+func (m *mockGitRunner) MergeNoFF(ctx context.Context, branch, message string) error {
 	m.mu.Lock()
-	m.MergeNoFFCalls = append(m.MergeNoFFCalls, mergeNoFFCall{Branch: branch})
+	m.MergeNoFFCalls = append(m.MergeNoFFCalls, mergeNoFFCall{Branch: branch, Message: message})
 	m.mu.Unlock()
 	return m.MergeNoFFFunc(ctx, branch)
 }
+
+func (m *mockGitRunner) WorktreeAdd(_ context.Context, path, commit string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WorktreeAddCalls = append(m.WorktreeAddCalls, worktreeAddCall{Path: path, Commit: commit})
+	return m.WorktreeAddErr
+}
+
+func (m *mockGitRunner) WorktreeRemove(_ context.Context, path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WorktreeRemoveCalls = append(m.WorktreeRemoveCalls, path)
+	return m.WorktreeRemoveErr
+}
+
+func (m *mockGitRunner) WorktreePrune(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WorktreePruneCalls++
+	return m.WorktreePruneErr
+}
+
+var _ GitRunner = (*mockGitRunner)(nil)
 
 func (m *mockGitRunner) MergeTree(ctx context.Context, base, head string) (string, error) {
 	m.mu.Lock()

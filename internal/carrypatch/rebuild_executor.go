@@ -451,7 +451,7 @@ func (h *RebuildHandler) applyMergePatch(ctx context.Context, git GitRunner, bra
 	}
 
 	// 16-REQ-1.4: merge with --no-ff.
-	if err := git.MergeNoFF(ctx, branchName); err != nil {
+	if err := git.MergeNoFF(ctx, branchName, ""); err != nil {
 		var mergeErr *MergeNoFFConflictError
 		if errors.As(err, &mergeErr) {
 			// Attempt rerere resolution (16-REQ-1.5).

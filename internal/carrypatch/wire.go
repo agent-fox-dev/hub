@@ -73,8 +73,16 @@ func (a *GitRunnerAdapter) CherryPick(ctx context.Context, commitSHA string) err
 
 // MergeNoFF merges a branch with --no-ff. Unlike gitcmd.MergeNoFF, it does NOT
 // auto-abort on conflict (same reason as CherryPick).
-func (a *GitRunnerAdapter) MergeNoFF(ctx context.Context, branch string) error {
-	_, err := a.runner.Run(ctx, "merge", "--no-ff", "--no-edit", "--end-of-options", branch)
+// An empty message keeps git's default merge message.
+func (a *GitRunnerAdapter) MergeNoFF(ctx context.Context, ref, message string) error {
+	args := []string{"merge", "--no-ff"}
+	if message != "" {
+		args = append(args, "-m", message)
+	} else {
+		args = append(args, "--no-edit")
+	}
+	args = append(args, "--end-of-options", ref)
+	_, err := a.runner.Run(ctx, args...)
 	if err != nil {
 		// Check if MERGE_HEAD exists — indicates a merge conflict in progress.
 		_, revErr := a.runner.Run(ctx, "rev-parse", "--verify", "MERGE_HEAD")
@@ -106,6 +114,21 @@ func (a *GitRunnerAdapter) Cherry(ctx context.Context, upstream, head string) ([
 func (a *GitRunnerAdapter) HardReset(ctx context.Context, ref string) error {
 	_, err := a.runner.Run(ctx, "reset", "--hard", ref)
 	return err
+}
+
+// WorktreeAdd delegates to gitcmd.GitRunner.WorktreeAdd.
+func (a *GitRunnerAdapter) WorktreeAdd(ctx context.Context, path, commit string) error {
+	return a.runner.WorktreeAdd(ctx, path, commit)
+}
+
+// WorktreeRemove delegates to gitcmd.GitRunner.WorktreeRemove.
+func (a *GitRunnerAdapter) WorktreeRemove(ctx context.Context, path string) error {
+	return a.runner.WorktreeRemove(ctx, path)
+}
+
+// WorktreePrune delegates to gitcmd.GitRunner.WorktreePrune.
+func (a *GitRunnerAdapter) WorktreePrune(ctx context.Context) error {
+	return a.runner.WorktreePrune(ctx)
 }
 
 // NewGitRunnerFactory returns a factory function suitable for

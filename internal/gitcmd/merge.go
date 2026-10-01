@@ -3,8 +3,6 @@ package gitcmd
 import (
 	"context"
 	"log"
-	"os"
-	"path/filepath"
 )
 
 // MergeNoFF merges a branch with --no-ff and returns the resulting merge
@@ -22,9 +20,12 @@ import (
 // returns ("", ctx.Err()) without running git merge --abort; the caller is
 // responsible for cleanup.
 //
+// message, when non-empty, is used as the merge commit message (-m); an
+// empty message keeps git's default.
+//
 // If branch is empty, MergeNoFF returns ("", *GitError) without invoking
 // the git subprocess.
-func (r *GitRunner) MergeNoFF(ctx context.Context, branch string) (string, error) {
+func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (string, error) {
 	// 14-REQ-9.E1: empty branch returns *GitError without invoking subprocess.
 	if branch == "" {
 		return "", &GitError{
@@ -35,7 +36,11 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch string) (string, error
 	}
 
 	// Run git merge --no-ff <branch> via runWithExitCode for exit-code discrimination.
-	args := []string{"merge", "--no-ff", endOfOptions, branch}
+	args := []string{"merge", "--no-ff"}
+	if message != "" {
+		args = append(args, "-m", message)
+	}
+	args = append(args, endOfOptions, branch)
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
 		// 14-REQ-9.3, 14-REQ-9.E4: context cancellation or deadline exceeded —
@@ -46,9 +51,9 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch string) (string, error
 	if exitCode != 0 {
 		// Determine whether this is a conflict or a different error.
 		// Check for MERGE_HEAD which git creates on conflict.
-		mergeHead := filepath.Join(r.workDir, ".git", "MERGE_HEAD")
-		_, statErr := os.Stat(mergeHead)
-		isConflict := statErr == nil
+		// rev-parse works in linked worktrees too, where .git is a file.
+		_, revErr := r.Run(ctx, "rev-parse", "--verify", "MERGE_HEAD")
+		isConflict := revErr == nil
 
 		// Also check combined output for CONFLICT lines.
 		combinedOutput := stdout + "\n" + stderr
