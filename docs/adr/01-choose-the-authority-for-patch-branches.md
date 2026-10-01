@@ -2,8 +2,6 @@
 
 - **Status:** Proposed
 - **Date:** 2026-09-29
-- **Related:** `docs/prd/17-sync-patch-branches-from-the-fork.md`,
-  `docs/carry_patch_workflow.md`, specs 15 and 16 (archived)
 
 ## Context
 
