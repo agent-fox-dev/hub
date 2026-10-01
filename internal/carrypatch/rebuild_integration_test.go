@@ -332,8 +332,8 @@ func TestRebuildExecutor_WorktreeRemoved_OnSuccess(t *testing.T) {
 		t.Fatalf("HandleRebuildJob returned error: %v", err)
 	}
 
-	if len(mock.WorktreeRemoveCalls) != 1 || mock.WorktreePruneCalls != 1 {
-		t.Errorf("expected the worktree to be removed and pruned, got remove=%d prune=%d",
+	if len(mock.WorktreeRemoveCalls) != 1 || mock.WorktreePruneCalls != 2 {
+		t.Errorf("expected the worktree to be removed and pruned (stale cleanup prune + post-removal prune), got remove=%d prune=%d",
 			len(mock.WorktreeRemoveCalls), mock.WorktreePruneCalls)
 	}
 	for _, call := range mock.RunCalls {

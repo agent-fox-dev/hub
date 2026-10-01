@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -45,14 +46,19 @@ func (e *rebuildConflictError) Error() string {
 //
 // The algorithm:
 //  1. Parse payload and resolve upstream auth.
-//  2. Fetch from the upstream remote and resolve the upstream base commit.
+//  2. Take the workspace lock and set the rebuild-active guard. Phase one,
+//     under the lock: fetch from the upstream remote, resolve the upstream
+//     base commit, migrate a legacy _rebuild_temp, remove stale rebuild
+//     worktrees and configure rerere; then release the lock.
 //  3. Create a detached per-run worktree at the upstream base
 //     (<workspace_root>/<slug>/rebuild/<job id>). The trunk checkout is never
 //     moved or modified.
 //  4. Collect patches in position order and apply each one inside the
 //     worktree using the captured strategy (rebase or merge).
-//  5. On success: force-update the integration branch ref with update-ref,
-//     remove merged_upstream patches, and compact positions.
+//  5. On success, phase two (lock re-acquired): force-update the
+//     integration branch ref with update-ref, remove merged_upstream
+//     patches, compact positions and optionally push to origin. Then the
+//     lock is released, the worktree removed and the guard ended.
 //  6. On conflict: abort, mark the conflicting patch and return a
 //     non-retryable error.
 //  7. On every exit path the worktree is removed with a non-cancelled
@@ -93,11 +99,30 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		repoPath = filepath.Join(h.WorkspaceRoot, payload.WorkspaceSlug, "trunk")
 	}
 
-	// The workspace lock is held for the whole run for now; patch
-	// application itself runs in a private worktree and never touches the
-	// trunk checkout.
-	unlock := wslock.Lock(payload.WorkspaceSlug)
+	slug := payload.WorkspaceSlug
+
+	// acquire takes the blocking workspace lock and returns a release
+	// function that is safe to call more than once, so every early return
+	// releases the lock exactly once (01-REQ-4.6).
+	acquire := func() func() {
+		release := wslock.Lock(slug)
+		var once sync.Once
+		return func() { once.Do(release) }
+	}
+
+	// Phase one runs under the workspace lock (01-REQ-4.1, 4.3): the
+	// blocking Lock, then, still under it, the rebuild-active guard so that
+	// archive and reclone cannot slip in between. The guard is ended by a
+	// defer registered before the worktree removal defer below, so it is
+	// cleared after the worktree has been removed on every exit path
+	// (01-REQ-5.4).
+	unlock := acquire()
 	defer unlock()
+	endGuard, guarded := wslock.BeginRebuild(slug)
+	defer endGuard()
+	if !guarded {
+		return nil, true, &TransientError{Err: fmt.Errorf("a rebuild is already active for workspace %q", slug)}
+	}
 
 	// 4. Fetch from upstream (16-REQ-1.2, 16-REQ-1.E5).
 	if h.Fetch != nil {
@@ -125,13 +150,24 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 7. Configure rerere (repository level, shared with every worktree) for
+	// 7. One-time migration of a legacy _rebuild_temp branch (01-REQ-2.5).
+	h.migrateLegacyRebuildBranch(ctx, trunk, slug)
+
+	// 8. Remove worktrees left behind by a crashed run and prune their
+	// registrations, before this run creates its own (01-REQ-8.2).
+	h.cleanStaleRebuildDirs(ctx, trunk, slug, repoPath)
+
+	// 9. Configure rerere (repository level, shared with every worktree) for
 	// conflict resolution replay (16-REQ-1.5, 01-REQ-3.1). This happens
 	// before the worktree is created.
 	_, _ = trunk.Run(ctx, "config", "rerere.enabled", "true")
 	_, _ = trunk.Run(ctx, "config", "rerere.autoupdate", "true")
 
-	// 8. Create the detached per-run worktree at the upstream base
+	// End of phase one: worktree creation and patch application hold no
+	// lock (01-REQ-4.4).
+	unlock()
+
+	// 10. Create the detached per-run worktree at the upstream base
 	// (01-REQ-1.1, 01-REQ-1.2).
 	jobID := jobqueue.JobIDFromContext(ctx)
 	worktreePath, err := h.rebuildWorktreePath(payload.WorkspaceSlug, repoPath, jobID)
@@ -144,7 +180,14 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	}
 	h.logInfo("rebuild worktree created", "slug", payload.WorkspaceSlug, "path", worktreePath)
 	// Removed on every exit path (success, conflict, error, cancellation).
-	defer h.removeWorktree(ctx, trunk, payload.WorkspaceSlug, worktreePath)
+	// On success it is removed explicitly after phase two; this defer covers
+	// the other paths and runs after the phase-two unlock defer, so removal
+	// never happens under the lock.
+	var removeOnce sync.Once
+	removeWT := func() {
+		removeOnce.Do(func() { h.removeWorktree(ctx, trunk, slug, worktreePath) })
+	}
+	defer removeWT()
 
 	// Patch application runs through a runner rooted in the worktree; it is
 	// built after the directory exists (01-REQ-1.3).
@@ -308,11 +351,22 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	}
 	result.IntegrationHeadSHA = finalHead
 
-	// Force-update integration branch ref to the worktree's final HEAD.
 	integrationBranch := payload.IntegrationBranch
 	if integrationBranch == "" {
 		integrationBranch = "deploy"
 	}
+
+	// Phase two: re-acquire the workspace lock for the integration-ref
+	// update, patch bookkeeping and the optional push (01-REQ-4.5). The
+	// unlock defer runs before the worktree removal defer, so every early
+	// return releases the lock first (01-REQ-4.6).
+	unlock2 := acquire()
+	defer unlock2()
+	if err := ctx.Err(); err != nil {
+		return nil, true, &TransientError{Err: err}
+	}
+
+	// Force-update integration branch ref to the worktree's final HEAD.
 
 	// Capture the previous integration branch HEAD before force-updating.
 	// If the branch does not exist yet (first rebuild), previousHead will be
@@ -352,6 +406,13 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			}
 		}
 	}
+
+	// End of phase two (01-REQ-4.8): release the lock, remove the worktree,
+	// check whether the run's inputs moved, emit the completion event; the
+	// guard is ended last by its defer.
+	unlock2()
+	removeWT()
+	h.checkStaleInputs(ctx, trunk, payload, upstreamHead, result.PatchResults)
 
 	// 18-REQ-3.4: Emit hub.rebuild.complete audit event.
 	h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.complete", map[string]any{
@@ -398,6 +459,55 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), rebuildCleanupTimeout)
 }
 
+// migrateLegacyRebuildBranch removes a _rebuild_temp branch left by a
+// pre-upgrade run (01-REQ-2.5). It runs in phase one under the lock.
+// Not implemented yet: filled in by the task that owns Exception B.
+func (h *RebuildHandler) migrateLegacyRebuildBranch(_ context.Context, _ GitRunner, _ string) {}
+
+// checkStaleInputs compares the run's patch tips and upstream base with the
+// current refs after the run and enqueues a follow-up rebuild when they
+// moved (01-REQ-7). It runs after the worktree is removed and the lock is
+// released. Not implemented yet: filled in by the task that owns the
+// follow-up.
+func (h *RebuildHandler) checkStaleInputs(_ context.Context, _ GitRunner, _ RebuildPayload, _ string, _ []PatchResult) {
+}
+
+// rebuildDir returns the directory that holds this workspace's rebuild
+// worktrees: <workspace_root>/<slug>/rebuild, or, when WorkspaceRoot is
+// empty, the sibling "rebuild" of the trunk path.
+func (h *RebuildHandler) rebuildDir(slug, trunkPath string) string {
+	if h.WorkspaceRoot != "" {
+		return filepath.Join(h.WorkspaceRoot, slug, "rebuild")
+	}
+	return filepath.Join(filepath.Dir(trunkPath), "rebuild")
+}
+
+// cleanStaleRebuildDirs removes every directory under the workspace's
+// rebuild directory (left by a crashed run) and prunes the worktree
+// registrations in the trunk (01-REQ-8.2, 8.6). It runs in phase one, under
+// the lock and the guard, and never fails the run: errors are logged.
+func (h *RebuildHandler) cleanStaleRebuildDirs(ctx context.Context, trunk GitRunner, slug, trunkPath string) {
+	dir := h.rebuildDir(slug, trunkPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		h.logWarn("cannot list rebuild directory", "slug", slug, "path", dir, "error", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		stale := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(stale); err != nil {
+			h.logWarn("cannot remove stale rebuild worktree directory", "slug", slug, "path", stale, "error", err)
+			continue
+		}
+		h.logInfo("removed stale rebuild worktree directory", "slug", slug, "path", stale)
+	}
+	if err := trunk.WorktreePrune(ctx); err != nil {
+		h.logWarn("stale rebuild worktree prune failed", "slug", slug, "path", dir, "error", err)
+	}
+}
+
 // rebuildWorktreePath returns the absolute path of this run's worktree:
 // <workspace_root>/<slug>/rebuild/<job id>. When no job ID is available a
 // random one is used; when WorkspaceRoot is empty the path is derived from
@@ -410,12 +520,7 @@ func (h *RebuildHandler) rebuildWorktreePath(slug, trunkPath, jobID string) (str
 		}
 		jobID = hex.EncodeToString(b[:])
 	}
-	var dir string
-	if h.WorkspaceRoot != "" {
-		dir = filepath.Join(h.WorkspaceRoot, slug, "rebuild")
-	} else {
-		dir = filepath.Join(filepath.Dir(trunkPath), "rebuild")
-	}
+	dir := h.rebuildDir(slug, trunkPath)
 	// git resolves a relative path against the runner's working directory
 	// (the trunk), so the path must be absolute.
 	abs, err := filepath.Abs(filepath.Join(dir, jobID))

@@ -276,7 +276,7 @@ func TestRerereIntegration_PartialResolve_AbortsAndRecordsConflict(t *testing.T)
 	}
 
 	// The rebuild worktree should be discarded (no temporary branch exists).
-	if len(mock.WorktreeRemoveCalls) != 1 || mock.WorktreePruneCalls != 1 {
+	if len(mock.WorktreeRemoveCalls) != 1 || mock.WorktreePruneCalls != 2 {
 		t.Errorf("expected the rebuild worktree to be removed and pruned after conflict abort, got remove=%d prune=%d",
 			len(mock.WorktreeRemoveCalls), mock.WorktreePruneCalls)
 	}
