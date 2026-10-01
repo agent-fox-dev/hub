@@ -78,6 +78,14 @@ info:
     Handlers that cannot take the lock immediately answer `409` with
     `error_type: workspace_busy`.
 
+    A carry-patch rebuild applies patches in its own detached worktree and
+    holds the lock only for its fetch phase (upstream fetch and base
+    resolution) and its final phase (integration-ref update, patch
+    bookkeeping, optional push to `origin`). Sync, rollback, rerere forget and
+    batch rebase are rejected only while a rebuild is in one of those two
+    phases. Archive and reclone delete the directory the worktree lives in, so
+    they answer `409 workspace_busy` for the whole rebuild.
+
     ## Error envelope
 
     All errors use the apikit envelope: `{"error": {"code": N, "message":
@@ -476,7 +484,11 @@ paths:
         "404":
           $ref: "#/components/responses/WorkspaceNotFoundOrForbidden"
         "409":
-          description: A clone is in progress; archiving is rejected until it settles.
+          description: >-
+            A clone is in progress (archiving is rejected until it settles), or
+            another operation holds the workspace lock (`error_type:
+            workspace_busy`). A running carry-patch rebuild makes archive answer
+            `workspace_busy` for the whole rebuild.
           content:
             application/json:
               schema:
@@ -629,7 +641,10 @@ paths:
         "409":
           description: >-
             A sync is already in progress, or the upstream history has diverged
-            (force-push detected) on a standard workspace.
+            (force-push detected) on a standard workspace, or another operation
+            holds the workspace lock (`error_type: workspace_busy`). A rebuild
+            holds the lock only during its fetch phase and final phase, not
+            while it applies patches.
           content:
             application/json:
               schema:
@@ -685,7 +700,11 @@ paths:
         "404":
           $ref: "#/components/responses/WorkspaceNotFound"
         "409":
-          description: A clone is already in progress (`clone_status` is `pending` or `cloning`).
+          description: >-
+            A clone is already in progress (`clone_status` is `pending` or
+            `cloning`), or another operation holds the workspace lock, or a
+            carry-patch rebuild is running (`error_type: workspace_busy`;
+            reclone is rejected for the whole rebuild).
           content:
             application/json:
               schema:
@@ -1040,6 +1059,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            Another operation holds the workspace lock (`error_type:
+            workspace_busy`). A rebuild holds it only during its fetch phase
+            and final phase, not while it applies patches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1067,15 +1095,19 @@ paths:
         If neither the body nor a variable supplies `fail_mode`, it is left
         empty at enqueue time and the executor applies `fail_fast` at runtime.
 
-        The executor: fetches upstream, branches at the upstream HEAD, enables
-        rerere, then for each patch in order skips `merged_upstream`,
+        The executor: fetches upstream, creates a detached git worktree at the
+        upstream HEAD (the workspace's trunk checkout is never changed),
+        enables rerere, resolves each patch branch to a tip SHA
+        (`patch_results[].source_sha`), then for each patch in order skips `merged_upstream`,
         `disabled`, `deleted`, and missing-branch patches and otherwise applies
         it (`rebase` cherry-picks each unique commit; `merge` uses
         `git merge --no-ff`). Conflicts are replayed through rerere; anything
         still unresolved either aborts the rebuild (`fail_fast`) or marks the
         patch `conflict` and continues (`continue`). Finally the integration
         ref is force-updated, `merged_upstream` patches are soft-deleted, and
-        the remaining positions are compacted.
+        the remaining positions are compacted. If a patch tip or the upstream
+        base moved during the run, one follow-up rebuild is enqueued
+        (`submitted_by: system:stale-snapshot`).
 
         A rebuild is also enqueued automatically when a push lands on a
         registered patch branch, unless `AUTO_REBUILD_AFTER_PUSH` is `"false"`.
@@ -1267,7 +1299,10 @@ paths:
         "409":
           description: >-
             No previous integration head is available to roll back to (first
-            rebuild, or the job carries no result).
+            rebuild, or the job carries no result), or another operation holds
+            the workspace lock (`error_type: workspace_busy`). A rebuild holds
+            it only during its fetch phase and final phase, not while it
+            applies patches.
           content:
             application/json:
               schema:
@@ -1573,6 +1608,15 @@ paths:
           $ref: "#/components/responses/MissingScope"
         "404":
           $ref: "#/components/responses/WorkspaceNotFound"
+        "409":
+          description: >-
+            Another operation holds the workspace lock (`error_type:
+            workspace_busy`). A rebuild holds it only during its fetch phase
+            and final phase, not while it applies patches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Batch rebase is not configured on this server, or the operation failed.
           content:
@@ -5668,6 +5712,13 @@ components:
           description: Present only when `status` is `conflict`.
           items:
             type: string
+        source_sha:
+          $ref: "#/components/schemas/Sha"
+          description: >-
+            The commit `refs/heads/<branch_name>` resolved to when patch
+            application began; the tip the rebuild applied. Omitted for patches
+            that were not attempted (skipped by status or `branch_not_found`).
+            Addressed as `patch_results[].source_sha` in rebuild job objects.
 
     RollbackResponse:
       type: object

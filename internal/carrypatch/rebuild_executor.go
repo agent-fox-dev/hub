@@ -158,7 +158,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	}
 
 	// 7. One-time migration of a legacy _rebuild_temp branch (01-REQ-2.6, 2.7).
-	h.migrateLegacyRebuildBranch(ctx, trunk, slug)
+	h.migrateLegacyRebuildBranch(ctx, trunk, slug, repoPath)
 
 	// 8. Remove worktrees left behind by a crashed run and prune their
 	// registrations, before this run creates its own (01-REQ-8.2).
@@ -543,7 +543,7 @@ func localRefExists(ctx context.Context, trunk GitRunner, ref string) bool {
 // aborted (best effort) and HEAD is moved to the workspace branch, else the
 // local branch origin/HEAD points to, else detached; only then is the branch
 // deleted. It runs in phase one under the lock and never fails the run.
-func (h *RebuildHandler) migrateLegacyRebuildBranch(ctx context.Context, trunk GitRunner, slug string) {
+func (h *RebuildHandler) migrateLegacyRebuildBranch(ctx context.Context, trunk GitRunner, slug, trunkPath string) {
 	legacyRef := "refs/heads/" + legacyRebuildBranch
 	if !localRefExists(ctx, trunk, legacyRef) {
 		return
@@ -556,26 +556,26 @@ func (h *RebuildHandler) migrateLegacyRebuildBranch(ctx context.Context, trunk G
 		if target := h.legacyMigrationTarget(ctx, trunk, slug); target != "" {
 			if _, err := trunk.Run(ctx, "checkout", "--force", target); err != nil {
 				h.logWarn("cannot move trunk off legacy rebuild branch",
-					"slug", slug, "branch", legacyRebuildBranch, "target", target, "error", err)
+					"slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "target", target, "error", err)
 				return
 			}
-			h.logInfo("moved trunk off legacy rebuild branch", "slug", slug, "branch", legacyRebuildBranch, "target", target)
+			h.logInfo("moved trunk off legacy rebuild branch", "slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "target", target)
 		} else {
 			h.logWarn("no workspace branch or origin/HEAD found locally; detaching trunk HEAD from legacy rebuild branch",
-				"slug", slug, "branch", legacyRebuildBranch)
+				"slug", slug, "path", trunkPath, "branch", legacyRebuildBranch)
 			if _, err := trunk.Run(ctx, "checkout", "--detach", "--force"); err != nil {
 				h.logWarn("cannot detach trunk from legacy rebuild branch",
-					"slug", slug, "branch", legacyRebuildBranch, "error", err)
+					"slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "error", err)
 				return
 			}
 		}
 	}
 
 	if _, err := trunk.Run(ctx, "branch", "-D", legacyRebuildBranch); err != nil {
-		h.logWarn("cannot delete legacy rebuild branch", "slug", slug, "branch", legacyRebuildBranch, "error", err)
+		h.logWarn("cannot delete legacy rebuild branch", "slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "error", err)
 		return
 	}
-	h.logInfo("removed legacy rebuild branch", "slug", slug, "branch", legacyRebuildBranch)
+	h.logInfo("removed legacy rebuild branch", "slug", slug, "path", trunkPath, "branch", legacyRebuildBranch)
 }
 
 // legacyMigrationTarget picks the branch the trunk moves to when it is found

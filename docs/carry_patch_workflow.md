@@ -808,55 +808,85 @@ When a rebuild job runs, the hub executes the following steps:
 
 2. **Fetch upstream.** Fetches `refs/heads/*` and `HEAD` of the `upstream`
    remote into `refs/remotes/upstream/*` with those credentials (go-git,
-   so private upstreams work).
+   so private upstreams work). The job takes the workspace lock for this
+   step and the next one only (the *fetch phase*).
 
-3. **Create a temporary branch.** Determines the upstream base as
-   `refs/remotes/upstream/HEAD`, falling back to
+3. **Resolve the base and create a worktree.** Determines the upstream base
+   as `refs/remotes/upstream/HEAD`, falling back to
    `refs/remotes/upstream/<workspace branch>` and finally `FETCH_HEAD`, and
-   creates `_rebuild_temp` there (`checkout -B`, so a stale temp branch from
-   an aborted run is reset). Before that, any in-progress cherry-pick,
-   merge, or rebase state left behind by a crashed job is aborted. The job
-   holds the workspace lock for its whole duration, so syncs, merges and
-   pushes to the same workspace wait.
+   sets the rebuild-active flag (archive and reclone answer `409
+   workspace_busy` until the run has ended). Worktrees left by a crashed
+   run under `<workspace_root>/<slug>/rebuild/` are removed and pruned, and
+   a legacy `_rebuild_temp` branch from a pre-worktree hub version is
+   deleted once (legacy migration). The lock is then released and the job
+   creates a detached `git worktree` for this run at
+   `<workspace_root>/<slug>/rebuild/<job id>`, positioned at the base. The
+   worktree shares the trunk's objects, refs, configuration and rerere
+   cache but has its own HEAD, index and files, so a rebuild does not
+   change the trunk's checkout (its HEAD, index and files stay as they
+   were). While patches are applied no lock is held: syncs, rollbacks,
+   merge jobs and pushes to the same workspace proceed normally.
 
-4. **Enable rerere.** Sets `rerere.enabled=true` and
-   `rerere.autoupdate=true` in the repo's git config.
+4. **Enable rerere and snapshot the patch tips.** Sets `rerere.enabled=true`
+   and `rerere.autoupdate=true` in the repo's git config (shared by every
+   worktree). Then each patch that will be attempted is resolved to a
+   commit SHA at `refs/heads/<branch>`; only that SHA is used for the rest
+   of the run and it is reported as `source_sha` in the patch result.
 
-5. **Process each patch in position order:**
+5. **Process each patch in position order, inside the worktree:**
    - **Skipped patches:** `merged_upstream`, `disabled`, and `deleted`
      patches are skipped. `merged_upstream` patches are collected for
      soft-deletion after the rebuild completes.
-   - **Missing branches:** If the branch does not exist in the repository,
-     the patch is skipped (not an error).
+   - **Missing branches:** If the branch does not exist as a local head
+     (`refs/heads/<branch>`), the patch is skipped (not an error).
    - **Rebase strategy:** Identifies commits unique to the patch branch
-     (`git log --right-only --cherry-pick --no-merges <base>...<branch>`, so
+     (`git log --right-only --cherry-pick --no-merges <base>...<sha>`, so
      commits already applied upstream under a different SHA are skipped) and
      cherry-picks each one in order. A cherry-pick that turns out empty is
      skipped rather than treated as a conflict.
-   - **Merge strategy:** Merges the patch branch with `--no-ff`.
+   - **Merge strategy:** Merges the patch tip with `--no-ff`, with the
+     message `Merge branch '<branch name>'`.
    - **Conflict handling:** If a cherry-pick or merge produces conflicts,
      the hub runs `git rerere` to attempt automatic resolution. If rerere
      resolves all conflicts, the operation continues. If unresolved
      conflicts remain:
      - In `fail_fast` mode (default): the patch is marked `conflict` and
        the rebuild stops immediately.
-     - In `continue` mode: the patch is marked `conflict`, the temporary
-       branch is reset to its pre-patch state, and processing continues
-       with the next patch.
+     - In `continue` mode: the patch is marked `conflict`, the worktree
+       is reset to its pre-patch state, and processing continues with the
+       next patch.
    - **Progress tracking:** After each patch is processed, the per-patch
      results are written to the job's progress field. Clients polling
      the rebuild status can observe which patches have been processed
      while the job is still running.
 
-6. **Finalize on success.** Captures the previous integration branch HEAD
-   SHA (for rollback), force-updates the integration branch ref to the
-   final HEAD of the temporary branch, restores whatever branch was checked
-   out before the rebuild, deletes the temporary branch, soft-deletes
-   `merged_upstream` patches, and compacts positions. When the
-   `REBUILD_PUSH_INTEGRATION_BRANCH` workspace variable is `"true"`, the
-   integration branch is then force-pushed to `origin` with the workspace
-   credentials and the job record reports `integration_branch_pushed`.
-   The working tree is restored on every exit path, including failures.
+6. **Finalize on success.** Re-acquires the workspace lock (the *final
+   phase*), captures the previous integration branch HEAD SHA (for
+   rollback), force-updates the integration branch ref to the worktree's
+   final HEAD with `git update-ref` (the integration branch is never checked
+   out), soft-deletes `merged_upstream` patches, and compacts positions.
+   When the `REBUILD_PUSH_INTEGRATION_BRANCH` workspace variable is
+   `"true"`, the integration branch is then force-pushed to `origin` with the
+   workspace credentials and the job record reports
+   `integration_branch_pushed`. The only time the trunk is touched is when
+   the trunk happens to have the integration branch checked out: it is then
+   hard-reset so its files match the new tip.
+
+   The worktree is removed on every exit path (success, conflict, failure,
+   cancellation), and the rebuild-active flag is cleared afterwards. Clones
+   and fetches served by the hub during a rebuild see the pre-rebuild
+   integration branch until the final phase completes.
+
+   **Follow-up rebuild.** Because patch application runs without the lock,
+   a patch branch can be pushed, or upstream synced, while a run is in
+   progress. After the worktree is removed, the job compares each applied
+   patch tip and the upstream base with their current values. If a patch tip
+   is stale, one follow-up rebuild is enqueued (`submitted_by:
+   system:stale-snapshot`, audit event `hub.rebuild.followup`) unless
+   `AUTO_REBUILD_AFTER_PUSH` is `"false"`; if the upstream base is stale, one
+   is enqueued unless `AUTO_REBUILD_AFTER_SYNC` is `"false"`. The check runs
+   after a successful run and after a fail-fast conflict, not after a
+   retryable failure or cancellation (a retry takes a fresh snapshot).
 
 ### Sync algorithm
 
@@ -1066,7 +1096,13 @@ in progress returns HTTP 409. Wait for the current rebuild to complete before
 resubmitting. More generally, every operation that touches the clone (sync,
 rebuild, merge, rollback, rerere forget, archive, reclone, git push) takes a
 per-workspace lock; HTTP calls that find it taken answer 409
-`workspace_busy` instead of waiting.
+`workspace_busy` instead of waiting. A rebuild holds that lock only in two
+phases: the upstream fetch and base resolution at the start (fetch phase) and
+the integration-ref update, bookkeeping and optional push at the end (final
+phase). While it applies patches in its own worktree, sync, rollback, rerere
+forget, batch rebase, merge jobs and pushes proceed. Archive and reclone
+delete the directory the worktree lives in, so they answer 409
+`workspace_busy` for the whole rebuild.
 
 **First rebuild cannot be rolled back.** The rollback mechanism requires a
 previous integration branch HEAD SHA, which is only available after at least

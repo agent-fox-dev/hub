@@ -452,8 +452,9 @@ hub's tracking record is removed. Trigger a rebuild after removal.
 - Patch branches: `patch/<descriptive-name>` (e.g., `patch/custom-auth-middleware`,
   `patch/increase-rate-limits`, `patch/fix-logging-format`).
 - Never use branch names that match the integration branch.
-- Never create branches with the prefix `_rebuild_temp` -- this is reserved by
-  the hub's rebuild mechanism.
+- Do not create a branch named `_rebuild_temp`. (Legacy: older hub versions
+  used it as a temporary rebuild branch; current versions rebuild in a
+  detached git worktree and delete a leftover legacy `_rebuild_temp` branch.)
 
 ### Commit Messages
 
@@ -554,8 +555,10 @@ A session is not complete until all of the following are true:
   the hub. Any direct commits will be overwritten.
 - **Never push to the upstream remote.** All upstream interaction is managed
   by the hub.
-- **Never modify the `_rebuild_temp` branch.** It is a transient branch used
-  during rebuild.
+- **Never touch anything under the hub's `rebuild/` worktree directory.**
+  A rebuild applies patches in a per-run detached worktree there and removes
+  it when the run ends. (Legacy: older hub versions used a transient
+  `_rebuild_temp` branch for this.)
 - **Never run `afc rebuild submit` if a rebuild is already running.** The hub
   returns 409 Conflict in this case. Wait for the current rebuild to finish,
   or cancel it first with `afc rebuild cancel`.
