@@ -487,7 +487,7 @@
       "done_when": [
         "`make test` and `make lint` pass with real git repositories and a real SQLite database"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
