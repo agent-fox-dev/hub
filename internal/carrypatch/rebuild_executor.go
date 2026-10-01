@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/google/uuid"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
@@ -63,6 +65,9 @@ func (e *rebuildConflictError) Error() string {
 //     lock is released, the worktree removed and the guard ended.
 //  6. On conflict: abort, mark the conflicting patch and return a
 //     non-retryable error.
+//     After a success or a fail-fast conflict, once the worktree is removed
+//     and the lock released, a patch tip or the upstream base that moved
+//     during the run enqueues one follow-up rebuild (checkStaleInputs).
 //  7. On every exit path the worktree is removed with a non-cancelled
 //     context, so cleanup still runs after the job context is cancelled.
 //
@@ -253,6 +258,17 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	var mergedPatchIDs []string
 
+	// attempted records every snapshotted patch that was applied or hit a
+	// conflict, for the stale-input check (01-REQ-7.1). It is kept apart
+	// from result.PatchResults because a fail-fast conflict returns no
+	// result.
+	var attempted []attemptedPatch
+
+	integrationBranch := payload.IntegrationBranch
+	if integrationBranch == "" {
+		integrationBranch = "deploy"
+	}
+
 	for _, patch := range patches {
 		pr := PatchResult{
 			PatchID:    patch.ID,
@@ -335,6 +351,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 					pr.ConflictFiles = ce.files
 					result.PatchResults = append(result.PatchResults, pr)
 					result.PatchesConflicted++
+					attempted = append(attempted, attemptedPatch{Branch: patch.BranchName, SHA: sourceSHA})
 
 					// Reset the worktree to the pre-patch HEAD so subsequent
 					// patches apply cleanly against the last good state.
@@ -347,9 +364,16 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 					continue
 				}
 
-				// Default fail_fast: abort immediately.
-				return nil, false, fmt.Errorf("conflict in patch %q: %s",
+				// Default fail_fast: abort immediately. A push that fixes
+				// the conflicting patch while the run was applying must not
+				// be lost, so the stale-input check still runs, after the
+				// worktree is removed (01-REQ-7.1).
+				attempted = append(attempted, attemptedPatch{Branch: patch.BranchName, SHA: sourceSHA})
+				conflictErr := fmt.Errorf("conflict in patch %q: %s",
 					patch.BranchName, strings.Join(ce.files, ", "))
+				removeWT()
+				h.checkStaleInputs(ctx, trunk, payload, integrationBranch, upstreamHead, attempted)
+				return nil, false, conflictErr
 			}
 
 			// Unknown / transient error -> signal retry.
@@ -366,6 +390,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		pr.NewHeadSHA = &newHead
 		result.PatchResults = append(result.PatchResults, pr)
 		result.PatchesApplied++
+		attempted = append(attempted, attemptedPatch{Branch: patch.BranchName, SHA: sourceSHA})
 
 		// Write progress after each patch completes (NS-REQ-4).
 		h.writeProgress(jobID, result.PatchResults)
@@ -385,11 +410,6 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: err}
 	}
 	result.IntegrationHeadSHA = finalHead
-
-	integrationBranch := payload.IntegrationBranch
-	if integrationBranch == "" {
-		integrationBranch = "deploy"
-	}
 
 	// Phase two: re-acquire the workspace lock for the integration-ref
 	// update, patch bookkeeping and the optional push (01-REQ-4.5). The
@@ -458,7 +478,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// guard is ended last by its defer.
 	unlock2()
 	removeWT()
-	h.checkStaleInputs(ctx, trunk, payload, upstreamHead, result.PatchResults)
+	h.checkStaleInputs(ctx, trunk, payload, integrationBranch, upstreamHead, attempted)
 
 	// 18-REQ-3.4: Emit hub.rebuild.complete audit event.
 	h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.complete", map[string]any{
@@ -596,12 +616,126 @@ func (h *RebuildHandler) syncTrunkCheckout(ctx context.Context, trunk GitRunner,
 		"slug", slug, "branch", integrationBranch)
 }
 
+// followupSubmitter is the submitted_by of a follow-up rebuild enqueued by a
+// run whose inputs moved while it was applying patches.
+const followupSubmitter = "system:stale-snapshot"
+
+// attemptedPatch is a snapshotted patch whose application was attempted in a
+// run (it succeeded or conflicted): the branch and the SHA it resolved to.
+type attemptedPatch struct {
+	Branch string
+	SHA    string
+}
+
+// workspaceVarIsFalse reports whether the workspace variable key is set to
+// "false". An unset variable, a lookup error or a nil GetVariable all mean
+// the default (enabled).
+func (h *RebuildHandler) workspaceVarIsFalse(slug, key string) bool {
+	if h.GetVariable == nil {
+		return false
+	}
+	val, err := h.GetVariable("workspace", slug, key)
+	return err == nil && val == "false"
+}
+
 // checkStaleInputs compares the run's patch tips and upstream base with the
-// current refs after the run and enqueues a follow-up rebuild when they
-// moved (01-REQ-7). It runs after the worktree is removed and the lock is
-// released. Not implemented yet: filled in by the task that owns the
-// follow-up.
-func (h *RebuildHandler) checkStaleInputs(_ context.Context, _ GitRunner, _ RebuildPayload, _ string, _ []PatchResult) {
+// current refs after the run and enqueues one follow-up rebuild when they
+// moved (01-REQ-7). It runs after the worktree is removed and the phase-two
+// lock is released, only for a successful run and a fail-fast conflict. It
+// never changes the job outcome: failures are logged.
+//
+// A patch tip is stale when refs/heads/<branch> no longer resolves to the
+// snapshot SHA; the upstream base is stale when resolveUpstreamBase returns a
+// different commit. A stale tip triggers a follow-up unless
+// AUTO_REBUILD_AFTER_PUSH is "false", a stale upstream unless
+// AUTO_REBUILD_AFTER_SYNC is "false".
+func (h *RebuildHandler) checkStaleInputs(ctx context.Context, trunk GitRunner, payload RebuildPayload, integrationBranch, upstreamHead string, attempted []attemptedPatch) {
+	slug := payload.WorkspaceSlug
+	if ctx.Err() != nil {
+		return
+	}
+
+	stalePatches := []string{}
+	for _, p := range attempted {
+		sha, err := trunk.Run(ctx, "rev-parse", "--verify", "refs/heads/"+p.Branch+"^{commit}")
+		if err != nil && isContextErr(err) {
+			return
+		}
+		// A branch that no longer resolves has moved too (deleted).
+		if strings.TrimSpace(sha) != p.SHA {
+			stalePatches = append(stalePatches, p.Branch)
+		}
+	}
+
+	upstreamStale := false
+	if now, err := resolveUpstreamBase(ctx, trunk, workspaceBranch(h.DB, slug)); err != nil {
+		if isContextErr(err) {
+			return
+		}
+		h.logWarn("stale-input check: cannot resolve the upstream base", "slug", slug, "error", err)
+	} else if now != upstreamHead {
+		upstreamStale = true
+	}
+
+	// Variables decide which kind of movement triggers a follow-up; what is
+	// reported is what triggered it.
+	if len(stalePatches) > 0 && h.workspaceVarIsFalse(slug, "AUTO_REBUILD_AFTER_PUSH") {
+		stalePatches = []string{}
+	}
+	if upstreamStale && h.workspaceVarIsFalse(slug, "AUTO_REBUILD_AFTER_SYNC") {
+		upstreamStale = false
+	}
+	if len(stalePatches) == 0 && !upstreamStale {
+		return
+	}
+
+	if h.Queue == nil {
+		h.logWarn("stale-input follow-up rebuild not enqueued: no job queue",
+			"slug", slug, "stale_patches", stalePatches, "upstream_stale", upstreamStale)
+		return
+	}
+
+	jobID := jobqueue.JobIDFromContext(ctx)
+	groupKey := FormatGroupKey(slug, integrationBranch)
+	if jobID != "" {
+		if job, err := h.Queue.GetByID(jobID); err == nil && job != nil && job.GroupKey != "" {
+			groupKey = job.GroupKey
+		}
+	}
+
+	followPayload := payload
+	followPayload.SubmittedBy = followupSubmitter
+	raw, err := json.Marshal(followPayload)
+	if err != nil {
+		h.logWarn("stale-input follow-up rebuild not enqueued", "slug", slug, "error", err)
+		return
+	}
+
+	followID, duplicate, err := h.Queue.Enqueue(jobqueue.EnqueueParams{
+		Type:         "rebuild",
+		Key:          slug,
+		Nonce:        uuid.New().String(),
+		Payload:      raw,
+		SubmittedBy:  followupSubmitter,
+		Group:        groupKey,
+		ExcludeJobID: jobID,
+	})
+	if err != nil {
+		h.logWarn("stale-input follow-up rebuild not enqueued", "slug", slug, "error", err)
+		return
+	}
+	if duplicate {
+		h.logInfo("stale-input follow-up rebuild skipped: a rebuild is already queued",
+			"slug", slug, "job_id", followID)
+		return
+	}
+	h.logInfo("stale-input follow-up rebuild enqueued",
+		"slug", slug, "job_id", followID, "stale_patches", stalePatches, "upstream_stale", upstreamStale)
+	h.emitRebuildAudit(ctx, slug, audit.EventRebuildFollowup, map[string]any{
+		"stale_patches":    stalePatches,
+		"upstream_stale":   upstreamStale,
+		"follow_up_job_id": followID,
+	})
 }
 
 // rebuildDir returns the directory that holds this workspace's rebuild

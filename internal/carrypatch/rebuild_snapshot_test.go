@@ -99,7 +99,12 @@ func TestSnapshot_TS_01_39_TipsResolvedAndOnlyShasUsed(t *testing.T) {
 			// worktree command.
 			firstWt := e.events.index("wt:")
 			lastSnap := -1
+			// Only the resolutions before the worktree removal are the
+			// snapshot; the stale-input check re-resolves the tips after it.
 			for i, ev := range e.events.snapshot() {
+				if strings.HasPrefix(ev, "trunk:WorktreeRemove") {
+					break
+				}
 				if strings.HasPrefix(ev, "trunk:run rev-parse --verify refs/heads/") && strings.HasSuffix(ev, "^{commit}") {
 					lastSnap = i
 				}
