@@ -1098,8 +1098,8 @@ func TestRebuildExecutor_PreviousIntegrationHeadSHA_Set(t *testing.T) {
 			if args[1] == "FETCH_HEAD" {
 				return fetchHeadSHA, nil
 			}
-			// rev-parse --verify integration (to capture previous HEAD)
-			if len(args) >= 3 && args[1] == "--verify" && args[2] == "deploy" {
+			// rev-parse --verify refs/heads/<integration> (to capture previous HEAD)
+			if len(args) >= 3 && args[1] == "--verify" && args[2] == "refs/heads/deploy" {
 				return previousIntegrationSHA, nil
 			}
 			// rev-parse HEAD (for final integration head and per-patch head)
@@ -1184,8 +1184,8 @@ func TestRebuildExecutor_PreviousIntegrationHeadSHA_EmptyOnFirstRebuild(t *testi
 			if args[1] == "FETCH_HEAD" {
 				return fetchHeadSHA, nil
 			}
-			// rev-parse --verify deploy fails (branch doesn't exist)
-			if len(args) >= 3 && args[1] == "--verify" && args[2] == "deploy" {
+			// rev-parse --verify refs/heads/deploy fails (branch doesn't exist)
+			if len(args) >= 3 && args[1] == "--verify" && args[2] == "refs/heads/deploy" {
 				return "", fmt.Errorf("fatal: Needed a single revision")
 			}
 			return finalSHA, nil

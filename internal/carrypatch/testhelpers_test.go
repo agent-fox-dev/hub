@@ -240,6 +240,7 @@ type mockGitRunner struct {
 	WorktreePruneErr    error
 	UpdateRefCalls      []updateRefCall
 	UpdateRefErr        error
+	HardResetCalls      []string
 
 	// Optional hooks invoked by the typed worktree methods (before the
 	// recorded error is returned when the hook returns nil).
@@ -379,6 +380,10 @@ func (m *mockGitRunner) Cherry(ctx context.Context, upstream, head string) ([]st
 }
 
 func (m *mockGitRunner) HardReset(ctx context.Context, ref string) error {
+	m.mu.Lock()
+	m.HardResetCalls = append(m.HardResetCalls, ref)
+	m.mu.Unlock()
+	m.record("HardReset " + ref)
 	return m.HardResetFunc(ctx, ref)
 }
 

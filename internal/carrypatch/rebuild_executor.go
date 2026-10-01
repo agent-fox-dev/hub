@@ -150,7 +150,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 7. One-time migration of a legacy _rebuild_temp branch (01-REQ-2.5).
+	// 7. One-time migration of a legacy _rebuild_temp branch (01-REQ-2.6, 2.7).
 	h.migrateLegacyRebuildBranch(ctx, trunk, slug)
 
 	// 8. Remove worktrees left behind by a crashed run and prune their
@@ -371,15 +371,26 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// Capture the previous integration branch HEAD before force-updating.
 	// If the branch does not exist yet (first rebuild), previousHead will be
 	// empty and PreviousIntegrationHeadSHA stays at its zero value.
-	previousHead, _ := trunk.Run(ctx, "rev-parse", "--verify", integrationBranch)
+	// The read happens under the phase-two lock, immediately before the
+	// update, so a rollback that ran during patch application is what gets
+	// recorded (01-REQ-2.4, 01-REQ-4.7).
+	integrationRef := "refs/heads/" + integrationBranch
+	previousHead, _ := trunk.Run(ctx, "rev-parse", "--verify", integrationRef)
 	if previousHead != "" {
 		result.PreviousIntegrationHeadSHA = previousHead
 	}
 
-	// update-ref (not branch -f, which refuses a checked-out branch).
-	if err := trunk.UpdateRef(ctx, "refs/heads/"+integrationBranch, finalHead); err != nil {
-		return nil, true, &TransientError{Err: err}
+	// update-ref (not branch -f, which refuses a checked-out branch). On
+	// failure nothing below runs: no soft-deletion, compaction or push
+	// (01-REQ-2.8); the deferred unlock releases the lock.
+	if err := trunk.UpdateRef(ctx, integrationRef, finalHead); err != nil {
+		return nil, true, &TransientError{Err: fmt.Errorf("update %s: %w", integrationRef, err)}
 	}
+
+	// Exception A (01-REQ-2.5): moving a ref under a checked-out branch
+	// leaves the trunk's index and files at the old commit, so the checkout
+	// is brought to the new tip. Only in that case is the trunk reset.
+	h.syncTrunkCheckout(ctx, trunk, slug, integrationBranch)
 
 	// Soft-delete merged_upstream patches (set status='deleted', deleted_at).
 	for _, id := range mergedPatchIDs {
@@ -459,10 +470,96 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), rebuildCleanupTimeout)
 }
 
-// migrateLegacyRebuildBranch removes a _rebuild_temp branch left by a
-// pre-upgrade run (01-REQ-2.5). It runs in phase one under the lock.
-// Not implemented yet: filled in by the task that owns Exception B.
-func (h *RebuildHandler) migrateLegacyRebuildBranch(_ context.Context, _ GitRunner, _ string) {}
+// legacyRebuildBranch is the temporary branch pre-upgrade rebuilds checked
+// out in the trunk. It is never created any more.
+const legacyRebuildBranch = "_rebuild_temp"
+
+// localRefExists reports whether the exact ref exists in the trunk. It uses
+// for-each-ref and compares the printed name, so a prefix match or an empty
+// answer never counts as existing.
+func localRefExists(ctx context.Context, trunk GitRunner, ref string) bool {
+	out, err := trunk.Run(ctx, "for-each-ref", "--format=%(refname)", ref)
+	return err == nil && strings.TrimSpace(out) == ref
+}
+
+// migrateLegacyRebuildBranch is Exception B (01-REQ-2.6, 2.7): the one-time
+// removal of a _rebuild_temp branch left by a pre-upgrade run. If the
+// trunk's HEAD is on it, any in-progress cherry-pick, merge or rebase is
+// aborted (best effort) and HEAD is moved to the workspace branch, else the
+// local branch origin/HEAD points to, else detached; only then is the branch
+// deleted. It runs in phase one under the lock and never fails the run.
+func (h *RebuildHandler) migrateLegacyRebuildBranch(ctx context.Context, trunk GitRunner, slug string) {
+	legacyRef := "refs/heads/" + legacyRebuildBranch
+	if !localRefExists(ctx, trunk, legacyRef) {
+		return
+	}
+
+	if head, err := trunk.Run(ctx, "symbolic-ref", "-q", "HEAD"); err == nil && strings.TrimSpace(head) == legacyRef {
+		for _, op := range []string{"cherry-pick", "merge", "rebase"} {
+			_, _ = trunk.Run(ctx, op, "--abort")
+		}
+		if target := h.legacyMigrationTarget(ctx, trunk, slug); target != "" {
+			if _, err := trunk.Run(ctx, "checkout", "--force", target); err != nil {
+				h.logWarn("cannot move trunk off legacy rebuild branch",
+					"slug", slug, "branch", legacyRebuildBranch, "target", target, "error", err)
+				return
+			}
+			h.logInfo("moved trunk off legacy rebuild branch", "slug", slug, "branch", legacyRebuildBranch, "target", target)
+		} else {
+			h.logWarn("no workspace branch or origin/HEAD found locally; detaching trunk HEAD from legacy rebuild branch",
+				"slug", slug, "branch", legacyRebuildBranch)
+			if _, err := trunk.Run(ctx, "checkout", "--detach", "--force"); err != nil {
+				h.logWarn("cannot detach trunk from legacy rebuild branch",
+					"slug", slug, "branch", legacyRebuildBranch, "error", err)
+				return
+			}
+		}
+	}
+
+	if _, err := trunk.Run(ctx, "branch", "-D", legacyRebuildBranch); err != nil {
+		h.logWarn("cannot delete legacy rebuild branch", "slug", slug, "branch", legacyRebuildBranch, "error", err)
+		return
+	}
+	h.logInfo("removed legacy rebuild branch", "slug", slug, "branch", legacyRebuildBranch)
+}
+
+// legacyMigrationTarget picks the branch the trunk moves to when it is found
+// on the legacy rebuild branch: the workspace's configured branch if it
+// exists locally, else the short name of refs/remotes/origin/HEAD if that
+// exists locally. It returns "" when neither does.
+func (h *RebuildHandler) legacyMigrationTarget(ctx context.Context, trunk GitRunner, slug string) string {
+	if wb := workspaceBranch(h.DB, slug); wb != "" && wb != legacyRebuildBranch &&
+		localRefExists(ctx, trunk, "refs/heads/"+wb) {
+		return wb
+	}
+	if out, err := trunk.Run(ctx, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"); err == nil {
+		short := strings.TrimPrefix(strings.TrimSpace(out), "origin/")
+		if short != "" && short != legacyRebuildBranch && localRefExists(ctx, trunk, "refs/heads/"+short) {
+			return short
+		}
+	}
+	return ""
+}
+
+// syncTrunkCheckout is Exception A (01-REQ-2.5). It runs under the phase-two
+// lock right after the integration ref was moved. When the trunk's HEAD is
+// the integration branch, the ref move left its index and files at the old
+// commit, so `reset --hard HEAD` brings the checkout to the new tip. In every
+// other case the trunk is not touched. A failing reset is logged and does
+// not fail the run: the ref is already updated.
+func (h *RebuildHandler) syncTrunkCheckout(ctx context.Context, trunk GitRunner, slug, integrationBranch string) {
+	head, err := trunk.Run(ctx, "symbolic-ref", "-q", "HEAD")
+	if err != nil || strings.TrimSpace(head) != "refs/heads/"+integrationBranch {
+		return
+	}
+	if err := trunk.HardReset(ctx, "HEAD"); err != nil {
+		h.logWarn("cannot reset trunk checkout to the new integration tip",
+			"slug", slug, "branch", integrationBranch, "error", err)
+		return
+	}
+	h.logInfo("reset trunk checkout to the new integration tip: the integration branch is checked out",
+		"slug", slug, "branch", integrationBranch)
+}
 
 // checkStaleInputs compares the run's patch tips and upstream base with the
 // current refs after the run and enqueues a follow-up rebuild when they
