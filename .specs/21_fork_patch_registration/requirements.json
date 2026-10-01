@@ -1,0 +1,564 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "21",
+  "spec_name": "fork_patch_registration",
+  "schema_version": 2,
+  "introduction": "Patch registration (POST /workspaces/:slug/patches, single and batch, and afc patch add on top of it) resolves a patch branch to a local refs/heads/<name> ref in the workspace trunk. It looks at the local ref first, then the clone's origin tracking ref, then, only when PATCH_BRANCH_SOURCE is origin, the fork itself. It records how the branch was resolved in the hub.patch.create audit event.",
+  "glossary": {
+    "PATCH_BRANCH_SOURCE": "Workspace variable defined by 20_fork_patch_sync. The exact, case-sensitive value origin means the fork is the authority for patch branches. Any other value, an unset variable or a lookup error means hub.",
+    "compare-and-swap create": "git update-ref refs/heads/<name> <sha> <all-zero-sha>, which fails if the ref already exists.",
+    "resolution method": "How a branch was found: local, origin_tracking or origin_fetch. The audit trail also uses skipped when skip_branch_check was true.",
+    "resolver hook": "The hook defined in internal/workspace/branch_check_hook.go that replaces the old boolean BranchCheckFunc. It takes a context, slug and branch name and returns a resolution method and a classified error.",
+    "tracking ref": "refs/remotes/origin/<name> in the trunk, the clone's copy of a fork branch.",
+    "trunk": "The clone of the fork at <workspace_root>/<slug>/trunk. Patch rebuilds read only refs/heads/<branch> in it.",
+    "workspace lock": "The per-slug lock taken with wslock.TryLock(slug) to serialise operations on the trunk."
+  },
+  "requirements": [
+    {
+      "id": "21-REQ-1",
+      "title": "Resolution order",
+      "rationale": "A fork-only branch must get a local ref before the patch row is inserted, because rebuilds read only refs/heads/<branch>.",
+      "criteria": [
+        {
+          "id": "21-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a non-skipped registration names a branch whose refs/heads/<name>^{commit} resolves to a commit",
+          "system": "branch resolver",
+          "action": "report the resolution method local, write no ref, take no workspace lock and perform no fetch"
+        },
+        {
+          "id": "21-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "refs/heads/<name> does not resolve and refs/remotes/origin/<name>^{commit} resolves to a commit, in either PATCH_BRANCH_SOURCE mode",
+          "system": "branch resolver",
+          "action": "create refs/heads/<name> at that commit and report the resolution method origin_tracking"
+        },
+        {
+          "id": "21-REQ-1.3",
+          "pattern": "complex_event",
+          "condition": "neither refs/heads/<name> nor refs/remotes/origin/<name> resolves",
+          "guard": "PATCH_BRANCH_SOURCE is origin",
+          "system": "branch resolver",
+          "action": "fetch that single branch from the fork and, if refs/remotes/origin/<name> then resolves to a commit, create refs/heads/<name> at that commit and report the resolution method origin_fetch"
+        },
+        {
+          "id": "21-REQ-1.4",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE is unset, its lookup returns an error, or its value is anything other than the exact string origin",
+          "system": "branch resolver",
+          "action": "treat the workspace as hub mode: perform zero fetches and zero origin credential lookups, including when the branch exists nowhere",
+          "contract": "A counting fetch stub and a counting credential-resolver stub both record 0 calls"
+        },
+        {
+          "id": "21-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "a registration request starts",
+          "system": "registration handler",
+          "action": "read PATCH_BRANCH_SOURCE once for that request using the parsing helper of 20_fork_patch_sync, so that a change of the variable takes effect on the next request"
+        },
+        {
+          "id": "21-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the submitted name resolves only as a tag, a SHA or a remote-qualified name such as origin/x and not as refs/heads/<name> or refs/remotes/origin/<name>",
+          "system": "branch resolver",
+          "action": "reject the branch as not found, using fully qualified refs for every existence check",
+          "contract": "HTTP 400 with the not-found message of 21-REQ-4; no row inserted and no local branch created"
+        },
+        {
+          "id": "21-REQ-1.7",
+          "pattern": "state_driven",
+          "condition": "no branch-check hook is registered",
+          "system": "registration handler",
+          "action": "accept the branch without any resolution, as before this spec"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-2",
+      "title": "Creating the local branch",
+      "rationale": "The local ref must be written without disturbing the trunk's working tree and must be safe against a concurrent hub push.",
+      "criteria": [
+        {
+          "id": "21-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "branch resolver",
+          "action": "create the local branch only with update-ref refs/heads/<name> <sha> <all-zero-sha>, never with checkout, branch or reset, leaving the trunk's working tree and HEAD unchanged"
+        },
+        {
+          "id": "21-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the compare-and-swap create fails because refs/heads/<name> now exists",
+          "system": "branch resolver",
+          "action": "re-run the resolution from step 1 and report the resolution method local",
+          "contract": "HTTP 201 for the registration; the existing ref is not modified"
+        },
+        {
+          "id": "21-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "writing refs/heads/<name> fails for any reason other than the ref already existing",
+          "system": "registration handler",
+          "action": "log the error with the slug and branch, insert no patch row and answer with an internal error",
+          "contract": "HTTP 500 with message internal server error"
+        },
+        {
+          "id": "21-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "branch resolver",
+          "action": "for any created local branch, point it at the tracking tip at the moment of creation and write no upstream tracking configuration"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-3",
+      "title": "Single-branch fork fetch",
+      "rationale": "Only the one requested branch is of interest at registration time; pruning and tags are sync's concern.",
+      "criteria": [
+        {
+          "id": "21-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "resolution step 3 runs",
+          "system": "branch resolver",
+          "action": "run a go-git fetch of the trunk's origin remote with the single refspec +refs/heads/<name>:refs/remotes/origin/<name>, no tags, no pruning, and credentials from workspace.ResolveCloneAuth (GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then none)"
+        },
+        {
+          "id": "21-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "the fetch returns git.NoErrAlreadyUpToDate",
+          "system": "branch resolver",
+          "action": "treat the fetch as successful and continue with the tracking-ref check"
+        },
+        {
+          "id": "21-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "the fork does not have the requested branch and the fetch reports that no remote ref matches",
+          "system": "branch resolver",
+          "action": "classify the failure as branch not found on origin, create no local branch and insert no row",
+          "contract": "HTTP 400 with the message of 21-REQ-4"
+        },
+        {
+          "id": "21-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the fetch fails for any reason other than the branch being absent on the fork (unreachable fork, authentication failure, transport error)",
+          "system": "registration handler",
+          "action": "log the error text, create no local branch, insert no row and not echo the error text in the response",
+          "contract": "HTTP 502 with message origin fetch failed and error type origin_fetch_failed"
+        },
+        {
+          "id": "21-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "origin credential resolution fails",
+          "system": "registration handler",
+          "action": "skip the fetch, create no local branch and insert no row",
+          "contract": "HTTP 502 with message failed to resolve origin credentials"
+        },
+        {
+          "id": "21-REQ-3.6",
+          "pattern": "ubiquitous",
+          "system": "branch resolver",
+          "action": "decide that a branch is not found on origin from a typed go-git error or by listing the remote's refs, and never from matching on error text alone"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-4",
+      "title": "Error for a branch found nowhere",
+      "rationale": "Clients need one stable message regardless of mode.",
+      "criteria": [
+        {
+          "id": "21-REQ-4.1",
+          "pattern": "unwanted",
+          "condition": "a single-patch registration names a branch that no resolution step finds (steps 1 and 2 in hub mode, steps 1 to 3 in origin mode)",
+          "system": "registration handler",
+          "action": "reject the request, insert no row and create no local branch",
+          "contract": "HTTP 400 with message branch does not exist in repository or on origin"
+        },
+        {
+          "id": "21-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "a batch registration contains an element whose branch no resolution step finds",
+          "system": "registration handler",
+          "action": "reject the request naming the first failing element and insert no row",
+          "contract": "HTTP 400 with message patch[i]: branch does not exist in repository or on origin, where i is the zero-based index of the first failing element"
+        },
+        {
+          "id": "21-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "registration handler",
+          "action": "for any registration of a branch found nowhere, return the identical 400 message in hub mode and in origin mode"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-5",
+      "title": "Skipping the branch check",
+      "rationale": "skip_branch_check must keep its meaning as an opt-out of every lookup and side effect.",
+      "criteria": [
+        {
+          "id": "21-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "a registration element has skip_branch_check true, in either mode",
+          "system": "registration handler",
+          "action": "perform no ref lookup, no fetch, no credential resolution, no local branch creation and take no workspace lock for that element"
+        },
+        {
+          "id": "21-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "a batch mixes skipped and non-skipped elements",
+          "system": "registration handler",
+          "action": "decide each element independently, so that a skipped element does not change how its neighbours resolve"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-6",
+      "title": "Batch registration",
+      "rationale": "A batch must stay all-or-nothing for rows while resolution may leave harmless refs behind.",
+      "criteria": [
+        {
+          "id": "21-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "batch registration handler",
+          "action": "validate and resolve every element, in array order, before inserting any row"
+        },
+        {
+          "id": "21-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "any element's resolution fails with a missing branch, a fetch failure, a busy workspace or an internal error",
+          "system": "batch registration handler",
+          "action": "stop at the first failing element and insert no row for any element",
+          "contract": "HTTP 400, 502, 409 or 500 respectively; the patch table row count is unchanged"
+        },
+        {
+          "id": "21-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "a later element fails after an earlier element created a local branch or completed a fork fetch",
+          "system": "batch registration handler",
+          "action": "keep the earlier local branches and fetched tracking refs in place",
+          "contract": "A later registration of the earlier branch reports the resolution method local"
+        },
+        {
+          "id": "21-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "batch registration handler",
+          "action": "run the duplicate-in-batch and already-registered checks after the resolution loop, so that error precedence is unchanged and a batch that answers 409 may already have created local branches"
+        },
+        {
+          "id": "21-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "registration handler",
+          "action": "run resolution before the existence checks and the if_not_exists lookup, so a missing branch answers 400 before a 409 for the same request"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-7",
+      "title": "Concurrency",
+      "rationale": "Sync fetches origin under the workspace lock and hub pushes take no lock, so writes need the lock and a compare-and-swap.",
+      "criteria": [
+        {
+          "id": "21-REQ-7.1",
+          "pattern": "complex_event",
+          "condition": "resolution needs to write a ref (an origin_tracking create or an origin_fetch)",
+          "guard": "the local check of step 1 failed",
+          "system": "branch resolver",
+          "action": "take wslock.TryLock(slug) before writing anything and hold it until that element's resolution finishes"
+        },
+        {
+          "id": "21-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the workspace lock has been acquired for an element",
+          "system": "branch resolver",
+          "action": "re-check step 1 before writing, and report local without writing if refs/heads/<name> now resolves"
+        },
+        {
+          "id": "21-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "wslock.TryLock(slug) reports the lock busy",
+          "system": "registration handler",
+          "action": "insert no row and not wait for the lock",
+          "contract": "HTTP 409 with error type workspace_busy and message another operation is running on this workspace; retry later"
+        },
+        {
+          "id": "21-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "registration handler",
+          "action": "release the workspace lock before the database insert and on every resolution outcome, success or failure"
+        },
+        {
+          "id": "21-REQ-7.5",
+          "pattern": "state_driven",
+          "condition": "the workspace lock is held by another operation",
+          "system": "registration handler",
+          "action": "complete registrations on the local path and for skip_branch_check elements without taking the lock",
+          "contract": "HTTP 201 for those registrations"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-8",
+      "title": "Audit of the resolution method",
+      "rationale": "Operators need to see how a branch was found and to tell not-checked from no-hook.",
+      "criteria": [
+        {
+          "id": "21-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "a single-patch registration with a registered hook creates a patch",
+          "system": "registration handler",
+          "action": "emit hub.patch.create with metadata key branch_resolution set to local, origin_tracking or origin_fetch, next to the existing branch_name and position keys"
+        },
+        {
+          "id": "21-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a single-patch registration with skip_branch_check true creates a patch",
+          "system": "registration handler",
+          "action": "emit hub.patch.create with branch_resolution set to skipped"
+        },
+        {
+          "id": "21-REQ-8.3",
+          "pattern": "state_driven",
+          "condition": "no branch-check hook is registered",
+          "system": "registration handler",
+          "action": "omit the branch_resolution key from hub.patch.create"
+        },
+        {
+          "id": "21-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "an if_not_exists request returns the existing record",
+          "system": "registration handler",
+          "action": "emit no hub.patch.create event"
+        },
+        {
+          "id": "21-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "batch registration handler",
+          "action": "emit no hub.patch.create events, as before this spec"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-9",
+      "title": "Resolver hook contract and wiring",
+      "rationale": "One resolving hook avoids two sources of truth and follows the existing hook pattern that avoids an import cycle.",
+      "criteria": [
+        {
+          "id": "21-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "define in internal/workspace/branch_check_hook.go a resolver hook type that takes a context, a slug and a branch name and returns a resolution method and a classified error, replacing BranchCheckFunc"
+        },
+        {
+          "id": "21-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "classify hook errors as at least branch not found, origin fetch failed (including credential resolution failure), workspace busy and other, and map them in the handlers to 400, 502, 409 and 500"
+        },
+        {
+          "id": "21-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "carrypatch package",
+          "action": "implement the resolver hook in internal/carrypatch, constructed from the git runner factory, the workspace root, the variable getter store.GetVariableValue, the origin credential resolver of 20_fork_patch_sync and an injectable single-branch fetch function, and register it from cmd/af-hub/main.go in place of the inline rev-parse --verify closure"
+        },
+        {
+          "id": "21-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "build",
+          "action": "keep the workspace package free of imports of carrypatch and the carrypatch package free of imports of workspace"
+        },
+        {
+          "id": "21-REQ-9.5",
+          "pattern": "unwanted",
+          "condition": "the resolver hook returns an error that carries no recognised classification",
+          "system": "registration handler",
+          "action": "treat it as an internal failure and insert no row",
+          "contract": "HTTP 500 with message internal server error"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-10",
+      "title": "Documentation and CLI surface",
+      "rationale": "Project steering treats outdated docs as regressions.",
+      "criteria": [
+        {
+          "id": "21-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "docs/api.md",
+          "action": "describe in the registration section the resolution order, the 400 message branch does not exist in repository or on origin, the 409 workspace_busy and 502 origin_fetch_failed responses, the skip_branch_check behaviour and the branch_resolution audit metadata"
+        },
+        {
+          "id": "21-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "docs/openapi.yaml",
+          "action": "update the POST /workspaces/{slug}/patches description, its 400 description and the skip_branch_check property description, and add 409 and 502 responses"
+        },
+        {
+          "id": "21-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "docs/cli.md",
+          "action": "update the afc patch add entry and the --skip-branch-check flag text, and update the command's help text, to describe the new resolution behaviour"
+        },
+        {
+          "id": "21-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "afc patch add",
+          "action": "add no new flag and send the same request body as before this spec, so that the existing CLI test passes unchanged"
+        },
+        {
+          "id": "21-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "change set",
+          "action": "leave docs/carry_patch_workflow.md unmodified"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "21-PATH-1",
+      "title": "Operator registers a fork-only branch known to the clone in hub mode",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc patch add for a branch that exists only as refs/remotes/origin/<name> in a hub-mode workspace"
+        },
+        {
+          "actor": "registration handler",
+          "action": "reads PATCH_BRANCH_SOURCE (hub) and calls the resolver hook"
+        },
+        {
+          "actor": "branch resolver",
+          "action": "finds no refs/heads/<name>, takes the workspace lock, finds the tracking ref and creates refs/heads/<name> with a compare-and-swap update-ref, then releases the lock"
+        },
+        {
+          "actor": "registration handler",
+          "action": "inserts the patch row, emits hub.patch.create with branch_resolution origin_tracking and returns 201"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-2",
+      "title": "Operator registers a branch pushed to the fork after the clone in origin mode",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "submits POST /workspaces/:slug/patches for a branch that exists only on the fork, with PATCH_BRANCH_SOURCE set to origin"
+        },
+        {
+          "actor": "branch resolver",
+          "action": "finds neither local nor tracking ref, takes the workspace lock and resolves origin credentials with ResolveCloneAuth"
+        },
+        {
+          "actor": "branch resolver",
+          "action": "fetches only +refs/heads/<name>:refs/remotes/origin/<name> from the fork and creates refs/heads/<name> at the fetched tip"
+        },
+        {
+          "actor": "registration handler",
+          "action": "inserts the patch row, emits hub.patch.create with branch_resolution origin_fetch and returns 201"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-3",
+      "title": "Batch with a missing second branch is rejected without rows",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "submits a batch whose first element is a tracking-only branch and whose second element exists nowhere"
+        },
+        {
+          "actor": "branch resolver",
+          "action": "creates the local branch for element 0 and then fails to find element 1"
+        },
+        {
+          "actor": "registration handler",
+          "action": "returns 400 patch[1]: branch does not exist in repository or on origin and inserts no row"
+        },
+        {
+          "actor": "operator",
+          "action": "re-submits the first branch and the registration resolves it as local without writing a ref"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-4",
+      "title": "Fork unreachable during origin-mode registration",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "submits a registration for an unresolved branch in origin mode while the fork is unreachable"
+        },
+        {
+          "actor": "branch resolver",
+          "action": "attempts the single-branch fetch, which fails with a transport error, and returns an origin-fetch-failed classification"
+        },
+        {
+          "actor": "registration handler",
+          "action": "logs the error text, inserts no row and returns 502 origin fetch failed with error type origin_fetch_failed"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-5",
+      "title": "Registration while a sync holds the workspace lock",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "submits a registration for a tracking-only branch while a sync holds the workspace lock"
+        },
+        {
+          "actor": "branch resolver",
+          "action": "finds no local ref, fails wslock.TryLock and returns a workspace-busy classification"
+        },
+        {
+          "actor": "registration handler",
+          "action": "returns 409 workspace_busy and inserts no row"
+        },
+        {
+          "actor": "operator",
+          "action": "submits a registration with skip_branch_check true, which is accepted without touching the lock or any ref"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5.19.1",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)"
+        },
+        {
+          "name": "Remote",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) Remote(name string) (*Remote, error)"
+        },
+        {
+          "name": "FetchContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Remote) FetchContext(ctx context.Context, o *FetchOptions) error"
+        },
+        {
+          "name": "FetchOptions",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "struct with RemoteName string, RefSpecs []config.RefSpec, Auth transport.AuthMethod, Tags TagMode",
+          "notes": "Fields as set in internal/upstream/upstream.go."
+        },
+        {
+          "name": "NoErrAlreadyUpToDate",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "var NoErrAlreadyUpToDate error"
+        },
+        {
+          "name": "NoMatchingRefSpecError",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "type NoMatchingRefSpecError struct",
+          "notes": "Assumed error for a refspec matching no remote ref; unverified and not used in the repo. An integration test against a real bare fork must confirm it; otherwise list remote refs."
+        }
+      ]
+    }
+  ]
+}

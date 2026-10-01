@@ -1,0 +1,764 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "23",
+  "spec_name": "patch_divergence_recovery",
+  "schema_version": 2,
+  "introduction": "Patch divergence recovery makes the hub-side backup ref refs/hub/replaced/<branch> usable and tidy. It adds a single-patch GET that exposes replaced_sha and an on-demand reset-to-origin endpoint and CLI command. It also adds a fixed git-server rule that rejects client pushes to the backup namespace, and removal of backup refs when a patch is removed or purged.",
+  "glossary": {
+    "PATCH_BRANCH_SOURCE": "Workspace variable defined by spec 20 with the modes hub and origin.",
+    "backup ref": "The hub-side ref refs/hub/replaced/<branch> that holds the last hub branch tip discarded when a patch branch was moved to the fork's tip.",
+    "compare-and-swap move": "A git update-ref <ref> <new> <expected-old> call that fails if the ref no longer holds the expected old value; supplied by spec 20.",
+    "fork": "The origin repository of a carry_patch workspace, from which the trunk was cloned.",
+    "protected namespace": "Ref names beginning with refs/hub/replaced/, which the git server never lets a client create, update or delete.",
+    "recovery hook": "The hook type defined in the workspace package, with a nil default, through which carrypatch supplies backup-ref reading, backup-ref removal and reset. It exists because workspace and carrypatch do not import each other.",
+    "replaced_sha": "The full 40-character SHA that a backup ref resolves to, returned by GET /workspaces/:slug/patches/:id when the ref exists.",
+    "reset action": "One of none, created, fast_forwarded or replaced: the outcome a reset-to-origin reports.",
+    "reset-to-origin": "The operator-initiated move of a patch branch to the fork's current tip, regardless of PATCH_DIVERGENCE_POLICY.",
+    "trunk": "The hub's on-disk git repository for a workspace at <workspace_root>/<slug>/trunk.",
+    "workspace lock": "The per-slug lock taken with wslock.TryLock(slug) that serialises operations on a trunk."
+  },
+  "requirements": [
+    {
+      "id": "23-REQ-1",
+      "title": "GET /workspaces/:slug/patches/:id",
+      "rationale": "An operator who sees a replaced outcome needs a read endpoint that shows whether a recoverable backup tip exists.",
+      "criteria": [
+        {
+          "id": "23-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "an owner, an admin or a PAT holding patches:read or patches:write sends GET /api/v1/workspaces/:slug/patches/:id for an existing patch and refs/hub/replaced/<branch> resolves to a commit in the workspace trunk",
+          "system": "workspace handler",
+          "action": "return the existing patch object (patchResponse, including any origin_* fields) plus replaced_sha holding the full 40-character commit SHA",
+          "contract": "HTTP 200 with the patch object and a replaced_sha string of 40 hexadecimal characters"
+        },
+        {
+          "id": "23-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "the patch is requested and the backup ref does not exist, or the workspace trunk is not on disk, or no recovery hook is registered",
+          "system": "workspace handler",
+          "action": "return the patch object without a replaced_sha key",
+          "contract": "HTTP 200 with the patch object; the JSON body contains no replaced_sha key"
+        },
+        {
+          "id": "23-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the recovery hook returns an error while reading the backup ref",
+          "system": "workspace handler",
+          "action": "log the failure at warn level and return the patch object without replaced_sha",
+          "contract": "HTTP 200 with the patch object, no replaced_sha key, and one warn-level log entry"
+        },
+        {
+          "id": "23-REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "the requested patch has status deleted",
+          "system": "workspace handler",
+          "action": "return the patch object with its deleted status",
+          "contract": "HTTP 200 with status \"deleted\""
+        },
+        {
+          "id": "23-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the patch id does not exist in the workspace",
+          "system": "workspace handler",
+          "action": "reject the request",
+          "contract": "HTTP 404 with error message \"patch not found\""
+        },
+        {
+          "id": "23-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the caller is neither the workspace owner nor an admin",
+          "system": "workspace handler",
+          "action": "reject the request without revealing the workspace",
+          "contract": "HTTP 404 with error message \"workspace not found\""
+        },
+        {
+          "id": "23-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "the caller is a PAT that holds neither patches:read nor patches:write",
+          "system": "workspace handler",
+          "action": "reject the request",
+          "contract": "HTTP 403"
+        },
+        {
+          "id": "23-REQ-1.8",
+          "pattern": "ubiquitous",
+          "system": "workspace handler",
+          "action": "for any other patch endpoint (list, add, update, remove, restore, sync), return a patch object without a replaced_sha key"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-2",
+      "title": "POST /workspaces/:slug/patches/:id/reset-to-origin: authorization, preconditions and locking",
+      "rationale": "A reset moves a branch, so it must refuse every state in which moving is wrong before it takes the lock or touches git.",
+      "criteria": [
+        {
+          "id": "23-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "an authorised caller sends POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin for an eligible patch and the reset completes",
+          "system": "workspace handler",
+          "action": "return the patch object as GET renders it (including replaced_sha when a backup exists after the reset) plus rebuild_triggered and, only when a job was enqueued, rebuild_job_id",
+          "contract": "HTTP 200 with the patch object, rebuild_triggered (boolean) and optional rebuild_job_id (string)"
+        },
+        {
+          "id": "23-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the caller is a PAT without patches:write, or is neither the owner nor an admin",
+          "system": "workspace handler",
+          "action": "reject the request before any git operation",
+          "contract": "HTTP 403 for a PAT without patches:write; HTTP 404 with message \"workspace not found\" for a non-owner non-admin"
+        },
+        {
+          "id": "23-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the workspace is not active or is not in carry_patch mode",
+          "system": "workspace handler",
+          "action": "reject the request with the same 400 messages as handleRestorePatch",
+          "contract": "HTTP 400 with the \"workspace is not active\" or \"workspace is not in carry_patch mode\" message"
+        },
+        {
+          "id": "23-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the workspace clone_status is not ready",
+          "system": "workspace handler",
+          "action": "reject the request",
+          "contract": "HTTP 409 with message \"workspace clone is not ready\""
+        },
+        {
+          "id": "23-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "the patch id is unknown, or the patch branch name equals the workspace integration branch",
+          "system": "workspace handler",
+          "action": "reject the request in that order and never move the integration branch",
+          "contract": "HTTP 404 with message \"patch not found\" for an unknown id; HTTP 400 with message \"patch branch is the integration branch\" for the integration branch"
+        },
+        {
+          "id": "23-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "the patch status is merged_upstream or deleted",
+          "system": "workspace handler",
+          "action": "reject the request; only active, conflict and disabled patches are eligible",
+          "contract": "HTTP 409 with message \"patch status <status> cannot be reset\""
+        },
+        {
+          "id": "23-REQ-2.7",
+          "pattern": "unwanted",
+          "condition": "wslock.TryLock(slug) reports the workspace is busy after the preceding checks passed",
+          "system": "workspace handler",
+          "action": "reject the request without writing any ref; the lock is taken only after the checks succeed and is held for the whole operation",
+          "contract": "HTTP 409 with error type workspace_busy and message \"another operation is running on this workspace; retry later\""
+        },
+        {
+          "id": "23-REQ-2.8",
+          "pattern": "unwanted",
+          "condition": "no recovery hook is registered",
+          "system": "workspace handler",
+          "action": "reject the reset request",
+          "contract": "HTTP 500 with message \"patch reset is not configured\""
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-3",
+      "title": "Reset semantics: fetch, compare and move",
+      "rationale": "The reset must act on the fork's current tip and discard hub commits only with a backup written first.",
+      "criteria": [
+        {
+          "id": "23-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "a reset holds the workspace lock",
+          "system": "reset operation",
+          "action": "run the single-branch fetch +refs/heads/<branch>:refs/remotes/origin/<branch> with origin credentials (GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then none) in both PATCH_BRANCH_SOURCE modes, then resolve the fork tip as refs/remotes/origin/<branch>^{commit} and the local tip as refs/heads/<branch>^{commit} (possibly absent)"
+        },
+        {
+          "id": "23-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "origin credential resolution fails or the single-branch fetch fails for a reason other than a missing branch",
+          "system": "reset operation",
+          "action": "write no ref, log the underlying error text and not echo it",
+          "contract": "HTTP 502 with message \"failed to resolve origin credentials\" for a credential failure, or message \"origin fetch failed\" with error type origin_fetch_failed for a fetch failure; every ref is unchanged"
+        },
+        {
+          "id": "23-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "the fork does not have the branch",
+          "system": "reset operation",
+          "action": "write no ref",
+          "contract": "HTTP 409 with error type missing_on_origin and message \"branch does not exist on origin\"; every ref is unchanged"
+        },
+        {
+          "id": "23-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "the local branch is missing, or the local and fork tips are the same commit",
+          "system": "reset operation",
+          "action": "when missing, create refs/heads/<branch> at the fork tip with a compare-and-swap create and report action created; when the same commit, write nothing and report action none; write no backup in either case",
+          "contract": "HTTP 200 with action created or none; refs/hub/replaced/<branch> is unchanged"
+        },
+        {
+          "id": "23-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "the local tip is a strict ancestor of the fork tip (GitRunner.IsAncestor on SHAs)",
+          "system": "reset operation",
+          "action": "move the local branch to the fork tip, report action fast_forwarded and leave any existing backup ref untouched",
+          "contract": "HTTP 200; refs/hub/replaced/<branch> keeps its previous value or stays absent"
+        },
+        {
+          "id": "23-REQ-3.6",
+          "pattern": "event_driven",
+          "condition": "the local tip and fork tip differ and the local tip is not a strict ancestor of the fork tip (diverged, or the fork tip is a strict ancestor of the local tip)",
+          "system": "reset operation",
+          "action": "write the local tip to refs/hub/replaced/<branch>, overwriting any earlier backup, then move the local branch to the fork tip and report action replaced",
+          "contract": "HTTP 200 with action replaced; replaced_sha equals the pre-reset local tip; a repeated replaced reset overwrites the backup"
+        },
+        {
+          "id": "23-REQ-3.7",
+          "pattern": "ubiquitous",
+          "system": "reset operation",
+          "action": "for any branch move or creation, use the spec 20 compare-and-swap helper (update-ref <ref> <new> <expected-old>, never checkout, reset or branch -f) and hard-reset the working tree when the moved branch is the trunk's checked-out branch, so the working tree follows the branch"
+        },
+        {
+          "id": "23-REQ-3.8",
+          "pattern": "unwanted",
+          "condition": "the compare-and-swap write fails because the ref changed after the SHAs were resolved, or the write fails for any other reason",
+          "system": "reset operation",
+          "action": "abort the reset, keep any backup already written, and make no further ref writes",
+          "contract": "HTTP 409 with error type ref_changed and message \"patch branch changed during reset; retry\" for a lost race; HTTP 500 with message \"failed to update patch branch <branch>\" for any other failure"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-4",
+      "title": "Reset: persisted sync state and rebuild trigger",
+      "rationale": "A branch moved by a reset looks in_sync at the next sync, so the reset must record state and trigger the rebuild itself.",
+      "criteria": [
+        {
+          "id": "23-REQ-4.1",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE is origin",
+          "system": "reset operation",
+          "action": "after a reset completes with any action, record the patch via the spec 20 PatchStore method as origin_sync_state in_sync with origin_sha set to the fork tip and origin_synced_at set to the current time"
+        },
+        {
+          "id": "23-REQ-4.2",
+          "pattern": "state_driven",
+          "condition": "PATCH_BRANCH_SOURCE is hub",
+          "system": "reset operation",
+          "action": "write no origin sync state"
+        },
+        {
+          "id": "23-REQ-4.3",
+          "pattern": "complex_event",
+          "condition": "the reset action is created, fast_forwarded or replaced",
+          "guard": "the patch status is active or conflict and AUTO_REBUILD_AFTER_SYNC is not \"false\"",
+          "system": "reset operation",
+          "action": "enqueue a rebuild job with the same type, key slug, group slug:integration_branch, payload builder and deduplication as sync, with SubmittedBy set to the caller",
+          "contract": "response rebuild_triggered true and rebuild_job_id set to the new job id"
+        },
+        {
+          "id": "23-REQ-4.4",
+          "pattern": "state_driven",
+          "condition": "AUTO_REBUILD_AFTER_SYNC is \"false\"",
+          "system": "reset operation",
+          "action": "enqueue no rebuild job after a branch move",
+          "contract": "response rebuild_triggered false and no rebuild_job_id"
+        },
+        {
+          "id": "23-REQ-4.5",
+          "pattern": "state_driven",
+          "condition": "the patch status is disabled",
+          "system": "reset operation",
+          "action": "move the branch but enqueue no rebuild job, because the rebuild skips disabled patches",
+          "contract": "response rebuild_triggered false and no rebuild_job_id"
+        },
+        {
+          "id": "23-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "the reset action is none",
+          "system": "reset operation",
+          "action": "enqueue no rebuild job",
+          "contract": "HTTP 200 with rebuild_triggered false"
+        },
+        {
+          "id": "23-REQ-4.7",
+          "pattern": "event_driven",
+          "condition": "the rebuild enqueue is deduplicated by the job queue",
+          "system": "reset operation",
+          "action": "leave rebuild_triggered false",
+          "contract": "HTTP 200 with rebuild_triggered false and no rebuild_job_id"
+        },
+        {
+          "id": "23-REQ-4.8",
+          "pattern": "unwanted",
+          "condition": "the rebuild enqueue returns an error",
+          "system": "reset operation",
+          "action": "log the error and complete the reset",
+          "contract": "HTTP 200 with rebuild_triggered false; the branch move stays in place"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-5",
+      "title": "CLI: afc patch reset-to-origin",
+      "rationale": "Operators drive recovery from the CLI, so the command must map directly to the endpoint.",
+      "criteria": [
+        {
+          "id": "23-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "the operator runs afc patch reset-to-origin <workspace-slug> <patch-id>",
+          "system": "afc CLI",
+          "action": "send POST /api/v1/workspaces/<slug>/patches/<id>/reset-to-origin with no body and print the JSON result",
+          "contract": "exit code 0 and the response JSON printed to standard output"
+        },
+        {
+          "id": "23-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "the number of positional arguments is not exactly two",
+          "system": "afc CLI",
+          "action": "reject the invocation and send no request",
+          "contract": "non-zero exit code and no HTTP request made"
+        },
+        {
+          "id": "23-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "the server answers with an error status",
+          "system": "afc CLI",
+          "action": "propagate the error through apikit.CLIHandleError with SilenceErrors and SilenceUsage set as for patch restore",
+          "contract": "non-zero exit code with the server error message reported"
+        },
+        {
+          "id": "23-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "afc CLI",
+          "action": "state in the reset-to-origin help text the backup ref refs/hub/replaced/<branch> and the replaced_sha field, and add no flags including no --force"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-6",
+      "title": "Protect refs/hub/replaced/ in the git server",
+      "rationale": "Only the hub writes backup refs; a client that could overwrite them would destroy the recovery data.",
+      "criteria": [
+        {
+          "id": "23-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "a client push creates, updates or deletes a ref whose name starts with refs/hub/replaced/",
+          "system": "git server",
+          "action": "reject that ref at the spec 22 receive-pack interception point, before the registered pre-receive hook is consulted, and keep the ref's old value",
+          "contract": "client sees unpack ok and ng <ref> \"refs/hub/replaced/ is maintained by the hub and cannot be pushed to\""
+        },
+        {
+          "id": "23-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "for any workspace, any workspace mode, any credential with git:write and any ref name starting with refs/hub/replaced/, reject the push of that ref, whether or not a pre-receive hook is registered"
+        },
+        {
+          "id": "23-REQ-6.3",
+          "pattern": "complex_event",
+          "condition": "a single push contains a refs/hub/replaced/ ref",
+          "guard": "the same push also contains a ref outside the protected namespace",
+          "system": "git server",
+          "action": "process the other refs as usual and reject only the protected ref",
+          "contract": "the normal branch is written and the protected ref keeps its old value"
+        },
+        {
+          "id": "23-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "a protected ref is rejected",
+          "system": "git server",
+          "action": "trigger no head_sha update, no audit entry and no post-push hook for that ref"
+        },
+        {
+          "id": "23-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "for any ref name outside refs/hub/replaced/, including other names under refs/hub/, not apply the protected-namespace rule"
+        },
+        {
+          "id": "23-REQ-6.6",
+          "pattern": "event_driven",
+          "condition": "a client runs git ls-remote or git fetch <hub_url> refs/hub/replaced/<branch>",
+          "system": "git server",
+          "action": "advertise the backup ref and serve its commit",
+          "contract": "ls-remote lists refs/hub/replaced/<branch> and the fetch succeeds with the backup commit"
+        },
+        {
+          "id": "23-REQ-6.7",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "leave hub-internal writes to refs/hub/replaced/ (sync, reset, removal), which do not pass through a client push, unaffected by the rule"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-7",
+      "title": "Backup cleanup on afc patch remove",
+      "rationale": "A removed patch must not leave an orphan backup ref behind, and a failed cleanup must not undo a completed delete.",
+      "criteria": [
+        {
+          "id": "23-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "deletePatchAndCompact succeeds in handleRemovePatch and a recovery hook is registered",
+          "system": "workspace handler",
+          "action": "ask the hook to delete refs/hub/replaced/<branch> (git update-ref -d), taking the branch name from the patch lookup made before deletion",
+          "contract": "HTTP 204 and the backup ref no longer exists"
+        },
+        {
+          "id": "23-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the backup ref does not exist at removal",
+          "system": "recovery hook",
+          "action": "treat the removal as a success",
+          "contract": "HTTP 204 with no warn log"
+        },
+        {
+          "id": "23-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "the workspace trunk is not on disk at removal (for example an archived workspace)",
+          "system": "recovery hook",
+          "action": "treat the removal as a success and log it at info level",
+          "contract": "HTTP 204 and one info-level log entry"
+        },
+        {
+          "id": "23-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "the hook fails to remove the ref for any other reason",
+          "system": "workspace handler",
+          "action": "log a warn entry with slug, branch and error and not change the response, because the row is already gone",
+          "contract": "HTTP 204"
+        },
+        {
+          "id": "23-REQ-7.5",
+          "pattern": "state_driven",
+          "condition": "the workspace lock is held by a running sync",
+          "system": "workspace handler",
+          "action": "remove the patch without taking the workspace lock",
+          "contract": "HTTP 204, never 409"
+        },
+        {
+          "id": "23-REQ-7.6",
+          "pattern": "state_driven",
+          "condition": "no recovery hook is registered",
+          "system": "workspace handler",
+          "action": "remove no ref and remove the patch as before",
+          "contract": "HTTP 204"
+        },
+        {
+          "id": "23-REQ-7.7",
+          "pattern": "event_driven",
+          "condition": "a patch is soft-deleted by a rebuild and later restored with POST .../restore",
+          "system": "carry-patch operations",
+          "action": "leave refs/hub/replaced/<branch> untouched by the soft deletion so the restored patch keeps its backup",
+          "contract": "the backup ref has the same value before the soft deletion and after the restore"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-8",
+      "title": "Backup cleanup on purge of soft-deleted patches",
+      "rationale": "Purging rows without their refs would orphan the backups, and nothing else would find them.",
+      "criteria": [
+        {
+          "id": "23-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "PatchStore",
+          "action": "provide a method that lists soft-deleted rows older than a cutoff with id, workspace slug and branch name, implemented by SQLPatchStore and by every test double"
+        },
+        {
+          "id": "23-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "the ref-aware purge routine runs",
+          "system": "purge routine",
+          "action": "for each expired soft-deleted row, remove refs/hub/replaced/<branch> in that workspace's trunk (using the workspace root and the carry-patch git runner factory) and then delete the row by id only while status='deleted', using a 7-day retention",
+          "contract": "returns the number of rows purged"
+        },
+        {
+          "id": "23-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "removing the backup ref of an expired row fails",
+          "system": "purge routine",
+          "action": "keep that row for the next purge, log a warn entry and continue with the remaining rows",
+          "contract": "the row still exists with status deleted and is not counted in the return value"
+        },
+        {
+          "id": "23-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "the backup ref is missing or the workspace trunk is not on disk for an expired row",
+          "system": "purge routine",
+          "action": "treat the ref removal as a success and delete the row",
+          "contract": "the row is deleted and counted"
+        },
+        {
+          "id": "23-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "a soft-deleted row is within the retention window",
+          "system": "purge routine",
+          "action": "leave the row and its backup ref untouched"
+        },
+        {
+          "id": "23-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "purge routine",
+          "action": "keep the PurgeDeletedPatches signature and behaviour and keep the two-argument PurgeExpiredDeletedPatches(ctx, store) working without ref cleanup, with the ref-aware routine as a new function"
+        },
+        {
+          "id": "23-REQ-8.7",
+          "pattern": "unwanted",
+          "condition": "listing the expired rows fails",
+          "system": "purge routine",
+          "action": "return the error and delete no row and no ref",
+          "contract": "non-nil error returned and zero rows purged"
+        },
+        {
+          "id": "23-REQ-8.8",
+          "pattern": "ubiquitous",
+          "system": "hub binary",
+          "action": "add no scheduler and no call to any purge routine in cmd/af-hub/main.go"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-9",
+      "title": "Package boundaries, hook wiring and documentation",
+      "rationale": "The workspace and carrypatch packages cannot import each other, and the steering requires documentation to change in the same session.",
+      "criteria": [
+        {
+          "id": "23-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "define a recovery hook type in a new file next to branch_check_hook.go, with a registration function and a nil default, carrying three operations: read the replaced SHA for a slug and branch, remove the backup ref for a slug and branch, and run a reset for a slug, a patch and the caller's auth info returning the action, SHAs and rebuild outcome"
+        },
+        {
+          "id": "23-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "the reset operation returns a classified error (workspace busy, branch missing on origin, origin fetch failure, credential failure, ref changed, or other failure)",
+          "system": "workspace handler",
+          "action": "map it to the status code, error type and message defined for that case in 23-REQ-2 and 23-REQ-3",
+          "contract": "409 workspace_busy, 409 missing_on_origin, 502 origin_fetch_failed, 502 \"failed to resolve origin credentials\", 409 ref_changed, 500 \"failed to update patch branch <branch>\" respectively"
+        },
+        {
+          "id": "23-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "carrypatch package",
+          "action": "implement the recovery hook with the git runner factory, the workspace root, store.GetVariableValue, the origin credential resolver, an injectable single-branch fetch function, the job queue, the spec 20 PatchStore methods and the PATCH_BRANCH_SOURCE parser, registered by cmd/af-hub/main.go next to the existing hooks, with no import between workspace and carrypatch in either direction"
+        },
+        {
+          "id": "23-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "workspace handler",
+          "action": "authenticate the new routes only through requirePatchReadScope, requirePatchWriteScope, lookupPatchWorkspace and apikit.GetAuthInfo, with no local auth structs and no custom context keys"
+        },
+        {
+          "id": "23-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "describe the new GET and reset-to-origin endpoints, the recovery command git fetch <hub_url> refs/hub/replaced/<branch>, the removal cleanup, the push rejection message and the hub.patch.reset event in docs/api.md, docs/openapi.yaml, docs/cli.md, docs/permissions.md, docs/architecture.md (if its hook list names the others) and two rows of the patch-endpoint table in docs/carry_patch_workflow.md, and leave docs/configuration.md unchanged"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-10",
+      "title": "Audit events and logging",
+      "rationale": "Operators must be able to find every reset and every discarded commit in the audit log.",
+      "criteria": [
+        {
+          "id": "23-REQ-10.1",
+          "pattern": "event_driven",
+          "condition": "a reset completes successfully",
+          "system": "reset operation",
+          "action": "emit one hub.patch.reset event (constant added to internal/audit/types.go next to EventRebuildFollowup) with resource_type patch, the workspace slug, the caller as actor and metadata {branch_name, action, local_sha, origin_sha, replaced_sha}, where action is none, created, fast_forwarded or replaced",
+          "contract": "one hub.patch.reset audit entry per successful reset"
+        },
+        {
+          "id": "23-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "reset operation",
+          "action": "for any hub.patch.reset event, omit local_sha when there was no local branch and include replaced_sha only when the action is replaced"
+        },
+        {
+          "id": "23-REQ-10.3",
+          "pattern": "event_driven",
+          "condition": "a reset has action replaced",
+          "system": "reset operation",
+          "action": "also emit hub.patch.replace with branch_name, replaced_sha, origin_sha and trigger set to reset_to_origin",
+          "contract": "a hub.patch.replace audit entry whose metadata trigger equals reset_to_origin"
+        },
+        {
+          "id": "23-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "sync operation",
+          "action": "emit hub.patch.replace events with no trigger key, which consumers read as sync"
+        },
+        {
+          "id": "23-REQ-10.5",
+          "pattern": "unwanted",
+          "condition": "a reset fails with any error",
+          "system": "reset operation",
+          "action": "emit no audit event",
+          "contract": "zero hub.patch.reset and zero hub.patch.replace events recorded"
+        },
+        {
+          "id": "23-REQ-10.6",
+          "pattern": "unwanted",
+          "condition": "the audit emitter is nil or returns an error",
+          "system": "reset operation",
+          "action": "skip emission when nil, or log the error when it fails, without affecting the outcome",
+          "contract": "the HTTP status and body are the same as with a working emitter"
+        },
+        {
+          "id": "23-REQ-10.7",
+          "pattern": "event_driven",
+          "condition": "a replacement (replaced reset) or a backup-ref removal occurs",
+          "system": "reset operation",
+          "action": "log it at info level with slug, branch and the SHAs involved"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "23-PATH-1",
+      "title": "Operator resets a diverged patch to the fork tip and the rebuild follows",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc patch reset-to-origin <slug> <patch-id> after a diverged report"
+        },
+        {
+          "actor": "afc CLI",
+          "action": "sends POST /api/v1/workspaces/<slug>/patches/<id>/reset-to-origin with no body"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "checks scope, ownership, workspace state, clone status and patch eligibility, then calls the recovery hook"
+        },
+        {
+          "actor": "recovery hook",
+          "action": "takes the workspace lock and fetches +refs/heads/<branch>:refs/remotes/origin/<branch> from the fork"
+        },
+        {
+          "actor": "recovery hook",
+          "action": "finds the tips diverged, writes the local tip to refs/hub/replaced/<branch> and moves refs/heads/<branch> to the fork tip with a compare-and-swap update-ref"
+        },
+        {
+          "actor": "recovery hook",
+          "action": "records in_sync origin state in origin mode and enqueues a rebuild job submitted by the caller"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "emits hub.patch.reset and hub.patch.replace (trigger reset_to_origin) and returns 200 with the patch object, replaced_sha, rebuild_triggered and rebuild_job_id"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-2",
+      "title": "Operator recovers a discarded tip from the backup ref",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "sends GET /api/v1/workspaces/<slug>/patches/<id> for a patch whose branch was replaced"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "reads refs/hub/replaced/<branch> through the recovery hook and returns the patch object with the 40-character replaced_sha"
+        },
+        {
+          "actor": "operator",
+          "action": "runs git fetch <hub_url> refs/hub/replaced/<branch>"
+        },
+        {
+          "actor": "git server",
+          "action": "advertises and serves the backup ref through git-upload-pack and the operator receives the discarded commit"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-3",
+      "title": "A client push to the backup namespace is rejected while other refs are accepted",
+      "steps": [
+        {
+          "actor": "client",
+          "action": "pushes refs/hub/replaced/<branch> together with a normal branch to the hub git server"
+        },
+        {
+          "actor": "git server",
+          "action": "evaluates the fixed protected-namespace rule at the receive-pack interception point before the pre-receive hook"
+        },
+        {
+          "actor": "git server",
+          "action": "writes the normal branch, rejects the protected ref with ng <ref> refs/hub/replaced/ is maintained by the hub and cannot be pushed to, and keeps the old backup value"
+        },
+        {
+          "actor": "client",
+          "action": "receives unpack ok with one ng line and one accepted ref"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-4",
+      "title": "Removing a patch removes its backup ref",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc patch remove for a patch that has a backup ref"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "looks up the patch row, deletes it with deletePatchAndCompact and emits hub.patch.delete"
+        },
+        {
+          "actor": "recovery hook",
+          "action": "runs git update-ref -d refs/hub/replaced/<branch> in the workspace trunk without taking the workspace lock"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "returns 204 and the backup ref no longer exists"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-5",
+      "title": "Purging expired soft-deleted patches removes their backup refs",
+      "steps": [
+        {
+          "actor": "purge caller",
+          "action": "invokes the ref-aware purge routine with the store, workspace root and git runner factory"
+        },
+        {
+          "actor": "purge routine",
+          "action": "lists soft-deleted rows older than 7 days with id, slug and branch"
+        },
+        {
+          "actor": "purge routine",
+          "action": "removes refs/hub/replaced/<branch> in each workspace trunk, treating a missing ref or trunk as success"
+        },
+        {
+          "actor": "purge routine",
+          "action": "deletes each row by id while status is deleted, keeps rows whose ref removal failed, and returns the purged count"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-6",
+      "title": "A reset that cannot reach the fork writes nothing",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "sends POST .../patches/<id>/reset-to-origin while the fork is unreachable"
+        },
+        {
+          "actor": "recovery hook",
+          "action": "takes the workspace lock, runs the single-branch fetch and receives a failure"
+        },
+        {
+          "actor": "workspace handler",
+          "action": "logs the error text, returns 502 origin fetch failed with error type origin_fetch_failed, and emits no audit event"
+        },
+        {
+          "actor": "recovery hook",
+          "action": "releases the workspace lock with every ref unchanged"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,381 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "24",
+  "spec_name": "patch_authority_docs",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/carrypatch -run TestDocs -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "20",
+      "reason": "defines PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY, origin fetch, patch refresh, sync response fields and --fail-on-diverged that the guide documents"
+    },
+    {
+      "spec": "21",
+      "reason": "defines registration resolution order, 400/409/502 messages and branch_resolution values documented in guide and agent example"
+    },
+    {
+      "spec": "22",
+      "reason": "defines PUSH_PATCHES_TO_ORIGIN, rejection, forwarding and mirror behaviour and messages"
+    },
+    {
+      "spec": "23",
+      "reason": "defines reset-to-origin, replaced_sha, backup-ref cleanup, protected namespace and purge behaviour documented in the recovery section"
+    },
+    {
+      "spec": "01",
+      "reason": "guide rebuild-algorithm text, lock note and docs tests TS-01-69 to TS-01-72 must keep passing"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Fix Remotes table and add the \"Where patch branches live\" section",
+      "criteria": [
+        "24-REQ-2"
+      ],
+      "tests": [
+        "TS-24-5",
+        "TS-24-6",
+        "TS-24-7",
+        "TS-24-8",
+        "TS-24-9",
+        "TS-24-10",
+        "TS-24-11"
+      ],
+      "steps": [
+        "Read the shipped code and docs of specs 20 to 23 (internal/carrypatch handlers, hooks, docs/api.md, docs/cli.md) so that every variable, message and ref name quoted is copied from code; note any divergence from the spec PRDs for the errata task",
+        "Add TestDocs_TS_24_* functions to internal/carrypatch/docs_test.go using readDoc, requireContains and section for TS-24-5 to TS-24-11 and confirm they fail",
+        "Rewrite the Remotes table in docs/carry_patch_workflow.md: origin is the fork, push target for REBUILD_PUSH_INTEGRATION_BRANCH and in origin mode the patch-branch authority; remove the string \"Where patch branches live; push target for local work\"; add a third row or note naming the hub's own git server as the hub-mode location",
+        "Add a \"Where patch branches live\" section after Concepts/Remotes: rebuild reads only refs/heads/<branch> in the trunk, initial clone brings fork branches only as refs/remotes/origin/*, PATCH_BRANCH_SOURCE hub (default) and origin",
+        "Add the seven-row comparison table (writer, sync, registration, push to hub, divergence, where to fix a conflict, which copy survives a lost hub data directory)",
+        "Add the recommendation (origin + REBUILD_PUSH_INTEGRATION_BRANCH=true for upstream-PR teams, hub for agent-driven workspaces), the integration-branch note (built by hub, only pushed to fork, never fetched by sync), the per-operation mode read, the switching-modes note and a link to the Configuration section naming the three variables",
+        "Delete the interim two-models note that specs 20/22 left under the sync section so the models are described only here"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Document patch fields, sync states, registration order and soft-delete text",
+      "criteria": [
+        "24-REQ-3"
+      ],
+      "tests": [
+        "TS-24-12",
+        "TS-24-13",
+        "TS-24-14",
+        "TS-24-15",
+        "TS-24-16",
+        "TS-24-17",
+        "TS-24-18"
+      ],
+      "steps": [
+        "Write TS-24-12 to TS-24-18 in docs_test.go; TS-24-17 and TS-24-18 search non-test .go files under internal/ for callers of PurgeDeletedPatches and PurgeExpiredDeletedPatches (TS-24-18 skips when none)",
+        "Add origin_sync_state, origin_sha and origin_synced_at rows to the patch field table, each stating absent when null and written only in origin mode",
+        "Add a paragraph explaining in_sync, diverged and missing_on_origin and that missing_on_origin leaves status unchanged so the rebuild keeps applying the hub's copy until an operator disables or removes the patch",
+        "Update Getting Started \"Add patches\" and Day-to-day \"Adding a new patch\" text: resolution order refs/heads/<name>, refs/remotes/origin/<name>, origin-mode-only single-branch fork fetch; quote the 400 message; fork-only branch no longer needs --skip-branch-check, which is for branches that exist nowhere yet",
+        "Update \"Removing a patch\": backup ref refs/hub/replaced/<branch> is deleted with the patch row, the branch itself is not deleted",
+        "Search for production callers of the purge routines; update soft-delete and \"Restoring a soft-deleted patch\" text to state the 7 days window and, if no caller exists, that expired rows are removed only when a purge runs, with no scheduler claim (otherwise describe the schedule as coded)"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Restructure Getting Started as fork-first with a hub-authoritative alternative",
+      "criteria": [
+        "24-REQ-4"
+      ],
+      "tests": [
+        "TS-24-19",
+        "TS-24-20",
+        "TS-24-21",
+        "TS-24-22",
+        "TS-24-23",
+        "TS-24-24",
+        "TS-24-25",
+        "TS-24-26"
+      ],
+      "steps": [
+        "Write TS-24-19 to TS-24-26 in docs_test.go; TS-24-26 extracts afc lines from fenced blocks in Getting Started and the alternative and checks command paths and flags appear in docs/cli.md",
+        "Reorder Getting Started on acme-oss/api-gateway and your-org/api-gateway-fork: create workspace, upstream credentials unchanged, choose the authority (afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway, optional REBUILD_PUSH_INTEGRATION_BRANCH=true, fork clone and read token via GIT_PAT or GIT_USERNAME/GIT_PASSWORD on every sync)",
+        "Add steps: create patch branch in a fork clone and git push to the fork, open upstream PR from same branch; register with afc patch add without --skip-branch-check, keeping position, --if-not-exists and batch examples",
+        "Add the sync step with afc workspace sync api-gateway, explanation that sync not afc rebuild submit brings fork commits in because a rebuild does not fetch the fork, a sample response with origin_fetched, patches_synced, patches_diverged next to existing fields, the outcomes created/fast_forwarded/replaced, --fail-on-diverged exit code 3 and PATCH_DIVERGENCE_POLICY (field names copied from the sync handler)",
+        "Renumber the preview, manual rebuild, dashboard, failed-rebuild and rollback steps consecutively; the dashboard step mentions origin_sync_state and the summary count fields as the handler names them",
+        "Add the \"Alternative: hub-authoritative workspace\" subsection: leave PATCH_BRANCH_SOURCE unset, push to the hub's git URL, register, push hook rebuild or afc rebuild submit, optional PUSH_PATCHES_TO_ORIGIN=true mirroring accepted pushes, suits agent-driven workspaces",
+        "Leave the failed-rebuild step to the conflict-resolution task but keep a placeholder heading so numbering is stable; verify every command and flag against docs/cli.md"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Rewrite the Sync algorithm and push and rebuild-trigger text",
+      "criteria": [
+        "24-REQ-5"
+      ],
+      "tests": [
+        "TS-24-27",
+        "TS-24-28",
+        "TS-24-29",
+        "TS-24-30",
+        "TS-24-31",
+        "TS-24-32",
+        "TS-24-33"
+      ],
+      "steps": [
+        "Write TS-24-27 to TS-24-33 in docs_test.go (order check of the eight phase keywords, pruning/502/unchanged, outcomes/states/backup ref, rebuild decision, absence of \"returns immediately\", push section, Rebuild algorithm sentence)",
+        "Read the shipped sync handler to copy the exact 502 message, response fields and rebuild decision conditions",
+        "Rewrite \"Sync algorithm\" in order: credential resolution and upstream fetch; origin fetch (origin mode only, pruning, 502 origin fetch failed leaving refs and patch state unchanged); base resolution; patch refresh (created, fast_forwarded, replaced; in_sync, diverged, missing_on_origin; backup ref refs/hub/replaced/<branch>); force-push detection; merge detection (also when only patch tips changed); rebuild decision (upstream advanced, active or conflict patch moved, newly merged, unless AUTO_REBUILD_AFTER_SYNC=false); unconditional last_sync_at write",
+        "Remove every statement that sync returns immediately on an unchanged upstream and any remaining interim note",
+        "Update the AUTO_REBUILD_AFTER_SYNC Configuration entry to say it covers patch changes as well as upstream advances",
+        "Extend \"Auto-rebuild on push\": keep the hook description; add rejection in origin mode, forwarding with PUSH_PATCHES_TO_ORIGIN=true, mirroring in hub mode, and that only accepted ref updates trigger the hook",
+        "Add one sentence to ### Rebuild algorithm that the snapshotted patch tips are whatever the last sync (origin mode) or push (hub mode) left in the trunk; run TS_01_69 to TS_01_72 to confirm they pass unchanged"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Document conflict resolution and divergence recovery for both modes",
+      "criteria": [
+        "24-REQ-6"
+      ],
+      "tests": [
+        "TS-24-34",
+        "TS-24-35",
+        "TS-24-36",
+        "TS-24-37",
+        "TS-24-38",
+        "TS-24-39",
+        "TS-24-40"
+      ],
+      "steps": [
+        "Write TS-24-34 to TS-24-40 in docs_test.go, including the check that no sentence in the origin subsections directs a trunk edit or hub push other than as a prohibition",
+        "Rewrite \"Resolving conflicts after a failed rebuild\" and the Getting Started failed-rebuild step: common opening (read conflict_files in afc workspace patch-status), then a hub mode subsection and an origin mode subsection",
+        "Hub mode: resolve in the trunk or push a fixed branch to the hub's git server, rerere records resolutions made during a rebuild, state what the code supports for manual rerere recording (verify in code), set patch active, rebuild",
+        "Origin mode: fix in a local clone (merge or rebase latest upstream, resolve, commit), push to the fork, afc workspace sync, set patch active if still conflict after the rebuild; state do not edit the trunk and do not push to the hub and why; state as a known limitation that fork-side resolutions are not recorded in the rerere cache",
+        "Add the section \"Recovering a replaced or diverged patch branch\": read origin_sync_state and replaced_sha; git fetch <hub_url> refs/hub/replaced/<branch>; push it to the fork to keep it; afc patch reset-to-origin <slug> <patch-id> moving a diverged branch to the fork's tip and reporting rebuild_triggered; only one backup per branch and later replacements overwrite it; what to do with missing_on_origin",
+        "Verify every command against docs/cli.md and message/field against code"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Reconcile Configuration, Limitations and the API reference summary",
+      "criteria": [
+        "24-REQ-7"
+      ],
+      "tests": [
+        "TS-24-41",
+        "TS-24-42",
+        "TS-24-43",
+        "TS-24-44",
+        "TS-24-45"
+      ],
+      "steps": [
+        "Write TS-24-41 to TS-24-45 in docs_test.go; TS-24-45 parses RegisterRoutes in internal/carrypatch and compares scopes with the guide's summary rows",
+        "Reconcile the Configuration section so PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY and PUSH_PATCHES_TO_ORIGIN each have exactly one heading entry with a values table, afc vars command and when-read statement, merging duplicates left by specs 20/22",
+        "State defaults (hub, replace, unset), the exact-match rule, PATCH_DIVERGENCE_POLICY ignored in hub mode, PUSH_PATCHES_TO_ORIGIN means forwarding in origin mode and mirroring in hub mode",
+        "Add the four-row recommended combinations table (fork-first, fork-first with hub forwarding, hub-only, hub with a durable mirror)",
+        "Add to Limitations: no fork webhooks and no built-in sync schedule (afc workspace sync, an operator's scheduler or POST /workspaces/:slug/sync), sync fetches every fork branch, manual resolutions not fed into rerere in origin mode, missing_on_origin does not disable the patch, origin mode needs working origin credentials on every sync; keep existing limitations and the **Concurrent rebuild prevention.** note",
+        "Update API reference summary: single-patch GET, reset-to-origin POST with scopes as registered in RegisterRoutes, and a sync row describing hub and origin modes"
+      ],
+      "touches": [
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Update the agent example for both authority modes",
+      "criteria": [
+        "24-REQ-9"
+      ],
+      "tests": [
+        "TS-24-49",
+        "TS-24-50",
+        "TS-24-51",
+        "TS-24-52",
+        "TS-24-53",
+        "TS-24-54"
+      ],
+      "steps": [
+        "Write TS-24-49 to TS-24-53 in docs_test.go; TS-24-54 is satisfied by the existing TestDocs_TS_01_71 run against the rewritten file",
+        "In docs/examples/AGENTS_carry_patch.md make the first step of \"Understand Before You Code\" read PATCH_BRANCH_SOURCE with afc vars list --workspace <workspace-slug> (unset means hub)",
+        "Split hub and origin instructions in Decide Where Your Change Belongs, Push to the Hub, Register the Patch, Trigger a Rebuild, Upstream Sync, Conflict Resolution, Patch Management > Removing a Patch, Commands Reference and Quality Gates",
+        "Origin mode: clone the fork, push the patch branch to the fork, register, run afc workspace sync (not afc rebuild submit), never push a registered patch branch to the hub because it refuses or replaces it",
+        "Hub mode: keep today's instructions (git push origin patch/<name>, afc rebuild submit) and explain PUSH_PATCHES_TO_ORIGIN=true as a mirror the agent need not do by hand",
+        "Removing a patch: branch is not deleted but backup ref is; make project context mode-neutral; add afc patch reset-to-origin, afc workspace sync --fail-on-diverged and afc vars list --workspace to the commands table (check docs/cli.md)",
+        "Keep every _rebuild_temp mention marked legacy and run TestDocs_TS_01_71"
+      ],
+      "touches": [
+        "docs/examples/AGENTS_carry_patch.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Accept ADR 01 and write the four errata files",
+      "criteria": [
+        "24-REQ-10.1",
+        "24-REQ-10.2",
+        "24-REQ-10.3",
+        "24-REQ-10.4",
+        "24-REQ-10.5",
+        "24-REQ-10.6"
+      ],
+      "tests": [
+        "TS-24-55",
+        "TS-24-56",
+        "TS-24-57",
+        "TS-24-58",
+        "TS-24-59",
+        "TS-24-60"
+      ],
+      "steps": [
+        "Write TS-24-55 to TS-24-60 in docs_test.go (ADR status/dates/no Proposed, Context sentence, Implementation notes, errata existence and headings, key strings per erratum)",
+        "Edit docs/adr/01-choose-the-authority-for-patch-branches.md: Status** Accepted, add Accepted date line with the change date, keep the 2026-09-29 Date, add the before-implementation sentence at the start of Context, add an Implementation notes section listing the four errata files and saying the Decision stands as written; no occurrence of the word Proposed; leave Decision and Consequences unchanged",
+        "Check each starting-list divergence against the shipped code of specs 20 to 23 (grep handlers, hooks, tests); drop any not borne out and add any divergence found in the code but not listed",
+        "Create docs/errata/20_fork_patch_sync_divergences.md and 21_fork_patch_registration_divergences.md with Spec Expectation, Implementation Reality and Resolution sections, one entry with reason per divergence",
+        "Create docs/errata/22_fork_push_control_divergences.md and 23_patch_divergence_recovery_divergences.md in the same format, covering the confirmed divergences including the unscheduled purge",
+        "Align the guide wording with each erratum where the code differs from a PRD"
+      ],
+      "touches": [
+        "docs/adr/01-choose-the-authority-for-patch-branches.md",
+        "docs/errata/20_fork_patch_sync_divergences.md",
+        "docs/errata/21_fork_patch_registration_divergences.md",
+        "docs/errata/22_fork_push_control_divergences.md",
+        "docs/errata/23_patch_divergence_recovery_divergences.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add the aggregate authority docs test and its regression guard",
+      "criteria": [
+        "24-REQ-10.7",
+        "24-REQ-10.8"
+      ],
+      "tests": [
+        "TS-24-61",
+        "TS-24-62"
+      ],
+      "steps": [
+        "Add one aggregate TestDocs function in internal/carrypatch/docs_test.go reusing readDoc, requireContains and section asserting: Where patch branches live heading with the three variable names and both values; one Configuration heading per variable; fork-first and alternative headings; both mode subsections in the conflict section; the recovery section; the Remotes table lacking the old string; agent example containing PATCH_BRANCH_SOURCE and afc workspace sync; ADR 01 Status:** Accepted and no Proposed; four errata files with the three headings",
+        "Collect the asserted items in a single table so TS-24-62 can iterate them",
+        "Write TS-24-62 as a mutation test that, for each item, removes it from an in-memory or temp-dir copy of the docs and asserts the aggregate check fails naming the missing content",
+        "Confirm TestDocs_TS_01_69 to TS_01_72 pass unchanged and make test and make lint pass"
+      ],
+      "touches": [
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Cross-document consistency pass and verbatim-quote verification",
+      "criteria": [
+        "24-REQ-1",
+        "24-REQ-8"
+      ],
+      "tests": [
+        "TS-24-1",
+        "TS-24-2",
+        "TS-24-3",
+        "TS-24-4",
+        "TS-24-46",
+        "TS-24-47",
+        "TS-24-48"
+      ],
+      "steps": [
+        "Write TS-24-1 (quoted tokens in the guide, agent example and ADR 01 exist in internal/ source, docs/api.md or docs/cli.md), TS-24-2, TS-24-3 (open questions appear only as limitations, no purge scheduler claim), TS-24-4 (changed paths limited to docs/, README.md, docs_test.go via git diff when available, skipping otherwise), TS-24-47, TS-24-48 (referenced repo paths exist, docs/architecture.md not referenced)",
+        "Grep docs/api.md, docs/cli.md, docs/openapi.yaml, docs/permissions.md and README.md for where patch branches live, what carry-patch sync fetches, when last_sync_at is written and what a push to a patch branch does",
+        "Correct any statement that contradicts the guide or shipped behaviour; leave README unchanged except for such corrections and keep its link to docs/carry_patch_workflow.md valid",
+        "Implement TS-24-46 as a test that runs the same searches in Go over the five files and, when git is available, checks the latest commit message lists them, skipping otherwise; record the commands and a summary of hits in the commit or handoff note",
+        "Fix any guide, agent example or ADR token that fails TS-24-1 by copying the code's exact wording and adding an erratum entry if the code differs from a PRD",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/cli.md",
+        "docs/openapi.yaml",
+        "docs/permissions.md",
+        "README.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the documentation rewrite paths end to end",
+      "tests": [
+        "TS-24-63",
+        "TS-24-64",
+        "TS-24-65",
+        "TS-24-66"
+      ],
+      "steps": [
+        "Write smoke tests TS-24-63 to TS-24-66 in docs_test.go against the real documents, errata, docs/cli.md and the go test runner",
+        "Trace 24-PATH-1: confirm guide, agent example, ADR 01 and four errata exist and make test and make lint pass with only documentation files and docs_test.go changed",
+        "Trace 24-PATH-2: extract commands from the fork-first walkthrough, origin conflict subsection and recovery section in order and confirm each exists in docs/cli.md and none directs a hub push or trunk edit",
+        "Trace 24-PATH-3: confirm the agent example's first step is afc vars list --workspace <workspace-slug> and that origin instructions go fork push then afc workspace sync, not afc rebuild submit",
+        "Trace 24-PATH-4: run the docs test against copies with the heading, a Configuration entry, an errata file and the ADR Accepted status removed and confirm each fails naming the missing content",
+        "Grep docs/, README.md and internal/carrypatch/docs_test.go for TODO, TBD and panic(\"not implemented\") and remove any that remain"
+      ],
+      "touches": [
+        "internal/carrypatch/docs_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

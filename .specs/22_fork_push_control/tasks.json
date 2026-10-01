@@ -1,0 +1,354 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "22",
+  "spec_name": "fork_push_control",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/gitserver/... ./internal/carrypatch/... ./internal/audit/... ./cmd/af-hub/... -count=1 -run 'PreReceive|PushControl|Forward|Mirror|AcceptedRefs|Spec22'"
+  },
+  "dependencies": [
+    {
+      "spec": "20",
+      "reason": "defines PATCH_BRANCH_SOURCE and its parsing helper reused here; compare-and-swap sync writes make unlocked hub pushes safe; docs and audit constants are extended"
+    },
+    {
+      "spec": "21",
+      "reason": "a registered patches row (including fork-only branches) is the criterion for push control"
+    },
+    {
+      "spec": "01",
+      "reason": "the post-push hook still enqueues the rebuild exactly as before and the mirror runs after it"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the pre-receive hook to the git server at the trunk-storer ref-write boundary",
+      "criteria": [
+        "22-REQ-2",
+        "22-REQ-8.3",
+        "22-REQ-8.4",
+        "22-REQ-8.6",
+        "22-REQ-9.5"
+      ],
+      "tests": [
+        "TS-22-1",
+        "TS-22-2",
+        "TS-22-3",
+        "TS-22-4",
+        "TS-22-5",
+        "TS-22-6",
+        "TS-22-7",
+        "TS-22-8"
+      ],
+      "steps": [
+        "Write TS-22-1 first, using newGitTestEnv and a real git push against the handler, and confirm it fails. It must prove that go-git turns a storer reference-write error into a per-ref 'ng' status that git shows as 'remote rejected'. Also confirm the real field names of packp.ReportStatus (UnpackStatus, CommandStatuses) and which storer method go-git calls (SetReference or CheckAndSetReference)",
+        "In internal/gitserver add the exported type PreReceiveHookFunc func(ctx context.Context, db *sql.DB, slug string, actor *apikit.AuthInfo, upd RefUpdate) error, a RefUpdate struct {Name plumbing.ReferenceName; Old, New plumbing.Hash}, and RegisterPreReceiveHook(fn) that stores a package-level hook (nil clears it) in the style of RegisterPostPushHook, guarded for concurrent access",
+        "Extend thinPackSafeStorer so it carries the request ctx, db, slug, actor and a hook lookup. Override SetReference, CheckAndSetReference and RemoveReference to call the hook once per update (new hash from the reference, old hash from the existing value or the CAS argument; zero hash for a removal) before delegating. A hook error is returned without touching the underlying storer. Keep hiding PackfileWriter",
+        "Make the loader and server per request, or otherwise bind the per-request context and actor from handleReceivePack (apikit.GetAuthInfo is nil-safe) into the storer wrapper. Keep info/refs, upload-pack and the existing loader behaviour unchanged",
+        "Record which refs the hook rejected on the request (a set keyed by ref name) so the accepted-refs logic in a later task can use it. With no hook registered the flow is identical to before",
+        "Make sure the empty-body no-op path never calls the hook and that no extra recover is added around the hook (a panic follows existing handler behaviour)",
+        "Write TS-22-2 to TS-22-8. TS-22-5 inspects 'go list -deps ./internal/gitserver' to prove it has no internal/carrypatch package; TS-22-6 posts a hand-built request without report-status",
+        "Confirm gitserver imports nothing from internal/carrypatch"
+      ],
+      "touches": [
+        "internal/gitserver/gitserver.go",
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/resolver.go",
+        "internal/gitserver/prereceive_test.go",
+        "internal/gitserver/testhelpers_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Only accepted ref updates drive audit, post-push hook and rebuild",
+      "criteria": [
+        "22-REQ-5"
+      ],
+      "tests": [
+        "TS-22-29",
+        "TS-22-30",
+        "TS-22-32",
+        "TS-22-33"
+      ],
+      "steps": [
+        "Write TS-22-29, TS-22-30, TS-22-32 and TS-22-33 first and confirm they fail",
+        "Add a pure helper acceptedCommands(cmds []*packp.Command, rs *packp.ReportStatus, hookRejected map/set) []*packp.Command in internal/gitserver/handlers.go. With a report, a command is accepted only when its CommandStatuses entry (matched by ReferenceName) has Status ok. Without a report, it is accepted unless the pre-receive hook rejected it",
+        "In handleReceivePack, after ReceivePack, compute the accepted commands. Pass only them to emitGitPushAudit and to extractPushedBranches for the post-push hook. If none is accepted, emit no hub.git.push event and run no post-push hook. Deletes stay excluded from extractPushedBranches",
+        "Leave updateHeadSHA unchanged and still called for every push",
+        "Write TS-22-30 with a recording post-push hook and audit emitter and a push of p1 (hook-rejected), feature and a delete of old. Write TS-22-33 as a property test over generated commands and ok/error statuses using the classifier",
+        "TS-22-32 asserts head_sha equals the trunk HEAD after an accepted push and after a rejected-only push"
+      ],
+      "touches": [
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/accepted_refs_test.go",
+        "internal/gitserver/push_audit_test.go",
+        "internal/gitserver/push_hook_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Carry-patch pre-receive hook: configuration parsing, applicability and fail-open",
+      "criteria": [
+        "22-REQ-1",
+        "22-REQ-8.1"
+      ],
+      "tests": [
+        "TS-22-10",
+        "TS-22-11",
+        "TS-22-12",
+        "TS-22-13",
+        "TS-22-14",
+        "TS-22-44"
+      ],
+      "steps": [
+        "Write TS-22-10 to TS-22-14 and TS-22-44 first and confirm they fail",
+        "Create internal/carrypatch/push_control.go with a constructor NewPreReceiveHook(deps) returning a gitserver.PreReceiveHookFunc. Deps hold GetVariableFunc, an origin credentials resolver (func(slug string) (transport.AuthMethod, error)), and a push seam for tests. Keep deps injectable so tests can stub the workspace, patches and variable lookups",
+        "Add pushPatchesEnabled(get GetVariableFunc, slug) bool: true only for the exact string 'true'; unset, other values and lookup errors are false",
+        "Add the applicability check: skip if ref is not refs/heads/<name>; query workspaces for workspace_mode, integration_branch and git_url; return nil for non carry_patch workspaces BEFORE reading any variable; return nil if <name> equals integration_branch; query patches for workspace_slug and branch_name with status != 'deleted'",
+        "Read PATCH_BRANCH_SOURCE with the spec 20 helper (find it in internal/carrypatch; unset, unrecognised and lookup error mean hub) and PUSH_PATCHES_TO_ORIGIN through GetVariableFunc on every controlled update, never caching",
+        "Fail open: a workspace-mode query error, patch registration query error or unexpected variable lookup failure beyond the defaults returns nil and logs a warning with slog. Where the source is hub, the hook returns nil",
+        "For now a controlled update in origin mode returns a placeholder rejection so TS-22-12 can observe that control applied; the reject and forward messages are implemented in the next tasks",
+        "TS-22-11 uses a counting GetVariableFunc over the real variable store and a real push; TS-22-14 asserts zero variable reads for a standard workspace"
+      ],
+      "touches": [
+        "internal/carrypatch/push_control.go",
+        "internal/carrypatch/push_control_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Reject mode: refuse hub pushes to registered patch branches in origin mode",
+      "criteria": [
+        "22-REQ-3"
+      ],
+      "tests": [
+        "TS-22-15",
+        "TS-22-16",
+        "TS-22-17",
+        "TS-22-18",
+        "TS-22-19",
+        "TS-22-20",
+        "TS-22-31"
+      ],
+      "steps": [
+        "Write TS-22-15 to TS-22-20 and TS-22-31 first and confirm they fail",
+        "In the carry-patch hook, when source is origin and PUSH_PATCHES_TO_ORIGIN is not true, return errors.New(\"branch is synced from origin; push to \"+sanitized git_url+\" instead\") for creates, updates and deletes of a registered patch branch",
+        "Add a stripUserinfo helper (net/url parse, clear User; fall back to a regexp removing user:password@ when the URL does not parse, including scp-like forms). Reuse it for later error sanitising. TS-22-17 is a property test over generated URLs, usernames and passwords with characters like ':' '%' '!'",
+        "Log each rejection at info level with slog fields slug, branch and user (apikit.AuthInfo user ID, or 'unknown' when actor is nil)",
+        "Verify through a real push that the response status is 200 and that only the registered branch of a mixed push (registered, unregistered, tag) is rejected",
+        "TS-22-31 uses the real post-push rebuild hook and a job queue to prove a rejected-only push enqueues no rebuild, emits no audit event and calls no hook"
+      ],
+      "touches": [
+        "internal/carrypatch/push_control.go",
+        "internal/carrypatch/push_control_reject_test.go"
+      ],
+      "depends_on": [
+        2,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Forward mode: push to the fork before the hub writes its ref",
+      "criteria": [
+        "22-REQ-4",
+        "22-REQ-8.2"
+      ],
+      "tests": [
+        "TS-22-21",
+        "TS-22-22",
+        "TS-22-23",
+        "TS-22-24",
+        "TS-22-25",
+        "TS-22-26",
+        "TS-22-27",
+        "TS-22-28"
+      ],
+      "steps": [
+        "Write TS-22-21 to TS-22-28 first, using a local bare repository added as the trunk's origin remote, and confirm they fail",
+        "In the carry-patch hook, when source is origin and PUSH_PATCHES_TO_ORIGIN is true: a delete of a registered branch returns 'branch is synced from origin; delete it on the fork instead' without contacting origin",
+        "For a create or update, resolve credentials with the injected resolver (workspace.ResolveCloneAuth wrapper); on error return exactly 'failed to resolve origin credentials' without contacting origin",
+        "Create the temporary ref refs/hub/forward/<branch> in the trunk pointing at the new commit (go-git PlainOpen of the trunk path; the workspace root comes from deps), push it via a seam around repo.PushContext with RemoteName origin, Force false, RefSpec 'refs/hub/forward/<branch>:refs/heads/<branch>' with no '+', and a context.WithTimeout of 120 seconds. Treat git.NoErrAlreadyUpToDate as success. Remove the temporary ref with defer on both success and failure",
+        "On failure return errors.New(\"origin rejected push: \"+stripUserinfo(err.Error())), log at warn level with slug, branch, user and the sanitised error, and never accept silently",
+        "Check whether go-git supports a hash source; if not keep the temporary ref. Beware the hook runs inside the receive session, so opening the trunk via PlainOpen is a separate handle on the same on-disk repo; the new objects are already written",
+        "TS-22-23 asserts via the push seam: RemoteName origin, Force false, no leading '+', deadline about 120s, and that the resolver got the slug",
+        "TS-22-26 uses an unreachable origin URL containing user:pw@ and a captured slog handler and asserts no 'pw' appears in the client output or logs",
+        "TS-22-28 pushes a registered and an unregistered branch together and asserts the unregistered one is not on origin"
+      ],
+      "touches": [
+        "internal/carrypatch/push_control.go",
+        "internal/carrypatch/push_control_forward_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Hub-mode mirror in the post-push hook and the hub.patch.mirror_failed event",
+      "criteria": [
+        "22-REQ-6",
+        "22-REQ-7"
+      ],
+      "tests": [
+        "TS-22-34",
+        "TS-22-35",
+        "TS-22-36",
+        "TS-22-37",
+        "TS-22-38",
+        "TS-22-39",
+        "TS-22-40",
+        "TS-22-41",
+        "TS-22-42",
+        "TS-22-43"
+      ],
+      "steps": [
+        "Write the listed tests first and confirm they fail",
+        "In internal/audit/types.go add the constant EventPatchMirrorFailed = \"hub.patch.mirror_failed\" directly next to EventRebuildFollowup",
+        "Extend NewPostPushRebuildHook in internal/carrypatch/push_hook.go with new dependencies: an origin credentials resolver, a workspace root and an audit emitter. Keep existing call sites compiling (variadic options or extra params; update push_hook_test.go callers). Any nil/empty dependency disables the mirror and leaves rebuild behaviour as before",
+        "After the rebuild enqueue (always executed first, whether enqueued, suppressed by AUTO_REBUILD_AFTER_PUSH=false, deduplicated or failed) run mirrorBranches in the same goroutine: skip unless workspace is carry_patch, PATCH_PUSH_PATCHES_TO_ORIGIN is the exact string true and PATCH_BRANCH_SOURCE resolves to hub (reuse the applicability code from push_control.go: registered, non-deleted, not integration branch)",
+        "For each applicable branch resolve credentials, open the trunk with git.PlainOpen, and PushContext with RemoteName origin, RefSpec '+refs/heads/<n>:refs/heads/<n>', Force true semantics through the refspec, a 120 second timeout and NoErrAlreadyUpToDate as success. A failure of one branch does not stop the others; there is no retry or persistence",
+        "On success log at info. On failure log at warn with slug, branch and the error with userinfo removed (reuse stripUserinfo) and emit audit.HubEvent with the new type, resource_type patch, action mirror, actor_type system, the slug and metadata {branch_name, error}. A nil emitter skips emission; an emit error is only logged",
+        "Deletes are never mirrored because the hook only receives branches from extractPushedBranches (TS-22-38 drives a delete through handleReceivePack)",
+        "TS-22-36 uses a local bare origin with a pre-receive hook refusing p2 and a failing queue on the second run; TS-22-35 records the order enqueue-then-mirror"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/carrypatch/push_hook.go",
+        "internal/carrypatch/push_hook_test.go",
+        "internal/carrypatch/push_mirror.go",
+        "internal/carrypatch/push_mirror_test.go"
+      ],
+      "depends_on": [
+        2,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Wire the pre-receive hook and the mirror dependencies in cmd/af-hub",
+      "criteria": [
+        "22-REQ-9.1",
+        "22-REQ-8.5"
+      ],
+      "tests": [
+        "TS-22-9",
+        "TS-22-45"
+      ],
+      "steps": [
+        "Write TS-22-9 and TS-22-45 first and confirm they fail",
+        "In cmd/af-hub/main.go register the carry-patch pre-receive hook with gitserver.RegisterPreReceiveHook, built with store.GetVariableValue as GetVariableFunc and a resolver that wraps workspace.ResolveCloneAuth(secretsStore, slug), plus the workspace root",
+        "Construct the post-push hook with the same resolver, the workspace root and the existing audit emitter already passed to gitserver.SetAuditEmitter",
+        "Use apikit helpers for timestamps and auth info and define no local auth structs",
+        "TS-22-9 asserts info/refs, clone, fetch and pushes to an unregistered branch, the integration branch, a tag, refs/notes/x and a standard workspace branch all still succeed with the hook registered and make no origin push",
+        "TS-22-45 runs the wiring function against a test database and temporary workspace root: an origin-mode push is rejected with the origin message and a hub-mode push with forwarding on reaches the local bare origin; also grep the wiring source for store.GetVariableValue and workspace.ResolveCloneAuth and no local auth struct",
+        "Extract the wiring into a testable function if main.go does not already have one"
+      ],
+      "touches": [
+        "cmd/af-hub/main.go",
+        "cmd/af-hub/wiring_test.go"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Update documentation for push control, the mirror and the new event",
+      "criteria": [
+        "22-REQ-9.2",
+        "22-REQ-9.3",
+        "22-REQ-9.4"
+      ],
+      "tests": [
+        "TS-22-46",
+        "TS-22-47",
+        "TS-22-48"
+      ],
+      "steps": [
+        "Write TS-22-46 to TS-22-48 first as Go tests that read the docs files (see internal/carrypatch/docs_test.go for the pattern) and confirm they fail",
+        "docs/api.md: add PUSH_PATCHES_TO_ORIGIN to the Workspace Variables Reference; in the git-server push section describe the three behaviours (reject, forward, mirror), the messages 'branch is synced from origin; push to <git_url> instead', 'branch is synced from origin; delete it on the fork instead', 'origin rejected push: <error>' and 'failed to resolve origin credentials', and the accepted-refs-only rule; document the hub.patch.mirror_failed event with its metadata",
+        "docs/openapi.yaml: mention PUSH_PATCHES_TO_ORIGIN and the rejections in the git receive-pack route description and the workspace-variable descriptions",
+        "docs/architecture.md: add the pre-receive hook to the git server section",
+        "docs/carry_patch_workflow.md: exactly two edits, a PUSH_PATCHES_TO_ORIGIN entry in Configuration and the spec 20 note about hub pushes in origin mode rewritten to describe rejection, forwarding and mirroring",
+        "Leave docs/configuration.md and docs/cli.md unchanged",
+        "Run make check"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/architecture.md",
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify the push-control paths end to end",
+      "tests": [
+        "TS-22-49",
+        "TS-22-50",
+        "TS-22-51",
+        "TS-22-52",
+        "TS-22-53",
+        "TS-22-54"
+      ],
+      "steps": [
+        "Write TS-22-49 to TS-22-54 against the real handler, carry-patch hooks, database, trunk, local bare origin and git binary (TS-22-54 also drives POST /workspaces/:slug/patches and the sync job) and confirm they pass",
+        "Trace 22-PATH-1 to 22-PATH-6 through production code: handleReceivePack, thinPackSafeStorer, the registered carry-patch pre-receive hook, the forward push, accepted-ref filtering, the post-push hook, the mirror and the audit emitter. Confirm each step calls the next and no stub remains",
+        "For every criterion with a contract (e.g. 22-REQ-2.3, 3.1, 4.1, 4.5, 5.2, 5.3, 6.1, 7.1) confirm the producer's result is consumed by a caller in production code, in particular that cmd/af-hub registers the pre-receive hook and passes the mirror dependencies, not only tests",
+        "Search every file in the touches of tasks 1 to 8 for panic(\"not implemented\"), TODO, and bare 'return nil' on non-trivial paths (including the placeholder rejection from task 3) and remove them",
+        "Confirm the spec 20 sync and spec 21 registration entry points are called from production code, and that 'go list -deps ./internal/gitserver' has no internal/carrypatch",
+        "Run make check"
+      ],
+      "touches": [
+        "internal/carrypatch/smoke_push_control_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

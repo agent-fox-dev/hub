@@ -1,0 +1,1205 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "24",
+  "spec_name": "patch_authority_docs",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-24-1",
+      "kind": "property",
+      "verifies": [
+        "24-REQ-1.1"
+      ],
+      "title": "Every quoted variable, value, message, field, path, exit code and event type in the rewritten documents exists verbatim in the shipped code, docs/api.md or docs/cli.md",
+      "given": [
+        "the rewritten guide, agent example and ADR 01",
+        "a fixed list of quoted tokens extracted from backticks and quoted strings in those documents"
+      ],
+      "when": "for any quoted token in the changed documents that names a variable, value, message string, field, endpoint path, exit code or event type",
+      "then": [
+        "the token appears character for character in the internal/ source, docs/api.md or docs/cli.md",
+        "no paraphrased variant of the token is the only occurrence"
+      ],
+      "pseudocode": "for tok in quotedTokens(guide, agent, adr01): assert grep(tok, internal/**, docs/api.md, docs/cli.md) != empty"
+    },
+    {
+      "id": "TS-24-2",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.2"
+      ],
+      "title": "A detail where the shipped code differs from a spec PRD is described as the code has it and recorded in that spec's erratum",
+      "given": [
+        "a detail from specs 20 to 23 whose PRD text and shipped code differ, for example the message or field name"
+      ],
+      "when": "the guide text and the erratum file of the delivering spec are compared with the code",
+      "then": [
+        "the guide quotes the code's wording, not the PRD's",
+        "the erratum file for that spec has an entry for the divergence with a stated reason"
+      ],
+      "pseudocode": "for d in confirmedDivergences: assert guide contains d.codeValue; assert not guide contains d.prdValue; assert erratum(d.spec) contains d.codeValue and reason"
+    },
+    {
+      "id": "TS-24-3",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.3"
+      ],
+      "title": "A behaviour claim with no code or test evidence is absent from the guide, agent example and ADR 01",
+      "given": [
+        "the four proposal open questions: rerere feedback from fork pushes, auto-disabling missing_on_origin, a built-in sync schedule, a fork branch filter"
+      ],
+      "when": "the documents are searched for claims about these behaviours and for a scheduler of the soft-delete purge",
+      "then": [
+        "each open question appears only as a current limitation",
+        "no sentence promises or describes a planned feature or an unimplemented scheduler"
+      ],
+      "pseudocode": "for q in openQuestions: for s in sentences(guide) if mentions(s,q): assert isLimitation(s) and not matches(s,'will|planned|upcoming')"
+    },
+    {
+      "id": "TS-24-4",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.4"
+      ],
+      "title": "The change set touches only documentation files and internal/carrypatch/docs_test.go",
+      "given": [
+        "the finished change compared with its base commit"
+      ],
+      "when": "the list of changed paths is computed with git diff --name-only",
+      "then": [
+        "every changed path is under docs/, README.md, or is internal/carrypatch/docs_test.go",
+        "no .go file other than docs_test.go, no route, CLI command, variable default or schema file is changed"
+      ],
+      "pseudocode": "for p in changedPaths: assert p startswith 'docs/' or p == 'README.md' or p == 'internal/carrypatch/docs_test.go'"
+    },
+    {
+      "id": "TS-24-5",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.1"
+      ],
+      "title": "The Remotes table describes origin as the fork and push target and drops the old purpose text",
+      "given": [
+        "docs/carry_patch_workflow.md"
+      ],
+      "when": "the Remotes table rows are read",
+      "then": [
+        "the origin row mentions the fork, REBUILD_PUSH_INTEGRATION_BRANCH and origin mode authority for patch branches",
+        "the guide does not contain \"Where patch branches live; push target for local work\""
+      ],
+      "pseudocode": "row = tableRow(guide,'origin'); requireContains(row,'fork','REBUILD_PUSH_INTEGRATION_BRANCH','origin mode'); assert !contains(guide,'Where patch branches live; push target for local work')"
+    },
+    {
+      "id": "TS-24-6",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.2"
+      ],
+      "title": "The Remotes table or a note names the hub's git server as the hub-mode patch branch location",
+      "given": [
+        "docs/carry_patch_workflow.md"
+      ],
+      "when": "the Remotes section is read",
+      "then": [
+        "a third row or note names the hub's own git server as where patch branches are written in hub mode"
+      ],
+      "pseudocode": "s = section(guide,'Remotes','## '); requireContains(s, \"hub's own git server\", 'hub mode')"
+    },
+    {
+      "id": "TS-24-7",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.3"
+      ],
+      "title": "A \"Where patch branches live\" section follows Concepts/Remotes and states the trunk read rule",
+      "given": [
+        "docs/carry_patch_workflow.md"
+      ],
+      "when": "the section headed \"Where patch branches live\" is located",
+      "then": [
+        "its heading appears after the Remotes text",
+        "it says a rebuild reads only refs/heads/<branch> in the workspace trunk",
+        "it says the initial clone brings fork branches in only as refs/remotes/origin/*"
+      ],
+      "pseudocode": "assert index(guide,'Where patch branches live') > index(guide,'Remotes'); s=section(...); requireContains(s,'refs/heads/<branch>','refs/remotes/origin/*')"
+    },
+    {
+      "id": "TS-24-8",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.4"
+      ],
+      "title": "The section explains PATCH_BRANCH_SOURCE and has a comparison table with all seven rows",
+      "given": [
+        "the \"Where patch branches live\" section"
+      ],
+      "when": "the section and its table are read",
+      "then": [
+        "PATCH_BRANCH_SOURCE, hub (default) and origin appear",
+        "table rows exist for who writes the branch, what sync does, what registration does, what a push to the hub does (reject, forward with PUSH_PATCHES_TO_ORIGIN=true, accept and mirror), divergence, where a person fixes a conflict, and which copy survives a lost hub data directory"
+      ],
+      "pseudocode": "requireContains(s,'PATCH_BRANCH_SOURCE','`hub`','`origin`','PUSH_PATCHES_TO_ORIGIN=true'); assert tableRowCount(s)>=7"
+    },
+    {
+      "id": "TS-24-9",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.5"
+      ],
+      "title": "The section recommends origin mode for upstream-PR teams, hub for agent workspaces, and states integration branch handling",
+      "given": [
+        "the \"Where patch branches live\" section"
+      ],
+      "when": "the recommendation paragraph is read",
+      "then": [
+        "origin with REBUILD_PUSH_INTEGRATION_BRANCH=true is recommended for teams opening upstream PRs",
+        "hub mode is recommended for agent-driven workspaces that never open upstream PRs",
+        "the integration branch is stated to be built by the hub, only pushed to the fork and never fetched from origin by sync"
+      ],
+      "pseudocode": "requireContains(s,'REBUILD_PUSH_INTEGRATION_BRANCH=true','agent','upstream pull request','never fetched')"
+    },
+    {
+      "id": "TS-24-10",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.6"
+      ],
+      "title": "The section states the mode is read per operation and has a switching-modes note",
+      "given": [
+        "the \"Where patch branches live\" section"
+      ],
+      "when": "the switching-modes note is read",
+      "then": [
+        "it says the mode is read at the start of each operation",
+        "it says switching to origin brings registered branches to fork tips with previous tips kept under refs/hub/replaced/<branch>",
+        "it says switching to hub stops fork fetches and clears persisted origin sync state at the next sync"
+      ],
+      "pseudocode": "requireContains(s,'start of each','refs/hub/replaced/<branch>','clears')"
+    },
+    {
+      "id": "TS-24-11",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.7"
+      ],
+      "title": "The section points to the Configuration section for the three variables",
+      "given": [
+        "the \"Where patch branches live\" section"
+      ],
+      "when": "the section is searched for the pointer",
+      "then": [
+        "it refers to Configuration and names PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY and PUSH_PATCHES_TO_ORIGIN",
+        "the markdown anchor it links to exists in the guide"
+      ],
+      "pseudocode": "requireContains(s,'Configuration','PATCH_BRANCH_SOURCE','PATCH_DIVERGENCE_POLICY','PUSH_PATCHES_TO_ORIGIN'); assert anchorExists(link)"
+    },
+    {
+      "id": "TS-24-12",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.1"
+      ],
+      "title": "The patch field table lists the three sync-state fields with absence and mode rules",
+      "given": [
+        "the guide's patch field table"
+      ],
+      "when": "the rows for origin_sync_state, origin_sha and origin_synced_at are read",
+      "then": [
+        "all three rows exist",
+        "each says it is absent when null and written only in origin mode"
+      ],
+      "pseudocode": "for f in ['origin_sync_state','origin_sha','origin_synced_at']: row=tableRow(guide,f); requireContains(row,'absent when null','origin mode')"
+    },
+    {
+      "id": "TS-24-13",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.2"
+      ],
+      "title": "The three sync states are explained and missing_on_origin leaves patch status unchanged",
+      "given": [
+        "the guide's patch lifecycle text"
+      ],
+      "when": "the sync-state paragraph is read",
+      "then": [
+        "in_sync, diverged and missing_on_origin are each explained",
+        "it says missing_on_origin leaves status unchanged and the rebuild keeps applying the hub's copy until an operator disables or removes the patch"
+      ],
+      "pseudocode": "requireContains(p,'in_sync','diverged','missing_on_origin',\"hub's copy\",'disables or removes')"
+    },
+    {
+      "id": "TS-24-14",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.3"
+      ],
+      "title": "Registration text gives the resolution order, the 400 message and the --skip-branch-check rule",
+      "given": [
+        "Getting Started \"Add patches\" and \"Adding a new patch\" text"
+      ],
+      "when": "both texts are read",
+      "then": [
+        "the order refs/heads/<name>, refs/remotes/origin/<name>, then origin-mode-only single-branch fork fetch is described",
+        "\"branch does not exist in repository or on origin\" is quoted",
+        "a fork-only branch no longer needs --skip-branch-check, which is for branches that exist nowhere yet"
+      ],
+      "pseudocode": "for s in [addPatches, addingNew]: requireContains(s,'refs/heads/<name>','refs/remotes/origin/<name>','branch does not exist in repository or on origin','--skip-branch-check')"
+    },
+    {
+      "id": "TS-24-15",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.4"
+      ],
+      "title": "\"Removing a patch\" says the backup ref is deleted and the branch is not",
+      "given": [
+        "the guide's Removing a patch text"
+      ],
+      "when": "the text is read",
+      "then": [
+        "refs/hub/replaced/<branch> is said to be deleted with the patch row",
+        "the branch itself is said not to be deleted"
+      ],
+      "pseudocode": "requireContains(s,'refs/hub/replaced/<branch>','deleted','branch itself is not deleted')"
+    },
+    {
+      "id": "TS-24-16",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.5"
+      ],
+      "title": "Soft-delete and restore text state the 7-day retention window",
+      "given": [
+        "the guide's soft-delete text and \"Restoring a soft-deleted patch\" text"
+      ],
+      "when": "both are read",
+      "then": [
+        "each mentions 7 days"
+      ],
+      "pseudocode": "for s in [softDelete, restoring]: requireContains(s,'7 days')"
+    },
+    {
+      "id": "TS-24-17",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.6"
+      ],
+      "title": "With no production caller of the purge routines the guide promises no automatic removal",
+      "given": [
+        "a search for callers of PurgeDeletedPatches and PurgeExpiredDeletedPatches outside _test.go files finds none"
+      ],
+      "when": "the guide's soft-delete text is read",
+      "then": [
+        "it says expired rows are removed only when a purge runs",
+        "no sentence says a background purge or scheduler removes expired patches after 7 days"
+      ],
+      "pseudocode": "callers=grep('PurgeExpiredDeletedPatches\\\\(', non-test files); if callers empty: assert contains(s,'only when a purge runs'); assert !matches(guide,'background purge|scheduler.*(remove|purge)')"
+    },
+    {
+      "id": "TS-24-18",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-3.7"
+      ],
+      "title": "If a production purge caller exists, the guide describes its schedule as implemented",
+      "given": [
+        "a search for callers of the purge routines finds a production caller; if none is found the test is skipped"
+      ],
+      "when": "the caller's interval and trigger are read from the code and the guide's soft-delete text is read",
+      "then": [
+        "the guide states the same interval and trigger as the code"
+      ],
+      "pseudocode": "if callers nonEmpty: requireContains(softDelete, interval(callers[0]))  else t.Skip()"
+    },
+    {
+      "id": "TS-24-19",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.1"
+      ],
+      "title": "Getting Started orders the fork-first steps on acme-oss/api-gateway and your-org/api-gateway-fork",
+      "given": [
+        "the guide's Getting Started section"
+      ],
+      "when": "its step headings are listed in order",
+      "then": [
+        "the order is create workspace, upstream credentials, choose the authority, push branch to fork, register, sync, preview, manual rebuild, dashboard, failed rebuild, rollback",
+        "the steps are consecutively numbered",
+        "acme-oss/api-gateway and your-org/api-gateway-fork appear"
+      ],
+      "pseudocode": "idx=[index(gs,h) for h in headings]; assert idx==sorted(idx); assert numbersConsecutive(gs)"
+    },
+    {
+      "id": "TS-24-20",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.2"
+      ],
+      "title": "The choose-the-authority step shows the vars command and the credential requirement",
+      "given": [
+        "the \"choose the authority\" step"
+      ],
+      "when": "the step is read",
+      "then": [
+        "it shows afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway",
+        "it mentions optional REBUILD_PUSH_INTEGRATION_BRANCH=true",
+        "it says a fork clone and a fork token with read access are needed on every sync via GIT_PAT or GIT_USERNAME/GIT_PASSWORD"
+      ],
+      "pseudocode": "requireContains(step,'afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway','REBUILD_PUSH_INTEGRATION_BRANCH=true','GIT_PAT','GIT_USERNAME','GIT_PASSWORD')"
+    },
+    {
+      "id": "TS-24-21",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.3"
+      ],
+      "title": "Branch creation and registration steps push to the fork and register without --skip-branch-check",
+      "given": [
+        "the fork-first branch and registration steps"
+      ],
+      "when": "the steps are read",
+      "then": [
+        "the branch is created in a clone of the fork and pushed to the fork",
+        "the upstream PR is opened from the same branch",
+        "afc patch add in the primary walkthrough has no --skip-branch-check",
+        "the position, --if-not-exists and batch examples remain"
+      ],
+      "pseudocode": "requireContains(steps,'git push','upstream PR','--if-not-exists','--position'); assert !contains(primaryPatchAddLines,'--skip-branch-check')"
+    },
+    {
+      "id": "TS-24-22",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.4"
+      ],
+      "title": "The sync step shows the command and explains why sync, not rebuild, brings in fork commits",
+      "given": [
+        "the fork-first sync step"
+      ],
+      "when": "the step is read",
+      "then": [
+        "it shows afc workspace sync api-gateway",
+        "it says in origin mode sync, not afc rebuild submit, brings new fork commits in because a rebuild reads the hub's copy and does not fetch the fork"
+      ],
+      "pseudocode": "requireContains(step,'afc workspace sync api-gateway','afc rebuild submit',\"does not fetch the fork\")"
+    },
+    {
+      "id": "TS-24-23",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.5"
+      ],
+      "title": "The sync sample response has the new fields and the text covers outcomes, --fail-on-diverged and the divergence policy",
+      "given": [
+        "the fork-first sync step"
+      ],
+      "when": "the sample JSON and following text are read",
+      "then": [
+        "origin_fetched, patches_synced and patches_diverged appear next to the existing response fields",
+        "created, fast_forwarded and replaced are covered",
+        "--fail-on-diverged with exit code 3 and PATCH_DIVERGENCE_POLICY are covered"
+      ],
+      "pseudocode": "requireContains(step,'\"origin_fetched\"','\"patches_synced\"','\"patches_diverged\"','created','fast_forwarded','replaced','--fail-on-diverged','exit code 3','PATCH_DIVERGENCE_POLICY')"
+    },
+    {
+      "id": "TS-24-24",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.6"
+      ],
+      "title": "The dashboard step mentions per-patch sync-state fields and the new summary counts",
+      "given": [
+        "the Getting Started dashboard step"
+      ],
+      "when": "the step is read",
+      "then": [
+        "it mentions origin_sync_state and the dashboard counts of synced and diverged patches as the code names them"
+      ],
+      "pseudocode": "requireContains(step,'origin_sync_state', <summary count field names from handler code>)"
+    },
+    {
+      "id": "TS-24-25",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-4.7"
+      ],
+      "title": "The \"Alternative: hub-authoritative workspace\" heading shows the hub flow",
+      "given": [
+        "the guide's Getting Started section"
+      ],
+      "when": "the section under the heading \"Alternative: hub-authoritative workspace\" is read",
+      "then": [
+        "it says to leave PATCH_BRANCH_SOURCE unset and push to the hub's git URL",
+        "it covers register, the push hook rebuild or afc rebuild submit",
+        "it covers PUSH_PATCHES_TO_ORIGIN=true mirroring accepted pushes to the fork",
+        "it says the flow suits agent-driven workspaces"
+      ],
+      "pseudocode": "s=section(guide,'Alternative: hub-authoritative workspace','#'); requireContains(s,'unset','git URL','afc rebuild submit','PUSH_PATCHES_TO_ORIGIN=true','agent-driven')"
+    },
+    {
+      "id": "TS-24-26",
+      "kind": "property",
+      "verifies": [
+        "24-REQ-4.8"
+      ],
+      "title": "Every afc command and flag in the walkthroughs exists in docs/cli.md",
+      "given": [
+        "all afc command lines extracted from fenced code blocks in Getting Started and the alternative flow"
+      ],
+      "when": "for any afc command line in the walkthroughs",
+      "then": [
+        "its command path appears in docs/cli.md",
+        "each flag on the line appears in docs/cli.md for that command"
+      ],
+      "pseudocode": "for line in afcLines(guide.gettingStarted): assert cli.contains(commandPath(line)); for f in flags(line): assert cli.contains(f)"
+    },
+    {
+      "id": "TS-24-27",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.1"
+      ],
+      "title": "The Sync algorithm section lists the eight phases in order",
+      "given": [
+        "the guide's Sync algorithm section"
+      ],
+      "when": "the positions of the phase descriptions are compared",
+      "then": [
+        "order is: credential resolution and upstream fetch; origin fetch (origin mode only); base resolution; patch refresh; force-push detection; merge detection (also when only patch tips changed); rebuild decision; unconditional last_sync_at write"
+      ],
+      "pseudocode": "idx=[index(s,k) for k in keys]; assert all(i>=0) and idx==sorted(idx)"
+    },
+    {
+      "id": "TS-24-28",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.2"
+      ],
+      "title": "The Sync algorithm says the origin fetch prunes and its failure answers 502 origin fetch failed with state unchanged",
+      "given": [
+        "the guide's Sync algorithm section"
+      ],
+      "when": "the origin fetch step is read",
+      "then": [
+        "it states pruning of stale tracking refs",
+        "it quotes \"502 origin fetch failed\" or the code's exact message",
+        "it says all refs and patch state remain unchanged"
+      ],
+      "pseudocode": "requireContains(s,'prun','origin fetch failed','unchanged')"
+    },
+    {
+      "id": "TS-24-29",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.3"
+      ],
+      "title": "The patch refresh text lists outcomes, states and the backup ref",
+      "given": [
+        "the guide's Sync algorithm section"
+      ],
+      "when": "the patch refresh step is read",
+      "then": [
+        "created, fast_forwarded and replaced are described",
+        "in_sync, diverged and missing_on_origin are described",
+        "refs/hub/replaced/<branch> is named as the backup ref"
+      ],
+      "pseudocode": "requireContains(s,'created','fast_forwarded','replaced','in_sync','diverged','missing_on_origin','refs/hub/replaced/<branch>')"
+    },
+    {
+      "id": "TS-24-30",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.4"
+      ],
+      "title": "Rebuild triggers and the AUTO_REBUILD_AFTER_SYNC entry cover patch changes",
+      "given": [
+        "the guide's rebuild decision text and the AUTO_REBUILD_AFTER_SYNC Configuration entry"
+      ],
+      "when": "both are read",
+      "then": [
+        "a rebuild is triggered when upstream advanced, an active or conflict patch moved, or a patch was newly merged, unless AUTO_REBUILD_AFTER_SYNC=false",
+        "the entry says it covers patch changes as well as upstream advances"
+      ],
+      "pseudocode": "requireContains(decision,'upstream advanced','conflict','newly merged','AUTO_REBUILD_AFTER_SYNC=false'); requireContains(entry,'patch')"
+    },
+    {
+      "id": "TS-24-31",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.5"
+      ],
+      "title": "The guide has no \"returns immediately\" claim and exactly one two-models description",
+      "given": [
+        "the finished guide"
+      ],
+      "when": "the guide is searched for the removed statements",
+      "then": [
+        "no sentence says sync returns immediately when upstream is unchanged",
+        "the spec-20 interim note under the sync section is gone",
+        "the two models are described only in \"Where patch branches live\""
+      ],
+      "pseudocode": "assert !matches(guide,'returns immediately'); assert !contains(guide, interimNoteText); assert count(guide,'## Where patch branches live')==1"
+    },
+    {
+      "id": "TS-24-32",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.6"
+      ],
+      "title": "\"Auto-rebuild on push\" keeps the hook description and adds per-mode push treatment",
+      "given": [
+        "the guide's Auto-rebuild on push section"
+      ],
+      "when": "the section is read",
+      "then": [
+        "the hook description is still present",
+        "it covers rejection in origin mode, forwarding with PUSH_PATCHES_TO_ORIGIN=true and mirroring in hub mode",
+        "it says only accepted ref updates trigger the hook"
+      ],
+      "pseudocode": "requireContains(s,'AUTO_REBUILD_AFTER_PUSH','rejected','forward','mirror','accepted')"
+    },
+    {
+      "id": "TS-24-33",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-5.7"
+      ],
+      "title": "The Rebuild algorithm section keeps its checks and gains one sentence about snapshotted patch tips",
+      "given": [
+        "the guide's Rebuild algorithm section and the existing docs tests"
+      ],
+      "when": "the section is read and TS-01-70 is run",
+      "then": [
+        "TS-01-70 passes unchanged",
+        "the section says the patch tips it snapshots are what the last sync (origin mode) or push (hub mode) left in the trunk"
+      ],
+      "pseudocode": "requireContains(algo,'last sync','origin mode','push','hub mode'); run TestDocs_TS_01_70"
+    },
+    {
+      "id": "TS-24-34",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.1"
+      ],
+      "title": "The conflict section and the Getting Started failed-rebuild step open with a common part and one subsection per mode",
+      "given": [
+        "the \"Resolving conflicts after a failed rebuild\" section and the Getting Started failed-rebuild step"
+      ],
+      "when": "each is read",
+      "then": [
+        "each starts with reading conflict_files in afc workspace patch-status",
+        "each then has a hub mode and an origin mode subsection"
+      ],
+      "pseudocode": "for s in [conflictSection, gsFailedStep]: assert index(s,'conflict_files') < index(s,'hub mode') and index(s,'hub mode') < index(s,'origin mode')"
+    },
+    {
+      "id": "TS-24-35",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.2"
+      ],
+      "title": "The hub mode subsection keeps the existing instructions and states rerere support",
+      "given": [
+        "the hub mode subsection of the conflict section"
+      ],
+      "when": "the subsection is read",
+      "then": [
+        "it says to resolve in the trunk or push a fixed branch to the hub's git server, set the patch to active, and rebuild",
+        "it says rerere records the resolution when it happens during a rebuild",
+        "it states what the code supports for manual rerere recording"
+      ],
+      "pseudocode": "requireContains(s,'trunk',\"hub's git server\",'active','rerere','during a rebuild')"
+    },
+    {
+      "id": "TS-24-36",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.3"
+      ],
+      "title": "The origin mode subsection gives the fork-side fix procedure",
+      "given": [
+        "the origin mode subsection of the conflict section"
+      ],
+      "when": "the subsection is read",
+      "then": [
+        "it says to fix the branch in a local clone by merging or rebasing latest upstream, resolve and commit",
+        "it says to push to the fork and run afc workspace sync",
+        "it says to set the patch back to active if the status is still conflict after the rebuild"
+      ],
+      "pseudocode": "requireContains(s,'local clone','rebase','push','fork','afc workspace sync','still `conflict`','active')"
+    },
+    {
+      "id": "TS-24-37",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.4"
+      ],
+      "title": "The origin mode subsection forbids editing the trunk or pushing to the hub and gives the reason, with no other such instruction",
+      "given": [
+        "the origin mode subsection of the conflict section and of Getting Started"
+      ],
+      "when": "the subsections are scanned for trunk-edit or hub-push instructions",
+      "then": [
+        "it tells the reader not to edit the trunk and not to push to the hub",
+        "it explains a hub push is rejected, forwarded or replaced and a trunk edit is overwritten at the next sync",
+        "no imperative sentence directs the reader to edit the trunk or push to the hub"
+      ],
+      "pseudocode": "requireContains(s,'not edit the trunk','not push','overwritten'); for sent in sentences(s): if mentionsTrunkOrHubPush(sent): assert isProhibition(sent)"
+    },
+    {
+      "id": "TS-24-38",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.5"
+      ],
+      "title": "The rerere limitation for fork-side resolutions is stated as a known limitation",
+      "given": [
+        "the origin mode subsection"
+      ],
+      "when": "the subsection is read",
+      "then": [
+        "it says a resolution made on the fork is not recorded in the hub's rerere cache",
+        "it says the same conflict is resolved by hand again unless the rebuild resolves it",
+        "it calls this a known limitation and not a planned feature"
+      ],
+      "pseudocode": "requireContains(s,'rerere','not recorded','known limitation'); assert !matches(s,'will be|planned')"
+    },
+    {
+      "id": "TS-24-39",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.6"
+      ],
+      "title": "The recovery section covers state fields, fetching a replaced tip and pushing it to the fork",
+      "given": [
+        "the section headed \"Recovering a replaced or diverged patch branch\""
+      ],
+      "when": "the section is read",
+      "then": [
+        "it covers reading origin_sync_state and replaced_sha",
+        "it shows git fetch <hub_url> refs/hub/replaced/<branch>",
+        "it says to push the fetched tip to the fork to keep it"
+      ],
+      "pseudocode": "requireContains(s,'origin_sync_state','replaced_sha','git fetch <hub_url> refs/hub/replaced/<branch>','fork')"
+    },
+    {
+      "id": "TS-24-40",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-6.7"
+      ],
+      "title": "The recovery section covers reset-to-origin, the single backup and missing_on_origin",
+      "given": [
+        "the recovery section"
+      ],
+      "when": "the section is read",
+      "then": [
+        "it describes afc patch reset-to-origin <slug> <patch-id> moving a diverged branch to the fork's tip and reporting rebuild_triggered",
+        "it says only one backup per branch exists and later replacements overwrite it",
+        "it says what to do with missing_on_origin"
+      ],
+      "pseudocode": "requireContains(s,'afc patch reset-to-origin <slug> <patch-id>','rebuild_triggered','one backup','overwrite','missing_on_origin')"
+    },
+    {
+      "id": "TS-24-41",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-7.1"
+      ],
+      "title": "The Configuration section has exactly one entry heading for each of the three variables",
+      "given": [
+        "the guide's Configuration section"
+      ],
+      "when": "headings naming the variables are counted",
+      "then": [
+        "PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY and PUSH_PATCHES_TO_ORIGIN each head exactly one entry",
+        "each entry has a values table, an afc vars command and a when-read statement"
+      ],
+      "pseudocode": "for v in vars: assert count(headingsIn(cfg), v)==1; e=entry(cfg,v); requireContains(e,'afc vars','| Value')"
+    },
+    {
+      "id": "TS-24-42",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-7.2"
+      ],
+      "title": "The three entries state defaults, exact-match, mode-specific ignore and dual meaning",
+      "given": [
+        "the three Configuration entries"
+      ],
+      "when": "each entry is read",
+      "then": [
+        "defaults hub, replace and unset are stated",
+        "the exact-match rule is stated for each",
+        "PATCH_DIVERGENCE_POLICY is said to be ignored in hub mode",
+        "PUSH_PATCHES_TO_ORIGIN is said to mean forwarding in origin mode and mirroring in hub mode"
+      ],
+      "pseudocode": "requireContains(entry(PATCH_DIVERGENCE_POLICY),'ignored','hub mode'); requireContains(entry(PUSH_PATCHES_TO_ORIGIN),'exactly `true`','forward','mirror')"
+    },
+    {
+      "id": "TS-24-43",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-7.3"
+      ],
+      "title": "A recommended-combinations table has the four required rows",
+      "given": [
+        "the guide's Configuration section"
+      ],
+      "when": "the combinations table is read",
+      "then": [
+        "rows exist for fork-first, fork-first with hub forwarding, hub-only, and hub with a durable mirror",
+        "the fork-first row names origin and optional REBUILD_PUSH_INTEGRATION_BRANCH=true"
+      ],
+      "pseudocode": "t=table(cfg,'combination'); assert rowCount(t)==4; requireContains(t,'fork-first','forwarding','hub-only','mirror')"
+    },
+    {
+      "id": "TS-24-44",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-7.4",
+        "24-REQ-7.5"
+      ],
+      "title": "Limitations gain the five new items and keep the existing ones including the lock note",
+      "given": [
+        "the guide's Limitations section"
+      ],
+      "when": "the section is read",
+      "then": [
+        "it states no fork webhooks and no built-in sync schedule naming afc workspace sync, an operator's scheduler or POST /workspaces/:slug/sync",
+        "it states sync fetches every fork branch, manual resolutions are not fed into rerere in origin mode, missing_on_origin does not disable the patch, and origin mode needs working origin credentials on every sync",
+        "**Concurrent rebuild prevention.** remains"
+      ],
+      "pseudocode": "requireContains(lim,'webhooks','POST /workspaces/:slug/sync','every fork branch','rerere','missing_on_origin','credentials','**Concurrent rebuild prevention.**')"
+    },
+    {
+      "id": "TS-24-45",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-7.6"
+      ],
+      "title": "The API reference summary rows match the routes registered in RegisterRoutes",
+      "given": [
+        "the real RegisterRoutes source in internal/carrypatch and the guide's API reference summary tables"
+      ],
+      "when": "the single-patch GET, reset-to-origin and sync routes and their scopes are read from the code and from the guide",
+      "then": [
+        "the guide has a row for GET /workspaces/:slug/patches/:id and for POST .../patches/:id/reset-to-origin",
+        "each row's scope equals the scope in RegisterRoutes",
+        "the sync row describes both hub and origin modes"
+      ],
+      "pseudocode": "routes=parse(RegisterRoutes); for r in [get,reset]: assert guideRow(r.path).scope==r.scope; requireContains(syncRow,'hub','origin')"
+    },
+    {
+      "id": "TS-24-46",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-8.1"
+      ],
+      "title": "The handoff note records the cross-document searches and a summary of hits",
+      "given": [
+        "the commit message or handoff note of the change"
+      ],
+      "when": "it is read for the search record",
+      "then": [
+        "it lists the grep commands over docs/api.md, docs/cli.md, docs/openapi.yaml, docs/permissions.md and README.md",
+        "it covers patch branch location, what sync fetches, last_sync_at and push behaviour",
+        "it summarises the hits"
+      ],
+      "pseudocode": "for f in files: assert note contains f; for topic in topics: assert note contains topic"
+    },
+    {
+      "id": "TS-24-47",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-8.2",
+        "24-REQ-8.3"
+      ],
+      "title": "No searched document contradicts the guide and README changes are limited to corrections",
+      "given": [
+        "the finished documents and the base README"
+      ],
+      "when": "the searched documents are grepped for the old claims and README is diffed against the base",
+      "then": [
+        "none of docs/api.md, docs/cli.md, docs/openapi.yaml, docs/permissions.md, README.md says origin is where patch branches live without qualification or that sync returns early on an unchanged upstream",
+        "any README diff hunk is a corrected contradiction",
+        "README's link to docs/carry_patch_workflow.md resolves"
+      ],
+      "pseudocode": "for f in refDocs: assert !matches(f,'patch branches live.*origin(?! mode)'); assert fileExists('docs/carry_patch_workflow.md')"
+    },
+    {
+      "id": "TS-24-48",
+      "kind": "property",
+      "verifies": [
+        "24-REQ-8.4"
+      ],
+      "title": "Every repository file path referenced in the changed documents exists",
+      "given": [
+        "all relative paths mentioned in the guide, agent example, ADR 01 and errata"
+      ],
+      "when": "for any file path of the form docs/..., internal/... or .specs/... referenced in a changed document",
+      "then": [
+        "the path exists in the repository",
+        "docs/architecture.md is not referenced"
+      ],
+      "pseudocode": "for p in extractPaths(changedDocs): assert os.Stat(p) ok; assert 'docs/architecture.md' not in p"
+    },
+    {
+      "id": "TS-24-49",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-9.1"
+      ],
+      "title": "\"Understand Before You Code\" has a step to read PATCH_BRANCH_SOURCE first",
+      "given": [
+        "docs/examples/AGENTS_carry_patch.md"
+      ],
+      "when": "the Understand Before You Code section is read",
+      "then": [
+        "it has a step with afc vars list --workspace <workspace-slug>",
+        "it says unset means hub",
+        "that step precedes steps that touch branches"
+      ],
+      "pseudocode": "s=section(agent,'Understand Before You Code','## '); requireContains(s,'PATCH_BRANCH_SOURCE','afc vars list --workspace <workspace-slug>','unset'); assert it is the first step"
+    },
+    {
+      "id": "TS-24-50",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-9.2"
+      ],
+      "title": "Each listed agent example section gives hub and origin instructions where they differ",
+      "given": [
+        "the agent example sections Decide Where Your Change Belongs, Push to the Hub, Register the Patch, Trigger a Rebuild, Upstream Sync, Conflict Resolution, Removing a Patch, Commands Reference and Quality Gates"
+      ],
+      "when": "each section is read",
+      "then": [
+        "each mentions both hub and origin mode",
+        "the Quality Gates section works in both modes"
+      ],
+      "pseudocode": "for h in sections: s=section(agent,h,'## '); requireContains(s,'origin','hub')"
+    },
+    {
+      "id": "TS-24-51",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-9.3"
+      ],
+      "title": "In origin mode the example directs the agent to the fork and to sync, never to a hub push",
+      "given": [
+        "the origin mode instructions of the agent example"
+      ],
+      "when": "they are read",
+      "then": [
+        "they say to clone the fork, push the patch branch to the fork and register it",
+        "they say to run afc workspace sync, not afc rebuild submit, to bring it in and rebuild",
+        "they say never to push a registered patch branch to the hub because the hub refuses or replaces it"
+      ],
+      "pseudocode": "requireContains(originInstr,'clone the fork','afc workspace sync','not `afc rebuild submit`','never push','refuses or replaces')"
+    },
+    {
+      "id": "TS-24-52",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-9.4"
+      ],
+      "title": "In hub or unset mode the example keeps today's instructions and explains the mirror",
+      "given": [
+        "the hub mode instructions of the agent example"
+      ],
+      "when": "they are read",
+      "then": [
+        "they still say to clone from the hub, push to the hub and run afc rebuild submit",
+        "they explain PUSH_PATCHES_TO_ORIGIN=true as a mirror the agent does not need to do by hand"
+      ],
+      "pseudocode": "requireContains(hubInstr,'git push origin patch/','afc rebuild submit','PUSH_PATCHES_TO_ORIGIN=true','mirror')"
+    },
+    {
+      "id": "TS-24-53",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-9.5",
+        "24-REQ-9.6"
+      ],
+      "title": "The example's remove text, project context and commands table are updated",
+      "given": [
+        "the agent example"
+      ],
+      "when": "afc patch remove text, the project context paragraph and the commands table are read",
+      "then": [
+        "remove text says the branch is not deleted but the backup ref is",
+        "the project context paragraph does not say patch branches live only on the hub or only on origin",
+        "the commands table contains afc patch reset-to-origin, afc workspace sync --fail-on-diverged and afc vars list --workspace"
+      ],
+      "pseudocode": "requireContains(removeText,'not deleted','backup ref'); requireContains(commandsTable,'afc patch reset-to-origin','afc workspace sync --fail-on-diverged','afc vars list --workspace')"
+    },
+    {
+      "id": "TS-24-54",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-9.7"
+      ],
+      "title": "Every _rebuild_temp mention in the agent example is still marked legacy",
+      "given": [
+        "the rewritten agent example and the existing test TestDocs_TS_01_71_AgentsExampleMarksRebuildTempLegacy"
+      ],
+      "when": "the existing test is run against the real file",
+      "then": [
+        "the test passes unchanged",
+        "every _rebuild_temp line has legacy within one line before to two lines after"
+      ],
+      "pseudocode": "go test ./internal/carrypatch -run TestDocs_TS_01_71"
+    },
+    {
+      "id": "TS-24-55",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-10.1"
+      ],
+      "title": "ADR 01 is Accepted with an Accepted date, the proposal date unchanged and no \"Proposed\"",
+      "given": [
+        "docs/adr/01-choose-the-authority-for-patch-branches.md"
+      ],
+      "when": "the file is read",
+      "then": [
+        "it contains \"Status:** Accepted\"",
+        "it has an Accepted date line with the change date and the 2026-09-29 proposal Date",
+        "it does not contain the word Proposed"
+      ],
+      "pseudocode": "requireContains(adr,'Status:** Accepted','2026-09-29'); assert !contains(adr,'Proposed')"
+    },
+    {
+      "id": "TS-24-56",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-10.2"
+      ],
+      "title": "ADR 01 Context opens with a before-implementation sentence and Implementation notes list the errata",
+      "given": [
+        "ADR 01 and its base version"
+      ],
+      "when": "Context and the Implementation notes section are read and the Decision text is diffed",
+      "then": [
+        "the first Context sentence says it describes the code before the decision was implemented",
+        "Implementation notes lists the four errata files and says the Decision stands as written",
+        "the Decision and Consequences text is byte-identical to the base"
+      ],
+      "pseudocode": "requireContains(notes,'20_fork_patch_sync_divergences.md','21_fork_patch_registration_divergences.md','22_fork_push_control_divergences.md','23_patch_divergence_recovery_divergences.md','stands as written'); assert decision(adr)==decision(base)"
+    },
+    {
+      "id": "TS-24-57",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-10.3"
+      ],
+      "title": "The four errata files exist and each has the three required sections",
+      "given": [
+        "docs/errata/"
+      ],
+      "when": "each of the four named files is read",
+      "then": [
+        "each file exists",
+        "each contains the headings Spec Expectation, Implementation Reality and Resolution"
+      ],
+      "pseudocode": "for f in four: d=readDoc('errata/'+f); requireContains(d,'## Spec Expectation','## Implementation Reality','## Resolution')"
+    },
+    {
+      "id": "TS-24-58",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-10.4"
+      ],
+      "title": "The errata for specs 20 and 21 record each confirmed divergence with a reason",
+      "given": [
+        "20_fork_patch_sync_divergences.md and 21_fork_patch_registration_divergences.md and the shipped code"
+      ],
+      "when": "each starting-list divergence is checked against the code and against the erratum",
+      "then": [
+        "each divergence confirmed in the code has one entry with a reason",
+        "the spec 20 file covers pruning, 502 and origin_fetch_failed, compare-and-swap, disabled patches, merge detection, field presence, last_sync_at on failure and docs/api.md variables",
+        "the spec 21 file covers refs/heads check, 502, 409 workspace_busy, branch_resolution skipped and no batch audit event"
+      ],
+      "pseudocode": "requireContains(e20,'origin_fetch_failed','compare-and-swap','last_sync_at','docs/api.md'); requireContains(e21,'workspace_busy','skipped','502')"
+    },
+    {
+      "id": "TS-24-59",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-10.5"
+      ],
+      "title": "The errata for specs 22 and 23 record each confirmed divergence with a reason",
+      "given": [
+        "22_fork_push_control_divergences.md and 23_patch_divergence_recovery_divergences.md and the shipped code"
+      ],
+      "when": "each starting-list divergence is checked against the code and against the erratum",
+      "then": [
+        "the spec 22 file covers delete rejection, refs/hub/forward/<branch> with 120 s and userinfo removal, accepted-only head_sha and hub.git.push, fail-open, and mirror with AUTO_REBUILD_AFTER_PUSH=false",
+        "the spec 23 file covers the added single-patch GET, reset semantics and status limits, hub.patch.reset, protected prefix refs/hub/replaced/ and the unscheduled purge"
+      ],
+      "pseudocode": "requireContains(e22,'refs/hub/forward/<branch>','fail open','AUTO_REBUILD_AFTER_PUSH=false'); requireContains(e23,'hub.patch.reset','refs/hub/replaced/','purge')"
+    },
+    {
+      "id": "TS-24-60",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-10.6"
+      ],
+      "title": "Unsupported erratum entries are dropped and code divergences not on the list are added",
+      "given": [
+        "the starting-list divergences and a grep of the shipped code for each",
+        "any additional divergence found in the code"
+      ],
+      "when": "each erratum entry is traced to code and each code divergence is traced to an entry",
+      "then": [
+        "no erratum entry names behaviour the code lacks",
+        "every code divergence from the proposal has an entry"
+      ],
+      "pseudocode": "for entry in errata: assert codeEvidence(entry) != empty; for d in codeDivergences: assert errata contains d"
+    },
+    {
+      "id": "TS-24-61",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-10.7"
+      ],
+      "title": "The new docs test passes on the real documents and covers every listed assertion",
+      "given": [
+        "internal/carrypatch/docs_test.go using readDoc, requireContains and section",
+        "the rewritten guide, agent example, ADR 01 and four errata files"
+      ],
+      "when": "go test ./internal/carrypatch -run TestDocs is executed",
+      "then": [
+        "the new test passes",
+        "it asserts the three variable names and both source values in the section, one Configuration entry per variable, the fork-first and alternative headings, both conflict-mode subsections, the recovery section, the absence of the old Remotes string, PATCH_BRANCH_SOURCE and afc workspace sync in the agent example, ADR 01 status text and the four errata files"
+      ],
+      "pseudocode": "go test ./internal/carrypatch -run TestDocs -v; assert PASS for new test and TS_01_69..72"
+    },
+    {
+      "id": "TS-24-62",
+      "kind": "property",
+      "verifies": [
+        "24-REQ-10.8"
+      ],
+      "title": "Removing any asserted content makes the new docs test fail while existing tests and the make targets pass",
+      "given": [
+        "a copy of the docs tree and the list of every string, heading and file the new docs test asserts"
+      ],
+      "when": "for any single asserted item, it is deleted from the copy and the docs test is run against the copy",
+      "then": [
+        "the new docs test fails naming the missing content",
+        "TS_01_69 to TS_01_72 are unaffected",
+        "on the unmodified tree make test and make lint succeed"
+      ],
+      "pseudocode": "for item in assertedItems: mutated=remove(docs,item); assert !pass(runNewDocsTest(mutated)); assert pass(runExistingDocsTests(docs)); assert make test and make lint succeed"
+    },
+    {
+      "id": "TS-24-63",
+      "kind": "smoke",
+      "verifies": [
+        "24-PATH-1",
+        "24-REQ-1.4",
+        "24-REQ-10.7"
+      ],
+      "title": "The rewritten documents, errata and docs test pass together under make test",
+      "given": [
+        "the finished change on the real repository",
+        "specs 20 to 23 code and docs present"
+      ],
+      "when": "the implementer follows the rewrite path and make test and make lint are run",
+      "then": [
+        "the guide, agent example, ADR 01 and four errata files are present and the new docs test passes",
+        "TS-01-69 to TS-01-72 pass unchanged",
+        "only documentation files and docs_test.go are changed",
+        "make lint reports no issues"
+      ],
+      "real_components": [
+        "docs/carry_patch_workflow.md",
+        "docs/examples/AGENTS_carry_patch.md",
+        "docs/adr/01-choose-the-authority-for-patch-branches.md",
+        "docs/errata",
+        "internal/carrypatch/docs_test.go",
+        "go test runner",
+        "make test and make lint"
+      ]
+    },
+    {
+      "id": "TS-24-64",
+      "kind": "smoke",
+      "verifies": [
+        "24-PATH-2",
+        "24-REQ-4.4",
+        "24-REQ-6.3",
+        "24-REQ-6.7"
+      ],
+      "title": "An operator can follow the fork-first guide from setup through conflict recovery using only documented commands",
+      "given": [
+        "the real guide and docs/cli.md",
+        "the guide's example workspace api-gateway"
+      ],
+      "when": "the guide's fork-first walkthrough, origin mode conflict subsection and recovery section are traversed in order, extracting every command",
+      "then": [
+        "the order is Where patch branches live, afc vars create PATCH_BRANCH_SOURCE=origin, push to fork, afc patch add, afc workspace sync api-gateway",
+        "after a failed rebuild the origin subsection directs a fork fix, push and sync again",
+        "the recovery section directs git fetch <hub_url> refs/hub/replaced/<branch> or afc patch reset-to-origin",
+        "every command exists in docs/cli.md and none directs a hub push or trunk edit"
+      ],
+      "real_components": [
+        "docs/carry_patch_workflow.md",
+        "docs/cli.md",
+        "docs/api.md",
+        "markdown section parser in docs_test.go"
+      ]
+    },
+    {
+      "id": "TS-24-65",
+      "kind": "smoke",
+      "verifies": [
+        "24-PATH-3",
+        "24-REQ-9.1",
+        "24-REQ-9.3"
+      ],
+      "title": "An agent reading the example in origin mode is led to the fork and to workspace sync",
+      "given": [
+        "the real docs/examples/AGENTS_carry_patch.md and docs/cli.md"
+      ],
+      "when": "the example's instructions are traversed as an agent in a workspace where afc vars list shows PATCH_BRANCH_SOURCE=origin",
+      "then": [
+        "the first step is afc vars list --workspace <workspace-slug>",
+        "the origin instructions say clone the fork and push the patch branch to the fork, not the hub",
+        "registration is followed by afc workspace sync, not afc rebuild submit",
+        "each command listed exists in docs/cli.md"
+      ],
+      "real_components": [
+        "docs/examples/AGENTS_carry_patch.md",
+        "docs/cli.md",
+        "markdown section parser in docs_test.go"
+      ]
+    },
+    {
+      "id": "TS-24-66",
+      "kind": "smoke",
+      "verifies": [
+        "24-PATH-4",
+        "24-REQ-10.8"
+      ],
+      "title": "Removing required content from the documents makes the docs test fail naming the missing content",
+      "given": [
+        "a temporary copy of the repository docs and docs_test.go with real helpers"
+      ],
+      "when": "in turn the Where patch branches live heading, a Configuration variable entry, an errata file and the ADR 01 Accepted status are removed and make test is run against each copy",
+      "then": [
+        "each run fails",
+        "the failure message names the missing content or file",
+        "the unmodified tree passes"
+      ],
+      "real_components": [
+        "internal/carrypatch/docs_test.go",
+        "docs/carry_patch_workflow.md",
+        "docs/adr/01-choose-the-authority-for-patch-branches.md",
+        "docs/errata",
+        "go test runner"
+      ]
+    }
+  ]
+}

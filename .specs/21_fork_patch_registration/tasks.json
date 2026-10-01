@@ -1,0 +1,346 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "21",
+  "spec_name": "fork_patch_registration",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/carrypatch/... ./internal/workspace/... ./internal/cli/... ./cmd/... -run 'TS21|ForkPatchRegistration' -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "20_fork_patch_sync",
+      "reason": "Defines PATCH_BRANCH_SOURCE and its parser, the origin credential resolver, the 502 origin fetch failed message and origin_fetch_failed error type, and the go-git origin fetch pattern the single-branch fetch is modelled on."
+    },
+    {
+      "spec": "15_carry_patch_workspace",
+      "reason": "Modifies patch registration in internal/workspace/patch_handlers.go, the branch-check hook and the hub.patch.create audit metadata."
+    },
+    {
+      "spec": "09_git_credentials",
+      "reason": "Reuses workspace.ResolveCloneAuth for fork credentials."
+    },
+    {
+      "spec": "18_hub_audit_query",
+      "reason": "The hub.patch.create event metadata gains branch_resolution."
+    },
+    {
+      "spec": "01_rebuild_worktree",
+      "reason": "Rebuilds read only refs/heads/<branch> in the trunk, which is why registration must create the local ref."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Remove the carrypatch to workspace import so the two packages are independent",
+      "criteria": [
+        "21-REQ-9.4"
+      ],
+      "tests": [
+        "TS-21-36"
+      ],
+      "steps": [
+        "Write TS-21-36 (run `go list -deps` for ./internal/workspace and ./internal/carrypatch via os/exec in a Go test; name it TestTS21_36_...) and confirm it fails: internal/carrypatch/api.go currently imports internal/workspace for workspace.AuthorizeWorkspace",
+        "Create a leaf package internal/wsaccess holding the WorkspaceAccess type and AuthorizeWorkspace(db, auth, slug) (moved verbatim from internal/workspace/authz.go, with its own small isAdmin check on *apikit.AuthInfo credential type admin_token); it imports only database/sql, net/http and apikit",
+        "Keep workspace.AuthorizeWorkspace and workspace.WorkspaceAccess as thin delegating wrapper/alias (type WorkspaceAccess = wsaccess.WorkspaceAccess) so internal/merge and other callers are untouched",
+        "Change carrypatch.authorizeWorkspace in internal/carrypatch/api.go to call wsaccess.AuthorizeWorkspace and drop the workspace import from every non-test carrypatch file",
+        "Run `go list -deps ./internal/carrypatch | grep internal/workspace`; if any other import chain still reaches internal/workspace, cut it the same way; confirm internal/workspace does not depend on internal/carrypatch either (existing _test files may still import across packages)",
+        "Run the existing authorisation tests (ownership_test.go, acl_matrix_test.go) to confirm behaviour is unchanged"
+      ],
+      "touches": [
+        "internal/wsaccess/wsaccess.go",
+        "internal/workspace/authz.go",
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/import_graph_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Replace the boolean branch-check hook with a resolver hook and map its errors in the registration handlers",
+      "criteria": [
+        "21-REQ-1.7",
+        "21-REQ-2.3",
+        "21-REQ-4",
+        "21-REQ-5",
+        "21-REQ-6.1",
+        "21-REQ-6.2",
+        "21-REQ-6.4",
+        "21-REQ-6.5",
+        "21-REQ-7.3",
+        "21-REQ-8.1",
+        "21-REQ-8.2",
+        "21-REQ-8.3",
+        "21-REQ-8.4",
+        "21-REQ-8.5",
+        "21-REQ-9.1",
+        "21-REQ-9.2",
+        "21-REQ-9.5"
+      ],
+      "tests": [
+        "TS-21-7",
+        "TS-21-18",
+        "TS-21-22",
+        "TS-21-31",
+        "TS-21-32",
+        "TS-21-33",
+        "TS-21-34",
+        "TS-21-37"
+      ],
+      "steps": [
+        "Write TS-21-7, 18, 22, 31, 32, 33, 34 and 37 in internal/workspace (name functions TestTS21_<n>_...) using stub hooks and confirm they fail; the recording stub for TS-21-22 logs call order and a stub insert timestamp",
+        "In internal/workspace/branch_check_hook.go delete BranchCheckFunc and define `type BranchResolverFunc func(ctx context.Context, slug, branchName string) (string, error)`; the string result is the resolution method, with exported constants ResolutionLocal=\"local\", ResolutionOriginTracking=\"origin_tracking\", ResolutionOriginFetch=\"origin_fetch\", ResolutionSkipped=\"skipped\". Keep `RegisterBranchCheckHook(fn BranchResolverFunc)` and the package var, still optional/nil-able",
+        "Define the error classification without importing carrypatch: an exported interface `BranchResolveError interface{ error; BranchResolveKind() string }` with kind constants not_found, origin_fetch_failed, origin_credentials, workspace_busy, plus an exported constructor NewBranchResolveError(kind string, cause error) error for tests and stubs; the handler classifies with errors.As on that interface so carrypatch can implement the same one-method interface with its own type and no workspace import; any other error (or unknown kind) is the internal class",
+        "Add one helper in patch_handlers.go that maps a hook error to a response: not_found -> 400 `branch does not exist in repository or on origin`; origin_fetch_failed -> 502 message `origin fetch failed` with apikit.WriteAPIErrorWithType type `origin_fetch_failed`; origin_credentials -> 502 `failed to resolve origin credentials`; workspace_busy -> 409 type `workspace_busy` message `another operation is running on this workspace; retry later`; anything else -> log slog.Error with slug, branch and error text, then 500 `internal server error`. Never echo the cause text. In a batch only the 400 message gets the `patch[i]: ` prefix",
+        "In handleAddPatchSingle call the hook as hook(c.Request().Context(), slug, branch) only when hook != nil and skip_branch_check is not true; capture the returned method; use ResolutionSkipped when skipped and a hook is registered; leave the method empty (key omitted) when no hook is registered. Add `branch_resolution` to the hub.patch.create Metadata next to branch_name and position only when non-empty. Resolution stays before the exists / if_not_exists checks; an if_not_exists hit still emits no event",
+        "In handleAddPatchBatch keep the per-element validation loop and call the hook inside it in array order for non-skipped elements only (skipped elements never reach the hook); the first failing element stops the loop and no row is inserted; the duplicate-in-batch and already-registered checks stay after the loop; emit no audit events in the batch path",
+        "Update the four existing stubs in internal/workspace/carry_patch_patches_test.go (lines ~712, 753, 784 and any other `func(_, _ string) error`) to the new signature (ctx, slug, branch) (string, error); RegisterBranchCheckHook(nil) cleanups stay as they are",
+        "Keep expected 400 text of existing tests in step with the new message `branch does not exist in repository or on origin` (grep internal/ and cmd/ for the old string `branch does not exist in repository`)"
+      ],
+      "touches": [
+        "internal/workspace/branch_check_hook.go",
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/carry_patch_patches_test.go",
+        "internal/workspace/fork_patch_registration_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement the carrypatch branch resolver for local and tracking refs with a locked compare-and-swap create",
+      "criteria": [
+        "21-REQ-1.1",
+        "21-REQ-1.2",
+        "21-REQ-1.4",
+        "21-REQ-1.5",
+        "21-REQ-1.6",
+        "21-REQ-2.1",
+        "21-REQ-2.2",
+        "21-REQ-2.4",
+        "21-REQ-7.1",
+        "21-REQ-7.2",
+        "21-REQ-7.4",
+        "21-REQ-9.3"
+      ],
+      "tests": [
+        "TS-21-1",
+        "TS-21-2",
+        "TS-21-4",
+        "TS-21-8",
+        "TS-21-9",
+        "TS-21-26"
+      ],
+      "steps": [
+        "Write TS-21-1, 2, 4, 8, 9 and 26 in internal/carrypatch (name TestTS21_<n>_...) with real git repositories (bare fork, clone as trunk) via the existing testhelpers_test.go helpers, a recording GitRunner wrapper around carrypatch.NewGitRunnerFactory(), counting fetch and credential stubs and a lock hook; confirm they fail. TS-21-9 is a property test over generated valid branch names and commit chains",
+        "Create internal/carrypatch/branch_resolver.go with `NewBranchResolverHook(newRunner func(string)(GitRunner,error), workspaceRoot string, getVariable GetVariableFunc, resolveAuth ResolveAuthFunc, fetch SingleBranchFetchFunc) func(ctx context.Context, slug, branch string) (string, error)`; define `SingleBranchFetchFunc func(ctx context.Context, repoPath, branch string, auth transport.AuthMethod) error`. Do not import internal/workspace. Add an unexported test seam for the lock function (default wslock.TryLock) so TS-21-26 can inject a lock that creates the ref while acquiring",
+        "Define a carrypatch error type implementing `BranchResolveKind() string` (kinds not_found, origin_fetch_failed, origin_credentials, workspace_busy, mirrored literally from the workspace package) and a Method string result using the literals local, origin_tracking, origin_fetch",
+        "Read PATCH_BRANCH_SOURCE once per hook call through getVariable('workspace', slug, 'PATCH_BRANCH_SOURCE') using the parse helper that 20_fork_patch_sync added (search internal/carrypatch for it; do not re-implement the rules). If 20's helper is not present yet, add a single exported helper per 20's rules (exact, case-sensitive `origin`, anything else/unset/error means hub) in the file 20 will use and let 20 reuse it",
+        "Step 1: resolve `refs/heads/<name>^{commit}` through the runner (git rev-parse --verify --end-of-options); on success return `local` without locking, fetching or writing. Never pass a bare name for existence checks, so tags, SHAs and origin/x are not found",
+        "Step 2: if step 1 fails, take the lock with TryLock(slug) (busy -> workspace_busy error, never wait; `defer unlock()` so every outcome releases it); re-check step 1 under the lock and return `local` with no write if it now resolves; then resolve `refs/remotes/origin/<name>^{commit}`; if found, run exactly `update-ref refs/heads/<name> <sha> 0000000000000000000000000000000000000000` and return `origin_tracking`. Never use checkout, branch, reset or switch and never write branch.<name>.* config",
+        "If the CAS update-ref fails because the ref now exists (detect by re-resolving refs/heads/<name>^{commit}, not by error text), rerun resolution from step 1 once and return `local`; any other update-ref failure returns a plain (unclassified) error wrapped with slug and branch context so the handler answers 500",
+        "If the tracking ref is missing: in hub mode return the not_found error and never call fetch or resolveAuth; in origin mode leave a clearly marked branch that returns not_found for now (task 4 fills in the fork fetch) and that passes TS-21-4 unchanged",
+        "Add a SingleBranchFetchFunc-based field only through the constructor; confirm with `go build ./...` that nothing in carrypatch imports internal/workspace"
+      ],
+      "touches": [
+        "internal/carrypatch/branch_resolver.go",
+        "internal/carrypatch/branch_resolver_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Add the single-branch fork fetch step with typed not-found classification",
+      "criteria": [
+        "21-REQ-1.3",
+        "21-REQ-3"
+      ],
+      "tests": [
+        "TS-21-3",
+        "TS-21-12",
+        "TS-21-13",
+        "TS-21-25"
+      ],
+      "steps": [
+        "Write TS-21-3 (real bare fork, branch pushed after the clone, real fetch function), TS-21-12 (recording fetch stub), TS-21-13 (stub returning git.NoErrAlreadyUpToDate, with and without the tracking ref present) and TS-21-25 (lock spy; fetch and update-ref observe the lock held) and confirm they fail",
+        "Implement `DefaultSingleBranchFetch()` in internal/carrypatch/wire.go modelled on upstream.Fetch: git.PlainOpen(repoPath), repo.Remote(\"origin\"), remote.FetchContext with FetchOptions{RemoteName:\"origin\", RefSpecs: []config.RefSpec{config.RefSpec(\"+refs/heads/<name>:refs/remotes/origin/<name>\")}, Auth: auth, Tags: git.NoTags} and no Prune; treat git.NoErrAlreadyUpToDate as success",
+        "Verify the unverified go-git behaviour with a real bare fork lacking the branch: capture which error FetchContext returns (expected git.NoMatchingRefSpecError, matched with errors.As). If it is not distinguishable by type from a transport/auth error, instead list the remote (remote.ListContext) and decide not-found from the absence of refs/heads/<name>; never decide from error text alone. Return a typed sentinel (e.g. errBranchNotOnOrigin) from the fetch function for the not-found case",
+        "In branch_resolver.go origin mode, under the already-held lock and after the step 1 re-check and tracking check: call resolveAuth(slug) once (error -> origin_credentials error, no fetch), then fetch(ctx, trunkPath, name, auth); NoErrAlreadyUpToDate is success; the typed not-found error -> not_found; any other error -> origin_fetch_failed error that carries the cause for logging; log the cause with slog (slug, branch) and never put it in the message",
+        "After a successful fetch re-resolve refs/remotes/origin/<name>^{commit}; if absent return not_found (not a fetch failure); if present create refs/heads/<name> with the same CAS update-ref and return `origin_fetch`, with the same ref-exists-race handling as the tracking path",
+        "Assert in TS-21-3 that no other tracking ref and no tag appeared, and in TS-21-12 that the stub receives exactly one refspec, the resolver's auth value, and that resolveAuth was called once with the slug",
+        "Also write the classification unit part of TS-21-14 (a fetch error wrapped around the typed error with a misleading message classifies as not found; a plain error with text `couldn't find remote ref` does not) and keep it in the test file for task 5 to complete"
+      ],
+      "touches": [
+        "internal/carrypatch/wire.go",
+        "internal/carrypatch/branch_resolver.go",
+        "internal/carrypatch/branch_resolver_fetch_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Wire the resolver into main and verify the error responses end to end over HTTP",
+      "criteria": [
+        "21-REQ-9.3",
+        "21-REQ-4.3",
+        "21-REQ-2.3",
+        "21-REQ-3.3",
+        "21-REQ-3.4",
+        "21-REQ-3.5"
+      ],
+      "tests": [
+        "TS-21-6",
+        "TS-21-11",
+        "TS-21-14",
+        "TS-21-15",
+        "TS-21-16",
+        "TS-21-17",
+        "TS-21-19",
+        "TS-21-35"
+      ],
+      "steps": [
+        "Write TS-21-6, 11, 14, 15, 16, 17, 19 and 35 as HTTP-level tests in an external test package (workspace_test in internal/workspace, which may import carrypatch as coexistence_test.go does): build the real patch handler, register carrypatch.NewBranchResolverHook with a real bare fork and clone, a captured slog handler, and the per-case stubs; confirm they fail",
+        "In cmd/af-hub/main.go replace the inline `rev-parse --verify` closure passed to workspace.RegisterBranchCheckHook with `workspace.RegisterBranchCheckHook(carrypatch.NewBranchResolverHook(cpGitRunnerFactory, cfg.Workspace.Path, store.GetVariableValue, <origin credential resolver>, carrypatch.DefaultSingleBranchFetch()))`. For the credential resolver reuse the adapter 20_fork_patch_sync wired for SyncAPIConfig.ResolveOriginAuth (a thin wrapper over workspace.ResolveCloneAuth(store, slug)); if none exists yet write the same wrapper inline",
+        "TS-21-35: construct the hook with stub getter/creds/fetch and assert the stubs are used; read cmd/af-hub/main.go as text and assert it contains `RegisterBranchCheckHook(carrypatch.` and no longer contains `rev-parse` inside a branch-check closure",
+        "TS-21-14: real fork without the branch answers 400 with the new message, no refs/heads/ghost and no row; combine with the classification unit assertions begun in task 4",
+        "TS-21-15: point the trunk's origin URL at a nonexistent path / closed port; assert 502, type origin_fetch_failed, message `origin fetch failed`, the underlying error text absent from the body and present in the captured log, no local branch, no row",
+        "TS-21-16: credential stub returns an error; assert 502 `failed to resolve origin credentials`, zero fetch calls, no branch and no row",
+        "TS-21-11: wrap the runner so update-ref fails with a non-exists error; assert 500 `internal server error`, no row, and that the log line contains the slug and branch",
+        "TS-21-17 and TS-21-19 (property over generated absent valid names): hub and origin mode both answer 400 with the identical message and create nothing; TS-21-6: a tag v1, a full SHA and origin/x (with refs/remotes/origin/x present) each answer 400 in hub mode, insert no row and create no refs/heads ref",
+        "Fix whatever these tests expose in the resolver or the handler mapping from tasks 2-4"
+      ],
+      "touches": [
+        "cmd/af-hub/main.go",
+        "internal/workspace/fork_patch_registration_http_test.go",
+        "internal/carrypatch/branch_resolver.go",
+        "internal/workspace/patch_handlers.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Verify skip, batch, concurrency, race and audit behaviour with the real resolver over HTTP",
+      "criteria": [
+        "21-REQ-5",
+        "21-REQ-6.3",
+        "21-REQ-7.5",
+        "21-REQ-8.1",
+        "21-REQ-8.2",
+        "21-REQ-1.5"
+      ],
+      "tests": [
+        "TS-21-5",
+        "TS-21-10",
+        "TS-21-20",
+        "TS-21-21",
+        "TS-21-23",
+        "TS-21-24",
+        "TS-21-27",
+        "TS-21-28",
+        "TS-21-29",
+        "TS-21-30"
+      ],
+      "steps": [
+        "Write TS-21-5, 10, 20, 21, 23, 24, 27, 28, 29 and 30 in the workspace_test external package using the real patch handler, the real carrypatch resolver, real fork and clone repositories, an audit sink that records events, counting getter/fetch/credential stubs, and a lock probe that calls wslock.TryLock(slug) afterwards; confirm which fail",
+        "TS-21-5: first request in hub mode answers 400 with zero fetches; set PATCH_BRANCH_SOURCE=origin and repeat: 201, one fetch, audit origin_fetch; the counting getter sees exactly one read per request",
+        "TS-21-10: wrap the runner so refs/heads/feat is created at another commit just before the resolver's update-ref; assert 201, audit `local`, and the ref still at the pushed commit",
+        "TS-21-20: skipped single registration in both modes with a branch that exists nowhere: 201, zero fetch/credential/lock calls, the recording runner saw no call at all, no refs/heads ref; TS-21-21: mixed batch (skipped absent, tracking-only, skipped, fork-only) inserts 4 rows, creates local refs only for the two non-skipped ones and fetches once",
+        "TS-21-23: batch [tracking-only, fork-only, missing] answers 400 with `patch[2]: ` prefix and no rows, both earlier local refs and the fetched tracking ref remain, and a later single registration of the first branch answers 201 with audit `local` and writes no ref; TS-21-24: duplicate batch answers 409 with the local branch created, [registered, missing] answers 400, and single missing + if_not_exists answers 400",
+        "TS-21-27/28/29: hold wslock.TryLock(slug) from the test; tracking-only (hub) and fork-only (origin) registrations answer 409 workspace_busy promptly with no row, fetch or branch; local-path and skipped registrations still answer 201 without calling TryLock; after every scenario of 28 TryLock succeeds again and the lock is not held at insert time",
+        "TS-21-30: audit metadata branch_resolution is local, origin_tracking, origin_fetch and skipped for the four single registrations, with branch_name and position still present",
+        "Fix any defect these tests expose in the resolver (task 3-4) or in the handler (task 2); do not weaken a test"
+      ],
+      "touches": [
+        "internal/workspace/fork_patch_registration_batch_test.go",
+        "internal/carrypatch/branch_resolver.go",
+        "internal/workspace/patch_handlers.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Update api.md, openapi.yaml, cli.md and the afc patch add help text",
+      "criteria": [
+        "21-REQ-10"
+      ],
+      "tests": [
+        "TS-21-38",
+        "TS-21-39",
+        "TS-21-40",
+        "TS-21-41",
+        "TS-21-42"
+      ],
+      "steps": [
+        "Write TS-21-38 (reads docs/api.md registration section), TS-21-39 (parses docs/openapi.yaml with the YAML library already in go.mod), TS-21-40 (docs/cli.md section plus the patch add cobra command Long and --skip-branch-check usage), TS-21-41 (existing CLI test unchanged plus flag-name set equality) and TS-21-42 (`git diff --quiet -- docs/carry_patch_workflow.md`); follow the style of the existing docs_*_test.go files and confirm they fail",
+        "docs/api.md: in the patch registration section add the resolution order local, origin_tracking, origin_fetch (origin_fetch only when PATCH_BRANCH_SOURCE is origin), the new 400 message `branch does not exist in repository or on origin` (batch prefix `patch[i]: `), the 409 `workspace_busy` and 502 `origin_fetch_failed` / `failed to resolve origin credentials` responses, that tags/SHAs/remote-qualified names are no longer accepted, the skip_branch_check semantics (no lookup, no fetch, no local branch, no lock), that batches may leave local branches behind on failure, and the hub.patch.create `branch_resolution` metadata with local/origin_tracking/origin_fetch/skipped",
+        "docs/openapi.yaml: update the POST /workspaces/{slug}/patches description (resolution order), its 400 description, add 409 and 502 responses, and the skip_branch_check property description (no lookup, fetch or local branch is made)",
+        "docs/cli.md: update the `afc patch add` entry and the --skip-branch-check flag text to say the server finds the branch locally, in the clone's origin tracking refs, or on the fork depending on PATCH_BRANCH_SOURCE",
+        "internal/cli/patch_cmd.go: update the command's Long help and the --skip-branch-check flag usage string accordingly; add no flag and leave the request body construction untouched so internal/cli/patch_cmd_test.go passes unmodified",
+        "Do not touch docs/carry_patch_workflow.md; run `make check`"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/cli.md",
+        "internal/cli/patch_cmd.go",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "integration",
+      "title": "Verify the five registration paths end to end with real components",
+      "tests": [
+        "TS-21-43",
+        "TS-21-44",
+        "TS-21-45",
+        "TS-21-46",
+        "TS-21-47"
+      ],
+      "steps": [
+        "Write smoke tests TS-21-43 to TS-21-47 (workspace_test package, file smoke_spec21_test.go) driving the real registration handler through an Echo server with real carrypatch resolver built exactly as cmd/af-hub/main.go builds it, real git runner, real wslock, SQLite database, audit sink, real bare fork and clone, and workspace.ResolveCloneAuth with a store; no stubs for fetch or locks except the simulated sync that holds wslock.TryLock in TS-21-47",
+        "Trace 21-PATH-1 to 21-PATH-5 through the code: handler -> workspace.branchCheckHook -> carrypatch hook -> GitRunner/wslock/DefaultSingleBranchFetch -> patch insert -> emitHubAudit; confirm each step calls the next and that cmd/af-hub/main.go registers the carrypatch hook in production code",
+        "For every criterion with a contract (21-REQ-1.4, 1.6, 2.2, 2.3, 6.2, 6.3, 7.3, 7.5, 3.3-3.5, 4.1-4.2, 9.5) confirm the classified error produced by the resolver is consumed by the handler's error-mapping helper in patch_handlers.go, not only by tests",
+        "Confirm the PATCH_BRANCH_SOURCE parser and the origin credential resolver from 20_fork_patch_sync are called from the production resolver and from cmd/af-hub/main.go",
+        "Search internal/workspace/branch_check_hook.go, internal/workspace/patch_handlers.go, internal/carrypatch/branch_resolver.go, internal/carrypatch/wire.go, internal/wsaccess, cmd/af-hub/main.go, internal/cli/patch_cmd.go for `TODO`, `panic(\"not implemented\")` and placeholder not-found branches left from task 3 and remove any that remain",
+        "Confirm `go list -deps` shows no import between internal/workspace and internal/carrypatch, and that no reference to the removed BranchCheckFunc remains; run `make check`"
+      ],
+      "touches": [
+        "internal/workspace/smoke_spec21_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass with all five smoke tests green against real git repositories"
+      ],
+      "state": "pending"
+    }
+  ]
+}

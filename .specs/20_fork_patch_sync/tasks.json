@@ -1,0 +1,429 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "20",
+  "spec_name": "fork_patch_sync",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/carrypatch/... ./internal/workspace/... ./internal/cli/... -run 'TS20|ForkPatchSync' -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "01_rebuild_worktree",
+      "reason": "Rebuild snapshot and follow-up logic decides what happens to a patch branch moved by sync during a running rebuild; this spec only reads that behaviour."
+    },
+    {
+      "spec": "16_carry_patch_operations",
+      "reason": "Modifies carry-patch sync (sync_handlers.go), sync response, patch-status and the shared rebuild enqueue."
+    },
+    {
+      "spec": "15_carry_patch_workspace",
+      "reason": "The patches table gains three columns and patch REST responses gain three fields."
+    },
+    {
+      "spec": "13_upstream_sync",
+      "reason": "The workspace sync handler merges carry-patch extras into the workspace response and owns last_sync_at."
+    },
+    {
+      "spec": "10_durable_job_queue",
+      "reason": "Rebuild enqueue deduplication on (type, key) and the group key."
+    },
+    {
+      "spec": "18_hub_audit_query",
+      "reason": "Adds hub event types hub.patch.sync and hub.patch.replace."
+    },
+    {
+      "spec": "09_git_credentials",
+      "reason": "Origin credential resolution through workspace.ResolveCloneAuth."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Persist origin sync state on patches and expose it in REST patch responses",
+      "criteria": [
+        "20-REQ-7.1",
+        "20-REQ-7.4",
+        "20-REQ-7.5"
+      ],
+      "tests": [
+        "TS-20-41",
+        "TS-20-44",
+        "TS-20-45"
+      ],
+      "steps": [
+        "Write TS-20-41, TS-20-44 and TS-20-45 and confirm they fail",
+        "Add nullable columns origin_sync_state, origin_sha, origin_synced_at to the patches table through the idempotent patchFieldDDL list in internal/workspace/schema.go; no backfill; confirm three initSchema runs on a pre-existing patches table succeed",
+        "Extend workspace Patch, scanPatch, patchSelectColumns and patchResponse (patch_store.go) with the three fields using sql.NullString/pointer types, omitted from JSON when null, so list/get/create/update responses all carry them",
+        "Add additive PatchStore methods (e.g. SetOriginSyncState(ctx, patchID, state, originSHA *string, syncedAt string) and ClearOriginSyncState(ctx, slug string) plus a per-row clear for merged/deleted) in internal/carrypatch, implement them on SQLPatchStore with the SQL UPDATEs, and add them to every test double that implements PatchStore; leave existing methods untouched",
+        "Extend the carrypatch SQLPatchStore SELECT/scan only as needed so the new columns can be read back; update the carrypatch test-helper DDL for the patches table to include the three columns"
+      ],
+      "touches": [
+        "internal/workspace/schema.go",
+        "internal/workspace/patch_store.go",
+        "internal/carrypatch/carrypatch.go",
+        "internal/carrypatch/testhelpers_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add the pruning origin fetch and origin credential resolver, wired into SyncAPIConfig",
+      "criteria": [
+        "20-REQ-2.1"
+      ],
+      "tests": [
+        "TS-20-7",
+        "TS-20-8"
+      ],
+      "steps": [
+        "Write TS-20-7 (real bare fork and cloned trunk) and TS-20-8 and confirm they fail",
+        "Add FetchOrigin func and ResolveOriginAuth func fields (plus optional Audit audit.Emitter placeholder only if needed later; do not add it yet) to SyncAPIConfig in internal/carrypatch/sync_handlers.go",
+        "Implement the production origin fetch in internal/carrypatch/wire.go modelled on upstream.Fetch: git.PlainOpen, repo.Remote(\"origin\"), FetchContext with RefSpecs +refs/heads/*:refs/remotes/origin/*, Auth, Tags git.NoTags and Prune true; treat git.NoErrAlreadyUpToDate as success",
+        "Confirm Prune really removes refs/remotes/origin/<branch> for a branch deleted on the fork (go-git Prune is unverified); if it does not, after the fetch list the remote's branches and delete stale refs/remotes/origin/* tracking refs yourself",
+        "Implement ResolveOriginAuth as a thin adapter over workspace.ResolveCloneAuth(store, slug)",
+        "Wire both into SyncAPIConfig in cmd/af-hub/main.go"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/wire.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement the patch-branch refresh engine with compare-and-swap ref writes",
+      "criteria": [
+        "20-REQ-3.1",
+        "20-REQ-3.2",
+        "20-REQ-3.3",
+        "20-REQ-3.4",
+        "20-REQ-3.5",
+        "20-REQ-3.6",
+        "20-REQ-3.7",
+        "20-REQ-3.8",
+        "20-REQ-4.1",
+        "20-REQ-4.2",
+        "20-REQ-4.4",
+        "20-REQ-4.5"
+      ],
+      "tests": [
+        "TS-20-15",
+        "TS-20-23",
+        "TS-20-24",
+        "TS-20-25",
+        "TS-20-28"
+      ],
+      "steps": [
+        "Write TS-20-15, TS-20-23, TS-20-24, TS-20-25 and TS-20-28 against the new engine using real git repositories and a recording GitRunner, and confirm they fail",
+        "Create internal/carrypatch/patch_refresh.go with refreshPatchBranches(ctx, runner, trunk, patches, integrationBranch, policy) returning per-branch outcomes {branch, action, state, localSHA, originSHA, replacedSHA, status}, a patchAdvanced bool, and the error of the first failed ref write together with the outcomes produced so far",
+        "Select candidates in position order: status active, conflict or disabled, excluding any patch named like the integration branch",
+        "Per candidate resolve refs/heads/<b>^{commit} and refs/remotes/origin/<b>^{commit} to SHAs via GitRunner.Run rev-parse, then apply the first matching rule: fork missing, local missing (create), same commit, local strict ancestor (fast-forward), diverged (also fork strict ancestor of local); decide ancestry with GitRunner.IsAncestor on SHAs only",
+        "Write every ref with Run(\"update-ref\", ref, new, expectedOld) using the SHA resolved at the start of the step and 40 zeros for a create; under replace write refs/hub/replaced/<b> first (overwriting via its own current value as expected-old, zeros if absent) then move the branch; never use checkout, reset or branch -f",
+        "Under report leave the diverged branch alone with state diverged; in hub mode the engine is never called so no patch ref is ever written",
+        "After a move, if `symbolic-ref -q HEAD` equals refs/heads/<b>, call GitRunner.HardReset(ctx, \"HEAD\")",
+        "Set patchAdvanced only for moved branches whose status is active or conflict; a moved disabled patch is reported but not advanced",
+        "On a failed update-ref return the outcomes so far and a typed error naming the branch, without touching later candidates"
+      ],
+      "touches": [
+        "internal/carrypatch/patch_refresh.go",
+        "internal/carrypatch/patch_refresh_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Restructure carry-patch sync: variables, credentials, origin fetch and failure responses",
+      "criteria": [
+        "20-REQ-1",
+        "20-REQ-2.2",
+        "20-REQ-2.3",
+        "20-REQ-2.4",
+        "20-REQ-2.5",
+        "20-REQ-2.6"
+      ],
+      "tests": [
+        "TS-20-1",
+        "TS-20-2",
+        "TS-20-3",
+        "TS-20-6",
+        "TS-20-9",
+        "TS-20-10",
+        "TS-20-11",
+        "TS-20-12",
+        "TS-20-13"
+      ],
+      "steps": [
+        "Write TS-20-1, 2, 3, 6, 9, 10, 11, 12 and 13 with recording stubs for lock, GetVariable, credential resolver and both fetches, and confirm they fail",
+        "In runCarryPatchSync, after wslock.TryLock succeeds, read PATCH_BRANCH_SOURCE and PATCH_DIVERGENCE_POLICY through GetVariable(\"workspace\", slug, name) on every sync; source is origin only for the exact string \"origin\", policy is report only for the exact string \"report\"; any error or other value means hub / replace",
+        "If the source is origin and cfg.FetchOrigin is nil answer 500 \"origin fetch is not configured\" with no state change",
+        "If the source is origin resolve origin credentials via cfg.ResolveOriginAuth before either fetch; on error answer 502 \"failed to resolve origin credentials\" and change nothing",
+        "Run the upstream fetch as today, then (origin only) cfg.FetchOrigin; on failure answer 502 \"origin fetch failed\" with error_type origin_fetch_failed through apikit.WriteAPIErrorWithType, writing nothing and enqueueing nothing",
+        "In hub mode never call ResolveOriginAuth or FetchOrigin",
+        "Keep the order: credentials, upstream fetch, origin fetch, upstream-base resolution, patch refresh (call refreshPatchBranches from task 3 in origin mode only), merge detection, workspace update; keep the lock held until the end",
+        "Hold the refresh outcomes and patchAdvanced in local variables for later tasks; PATCH_DIVERGENCE_POLICY is not consulted in hub mode"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/sync_extension_test.go"
+      ],
+      "depends_on": [
+        2,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Move the early return, trigger rebuilds on patch change and write last_sync_at on every sync",
+      "criteria": [
+        "20-REQ-5",
+        "20-REQ-7.3"
+      ],
+      "tests": [
+        "TS-20-27",
+        "TS-20-29",
+        "TS-20-30",
+        "TS-20-31",
+        "TS-20-32",
+        "TS-20-33",
+        "TS-20-34",
+        "TS-20-43"
+      ],
+      "steps": [
+        "Write TS-20-27, 29, 30, 31, 32, 33, 34 and 43 (real SQLite job queue where the test says integration) and confirm they fail",
+        "Move the \"upstream HEAD has not changed\" early return to after the patch refresh; compute upstreamAdvanced and patchAdvanced",
+        "Run merge detection over active patches when upstreamAdvanced || patchAdvanced (hub mode: exactly when upstream advanced), using the refreshed tips",
+        "Enqueue the rebuild (key slug, group slug:integration_branch, SubmittedBy caller, unchanged payload) when upstreamAdvanced || patchAdvanced || newly merged patches > 0, unless AUTO_REBUILD_AFTER_SYNC is \"false\"; rebuild_triggered false when deduplicated",
+        "Write last_sync_at and updated_at on every completed sync in both modes and upstream_head_sha only when upstream advanced; a no-change sync returns empty patches_merged and rebuild_triggered false",
+        "In hub mode clear the three origin columns of every patch row of the workspace on each sync, via the store method from task 1, scoped to the workspace slug",
+        "Update existing sync tests that asserted no write on an unchanged sync"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/sync_extension_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Persist per-branch outcomes and verify fork-tip outcomes through the sync",
+      "criteria": [
+        "20-REQ-2.7",
+        "20-REQ-7.2"
+      ],
+      "tests": [
+        "TS-20-14",
+        "TS-20-16",
+        "TS-20-17",
+        "TS-20-18",
+        "TS-20-19",
+        "TS-20-20",
+        "TS-20-21",
+        "TS-20-22",
+        "TS-20-42"
+      ],
+      "steps": [
+        "Write TS-20-14, 16, 17, 18, 19, 20, 21, 22 and 42 as sync-level integration tests with a real bare fork, real upstream and real trunk, asserting local ref, backup ref, response outcome and persisted state, and confirm they fail",
+        "In origin mode after the refresh persist for each produced outcome: origin_sync_state, origin_sha (NULL for missing_on_origin) and origin_synced_at from apikit.NowUTC, through the PatchStore write method",
+        "Clear the three columns of merged_upstream and deleted rows of the workspace in origin mode",
+        "Persist outcomes already produced even when the refresh stopped with an error",
+        "Confirm with TS-20-14 that the production fetch removes the tracking ref of a fork-deleted branch so the patch reports missing_on_origin and the patch status stays unchanged",
+        "Fix any engine defect these end-to-end cases expose (create at zero SHA, backup overwrite, fork-ancestor-of-local divergence)"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/patch_refresh.go",
+        "internal/carrypatch/patch_sync_origin_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Report outcomes in the sync response and dashboard; handle ref-write failure",
+      "criteria": [
+        "20-REQ-6.1",
+        "20-REQ-6.2",
+        "20-REQ-6.3",
+        "20-REQ-4.3",
+        "20-REQ-7.6",
+        "20-REQ-1.4",
+        "20-REQ-1.5"
+      ],
+      "tests": [
+        "TS-20-4",
+        "TS-20-5",
+        "TS-20-26",
+        "TS-20-35",
+        "TS-20-36",
+        "TS-20-37",
+        "TS-20-46"
+      ],
+      "steps": [
+        "Write TS-20-4, 5, 26, 35, 36, 37 and 46 and confirm they fail",
+        "Extend CarryPatchSyncResponse with origin_fetched (always serialised), patches_synced and patches_diverged (present only in origin mode); use non-omitempty slices behind a pointer or custom marshal so an empty origin-mode slice serialises as [] and hub mode omits both",
+        "Mirror the same rules in asExtras so the map merged into the workspace response by internal/workspace/sync_handler.go has origin_fetched always and the arrays only in origin mode; patches_synced elements carry branch_name, action, state, local_sha, origin_sha, replaced_sha with the specified omissions; patches_diverged is [] under replace",
+        "On a ref-write failure: persist earlier outcomes, still make the rebuild decision for branches already moved (honouring AUTO_REBUILD_AFTER_SYNC), write neither upstream_head_sha nor last_sync_at, and answer 500 \"failed to update patch branch <branch>\"",
+        "Extend handlePatchStatus (internal/carrypatch/api.go): select and return origin_sync_state, origin_sha, origin_synced_at per patch (omitted when null) and add patches_diverged and patches_missing_on_origin to the summary, always present, 0 in hub mode"
+      ],
+      "touches": [
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/api.go",
+        "internal/workspace/sync_handler.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Emit hub.patch.sync and hub.patch.replace audit events",
+      "criteria": [
+        "20-REQ-8"
+      ],
+      "tests": [
+        "TS-20-47",
+        "TS-20-48",
+        "TS-20-49",
+        "TS-20-50",
+        "TS-20-51",
+        "TS-20-52"
+      ],
+      "steps": [
+        "Write TS-20-47 to TS-20-52 with a recording emitter and a captured logger and confirm they fail",
+        "Add EventPatchSync = \"hub.patch.sync\" and EventPatchReplace = \"hub.patch.replace\" constants in internal/audit/types.go next to EventRebuildFollowup, and register them wherever event types are enumerated",
+        "Add optional Audit audit.Emitter to SyncAPIConfig and wire it in cmd/af-hub/main.go",
+        "In origin mode emit one hub.patch.sync per completed sync with metadata {origin_fetched, created[], fast_forwarded[], replaced[], diverged[], missing_on_origin[]} of branch names, and one hub.patch.replace per replaced branch with branch_name, replaced_sha, origin_sha; actor is the caller credential from apikit.GetAuthInfo, resource_type patch, resource id/slug the workspace slug",
+        "Also emit for outcomes already produced on the ref-write failure path; emit nothing in hub mode",
+        "Skip emission when Audit is nil; log an Emit error and continue with identical status and body",
+        "Log each replacement at info level with slug, branch, replaced SHA and origin SHA"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/carrypatch/sync_handlers.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add --fail-on-diverged and exit code 3 to afc workspace sync",
+      "criteria": [
+        "20-REQ-6.4",
+        "20-REQ-6.5",
+        "20-REQ-6.6"
+      ],
+      "tests": [
+        "TS-20-38",
+        "TS-20-39",
+        "TS-20-40"
+      ],
+      "steps": [
+        "Write TS-20-38, 39 and 40 against a stub hub and confirm they fail",
+        "In internal/cli/workspace_cmd.go (the `sync <slug>` command) add the --fail-on-diverged bool flag",
+        "Parse patches_diverged from the sync response while still printing the response JSON unchanged, including origin_fetched and patches_synced; exit 0 on success when the flag is absent even with diverged branches",
+        "With the flag and non-empty patches_diverged, print a message naming the branches and return apikit.NewCLIError(3, ...) through the existing CLI error handling",
+        "With --wait run the diverged check only after the rebuild wait finishes; a wait failure (exit 1) takes precedence; exit codes 1 and 2 keep their meaning"
+      ],
+      "touches": [
+        "internal/cli/workspace_cmd.go",
+        "internal/cli/workspace_sync_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update api, openapi, cli and carry-patch workflow documentation",
+      "criteria": [
+        "20-REQ-9"
+      ],
+      "tests": [
+        "TS-20-53",
+        "TS-20-54",
+        "TS-20-55"
+      ],
+      "steps": [
+        "Write the docs tests TS-20-53, 54 and 55 (string checks on docs/api.md, docs/cli.md, docs/carry_patch_workflow.md, docs/configuration.md and a YAML parse of docs/openapi.yaml, following the existing carrypatch docs_test.go style) and confirm they fail",
+        "docs/api.md: sync response table and Carry-Patch Sync Flow (origin fetch, patch refresh, early-return move, last_sync_at on every sync, rebuild on patch change); PATCH_BRANCH_SOURCE and PATCH_DIVERGENCE_POLICY in the Workspace Variables Reference; extended AUTO_REBUILD_AFTER_SYNC text; patch response and patch-status fields incl. patches_diverged and patches_missing_on_origin; the 502 messages \"origin fetch failed\" and \"failed to resolve origin credentials\"; hub.patch.sync and hub.patch.replace events",
+        "docs/openapi.yaml: sync description and 200/502 responses, CarryPatchSyncResponse with origin_fetched required and optional patches_synced/patches_diverged, the patch schema and the patch-status schema",
+        "docs/cli.md: --fail-on-diverged and exit code 3 of afc workspace sync",
+        "docs/carry_patch_workflow.md: Configuration entries for both variables and one short note under the sync section on the two models and that until fork_push_control ships hub pushes to patch branches are replaced by the next origin-mode sync; leave docs/configuration.md unchanged",
+        "Run make check"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/cli.md",
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "depends_on": [
+        8,
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify fork-patch sync paths end to end",
+      "tests": [
+        "TS-20-56",
+        "TS-20-57",
+        "TS-20-58",
+        "TS-20-59",
+        "TS-20-60",
+        "TS-20-61"
+      ],
+      "steps": [
+        "Write smoke tests TS-20-56 to TS-20-61 against real handlers, real git repositories, real SQLite and job queue, the production go-git origin fetch and (for TS-20-58) the real afc CLI, and confirm they pass",
+        "Trace 20-PATH-1 to 20-PATH-6 from POST /workspaces/:slug/sync through NewCarryPatchSyncHook, runCarryPatchSync, the origin fetch, refreshPatchBranches, the PatchStore writes, the rebuild enqueue and the audit emitter; confirm each step calls the next and no stub remains",
+        "Confirm in cmd/af-hub/main.go that FetchOrigin, ResolveOriginAuth and Audit are wired into SyncAPIConfig in production code",
+        "For every criterion with a contract (e.g. 20-REQ-2.3, 2.4, 2.6, 3.6, 4.3, 8.7) confirm the producer's result is consumed by a production caller: error_type reaches the response, outcomes reach the response extras, persisted state and dashboard, and the --fail-on-diverged check reads patches_diverged from the printed response",
+        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths and remove any that remain",
+        "Run make check"
+      ],
+      "touches": [
+        "internal/carrypatch/smoke_fork_patch_sync_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

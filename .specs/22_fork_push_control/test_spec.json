@@ -1,0 +1,1088 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "22",
+  "spec_name": "fork_push_control",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-22-1",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-2.3",
+        "22-REQ-9.5"
+      ],
+      "title": "go-git reports a failed ref write as a per-ref status that a real git push shows as remote rejected",
+      "given": [
+        "a gitserver test env from newGitTestEnv with a real trunk and the handler served over HTTP",
+        "a pre-receive hook registered that rejects every update with the text 'nope: blocked'",
+        "a local clone with one new commit on branch feature"
+      ],
+      "when": "git push is run from the clone to the hub for refs/heads/feature",
+      "then": [
+        "git push exits non-zero",
+        "client output contains 'remote rejected' and 'nope: blocked'",
+        "client output shows unpack ok semantics (no 'unpack failed')",
+        "the trunk's refs/heads/feature does not exist",
+        "the HTTP response status of the receive-pack POST is 200"
+      ],
+      "pseudocode": "RegisterPreReceiveHook(func(...) error { return errors.New('nope: blocked') }); out, err := gitPush(clone, 'feature'); assert err != nil; assert contains(out,'remote rejected'); assert contains(out,'nope: blocked'); assert refMissing(trunk,'refs/heads/feature')"
+    },
+    {
+      "id": "TS-22-2",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-2.1",
+        "22-REQ-2.5"
+      ],
+      "title": "With no hook, or after registering nil, pushes behave as before; a nil-returning hook lets the ref be written",
+      "given": [
+        "a gitserver test env"
+      ],
+      "when": "a push is made with no hook, then with a hook returning nil, then after RegisterPreReceiveHook(nil) following a rejecting hook",
+      "then": [
+        "all three pushes succeed",
+        "after each push the trunk ref holds the pushed commit",
+        "the cleared rejecting hook is no longer consulted"
+      ],
+      "pseudocode": "push -> assert ref==sha1; Register(allowAll); push -> assert ref==sha2; Register(rejectAll); Register(nil); push -> assert ref==sha3"
+    },
+    {
+      "id": "TS-22-3",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-2.2"
+      ],
+      "title": "The hook is called once per ref update in command order with request context, db, slug, actor and update",
+      "given": [
+        "a recording pre-receive hook that returns nil",
+        "an authenticated request with apikit.AuthInfo for user u1 injected by the middleware",
+        "a push that creates branch a, updates branch b and deletes branch c"
+      ],
+      "when": "git push is run with all three updates in one request",
+      "then": [
+        "the hook is called exactly three times",
+        "calls arrive in the same order as the commands",
+        "each call carries slug, a non-nil context that is cancelled when the request ends, the *sql.DB, actor u1 and the ref name, old hash and new hash of its command",
+        "at call time the new commit object is already readable from the trunk and the ref has not yet been written",
+        "with an unauthenticated test context the actor argument is nil-safe and the hook is still called"
+      ],
+      "pseudocode": "calls=[]; hook=func(ctx,db,slug,actor,upd){ calls=append(calls,{slug,actor,upd,hasObj(trunk,upd.New),refVal(trunk,upd.Name)}); return nil }; push(a,b,c); assert names(calls)==['a','b','c']; assert calls[0].hasObj"
+    },
+    {
+      "id": "TS-22-4",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-2.4",
+        "22-REQ-2.5"
+      ],
+      "title": "A hook rejecting one of two refs leaves the other written and reports only the rejected ref's message",
+      "given": [
+        "a hook that rejects refs/heads/blocked with 'blocked by policy' and accepts refs/heads/open",
+        "a clone with commits on both branches"
+      ],
+      "when": "one git push sends both branches to the hub handler",
+      "then": [
+        "refs/heads/open in the trunk equals the pushed commit",
+        "refs/heads/blocked is unchanged (absent or at its old value)",
+        "client output contains 'blocked by policy' attached to blocked",
+        "client output has no rejection message for open"
+      ],
+      "pseudocode": "push(both); assert ref(open)==sha; assert ref(blocked)==old; assert out contains 'blocked by policy'; assert not rejectedLine(out,'open')"
+    },
+    {
+      "id": "TS-22-5",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-2.6"
+      ],
+      "title": "The storer wrapper consults the hook on every reference write and removal, still hides PackfileWriter, and gitserver does not import carrypatch",
+      "given": [
+        "thinPackSafeStorer wrapping a real repo storer with a recording hook bound to a request context and actor"
+      ],
+      "when": "SetReference, CheckAndSetReference and RemoveReference are called on the wrapper, and the dependency list of internal/gitserver is inspected",
+      "then": [
+        "each reference-writing and removing method calls the hook exactly once before delegating",
+        "a hook error is returned and the underlying storer is not modified",
+        "the wrapper does not expose a PackfileWriter method (type assertion to storer.PackfileWriter fails)",
+        "go list -deps for internal/gitserver contains no internal/carrypatch package"
+      ],
+      "pseudocode": "w := thinPackSafeStorer{...}; _,ok := any(w).(storer.PackfileWriter); assert !ok; assert w.SetReference(ref)==hookErr when hook rejects; deps := goListDeps('./internal/gitserver'); assert none contains 'internal/carrypatch'"
+    },
+    {
+      "id": "TS-22-6",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-8.3"
+      ],
+      "title": "A client that does not request report-status still has the hook's rejection enforced but gets no per-ref message",
+      "given": [
+        "a hook that rejects refs/heads/feature with 'denied here'",
+        "a hand-built receive-pack request body without the report-status capability"
+      ],
+      "when": "the request is POSTed to the receive-pack handler",
+      "then": [
+        "the trunk's refs/heads/feature is unchanged",
+        "the response body contains no 'ng' line and no 'denied here' text"
+      ],
+      "pseudocode": "body := encodeUpdateRequest(cmds, caps=[]); resp := post(body); assert ref(feature)==old; assert !contains(resp.body,'denied here')"
+    },
+    {
+      "id": "TS-22-7",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-8.4"
+      ],
+      "title": "An empty-body receive-pack request does not call the pre-receive hook",
+      "given": [
+        "a counting pre-receive hook"
+      ],
+      "when": "POST /git/<slug>/git-receive-pack is sent with an empty body",
+      "then": [
+        "the response is the existing no-op response",
+        "the hook call count is 0"
+      ],
+      "pseudocode": "post(emptyBody); assert hookCalls==0"
+    },
+    {
+      "id": "TS-22-8",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-8.6"
+      ],
+      "title": "A panicking pre-receive hook gets no special recovery from the git server",
+      "given": [
+        "a hook that panics",
+        "the handler mounted the same way as in existing tests (with the framework's normal recovery behaviour)"
+      ],
+      "when": "a push with one ref update is sent",
+      "then": [
+        "the handler adds no recover of its own; the outcome is the same as for any other handler panic (existing behaviour)",
+        "no accepted-ref side effects (audit event, post-push hook) occur"
+      ],
+      "pseudocode": "Register(panicHook); assertPanicHandledLikeOtherHandlers(push()); assert auditCount==0 && postHookCalls==0"
+    },
+    {
+      "id": "TS-22-9",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-8.5"
+      ],
+      "title": "info/refs, clone, fetch and pushes to unregistered branches, integration branch, tags, other refs and standard workspaces are unchanged with the carry-patch hook wired",
+      "given": [
+        "the carry-patch pre-receive hook registered",
+        "a carry_patch workspace with PATCH_BRANCH_SOURCE=origin and a standard workspace",
+        "a registered patch branch in the carry_patch workspace"
+      ],
+      "when": "info/refs is requested, the repo is cloned and fetched, and pushes are made to an unregistered branch, the integration branch, a tag, refs/notes/x in the carry_patch workspace, and a branch in the standard workspace",
+      "then": [
+        "the advertisement, clone and fetch succeed with the same refs as before",
+        "every one of those pushes succeeds and the refs are written",
+        "no origin push occurs"
+      ],
+      "pseudocode": "assert advertise ok; clone ok; for ref in [feature,integration,tag v1,refs/notes/x]: assert push(ref).ok && ref written; assert push(stdBranch).ok"
+    },
+    {
+      "id": "TS-22-10",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.1"
+      ],
+      "title": "PUSH_PATCHES_TO_ORIGIN is enabled only by the exact string true",
+      "given": [
+        "a GetVariableFunc stub returning controlled values"
+      ],
+      "when": "the flag parser is evaluated with unset, 'true', 'True', 'TRUE', '1', ' true', empty string and a lookup error",
+      "then": [
+        "only 'true' yields enabled",
+        "every other input including the lookup error yields disabled"
+      ],
+      "pseudocode": "table: {unset:false,'true':true,'True':false,'1':false,err:false}; for each: assert pushPatchesEnabled(get)==expected"
+    },
+    {
+      "id": "TS-22-11",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-1.2"
+      ],
+      "title": "PATCH_BRANCH_SOURCE uses spec 20's parsing and both variables are re-read on every controlled ref update",
+      "given": [
+        "a counting GetVariableFunc over a real variable store",
+        "a registered patch branch in a carry_patch workspace"
+      ],
+      "when": "pushes are made with the source unset, 'garbage', and a lookup error (all meaning hub), then the variable is changed to origin between two pushes",
+      "then": [
+        "unset, unrecognised and error values behave as hub (no rejection)",
+        "after PATCH_BRANCH_SOURCE changes to origin the very next push is rejected without restarting anything",
+        "both variables are read once per controlled ref update"
+      ],
+      "pseudocode": "push1 ok under unset; set(PATCH_BRANCH_SOURCE,'origin'); push2 rejected; assert getCalls per update >= 2 for both names"
+    },
+    {
+      "id": "TS-22-12",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.3"
+      ],
+      "title": "Push control applies to refs/heads/<name> matching a non-deleted patch row of a carry_patch workspace",
+      "given": [
+        "a carry_patch workspace with integration_branch 'main-int' and patches rows with statuses active, pending and conflict",
+        "source origin with forwarding off"
+      ],
+      "when": "the carry-patch hook is invoked for each of those branches",
+      "then": [
+        "each call returns a non-nil rejection error showing control applied"
+      ],
+      "pseudocode": "for b in [active,pending,conflict]: assert hook(ctx,db,slug,actor,update(refs/heads/+b)) != nil"
+    },
+    {
+      "id": "TS-22-13",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.4"
+      ],
+      "title": "Updates the control does not apply to are let through with no origin push",
+      "given": [
+        "source origin, forwarding on, a recording origin push function and a bare origin",
+        "a carry_patch workspace with a patch row status deleted, a patch row named like the integration branch, and a standard workspace"
+      ],
+      "when": "the hook is invoked for the deleted-status branch, the integration branch, a branch with no row, refs/tags/v1, refs/notes/x and a branch in the standard workspace",
+      "then": [
+        "every call returns nil",
+        "no push reaches the origin bare repository",
+        "for a real push the hub writes each ref"
+      ],
+      "pseudocode": "for u in cases: assert hook(u)==nil; assert originRefs(bare)==[]"
+    },
+    {
+      "id": "TS-22-14",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.5"
+      ],
+      "title": "A standard-mode workspace push reads neither variable",
+      "given": [
+        "a standard-mode workspace",
+        "a GetVariableFunc stub counting calls"
+      ],
+      "when": "the hook is invoked for updates to several refs in a push to that workspace",
+      "then": [
+        "the hook returns nil each time",
+        "the GetVariableFunc call count is 0"
+      ],
+      "pseudocode": "assert hook(...)==nil; assert getVarCalls==0"
+    },
+    {
+      "id": "TS-22-15",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-3.1"
+      ],
+      "title": "Reject mode refuses a create and an update of a registered patch branch with the origin message",
+      "given": [
+        "carry_patch workspace, git_url https://example.com/fork.git, PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN unset",
+        "registered patch branch 'p1' existing at commit A on the hub"
+      ],
+      "when": "git push creates registered branch 'p2' (a row exists, ref absent), then git push updates p1 to commit B",
+      "then": [
+        "both pushes fail with 'remote rejected' and 'branch is synced from origin; push to https://example.com/fork.git instead'",
+        "hub p1 still equals A and hub p2 does not exist"
+      ],
+      "pseudocode": "assert contains(out,'branch is synced from origin; push to https://example.com/fork.git instead'); assert ref(p1)==A; assert refMissing(p2)"
+    },
+    {
+      "id": "TS-22-16",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-3.2"
+      ],
+      "title": "Userinfo in git_url never appears in the rejection message",
+      "given": [
+        "workspaces.git_url 'https://user:s3cret@example.com/fork.git'",
+        "reject mode applies"
+      ],
+      "when": "the hook rejects an update",
+      "then": [
+        "the message is 'branch is synced from origin; push to https://example.com/fork.git instead'",
+        "the message contains neither 'user' as credential nor 's3cret' nor '@'"
+      ],
+      "pseudocode": "err := hook(...); assert err.Error()=='branch is synced from origin; push to https://example.com/fork.git instead'"
+    },
+    {
+      "id": "TS-22-17",
+      "kind": "property",
+      "verifies": [
+        "22-REQ-3.2"
+      ],
+      "title": "For any git_url with userinfo the rejection message is credential-free",
+      "given": [
+        "reject mode applies"
+      ],
+      "when": "for any generated URL scheme, username, password (including characters like ':' '%' '!') host and path, stored as git_url with user:password@ userinfo",
+      "then": [
+        "the rejection message never contains the username:password text",
+        "the message equals the template with the URL rendered without userinfo"
+      ],
+      "pseudocode": "for url in gen_urls_with_userinfo(): msg := hook(...).Error(); assert !contains(msg, password); assert msg == fmt('branch is synced from origin; push to %s instead', stripUserinfo(url))"
+    },
+    {
+      "id": "TS-22-18",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-3.3"
+      ],
+      "title": "Reject mode refuses the deletion of a registered patch branch",
+      "given": [
+        "reject mode, registered patch branch p1 present on the hub"
+      ],
+      "when": "git push origin :refs/heads/p1 is run against the hub",
+      "then": [
+        "the client sees 'remote rejected' with the origin message",
+        "hub p1 still exists at its old commit"
+      ],
+      "pseudocode": "out := gitPush(':refs/heads/p1'); assert contains(out,'branch is synced from origin'); assert ref(p1)==old"
+    },
+    {
+      "id": "TS-22-19",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-3.4"
+      ],
+      "title": "A push mixing a registered branch, an unregistered branch and a tag rejects only the registered branch",
+      "given": [
+        "reject mode",
+        "commits for registered branch p1, unregistered branch feature and tag v1"
+      ],
+      "when": "a single git push sends all three",
+      "then": [
+        "only p1 shows remote rejected",
+        "feature and v1 exist in the hub trunk",
+        "p1 unchanged"
+      ],
+      "pseudocode": "out := push(p1,feature,v1); assert rejectedRefs(out)==['refs/heads/p1']; assert ref(feature)&&tag(v1)"
+    },
+    {
+      "id": "TS-22-20",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-3.5"
+      ],
+      "title": "A rejection is logged at info level with slug, branch and user, and the HTTP status is 200",
+      "given": [
+        "reject mode",
+        "a captured logger",
+        "authenticated user id 'u-42', and a second run with no auth info"
+      ],
+      "when": "a push of a registered patch branch is rejected",
+      "then": [
+        "the HTTP response status is 200",
+        "an info-level record contains slug, branch and user 'u-42'",
+        "without auth info the user field is 'unknown'"
+      ],
+      "pseudocode": "resp := post(...); assert resp.Status==200; rec := logs.Find(INFO,'rejected'); assert rec.slug && rec.branch && rec.user=='u-42'"
+    },
+    {
+      "id": "TS-22-21",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.1"
+      ],
+      "title": "Forward mode pushes a create and a fast-forward update to a local bare origin before writing the hub ref",
+      "given": [
+        "trunk's origin remote is a local bare repository",
+        "source origin, PUSH_PATCHES_TO_ORIGIN=true, registered patch branch p1"
+      ],
+      "when": "git push creates p1 at commit A, then pushes fast-forward commit B",
+      "then": [
+        "after the first push p1 equals A in both the hub trunk and the bare origin",
+        "after the second push p1 equals B in both",
+        "the origin received the commit before the hub ref was written (hook returns after origin has the ref)",
+        "an already-up-to-date forward (pushing a commit the origin already has) succeeds"
+      ],
+      "pseudocode": "push(A); assert ref(trunk,p1)==A && ref(bare,p1)==A; push(B); assert both==B; seedOrigin(C); push(C); assert ok"
+    },
+    {
+      "id": "TS-22-22",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.2"
+      ],
+      "title": "The temporary refs/hub/forward/<branch> ref is absent after a successful and after a failed forward",
+      "given": [
+        "forward mode with a local bare origin"
+      ],
+      "when": "one forward succeeds and one fails because the origin is ahead (non-fast-forward)",
+      "then": [
+        "after each, no ref under refs/hub/forward/ exists in the trunk",
+        "during the forward the push is made from the temporary ref or a hash source that resolves the unreferenced commit"
+      ],
+      "pseudocode": "push(ok); assert refsWithPrefix(trunk,'refs/hub/forward/')==[]; push(nonff); assert refsWithPrefix(trunk,'refs/hub/forward/')==[]"
+    },
+    {
+      "id": "TS-22-23",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-4.3"
+      ],
+      "title": "Forward uses ResolveCloneAuth credentials, a non-force refspec and a 120 second deadline",
+      "given": [
+        "an injected credential resolver recording its calls and a push function seam recording PushOptions and context"
+      ],
+      "when": "the hook forwards an update",
+      "then": [
+        "the resolver is called with the workspace slug",
+        "PushOptions has RemoteName origin, Force false and a refspec with no leading '+'",
+        "the context passed to the push has a deadline about 120 seconds from now"
+      ],
+      "pseudocode": "opts, ctx := captured; assert opts.Force==false; assert !startsWith(opts.RefSpecs[0],'+'); assert 119s < deadline(ctx)-now <= 120s"
+    },
+    {
+      "id": "TS-22-24",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-4.4"
+      ],
+      "title": "Credential resolution failure rejects the ref without contacting origin",
+      "given": [
+        "forward mode",
+        "a resolver returning an error",
+        "a bare origin"
+      ],
+      "when": "the hook is invoked for a registered branch update",
+      "then": [
+        "the returned error text is exactly 'failed to resolve origin credentials'",
+        "the bare origin receives nothing",
+        "through a real push the hub ref is unchanged"
+      ],
+      "pseudocode": "err := hook(...); assert err.Error()=='failed to resolve origin credentials'; assert originRefs==[]"
+    },
+    {
+      "id": "TS-22-25",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.5",
+        "22-REQ-8.2"
+      ],
+      "title": "A non-fast-forward forward is rejected with the origin error text and leaves hub and fork refs unchanged",
+      "given": [
+        "forward mode with a local bare origin whose p1 has moved ahead with a commit the hub lacks",
+        "hub p1 at commit A"
+      ],
+      "when": "git push sends a different commit B on p1",
+      "then": [
+        "the client shows 'remote rejected' with text starting 'origin rejected push: ' including the go-git non-fast-forward error",
+        "hub p1 still equals A",
+        "origin p1 still equals its own tip",
+        "the hook returned a non-nil error"
+      ],
+      "pseudocode": "out := push(B); assert contains(out,'origin rejected push: '); assert ref(trunk,p1)==A; assert ref(bare,p1)==originTip"
+    },
+    {
+      "id": "TS-22-26",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.5",
+        "22-REQ-4.6"
+      ],
+      "title": "An unreachable origin rejects the update, leaves the hub ref unchanged and logs a warning without userinfo",
+      "given": [
+        "forward mode where the origin remote URL is a nonexistent path or URL containing user:pw@",
+        "a captured logger"
+      ],
+      "when": "git push updates registered branch p1",
+      "then": [
+        "the per-ref message starts with 'origin rejected push: ' and contains no 'pw' credential text",
+        "hub p1 is unchanged",
+        "a warn-level record contains slug, branch, user and the credential-free error"
+      ],
+      "pseudocode": "out := push(); assert contains(out,'origin rejected push: '); assert !contains(out,'pw'); rec := logs.Find(WARN); assert rec.slug && rec.branch && rec.user && !contains(rec.error,'pw')"
+    },
+    {
+      "id": "TS-22-27",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.7"
+      ],
+      "title": "Forward mode rejects deleting a registered patch branch without contacting origin",
+      "given": [
+        "forward mode, p1 exists on both hub and local bare origin"
+      ],
+      "when": "git push :refs/heads/p1 is run",
+      "then": [
+        "the client shows 'branch is synced from origin; delete it on the fork instead'",
+        "hub p1 and origin p1 still exist",
+        "no push was attempted against origin"
+      ],
+      "pseudocode": "out := push(':p1'); assert contains(out,'branch is synced from origin; delete it on the fork instead'); assert exists(trunk,p1)&&exists(bare,p1)"
+    },
+    {
+      "id": "TS-22-28",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.8"
+      ],
+      "title": "A mixed push forwards the patch branch and passes an unregistered branch through unchanged",
+      "given": [
+        "forward mode with local bare origin",
+        "registered p1 and unregistered feature"
+      ],
+      "when": "one git push sends both",
+      "then": [
+        "both refs are written on the hub",
+        "p1 exists on the origin bare repository",
+        "feature does not exist on the origin"
+      ],
+      "pseudocode": "push(p1,feature); assert ref(trunk,p1)&&ref(trunk,feature); assert exists(bare,p1); assert !exists(bare,feature)"
+    },
+    {
+      "id": "TS-22-29",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.1"
+      ],
+      "title": "A ref is accepted when its report-status entry is ok, or, with no report, unless the hook rejected it",
+      "given": [
+        "a ReportStatus with entries ok for refs/heads/a and an error string for refs/heads/b",
+        "a nil report with a hook-rejected set containing refs/heads/c"
+      ],
+      "when": "the accepted-commands classifier runs on both inputs",
+      "then": [
+        "with the report only a is accepted",
+        "with no report, every command except c is accepted"
+      ],
+      "pseudocode": "assert names(accepted(cmds,rs,nil))==['a']; assert names(accepted(cmds,nil,{c}))==['a','b']"
+    },
+    {
+      "id": "TS-22-30",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-5.2"
+      ],
+      "title": "A mixed push calls the post-push hook with accepted branches only and audits only the accepted ref",
+      "given": [
+        "a hook rejecting refs/heads/p1",
+        "a recording post-push hook and audit emitter",
+        "a deletion of refs/heads/old included in the push and accepted"
+      ],
+      "when": "one git push sends p1, feature and the delete of old",
+      "then": [
+        "post-push hook receives ['feature'] only (delete excluded, p1 excluded)",
+        "hub.git.push has refs_updated listing feature and the accepted delete only, not p1"
+      ],
+      "pseudocode": "push(p1,feature,':old'); assert postHookBranches==['feature']; assert 'refs/heads/p1' not in event.refs_updated; assert 'refs/heads/feature' in event.refs_updated"
+    },
+    {
+      "id": "TS-22-31",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-5.3"
+      ],
+      "title": "A push where nothing was accepted emits no audit event and runs no post-push hook or rebuild",
+      "given": [
+        "reject mode with the real carry-patch post-push hook and a job queue",
+        "a recording audit emitter"
+      ],
+      "when": "git push of only a registered patch branch is rejected",
+      "then": [
+        "no hub.git.push event is emitted",
+        "the post-push hook is not called",
+        "no rebuild job is enqueued",
+        "HTTP status is 200"
+      ],
+      "pseudocode": "push(p1); wait(); assert events==[]; assert hookCalls==0; assert queue.len()==0"
+    },
+    {
+      "id": "TS-22-32",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.4"
+      ],
+      "title": "updateHeadSHA still reads the trunk HEAD for every push including rejected-only pushes",
+      "given": [
+        "a workspace whose head_sha is stale",
+        "a trunk whose HEAD changed through an accepted push, and a second rejected-only push"
+      ],
+      "when": "the receive-pack handler finishes each push",
+      "then": [
+        "head_sha equals the trunk HEAD after the accepted push",
+        "after the rejected-only push head_sha equals the current trunk HEAD (unchanged and harmless)"
+      ],
+      "pseudocode": "push(ok); assert db.head_sha==trunkHEAD; push(rejected); assert db.head_sha==trunkHEAD"
+    },
+    {
+      "id": "TS-22-33",
+      "kind": "property",
+      "verifies": [
+        "22-REQ-5.5"
+      ],
+      "title": "For any push, side effects cover a subset of ref updates whose status is ok",
+      "given": [
+        "a stub receive session producing arbitrary per-command statuses"
+      ],
+      "when": "for any list of commands (create, update, delete, branches, tags) with any assignment of ok or error statuses and any hook-rejection subset",
+      "then": [
+        "the audited refs and the post-push branches are subsets of the ok commands",
+        "no command with non-ok status ever appears in either",
+        "no event is emitted when the ok set is empty"
+      ],
+      "pseudocode": "for cmds,statuses in gen(): accepted := classify(cmds,statuses); assert set(audited) <= set(ok(cmds,statuses)); assert set(postBranches) <= set(branchesOf(ok)); assert (len(ok)==0) == (eventsEmitted==0)"
+    },
+    {
+      "id": "TS-22-34",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-6.1"
+      ],
+      "title": "Hub-mode mirror force-pushes a created branch and a rewritten branch to the local bare origin",
+      "given": [
+        "hub mode (source unset), PUSH_PATCHES_TO_ORIGIN=true, local bare origin, registered patch branch p1",
+        "post-push hook built with credential resolver, workspace root and emitter"
+      ],
+      "when": "p1 is pushed (create), then rewritten with a force push to a diverging commit",
+      "then": [
+        "after the first hook run origin p1 equals the hub tip",
+        "after the rewrite origin p1 equals the new hub tip (forced update)",
+        "the refspec used is '+refs/heads/p1:refs/heads/p1' with a 120 second deadline"
+      ],
+      "pseudocode": "hook(db,slug,['p1']); assert ref(bare,p1)==ref(trunk,p1); rewrite(); hook(db,slug,['p1']); assert ref(bare,p1)==newTip"
+    },
+    {
+      "id": "TS-22-35",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-6.2"
+      ],
+      "title": "The rebuild enqueue runs first and the mirror runs afterwards, including when AUTO_REBUILD_AFTER_PUSH is false",
+      "given": [
+        "hub mode with forwarding on, a recording queue and a local bare origin",
+        "scenarios: rebuild enqueued, AUTO_REBUILD_AFTER_PUSH=false, deduplicated enqueue"
+      ],
+      "when": "the post-push hook runs for registered branch p1",
+      "then": [
+        "in the enqueue scenario the enqueue is observed before the origin push",
+        "with AUTO_REBUILD_AFTER_PUSH=false no job is enqueued but origin receives p1",
+        "with a deduplicated enqueue origin still receives p1",
+        "both happen in the single hook goroutine"
+      ],
+      "pseudocode": "order := recordOrder(queue, originPush); assert order==['enqueue','mirror']; setVar(AUTO,'false'); run; assert queue.len()==0 && exists(bare,p1)"
+    },
+    {
+      "id": "TS-22-36",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-6.3"
+      ],
+      "title": "A failing mirror does not prevent the rebuild or the other branches, and an enqueue failure does not stop the mirror",
+      "given": [
+        "hub mode with forwarding on",
+        "a local bare origin with a pre-receive hook refusing branch p2",
+        "two registered branches p1 and p2 in one push",
+        "a second run where the queue enqueue returns an error"
+      ],
+      "when": "the post-push hook runs with ['p1','p2'] and then with a failing queue",
+      "then": [
+        "a rebuild job is enqueued despite the p2 failure",
+        "p1 is mirrored to origin and p2 is not",
+        "the hook does not panic or return a failure",
+        "with the failing queue both branches are still attempted for mirroring",
+        "no retry occurs (the origin sees one attempt per branch)"
+      ],
+      "pseudocode": "hook(db,slug,['p1','p2']); assert queue.len()==1; assert exists(bare,p1) && !exists(bare,p2); queue.failNext(); hook(...); assert exists(bare,p1)"
+    },
+    {
+      "id": "TS-22-37",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-6.4"
+      ],
+      "title": "No mirror for disabled variable, origin source, unregistered branch, integration branch or standard workspace",
+      "given": [
+        "a local bare origin",
+        "registered branch p1 and the integration branch in a carry_patch workspace and a standard workspace"
+      ],
+      "when": "the post-push hook runs in each case: variable unset, variable 'True', source origin with variable true, branch 'feature' unregistered, the integration branch, and the standard workspace",
+      "then": [
+        "the origin bare repository receives no ref in every case"
+      ],
+      "pseudocode": "for case in cases: setup(case); hook(db,slug,[branch]); assert originRefs(bare)==[]"
+    },
+    {
+      "id": "TS-22-38",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-6.5"
+      ],
+      "title": "Branch deletions are never mirrored",
+      "given": [
+        "hub mode with forwarding on and p1 present on the origin"
+      ],
+      "when": "a push that deletes registered branch p1 is accepted and the post-push hook is invoked through handleReceivePack",
+      "then": [
+        "the post-push hook receives no branches for the delete",
+        "origin p1 is not deleted"
+      ],
+      "pseudocode": "push(':p1'); assert hookBranches==[]; assert exists(bare,p1)"
+    },
+    {
+      "id": "TS-22-39",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-6.6"
+      ],
+      "title": "Mirror works only when its dependencies are supplied; with any nil it is disabled and rebuild behaviour is unchanged",
+      "given": [
+        "hub mode with forwarding on and a local bare origin"
+      ],
+      "when": "NewPostPushRebuildHook is built with all dependencies, and then with each of the credential resolver, workspace root (empty) and emitter nil in turn",
+      "then": [
+        "with all supplied origin receives the branch",
+        "with any one nil origin receives nothing and the rebuild job is still enqueued as before with SubmittedBy system:push-hook"
+      ],
+      "pseudocode": "for deps in [all, nilResolver, emptyRoot, nilEmitter]: hook := New(queue,get,deps...); hook(db,slug,['p1']); assert queue.len()==1; assert exists(bare,p1)==(deps==all)"
+    },
+    {
+      "id": "TS-22-40",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-7.1"
+      ],
+      "title": "A mirror failure emits hub.patch.mirror_failed with the required fields and credential-free error",
+      "given": [
+        "a recording emitter and an origin whose error text contains https://user:pw@host/repo.git"
+      ],
+      "when": "the mirror of branch p1 fails",
+      "then": [
+        "one event of type hub.patch.mirror_failed is emitted",
+        "resource_type is patch, action is mirror, actor_type is system, workspace slug is set",
+        "metadata contains branch_name p1 and error without 'user:pw@'"
+      ],
+      "pseudocode": "ev := emitter.events[0]; assert ev.Type=='hub.patch.mirror_failed'; assert ev.ResourceType=='patch' && ev.Action=='mirror' && ev.ActorType=='system'; assert ev.Metadata.branch_name=='p1'; assert !contains(ev.Metadata.error,'pw')"
+    },
+    {
+      "id": "TS-22-41",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-7.2"
+      ],
+      "title": "The audit package defines the hub.patch.mirror_failed constant next to EventRebuildFollowup",
+      "given": [
+        "internal/audit/types.go"
+      ],
+      "when": "the constant is referenced and the source is read",
+      "then": [
+        "the constant's value is 'hub.patch.mirror_failed'",
+        "it is declared adjacent to EventRebuildFollowup"
+      ],
+      "pseudocode": "assert audit.EventPatchMirrorFailed=='hub.patch.mirror_failed'; assert adjacent(src,'EventRebuildFollowup','hub.patch.mirror_failed')"
+    },
+    {
+      "id": "TS-22-42",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-7.3",
+        "22-REQ-7.4"
+      ],
+      "title": "A successful mirror logs at info and emits nothing; a failed mirror logs at warn with slug, branch and error",
+      "given": [
+        "a captured logger and a recording emitter",
+        "a working local bare origin and a failing origin"
+      ],
+      "when": "the mirror runs for a good origin, then for a failing origin",
+      "then": [
+        "success: an info record is written and no event is emitted",
+        "failure: a warn record contains slug, branch and the error"
+      ],
+      "pseudocode": "mirror(good); assert logs.Has(INFO) && emitter.events==[]; mirror(bad); assert logs.Find(WARN).slug && .branch && .error"
+    },
+    {
+      "id": "TS-22-43",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-7.5"
+      ],
+      "title": "A nil emitter or an emitter that errors changes nothing else about the mirror outcome",
+      "given": [
+        "hub mode with forwarding on, branches p1 (failing) and p2 (succeeding)",
+        "one run with an emitter returning an error on every emit and one run with a nil emitter passed through a test seam"
+      ],
+      "when": "the post-push hook runs",
+      "then": [
+        "no panic",
+        "p2 is mirrored and the rebuild job is enqueued in both runs",
+        "the emit error is logged",
+        "with a nil emitter no emission is attempted"
+      ],
+      "pseudocode": "run(errEmitter); assert exists(bare,p2) && queue.len()==1; assert logs.Has('emit'); run(nilEmitter); assert exists(bare,p2)"
+    },
+    {
+      "id": "TS-22-44",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-8.1"
+      ],
+      "title": "A failure while deciding whether control applies lets the update through with a warning",
+      "given": [
+        "a carry_patch workspace with source origin",
+        "stubs that fail one at a time: the workspace-mode query, a variable lookup returning an unexpected failure beyond defaults, and the patches registration query"
+      ],
+      "when": "the hook is invoked for a registered branch update under each failure",
+      "then": [
+        "the hook returns nil in each case",
+        "a warn-level record is logged each time",
+        "a real push in this state writes the hub ref"
+      ],
+      "pseudocode": "for failure in [modeQuery,patchQuery,variableErr]: assert hook(...)==nil; assert logs.Has(WARN)"
+    },
+    {
+      "id": "TS-22-45",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-9.1"
+      ],
+      "title": "cmd/af-hub wiring registers the carry-patch pre-receive hook and builds the post-push hook with credentials, workspace root and emitter",
+      "given": [
+        "the app wiring function from cmd/af-hub run against a test database and temporary workspace root"
+      ],
+      "when": "after wiring, a push of a registered branch is made in origin mode, and a hub-mode push with forwarding on is made",
+      "then": [
+        "the origin-mode push is rejected with the origin message (pre-receive hook registered)",
+        "the hub-mode push reaches the local bare origin (post-push hook has mirror dependencies)",
+        "the wiring source uses store.GetVariableValue and workspace.ResolveCloneAuth and declares no local auth struct"
+      ],
+      "pseudocode": "app := wire(); assert contains(push(origin mode),'branch is synced from origin'); assert exists(bare,p1) after hub-mode push"
+    },
+    {
+      "id": "TS-22-46",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-9.2"
+      ],
+      "title": "docs/api.md documents the variable, the three push behaviours, per-ref messages, accepted-refs-only rule and mirror_failed event",
+      "given": [
+        "docs/api.md"
+      ],
+      "when": "the file is searched",
+      "then": [
+        "the Workspace Variables Reference lists PUSH_PATCHES_TO_ORIGIN",
+        "the git push section mentions 'branch is synced from origin; push to', 'origin rejected push:', 'failed to resolve origin credentials' and accepted refs only",
+        "hub.patch.mirror_failed is documented"
+      ],
+      "pseudocode": "for s in strings: assert contains(read('docs/api.md'), s)"
+    },
+    {
+      "id": "TS-22-47",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-9.3"
+      ],
+      "title": "docs/openapi.yaml and docs/architecture.md describe the variable, rejections and pre-receive hook",
+      "given": [
+        "docs/openapi.yaml and docs/architecture.md"
+      ],
+      "when": "the files are searched",
+      "then": [
+        "openapi mentions PUSH_PATCHES_TO_ORIGIN and the rejections in the receive-pack route description",
+        "architecture.md git server section mentions the pre-receive hook"
+      ],
+      "pseudocode": "assert contains(openapi,'PUSH_PATCHES_TO_ORIGIN'); assert contains(arch,'pre-receive')"
+    },
+    {
+      "id": "TS-22-48",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-9.4"
+      ],
+      "title": "carry_patch_workflow.md gets the variable entry and the updated note, while configuration.md and cli.md are unchanged",
+      "given": [
+        "docs/carry_patch_workflow.md, docs/configuration.md and docs/cli.md compared with the base revision"
+      ],
+      "when": "the files are searched and diffed",
+      "then": [
+        "the Configuration section lists PUSH_PATCHES_TO_ORIGIN",
+        "the spec 20 note describes rejection, forwarding and mirroring",
+        "configuration.md and cli.md show no diff",
+        "the workflow guide diff touches only those two places"
+      ],
+      "pseudocode": "assert contains(workflow,'PUSH_PATCHES_TO_ORIGIN'); assert diffStat('docs/configuration.md')==0 && diffStat('docs/cli.md')==0"
+    },
+    {
+      "id": "TS-22-49",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-1",
+        "22-REQ-3.1",
+        "22-REQ-5.3"
+      ],
+      "title": "A developer's push to a registered patch branch in origin mode is rejected end to end",
+      "given": [
+        "a running hub handler with real gitserver, carry-patch hooks, database and trunk",
+        "carry_patch workspace, PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN unset, git_url with userinfo",
+        "registered branch p1"
+      ],
+      "when": "a real git push updates p1",
+      "then": [
+        "git shows 'remote rejected' with 'branch is synced from origin; push to <git_url without userinfo> instead'",
+        "hub p1 is unchanged",
+        "no hub.git.push event is emitted and no post-push hook or rebuild runs"
+      ],
+      "real_components": [
+        "gitserver HTTP handler",
+        "thinPackSafeStorer",
+        "carry-patch pre-receive hook",
+        "database",
+        "trunk repository",
+        "git binary"
+      ]
+    },
+    {
+      "id": "TS-22-50",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-2",
+        "22-REQ-4.1",
+        "22-REQ-5.2"
+      ],
+      "title": "A push to a registered patch branch in origin mode with forwarding on reaches both fork and hub",
+      "given": [
+        "running hub with real gitserver, carry-patch hooks, database and trunk",
+        "local bare repository as the trunk's origin",
+        "PATCH_BRANCH_SOURCE=origin, PUSH_PATCHES_TO_ORIGIN=true, registered branch p1"
+      ],
+      "when": "a real git push sends a new commit on p1",
+      "then": [
+        "the push succeeds",
+        "p1 is at the same commit on the bare origin and the hub trunk",
+        "no refs/hub/forward/* remains",
+        "hub.git.push is emitted listing refs/heads/p1 and the post-push hook runs"
+      ],
+      "real_components": [
+        "gitserver HTTP handler",
+        "thinPackSafeStorer",
+        "carry-patch pre-receive hook",
+        "local bare origin",
+        "database",
+        "audit emitter",
+        "git binary"
+      ]
+    },
+    {
+      "id": "TS-22-51",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-3",
+        "22-REQ-4.5",
+        "22-REQ-4.6"
+      ],
+      "title": "A forward refused by the fork as non-fast-forward leaves the hub ref unchanged",
+      "given": [
+        "running hub with real gitserver and carry-patch hooks",
+        "local bare origin whose p1 is ahead of the pushed commit's history",
+        "origin mode with forwarding on, a captured logger"
+      ],
+      "when": "a real git push sends p1 behind the fork's p1",
+      "then": [
+        "git shows 'remote rejected' with 'origin rejected push: ' and the origin error text",
+        "hub p1 and origin p1 are unchanged",
+        "the temporary forward ref is gone",
+        "a warn record is logged"
+      ],
+      "real_components": [
+        "gitserver HTTP handler",
+        "carry-patch pre-receive hook",
+        "local bare origin",
+        "database",
+        "git binary"
+      ]
+    },
+    {
+      "id": "TS-22-52",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-4",
+        "22-REQ-6.1",
+        "22-REQ-6.2"
+      ],
+      "title": "A hub-mode push of a registered patch branch is accepted, rebuilt and mirrored to the fork",
+      "given": [
+        "running hub with real gitserver, post-push rebuild hook with credentials, workspace root and emitter, and a real queue",
+        "local bare origin, PATCH_BRANCH_SOURCE unset, PUSH_PATCHES_TO_ORIGIN=true, registered branch p1"
+      ],
+      "when": "a real git push sends commits on p1",
+      "then": [
+        "the push succeeds and hub p1 holds the commit",
+        "a rebuild job with SubmittedBy system:push-hook is enqueued",
+        "the bare origin holds p1 at the hub tip"
+      ],
+      "real_components": [
+        "gitserver HTTP handler",
+        "post-push rebuild hook",
+        "job queue",
+        "local bare origin",
+        "database",
+        "git binary"
+      ]
+    },
+    {
+      "id": "TS-22-53",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-5",
+        "22-REQ-7.1",
+        "22-REQ-6.3"
+      ],
+      "title": "A failed mirror is reported through hub.patch.mirror_failed while the push, rebuild and other branch succeed",
+      "given": [
+        "running hub with real gitserver, post-push hook and a recording audit emitter",
+        "local bare origin with a hook refusing p2",
+        "hub mode, forwarding on, registered branches p1 and p2"
+      ],
+      "when": "a real git push sends p1 and p2",
+      "then": [
+        "the push succeeds with HTTP 200",
+        "a rebuild job is enqueued",
+        "p1 exists on the origin and p2 does not",
+        "one hub.patch.mirror_failed event has resource_type patch, action mirror, actor_type system, slug and metadata branch_name p2 with credential-free error"
+      ],
+      "real_components": [
+        "gitserver HTTP handler",
+        "post-push rebuild hook",
+        "job queue",
+        "audit emitter",
+        "local bare origin",
+        "database",
+        "git binary"
+      ]
+    },
+    {
+      "id": "TS-22-54",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-6",
+        "22-REQ-3.4",
+        "22-REQ-5.2"
+      ],
+      "title": "After registration and sync of a fork-only branch, a mixed push rejects only the registered branch",
+      "given": [
+        "a fork-only branch registered through POST /workspaces/:slug/patches in origin mode",
+        "the sync job has created the hub patch branch from the fork",
+        "real gitserver, hooks, database and local bare origin"
+      ],
+      "when": "a real git push sends the registered branch, an unregistered branch and a tag",
+      "then": [
+        "the registered branch shows remote rejected with the origin message",
+        "the unregistered branch and tag are written on the hub",
+        "hub.git.push lists only those accepted refs and the post-push hook receives only the unregistered branch",
+        "the HTTP status is 200"
+      ],
+      "real_components": [
+        "workspace patch registration handler",
+        "sync job",
+        "gitserver HTTP handler",
+        "carry-patch pre-receive hook",
+        "audit emitter",
+        "local bare origin",
+        "database",
+        "git binary"
+      ]
+    }
+  ]
+}

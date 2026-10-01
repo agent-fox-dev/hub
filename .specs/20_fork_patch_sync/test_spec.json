@@ -1,0 +1,1186 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "20",
+  "spec_name": "fork_patch_sync",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-20-1",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.1"
+      ],
+      "title": "Both variables are read through GetVariable after the lock is taken and before any fetch, on every sync",
+      "given": [
+        "a recording GetVariable stub, a recording lock and recording fetch stubs",
+        "PATCH_BRANCH_SOURCE initially unset"
+      ],
+      "when": "two syncs run, with PATCH_BRANCH_SOURCE set to origin between them, without rebuilding the handler or config",
+      "then": [
+        "GetVariable(\"workspace\", slug, \"PATCH_BRANCH_SOURCE\") and PATCH_DIVERGENCE_POLICY are called once per sync",
+        "the recorded order is lock, variable reads, first fetch",
+        "the first sync performs no origin fetch and the second performs one"
+      ],
+      "pseudocode": "run(sync); setVar(origin); run(sync); assert calls[0:3]==[lock,getvar,getvar] ; assert originFetches==[0,1]"
+    },
+    {
+      "id": "TS-20-2",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.2"
+      ],
+      "title": "The exact value origin selects origin as the patch authority",
+      "given": [
+        "PATCH_BRANCH_SOURCE is \"origin\""
+      ],
+      "when": "a carry-patch sync runs with counting fetch stubs",
+      "then": [
+        "the origin fetch stub is called once",
+        "the response has origin_fetched true"
+      ],
+      "pseudocode": "setVar('PATCH_BRANCH_SOURCE','origin'); r=sync(); assert originFetch.count==1; assert r.origin_fetched==true"
+    },
+    {
+      "id": "TS-20-3",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.3"
+      ],
+      "title": "Unset, error, hub, Origin, empty and other values select hub without an error",
+      "given": [
+        "a table of PATCH_BRANCH_SOURCE states: unset, lookup error, \"hub\", \"Origin\", \"ORIGIN\", \"\", \"garbage\""
+      ],
+      "when": "a sync runs for each row",
+      "then": [
+        "every sync answers HTTP 200",
+        "no origin fetch and no origin credential lookup happens",
+        "origin_fetched is false and no patches_synced field is present"
+      ],
+      "pseudocode": "for v in rows: r=sync(v); assert r.status==200; assert originFetch.count==0; assert r.origin_fetched==false; assert 'patches_synced' not in r"
+    },
+    {
+      "id": "TS-20-4",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.4"
+      ],
+      "title": "The exact value report applies the report policy to a diverged branch",
+      "given": [
+        "origin mode with one diverged candidate patch",
+        "PATCH_DIVERGENCE_POLICY is \"report\""
+      ],
+      "when": "a sync runs",
+      "then": [
+        "the local branch is unchanged",
+        "the element has state diverged and action none"
+      ],
+      "pseudocode": "setVar(policy,'report'); r=sync(); assert r.patches_synced[0].state=='diverged'; assert refLocal==oldTip"
+    },
+    {
+      "id": "TS-20-5",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.5"
+      ],
+      "title": "Unset, error, replace, Report and other policy values apply replace without an error",
+      "given": [
+        "origin mode with one diverged candidate patch",
+        "a table of PATCH_DIVERGENCE_POLICY states: unset, lookup error, \"replace\", \"Report\", \"\", \"x\""
+      ],
+      "when": "a sync runs for each row",
+      "then": [
+        "every sync answers HTTP 200",
+        "the element has action replaced",
+        "patches_diverged is []"
+      ],
+      "pseudocode": "for v in rows: r=sync(v); assert r.status==200; assert r.patches_synced[0].action=='replaced'; assert r.patches_diverged==[]"
+    },
+    {
+      "id": "TS-20-6",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.6"
+      ],
+      "title": "In hub mode the divergence policy is ignored",
+      "given": [
+        "PATCH_BRANCH_SOURCE unset",
+        "PATCH_DIVERGENCE_POLICY is \"report\" in one run and \"replace\" in another",
+        "a patch branch that differs from the fork"
+      ],
+      "when": "a sync runs in each configuration",
+      "then": [
+        "both responses are identical",
+        "no patch ref and no refs/hub/replaced/* ref is written"
+      ],
+      "pseudocode": "assert sync(policy='report')==sync(policy='replace'); assert refsWritten==[]"
+    },
+    {
+      "id": "TS-20-7",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-2.1"
+      ],
+      "title": "The origin fetch brings in fork branches with the heads refspec, no tags, and treats up-to-date as success",
+      "given": [
+        "a real bare fork with branches and a tag, a trunk cloned from it with origin pointing at the fork, and no GIT_PAT set (credentials resolve to none)"
+      ],
+      "when": "the production FetchOrigin is called twice",
+      "then": [
+        "refs/remotes/origin/<branch> equals the fork tip for every branch",
+        "no tag is created in the trunk",
+        "the second call returns nil (already up to date)"
+      ],
+      "pseudocode": "FetchOrigin(ctx, trunk, auth); assert rev-parse origin/b==forkTip; assert tags(trunk)==[]; assert FetchOrigin(...)==nil"
+    },
+    {
+      "id": "TS-20-8",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.1"
+      ],
+      "title": "Origin credentials follow GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then none",
+      "given": [
+        "a secrets store with three configurations: GIT_PAT set; only GIT_USERNAME and GIT_PASSWORD set; neither set"
+      ],
+      "when": "the wired ResolveOriginAuth is called for each configuration",
+      "then": [
+        "it returns the same auth value as workspace.ResolveCloneAuth in each case"
+      ],
+      "pseudocode": "for cfg in cfgs: assert ResolveOriginAuth(store,slug)==workspace.ResolveCloneAuth(store,slug)"
+    },
+    {
+      "id": "TS-20-9",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.2"
+      ],
+      "title": "Sync steps run in the documented order under the held lock",
+      "given": [
+        "origin mode with a call-recording stub for every step and for the lock"
+      ],
+      "when": "a sync completes",
+      "then": [
+        "the recorded order is lock, origin credential resolution, upstream fetch, origin fetch, upstream-base resolution, patch refresh, merge detection, workspace update",
+        "the lock is held until after the workspace update"
+      ],
+      "pseudocode": "assert calls==[lock,resolveOriginAuth,fetchUpstream,fetchOrigin,resolveBase,refresh,detect,updateWs,unlock]"
+    },
+    {
+      "id": "TS-20-10",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.3"
+      ],
+      "title": "A credential-resolution failure answers 502 before any fetch and changes nothing",
+      "given": [
+        "origin mode, ResolveOriginAuth returns an error",
+        "upstream_head_sha, last_sync_at, patch rows and refs snapshotted"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "the status is 502 with message \"failed to resolve origin credentials\"",
+        "neither the upstream nor the origin fetch stub was called",
+        "upstream_head_sha, last_sync_at, patch rows and refs equal the snapshot"
+      ],
+      "pseudocode": "r=sync(); assert r.status==502; assert r.error=='failed to resolve origin credentials'; assert fetches==0; assert snapshot()==before"
+    },
+    {
+      "id": "TS-20-11",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.4"
+      ],
+      "title": "An origin fetch failure after a successful upstream fetch answers 502 origin_fetch_failed and changes nothing",
+      "given": [
+        "origin mode with upstream advanced, FetchOrigin returning an error",
+        "snapshot of upstream_head_sha, last_sync_at, patch statuses, persisted origin sync columns and refs/heads/*"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "the status is 502, message \"origin fetch failed\", error_type \"origin_fetch_failed\"",
+        "the upstream fetch stub was called once",
+        "the snapshot is unchanged",
+        "no rebuild job is enqueued"
+      ],
+      "pseudocode": "r=sync(); assert r.status==502; assert r.error_type=='origin_fetch_failed'; assert snapshot()==before; assert jobs==0"
+    },
+    {
+      "id": "TS-20-12",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.5"
+      ],
+      "title": "The hub source performs zero origin fetches and zero origin credential lookups",
+      "given": [
+        "PATCH_BRANCH_SOURCE unset, counting stubs for FetchOrigin and ResolveOriginAuth"
+      ],
+      "when": "a sync runs, with and without an upstream advance",
+      "then": [
+        "FetchOrigin count is 0",
+        "ResolveOriginAuth count is 0"
+      ],
+      "pseudocode": "sync(); assert fetchOrigin.n==0 and resolveOriginAuth.n==0"
+    },
+    {
+      "id": "TS-20-13",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.6"
+      ],
+      "title": "Origin mode with a nil FetchOrigin answers 500 origin fetch is not configured",
+      "given": [
+        "origin mode, SyncAPIConfig.FetchOrigin is nil",
+        "state snapshot"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "the status is 500 with message \"origin fetch is not configured\"",
+        "the snapshot is unchanged"
+      ],
+      "pseudocode": "cfg.FetchOrigin=nil; r=sync(); assert r.status==500; assert r.error=='origin fetch is not configured'; assert snapshot()==before"
+    },
+    {
+      "id": "TS-20-14",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-2.7"
+      ],
+      "title": "A branch deleted on a real bare fork loses its tracking ref after an origin-mode sync",
+      "given": [
+        "a real bare fork and real upstream, trunk with refs/remotes/origin/feat from an earlier fetch",
+        "feat is registered as an active patch",
+        "feat is then deleted on the fork"
+      ],
+      "when": "an origin-mode sync runs through the production fetch",
+      "then": [
+        "refs/remotes/origin/feat no longer exists",
+        "the element for feat has state missing_on_origin"
+      ],
+      "pseudocode": "git(fork,'branch -D feat'); r=sync(); assert not refExists(trunk,'refs/remotes/origin/feat'); assert r.patches_synced[0].state=='missing_on_origin'"
+    },
+    {
+      "id": "TS-20-15",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.1"
+      ],
+      "title": "Only active, conflict and disabled patches are candidates, in position order, excluding the integration branch",
+      "given": [
+        "real fork and upstream",
+        "patches in positions 1-6 with statuses active, conflict, disabled, merged_upstream, deleted, and one active patch named like the integration branch"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "patches_synced lists exactly the active, conflict and disabled branches in position order",
+        "the merged_upstream, deleted and integration-named patches have no element and their refs are untouched"
+      ],
+      "pseudocode": "r=sync(); assert names(r.patches_synced)==['a','c','d']"
+    },
+    {
+      "id": "TS-20-16",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.2"
+      ],
+      "title": "A branch missing on the fork is reported missing_on_origin and left alone",
+      "given": [
+        "real fork without branch feat, local refs/heads/feat exists, patch status active"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "the element has state missing_on_origin, action none, no origin_sha, local_sha set",
+        "refs/heads/feat is unchanged",
+        "the patch status is still active",
+        "the persisted origin_sync_state is missing_on_origin and origin_sha is null"
+      ],
+      "pseudocode": "r=sync(); e=r.patches_synced[0]; assert e.state=='missing_on_origin' and e.action=='none'; assert 'origin_sha' not in e; assert status=='active'"
+    },
+    {
+      "id": "TS-20-17",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.3"
+      ],
+      "title": "A missing local branch is created at the fork tip",
+      "given": [
+        "real fork with branch feat, no refs/heads/feat in the trunk, patch active"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "refs/heads/feat equals the fork tip",
+        "the element has action created, state in_sync, local_sha and origin_sha equal to the fork tip",
+        "the persisted state is in_sync with origin_sha set"
+      ],
+      "pseudocode": "r=sync(); assert rev(trunk,'refs/heads/feat')==forkTip; assert e.action=='created' and e.state=='in_sync'"
+    },
+    {
+      "id": "TS-20-18",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.4"
+      ],
+      "title": "Equal tips write no ref and report in_sync",
+      "given": [
+        "real fork and trunk where refs/heads/feat equals refs/remotes/origin/feat"
+      ],
+      "when": "an origin-mode sync runs with a ref-write recorder wrapping the git runner",
+      "then": [
+        "no update-ref call is made for feat",
+        "the element has action none, state in_sync",
+        "the persisted state is in_sync"
+      ],
+      "pseudocode": "r=sync(); assert updateRefCalls==[]; assert e.action=='none' and e.state=='in_sync'"
+    },
+    {
+      "id": "TS-20-19",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.5"
+      ],
+      "title": "A local tip that is a strict ancestor of the fork tip is fast-forwarded",
+      "given": [
+        "real fork where feat is two commits ahead of the hub's refs/heads/feat"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "refs/heads/feat equals the fork tip",
+        "the element has action fast_forwarded, state in_sync, replaced_sha absent",
+        "no refs/hub/replaced/feat exists"
+      ],
+      "pseudocode": "r=sync(); assert rev(local)==forkTip; assert e.action=='fast_forwarded'; assert not refExists('refs/hub/replaced/feat')"
+    },
+    {
+      "id": "TS-20-20",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.6"
+      ],
+      "title": "Divergence under replace backs up the old tip and moves the branch to the fork tip",
+      "given": [
+        "real fork and trunk where feat diverged (a hub commit and a different fork commit on a common base)",
+        "policy replace"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "refs/hub/replaced/feat holds the former local tip",
+        "refs/heads/feat holds the fork tip",
+        "the element has action replaced, state in_sync, replaced_sha equal to the old local tip",
+        "a pre-existing older backup for feat is overwritten"
+      ],
+      "pseudocode": "old=rev(local); r=sync(); assert rev('refs/hub/replaced/feat')==old; assert rev(local)==forkTip; assert e.replaced_sha==old"
+    },
+    {
+      "id": "TS-20-21",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.7"
+      ],
+      "title": "Divergence under report leaves the local branch and reports both SHAs",
+      "given": [
+        "real fork and trunk with a diverged feat",
+        "policy report"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "refs/heads/feat is unchanged",
+        "no refs/hub/replaced/feat exists",
+        "the element has state diverged, action none, local_sha and origin_sha set and different",
+        "patches_diverged equals [\"feat\"]",
+        "the persisted state is diverged"
+      ],
+      "pseudocode": "r=sync(); assert rev(local)==old; assert e.state=='diverged'; assert r.patches_diverged==['feat']"
+    },
+    {
+      "id": "TS-20-22",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-3.6",
+        "20-REQ-3.7"
+      ],
+      "title": "A fork tip that is a strict ancestor of the local tip is divergence and follows the policy",
+      "given": [
+        "real fork whose feat is behind the hub's refs/heads/feat (hub has extra commits)"
+      ],
+      "when": "a sync runs once under replace and once, on a fresh copy, under report",
+      "then": [
+        "under replace the backup holds the longer hub tip, the local ref equals the fork tip and the action is replaced",
+        "under report the local ref is unchanged and the state is diverged"
+      ],
+      "pseudocode": "assert isAncestor(forkTip, localTip) and forkTip!=localTip; run both policies; check refs"
+    },
+    {
+      "id": "TS-20-23",
+      "kind": "property",
+      "verifies": [
+        "20-REQ-3.8"
+      ],
+      "title": "For any pair of local and fork histories exactly the first matching rule applies, decided on SHAs",
+      "given": [
+        "a real git repository with generated commit graphs and a recording GitRunner"
+      ],
+      "when": "for any candidate whose fork branch is present or absent, local branch present or absent, and tips equal, ancestor, descendant or unrelated",
+      "then": [
+        "the outcome equals the first matching rule in the order fork missing, local missing, same commit, local strict ancestor, diverged",
+        "every IsAncestor call receives 40-hex SHAs and never branch names",
+        "exactly one rule's ref writes occur"
+      ],
+      "pseudocode": "for (fork,local,rel) in gen(): out=refresh(c); assert out==expected(first_match(rel)); assert all(isSha(a) for a in isAncestorArgs)"
+    },
+    {
+      "id": "TS-20-24",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-4.1"
+      ],
+      "title": "Every patch and backup ref is written with update-ref carrying the expected old SHA, never checkout, reset or branch -f",
+      "given": [
+        "a recording GitRunner over a real repo with one created, one fast-forwarded and one replaced candidate"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "each ref write is update-ref <ref> <new> <expected-old> through Run",
+        "the create uses the all-zero SHA as expected-old",
+        "the others use the tip resolved at the start of that step",
+        "no checkout, reset or branch -f call appears (apart from the HardReset of 20-REQ-4.2)"
+      ],
+      "pseudocode": "calls=recorder.calls; assert all(c[0]=='update-ref' for c in writes); assert createCall[-1]=='0'*40; assert no c[0] in ['checkout','branch']"
+    },
+    {
+      "id": "TS-20-25",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-4.2"
+      ],
+      "title": "Moving the checked-out branch hard-resets the working tree to the new tip",
+      "given": [
+        "real trunk whose HEAD is refs/heads/feat with a clean working tree",
+        "the fork has a new commit on feat adding a file"
+      ],
+      "when": "an origin-mode sync fast-forwards feat",
+      "then": [
+        "the new file exists in the trunk working directory",
+        "git status is clean",
+        "moving a branch that is not HEAD performs no hard reset"
+      ],
+      "pseudocode": "r=sync(); assert fileExists(trunk,'new.txt'); assert status(trunk)==''"
+    },
+    {
+      "id": "TS-20-26",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-4.3"
+      ],
+      "title": "A lost compare-and-swap persists earlier outcomes, stops the refresh and returns 500",
+      "given": [
+        "real fork, three candidates a, b, c where a is fast-forwardable",
+        "a hub push to b lands after the ancestry check, simulated with a runner hook that advances refs/heads/b just before update-ref",
+        "AUTO_REBUILD_AFTER_SYNC unset"
+      ],
+      "when": "an origin-mode sync runs",
+      "then": [
+        "the status is 500 with message \"failed to update patch branch b\"",
+        "a is moved and its persisted state is in_sync",
+        "b keeps the pushed tip, c is unprocessed with its previous persisted state",
+        "a rebuild job is enqueued for the moved branch a",
+        "upstream_head_sha and last_sync_at are unchanged"
+      ],
+      "pseudocode": "r=sync(); assert r.status==500; assert r.error=='failed to update patch branch b'; assert rev(a)==forkA; assert jobs==1; assert ws.last_sync_at==before"
+    },
+    {
+      "id": "TS-20-27",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-4.4"
+      ],
+      "title": "A moved disabled patch is refreshed and reported but does not trigger a rebuild; active and conflict ones do",
+      "given": [
+        "real fork and upstream with upstream unchanged",
+        "a fast-forwardable patch with status disabled in one run, conflict in another, active in a third"
+      ],
+      "when": "an origin-mode sync runs for each",
+      "then": [
+        "the disabled run moves the ref, reports fast_forwarded and enqueues no job (rebuild_triggered false)",
+        "the conflict and active runs enqueue a rebuild job"
+      ],
+      "pseudocode": "for st in [disabled,conflict,active]: r=sync(st); assert r.patches_synced[0].action=='fast_forwarded'; assert r.rebuild_triggered==(st!='disabled')"
+    },
+    {
+      "id": "TS-20-28",
+      "kind": "property",
+      "verifies": [
+        "20-REQ-4.5"
+      ],
+      "title": "For any hub-mode sync or report-policy sync no backup ref is written and no diverged branch is moved; hub mode writes no patch ref at all",
+      "given": [
+        "a real repository with generated patch branches, fork branches and statuses and a recording GitRunner"
+      ],
+      "when": "for any sync where the source is hub, or the source is origin with policy report",
+      "then": [
+        "no refs/hub/replaced/* ref exists afterwards",
+        "every diverged branch keeps its old SHA",
+        "in hub mode the recorder saw zero update-ref calls"
+      ],
+      "pseudocode": "for cfg in gen(): sync(cfg); assert refs('refs/hub/replaced/')==[]; if cfg.source=='hub': assert updateRefCalls==[]"
+    },
+    {
+      "id": "TS-20-29",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-5.1",
+        "20-REQ-5.2"
+      ],
+      "title": "A patch-only change with upstream unchanged reaches merge detection on the refreshed tips",
+      "given": [
+        "real fork and upstream, origin mode, upstream_head_sha equal to upstream HEAD",
+        "an active patch that fast-forwards and whose new tip is already contained in upstream"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "merge detection runs and the patch is marked merged_upstream",
+        "patches_merged lists it",
+        "with no patch change and no upstream advance, merge detection does not run"
+      ],
+      "pseudocode": "r=sync(); assert detector.calls==1; assert r.patches_merged==['feat']; r2=sync(); assert detector.calls==1"
+    },
+    {
+      "id": "TS-20-30",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.2"
+      ],
+      "title": "With the hub source merge detection runs exactly when upstream advanced",
+      "given": [
+        "hub mode, a counting merge-detection stub"
+      ],
+      "when": "one sync with upstream unchanged and one with upstream advanced",
+      "then": [
+        "detection runs 0 times for the first and once for the second"
+      ],
+      "pseudocode": "sync(unchanged); assert detect.n==0; sync(advanced); assert detect.n==1"
+    },
+    {
+      "id": "TS-20-31",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-5.3"
+      ],
+      "title": "A patch-only change enqueues one deduplicated rebuild job with the standard key, group and submitter",
+      "given": [
+        "real SQLite job queue, origin mode, upstream unchanged, a fast-forwardable active patch",
+        "a caller identity",
+        "a second scenario where a rebuild job for the slug is already queued, and a third where a newly merged patch is the only change"
+      ],
+      "when": "a sync runs in each scenario",
+      "then": [
+        "the first enqueues type rebuild with key slug, group slug:integration_branch and SubmittedBy the caller, and returns rebuild_triggered true with rebuild_job_id",
+        "the second returns rebuild_triggered false (deduplicated)",
+        "the third also enqueues a rebuild"
+      ],
+      "pseudocode": "r=sync(); assert job.key==slug and job.group==slug+':'+integ and job.submitted_by==caller; assert r.rebuild_triggered"
+    },
+    {
+      "id": "TS-20-32",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.4"
+      ],
+      "title": "AUTO_REBUILD_AFTER_SYNC=false suppresses the rebuild for a patch change and for an upstream advance",
+      "given": [
+        "AUTO_REBUILD_AFTER_SYNC is \"false\"",
+        "a patch-only change in one run and an upstream advance in another"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "no job is enqueued",
+        "rebuild_triggered is false in both responses"
+      ],
+      "pseudocode": "setVar('AUTO_REBUILD_AFTER_SYNC','false'); assert sync(patchOnly).rebuild_triggered==false and jobs==0"
+    },
+    {
+      "id": "TS-20-33",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.5"
+      ],
+      "title": "last_sync_at and updated_at are written on every completed sync in both modes while upstream_head_sha is written only on advance",
+      "given": [
+        "a workspace with an old last_sync_at",
+        "a no-change sync in hub mode and a no-change sync in origin mode, then an upstream-advance sync"
+      ],
+      "when": "each sync completes",
+      "then": [
+        "last_sync_at and updated_at are newer after each sync",
+        "upstream_head_sha is unchanged after the no-change syncs and updated after the advance"
+      ],
+      "pseudocode": "for mode in [hub,origin]: sync(); assert ws.last_sync_at>old and ws.upstream_head_sha==oldSha"
+    },
+    {
+      "id": "TS-20-34",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.6"
+      ],
+      "title": "A sync where nothing changed returns empty patches_merged and rebuild_triggered false",
+      "given": [
+        "upstream unchanged and, in origin mode, all candidates in_sync"
+      ],
+      "when": "a sync runs in hub and in origin mode",
+      "then": [
+        "the status is 200",
+        "patches_merged is []",
+        "rebuild_triggered is false and no job is enqueued"
+      ],
+      "pseudocode": "r=sync(); assert r.status==200 and r.patches_merged==[] and r.rebuild_triggered==false and jobs==0"
+    },
+    {
+      "id": "TS-20-35",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.1"
+      ],
+      "title": "origin_fetched is always present, and a hub response gains no other field",
+      "given": [
+        "hub mode response and origin mode response"
+      ],
+      "when": "the standalone route and the workspace sync route are called",
+      "then": [
+        "origin_fetched is false in hub mode and true in origin mode",
+        "the hub response key set equals the previous key set plus origin_fetched"
+      ],
+      "pseudocode": "assert keys(hubResp)==oldKeys+['origin_fetched']; assert originResp.origin_fetched==true"
+    },
+    {
+      "id": "TS-20-36",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.2"
+      ],
+      "title": "In origin mode patches_synced elements and patches_diverged follow the omission rules",
+      "given": [
+        "origin mode with candidates covering created, fast_forwarded, replaced, in_sync, diverged (report) and missing_on_origin outcomes"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "each element has branch_name, action, state",
+        "local_sha is omitted for a missing local branch, origin_sha for a missing fork branch, replaced_sha unless action is replaced",
+        "patches_diverged lists exactly the diverged branches",
+        "under replace patches_diverged is []"
+      ],
+      "pseudocode": "for e in r.patches_synced: assert ('replaced_sha' in e)==(e.action=='replaced')"
+    },
+    {
+      "id": "TS-20-37",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.3"
+      ],
+      "title": "Empty patches_synced and patches_diverged serialise as [] in origin mode and are omitted in hub mode, in both body shapes",
+      "given": [
+        "CarryPatchSyncResponse and the asExtras map for origin mode with zero candidates and for hub mode"
+      ],
+      "when": "each is JSON-encoded",
+      "then": [
+        "origin mode JSON contains \"patches_synced\":[] and \"patches_diverged\":[] (not null, not omitted) in the body and in the extras",
+        "hub mode contains neither key in either form"
+      ],
+      "pseudocode": "b=json(resp); assert b.patches_synced==[] and b.patches_diverged==[]; assert 'patches_synced' not in hub.asExtras()"
+    },
+    {
+      "id": "TS-20-38",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.4"
+      ],
+      "title": "afc workspace sync prints the new fields and exits 0 even with diverged branches when the flag is absent",
+      "given": [
+        "a stub hub returning a response with origin_fetched true, patches_synced and patches_diverged [\"feat\"] plus all existing fields"
+      ],
+      "when": "afc workspace sync runs without --fail-on-diverged",
+      "then": [
+        "the exit code is 0",
+        "the printed JSON contains origin_fetched, patches_synced, patches_diverged and every existing field unchanged"
+      ],
+      "pseudocode": "code,out=run(['workspace','sync',slug]); assert code==0; assert json(out).patches_diverged==['feat']"
+    },
+    {
+      "id": "TS-20-39",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.5"
+      ],
+      "title": "--fail-on-diverged prints the JSON and a message naming the branches and exits 3 only when diverged is non-empty",
+      "given": [
+        "stub hub returning patches_diverged [\"a\",\"b\"] in one run and [] in another"
+      ],
+      "when": "afc workspace sync --fail-on-diverged runs",
+      "then": [
+        "the first run prints the JSON, then a message containing a and b, and exits 3",
+        "the second run exits 0"
+      ],
+      "pseudocode": "code,out,err=run([...,'--fail-on-diverged']); assert code==3; assert 'a' in err and 'b' in err"
+    },
+    {
+      "id": "TS-20-40",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.6"
+      ],
+      "title": "With --wait the diverged check runs after the wait and a wait failure takes precedence",
+      "given": [
+        "stub hub returning patches_diverged [\"a\"] and a rebuild job id",
+        "a job-status stub that succeeds in one run and fails in another",
+        "a stub returning a request error (exit 2) in a third run"
+      ],
+      "when": "afc workspace sync --wait --fail-on-diverged runs",
+      "then": [
+        "the wait polling happens before the exit decision",
+        "wait success gives exit 3",
+        "wait failure gives exit 1",
+        "the exit-2 case keeps its current meaning"
+      ],
+      "pseudocode": "assert run(waitOk)==3; assert run(waitFail)==1; assert run(usageErr)==2"
+    },
+    {
+      "id": "TS-20-41",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.1"
+      ],
+      "title": "The migration adds the three nullable columns to an existing patches table idempotently without backfill",
+      "given": [
+        "a real database whose patches table predates this spec and holds rows"
+      ],
+      "when": "initSchema runs three times",
+      "then": [
+        "origin_sync_state, origin_sha and origin_synced_at exist as nullable columns",
+        "existing rows have NULL in all three",
+        "no run returns an error"
+      ],
+      "pseudocode": "for i in 1..3: assert initSchema(db)==nil; cols=pragma(patches); assert {'origin_sync_state','origin_sha','origin_synced_at'}<=cols; assert allNull(rows)"
+    },
+    {
+      "id": "TS-20-42",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.2"
+      ],
+      "title": "Origin mode persists state, fork SHA and an RFC 3339 UTC timestamp per candidate and clears merged and deleted rows",
+      "given": [
+        "real database, origin mode, candidates in states in_sync, diverged (report) and missing_on_origin",
+        "a merged_upstream row and a deleted row carrying stale origin columns"
+      ],
+      "when": "a sync completes",
+      "then": [
+        "each candidate row has the matching origin_sync_state, origin_sha (NULL for missing_on_origin) and a timestamp parsable by apikit.ParseUTC",
+        "the merged_upstream and deleted rows have all three columns NULL"
+      ],
+      "pseudocode": "rows=select(patches); assert row(missing).origin_sha is NULL; assert parseUTC(row.origin_synced_at) ok; assert row(merged).origin_sync_state is NULL"
+    },
+    {
+      "id": "TS-20-43",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.3"
+      ],
+      "title": "A hub-mode sync clears origin columns of every patch row of the workspace only",
+      "given": [
+        "patch rows of the workspace with all statuses carrying origin state",
+        "a row of another workspace with origin state"
+      ],
+      "when": "a hub-mode carry-patch sync completes",
+      "then": [
+        "all rows of the synced workspace have the three columns NULL",
+        "the other workspace's row is unchanged"
+      ],
+      "pseudocode": "sync(hub); assert all(r.origin_sync_state is NULL for r in rows(slug)); assert other.origin_sync_state=='diverged'"
+    },
+    {
+      "id": "TS-20-44",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-7.4"
+      ],
+      "title": "PatchStore gains write and clear methods on SQLPatchStore and the doubles without changing existing methods",
+      "given": [
+        "an SQLPatchStore on a test database and the in-memory test double"
+      ],
+      "when": "the new write method is called for a patch and the clear methods are called for one row and for a whole workspace",
+      "then": [
+        "the three columns are set, then cleared, in both implementations",
+        "existing PatchStore methods keep their signatures and results (the interface is still satisfied by existing callers)"
+      ],
+      "pseudocode": "store.SetOriginSyncState(id,'in_sync',sha,ts); assert get(id).origin_sha==sha; store.ClearOriginSyncState(slug); assert get(id).origin_sha is NULL"
+    },
+    {
+      "id": "TS-20-45",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.5"
+      ],
+      "title": "Every workspace patch REST response exposes the three fields and omits them when null",
+      "given": [
+        "a patch with origin state and a patch without"
+      ],
+      "when": "list, get, create and update patch endpoints are called",
+      "then": [
+        "the patch with state shows origin_sync_state, origin_sha and origin_synced_at",
+        "the other patch's JSON contains none of the three keys",
+        "the existing fields are unchanged"
+      ],
+      "pseudocode": "r=GET /workspaces/s/patches; assert 'origin_sha' in r[0] and 'origin_sha' not in r[1]"
+    },
+    {
+      "id": "TS-20-46",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.6"
+      ],
+      "title": "patch-status shows per-patch origin fields and summary counts, with counts 0 in hub mode",
+      "given": [
+        "patches with origin_sync_state diverged, missing_on_origin, in_sync and null",
+        "a second workspace in hub mode"
+      ],
+      "when": "GET /workspaces/:slug/patch-status is requested for each",
+      "then": [
+        "each patch carries the three fields, omitted when null",
+        "the summary has patches_diverged 1 and patches_missing_on_origin 1 for the origin workspace",
+        "the hub workspace summary has both counts present and equal to 0"
+      ],
+      "pseudocode": "r=GET patch-status; assert r.summary.patches_diverged==1; assert hub.summary.patches_missing_on_origin==0"
+    },
+    {
+      "id": "TS-20-47",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-8.1",
+        "20-REQ-8.3"
+      ],
+      "title": "A mixed origin-mode sync emits one hub.patch.sync event with the branch lists and the standard actor, resource and slug",
+      "given": [
+        "a recording audit emitter, origin mode, candidates covering created, fast_forwarded, replaced, diverged (second run under report) and missing_on_origin",
+        "a caller credential"
+      ],
+      "when": "a sync completes",
+      "then": [
+        "exactly one hub.patch.sync event is emitted using the constant from internal/audit/types.go",
+        "metadata has origin_fetched true and created, fast_forwarded, replaced, diverged, missing_on_origin lists of branch names",
+        "actor is the caller, resource_type is patch and the workspace slug is set"
+      ],
+      "pseudocode": "ev=emitter.byType(EventPatchSync); assert len(ev)==1; assert ev[0].metadata.replaced==['r']; assert ev[0].actor==caller and ev[0].resource_type=='patch'"
+    },
+    {
+      "id": "TS-20-48",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-8.2",
+        "20-REQ-8.3"
+      ],
+      "title": "Each replaced branch emits a hub.patch.replace event and an info log with slug, branch and both SHAs",
+      "given": [
+        "a recording emitter and a captured logger",
+        "two diverged candidates under replace"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "two hub.patch.replace events are emitted with branch_name, replaced_sha and origin_sha",
+        "the actor, resource_type patch and slug are set as for the sync event",
+        "two info log lines carry slug, branch and both SHAs"
+      ],
+      "pseudocode": "evs=emitter.byType(EventPatchReplace); assert len(evs)==2; assert evs[0].metadata.replaced_sha==oldTip"
+    },
+    {
+      "id": "TS-20-49",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.4"
+      ],
+      "title": "Hub mode emits no hub.patch.sync event",
+      "given": [
+        "hub mode with a recording emitter"
+      ],
+      "when": "a sync completes, with and without upstream change",
+      "then": [
+        "no hub.patch.sync and no hub.patch.replace event is emitted"
+      ],
+      "pseudocode": "sync(); assert emitter.byType(EventPatchSync)==[]"
+    },
+    {
+      "id": "TS-20-50",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-8.5"
+      ],
+      "title": "A ref-write failure still emits events for the outcomes already produced",
+      "given": [
+        "recording emitter, a first candidate replaced and a second candidate whose compare-and-swap fails"
+      ],
+      "when": "the sync runs and returns 500",
+      "then": [
+        "one hub.patch.sync event lists the first branch under replaced and omits the failed and unprocessed ones",
+        "one hub.patch.replace event is emitted for the first branch"
+      ],
+      "pseudocode": "r=sync(); assert r.status==500; assert emitter.byType(EventPatchSync)[0].metadata.replaced==['a']"
+    },
+    {
+      "id": "TS-20-51",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.6"
+      ],
+      "title": "A nil audit emitter skips emission and the sync completes",
+      "given": [
+        "SyncAPIConfig.Audit is nil, origin mode with a replaced branch"
+      ],
+      "when": "a sync runs",
+      "then": [
+        "the status is 200 with the normal body and no panic"
+      ],
+      "pseudocode": "cfg.Audit=nil; r=sync(); assert r.status==200 and r.patches_synced[0].action=='replaced'"
+    },
+    {
+      "id": "TS-20-52",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.7"
+      ],
+      "title": "A failing emitter is logged and does not change the response",
+      "given": [
+        "an emitter whose Emit returns an error, a second sync with a succeeding emitter on an identical fixture"
+      ],
+      "when": "both syncs run",
+      "then": [
+        "the status and body are identical in both runs",
+        "the error is logged"
+      ],
+      "pseudocode": "assert sync(failing).status==sync(ok).status and body equal; assert log.contains(err)"
+    },
+    {
+      "id": "TS-20-53",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-9.1"
+      ],
+      "title": "docs/api.md documents the new sync behaviour, variables, fields, messages and events",
+      "given": [
+        "the repository docs/api.md"
+      ],
+      "when": "a docs test reads the file",
+      "then": [
+        "it mentions origin_fetched, patches_synced, patches_diverged, PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY, origin_sync_state, origin_sha, origin_synced_at, patches_missing_on_origin",
+        "it contains the strings \"origin fetch failed\", \"failed to resolve origin credentials\", hub.patch.sync and hub.patch.replace",
+        "the AUTO_REBUILD_AFTER_SYNC text mentions patch changes"
+      ],
+      "pseudocode": "for s in required: assert s in read('docs/api.md')"
+    },
+    {
+      "id": "TS-20-54",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-9.2"
+      ],
+      "title": "docs/openapi.yaml describes the sync response, patch and patch-status changes and stays valid YAML",
+      "given": [
+        "the repository docs/openapi.yaml"
+      ],
+      "when": "a docs test parses it",
+      "then": [
+        "CarryPatchSyncResponse has origin_fetched in its required list and optional patches_synced and patches_diverged",
+        "the sync operation has 502 and 200 responses covering origin failures",
+        "the patch and patch-status schemas contain the three origin fields and the two summary counts"
+      ],
+      "pseudocode": "y=yaml.load(read('docs/openapi.yaml')); assert 'origin_fetched' in y.components.schemas.CarryPatchSyncResponse.required"
+    },
+    {
+      "id": "TS-20-55",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-9.3",
+        "20-REQ-9.4"
+      ],
+      "title": "docs/cli.md and docs/carry_patch_workflow.md document the flag, exit code and variables, and docs/configuration.md is unchanged",
+      "given": [
+        "the repository docs files and the git diff of the change"
+      ],
+      "when": "a docs test reads them",
+      "then": [
+        "docs/cli.md mentions --fail-on-diverged and exit code 3",
+        "docs/carry_patch_workflow.md mentions PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY and fork_push_control",
+        "docs/configuration.md does not mention PATCH_BRANCH_SOURCE"
+      ],
+      "pseudocode": "assert '--fail-on-diverged' in read('docs/cli.md'); assert 'PATCH_BRANCH_SOURCE' not in read('docs/configuration.md')"
+    },
+    {
+      "id": "TS-20-56",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-1",
+        "20-REQ-5.3"
+      ],
+      "title": "A fork-side fix fast-forwards a patch and triggers a rebuild with upstream unchanged",
+      "given": [
+        "running hub handlers with a real fork, real upstream, real trunk, real SQLite database and job queue",
+        "PATCH_BRANCH_SOURCE=origin, upstream unchanged, an active patch behind the fork's tip"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "refs/heads/<branch> equals the fork tip",
+        "patches_synced has action fast_forwarded, origin_fetched true, rebuild_triggered true with a rebuild_job_id",
+        "the patch row has origin_sync_state in_sync, origin_sha and origin_synced_at",
+        "last_sync_at is updated and upstream_head_sha unchanged",
+        "a hub.patch.sync event is recorded and a rebuild job is queued"
+      ],
+      "real_components": [
+        "HTTP sync handler",
+        "workspace lock",
+        "carry-patch sync",
+        "git runner and real git repositories",
+        "go-git origin fetch",
+        "SQLite patch store",
+        "job queue",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-20-57",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-2",
+        "20-REQ-3.6"
+      ],
+      "title": "Divergence under replace keeps a backup of the discarded tip and enqueues a rebuild",
+      "given": [
+        "running hub handlers with real fork, upstream, trunk, database and queue",
+        "origin mode, policy unset, a patch whose hub tip was pushed and diverged from the fork"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "refs/hub/replaced/<branch> holds the old hub tip",
+        "refs/heads/<branch> holds the fork tip",
+        "the response has action replaced with replaced_sha and patches_diverged []",
+        "hub.patch.replace and hub.patch.sync events are recorded and a rebuild job is queued"
+      ],
+      "real_components": [
+        "HTTP sync handler",
+        "carry-patch sync",
+        "git runner and real git repositories",
+        "go-git origin fetch",
+        "SQLite patch store",
+        "job queue",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-20-58",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-3",
+        "20-REQ-6.5"
+      ],
+      "title": "A CI sync with --fail-on-diverged under report exits 3 and the dashboard shows the divergence",
+      "given": [
+        "a running hub with real repositories and database, origin mode, PATCH_DIVERGENCE_POLICY=report, a diverged patch",
+        "the real afc CLI pointed at the hub"
+      ],
+      "when": "afc workspace sync --fail-on-diverged is run, then GET /workspaces/:slug/patch-status is called",
+      "then": [
+        "the CLI prints the response JSON and a message naming the branch and exits 3",
+        "the local branch is unchanged",
+        "patch-status shows origin_sync_state diverged for the patch and patches_diverged 1 in the summary"
+      ],
+      "real_components": [
+        "afc CLI",
+        "HTTP sync handler",
+        "carry-patch sync",
+        "git runner and real git repositories",
+        "SQLite patch store",
+        "patch-status handler"
+      ]
+    },
+    {
+      "id": "TS-20-59",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-4",
+        "20-REQ-2.4"
+      ],
+      "title": "An unreachable fork aborts the sync with 502 origin_fetch_failed and changes nothing",
+      "given": [
+        "a running hub with real upstream and trunk, origin remote pointing at a non-existent path",
+        "origin mode, upstream advanced, snapshot of workspace row, patch rows and refs/heads/*"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "the status is 502 with message \"origin fetch failed\" and error_type origin_fetch_failed",
+        "upstream_head_sha, last_sync_at, patch statuses, origin sync columns and refs/heads/* equal the snapshot",
+        "no rebuild job is queued"
+      ],
+      "real_components": [
+        "HTTP sync handler",
+        "workspace lock",
+        "carry-patch sync",
+        "go-git fetch",
+        "git runner and real git repositories",
+        "SQLite patch store"
+      ]
+    },
+    {
+      "id": "TS-20-60",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-5",
+        "20-REQ-2.5",
+        "20-REQ-6.1"
+      ],
+      "title": "A hub-mode sync with no upstream change only refreshes last_sync_at and returns origin_fetched false",
+      "given": [
+        "a running hub with real repositories and database, PATCH_BRANCH_SOURCE unset, no upstream change",
+        "patch rows carrying stale origin columns, counting stubs on the origin fetch and origin credential resolver wired in the config"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "the origin fetch and credential stubs are called 0 times",
+        "no patch ref is written",
+        "last_sync_at is updated and all origin columns are cleared",
+        "the response has empty patches_merged, rebuild_triggered false, origin_fetched false and no patches_synced field"
+      ],
+      "real_components": [
+        "HTTP sync handler",
+        "carry-patch sync",
+        "upstream fetch",
+        "git runner and real git repositories",
+        "SQLite patch store"
+      ]
+    },
+    {
+      "id": "TS-20-61",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-6",
+        "20-REQ-4.3"
+      ],
+      "title": "A lost compare-and-swap keeps the earlier outcome, still enqueues the rebuild and returns 500",
+      "given": [
+        "a running hub with real fork, upstream, trunk, database and queue, origin mode, two fast-forwardable candidates",
+        "a hub push to the second branch lands after its ancestry check"
+      ],
+      "when": "POST /workspaces/:slug/sync is called",
+      "then": [
+        "the status is 500 with message \"failed to update patch branch <second>\"",
+        "the first branch is moved and persisted in_sync",
+        "the second branch holds the pushed tip",
+        "a rebuild job is queued",
+        "hub.patch.sync lists the first branch under fast_forwarded",
+        "upstream_head_sha and last_sync_at are unchanged"
+      ],
+      "real_components": [
+        "HTTP sync handler",
+        "carry-patch sync",
+        "git runner and real git repositories",
+        "go-git origin fetch",
+        "SQLite patch store",
+        "job queue",
+        "audit emitter"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1504 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "23",
+  "spec_name": "patch_divergence_recovery",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-23-1",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.1"
+      ],
+      "title": "GET single patch returns the patch object plus the 40-character replaced_sha when a backup exists",
+      "given": [
+        "an owned carry_patch workspace with one patch",
+        "a stub recovery hook whose ReadReplacedSHA returns a 40-hex SHA for the patch branch"
+      ],
+      "when": "the owner, an admin, a PAT with patches:read and a PAT with only patches:write each send GET /api/v1/workspaces/:slug/patches/:id",
+      "then": [
+        "every call returns 200",
+        "the body carries every existing patchResponse field",
+        "replaced_sha equals the stub SHA and has 40 hexadecimal characters"
+      ],
+      "pseudocode": "for caller in [owner, admin, pat_read, pat_write]: r = get(path, caller); assert r.status == 200; assert r.json.replaced_sha == SHA; assert re.match('^[0-9a-f]{40}$', r.json.replaced_sha); assert r.json.id == patch.id"
+    },
+    {
+      "id": "TS-23-2",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.2"
+      ],
+      "title": "GET omits replaced_sha when there is no backup, no trunk on disk or no hook registered",
+      "given": [
+        "an owned carry_patch workspace with one patch"
+      ],
+      "when": "GET is called (a) with a hook reporting no ref, (b) with a hook reporting the trunk is missing, (c) with no hook registered",
+      "then": [
+        "each call returns 200 with the patch object",
+        "the raw JSON body contains no replaced_sha key in any of the three cases"
+      ],
+      "pseudocode": "for setup in [no_ref_hook, no_trunk_hook, nil_hook]: r = get(path); assert r.status == 200; assert 'replaced_sha' not in r.json"
+    },
+    {
+      "id": "TS-23-3",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.3"
+      ],
+      "title": "A hook error while reading the backup ref is logged at warn level and does not fail GET",
+      "given": [
+        "a stub hook whose ReadReplacedSHA returns an error",
+        "a captured log handler"
+      ],
+      "when": "GET /api/v1/workspaces/:slug/patches/:id is called by the owner",
+      "then": [
+        "the status is 200 with the patch object",
+        "no replaced_sha key is present",
+        "exactly one warn-level log entry is recorded"
+      ],
+      "pseudocode": "r = get(path); assert r.status == 200; assert 'replaced_sha' not in r.json; assert count(logs, level=WARN) == 1"
+    },
+    {
+      "id": "TS-23-4",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.4"
+      ],
+      "title": "GET returns a soft-deleted patch with status deleted",
+      "given": [
+        "a patch with status deleted and a non-empty deleted_at"
+      ],
+      "when": "the owner calls GET on that patch id",
+      "then": [
+        "the status is 200",
+        "status in the body is \"deleted\""
+      ],
+      "pseudocode": "r = get(path); assert r.status == 200; assert r.json.status == 'deleted'"
+    },
+    {
+      "id": "TS-23-5",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.5"
+      ],
+      "title": "GET with an unknown patch id answers 404 patch not found",
+      "given": [
+        "an owned workspace with no patch of the requested id"
+      ],
+      "when": "the owner calls GET /api/v1/workspaces/:slug/patches/999999",
+      "then": [
+        "the status is 404",
+        "the error message is \"patch not found\""
+      ],
+      "pseudocode": "r = get('/patches/999999'); assert r.status == 404; assert r.json.error.message == 'patch not found'"
+    },
+    {
+      "id": "TS-23-6",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.6"
+      ],
+      "title": "GET by a caller who is neither owner nor admin answers 404 workspace not found",
+      "given": [
+        "a workspace owned by user A and a patch in it",
+        "an authenticated user B who is not an admin"
+      ],
+      "when": "user B calls GET on the patch",
+      "then": [
+        "the status is 404",
+        "the error message is \"workspace not found\""
+      ],
+      "pseudocode": "r = get(path, as_user_b); assert r.status == 404; assert r.json.error.message == 'workspace not found'"
+    },
+    {
+      "id": "TS-23-7",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.7"
+      ],
+      "title": "GET by a PAT with neither patches:read nor patches:write answers 403",
+      "given": [
+        "a PAT whose permissions are [\"workspaces:read\"] only",
+        "an owned workspace with a patch"
+      ],
+      "when": "the PAT calls GET on the patch",
+      "then": [
+        "the status is 403"
+      ],
+      "pseudocode": "r = get(path, pat(['workspaces:read'])); assert r.status == 403"
+    },
+    {
+      "id": "TS-23-8",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-1.8"
+      ],
+      "title": "No other patch endpoint ever returns replaced_sha",
+      "given": [
+        "a stub hook that always returns a backup SHA"
+      ],
+      "when": "for any patch endpoint among list, add, update, remove-adjacent responses, restore and sync, and any patch state, the endpoint is called",
+      "then": [
+        "no patch object in any response body contains a replaced_sha key"
+      ],
+      "pseudocode": "for ep in [list, add, update, restore, sync]: body = call(ep, gen_patch_state()); for p in patch_objects(body): assert 'replaced_sha' not in p"
+    },
+    {
+      "id": "TS-23-9",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.1"
+      ],
+      "title": "A completed reset returns the patch object with replaced_sha, rebuild_triggered and rebuild_job_id",
+      "given": [
+        "a stub hook whose RunReset returns action replaced, SHAs, rebuild_triggered true and job id \"job-1\" and whose ReadReplacedSHA returns a SHA",
+        "an eligible active patch"
+      ],
+      "when": "an authorised caller POSTs .../patches/:id/reset-to-origin",
+      "then": [
+        "the status is 200",
+        "the body has the patch fields, replaced_sha, rebuild_triggered true and rebuild_job_id \"job-1\"",
+        "when the stub reports no job, rebuild_triggered is false and rebuild_job_id is absent"
+      ],
+      "pseudocode": "r = post(path); assert r.status == 200; assert r.json.rebuild_triggered == True; assert r.json.rebuild_job_id == 'job-1'; assert r.json.replaced_sha == SHA"
+    },
+    {
+      "id": "TS-23-10",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.2"
+      ],
+      "title": "Reset is refused for a PAT without patches:write (403) and for a non-owner (404) before any git operation",
+      "given": [
+        "a stub hook counting RunReset calls"
+      ],
+      "when": "a PAT with only patches:read posts the reset, and a non-owner non-admin posts the reset",
+      "then": [
+        "the PAT receives 403",
+        "the non-owner receives 404 with message \"workspace not found\"",
+        "RunReset was called zero times"
+      ],
+      "pseudocode": "assert post(path, pat(['patches:read'])).status == 403; r = post(path, other_user); assert r.status == 404; assert r.json.error.message == 'workspace not found'; assert hook.calls == 0"
+    },
+    {
+      "id": "TS-23-11",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.3"
+      ],
+      "title": "Reset on an inactive or non-carry_patch workspace answers the same 400 messages as restore",
+      "given": [
+        "one archived workspace and one standard-mode workspace, each with a patch id"
+      ],
+      "when": "the owner posts reset-to-origin to each",
+      "then": [
+        "the archived one returns 400 \"workspace is not active\"",
+        "the standard one returns 400 \"workspace is not in carry_patch mode\"",
+        "the hook is not called"
+      ],
+      "pseudocode": "assert post(archived).status == 400 and msg == 'workspace is not active'; assert post(standard).status == 400 and msg == 'workspace is not in carry_patch mode'"
+    },
+    {
+      "id": "TS-23-12",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.4"
+      ],
+      "title": "Reset on a workspace whose clone is not ready answers 409 workspace clone is not ready",
+      "given": [
+        "an active carry_patch workspace with clone_status \"cloning\""
+      ],
+      "when": "the owner posts reset-to-origin",
+      "then": [
+        "the status is 409",
+        "the message is \"workspace clone is not ready\"",
+        "the hook is not called"
+      ],
+      "pseudocode": "r = post(path); assert r.status == 409; assert r.json.error.message == 'workspace clone is not ready'; assert hook.calls == 0"
+    },
+    {
+      "id": "TS-23-13",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.5"
+      ],
+      "title": "Reset checks unknown id (404) before the integration-branch rule (400) and never calls the hook for either",
+      "given": [
+        "a workspace with integration branch \"main\"",
+        "a patch whose branch_name is \"main\""
+      ],
+      "when": "the owner posts reset for an unknown id and then for the patch named like the integration branch",
+      "then": [
+        "the unknown id returns 404 \"patch not found\"",
+        "the integration-branch patch returns 400 \"patch branch is the integration branch\"",
+        "the hook is called zero times"
+      ],
+      "pseudocode": "assert (post(unknown).status, msg) == (404, 'patch not found'); assert (post(main_patch).status, msg) == (400, 'patch branch is the integration branch'); assert hook.calls == 0"
+    },
+    {
+      "id": "TS-23-14",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.6"
+      ],
+      "title": "Reset on merged_upstream or deleted patches answers 409 with the status in the message",
+      "given": [
+        "one patch with status merged_upstream and one with status deleted"
+      ],
+      "when": "the owner posts reset for each",
+      "then": [
+        "each returns 409",
+        "the messages are \"patch status merged_upstream cannot be reset\" and \"patch status deleted cannot be reset\"",
+        "active, conflict and disabled patches pass this check"
+      ],
+      "pseudocode": "for s in ['merged_upstream','deleted']: r = post(patch_with(s)); assert r.status == 409; assert r.json.error.message == f'patch status {s} cannot be reset'"
+    },
+    {
+      "id": "TS-23-15",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-2.7"
+      ],
+      "title": "Reset on a busy workspace answers 409 workspace_busy and writes no ref; the lock is not taken before the checks",
+      "given": [
+        "a real carrypatch recovery hook with a real trunk and a stub fetch recording calls",
+        "wslock held for the slug by another operation"
+      ],
+      "when": "the owner posts reset for an eligible patch, and separately posts for an ineligible patch while the lock is held",
+      "then": [
+        "the eligible request returns 409 with error type workspace_busy and message \"another operation is running on this workspace; retry later\"",
+        "the fetch stub was not called and every ref is unchanged",
+        "the ineligible request returns its own precondition error rather than workspace_busy"
+      ],
+      "pseudocode": "unlock = wslock.TryLock(slug); r = post(path); assert r.status == 409 and r.json.error.type == 'workspace_busy'; assert fetch.calls == 0; assert refs_before == refs_after"
+    },
+    {
+      "id": "TS-23-16",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.8"
+      ],
+      "title": "Reset with no recovery hook registered answers 500 patch reset is not configured",
+      "given": [
+        "the recovery hook is nil"
+      ],
+      "when": "the owner posts reset for an eligible patch",
+      "then": [
+        "the status is 500",
+        "the message is \"patch reset is not configured\""
+      ],
+      "pseudocode": "RegisterRecoveryHook(nil); r = post(path); assert r.status == 500; assert r.json.error.message == 'patch reset is not configured'"
+    },
+    {
+      "id": "TS-23-17",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.1"
+      ],
+      "title": "Reset fetches the single branch with resolved origin credentials in both modes, then resolves both tips",
+      "given": [
+        "a real bare fork and real trunk",
+        "a stub fetch function recording refspec and credentials",
+        "PATCH_BRANCH_SOURCE set to hub, then origin",
+        "credentials in turn: GIT_PAT, GIT_USERNAME/GIT_PASSWORD, none"
+      ],
+      "when": "a reset runs in each mode and for each credential configuration",
+      "then": [
+        "the fetch is called once per reset with refspec +refs/heads/<branch>:refs/remotes/origin/<branch>",
+        "credentials follow the order GIT_PAT, then username/password, then none",
+        "after the fetch the fork tip is read from refs/remotes/origin/<branch>^{commit} and the local tip from refs/heads/<branch>^{commit}"
+      ],
+      "pseudocode": "for mode in ['hub','origin']: for creds in cases: reset(); assert fetch.calls[-1].refspec == '+refs/heads/b:refs/remotes/origin/b'; assert fetch.calls[-1].auth == expected(creds)"
+    },
+    {
+      "id": "TS-23-18",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.2"
+      ],
+      "title": "Credential and fetch failures answer 502, echo no error text and write no ref",
+      "given": [
+        "a real trunk with a local branch and a backup ref",
+        "a log capture",
+        "a resolver failing with text \"secret-token-xyz\", and a fetch stub failing with text \"dial tcp 10.0.0.1 refused\""
+      ],
+      "when": "a reset runs under each failure",
+      "then": [
+        "the credential failure returns 502 \"failed to resolve origin credentials\"",
+        "the fetch failure returns 502 \"origin fetch failed\" with error type origin_fetch_failed",
+        "neither response body contains the underlying error text, but the log does",
+        "all refs (heads, remotes, backup) are unchanged"
+      ],
+      "pseudocode": "r = reset(cred_fail); assert r.status == 502 and r.msg == 'failed to resolve origin credentials'; r = reset(fetch_fail); assert r.json.error.type == 'origin_fetch_failed'; assert 'dial tcp' not in r.body; assert 'dial tcp' in logs; assert snapshot_refs() == before"
+    },
+    {
+      "id": "TS-23-19",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.3"
+      ],
+      "title": "A branch missing on the fork answers 409 missing_on_origin and writes nothing",
+      "given": [
+        "a real bare fork lacking the patch branch",
+        "a real trunk holding the branch and a backup ref",
+        "the real single-branch fetch classification"
+      ],
+      "when": "a reset runs",
+      "then": [
+        "the status is 409",
+        "error type is missing_on_origin",
+        "message is \"branch does not exist on origin\"",
+        "every ref is unchanged"
+      ],
+      "pseudocode": "r = reset(); assert r.status == 409 and r.json.error.type == 'missing_on_origin'; assert r.msg == 'branch does not exist on origin'; assert snapshot_refs() == before"
+    },
+    {
+      "id": "TS-23-20",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.4"
+      ],
+      "title": "Reset creates a missing local branch and reports none for the same commit, writing no backup",
+      "given": [
+        "a real bare fork with the branch",
+        "a real trunk once without the local branch and once with it at the fork tip",
+        "an existing backup ref in the trunk"
+      ],
+      "when": "a reset runs in each case",
+      "then": [
+        "case missing: refs/heads/<branch> equals the fork tip, action created, 200",
+        "case same commit: no ref written, action none, 200",
+        "refs/hub/replaced/<branch> is unchanged in both cases"
+      ],
+      "pseudocode": "r = reset(no_local); assert r.action == 'created'; assert rev('refs/heads/b') == fork_tip; r = reset(same); assert r.action == 'none'; assert rev(backup) == backup_before"
+    },
+    {
+      "id": "TS-23-21",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.5"
+      ],
+      "title": "A fast-forward reset moves the branch, reports fast_forwarded and leaves the existing backup untouched",
+      "given": [
+        "a real fork whose branch is ahead of the trunk's local branch by two commits",
+        "an earlier backup ref pointing at an older discarded commit, and a second case with no backup"
+      ],
+      "when": "a reset runs",
+      "then": [
+        "refs/heads/<branch> equals the fork tip",
+        "action is fast_forwarded",
+        "the backup keeps its previous value, or stays absent when there was none"
+      ],
+      "pseudocode": "r = reset(); assert r.action == 'fast_forwarded'; assert rev('refs/heads/b') == fork_tip; assert rev_or_none(backup) == backup_before"
+    },
+    {
+      "id": "TS-23-22",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.6"
+      ],
+      "title": "Diverged and fork-behind resets write the backup first, move the branch and report replaced; a repeat overwrites the backup",
+      "given": [
+        "a real fork and trunk with diverged tips",
+        "a second scenario where the fork tip is a strict ancestor of the local tip"
+      ],
+      "when": "a reset runs for the diverged case, the local branch is advanced by a hub commit, and a second reset runs; then the fork-behind scenario runs",
+      "then": [
+        "after the first reset backup equals the pre-reset local tip, the branch equals the fork tip, action replaced, replaced_sha in the response equals the backup",
+        "after the second reset the backup equals the newer local tip",
+        "the fork-behind scenario also reports replaced with the old local tip as backup"
+      ],
+      "pseudocode": "r1 = reset(); assert r1.action == 'replaced' and rev(backup) == local_before; commit_on_local(); r2 = reset(); assert rev(backup) == local_before2 != local_before"
+    },
+    {
+      "id": "TS-23-23",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-3.7"
+      ],
+      "title": "Every branch move uses compare-and-swap update-ref and the working tree follows a checked-out branch",
+      "given": [
+        "a real trunk and bare fork",
+        "a git runner wrapper recording every command"
+      ],
+      "when": "for any random local and fork commit graphs (missing, equal, fast-forward, diverged, behind) and any choice of whether the patch branch is the trunk's checked-out branch, a reset runs",
+      "then": [
+        "the branch write is `update-ref <ref> <new> <expected-old>` and no checkout, reset or branch -f command touches the patch branch",
+        "when the branch is checked out, HEAD, index and working tree equal the fork tip afterwards, with no dirty state",
+        "the branch ref equals the fork tip when the action is not none"
+      ],
+      "pseudocode": "for g in gen_graphs(): setup(g); reset(); assert not any(c.args[0] in ('checkout','branch') for c in runner.cmds); if checked_out: assert git('status --porcelain') == '' and worktree_matches(fork_tip)"
+    },
+    {
+      "id": "TS-23-24",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.8"
+      ],
+      "title": "A lost compare-and-swap race answers 409 ref_changed and any other write failure answers 500, keeping the backup",
+      "given": [
+        "a real trunk and fork with diverged tips",
+        "a hook point that makes a hub push move the local branch between SHA resolution and the write",
+        "a second scenario where update-ref fails for another reason (read-only ref lock)"
+      ],
+      "when": "the reset runs in each scenario",
+      "then": [
+        "the race returns 409 error type ref_changed and message \"patch branch changed during reset; retry\"",
+        "the backup written before the failed move stays and points at the tip read before the race",
+        "the other failure returns 500 \"failed to update patch branch <branch>\"",
+        "no further ref writes happen after the failure"
+      ],
+      "pseudocode": "r = reset(with_race); assert r.status == 409 and r.json.error.type == 'ref_changed'; assert rev(backup) == tip_read; r = reset(other_fail); assert r.status == 500 and r.msg == 'failed to update patch branch b'"
+    },
+    {
+      "id": "TS-23-25",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.1"
+      ],
+      "title": "In origin mode every completed reset records in_sync state with the fork tip and the current time",
+      "given": [
+        "PATCH_BRANCH_SOURCE=origin",
+        "a real PatchStore on a test database",
+        "a patch with origin_sync_state diverged",
+        "reset scenarios for created, none, fast_forwarded and replaced"
+      ],
+      "when": "each reset completes",
+      "then": [
+        "the patch row has origin_sync_state in_sync",
+        "origin_sha equals the fork tip",
+        "origin_synced_at is within a few seconds of now"
+      ],
+      "pseudocode": "for action in actions: setup(action); reset(); row = store.get(patch); assert row.origin_sync_state == 'in_sync'; assert row.origin_sha == fork_tip; assert now - row.origin_synced_at < 5s"
+    },
+    {
+      "id": "TS-23-26",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.2"
+      ],
+      "title": "In hub mode a reset writes no origin sync state",
+      "given": [
+        "PATCH_BRANCH_SOURCE=hub",
+        "a patch row with null origin_* columns and a recording PatchStore"
+      ],
+      "when": "a replaced reset completes",
+      "then": [
+        "the origin-state PatchStore method is never called",
+        "origin_sync_state, origin_sha and origin_synced_at are unchanged"
+      ],
+      "pseudocode": "reset(); assert store.origin_state_calls == 0; assert row_after == row_before"
+    },
+    {
+      "id": "TS-23-27",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.3"
+      ],
+      "title": "A moved active or conflict patch enqueues a rebuild submitted by the caller",
+      "given": [
+        "a real job queue",
+        "a patch with status active, then one with conflict",
+        "AUTO_REBUILD_AFTER_SYNC unset",
+        "resets with action created, fast_forwarded and replaced"
+      ],
+      "when": "each reset completes",
+      "then": [
+        "one rebuild job is enqueued with key slug, group slug:integration_branch and the payload from BuildRebuildPayload",
+        "SubmittedBy equals the caller",
+        "the response has rebuild_triggered true and rebuild_job_id equal to the job id"
+      ],
+      "pseudocode": "r = reset(); job = queue.get(r.rebuild_job_id); assert job.type == 'rebuild' and job.key == slug and job.group == f'{slug}:{integration}'; assert job.submitted_by == caller; assert r.rebuild_triggered"
+    },
+    {
+      "id": "TS-23-28",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.4"
+      ],
+      "title": "AUTO_REBUILD_AFTER_SYNC=false suppresses the rebuild after a branch move",
+      "given": [
+        "variable AUTO_REBUILD_AFTER_SYNC set to \"false\"",
+        "an active patch whose reset will replace the branch"
+      ],
+      "when": "the reset runs",
+      "then": [
+        "the branch moves",
+        "no job is in the queue",
+        "response rebuild_triggered is false and has no rebuild_job_id"
+      ],
+      "pseudocode": "r = reset(); assert r.rebuild_triggered == False; assert 'rebuild_job_id' not in r; assert queue.count() == 0"
+    },
+    {
+      "id": "TS-23-29",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.5"
+      ],
+      "title": "A moved disabled patch triggers no rebuild",
+      "given": [
+        "a disabled patch whose branch differs from the fork tip"
+      ],
+      "when": "the reset runs",
+      "then": [
+        "the branch moves to the fork tip",
+        "no job is enqueued",
+        "rebuild_triggered is false with no rebuild_job_id"
+      ],
+      "pseudocode": "r = reset(disabled_patch); assert rev(branch) == fork_tip; assert queue.count() == 0; assert not r.rebuild_triggered"
+    },
+    {
+      "id": "TS-23-30",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.6"
+      ],
+      "title": "A reset with action none enqueues no rebuild",
+      "given": [
+        "local and fork tips identical",
+        "an active patch"
+      ],
+      "when": "the reset runs",
+      "then": [
+        "the status is 200",
+        "rebuild_triggered is false",
+        "no job is enqueued"
+      ],
+      "pseudocode": "r = reset(); assert r.status == 200 and r.action == 'none'; assert not r.rebuild_triggered; assert queue.count() == 0"
+    },
+    {
+      "id": "TS-23-31",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.7"
+      ],
+      "title": "A deduplicated rebuild enqueue leaves rebuild_triggered false",
+      "given": [
+        "an already queued rebuild job with the same key and group",
+        "an active patch whose branch will move"
+      ],
+      "when": "the reset runs",
+      "then": [
+        "the status is 200",
+        "rebuild_triggered is false and rebuild_job_id is absent",
+        "the queue still holds one job"
+      ],
+      "pseudocode": "enqueue_rebuild(slug); r = reset(); assert r.status == 200 and not r.rebuild_triggered; assert 'rebuild_job_id' not in r; assert queue.count() == 1"
+    },
+    {
+      "id": "TS-23-32",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.8"
+      ],
+      "title": "A rebuild enqueue error is logged and the reset still completes",
+      "given": [
+        "a job queue stub whose Enqueue returns an error",
+        "an active patch whose branch will move"
+      ],
+      "when": "the reset runs",
+      "then": [
+        "the status is 200 with rebuild_triggered false",
+        "the branch has moved to the fork tip",
+        "an error is logged"
+      ],
+      "pseudocode": "r = reset(queue=failing); assert r.status == 200 and not r.rebuild_triggered; assert rev(branch) == fork_tip; assert logs.contains(ERROR_OR_WARN)"
+    },
+    {
+      "id": "TS-23-33",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.1"
+      ],
+      "title": "afc patch reset-to-origin posts to the endpoint with no body and prints the JSON result",
+      "given": [
+        "a stub HTTP server answering 200 with a patch JSON including replaced_sha"
+      ],
+      "when": "the command runs with args <slug> <patch-id>",
+      "then": [
+        "the stub received POST /api/v1/workspaces/<slug>/patches/<id>/reset-to-origin",
+        "the request body was empty",
+        "the exit code is 0 and stdout holds the response JSON"
+      ],
+      "pseudocode": "out, code = run(['patch','reset-to-origin','ws','7']); assert stub.method == 'POST' and stub.path == '/api/v1/workspaces/ws/patches/7/reset-to-origin'; assert stub.body == ''; assert code == 0; assert json(out) == response"
+    },
+    {
+      "id": "TS-23-34",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.2"
+      ],
+      "title": "The command rejects any argument count other than two and sends no request",
+      "given": [
+        "a stub HTTP server counting requests"
+      ],
+      "when": "the command runs with zero, one and three positional arguments",
+      "then": [
+        "each invocation returns a non-zero exit code",
+        "the stub received zero requests"
+      ],
+      "pseudocode": "for args in [[], ['ws'], ['ws','1','x']]: code = run(['patch','reset-to-origin']+args); assert code != 0; assert stub.requests == 0"
+    },
+    {
+      "id": "TS-23-35",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.3"
+      ],
+      "title": "A server error status propagates through CLIHandleError with a non-zero exit",
+      "given": [
+        "a stub server answering 409 with message \"patch status deleted cannot be reset\"",
+        "a second stub answering 502 origin fetch failed"
+      ],
+      "when": "the command runs against each stub",
+      "then": [
+        "the exit code is non-zero",
+        "the server message is reported on the error output",
+        "the command has SilenceErrors and SilenceUsage set, so no usage text is printed"
+      ],
+      "pseudocode": "out, err, code = run(...); assert code != 0; assert 'cannot be reset' in err; assert 'Usage:' not in err+out; assert cmd.SilenceErrors and cmd.SilenceUsage"
+    },
+    {
+      "id": "TS-23-36",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.4"
+      ],
+      "title": "Help text names the backup ref and replaced_sha and the command defines no flags",
+      "given": [
+        "the constructed PatchCmd tree"
+      ],
+      "when": "the reset-to-origin subcommand is found and its help is rendered",
+      "then": [
+        "help contains \"refs/hub/replaced/\" and \"replaced_sha\"",
+        "the command defines no local flags and no --force flag"
+      ],
+      "pseudocode": "c = find(PatchCmd, 'reset-to-origin'); h = help(c); assert 'refs/hub/replaced/' in h and 'replaced_sha' in h; assert c.LocalFlags().lookup('force') is None; assert count(c.LocalNonPersistentFlags()) == 0"
+    },
+    {
+      "id": "TS-23-37",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.1"
+      ],
+      "title": "A real git push that creates, updates or deletes refs/hub/replaced/ is rejected with the fixed message and keeps the old value",
+      "given": [
+        "a running git server over a real trunk with a git:write credential",
+        "a pre-receive hook registered that would accept everything",
+        "an existing refs/hub/replaced/feature ref"
+      ],
+      "when": "a client runs git push for a create of refs/hub/replaced/new, an update of refs/hub/replaced/feature and a delete of refs/hub/replaced/feature",
+      "then": [
+        "each push shows unpack ok and `ng <ref> refs/hub/replaced/ is maintained by the hub and cannot be pushed to`",
+        "the registered hook was never consulted for these refs",
+        "the trunk's refs/hub/replaced/feature keeps its old value and refs/hub/replaced/new does not exist"
+      ],
+      "pseudocode": "out = git_push('+X:refs/hub/replaced/new'); assert 'ng refs/hub/replaced/new refs/hub/replaced/ is maintained by the hub and cannot be pushed to' in out; assert hook.calls == 0; assert rev(trunk, backup) == before"
+    },
+    {
+      "id": "TS-23-38",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-6.2"
+      ],
+      "title": "Any ref under refs/hub/replaced/ is rejected for any workspace mode, credential and hook state",
+      "given": [
+        "git servers over workspaces in standard and carry_patch modes",
+        "with and without a registered pre-receive hook",
+        "admin, api key and PAT credentials holding git:write"
+      ],
+      "when": "for any ref name starting with refs/hub/replaced/ (including nested and unusual names) and any of those combinations, a client pushes a create, update or delete",
+      "then": [
+        "the ref is rejected with the protected-namespace message",
+        "the trunk ref is unchanged"
+      ],
+      "pseudocode": "for mode, hook, cred, name, op in product(modes, hooks, creds, gen_names('refs/hub/replaced/'), ops): out = push(op, name); assert rejected(out, name); assert trunk_ref(name) == before"
+    },
+    {
+      "id": "TS-23-39",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.3"
+      ],
+      "title": "A push mixing a protected ref and a normal branch writes the branch and rejects only the protected ref",
+      "given": [
+        "a running git server over a real trunk",
+        "an existing backup ref"
+      ],
+      "when": "one git push carries refs/hub/replaced/feature and refs/heads/newbranch",
+      "then": [
+        "unpack ok is reported with one ng line for the protected ref and one ok for refs/heads/newbranch",
+        "refs/heads/newbranch exists in the trunk at the pushed commit",
+        "refs/hub/replaced/feature keeps its old value"
+      ],
+      "pseudocode": "out = push(['X:refs/hub/replaced/feature','X:refs/heads/newbranch']); assert 'ok refs/heads/newbranch' in out and 'ng refs/hub/replaced/feature' in out; assert rev(trunk,'refs/heads/newbranch') == X; assert rev(trunk, backup) == before"
+    },
+    {
+      "id": "TS-23-40",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.4"
+      ],
+      "title": "A rejected protected ref triggers no head_sha update, audit entry or post-push hook",
+      "given": [
+        "a git server wired with a recording head_sha updater, audit emitter and post-push hook",
+        "a push containing only a protected ref"
+      ],
+      "when": "the push is rejected",
+      "then": [
+        "head_sha is unchanged",
+        "no audit entry is emitted",
+        "the post-push hook is not called"
+      ],
+      "pseudocode": "push('X:refs/hub/replaced/f'); assert head_sha_updates == 0; assert audit.events == []; assert post_push.calls == 0"
+    },
+    {
+      "id": "TS-23-41",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-6.5"
+      ],
+      "title": "Ref names outside refs/hub/replaced/ are never rejected by the protected-namespace rule",
+      "given": [
+        "a git server over a real trunk with no pre-receive hook registered"
+      ],
+      "when": "for any ref name outside the prefix, including refs/hub/forward/x, refs/hub/replaced (no trailing slash), refs/hub/replacedx, refs/heads/hub/replaced/x and arbitrary branch names, a client pushes a create",
+      "then": [
+        "the ref is accepted and written",
+        "the protected-namespace message never appears"
+      ],
+      "pseudocode": "for name in gen_names_not_prefixed('refs/hub/replaced/'): out = push('X:'+name); assert 'ok '+name in out; assert 'maintained by the hub' not in out"
+    },
+    {
+      "id": "TS-23-42",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.6"
+      ],
+      "title": "ls-remote lists the backup ref and a client can fetch it by name",
+      "given": [
+        "a running git server over a trunk holding refs/hub/replaced/feature at a commit not reachable from any branch"
+      ],
+      "when": "a client runs git ls-remote and git fetch <hub_url> refs/hub/replaced/feature",
+      "then": [
+        "ls-remote output includes refs/hub/replaced/feature with the backup SHA",
+        "the fetch succeeds and the client obtains the backup commit"
+      ],
+      "pseudocode": "assert (SHA+'\\trefs/hub/replaced/feature') in git('ls-remote', url); git('fetch', url, 'refs/hub/replaced/feature'); assert git('rev-parse FETCH_HEAD') == SHA"
+    },
+    {
+      "id": "TS-23-43",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.7"
+      ],
+      "title": "Hub-internal writes to refs/hub/replaced/ are unaffected by the git server rule",
+      "given": [
+        "a real trunk served by the git server",
+        "a hub-internal update-ref and a reset that writes a backup"
+      ],
+      "when": "the backup ref is written by update-ref, overwritten, then deleted by the recovery hook",
+      "then": [
+        "each internal write succeeds",
+        "a client fetch sees the value after each write"
+      ],
+      "pseudocode": "runner.UpdateRef(backup, A); assert fetch(backup) == A; runner.UpdateRef(backup, B); assert fetch(backup) == B; hook.RemoveBackup(slug, b); assert rev_or_none(backup) is None"
+    },
+    {
+      "id": "TS-23-44",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-7.1"
+      ],
+      "title": "Removing a patch deletes its backup ref and answers 204",
+      "given": [
+        "a real trunk holding refs/hub/replaced/<branch>",
+        "the real carrypatch recovery hook registered",
+        "the patch row for that branch"
+      ],
+      "when": "the owner sends DELETE /workspaces/:slug/patches/:id",
+      "then": [
+        "the status is 204",
+        "the patch row is gone",
+        "refs/hub/replaced/<branch> no longer exists",
+        "the hook used the branch name from the pre-deletion lookup"
+      ],
+      "pseudocode": "r = delete(path); assert r.status == 204; assert rev_or_none(trunk, backup) is None; assert row_missing(id)"
+    },
+    {
+      "id": "TS-23-45",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-7.2"
+      ],
+      "title": "Removal with no backup ref is a silent success",
+      "given": [
+        "a real trunk without refs/hub/replaced/<branch>",
+        "the real recovery hook",
+        "a log capture"
+      ],
+      "when": "the patch is removed",
+      "then": [
+        "the status is 204",
+        "no warn-level log entry is recorded"
+      ],
+      "pseudocode": "r = delete(path); assert r.status == 204; assert count(logs, WARN) == 0"
+    },
+    {
+      "id": "TS-23-46",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-7.3"
+      ],
+      "title": "Removal in a workspace whose trunk is missing succeeds with one info log",
+      "given": [
+        "an archived workspace with no trunk directory on disk",
+        "the real recovery hook",
+        "a log capture"
+      ],
+      "when": "a patch of that workspace is removed",
+      "then": [
+        "the status is 204",
+        "one info-level log entry notes the missing trunk",
+        "no warn-level entry is recorded"
+      ],
+      "pseudocode": "r = delete(path); assert r.status == 204; assert count(logs, INFO, contains='trunk') == 1; assert count(logs, WARN) == 0"
+    },
+    {
+      "id": "TS-23-47",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-7.4"
+      ],
+      "title": "A hook failure on removal logs a warn entry with slug, branch and error and still answers 204",
+      "given": [
+        "a stub hook whose RemoveBackup returns an error",
+        "a log capture"
+      ],
+      "when": "the patch is removed",
+      "then": [
+        "the status is 204",
+        "the row is deleted",
+        "a warn entry carries slug, branch and the error"
+      ],
+      "pseudocode": "r = delete(path); assert r.status == 204; w = logs.warn(); assert w.slug == slug and w.branch == b and w.error != ''"
+    },
+    {
+      "id": "TS-23-48",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-7.5"
+      ],
+      "title": "Removal during a running sync does not take the workspace lock and answers 204",
+      "given": [
+        "wslock held for the slug by a simulated sync",
+        "a backup ref in the trunk"
+      ],
+      "when": "the patch is removed",
+      "then": [
+        "the status is 204, never 409",
+        "the backup ref is deleted",
+        "the lock remained held by the sync until released by the test"
+      ],
+      "pseudocode": "unlock = wslock.TryLock(slug); r = delete(path); assert r.status == 204; assert rev_or_none(backup) is None"
+    },
+    {
+      "id": "TS-23-49",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-7.6"
+      ],
+      "title": "Removal with no recovery hook registered works as before",
+      "given": [
+        "the recovery hook is nil",
+        "a trunk holding a backup ref"
+      ],
+      "when": "the patch is removed",
+      "then": [
+        "the status is 204",
+        "the row is deleted",
+        "the backup ref is untouched"
+      ],
+      "pseudocode": "RegisterRecoveryHook(nil); r = delete(path); assert r.status == 204; assert rev(backup) == before"
+    },
+    {
+      "id": "TS-23-50",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-7.7"
+      ],
+      "title": "Soft deletion by a rebuild and a later restore keep the backup ref intact",
+      "given": [
+        "a patch with a backup ref pointing at SHA S",
+        "a real SQLPatchStore"
+      ],
+      "when": "SoftDeletePatch runs, then POST .../restore is called",
+      "then": [
+        "the backup ref equals S after the soft deletion",
+        "the backup ref equals S after the restore",
+        "the patch is active again"
+      ],
+      "pseudocode": "store.SoftDeletePatch(id); assert rev(backup) == S; r = post_restore(path); assert r.status == 200; assert rev(backup) == S"
+    },
+    {
+      "id": "TS-23-51",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-8.1"
+      ],
+      "title": "The PatchStore expired-listing method returns id, slug and branch for soft-deleted rows older than the cutoff and every double implements it",
+      "given": [
+        "a test database with soft-deleted rows older and newer than a cutoff, plus an active row",
+        "every PatchStore test double compiled against the interface"
+      ],
+      "when": "the listing method is called with the cutoff on SQLPatchStore",
+      "then": [
+        "only the older soft-deleted rows are returned, each with id, workspace slug and branch name",
+        "active rows and newer deleted rows are excluded",
+        "all test doubles compile against the interface"
+      ],
+      "pseudocode": "rows = store.ListExpiredDeletedPatches(ctx, cutoff); assert ids(rows) == old_deleted_ids; assert all(r.Slug and r.Branch for r in rows)"
+    },
+    {
+      "id": "TS-23-52",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.2"
+      ],
+      "title": "The ref-aware purge removes each expired row's backup ref, deletes the row by id and returns the count",
+      "given": [
+        "a real database and workspace roots with trunks",
+        "two expired soft-deleted rows, one with a backup ref and one without, in different workspaces",
+        "the carry-patch git runner factory"
+      ],
+      "when": "the ref-aware purge routine runs with the 7-day retention",
+      "then": [
+        "both backup refs are gone or absent",
+        "both rows are deleted",
+        "the return value is 2",
+        "rows are deleted only while status='deleted'"
+      ],
+      "pseudocode": "n = PurgeExpiredDeletedPatchesWithRefs(ctx, store, root, factory); assert n == 2; assert rev_or_none(t1, backup) is None; assert rows_count() == 0"
+    },
+    {
+      "id": "TS-23-53",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.3"
+      ],
+      "title": "A failing ref removal keeps the row for the next purge, logs a warn and continues",
+      "given": [
+        "three expired rows",
+        "a runner factory whose update-ref -d fails for the second row's workspace",
+        "a log capture"
+      ],
+      "when": "the purge runs, then runs again with the failure cleared",
+      "then": [
+        "the first run returns 2, the failing row remains with status deleted and a warn is logged",
+        "the other rows are purged",
+        "the second run purges the remaining row and returns 1"
+      ],
+      "pseudocode": "n = purge(); assert n == 2; assert row(r2).status == 'deleted'; assert logs.warn(); fix(); assert purge() == 1"
+    },
+    {
+      "id": "TS-23-54",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.4"
+      ],
+      "title": "A missing backup ref or missing trunk counts as success and the row is purged",
+      "given": [
+        "one expired row whose trunk lacks the backup ref",
+        "one expired row whose workspace trunk directory does not exist"
+      ],
+      "when": "the purge runs",
+      "then": [
+        "both rows are deleted",
+        "the return value is 2"
+      ],
+      "pseudocode": "n = purge(); assert n == 2; assert rows_count() == 0"
+    },
+    {
+      "id": "TS-23-55",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.5"
+      ],
+      "title": "Rows within the retention window and their backup refs are untouched",
+      "given": [
+        "a soft-deleted row deleted 6 days ago with a backup ref",
+        "an expired row 8 days old"
+      ],
+      "when": "the purge runs",
+      "then": [
+        "the 6-day-old row still exists with status deleted",
+        "its backup ref is unchanged",
+        "only the 8-day-old row is purged"
+      ],
+      "pseudocode": "n = purge(); assert n == 1; assert row(recent).exists; assert rev(recent_backup) == before"
+    },
+    {
+      "id": "TS-23-56",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-8.6"
+      ],
+      "title": "PurgeDeletedPatches and the two-argument PurgeExpiredDeletedPatches keep their behaviour without ref cleanup",
+      "given": [
+        "expired soft-deleted rows with backup refs in a trunk"
+      ],
+      "when": "PurgeDeletedPatches(ctx, olderThan) and PurgeExpiredDeletedPatches(ctx, store) are called",
+      "then": [
+        "PurgeDeletedPatches keeps its signature and returns the deleted count",
+        "PurgeExpiredDeletedPatches(ctx, store) deletes expired rows with a 7-day cutoff",
+        "neither touches backup refs",
+        "the ref-aware routine is a separate function"
+      ],
+      "pseudocode": "n = store.PurgeDeletedPatches(ctx, cutoff); assert n == k; n2 = PurgeExpiredDeletedPatches(ctx, store); assert rev(backup) == before"
+    },
+    {
+      "id": "TS-23-57",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-8.7"
+      ],
+      "title": "A failure listing expired rows returns the error and deletes nothing",
+      "given": [
+        "a store double whose listing method returns an error",
+        "a runner factory recording calls"
+      ],
+      "when": "the ref-aware purge runs",
+      "then": [
+        "a non-nil error is returned",
+        "the purged count is 0",
+        "no row delete and no ref removal was attempted"
+      ],
+      "pseudocode": "n, err = purge(failing_list); assert err != None and n == 0; assert store.deletes == 0 and runner.calls == 0"
+    },
+    {
+      "id": "TS-23-58",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-8.8"
+      ],
+      "title": "cmd/af-hub/main.go adds no purge scheduler or purge call",
+      "given": [
+        "the source of cmd/af-hub"
+      ],
+      "when": "the source is scanned for PurgeExpiredDeletedPatches, PurgeDeletedPatches and the ref-aware purge name, and for new ticker or goroutine loops tied to them",
+      "then": [
+        "no match is found"
+      ],
+      "pseudocode": "src = read('cmd/af-hub/*.go'); for name in purge_names: assert name not in src"
+    },
+    {
+      "id": "TS-23-59",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.1"
+      ],
+      "title": "The workspace package defines the recovery hook with a nil default, a registration function and three operations",
+      "given": [
+        "the workspace package"
+      ],
+      "when": "the hook type is inspected and registration is exercised",
+      "then": [
+        "the hook lives in a new file next to branch_check_hook.go",
+        "the default registered value is nil",
+        "after registration handlers see the hook",
+        "the type carries read-replaced-SHA, remove-backup and run-reset operations, the last taking slug, patch and *apikit.AuthInfo"
+      ],
+      "pseudocode": "assert currentRecoveryHook() is None; Register(stub); assert currentRecoveryHook() is stub; assert has_methods(stub, ['ReadReplacedSHA','RemoveBackup','RunReset'])"
+    },
+    {
+      "id": "TS-23-60",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.2"
+      ],
+      "title": "Each classified reset error maps to its status code, error type and message",
+      "given": [
+        "a stub hook returning each classified error in turn"
+      ],
+      "when": "the reset handler runs",
+      "then": [
+        "busy gives 409 workspace_busy with the busy message",
+        "missing on origin gives 409 missing_on_origin",
+        "fetch failure gives 502 origin_fetch_failed \"origin fetch failed\"",
+        "credential failure gives 502 \"failed to resolve origin credentials\"",
+        "ref changed gives 409 ref_changed",
+        "other failure gives 500 \"failed to update patch branch <branch>\""
+      ],
+      "pseudocode": "for err, status, typ, msg in table: r = post(path, hook_returns=err); assert (r.status, r.json.error.type, r.json.error.message) == (status, typ, msg)"
+    },
+    {
+      "id": "TS-23-61",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.3"
+      ],
+      "title": "carrypatch implements the hook, main registers it, and workspace and carrypatch do not import each other",
+      "given": [
+        "the module's package graph and cmd/af-hub/main.go"
+      ],
+      "when": "go list -deps is run for internal/workspace and internal/carrypatch and main.go is scanned",
+      "then": [
+        "internal/workspace does not depend on internal/carrypatch",
+        "internal/carrypatch does not depend on internal/workspace",
+        "main.go registers the carrypatch recovery hook next to the existing hooks",
+        "the carrypatch hook accepts an injectable fetch function"
+      ],
+      "pseudocode": "assert 'internal/carrypatch' not in deps('internal/workspace'); assert 'internal/workspace' not in deps('internal/carrypatch'); assert 'RegisterRecoveryHook' in read('cmd/af-hub/main.go')"
+    },
+    {
+      "id": "TS-23-62",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.4"
+      ],
+      "title": "The new routes use only the shared auth helpers and no custom context keys or auth structs",
+      "given": [
+        "the sources of the new handlers and routes in internal/workspace"
+      ],
+      "when": "the handler files are scanned and an unauthenticated request is sent to each new route",
+      "then": [
+        "handlers call requirePatchReadScope, requirePatchWriteScope, lookupPatchWorkspace and apikit.GetAuthInfo",
+        "no c.Get or c.Set with a custom key and no local auth struct appear",
+        "unauthenticated requests are rejected"
+      ],
+      "pseudocode": "src = read(new_handler_files); assert 'requirePatchReadScope' in src and 'requirePatchWriteScope' in src; assert not re.search(r'c\\.(Get|Set)\\(\"', src)"
+    },
+    {
+      "id": "TS-23-63",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.5"
+      ],
+      "title": "Documentation describes the new endpoints, removal cleanup, push rejection and event, and configuration.md is unchanged",
+      "given": [
+        "the docs directory after the change"
+      ],
+      "when": "the docs are scanned",
+      "then": [
+        "docs/api.md has GET and reset-to-origin sections, replaced_sha, the recovery command, the removal note, the push rejection message, the permissions-table lines and hub.patch.reset",
+        "docs/openapi.yaml has the get operation, the /reset-to-origin path and the replaced_sha, rebuild_triggered and rebuild_job_id properties",
+        "docs/cli.md, docs/permissions.md and docs/carry_patch_workflow.md mention the new command or endpoints",
+        "docs/architecture.md mentions the recovery hook if it lists other hooks",
+        "docs/configuration.md is unchanged"
+      ],
+      "pseudocode": "assert 'reset-to-origin' in read('docs/api.md') and 'replaced_sha' in read('docs/openapi.yaml'); assert 'reset-to-origin' in read('docs/cli.md'); assert git_diff('docs/configuration.md') == ''"
+    },
+    {
+      "id": "TS-23-64",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.1"
+      ],
+      "title": "A successful reset emits one hub.patch.reset event with the specified actor, resource and metadata for each action",
+      "given": [
+        "a recording audit emitter",
+        "the constant EventPatchReset in internal/audit/types.go",
+        "reset scenarios for none, created, fast_forwarded and replaced"
+      ],
+      "when": "each reset completes",
+      "then": [
+        "exactly one hub.patch.reset event is emitted",
+        "resource_type is patch, the slug is set and the actor is the caller",
+        "metadata holds branch_name, action, local_sha and origin_sha matching the refs"
+      ],
+      "pseudocode": "ev = audit.events_of('hub.patch.reset'); assert len(ev) == 1; assert ev[0].resource_type == 'patch' and ev[0].actor == caller; assert ev[0].meta.action == expected and ev[0].meta.origin_sha == fork_tip"
+    },
+    {
+      "id": "TS-23-65",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-10.2"
+      ],
+      "title": "hub.patch.reset metadata omits local_sha without a local branch and carries replaced_sha only for replaced",
+      "given": [
+        "a recording audit emitter"
+      ],
+      "when": "for any reset outcome (local branch present or absent, action in none, created, fast_forwarded, replaced)",
+      "then": [
+        "local_sha key is absent exactly when there was no local branch",
+        "replaced_sha key is present exactly when action is replaced and equals the pre-reset local tip",
+        "action is one of the four allowed values"
+      ],
+      "pseudocode": "for o in gen_outcomes(): m = emit(o).meta; assert ('local_sha' in m) == o.had_local; assert ('replaced_sha' in m) == (o.action == 'replaced'); assert m.action in ALLOWED"
+    },
+    {
+      "id": "TS-23-66",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.3"
+      ],
+      "title": "A replaced reset also emits hub.patch.replace with trigger reset_to_origin",
+      "given": [
+        "a recording audit emitter",
+        "a diverged patch"
+      ],
+      "when": "the reset runs",
+      "then": [
+        "one hub.patch.replace event is emitted",
+        "its metadata has branch_name, replaced_sha, origin_sha and trigger equal to reset_to_origin",
+        "no hub.patch.replace is emitted for none, created or fast_forwarded"
+      ],
+      "pseudocode": "ev = audit.events_of('hub.patch.replace'); assert len(ev) == 1; assert ev[0].meta.trigger == 'reset_to_origin'; assert ev[0].meta.replaced_sha == local_before"
+    },
+    {
+      "id": "TS-23-67",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.4"
+      ],
+      "title": "hub.patch.replace events emitted by sync carry no trigger key",
+      "given": [
+        "a workspace with PATCH_DIVERGENCE_POLICY set to replace and a diverged patch",
+        "a recording audit emitter"
+      ],
+      "when": "sync runs and replaces the branch",
+      "then": [
+        "a hub.patch.replace event is emitted",
+        "its metadata has no trigger key"
+      ],
+      "pseudocode": "sync(); ev = audit.events_of('hub.patch.replace')[0]; assert 'trigger' not in ev.meta"
+    },
+    {
+      "id": "TS-23-68",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.5"
+      ],
+      "title": "A failed reset emits no audit event",
+      "given": [
+        "a recording audit emitter",
+        "failure scenarios: busy, credential failure, fetch failure, missing on origin, ref changed, update failure"
+      ],
+      "when": "the reset runs in each failure scenario",
+      "then": [
+        "each returns its documented error status",
+        "zero hub.patch.reset and zero hub.patch.replace events are recorded"
+      ],
+      "pseudocode": "for s in failures: r = reset(s); assert r.status in (409,502,500); assert audit.events == []"
+    },
+    {
+      "id": "TS-23-69",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-10.6"
+      ],
+      "title": "A nil or failing audit emitter does not change the reset response",
+      "given": [
+        "a stub hook returning a replaced result",
+        "emitter configurations: working, nil, returning an error",
+        "a log capture"
+      ],
+      "when": "the reset handler runs with each configuration",
+      "then": [
+        "status and body are identical in all three",
+        "the failing emitter's error is logged",
+        "the nil emitter causes no panic"
+      ],
+      "pseudocode": "bodies = [post(path, emitter=e) for e in [ok, None, failing]]; assert all(b == bodies[0] for b in bodies); assert logs.contains(emit_error)"
+    },
+    {
+      "id": "TS-23-70",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.7"
+      ],
+      "title": "A replaced reset and a backup removal log at info level with slug, branch and SHAs",
+      "given": [
+        "a log capture",
+        "a diverged patch with a backup ref"
+      ],
+      "when": "a reset replaces the branch and then the patch is removed",
+      "then": [
+        "an info entry for the replacement carries slug, branch, local SHA and origin SHA",
+        "an info entry for the removal carries slug, branch and the removed ref"
+      ],
+      "pseudocode": "reset(); e = logs.info(contains='replace'); assert e.slug and e.branch and e.replaced_sha and e.origin_sha; delete(path); assert logs.info(contains='backup').branch == b"
+    },
+    {
+      "id": "TS-23-71",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-1",
+        "23-REQ-3.6",
+        "23-REQ-4.3",
+        "23-REQ-10.3"
+      ],
+      "title": "An operator resets a diverged patch through the CLI and the rebuild follows",
+      "given": [
+        "a running hub with real handlers, real carrypatch hook, real database, real bare fork and trunk",
+        "PATCH_BRANCH_SOURCE=origin",
+        "a diverged active patch branch",
+        "a real job queue and audit store"
+      ],
+      "when": "afc patch reset-to-origin <slug> <patch-id> is run against the server",
+      "then": [
+        "the CLI exits 0 and prints the patch JSON with replaced_sha, rebuild_triggered true and rebuild_job_id",
+        "the trunk branch equals the fork tip and refs/hub/replaced/<branch> equals the old local tip",
+        "the patch row is in_sync with origin_sha set",
+        "a rebuild job submitted by the caller is queued",
+        "hub.patch.reset and hub.patch.replace (trigger reset_to_origin) audit entries exist"
+      ],
+      "real_components": [
+        "afc CLI",
+        "HTTP server and workspace handlers",
+        "carrypatch recovery hook",
+        "git runner with real git",
+        "bare fork repository",
+        "trunk repository",
+        "job queue",
+        "audit store",
+        "database",
+        "wslock"
+      ]
+    },
+    {
+      "id": "TS-23-72",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-2",
+        "23-REQ-1.1",
+        "23-REQ-6.6"
+      ],
+      "title": "An operator reads replaced_sha and fetches the discarded tip from the hub",
+      "given": [
+        "a running hub with real git server, handlers and hook",
+        "a patch whose branch was replaced so the trunk holds refs/hub/replaced/<branch>"
+      ],
+      "when": "GET /api/v1/workspaces/<slug>/patches/<id> is called, then git fetch <hub_url> refs/hub/replaced/<branch> is run by a client",
+      "then": [
+        "the GET returns replaced_sha with 40 hex characters",
+        "the fetch succeeds",
+        "the fetched commit equals replaced_sha"
+      ],
+      "real_components": [
+        "HTTP server and workspace handlers",
+        "carrypatch recovery hook",
+        "git server (upload-pack via git CLI)",
+        "trunk repository",
+        "real git client",
+        "database"
+      ]
+    },
+    {
+      "id": "TS-23-73",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-3",
+        "23-REQ-6.1",
+        "23-REQ-6.3"
+      ],
+      "title": "A client push mixing a backup ref and a normal branch is partly rejected end to end",
+      "given": [
+        "a running hub git server with a real trunk and a git:write credential",
+        "an existing refs/hub/replaced/<branch> backup"
+      ],
+      "when": "a real git client pushes refs/hub/replaced/<branch> and refs/heads/newbranch in one push",
+      "then": [
+        "the client sees unpack ok, one ng line with the protected-namespace message and one accepted ref",
+        "refs/heads/newbranch exists in the trunk",
+        "the backup keeps its old value"
+      ],
+      "real_components": [
+        "git server receive-pack",
+        "trunk repository",
+        "real git client",
+        "auth middleware",
+        "database"
+      ]
+    },
+    {
+      "id": "TS-23-74",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-4",
+        "23-REQ-7.1"
+      ],
+      "title": "Removing a patch through the CLI deletes its backup ref",
+      "given": [
+        "a running hub with real handlers, hook, database and trunk",
+        "a patch with a backup ref"
+      ],
+      "when": "afc patch remove is run for that patch",
+      "then": [
+        "the call succeeds with 204 semantics",
+        "the patch row is gone and hub.patch.delete is emitted",
+        "refs/hub/replaced/<branch> no longer exists in the trunk"
+      ],
+      "real_components": [
+        "afc CLI",
+        "HTTP server and workspace handlers",
+        "carrypatch recovery hook",
+        "git runner with real git",
+        "trunk repository",
+        "audit store",
+        "database"
+      ]
+    },
+    {
+      "id": "TS-23-75",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-5",
+        "23-REQ-8.2"
+      ],
+      "title": "The ref-aware purge removes backup refs and rows for expired soft-deleted patches",
+      "given": [
+        "a real database with expired and recent soft-deleted rows across two workspaces",
+        "real trunks holding backup refs",
+        "the carry-patch git runner factory"
+      ],
+      "when": "the ref-aware purge routine is invoked with the store, workspace root and factory",
+      "then": [
+        "expired rows and their backup refs are removed",
+        "a row whose ref removal failed is kept",
+        "recent rows remain with their refs",
+        "the returned count equals the purged rows"
+      ],
+      "real_components": [
+        "purge routine",
+        "SQLPatchStore",
+        "git runner factory with real git",
+        "trunk repositories",
+        "database"
+      ]
+    },
+    {
+      "id": "TS-23-76",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-6",
+        "23-REQ-3.2",
+        "23-REQ-10.5"
+      ],
+      "title": "A reset against an unreachable fork returns 502 and leaves everything unchanged",
+      "given": [
+        "a running hub with real handlers, hook and trunk",
+        "a fork URL that refuses connections, using the real fetch",
+        "a recording audit store"
+      ],
+      "when": "POST .../patches/<id>/reset-to-origin is sent",
+      "then": [
+        "the status is 502 with message \"origin fetch failed\" and error type origin_fetch_failed",
+        "the response omits the underlying network error text",
+        "every trunk ref is unchanged and no audit event is recorded",
+        "the workspace lock is free afterwards"
+      ],
+      "real_components": [
+        "HTTP server and workspace handlers",
+        "carrypatch recovery hook",
+        "real single-branch fetch",
+        "git runner with real git",
+        "trunk repository",
+        "audit store",
+        "wslock",
+        "database"
+      ]
+    }
+  ]
+}

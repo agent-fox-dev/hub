@@ -1,0 +1,430 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "23",
+  "spec_name": "patch_divergence_recovery",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/workspace/... ./internal/carrypatch/... ./internal/gitserver/... ./internal/cli/... ./internal/audit/... -count=1 -run 'TS23|Recovery|ResetToOrigin|ReplacedSHA|Purge|Protected'"
+  },
+  "dependencies": [
+    {
+      "spec": "01",
+      "reason": "the rebuild job enqueued by a reset is executed by that spec's executor; its logic is unchanged"
+    },
+    {
+      "spec": "20",
+      "reason": "provides refs/hub/replaced writes, PATCH_BRANCH_SOURCE parser, compare-and-swap ref-move helper, PatchStore origin-state methods, origin credential resolver, the 502 messages and hub.patch.replace event"
+    },
+    {
+      "spec": "21",
+      "reason": "provides the single-branch fork fetch, its missing-branch classification and the workspace/carrypatch hook pattern"
+    },
+    {
+      "spec": "22",
+      "reason": "provides the receive-pack per-ref interception point and accepted-refs-only rule where the protected-namespace rule is added"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Define the workspace recovery hook and add GET /workspaces/:slug/patches/:id with replaced_sha",
+      "criteria": [
+        "23-REQ-1",
+        "23-REQ-9.1"
+      ],
+      "tests": [
+        "TS-23-1",
+        "TS-23-2",
+        "TS-23-3",
+        "TS-23-4",
+        "TS-23-5",
+        "TS-23-6",
+        "TS-23-7",
+        "TS-23-8",
+        "TS-23-59"
+      ],
+      "steps": [
+        "Write TS-23-1..TS-23-8 and TS-23-59 as Go tests in internal/workspace and confirm they fail",
+        "Create internal/workspace/recovery_hook.go next to branch_check_hook.go: a RecoveryHook type (nil default) with three operations ReadReplacedSHA(ctx, slug, branch) (sha string, found bool, err error), RemoveBackup(ctx, slug, branch) error, RunReset(ctx, slug string, patch patchRow-like data incl. branch/status/integration branch, auth *apikit.AuthInfo) (ResetResult, error); a RegisterRecoveryHook function and an unexported current-hook accessor, following the pattern of BranchCheckFunc/CarryPatchSyncFunc",
+        "Define workspace-owned neutral types: ResetResult {Action, LocalSHA, OriginSHA, ReplacedSHA, RebuildTriggered, RebuildJobID} and a classified ResetError with kinds Busy, MissingOnOrigin, FetchFailed, CredentialFailed, RefChanged, Other (so carrypatch need not import workspace; main.go adapts)",
+        "Add handleGetPatch in patch_handlers.go: requirePatchReadScope (accepts patches:read or patches:write), lookupPatchWorkspace for owner/admin and 404 workspace not found, getPatch by id (404 patch not found; soft-deleted rows returned with status deleted)",
+        "Render the existing patchResponse (including origin_* fields); when a hook is registered call ReadReplacedSHA and add replaced_sha only when found; omit on not found, missing trunk, nil hook; on hook error log slog.Warn and omit",
+        "Do not add replaced_sha to list/add/update/restore/sync responses (TS-23-8 property test)",
+        "Mount GET /workspaces/:slug/patches/:id in RegisterRecoveryRoutes/RegisterRoutes in routes.go next to the other patch routes"
+      ],
+      "touches": [
+        "internal/workspace/recovery_hook.go",
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/routes.go",
+        "internal/workspace/recovery_hook_test.go",
+        "internal/workspace/patch_get_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add the reset-to-origin handler, error mapping and hub.patch.reset audit",
+      "criteria": [
+        "23-REQ-2",
+        "23-REQ-9.2",
+        "23-REQ-9.4",
+        "23-REQ-10.1",
+        "23-REQ-10.2",
+        "23-REQ-10.3",
+        "23-REQ-10.5",
+        "23-REQ-10.6"
+      ],
+      "tests": [
+        "TS-23-9",
+        "TS-23-10",
+        "TS-23-11",
+        "TS-23-12",
+        "TS-23-13",
+        "TS-23-14",
+        "TS-23-16",
+        "TS-23-60",
+        "TS-23-62",
+        "TS-23-69"
+      ],
+      "steps": [
+        "Write the listed tests against a stub RecoveryHook in internal/workspace and confirm they fail",
+        "Add audit.EventPatchReset = \"hub.patch.reset\" in internal/audit/types.go next to EventRebuildFollowup (and register it wherever event types are enumerated/validated); confirm hub.patch.replace constant from spec 20 exists",
+        "Add handleResetPatchToOrigin to patch_handlers.go: requirePatchWriteScope, lookupPatchWorkspace, same 400 'workspace is not active' / 'workspace is not in carry_patch mode' as handleRestorePatch, 409 'workspace clone is not ready' when clone_status != ready",
+        "Check in order: nil hook -> 500 'patch reset is not configured' (after auth/workspace checks, before any git op); unknown patch id 404 'patch not found'; branch equals integration branch 400 'patch branch is the integration branch'; status merged_upstream/deleted 409 'patch status <status> cannot be reset'",
+        "Call hook.RunReset; map ResetError kinds: Busy 409 workspace_busy with message 'another operation is running on this workspace; retry later', MissingOnOrigin 409 missing_on_origin 'branch does not exist on origin', FetchFailed 502 origin_fetch_failed 'origin fetch failed', CredentialFailed 502 'failed to resolve origin credentials', RefChanged 409 ref_changed 'patch branch changed during reset; retry', Other 500 'failed to update patch branch <branch>' using apikit.WriteAPIError/WriteAPIErrorWithType",
+        "On success: render the patch object as GET does (re-read patch row, ReadReplacedSHA) plus rebuild_triggered and rebuild_job_id (only when set); emit hub.patch.reset via emitHubAudit with resource_type patch, slug, metadata {branch_name, action, local_sha (omitted when no local branch), origin_sha, replaced_sha (only for replaced)}; for action replaced also emit hub.patch.replace with branch_name, replaced_sha, origin_sha, trigger=reset_to_origin; nil emitter skips, emit errors are logged only; emit nothing on failure",
+        "Mount POST /workspaces/:slug/patches/:id/reset-to-origin in routes.go; use only apikit.GetAuthInfo and the shared helpers (no c.Get/c.Set custom keys, no local auth structs)"
+      ],
+      "touches": [
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/patch_reset_handler.go",
+        "internal/workspace/routes.go",
+        "internal/audit/types.go",
+        "internal/workspace/patch_reset_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement the carrypatch recovery hook: reset fetch, compare and compare-and-swap move",
+      "criteria": [
+        "23-REQ-3",
+        "23-REQ-9.3"
+      ],
+      "tests": [
+        "TS-23-15",
+        "TS-23-17",
+        "TS-23-18",
+        "TS-23-19",
+        "TS-23-20",
+        "TS-23-21",
+        "TS-23-22",
+        "TS-23-23",
+        "TS-23-24",
+        "TS-23-61"
+      ],
+      "steps": [
+        "Write the listed tests with a real bare fork, real trunk and an injectable fetch stub; confirm they fail",
+        "Create internal/carrypatch/recovery.go: a RecoveryService constructed with the git runner factory, workspace root, variable getter (store.GetVariableValue), spec 20 origin credential resolver, an injectable single-branch fetch func (default: spec 21 fetch), job queue, spec 20 PatchStore methods and PATCH_BRANCH_SOURCE parser; expose ReadReplacedSHA, RemoveBackup and RunReset",
+        "ReadReplacedSHA: runner rev-parse --verify --end-of-options refs/hub/replaced/<branch>^{commit}; absent ref -> not found; missing trunk dir -> not found without error",
+        "RemoveBackup: git update-ref -d refs/hub/replaced/<branch>; missing ref is success; missing trunk is success with slog.Info; other errors returned (shared helper also used by purge)",
+        "RunReset: wslock.TryLock(slug) only inside the hook (busy -> classified Busy error); fetch +refs/heads/<branch>:refs/remotes/origin/<branch> in both modes with credentials via the resolver (credential failure / fetch failure / missing branch classified, underlying text logged not returned); no ref writes on these failures",
+        "Resolve fork tip refs/remotes/origin/<branch>^{commit} and local tip refs/heads/<branch>^{commit}; apply first matching rule: missing local -> CAS create (action created); same SHA -> none; local strict ancestor of fork (GitRunner.IsAncestor on SHAs) -> fast_forwarded, no backup; else write backup with GitRunner.UpdateRef then move (action replaced)",
+        "Move through spec 20's compare-and-swap helper (update-ref <ref> <new> <expected-old>, hard reset of worktree when branch is checked out); if it is not callable from carrypatch, extract and share it rather than duplicate; lost race -> RefChanged, other failure -> Other, keep backup already written, no further writes",
+        "Define carrypatch-local result and error types (no import of workspace); in cmd/af-hub/main.go add an adapter that converts them to the workspace ResetResult/ResetError types and calls workspace.RegisterRecoveryHook next to the existing hook registrations",
+        "Confirm go list -deps shows no import between internal/workspace and internal/carrypatch in either direction"
+      ],
+      "touches": [
+        "internal/carrypatch/recovery.go",
+        "internal/carrypatch/recovery_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Reset: persist origin sync state and trigger the rebuild",
+      "criteria": [
+        "23-REQ-4"
+      ],
+      "tests": [
+        "TS-23-25",
+        "TS-23-26",
+        "TS-23-27",
+        "TS-23-28",
+        "TS-23-29",
+        "TS-23-30",
+        "TS-23-31",
+        "TS-23-32"
+      ],
+      "steps": [
+        "Write the listed tests with a real PatchStore/test database, real job queue and the real recovery service; confirm they fail",
+        "In RunReset, after any completed action and when PATCH_BRANCH_SOURCE parses to origin, call the spec 20 PatchStore origin-state method with in_sync, origin_sha = fork tip and origin_synced_at = now (apikit.NowUTC); in hub mode never call it",
+        "After a move (created, fast_forwarded, replaced) for active or conflict patches, unless AUTO_REBUILD_AFTER_SYNC == \"false\", enqueue a rebuild with jobqueue.EnqueueParams exactly as sync does (type rebuild, key slug, group slug:integration_branch, BuildRebuildPayload, same dedup), SubmittedBy = caller; reuse sync's enqueue helper instead of duplicating, extracting it if unexported inside sync_handlers.go",
+        "Set RebuildTriggered/RebuildJobID only when a job was newly enqueued; deduplicated enqueue -> false; enqueue error -> log and complete with false",
+        "No rebuild for action none, for disabled patches or when the opt-out variable is false"
+      ],
+      "touches": [
+        "internal/carrypatch/recovery.go",
+        "internal/carrypatch/sync_handlers.go",
+        "internal/carrypatch/recovery_rebuild_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Add afc patch reset-to-origin CLI command",
+      "criteria": [
+        "23-REQ-5"
+      ],
+      "tests": [
+        "TS-23-33",
+        "TS-23-34",
+        "TS-23-35",
+        "TS-23-36"
+      ],
+      "steps": [
+        "Write the CLI tests with a stub HTTP server in internal/cli/patch_cmd_test.go style and confirm they fail",
+        "Add a reset-to-origin subcommand to PatchCmd in internal/cli/patch_cmd.go with cobra.ExactArgs(2), SilenceErrors/SilenceUsage as in patch restore",
+        "Send POST /api/v1/workspaces/<slug>/patches/<id>/reset-to-origin with no body via apikit.CLIClientFromCmd, print the JSON result, route errors through apikit.CLIHandleError",
+        "Write help text naming the backup ref refs/hub/replaced/<branch> and the replaced_sha field; define no flags (no --force)"
+      ],
+      "touches": [
+        "internal/cli/patch_cmd.go",
+        "internal/cli/patch_cmd_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Protect refs/hub/replaced/ in the git server receive-pack path",
+      "criteria": [
+        "23-REQ-6"
+      ],
+      "tests": [
+        "TS-23-37",
+        "TS-23-38",
+        "TS-23-39",
+        "TS-23-40",
+        "TS-23-41",
+        "TS-23-42",
+        "TS-23-43"
+      ],
+      "steps": [
+        "Write gitserver tests using real git push/fetch/ls-remote against the test git server; confirm they fail",
+        "Locate spec 22's per-ref interception point in the receive-pack path in internal/gitserver (handlers.go and the receive session code)",
+        "Add a fixed rule evaluated before the registered pre-receive hook: any ref name with prefix refs/hub/replaced/ (create, update, delete) is rejected with per-ref message 'refs/hub/replaced/ is maintained by the hub and cannot be pushed to', independent of workspace mode, credential and hook registration; match exact prefix only (refs/hub/replaced, refs/hub/replacedx, refs/hub/forward/ are not covered)",
+        "Ensure rejected refs are excluded from head_sha update, audit entry and post-push hook (spec 22's accepted-refs-only rule), and other refs in the same push are processed normally",
+        "Add tests asserting ls-remote lists the backup ref and git fetch <url> refs/hub/replaced/<branch> succeeds; assert hub-internal update-ref writes/deletes on the trunk still work and are visible to a fetch",
+        "Make TS-23-38 and TS-23-41 table/property tests over generated ref names, modes, hook states and credential types"
+      ],
+      "touches": [
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/protected_refs.go",
+        "internal/gitserver/protected_refs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Remove the backup ref on afc patch remove",
+      "criteria": [
+        "23-REQ-7"
+      ],
+      "tests": [
+        "TS-23-44",
+        "TS-23-45",
+        "TS-23-46",
+        "TS-23-47",
+        "TS-23-48",
+        "TS-23-49",
+        "TS-23-50"
+      ],
+      "steps": [
+        "Write the listed tests: handler tests with a stub hook and integration tests with the real carrypatch hook and trunk; confirm they fail",
+        "In handleRemovePatch, keep the branch name from the pre-deletion patch lookup; after deletePatchAndCompact succeeds and the hook is registered, call RemoveBackup(slug, branch) without taking wslock",
+        "On hook error log slog.Warn with slug, branch and error and still return 204; nil hook -> skip; missing ref silent success; missing trunk info log (done in the carrypatch RemoveBackup from task 3, verify)",
+        "Verify SoftDeletePatch and restore do not touch refs/hub/replaced/<branch> (TS-23-50) and add the test",
+        "Verify removal during a held wslock returns 204 not 409"
+      ],
+      "touches": [
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/patch_remove_test.go",
+        "internal/carrypatch/recovery_remove_test.go"
+      ],
+      "depends_on": [
+        1,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Ref-aware purge of expired soft-deleted patches",
+      "criteria": [
+        "23-REQ-8"
+      ],
+      "tests": [
+        "TS-23-51",
+        "TS-23-52",
+        "TS-23-53",
+        "TS-23-54",
+        "TS-23-55",
+        "TS-23-56",
+        "TS-23-57",
+        "TS-23-58"
+      ],
+      "steps": [
+        "Write the listed tests (real database, real trunks, failing runner factory double, source scan of cmd/af-hub) and confirm they fail",
+        "Add ListExpiredDeletedPatches(ctx, cutoff) returning rows {ID, Slug, Branch} for status='deleted' and deleted_at older than cutoff to the PatchStore interface; implement in SQLPatchStore (join workspaces for slug) and in every test double",
+        "Add a row-delete-by-id method that only deletes while status='deleted' (reuse existing one if present)",
+        "Add PurgeExpiredDeletedPatchesWithRefs(ctx, store, workspaceRoot, factory) with a 7-day retention: for each expired row remove refs/hub/replaced/<branch> via the shared backup-removal helper (missing ref/trunk = success), then delete the row; on ref failure log warn, keep the row and continue; return purged count; list error -> return (0, err) with no deletes",
+        "Keep PurgeDeletedPatches and two-argument PurgeExpiredDeletedPatches(ctx, store) unchanged (no ref cleanup)",
+        "Do not add any scheduler or purge call to cmd/af-hub/main.go"
+      ],
+      "touches": [
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/carrypatch.go",
+        "internal/carrypatch/purge_refs.go",
+        "internal/carrypatch/purge_refs_test.go",
+        "internal/carrypatch/soft_delete_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Verify audit events and info logging for reset, replace and removal",
+      "criteria": [
+        "23-REQ-10.4",
+        "23-REQ-10.7"
+      ],
+      "tests": [
+        "TS-23-64",
+        "TS-23-65",
+        "TS-23-66",
+        "TS-23-67",
+        "TS-23-68",
+        "TS-23-70"
+      ],
+      "steps": [
+        "Write integration tests wiring the real handlers, real recovery hook and a recording audit emitter for every reset action and failure scenario; confirm which fail",
+        "Ensure one hub.patch.reset per success with correct metadata, local_sha omitted without local branch, replaced_sha only for replaced, plus hub.patch.replace with trigger=reset_to_origin; none on failures",
+        "Confirm spec 20's sync hub.patch.replace emission carries no trigger key; adjust only if a trigger key is present (TS-23-67)",
+        "Add slog.Info entries in RunReset for action replaced (slug, branch, replaced_sha, origin_sha) and in RemoveBackup on successful removal (slug, branch, ref); property test TS-23-65 over generated outcomes"
+      ],
+      "touches": [
+        "internal/carrypatch/recovery.go",
+        "internal/workspace/patch_reset_handler.go",
+        "internal/carrypatch/recovery_audit_test.go"
+      ],
+      "depends_on": [
+        2,
+        3,
+        4,
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update documentation for recovery endpoints, CLI, permissions and push rule",
+      "criteria": [
+        "23-REQ-9.5"
+      ],
+      "tests": [
+        "TS-23-63"
+      ],
+      "steps": [
+        "Write TS-23-63 as a Go docs test (as in internal/carrypatch/docs_test.go) asserting the required strings and that docs/configuration.md is untouched; confirm it fails",
+        "docs/api.md: add GET /api/v1/workspaces/:slug/patches/:id (replaced_sha) and POST .../reset-to-origin (request, response, errors 400/404/409/502, backup-ref semantics, recovery command git fetch <hub_url> refs/hub/replaced/<branch>); update the removal section, git-server push section (rejection message), permissions table lines and the hub.patch.reset event",
+        "docs/openapi.yaml: get operation on /api/v1/workspaces/{slug}/patches/{id}, new /reset-to-origin path with 200/400/404/409/502, properties replaced_sha, rebuild_triggered, rebuild_job_id",
+        "docs/cli.md: afc patch reset-to-origin; docs/permissions.md: patches:read and patches:write endpoint lists",
+        "docs/architecture.md: name the recovery hook if the hook list names the others; docs/carry_patch_workflow.md: two rows in the patch-endpoint table only",
+        "Leave docs/configuration.md unchanged"
+      ],
+      "touches": [
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/cli.md",
+        "docs/permissions.md",
+        "docs/architecture.md",
+        "docs/carry_patch_workflow.md",
+        "internal/carrypatch/docs_test.go"
+      ],
+      "depends_on": [
+        2,
+        5,
+        6,
+        7,
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify all divergence-recovery execution paths end to end",
+      "tests": [
+        "TS-23-71",
+        "TS-23-72",
+        "TS-23-73",
+        "TS-23-74",
+        "TS-23-75",
+        "TS-23-76"
+      ],
+      "steps": [
+        "Write smoke tests TS-23-71..TS-23-76 against real handlers, real carrypatch hook, real database, real git and real afc CLI where specified; confirm they pass",
+        "Trace 23-PATH-1 through CLI -> POST handler -> RecoveryHook.RunReset -> carrypatch (lock, fetch, backup, CAS move, state, rebuild) -> audit -> response; confirm each step calls the next and no stub remains",
+        "Trace 23-PATH-2, 23-PATH-3, 23-PATH-4, 23-PATH-5, 23-PATH-6 likewise; confirm cmd/af-hub/main.go registers the recovery hook and the git server protected-ref rule is on the live receive-pack path",
+        "For each criterion with a contract (reset status/type/message mapping, rebuild_triggered/rebuild_job_id, replaced_sha, ng message), confirm the producer's result is consumed by a production caller, not only tests",
+        "Grep every task's touches for panic(\"not implemented\"), TODO and bare return nil on non-trivial paths and remove them",
+        "Confirm no purge call or scheduler was added to cmd/af-hub/main.go and run make check"
+      ],
+      "touches": [
+        "internal/carrypatch/smoke_recovery_test.go",
+        "internal/gitserver/smoke_protected_refs_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

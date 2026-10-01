@@ -1,0 +1,642 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "22",
+  "spec_name": "fork_push_control",
+  "schema_version": 2,
+  "introduction": "The hub git server enforces a single writer for registered carry-patch branches: in origin mode it rejects or forwards a hub push to the fork before writing its own ref, in hub mode it optionally mirrors accepted pushes to the fork, and only accepted ref updates drive audit, head_sha and post-push side effects.",
+  "glossary": {
+    "PUSH_PATCHES_TO_ORIGIN": "Workspace variable. Only the exact string true enables forwarding (origin mode) or mirroring (hub mode).",
+    "accepted ref update": "A ref update whose report-status entry is ok, or, when no report status is available, one the pre-receive hook did not reject.",
+    "fork": "The upstream repository the trunk was cloned from; the trunk's origin remote and workspaces.git_url point at it.",
+    "forward": "A non-force push of a ref update to the fork, made before the hub writes its own ref (origin mode).",
+    "hub mode": "PATCH_BRANCH_SOURCE=hub (the default): the hub is authoritative for patch branches.",
+    "mirror": "A best-effort force push of a registered patch branch to the fork after the hub accepted the push (hub mode).",
+    "origin mode": "PATCH_BRANCH_SOURCE=origin: the fork is authoritative for patch branches.",
+    "pre-receive hook": "A function registered with gitserver.RegisterPreReceiveHook, called once per ref update after unpacking and before the hub writes the ref. A non-nil error rejects that update.",
+    "registered patch branch": "A branch whose name equals the branch_name of a patches row of a carry_patch workspace, whose status is not deleted, and which is not the workspace integration_branch.",
+    "trunk": "The workspace's bare-style clone at <workspaceRoot>/<slug>/trunk that go-git receive-pack writes into.",
+    "userinfo": "The user:password@ part of a URL, which must be removed from messages, logs and events."
+  },
+  "requirements": [
+    {
+      "id": "22-REQ-1",
+      "title": "Configuration and scope of control",
+      "rationale": "Push control must touch only registered patch branches of carry-patch workspaces and must follow variable changes on the next push.",
+      "criteria": [
+        {
+          "id": "22-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "push control",
+          "action": "treat PUSH_PATCHES_TO_ORIGIN as enabled only when its value is exactly the case-sensitive string true, and as disabled when it is unset, has any other value (including True and 1), or its lookup returns an error"
+        },
+        {
+          "id": "22-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "push control",
+          "action": "read PATCH_BRANCH_SOURCE with the helper provided by spec 20_fork_patch_sync, so that unset, unrecognised and lookup-error values mean hub, and read both variables through GetVariableFunc for each ref update the control applies to, so a variable change takes effect on the next push without a restart"
+        },
+        {
+          "id": "22-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "a ref update targets refs/heads/<name> in a workspace whose workspace_mode is carry_patch, and <name> equals the branch_name of a patches row of that workspace with a status other than deleted, and <name> is not the workspace integration_branch",
+          "system": "push control",
+          "action": "apply push control to that ref update"
+        },
+        {
+          "id": "22-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "a ref update targets a branch whose patches row has status deleted, the integration branch (even if a patches row of that name exists), a branch with no patches row, a tag or any ref outside refs/heads/, or any ref of a standard-mode workspace",
+          "system": "push control",
+          "action": "let the update through exactly as before this spec",
+          "contract": "the hook returns nil, no origin push occurs, and the hub writes the ref"
+        },
+        {
+          "id": "22-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the workspace is in standard mode",
+          "system": "push control",
+          "action": "read neither PUSH_PATCHES_TO_ORIGIN nor PATCH_BRANCH_SOURCE",
+          "contract": "GetVariableFunc is called zero times for that push"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-2",
+      "title": "Pre-receive hook in the git server",
+      "rationale": "Forwarding needs the unpacked commit but must precede the hub ref write, which only a hook at the ref-write step of the receive session provides.",
+      "criteria": [
+        {
+          "id": "22-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "gitserver",
+          "action": "expose RegisterPreReceiveHook(fn PreReceiveHookFunc) in the style of RegisterPostPushHook, where registering nil clears the hook and, with no hook registered, the receive-pack flow behaves as before this spec"
+        },
+        {
+          "id": "22-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "a receive-pack request contains ref updates and a pre-receive hook is registered",
+          "system": "gitserver",
+          "action": "call the hook once per ref update (create, update or delete) in command order, after the pack is unpacked into the trunk and before the hub writes that ref, passing a context bound to the request, the *sql.DB, the workspace slug, the actor identity from apikit.GetAuthInfo (nil-safe) and the update (ref name, old hash, new hash)"
+        },
+        {
+          "id": "22-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the pre-receive hook returns a non-nil error for a ref update",
+          "system": "gitserver",
+          "action": "not write or remove that ref and use the error text as the per-ref status message",
+          "contract": "the ref keeps its old value; the client receives unpack ok and a per-ref ng <ref> <error text>, which git push shows as remote rejected with that message"
+        },
+        {
+          "id": "22-REQ-2.4",
+          "pattern": "complex_event",
+          "condition": "a push contains several ref updates and the hook rejects some of them",
+          "guard": "the other updates are not rejected",
+          "system": "gitserver",
+          "action": "write the non-rejected refs and report each ref with its own status",
+          "contract": "the non-rejected refs are written, the rejected refs are unchanged, and the client output contains the message of the rejected refs only"
+        },
+        {
+          "id": "22-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "the pre-receive hook returns nil for a ref update",
+          "system": "gitserver",
+          "action": "let the hub write (or remove) the ref",
+          "contract": "the ref holds the new value after the push"
+        },
+        {
+          "id": "22-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "gitserver",
+          "action": "consult the hook from the wrapper around the trunk storer on every reference write and removal, keep that wrapper hiding PackfileWriter so thin packs resolve, receive per-request context and actor from the receive-pack handler, and import no code from internal/carrypatch"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-3",
+      "title": "Reject mode (origin source, forwarding off)",
+      "rationale": "Without forwarding, an accepted hub push is a second writer that the next sync would replace or report, so the push is refused.",
+      "criteria": [
+        {
+          "id": "22-REQ-3.1",
+          "pattern": "complex_event",
+          "condition": "a create or update of a registered patch branch is pushed",
+          "guard": "PATCH_BRANCH_SOURCE resolves to origin and PUSH_PATCHES_TO_ORIGIN is not true",
+          "system": "carry-patch pre-receive hook",
+          "action": "reject the update with the message \"branch is synced from origin; push to <git_url> instead\"",
+          "contract": "the hub ref is unchanged and the client sees the per-ref message"
+        },
+        {
+          "id": "22-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "carry-patch pre-receive hook",
+          "action": "for any workspaces.git_url value containing user:password@ userinfo, produce a rejection message in which the userinfo is removed and no credential text appears"
+        },
+        {
+          "id": "22-REQ-3.3",
+          "pattern": "complex_event",
+          "condition": "a delete of a registered patch branch is pushed",
+          "guard": "PATCH_BRANCH_SOURCE resolves to origin and PUSH_PATCHES_TO_ORIGIN is not true",
+          "system": "carry-patch pre-receive hook",
+          "action": "reject the delete with the same message as a create or update",
+          "contract": "the hub branch still exists after the push"
+        },
+        {
+          "id": "22-REQ-3.4",
+          "pattern": "complex_event",
+          "condition": "one push contains a registered patch branch, an unregistered branch and a tag",
+          "guard": "reject mode applies",
+          "system": "carry-patch pre-receive hook",
+          "action": "reject only the registered patch branch",
+          "contract": "the unregistered branch and the tag are written and only the registered branch shows remote rejected"
+        },
+        {
+          "id": "22-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "the hook rejects a ref update in reject mode",
+          "system": "carry-patch pre-receive hook",
+          "action": "log the rejection at info level with the slug, branch and pushing user ID (or unknown when there is no auth info)",
+          "contract": "the push as a whole returns HTTP 200 with the per-ref error in the report"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-4",
+      "title": "Forward mode (origin source, forwarding on)",
+      "rationale": "Forwarding to the fork before the hub writes its ref keeps the fork and the hub from disagreeing because of a hub push.",
+      "criteria": [
+        {
+          "id": "22-REQ-4.1",
+          "pattern": "complex_event",
+          "condition": "a create or update of a registered patch branch is pushed",
+          "guard": "PATCH_BRANCH_SOURCE resolves to origin and PUSH_PATCHES_TO_ORIGIN is true",
+          "system": "carry-patch pre-receive hook",
+          "action": "push the new commit to refs/heads/<name> on the trunk's origin remote with Force false and no + in the refspec before the hub writes its own ref, treating an already-up-to-date result as success",
+          "contract": "on success the hook returns nil, the hub writes its ref, and the branch exists at the same commit on the fork and the hub"
+        },
+        {
+          "id": "22-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "carry-patch pre-receive hook",
+          "action": "push from a commit not yet referenced by a hub ref through a temporary ref under refs/hub/forward/<branch> (or a hash source if go-git supports one) and remove that temporary ref after both success and failure"
+        },
+        {
+          "id": "22-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "carry-patch pre-receive hook",
+          "action": "resolve origin credentials with workspace.ResolveCloneAuth (GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then none) and bound each forward by a 120 second timeout"
+        },
+        {
+          "id": "22-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "origin credential resolution fails",
+          "system": "carry-patch pre-receive hook",
+          "action": "reject the ref without contacting origin",
+          "contract": "the per-ref message is \"failed to resolve origin credentials\" and the hub ref is unchanged"
+        },
+        {
+          "id": "22-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "the forward fails (non-fast-forward, authentication, network error or the 120 second timeout)",
+          "system": "carry-patch pre-receive hook",
+          "action": "reject the update and not write the hub ref",
+          "contract": "the per-ref message is \"origin rejected push: <error>\" with URL userinfo removed from <error>, the hub ref is unchanged and the fork is unchanged"
+        },
+        {
+          "id": "22-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "a forward fails",
+          "system": "carry-patch pre-receive hook",
+          "action": "log at warn level the slug, branch, pushing user and the error with URL userinfo removed"
+        },
+        {
+          "id": "22-REQ-4.7",
+          "pattern": "complex_event",
+          "condition": "a delete of a registered patch branch is pushed",
+          "guard": "PATCH_BRANCH_SOURCE resolves to origin and PUSH_PATCHES_TO_ORIGIN is true",
+          "system": "carry-patch pre-receive hook",
+          "action": "reject the delete without contacting origin",
+          "contract": "the per-ref message is \"branch is synced from origin; delete it on the fork instead\" and neither the hub branch nor the fork branch is deleted"
+        },
+        {
+          "id": "22-REQ-4.8",
+          "pattern": "complex_event",
+          "condition": "one push contains a registered patch branch to forward and a ref the control does not apply to",
+          "guard": "forward mode applies",
+          "system": "carry-patch pre-receive hook",
+          "action": "forward only the registered patch branch and let the other ref through unchanged",
+          "contract": "both refs are written on the hub and only the patch branch exists on the fork"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-5",
+      "title": "Accepted refs only drive side effects",
+      "rationale": "A ref that failed to update must not trigger rebuilds, audit entries or head_sha changes.",
+      "criteria": [
+        {
+          "id": "22-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "handleReceivePack",
+          "action": "classify a ref update as accepted when its entry in the report status is ok, or, when no report status is available, unless the pre-receive hook rejected it"
+        },
+        {
+          "id": "22-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "a push finishes with at least one accepted update",
+          "system": "handleReceivePack",
+          "action": "give emitGitPushAudit only the accepted commands and invoke the post-push hook with extractPushedBranches of the accepted commands only, keeping deletes excluded",
+          "contract": "refs_updated in the hub.git.push event lists accepted refs only and the hook receives accepted branches only"
+        },
+        {
+          "id": "22-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "no ref update of a push was accepted",
+          "system": "handleReceivePack",
+          "action": "emit no hub.git.push event and run no post-push hook",
+          "contract": "no rebuild job is enqueued and the audit log gains no entry for the push"
+        },
+        {
+          "id": "22-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "handleReceivePack",
+          "action": "leave updateHeadSHA unchanged, reading the trunk HEAD, for every push"
+        },
+        {
+          "id": "22-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "handleReceivePack",
+          "action": "for any push, including pushes whose refs failed to update for reasons unrelated to patch branches, invoke the post-push hook and emit the audit event for a subset of the accepted ref updates only, never for a ref whose status is not ok"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-6",
+      "title": "Hub-mode mirror (hub source, forwarding on)",
+      "rationale": "In hub mode the hub is authoritative and the fork should receive its patch branches on a best-effort basis.",
+      "criteria": [
+        {
+          "id": "22-REQ-6.1",
+          "pattern": "complex_event",
+          "condition": "a push that created or updated a registered patch branch was accepted",
+          "guard": "PATCH_BRANCH_SOURCE resolves to hub and PUSH_PATCHES_TO_ORIGIN is true",
+          "system": "post-push rebuild hook",
+          "action": "force-push the branch's current hub tip to origin with the refspec +refs/heads/<name>:refs/heads/<name>, credentials resolved as in 22-REQ-4.3 and a 120 second timeout",
+          "contract": "the branch exists on the fork at the hub tip, including after a rewrite of the branch"
+        },
+        {
+          "id": "22-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "post-push rebuild hook",
+          "action": "run the rebuild enqueue first, unchanged, and then the mirror in the same goroutine, whether the rebuild was enqueued, suppressed by AUTO_REBUILD_AFTER_PUSH=false, or deduplicated"
+        },
+        {
+          "id": "22-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "the mirror of one branch fails or the rebuild enqueue fails",
+          "system": "post-push rebuild hook",
+          "action": "continue with the remaining branches and the mirror respectively, with no retry and no persisted state",
+          "contract": "the push still returns success, the rebuild enqueue is not prevented by a mirror failure, and the other branches of the push are mirrored"
+        },
+        {
+          "id": "22-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "PUSH_PATCHES_TO_ORIGIN is not true, the source resolves to origin, the branch is unregistered or the integration branch, or the workspace is in standard mode",
+          "system": "post-push rebuild hook",
+          "action": "not mirror the branch",
+          "contract": "the fork receives no push for that branch"
+        },
+        {
+          "id": "22-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "post-push rebuild hook",
+          "action": "not mirror branch deletions, because extractPushedBranches excludes deletes"
+        },
+        {
+          "id": "22-REQ-6.6",
+          "pattern": "optional",
+          "condition": "the origin-credentials resolver, workspace root and audit emitter are supplied to NewPostPushRebuildHook",
+          "system": "post-push rebuild hook",
+          "action": "perform the mirror, and with any of those dependencies nil, disable the mirror and leave the rebuild behaviour as before this spec"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-7",
+      "title": "Mirror failure event and logging",
+      "rationale": "A best-effort mirror needs visible failures without affecting the push.",
+      "criteria": [
+        {
+          "id": "22-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a hub-mode mirror of a branch fails",
+          "system": "post-push rebuild hook",
+          "action": "emit the audit event hub.patch.mirror_failed with resource_type patch, action mirror, actor_type system, the workspace slug and metadata {branch_name, error}",
+          "contract": "the error value in metadata has URL userinfo removed"
+        },
+        {
+          "id": "22-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "audit package",
+          "action": "define the hub.patch.mirror_failed event type as a constant in internal/audit/types.go next to EventRebuildFollowup"
+        },
+        {
+          "id": "22-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "a mirror succeeds",
+          "system": "post-push rebuild hook",
+          "action": "log at info level and emit no event",
+          "contract": "no hub.patch.mirror_failed event is emitted"
+        },
+        {
+          "id": "22-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "a mirror fails",
+          "system": "post-push rebuild hook",
+          "action": "log at warn level the slug, branch and error"
+        },
+        {
+          "id": "22-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "the audit emitter is nil or its emit call returns an error",
+          "system": "post-push rebuild hook",
+          "action": "skip emission when nil, or log the emit error, and change nothing else",
+          "contract": "the mirror outcome, the remaining mirrors and the rebuild enqueue are unaffected"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-8",
+      "title": "Failure and boundary behaviour",
+      "rationale": "Deciding whether to control a push fails open so the default hub mode is never blocked by a database error, while forward failures fail closed.",
+      "criteria": [
+        {
+          "id": "22-REQ-8.1",
+          "pattern": "unwanted",
+          "condition": "determining whether control applies fails (workspace-mode query, variable lookup beyond the defaults in 22-REQ-1, or patch registration query)",
+          "system": "carry-patch pre-receive hook",
+          "action": "let the update through and log a warning",
+          "contract": "the hook returns nil and the hub writes the ref"
+        },
+        {
+          "id": "22-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "a forward fails",
+          "system": "carry-patch pre-receive hook",
+          "action": "never accept the update silently",
+          "contract": "the hook returns a non-nil error and the hub ref is not written"
+        },
+        {
+          "id": "22-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "a client does not request report-status",
+          "system": "gitserver",
+          "action": "still reject the update the hook rejected",
+          "contract": "the hub ref is unchanged and the client receives no per-ref message"
+        },
+        {
+          "id": "22-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a receive-pack request has an empty body (no-op push)",
+          "system": "gitserver",
+          "action": "not call the pre-receive hook"
+        },
+        {
+          "id": "22-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "gitserver",
+          "action": "leave the info/refs advertisement, clone and fetch unchanged, and leave pushes to unregistered branches, the integration branch, tags, other refs and standard-mode workspaces unchanged"
+        },
+        {
+          "id": "22-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "gitserver",
+          "action": "not recover a panicking pre-receive hook specially, leaving the existing handler behaviour in force"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-9",
+      "title": "Wiring, documentation and tests",
+      "rationale": "Project steering requires docs and wiring in the same change, and the PRD requires local-bare-repository tests for every behaviour.",
+      "criteria": [
+        {
+          "id": "22-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "cmd/af-hub",
+          "action": "register the carry-patch pre-receive hook with gitserver.RegisterPreReceiveHook and build the post-push hook with the origin-credentials resolver, workspace root and audit emitter, using store.GetVariableValue, workspace.ResolveCloneAuth and the existing audit emitter, apikit helpers for timestamps and auth info, and no local auth structs"
+        },
+        {
+          "id": "22-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "docs/api.md",
+          "action": "list PUSH_PATCHES_TO_ORIGIN in the Workspace Variables Reference, describe in the git-server push section the three behaviours, the per-ref messages and the accepted-refs-only rule, and document the hub.patch.mirror_failed event"
+        },
+        {
+          "id": "22-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "docs/openapi.yaml and docs/architecture.md",
+          "action": "mention the variable and the rejections in the receive-pack route and workspace-variable descriptions of docs/openapi.yaml, and describe the pre-receive hook in the git server section of docs/architecture.md"
+        },
+        {
+          "id": "22-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "docs/carry_patch_workflow.md",
+          "action": "receive exactly two edits: a PUSH_PATCHES_TO_ORIGIN entry in the Configuration section, and the spec 20 note about hub pushes in origin mode updated to describe rejection, forwarding and mirroring, while docs/configuration.md and docs/cli.md stay unchanged"
+        },
+        {
+          "id": "22-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "test suite",
+          "action": "exercise forwards, mirrors and rejections against a local bare repository added as the trunk's origin remote, using the existing newGitTestEnv helpers and a real git push, with the first test proving that go-git reports a failed ref write as a per-ref status"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "22-PATH-1",
+      "title": "Hub push to a registered patch branch is rejected in origin mode",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs git push of an updated registered patch branch to the hub in a workspace with PATCH_BRANCH_SOURCE=origin and PUSH_PATCHES_TO_ORIGIN unset"
+        },
+        {
+          "actor": "gitserver",
+          "action": "unpacks the pack into the trunk and calls the pre-receive hook for the ref update"
+        },
+        {
+          "actor": "carry-patch pre-receive hook",
+          "action": "loads workspace mode, variables and patches row, and returns the error \"branch is synced from origin; push to <git_url> instead\" with userinfo removed"
+        },
+        {
+          "actor": "gitserver",
+          "action": "leaves the hub ref unchanged, reports unpack ok and ng for the ref, emits no hub.git.push event and runs no post-push hook"
+        },
+        {
+          "actor": "developer",
+          "action": "sees remote rejected with the message naming the fork"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-2",
+      "title": "Hub push is forwarded to the fork in origin mode",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs git push of a new commit on a registered patch branch with PATCH_BRANCH_SOURCE=origin and PUSH_PATCHES_TO_ORIGIN=true"
+        },
+        {
+          "actor": "carry-patch pre-receive hook",
+          "action": "creates refs/hub/forward/<branch>, pushes the commit non-force to the origin remote with resolved credentials, and removes the temporary ref"
+        },
+        {
+          "actor": "fork",
+          "action": "accepts the fast-forward and holds the new commit"
+        },
+        {
+          "actor": "gitserver",
+          "action": "writes the hub ref, reports ok, emits hub.git.push with the accepted ref and runs the post-push hook"
+        },
+        {
+          "actor": "developer",
+          "action": "sees the push succeed and the branch at the same commit on the hub and the fork"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-3",
+      "title": "A forward the fork refuses leaves the hub ref unchanged",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "pushes a registered patch branch that is behind the fork's branch, in origin mode with forwarding on"
+        },
+        {
+          "actor": "carry-patch pre-receive hook",
+          "action": "attempts the non-force push to origin and receives a non-fast-forward error"
+        },
+        {
+          "actor": "carry-patch pre-receive hook",
+          "action": "removes the temporary ref, logs a warning and returns \"origin rejected push: <error>\" with userinfo removed"
+        },
+        {
+          "actor": "gitserver",
+          "action": "does not write the hub ref and reports ng for the ref"
+        },
+        {
+          "actor": "developer",
+          "action": "sees remote rejected with the origin error text while the hub and fork refs are unchanged"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-4",
+      "title": "Hub-mode push is mirrored to the fork",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs git push of a registered patch branch with PATCH_BRANCH_SOURCE unset (hub) and PUSH_PATCHES_TO_ORIGIN=true"
+        },
+        {
+          "actor": "gitserver",
+          "action": "writes the hub ref, reports ok, emits hub.git.push and starts the post-push hook goroutine with the accepted branches"
+        },
+        {
+          "actor": "post-push rebuild hook",
+          "action": "enqueues the rebuild job with SubmittedBy system:push-hook according to AUTO_REBUILD_AFTER_PUSH"
+        },
+        {
+          "actor": "post-push rebuild hook",
+          "action": "force-pushes +refs/heads/<name>:refs/heads/<name> to origin with a 120 second timeout"
+        },
+        {
+          "actor": "fork",
+          "action": "holds the branch at the hub tip"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-5",
+      "title": "A failed mirror is reported without failing the push",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "pushes two registered patch branches in hub mode with forwarding on while origin refuses one branch"
+        },
+        {
+          "actor": "post-push rebuild hook",
+          "action": "enqueues the rebuild, then mirrors both branches, and the push to origin of one branch fails"
+        },
+        {
+          "actor": "post-push rebuild hook",
+          "action": "logs a warning and emits hub.patch.mirror_failed with metadata {branch_name, error} having userinfo removed"
+        },
+        {
+          "actor": "audit emitter",
+          "action": "records the event with resource_type patch, action mirror and actor_type system, while the other branch is mirrored and the rebuild job stays enqueued"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-6",
+      "title": "A fork-only branch is registered, then protected from hub pushes",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "registers a fork-only branch through POST /workspaces/:slug/patches (spec 21) in a workspace with PATCH_BRANCH_SOURCE=origin (spec 20)"
+        },
+        {
+          "actor": "sync job",
+          "action": "fetches origin and creates the hub patch branch from the fork (spec 20)"
+        },
+        {
+          "actor": "developer",
+          "action": "pushes a mixed set of refs to the hub: the registered branch, an unregistered branch and a tag"
+        },
+        {
+          "actor": "carry-patch pre-receive hook",
+          "action": "rejects only the registered branch with the origin message"
+        },
+        {
+          "actor": "gitserver",
+          "action": "writes the unregistered branch and the tag, audits and post-push hooks only those accepted refs, and returns HTTP 200 with the per-ref error"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*Repository, error)",
+          "notes": "Verified by call site only; go-git source not readable."
+        },
+        {
+          "name": "(*Repository).PushContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) PushContext(ctx context.Context, o *PushOptions) error",
+          "notes": "PushOptions fields RemoteName, RefSpecs, Auth, Force; NoErrAlreadyUpToDate is success. Call-site verified."
+        },
+        {
+          "name": "ReportStatus",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/protocol/packp",
+          "signature": "type ReportStatus struct { UnpackStatus string; CommandStatuses []*CommandStatus }",
+          "notes": "Unverified; field names and that a storer reference-write error becomes a command status must be confirmed by the first test."
+        },
+        {
+          "name": "ReferenceUpdateRequest",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/protocol/packp",
+          "signature": "type ReferenceUpdateRequest struct { Commands []*Command; ... }",
+          "notes": "Call-site verified in internal/gitserver/handlers.go."
+        }
+      ]
+    }
+  ]
+}

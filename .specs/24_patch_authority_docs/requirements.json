@@ -1,0 +1,577 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "24",
+  "spec_name": "patch_authority_docs",
+  "schema_version": 2,
+  "introduction": "This spec rewrites the carry-patch workflow guide, the agent-instructions example and ADR 01 so they describe the two patch-branch authority models (hub and origin) delivered by specs 20 to 23. It also records ADR 01 as accepted, files errata for each divergence from the original proposal, and adds a documentation test. It changes no code behaviour.",
+  "glossary": {
+    "authority model": "The choice of which git copy of a patch branch is the writer of record: the hub's own git server (hub mode) or the fork named origin (origin mode), selected by the workspace variable PATCH_BRANCH_SOURCE.",
+    "docs test": "A Go test in internal/carrypatch/docs_test.go that asserts content of documentation files, using the readDoc, requireContains and section helpers.",
+    "erratum": "A file under docs/errata/ named NN_snake_case_topic.md with the sections Spec Expectation, Implementation Reality and Resolution, recording where delivered behaviour differs from what was specified.",
+    "fork": "The user's GitHub copy of the upstream repository, configured as the git remote origin of the workspace trunk.",
+    "hub": "The agent-fox hub service, which hosts a git server per workspace and rebuilds the integration branch from patch branches.",
+    "origin_sync_state": "Per-patch sync state recorded in origin mode: in_sync, diverged or missing_on_origin.",
+    "patch branch": "A branch holding one carry patch, registered in the workspace with afc patch add.",
+    "replaced backup ref": "refs/hub/replaced/<branch>, the hub-side ref that keeps the previous tip of a patch branch when sync replaces it with the fork's tip.",
+    "trunk": "The hub's bare clone of the workspace repository; a rebuild reads patch branches only from refs/heads/<branch> in it."
+  },
+  "requirements": [
+    {
+      "id": "24-REQ-1",
+      "title": "Source of truth for what is documented",
+      "rationale": "Specs 20 to 23 may change details during implementation, and a guide that repeats a superseded PRD is worse than no guide.",
+      "criteria": [
+        {
+          "id": "24-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "documentation set",
+          "action": "for any variable name, value, message string, field name, endpoint path, exit code or event type quoted in the rewritten documents, match the shipped code, docs/api.md or docs/cli.md character for character"
+        },
+        {
+          "id": "24-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "the shipped code of specs 20 to 23 differs from a spec PRD in a detail the documents describe",
+          "system": "documentation set",
+          "action": "describe the behaviour of the code and record the difference as an entry in the erratum file of the delivering spec",
+          "contract": "the guide text matches the code; the erratum file for that spec lists the divergence with its reason"
+        },
+        {
+          "id": "24-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "a behaviour claim cannot be found in the shipped code or in a test",
+          "system": "documentation set",
+          "action": "omit the claim from the rewritten documents",
+          "contract": "no sentence in the guide, agent example or ADR 01 asserts a behaviour that has no code or test evidence"
+        },
+        {
+          "id": "24-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "change set",
+          "action": "modify only documentation files and internal/carrypatch/docs_test.go, leaving code, routes, CLI commands, variables and schemas unchanged"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-2",
+      "title": "Remotes table and the \"Where patch branches live\" section",
+      "rationale": "The guide must stop implying that origin always holds patch branches, because the code reads only the trunk's refs/heads/<branch>.",
+      "criteria": [
+        {
+          "id": "24-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "guide Remotes table",
+          "action": "describe origin as the fork, the push target for the integration branch (REBUILD_PUSH_INTEGRATION_BRANCH) and, in origin mode, the authority for patch branches, and not contain the string \"Where patch branches live; push target for local work\""
+        },
+        {
+          "id": "24-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "guide Remotes table",
+          "action": "name the hub's own git server, through a third row or a note, as the place patch branches are written in hub mode"
+        },
+        {
+          "id": "24-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "guide",
+          "action": "contain a section headed \"Where patch branches live\" after Concepts/Remotes that states a rebuild reads only refs/heads/<branch> in the workspace trunk and that the initial clone brings the fork's branches in only as refs/remotes/origin/*"
+        },
+        {
+          "id": "24-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "\"Where patch branches live\" section",
+          "action": "explain PATCH_BRANCH_SOURCE with the values hub (default) and origin, and include a comparison table with the rows: who writes the branch, what sync does with it, what registration does, what a push to the hub does (reject, forward with PUSH_PATCHES_TO_ORIGIN=true, or accept and optionally mirror), what happens on divergence, where a person fixes a conflict, and which copy survives a lost hub data directory"
+        },
+        {
+          "id": "24-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "\"Where patch branches live\" section",
+          "action": "recommend origin mode with REBUILD_PUSH_INTEGRATION_BRANCH=true for teams that open upstream pull requests, recommend hub mode for agent-driven workspaces that never open upstream PRs, and state that the integration branch is always built by the hub, only pushed to the fork and never fetched from origin by sync"
+        },
+        {
+          "id": "24-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "\"Where patch branches live\" section",
+          "action": "state that the mode is read at the start of each operation, and include a switching-modes note: switching to origin makes the next sync bring registered branches to the fork's tips (previous hub tips kept under refs/hub/replaced/<branch>), and switching to hub stops fork fetches and clears persisted origin sync state at the next sync"
+        },
+        {
+          "id": "24-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "\"Where patch branches live\" section",
+          "action": "point to the Configuration section for PATCH_BRANCH_SOURCE, PATCH_DIVERGENCE_POLICY and PUSH_PATCHES_TO_ORIGIN"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-3",
+      "title": "Patch lifecycle, patch fields and soft-delete text",
+      "rationale": "Operators need the new sync-state fields, the registration order and an honest account of backup and purge behaviour.",
+      "criteria": [
+        {
+          "id": "24-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "guide patch field table",
+          "action": "list origin_sync_state, origin_sha and origin_synced_at, stating each is absent when null and written only in origin mode"
+        },
+        {
+          "id": "24-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "guide",
+          "action": "explain the sync states in_sync, diverged and missing_on_origin, and state that missing_on_origin leaves the patch status unchanged so the rebuild keeps applying the hub's copy until an operator disables or removes the patch"
+        },
+        {
+          "id": "24-REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "guide registration text (Getting Started \"Add patches\" and \"Adding a new patch\")",
+          "action": "describe the resolution order refs/heads/<name>, refs/remotes/origin/<name>, then (origin mode only) a single-branch fork fetch, quote the 400 message \"branch does not exist in repository or on origin\", state that a fork-only branch no longer needs --skip-branch-check, and state that --skip-branch-check is for branches that exist nowhere yet"
+        },
+        {
+          "id": "24-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "guide \"Removing a patch\" text",
+          "action": "state that the backup ref refs/hub/replaced/<branch> is deleted with the patch row and that the branch itself is not deleted"
+        },
+        {
+          "id": "24-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "guide soft-delete and \"Restoring a soft-deleted patch\" text",
+          "action": "state the 7-day retention window"
+        },
+        {
+          "id": "24-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "a search for callers of PurgeDeletedPatches and PurgeExpiredDeletedPatches finds no production caller at implementation time",
+          "system": "guide",
+          "action": "state that expired soft-deleted rows are removed only when a purge runs and make no promise of automatic removal",
+          "contract": "no sentence in the guide says a background purge or scheduler removes expired patches after 7 days"
+        },
+        {
+          "id": "24-REQ-3.7",
+          "pattern": "optional",
+          "condition": "a production caller of the purge routines exists at implementation time",
+          "system": "guide",
+          "action": "describe the purge schedule exactly as the code implements it"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-4",
+      "title": "Getting Started: fork-first walkthrough with hub alternative",
+      "rationale": "The recommended path for teams that open upstream pull requests is fork-authoritative, and the walkthrough must show that sync, not rebuild, brings fork commits into the hub.",
+      "criteria": [
+        {
+          "id": "24-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "guide Getting Started",
+          "action": "present the primary walkthrough on acme-oss/api-gateway and your-org/api-gateway-fork in this order: create workspace, set upstream credentials (unchanged), choose the authority, push a patch branch to the fork, register it, sync, then the existing preview, manual rebuild, dashboard, failed-rebuild and rollback steps renumbered"
+        },
+        {
+          "id": "24-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "guide \"choose the authority\" step",
+          "action": "show afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway, optionally with REBUILD_PUSH_INTEGRATION_BRANCH=true, and state that a fork clone and a fork token with read access are needed on every sync via the workspace's GIT_PAT or GIT_USERNAME/GIT_PASSWORD"
+        },
+        {
+          "id": "24-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "guide fork-first steps for branch creation and registration",
+          "action": "show creating the patch branch in a normal clone of the fork, pushing it to the fork, opening the upstream PR from the same branch, and registering with afc patch add without --skip-branch-check, keeping the existing position, --if-not-exists and batch examples"
+        },
+        {
+          "id": "24-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "guide sync step",
+          "action": "show afc workspace sync api-gateway and explain that in origin mode sync, not afc rebuild submit, brings new fork commits into the hub because a rebuild reads the hub's copy of each branch and does not fetch the fork"
+        },
+        {
+          "id": "24-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "guide sync step",
+          "action": "show a sample response containing origin_fetched, patches_synced and patches_diverged next to the existing fields, and cover the outcomes created, fast_forwarded and replaced, the --fail-on-diverged flag with exit code 3, and PATCH_DIVERGENCE_POLICY"
+        },
+        {
+          "id": "24-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "guide dashboard step",
+          "action": "mention the per-patch sync-state fields and the new summary counts"
+        },
+        {
+          "id": "24-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "guide",
+          "action": "contain a heading \"Alternative: hub-authoritative workspace\" showing: leave PATCH_BRANCH_SOURCE unset, push the branch to the hub's git URL, register, let the push hook rebuild or run afc rebuild submit, optionally set PUSH_PATCHES_TO_ORIGIN=true to mirror accepted pushes to the fork, and state this flow suits agent-driven workspaces"
+        },
+        {
+          "id": "24-REQ-4.8",
+          "pattern": "ubiquitous",
+          "system": "guide walkthroughs",
+          "action": "use only afc commands and flags that exist in docs/cli.md"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-5",
+      "title": "Sync, push and rebuild-trigger text",
+      "rationale": "The sync section must match the sync spec 20 delivers, or the recommended workflow would silently rebuild stale patch tips.",
+      "criteria": [
+        {
+          "id": "24-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "guide Sync algorithm section",
+          "action": "describe in order: credential resolution and the upstream fetch; the origin fetch (origin mode only); base resolution; the patch refresh; force-push detection; merge detection (also run when only patch tips changed); the rebuild decision; and the unconditional write of last_sync_at"
+        },
+        {
+          "id": "24-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "guide Sync algorithm section",
+          "action": "state that the origin fetch prunes stale tracking refs and that its failure answers \"502 origin fetch failed\" and leaves all refs and patch state unchanged"
+        },
+        {
+          "id": "24-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "guide Sync algorithm section",
+          "action": "describe the patch refresh outcomes created, fast_forwarded and replaced, the states in_sync, diverged and missing_on_origin, and the backup ref refs/hub/replaced/<branch>"
+        },
+        {
+          "id": "24-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "guide",
+          "action": "state that a rebuild is triggered when upstream advanced, an active or conflict patch moved, or a patch was newly merged, unless AUTO_REBUILD_AFTER_SYNC=false, and that the AUTO_REBUILD_AFTER_SYNC entry covers patch changes as well as upstream advances"
+        },
+        {
+          "id": "24-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "the guide contains a statement that sync returns immediately when upstream is unchanged",
+          "system": "guide",
+          "action": "remove the statement and the interim two-models note written by spec 20, without keeping both",
+          "contract": "the guide contains no sentence that sync returns immediately on an unchanged upstream and exactly one description of the two models, in \"Where patch branches live\""
+        },
+        {
+          "id": "24-REQ-5.6",
+          "pattern": "ubiquitous",
+          "system": "guide \"Auto-rebuild on push\" section",
+          "action": "keep the push hook description and add how a push to a registered patch branch is treated in each mode (rejection in origin mode, forwarding with PUSH_PATCHES_TO_ORIGIN=true, mirroring in hub mode) and that only accepted ref updates trigger the hook"
+        },
+        {
+          "id": "24-REQ-5.7",
+          "pattern": "ubiquitous",
+          "system": "guide \"Rebuild algorithm\" section",
+          "action": "stay unchanged apart from one added sentence that the patch tips it snapshots are whatever the last sync (origin mode) or push (hub mode) left in the trunk"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-6",
+      "title": "Conflict resolution and divergence recovery in both modes",
+      "rationale": "Telling an origin-mode operator to edit the trunk or push to the hub would have the fix rejected, forwarded or overwritten.",
+      "criteria": [
+        {
+          "id": "24-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "guide \"Resolving conflicts after a failed rebuild\" section and the Getting Started failed-rebuild step",
+          "action": "each open with a common part (read conflict_files in afc workspace patch-status) followed by one subsection for hub mode and one for origin mode"
+        },
+        {
+          "id": "24-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "guide hub mode subsection",
+          "action": "keep the existing instructions (resolve in the trunk or push a fixed branch to the hub's git server, set the patch to active, rebuild), say rerere records the resolution when it happens during a rebuild, and state what the code supports for manual rerere recording"
+        },
+        {
+          "id": "24-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "guide origin mode subsection",
+          "action": "instruct: fix the branch in a local clone (merge or rebase the latest upstream, resolve, commit), push it to the fork, run afc workspace sync, and set the patch back to active if its status is still conflict after the rebuild"
+        },
+        {
+          "id": "24-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "a reader of the origin mode subsection looks for the place to apply a fix",
+          "system": "guide origin mode subsection",
+          "action": "tell the reader not to edit the trunk and not to push to the hub, and give the reason (a hub push is rejected, forwarded or replaced, and a trunk edit is overwritten at the next sync)",
+          "contract": "the origin mode subsection contains no instruction to edit the trunk or push to the hub other than that prohibition"
+        },
+        {
+          "id": "24-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "guide origin mode subsection",
+          "action": "state as a known limitation, not a planned feature, that a resolution made on the fork is not recorded in the hub's rerere cache, so the same conflict is resolved by hand again unless the rebuild itself resolves it"
+        },
+        {
+          "id": "24-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "guide",
+          "action": "contain a section \"Recovering a replaced or diverged patch branch\" covering reading origin_sync_state and replaced_sha, fetching a replaced tip with git fetch <hub_url> refs/hub/replaced/<branch>, and pushing it to the fork to keep it"
+        },
+        {
+          "id": "24-REQ-6.7",
+          "pattern": "ubiquitous",
+          "system": "guide recovery section",
+          "action": "describe afc patch reset-to-origin <slug> <patch-id> moving a diverged branch to the fork's tip and reporting rebuild_triggered, state that only one backup per branch exists and later replacements overwrite it, and say what to do with missing_on_origin"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-7",
+      "title": "Configuration, limitations and endpoint summary",
+      "rationale": "The three new variables are written by three different specs, so they must be reconciled into one entry each.",
+      "criteria": [
+        {
+          "id": "24-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "guide Configuration section",
+          "action": "contain exactly one entry headed PATCH_BRANCH_SOURCE, one headed PATCH_DIVERGENCE_POLICY and one headed PUSH_PATCHES_TO_ORIGIN, each in the style of the existing entries (values table, how to set it with afc vars, when it is read)"
+        },
+        {
+          "id": "24-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "guide Configuration entries for the three variables",
+          "action": "state the default (hub, replace and unset), the exact-match rule, that PATCH_DIVERGENCE_POLICY is ignored in hub mode, and that PUSH_PATCHES_TO_ORIGIN means forwarding in origin mode and mirroring in hub mode"
+        },
+        {
+          "id": "24-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "guide Configuration section",
+          "action": "include a table of recommended combinations with four rows: fork-first (origin, optional REBUILD_PUSH_INTEGRATION_BRANCH=true), fork-first with hub forwarding, hub-only, and hub with a durable mirror"
+        },
+        {
+          "id": "24-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "guide Limitations section",
+          "action": "add limitations stating: no fork webhooks and no built-in sync schedule (sync is triggered by afc workspace sync, an operator's scheduler or any client of POST /workspaces/:slug/sync); sync fetches every fork branch; manual resolutions are not fed into rerere in origin mode; missing_on_origin does not disable the patch; origin mode needs working origin credentials on every sync"
+        },
+        {
+          "id": "24-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "guide Limitations section",
+          "action": "retain the existing limitations including the \"**Concurrent rebuild prevention.**\" note"
+        },
+        {
+          "id": "24-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "guide API reference summary",
+          "action": "include the single-patch GET and the reset endpoint with their scopes as registered in RegisterRoutes, and a sync row that describes both modes"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-8",
+      "title": "Cross-document consistency",
+      "rationale": "A rewritten guide that contradicts the reference documents leaves operators with two accounts.",
+      "criteria": [
+        {
+          "id": "24-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "the guide rewrite is complete",
+          "system": "implementer",
+          "action": "search docs/api.md, docs/cli.md, docs/openapi.yaml, docs/permissions.md and README.md for statements about where patch branches live, what carry-patch sync fetches, when last_sync_at is written, and what a push to a patch branch does",
+          "contract": "the commands and a summary of the hits are recorded in the commit message or handoff note"
+        },
+        {
+          "id": "24-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "a searched document contradicts the guide or the shipped behaviour",
+          "system": "implementer",
+          "action": "correct that statement in the same change",
+          "contract": "after the change, no searched document contains a statement that contradicts the guide"
+        },
+        {
+          "id": "24-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "README.md",
+          "action": "stay unchanged except for statements corrected under the contradiction rule, with its link to docs/carry_patch_workflow.md still valid"
+        },
+        {
+          "id": "24-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "documentation set",
+          "action": "for any file path referenced in the changed documents, refer to a file that exists in the repository"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-9",
+      "title": "Agent example for both modes",
+      "rationale": "An agent that pushes a registered patch branch to the hub in origin mode has its work refused or replaced and rebuilds stale tips.",
+      "criteria": [
+        {
+          "id": "24-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "docs/examples/AGENTS_carry_patch.md",
+          "action": "add a step in \"Understand Before You Code\" telling the agent to read PATCH_BRANCH_SOURCE with afc vars list --workspace <workspace-slug> (unset means hub) before anything else touches branches"
+        },
+        {
+          "id": "24-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "AGENTS example sections \"Decide Where Your Change Belongs\", \"Push to the Hub\", \"Register the Patch\", \"Trigger a Rebuild\", \"Upstream Sync\", \"Conflict Resolution\", \"Removing a Patch\", \"Commands Reference\" and \"Quality Gates\"",
+          "action": "give the hub and origin instructions separately wherever they differ"
+        },
+        {
+          "id": "24-REQ-9.3",
+          "pattern": "state_driven",
+          "condition": "the workspace PATCH_BRANCH_SOURCE is origin",
+          "system": "AGENTS example",
+          "action": "instruct the agent to clone the fork, push the patch branch to the fork, register it, run afc workspace sync (not afc rebuild submit) to bring it in and rebuild, and never push a registered patch branch to the hub because the hub refuses or replaces it"
+        },
+        {
+          "id": "24-REQ-9.4",
+          "pattern": "state_driven",
+          "condition": "the workspace PATCH_BRANCH_SOURCE is hub or unset",
+          "system": "AGENTS example",
+          "action": "keep today's instructions and explain that PUSH_PATCHES_TO_ORIGIN=true is a mirror the agent does not need to do by hand"
+        },
+        {
+          "id": "24-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "AGENTS example afc patch remove text",
+          "action": "state that the branch is not deleted but the backup ref is"
+        },
+        {
+          "id": "24-REQ-9.6",
+          "pattern": "ubiquitous",
+          "system": "AGENTS example",
+          "action": "make the project context paragraph mode-neutral and add afc patch reset-to-origin, afc workspace sync --fail-on-diverged and afc vars list --workspace to the commands table"
+        },
+        {
+          "id": "24-REQ-9.7",
+          "pattern": "ubiquitous",
+          "system": "AGENTS example",
+          "action": "keep every _rebuild_temp mention marked as legacy so TS-01-71 passes unchanged"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-10",
+      "title": "ADR 01 acceptance, errata and documentation test",
+      "rationale": "The decision is delivered, so the ADR must say so, the audit trail of divergences must exist, and a test must stop the content from decaying.",
+      "criteria": [
+        {
+          "id": "24-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "ADR 01",
+          "action": "contain the status line \"Status:** Accepted\", an Accepted date line using the date of the change, the unchanged proposal Date, and no occurrence of the word Proposed"
+        },
+        {
+          "id": "24-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "ADR 01",
+          "action": "start Context with a sentence saying it describes the code before the decision was implemented, add an \"Implementation notes\" section listing the four errata files and stating the Decision section stands as written, and leave the Decision text and consequences unchanged"
+        },
+        {
+          "id": "24-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "errata",
+          "action": "provide the files docs/errata/20_fork_patch_sync_divergences.md, 21_fork_patch_registration_divergences.md, 22_fork_push_control_divergences.md and 23_patch_divergence_recovery_divergences.md, each containing the sections Spec Expectation, Implementation Reality and Resolution"
+        },
+        {
+          "id": "24-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "errata for specs 20 and 21",
+          "action": "list one entry with a reason for each divergence confirmed in the code, starting from the PRD list (spec 20: origin fetch pruning, 502 credential failure and origin_fetch_failed type, compare-and-swap ref writes, disabled patches not counting as advanced, merge detection on patch-only changes, field presence of origin_fetched, patches_synced and patches_diverged, last_sync_at on ref-write failure, variables documented in docs/api.md; spec 21: refs/heads existence check, 502 on fork fetch failure, 409 workspace_busy, branch_resolution value skipped, no batch audit event)"
+        },
+        {
+          "id": "24-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "errata for specs 22 and 23",
+          "action": "list one entry with a reason for each divergence confirmed in the code, starting from the PRD list (spec 22: delete rejection in origin mode, refs/hub/forward/<branch> temporary ref with 120 s timeout and userinfo removal, accepted-only head_sha, hub.git.push event and post-push hook, fail-open on lookup failure, mirror when AUTO_REBUILD_AFTER_PUSH=false; spec 23: single-patch GET added, reset semantics and status limits, sync state only in origin mode, hub.patch.reset event, only the refs/hub/replaced/ prefix protected, purge not scheduled)"
+        },
+        {
+          "id": "24-REQ-10.6",
+          "pattern": "unwanted",
+          "condition": "a starting-list divergence is not borne out by the code, or the code shows a divergence not on the list",
+          "system": "errata",
+          "action": "drop the unsupported entry and add the missing one",
+          "contract": "every erratum entry matches the shipped code and no code divergence of specs 20 to 23 from the proposal is left unrecorded"
+        },
+        {
+          "id": "24-REQ-10.7",
+          "pattern": "ubiquitous",
+          "system": "internal/carrypatch/docs_test.go",
+          "action": "add a docs test reusing readDoc, requireContains and section that asserts: the \"Where patch branches live\" heading with the three variable names and both source values; one Configuration entry per variable; the fork-first and alternative walkthrough headings; both mode subsections in the conflict section; the recovery section; the Remotes table lacking \"Where patch branches live; push target for local work\"; the agent example containing PATCH_BRANCH_SOURCE and afc workspace sync; ADR 01 containing \"Status:** Accepted\" and not \"Proposed\"; and the four errata files existing with the three section headings"
+        },
+        {
+          "id": "24-REQ-10.8",
+          "pattern": "ubiquitous",
+          "system": "test suite",
+          "action": "for any removal of content asserted by the new docs test, fail that test, while TS-01-69 to TS-01-72 and the other existing tests pass unchanged and make test and make lint succeed"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "24-PATH-1",
+      "title": "Implementer rewrites the documents from the shipped code",
+      "steps": [
+        {
+          "actor": "implementer",
+          "action": "reads the shipped code of specs 20 to 23, docs/api.md, docs/cli.md and docs/openapi.yaml, and searches for callers of the purge routines"
+        },
+        {
+          "actor": "implementer",
+          "action": "rewrites docs/carry_patch_workflow.md, docs/examples/AGENTS_carry_patch.md and ADR 01, and writes the four errata files from confirmed divergences"
+        },
+        {
+          "actor": "implementer",
+          "action": "searches the reference documents and README for contradictions and corrects them, recording the search in the handoff note"
+        },
+        {
+          "actor": "docs test",
+          "action": "run by make test, asserts the guide, agent example, ADR 01 and errata content and the existing TS-01-69 to TS-01-72 checks, and passes"
+        }
+      ]
+    },
+    {
+      "id": "24-PATH-2",
+      "title": "Operator follows the fork-first guide from setup to conflict recovery",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "reads Where patch branches live and runs afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway"
+        },
+        {
+          "actor": "operator",
+          "action": "pushes a patch branch to the fork, registers it with afc patch add, and runs afc workspace sync api-gateway as the guide directs"
+        },
+        {
+          "actor": "operator",
+          "action": "after a failed rebuild follows the origin mode subsection: fixes the branch in a fork clone, pushes it to the fork and runs afc workspace sync again"
+        },
+        {
+          "actor": "operator",
+          "action": "follows the recovery section to fetch a replaced tip from refs/hub/replaced/<branch> or run afc patch reset-to-origin, ending with the patch branch at the intended tip"
+        }
+      ]
+    },
+    {
+      "id": "24-PATH-3",
+      "title": "Agent reads the example and works in origin mode",
+      "steps": [
+        {
+          "actor": "coding agent",
+          "action": "runs afc vars list --workspace <workspace-slug> as the example's first step and finds PATCH_BRANCH_SOURCE=origin"
+        },
+        {
+          "actor": "coding agent",
+          "action": "clones the fork, commits a patch branch and pushes it to the fork, not the hub"
+        },
+        {
+          "actor": "coding agent",
+          "action": "registers the branch with afc patch add and runs afc workspace sync, which brings the tip into the hub and triggers the rebuild"
+        }
+      ]
+    },
+    {
+      "id": "24-PATH-4",
+      "title": "Documentation regression is caught by the docs test",
+      "steps": [
+        {
+          "actor": "contributor",
+          "action": "removes a required heading, variable entry, errata file or ADR status text from the documents"
+        },
+        {
+          "actor": "docs test",
+          "action": "run by make test, fails naming the missing content"
+        }
+      ]
+    }
+  ]
+}
