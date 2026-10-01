@@ -293,23 +293,17 @@ func TestRebuildExecutor_MergedPatchesCleanedUp(t *testing.T) {
 	}
 }
 
-// Test: temporary branch is always cleaned up (16-PROP-9).
-// On success, the temp branch should be deleted.
-func TestRebuildExecutor_TempBranchDeleted_OnSuccess(t *testing.T) {
+// Test: the per-run worktree is always cleaned up (16-PROP-9, 01-REQ-1.4).
+// On success, the worktree should be removed and pruned and no temporary
+// branch is ever created.
+func TestRebuildExecutor_WorktreeRemoved_OnSuccess(t *testing.T) {
 	mock := newMockGitRunner()
 	patches := newMockPatchStore([]Patch{
 		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
 	})
 
-	// Track whether branch delete was called.
-	branchDeleteCalled := false
 	originalRunFunc := mock.RunFunc
 	mock.RunFunc = func(ctx context.Context, args ...string) (string, error) {
-		// Detect branch -D or branch -d calls (temp branch deletion).
-		if len(args) >= 2 && args[0] == "branch" && (args[1] == "-D" || args[1] == "-d") {
-			branchDeleteCalled = true
-			return "", nil
-		}
 		for _, arg := range args {
 			if arg == "--reverse" {
 				return "bbbb000000000000000000000000000000000001", nil
@@ -338,8 +332,16 @@ func TestRebuildExecutor_TempBranchDeleted_OnSuccess(t *testing.T) {
 		t.Fatalf("HandleRebuildJob returned error: %v", err)
 	}
 
-	if !branchDeleteCalled {
-		t.Error("expected temporary branch to be deleted after successful rebuild")
+	if len(mock.WorktreeRemoveCalls) != 1 || mock.WorktreePruneCalls != 1 {
+		t.Errorf("expected the worktree to be removed and pruned, got remove=%d prune=%d",
+			len(mock.WorktreeRemoveCalls), mock.WorktreePruneCalls)
+	}
+	for _, call := range mock.RunCalls {
+		for _, a := range call.Args {
+			if a == "_rebuild_temp" {
+				t.Errorf("temporary branch must not be used: %v", call.Args)
+			}
+		}
 	}
 }
 

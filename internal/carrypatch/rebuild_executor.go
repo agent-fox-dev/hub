@@ -2,12 +2,16 @@ package carrypatch
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
@@ -41,14 +45,18 @@ func (e *rebuildConflictError) Error() string {
 //
 // The algorithm:
 //  1. Parse payload and resolve upstream auth.
-//  2. Fetch from the upstream remote.
-//  3. Resolve upstream HEAD and create a temporary branch at that commit.
-//  4. Collect patches in position order and apply each one using the
-//     captured strategy (rebase or merge).
-//  5. On success: force-update the integration branch ref, delete the
-//     temporary branch, remove merged_upstream patches, and compact positions.
-//  6. On conflict: abort, mark the conflicting patch, delete the temporary
-//     branch, and return a non-retryable error.
+//  2. Fetch from the upstream remote and resolve the upstream base commit.
+//  3. Create a detached per-run worktree at the upstream base
+//     (<workspace_root>/<slug>/rebuild/<job id>). The trunk checkout is never
+//     moved or modified.
+//  4. Collect patches in position order and apply each one inside the
+//     worktree using the captured strategy (rebase or merge).
+//  5. On success: force-update the integration branch ref with update-ref,
+//     remove merged_upstream patches, and compact positions.
+//  6. On conflict: abort, mark the conflicting patch and return a
+//     non-retryable error.
+//  7. On every exit path the worktree is removed with a non-cancelled
+//     context, so cleanup still runs after the job context is cancelled.
 //
 // Returns (result, retryable, error).
 func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.RawMessage) (retResult any, retRetryable bool, retErr error) {
@@ -61,7 +69,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// 18-REQ-3.5: Emit hub.rebuild.fail on any error return from this function.
 	defer func() {
 		if retErr != nil {
-			h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.fail", map[string]any{
+			// The job context may already be cancelled; the event must still
+			// be recorded.
+			h.emitRebuildAudit(context.WithoutCancel(ctx), payload.WorkspaceSlug, "hub.rebuild.fail", map[string]any{
 				"reason": retErr.Error(),
 			})
 		}
@@ -83,8 +93,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		repoPath = filepath.Join(h.WorkspaceRoot, payload.WorkspaceSlug, "trunk")
 	}
 
-	// The trunk working tree is shared with pushes, syncs, and merge jobs;
-	// hold the workspace lock for the whole rebuild.
+	// The workspace lock is held for the whole run for now; patch
+	// application itself runs in a private worktree and never touches the
+	// trunk checkout.
 	unlock := wslock.Lock(payload.WorkspaceSlug)
 	defer unlock()
 
@@ -99,8 +110,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		}
 	}
 
-	// 5. Create GitRunner for the workspace repo.
-	git, err := h.NewGitRunner(repoPath)
+	// 5. Create the GitRunner for the trunk. It is used only for reads,
+	// config, worktree management and the final ref update.
+	trunk, err := h.NewGitRunner(repoPath)
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
@@ -108,42 +120,49 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// 6. Resolve the upstream base: the upstream default branch recorded by
 	// the fetch (refs/remotes/upstream/HEAD), falling back to the workspace
 	// branch tracking ref and finally FETCH_HEAD (16-REQ-1.2).
-	upstreamHead, err := resolveUpstreamBase(ctx, git, workspaceBranch(h.DB, payload.WorkspaceSlug))
+	upstreamHead, err := resolveUpstreamBase(ctx, trunk, workspaceBranch(h.DB, payload.WorkspaceSlug))
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 7. Remember what the trunk had checked out so it can be restored
-	// afterwards: clones served by the hub's git server must not end up on
-	// a detached HEAD or on the temporary branch. Then clear any state a
-	// crashed or cancelled rebuild may have left behind (in-progress
-	// cherry-pick/merge, dirty tree, stale temporary branch) and create the
-	// temporary branch at the upstream base.
-	const tempBranch = "_rebuild_temp"
-	originalRef := currentCheckout(ctx, git)
-	if originalRef == tempBranch {
-		originalRef = ""
+	// 7. Configure rerere (repository level, shared with every worktree) for
+	// conflict resolution replay (16-REQ-1.5, 01-REQ-3.1). This happens
+	// before the worktree is created.
+	_, _ = trunk.Run(ctx, "config", "rerere.enabled", "true")
+	_, _ = trunk.Run(ctx, "config", "rerere.autoupdate", "true")
+
+	// 8. Create the detached per-run worktree at the upstream base
+	// (01-REQ-1.1, 01-REQ-1.2).
+	jobID := jobqueue.JobIDFromContext(ctx)
+	worktreePath, err := h.rebuildWorktreePath(payload.WorkspaceSlug, repoPath, jobID)
+	if err != nil {
+		return nil, true, &TransientError{Err: err}
 	}
-	preflightCleanup(ctx, git)
-	if _, err := git.Run(ctx, "checkout", "-B", tempBranch, upstreamHead, "--"); err != nil {
+	if err := trunk.WorktreeAdd(ctx, worktreePath, upstreamHead); err != nil {
+		h.discardFailedWorktree(ctx, trunk, payload.WorkspaceSlug, worktreePath)
+		return nil, true, &TransientError{Err: fmt.Errorf("create rebuild worktree: %w", err)}
+	}
+	h.logInfo("rebuild worktree created", "slug", payload.WorkspaceSlug, "path", worktreePath)
+	// Removed on every exit path (success, conflict, error, cancellation).
+	defer h.removeWorktree(ctx, trunk, payload.WorkspaceSlug, worktreePath)
+
+	// Patch application runs through a runner rooted in the worktree; it is
+	// built after the directory exists (01-REQ-1.3).
+	wt, err := h.NewGitRunner(worktreePath)
+	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// cleanupTempBranch restores the original checkout and deletes the
-	// temporary branch. Called on both success and failure (16-PROP-9).
-	cleanupTempBranch := func() {
-		restoreCheckout(ctx, git, originalRef)
-		_, _ = git.Run(ctx, "branch", "-D", tempBranch)
+	// cancelled reports whether err (or the job context) signals
+	// cancellation, in which case the run ends as a retryable failure
+	// instead of being recorded as a skip, conflict or success (01-REQ-8.1).
+	cancelled := func(err error) bool {
+		return ctx.Err() != nil || isContextErr(err)
 	}
-
-	// 8. Configure rerere for conflict resolution replay (16-REQ-1.5).
-	_, _ = git.Run(ctx, "config", "rerere.enabled", "true")
-	_, _ = git.Run(ctx, "config", "rerere.autoupdate", "true")
 
 	// 9. List all patches from the patch store.
 	patches, err := h.PatchStore.ListPatches(ctx, payload.WorkspaceSlug)
 	if err != nil {
-		cleanupTempBranch()
 		return nil, true, &TransientError{Err: err}
 	}
 
@@ -168,9 +187,6 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	var mergedPatchIDs []string
 
-	// Extract the job ID from context for progress updates.
-	jobID := jobqueue.JobIDFromContext(ctx)
-
 	for _, patch := range patches {
 		pr := PatchResult{
 			PatchID:    patch.ID,
@@ -193,9 +209,8 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		}
 
 		// Capture the pre-patch HEAD for continue-mode rollback.
-		prePatchHead, headErr := git.Run(ctx, "rev-parse", "HEAD")
+		prePatchHead, headErr := wt.Run(ctx, "rev-parse", "HEAD")
 		if headErr != nil {
-			cleanupTempBranch()
 			return nil, true, &TransientError{Err: headErr}
 		}
 
@@ -207,12 +222,18 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 		var applyErr error
 		if strategy == StrategyMerge {
-			applyErr = h.applyMergePatch(ctx, git, patch.BranchName)
+			applyErr = h.applyMergePatch(ctx, wt, patch.BranchName)
 		} else {
-			applyErr = h.applyRebasePatch(ctx, git, patch.BranchName, upstreamHead)
+			applyErr = h.applyRebasePatch(ctx, wt, patch.BranchName, upstreamHead)
 		}
 
 		if applyErr != nil {
+			// Cancellation (or a context error from a git call) is never a
+			// skip, conflict or success: discard the run and retry later.
+			if cancelled(applyErr) {
+				return nil, true, &TransientError{Err: applyErr}
+			}
+
 			// 16-REQ-1.6: branch not found -> skip.
 			if errors.Is(applyErr, errPatchBranchNotFound) {
 				pr.Status = "skipped"
@@ -237,10 +258,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 					result.PatchResults = append(result.PatchResults, pr)
 					result.PatchesConflicted++
 
-					// Reset temp branch to pre-patch HEAD so subsequent
+					// Reset the worktree to the pre-patch HEAD so subsequent
 					// patches apply cleanly against the last good state.
-					if err := git.HardReset(ctx, prePatchHead); err != nil {
-						cleanupTempBranch()
+					if err := wt.HardReset(ctx, prePatchHead); err != nil {
 						return result, true, &TransientError{Err: err}
 					}
 
@@ -250,20 +270,17 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 				}
 
 				// Default fail_fast: abort immediately.
-				cleanupTempBranch()
 				return nil, false, fmt.Errorf("conflict in patch %q: %s",
 					patch.BranchName, strings.Join(ce.files, ", "))
 			}
 
-			// Unknown / transient error -> cleanup and signal retry.
-			cleanupTempBranch()
+			// Unknown / transient error -> signal retry.
 			return nil, true, &TransientError{Err: applyErr}
 		}
 
 		// Get the new HEAD SHA for the successfully applied patch.
-		newHead, headErr := git.Run(ctx, "rev-parse", "HEAD")
+		newHead, headErr := wt.Run(ctx, "rev-parse", "HEAD")
 		if headErr != nil {
-			cleanupTempBranch()
 			return nil, true, &TransientError{Err: headErr}
 		}
 
@@ -278,15 +295,20 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	// === Success path (16-REQ-1.2) ===
 
-	// Get final integration HEAD SHA.
-	finalHead, err := git.Run(ctx, "rev-parse", "HEAD")
+	// A cancellation that arrived after the last git call must not publish
+	// a half-finished result.
+	if err := ctx.Err(); err != nil {
+		return nil, true, &TransientError{Err: err}
+	}
+
+	// Get final integration HEAD SHA from the worktree.
+	finalHead, err := wt.Run(ctx, "rev-parse", "HEAD")
 	if err != nil {
-		cleanupTempBranch()
 		return nil, true, &TransientError{Err: err}
 	}
 	result.IntegrationHeadSHA = finalHead
 
-	// Force-update integration branch ref to the temporary branch HEAD.
+	// Force-update integration branch ref to the worktree's final HEAD.
 	integrationBranch := payload.IntegrationBranch
 	if integrationBranch == "" {
 		integrationBranch = "deploy"
@@ -295,18 +317,15 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// Capture the previous integration branch HEAD before force-updating.
 	// If the branch does not exist yet (first rebuild), previousHead will be
 	// empty and PreviousIntegrationHeadSHA stays at its zero value.
-	previousHead, _ := git.Run(ctx, "rev-parse", "--verify", integrationBranch)
+	previousHead, _ := trunk.Run(ctx, "rev-parse", "--verify", integrationBranch)
 	if previousHead != "" {
 		result.PreviousIntegrationHeadSHA = previousHead
 	}
 
-	if _, err := git.Run(ctx, "branch", "-f", integrationBranch, "HEAD"); err != nil {
-		cleanupTempBranch()
+	// update-ref (not branch -f, which refuses a checked-out branch).
+	if err := trunk.UpdateRef(ctx, "refs/heads/"+integrationBranch, finalHead); err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
-
-	// Delete temporary branch (16-PROP-9).
-	cleanupTempBranch()
 
 	// Soft-delete merged_upstream patches (set status='deleted', deleted_at).
 	for _, id := range mergedPatchIDs {
@@ -349,38 +368,98 @@ func (h *RebuildHandler) logf(format string, args ...any) {
 	}
 }
 
-// currentCheckout returns the branch currently checked out in the trunk
-// (short name), or the detached HEAD commit, or "" when neither can be read.
-func currentCheckout(ctx context.Context, git GitRunner) string {
-	if ref, err := git.Run(ctx, "symbolic-ref", "--short", "-q", "HEAD"); err == nil && ref != "" {
-		return ref
+// logInfo logs at info level through the handler's logger (nil-safe).
+func (h *RebuildHandler) logInfo(msg string, args ...any) {
+	if h.Logger != nil {
+		h.Logger.Info(msg, args...)
 	}
-	if sha, err := git.Run(ctx, "rev-parse", "HEAD"); err == nil {
-		return sha
-	}
-	return ""
 }
 
-// restoreCheckout returns the working tree to ref (a branch name or commit)
-// recorded by currentCheckout, detaching HEAD when ref is empty so that the
-// temporary branch can always be deleted.
-func restoreCheckout(ctx context.Context, git GitRunner, ref string) {
-	if ref != "" {
-		if _, err := git.Run(ctx, "checkout", "--force", ref, "--"); err == nil {
-			return
+// logWarn logs at warning level through the handler's logger (nil-safe).
+func (h *RebuildHandler) logWarn(msg string, args ...any) {
+	if h.Logger != nil {
+		h.Logger.Warn(msg, args...)
+	}
+}
+
+// isContextErr reports whether err is (or wraps) a context cancellation or
+// deadline error.
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// rebuildCleanupTimeout bounds worktree removal and every other cleanup step.
+const rebuildCleanupTimeout = 2 * time.Minute
+
+// cleanupContext returns a context for cleanup that survives cancellation of
+// ctx (01-REQ-1.6): the job context is dead when a run is cancelled, and git
+// would not start under it.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), rebuildCleanupTimeout)
+}
+
+// rebuildWorktreePath returns the absolute path of this run's worktree:
+// <workspace_root>/<slug>/rebuild/<job id>. When no job ID is available a
+// random one is used; when WorkspaceRoot is empty the path is derived from
+// the parent directory of the trunk path (01-REQ-1.1, 01-REQ-1.2).
+func (h *RebuildHandler) rebuildWorktreePath(slug, trunkPath, jobID string) (string, error) {
+	if jobID == "" {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", fmt.Errorf("generate rebuild id: %w", err)
+		}
+		jobID = hex.EncodeToString(b[:])
+	}
+	var dir string
+	if h.WorkspaceRoot != "" {
+		dir = filepath.Join(h.WorkspaceRoot, slug, "rebuild")
+	} else {
+		dir = filepath.Join(filepath.Dir(trunkPath), "rebuild")
+	}
+	// git resolves a relative path against the runner's working directory
+	// (the trunk), so the path must be absolute.
+	abs, err := filepath.Abs(filepath.Join(dir, jobID))
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree path: %w", err)
+	}
+	return abs, nil
+}
+
+// removeWorktree discards the run's worktree: `git worktree remove --force`
+// (which also discards any in-progress cherry-pick or merge) followed by
+// `git worktree prune`. If git cannot remove it the directory is deleted
+// directly. It is best-effort, runs with a non-cancelled bounded context and
+// never changes the job outcome (01-REQ-1.4, 1.5, 1.6).
+func (h *RebuildHandler) removeWorktree(ctx context.Context, trunk GitRunner, slug, path string) {
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+
+	if err := trunk.WorktreeRemove(cctx, path); err != nil {
+		h.logWarn("rebuild worktree removal failed; deleting directory",
+			"slug", slug, "path", path, "error", err)
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			h.logWarn("rebuild worktree directory removal failed",
+				"slug", slug, "path", path, "error", rmErr)
 		}
 	}
-	_, _ = git.Run(ctx, "checkout", "--detach")
+	if err := trunk.WorktreePrune(cctx); err != nil {
+		h.logWarn("rebuild worktree prune failed", "slug", slug, "path", path, "error", err)
+	}
+	h.logInfo("rebuild worktree removed", "slug", slug, "path", path)
 }
 
-// preflightCleanup clears state a crashed or cancelled rebuild may have left
-// in the trunk: an in-progress cherry-pick or merge, uncommitted changes, and
-// a stale temporary branch. Every step is best-effort.
-func preflightCleanup(ctx context.Context, git GitRunner) {
-	_, _ = git.Run(ctx, "cherry-pick", "--abort")
-	_, _ = git.Run(ctx, "merge", "--abort")
-	_, _ = git.Run(ctx, "rebase", "--abort")
-	_ = git.HardReset(ctx, "HEAD")
+// discardFailedWorktree cleans up after a failed `git worktree add`: nothing
+// may be left under rebuild/ for this run (01-REQ-1.8).
+func (h *RebuildHandler) discardFailedWorktree(ctx context.Context, trunk GitRunner, slug, path string) {
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+
+	if err := os.RemoveAll(path); err != nil {
+		h.logWarn("rebuild worktree directory removal failed", "slug", slug, "path", path, "error", err)
+	}
+	if err := trunk.WorktreePrune(cctx); err != nil {
+		h.logWarn("rebuild worktree prune failed", "slug", slug, "path", path, "error", err)
+	}
 }
 
 // writeProgress writes the current patch results to the job's progress column.
@@ -399,7 +478,7 @@ func (h *RebuildHandler) writeProgress(jobID string, patchResults []PatchResult)
 // applyRebasePatch applies a patch using the rebase (cherry-pick) strategy.
 //
 // For each unique commit on the patch branch (determined via git log --reverse),
-// cherry-picks it onto the current temporary branch. If the branch does not
+// cherry-picks it onto the worktree's HEAD. If the branch does not
 // exist, returns errPatchBranchNotFound. If an unresolvable conflict occurs,
 // returns *rebuildConflictError.
 func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, branchName, upstreamHead string) error {
@@ -411,6 +490,9 @@ func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, br
 	logOutput, err := git.Run(ctx, "log", "--reverse", "--format=%H", "--no-merges",
 		"--right-only", "--cherry-pick", upstreamHead+"..."+branchName)
 	if err != nil {
+		if isContextErr(err) {
+			return err
+		}
 		// Branch doesn't exist or is not valid.
 		return errPatchBranchNotFound
 	}
@@ -441,12 +523,15 @@ func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, br
 
 // applyMergePatch applies a patch using the merge (--no-ff) strategy.
 //
-// Merges the patch branch into the current temporary branch with --no-ff.
+// Merges the patch branch into the worktree's HEAD with --no-ff.
 // If the branch does not exist, returns errPatchBranchNotFound. If an
 // unresolvable conflict occurs, returns *rebuildConflictError.
 func (h *RebuildHandler) applyMergePatch(ctx context.Context, git GitRunner, branchName string) error {
 	// Check if the branch exists before attempting merge.
 	if _, err := git.Run(ctx, "rev-parse", "--verify", branchName); err != nil {
+		if isContextErr(err) {
+			return err
+		}
 		return errPatchBranchNotFound
 	}
 
@@ -480,12 +565,30 @@ func (h *RebuildHandler) applyMergePatch(ctx context.Context, git GitRunner, bra
 //     unresolved conflicts.
 //  3. If unresolved remain: abort the operation and return *rebuildConflictError.
 //  4. If all resolved: continue/commit the operation and return nil.
-func (h *RebuildHandler) handleConflictWithRerere(ctx context.Context, git GitRunner, operation string) *rebuildConflictError {
+//
+// It returns *rebuildConflictError for unresolved conflicts, a context error
+// when the run was cancelled (so that cancellation is never mistaken for a
+// resolved conflict), and nil when all conflicts were resolved.
+func (h *RebuildHandler) handleConflictWithRerere(ctx context.Context, git GitRunner, operation string) error {
+	// ctxFailure reports a cancellation seen after a (best-effort) git call.
+	ctxFailure := func(err error) error {
+		if isContextErr(err) {
+			return err
+		}
+		return ctx.Err()
+	}
+
 	// 16-REQ-1.5: allow git rerere with autoupdate to stage resolved files.
-	_, _ = git.Run(ctx, "rerere")
+	_, err := git.Run(ctx, "rerere")
+	if cerr := ctxFailure(err); cerr != nil {
+		return cerr
+	}
 
 	// Check for remaining unresolved conflicts via diff filter.
-	diffOutput, _ := git.Run(ctx, "diff", "--name-only", "--diff-filter=U")
+	diffOutput, err := git.Run(ctx, "diff", "--name-only", "--diff-filter=U")
+	if cerr := ctxFailure(err); cerr != nil {
+		return cerr
+	}
 	unresolvedFiles := splitNonEmpty(diffOutput)
 
 	if len(unresolvedFiles) > 0 {
@@ -496,10 +599,13 @@ func (h *RebuildHandler) handleConflictWithRerere(ctx context.Context, git GitRu
 
 	// All conflicts resolved by rerere: continue the operation.
 	if operation == "cherry-pick" {
-		_, _ = git.Run(ctx, "cherry-pick", "--continue")
+		_, err = git.Run(ctx, "cherry-pick", "--continue")
 	} else {
 		// For merge: finalize with git commit.
-		_, _ = git.Run(ctx, "commit", "--no-edit")
+		_, err = git.Run(ctx, "commit", "--no-edit")
+	}
+	if cerr := ctxFailure(err); cerr != nil {
+		return cerr
 	}
 
 	return nil

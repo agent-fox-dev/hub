@@ -936,20 +936,12 @@ func TestRebuildExecutor_UsesUpstreamTrackingRefNotHead(t *testing.T) {
 		t.Fatalf("HandleRebuildJob returned error: %v", err)
 	}
 
-	// Verify the temporary branch was created at the upstream SHA.
-	foundCheckout := false
-	for _, call := range mock.RunCalls {
-		if len(call.Args) >= 4 && call.Args[0] == "checkout" && call.Args[1] == "-B" {
-			if call.Args[3] == upstreamSHA {
-				foundCheckout = true
-			} else if call.Args[3] == localHeadSHA {
-				t.Error("checkout -B used local HEAD SHA instead of the upstream tracking ref")
-			}
-			break
-		}
+	// Verify the worktree was created at the upstream SHA (not local HEAD).
+	if len(mock.WorktreeAddCalls) != 1 {
+		t.Fatalf("expected 1 WorktreeAdd call, got %d", len(mock.WorktreeAddCalls))
 	}
-	if !foundCheckout {
-		t.Error("expected checkout -B with the upstream tracking ref SHA as start point")
+	if got := mock.WorktreeAddCalls[0].Commit; got != upstreamSHA {
+		t.Errorf("worktree created at %q, want the upstream tracking ref SHA %q", got, upstreamSHA)
 	}
 
 	// The commits to replay are computed against the upstream base with
@@ -1077,10 +1069,8 @@ func TestRebuildExecutor_UpstreamBaseUnavailable_ReturnsTransientError(t *testin
 	if result != nil {
 		t.Error("expected nil result when the upstream base is unavailable")
 	}
-	for _, call := range mock.RunCalls {
-		if len(call.Args) >= 2 && call.Args[0] == "checkout" && call.Args[1] == "-B" {
-			t.Error("should not create temp branch when upstream base resolution fails")
-		}
+	if len(mock.WorktreeAddCalls) != 0 {
+		t.Error("should not create a worktree when upstream base resolution fails")
 	}
 }
 

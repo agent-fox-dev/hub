@@ -204,6 +204,12 @@ type worktreeAddCall struct {
 	Commit string
 }
 
+// updateRefCall records an UpdateRef invocation.
+type updateRefCall struct {
+	Ref string
+	SHA string
+}
+
 // runCall records a Run invocation.
 type runCall struct {
 	Args []string
@@ -232,6 +238,19 @@ type mockGitRunner struct {
 	WorktreeRemoveErr   error
 	WorktreePruneCalls  int
 	WorktreePruneErr    error
+	UpdateRefCalls      []updateRefCall
+	UpdateRefErr        error
+
+	// Optional hooks invoked by the typed worktree methods (before the
+	// recorded error is returned when the hook returns nil).
+	OnWorktreeAdd    func(ctx context.Context, path, commit string) error
+	OnWorktreeRemove func(ctx context.Context, path string) error
+	OnWorktreePrune  func(ctx context.Context) error
+
+	// Recorder, when set, receives a short description of every call. It lets
+	// tests assert ordering across several mocks.
+	Recorder func(event string)
+
 	MergeTreeCalls      []mergeTreeCall
 	MergeTreeFunc       func(ctx context.Context, base, head string) (string, error)
 	IsAncestorFunc      func(ctx context.Context, ancestor, descendant string) (bool, error)
@@ -265,10 +284,17 @@ func newMockGitRunner() *mockGitRunner {
 	}
 }
 
+func (m *mockGitRunner) record(event string) {
+	if m.Recorder != nil {
+		m.Recorder(event)
+	}
+}
+
 func (m *mockGitRunner) Run(ctx context.Context, args ...string) (string, error) {
 	m.mu.Lock()
 	m.RunCalls = append(m.RunCalls, runCall{Args: args})
 	m.mu.Unlock()
+	m.record("run " + strings.Join(args, " "))
 	return m.RunFunc(ctx, args...)
 }
 
@@ -276,6 +302,7 @@ func (m *mockGitRunner) CherryPick(ctx context.Context, commitSHA string) error 
 	m.mu.Lock()
 	m.CherryPickCalls = append(m.CherryPickCalls, cherryPickCall{CommitSHA: commitSHA})
 	m.mu.Unlock()
+	m.record("cherry-pick " + commitSHA)
 	return m.CherryPickFunc(ctx, commitSHA)
 }
 
@@ -283,28 +310,55 @@ func (m *mockGitRunner) MergeNoFF(ctx context.Context, branch, message string) e
 	m.mu.Lock()
 	m.MergeNoFFCalls = append(m.MergeNoFFCalls, mergeNoFFCall{Branch: branch, Message: message})
 	m.mu.Unlock()
+	m.record("merge " + branch)
 	return m.MergeNoFFFunc(ctx, branch)
 }
 
-func (m *mockGitRunner) WorktreeAdd(_ context.Context, path, commit string) error {
+func (m *mockGitRunner) WorktreeAdd(ctx context.Context, path, commit string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.WorktreeAddCalls = append(m.WorktreeAddCalls, worktreeAddCall{Path: path, Commit: commit})
+	m.mu.Unlock()
+	m.record("WorktreeAdd")
+	if m.OnWorktreeAdd != nil {
+		if err := m.OnWorktreeAdd(ctx, path, commit); err != nil {
+			return err
+		}
+	}
 	return m.WorktreeAddErr
 }
 
-func (m *mockGitRunner) WorktreeRemove(_ context.Context, path string) error {
+func (m *mockGitRunner) WorktreeRemove(ctx context.Context, path string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.WorktreeRemoveCalls = append(m.WorktreeRemoveCalls, path)
+	m.mu.Unlock()
+	m.record("WorktreeRemove")
+	if m.OnWorktreeRemove != nil {
+		if err := m.OnWorktreeRemove(ctx, path); err != nil {
+			return err
+		}
+	}
 	return m.WorktreeRemoveErr
 }
 
-func (m *mockGitRunner) WorktreePrune(_ context.Context) error {
+func (m *mockGitRunner) WorktreePrune(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.WorktreePruneCalls++
+	m.mu.Unlock()
+	m.record("WorktreePrune")
+	if m.OnWorktreePrune != nil {
+		if err := m.OnWorktreePrune(ctx); err != nil {
+			return err
+		}
+	}
 	return m.WorktreePruneErr
+}
+
+func (m *mockGitRunner) UpdateRef(_ context.Context, ref, sha string) error {
+	m.mu.Lock()
+	m.UpdateRefCalls = append(m.UpdateRefCalls, updateRefCall{Ref: ref, SHA: sha})
+	m.mu.Unlock()
+	m.record("UpdateRef " + ref)
+	return m.UpdateRefErr
 }
 
 var _ GitRunner = (*mockGitRunner)(nil)

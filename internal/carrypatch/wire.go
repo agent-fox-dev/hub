@@ -131,6 +131,11 @@ func (a *GitRunnerAdapter) WorktreePrune(ctx context.Context) error {
 	return a.runner.WorktreePrune(ctx)
 }
 
+// UpdateRef delegates to gitcmd.GitRunner.UpdateRef (git update-ref).
+func (a *GitRunnerAdapter) UpdateRef(ctx context.Context, ref, sha string) error {
+	return a.runner.UpdateRef(ctx, ref, sha)
+}
+
 // NewGitRunnerFactory returns a factory function suitable for
 // RebuildHandler.NewGitRunner and the various API config types.
 func NewGitRunnerFactory() func(repoPath string) (GitRunner, error) {

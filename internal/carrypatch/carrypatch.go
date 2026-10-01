@@ -150,6 +150,8 @@ type GitRunner interface {
 	WorktreeRemove(ctx context.Context, path string) error
 	// WorktreePrune prunes stale linked-worktree registrations.
 	WorktreePrune(ctx context.Context) error
+	// UpdateRef force-updates ref to point at sha (git update-ref).
+	UpdateRef(ctx context.Context, ref, sha string) error
 }
 
 // PatchStore abstracts patch table operations for testing.
