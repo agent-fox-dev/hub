@@ -145,8 +145,8 @@ func listRerereEntries(gitDir string) []RerereResolution {
 			continue
 		}
 		subdir := filepath.Join(rrCacheDir, entry.Name())
-		preimage, preErr := os.Stat(filepath.Join(subdir, "preimage"))
-		postimage, postErr := os.Stat(filepath.Join(subdir, "postimage"))
+		preimage, preErr := newestRRImage(subdir, "preimage")
+		postimage, postErr := newestRRImage(subdir, "postimage")
 		if preErr != nil && postErr != nil {
 			continue
 		}
@@ -166,6 +166,38 @@ func listRerereEntries(gitDir string) []RerereResolution {
 		resolutions = append(resolutions, res)
 	}
 	return resolutions
+}
+
+// newestRRImage returns the most recently modified rr-cache image of the
+// given kind ("preimage" or "postimage") in subdir. git keeps several
+// variants of one conflict as <kind>, <kind>.1, <kind>.2, ... when the same
+// conflict id is met again with a different preimage (for example after an
+// aborted rebuild left a preimage behind), so a resolution recorded by a
+// later rebuild may live in postimage.1. It returns an error when there is no
+// image of that kind.
+func newestRRImage(subdir, kind string) (os.FileInfo, error) {
+	files, err := os.ReadDir(subdir)
+	if err != nil {
+		return nil, err
+	}
+	var newest os.FileInfo
+	for _, f := range files {
+		name := f.Name()
+		if f.IsDir() || (name != kind && !strings.HasPrefix(name, kind+".")) {
+			continue
+		}
+		info, err := f.Info()
+		if err != nil {
+			continue
+		}
+		if newest == nil || info.ModTime().After(newest.ModTime()) {
+			newest = info
+		}
+	}
+	if newest == nil {
+		return nil, os.ErrNotExist
+	}
+	return newest, nil
 }
 
 // readMergeRR parses .git/MERGE_RR, which maps rr-cache ids to the paths of

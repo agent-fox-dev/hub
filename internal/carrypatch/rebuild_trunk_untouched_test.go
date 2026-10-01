@@ -98,7 +98,14 @@ type realEnv struct {
 
 func newRealEnv(t *testing.T) *realEnv {
 	t.Helper()
-	e := &realEnv{t: t, root: t.TempDir(), slug: "ws-real", logs: &capturedLog{}}
+	return newRealEnvAt(t, t.TempDir(), "ws-real")
+}
+
+// newRealEnvAt builds the real-repository environment under an existing
+// workspace root, for tests that share the root with other fixtures.
+func newRealEnvAt(t *testing.T, root, slug string) *realEnv {
+	t.Helper()
+	e := &realEnv{t: t, root: root, slug: slug, logs: &capturedLog{}}
 	e.trunk, e.baseSHA = setupCarryPatchRepo(t, e.root, e.slug)
 	runGitCmd(t, e.trunk, "update-ref", "refs/remotes/upstream/HEAD", e.baseSHA)
 	e.h = &RebuildHandler{
