@@ -957,6 +957,14 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 			defer unlock()
 
+			// A rebuild applies patches in a worktree under the workspace
+			// directory without holding the lock; deleting that directory
+			// now would pull the worktree out from under it (01-REQ-5.5).
+			if wslock.RebuildActive(slug) {
+				return respondErrorWithType(c, http.StatusConflict,
+					"another operation is running on this workspace; retry later", "workspace_busy")
+			}
+
 			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 
 			headSHA, headErr := archiveHeadFn(repoPath)

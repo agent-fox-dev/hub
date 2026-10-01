@@ -8,6 +8,11 @@
 // Running two of these concurrently corrupts the tree; the job queue only
 // serializes jobs that share a group key. This package is the process-wide
 // guard. The hub runs as a single replica, so an in-process lock suffices.
+//
+// Besides the mutex, the package keeps a per-workspace rebuild-active flag
+// (BeginRebuild / RebuildActive). A rebuild applies patches in a worktree
+// under <root>/<slug>/rebuild without holding the mutex, so operations that
+// delete the workspace directory (archive, reclone) consult the flag as well.
 package wslock
 
 import "sync"
@@ -15,6 +20,12 @@ import "sync"
 var (
 	mu    sync.Mutex
 	locks = map[string]*sync.Mutex{}
+
+	// rebuildGuards holds the rebuild-active guard per slug. Each guard is a
+	// distinct token so an end function can tell whether the guard it set is
+	// still the current one. Protected by mu; independent of the per-slug
+	// mutex.
+	rebuildGuards = map[string]*struct{ _ byte }{}
 )
 
 func get(slug string) *sync.Mutex {
@@ -46,4 +57,42 @@ func TryLock(slug string) (unlock func(), ok bool) {
 		return nil, false
 	}
 	return l.Unlock, true
+}
+
+// BeginRebuild sets the rebuild-active guard for slug and returns the
+// function that clears it. The guard is independent of the workspace mutex: it
+// stays set while the mutex is free, so that handlers which delete the
+// workspace directory (archive, reclone) can refuse to run for the whole
+// rebuild while the others proceed. The rebuild calls it while holding the
+// workspace lock, which leaves no gap against archive and reclone.
+//
+// If a guard is already set for slug, BeginRebuild returns a no-op end
+// function and ok=false and leaves the existing guard untouched. end is
+// idempotent: it clears only the guard this call set, so calling it again
+// never clears a guard set later by another run. The guard lives in memory
+// only and is therefore cleared by a process exit.
+func BeginRebuild(slug string) (end func(), ok bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	if _, set := rebuildGuards[slug]; set {
+		return func() {}, false
+	}
+	token := &struct{ _ byte }{}
+	rebuildGuards[slug] = token
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if rebuildGuards[slug] == token {
+			delete(rebuildGuards, slug)
+		}
+	}, true
+}
+
+// RebuildActive reports whether the rebuild-active guard is set for slug.
+// Archive and reclone call it after a successful TryLock.
+func RebuildActive(slug string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	_, set := rebuildGuards[slug]
+	return set
 }
