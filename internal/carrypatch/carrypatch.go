@@ -112,6 +112,10 @@ type PatchResult struct {
 	SkippedReason string   `json:"skipped_reason,omitempty"`
 	NewHeadSHA    *string  `json:"new_head_sha"`
 	ConflictFiles []string `json:"conflict_files,omitempty"`
+	// SourceSHA is the commit the patch branch resolved to at
+	// refs/heads/<branch> when patch application began (01-REQ-6.6). It is
+	// the only reference to the branch used during the run.
+	SourceSHA string `json:"source_sha,omitempty"`
 }
 
 // RebuildResult is the structured result returned by a successful rebuild job.

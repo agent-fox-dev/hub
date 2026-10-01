@@ -159,12 +159,16 @@ func TestRebuildExecutor_MergeStrategy_MergesWithNoFF(t *testing.T) {
 		t.Fatalf("expected result to be *RebuildResult, got %T", result)
 	}
 
-	// Verify MergeNoFF was called with the correct branch.
+	// Verify MergeNoFF was called with the branch's snapshot SHA (01-REQ-6.1)
+	// and a message naming the branch (01-REQ-6.3).
 	if len(mock.MergeNoFFCalls) != 1 {
 		t.Fatalf("expected 1 MergeNoFF call, got %d", len(mock.MergeNoFFCalls))
 	}
-	if mock.MergeNoFFCalls[0].Branch != "feature/bar" {
-		t.Errorf("expected MergeNoFF branch='feature/bar', got %q", mock.MergeNoFFCalls[0].Branch)
+	if mock.MergeNoFFCalls[0].Branch != mergeSHA {
+		t.Errorf("expected MergeNoFF ref=%q (the snapshot SHA), got %q", mergeSHA, mock.MergeNoFFCalls[0].Branch)
+	}
+	if want := "Merge branch 'feature/bar'"; mock.MergeNoFFCalls[0].Message != want {
+		t.Errorf("expected MergeNoFF message=%q, got %q", want, mock.MergeNoFFCalls[0].Message)
 	}
 
 	// Verify no cherry-pick calls were made (merge strategy, not rebase).
@@ -342,18 +346,14 @@ func TestRebuildExecutor_MissingBranch_Skipped(t *testing.T) {
 	commitSHA := "bbbb000000000000000000000000000000000001"
 	resultSHA := "cccc000000000000000000000000000000000001"
 
-	// Mock: git log for feature/exists returns a commit,
-	// git log for feature/missing returns an error (branch not found).
+	// Mock: resolving feature/missing's tip fails (branch not found,
+	// 01-REQ-6.4); git log for feature/exists returns a commit.
 	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if br, ok := snapshotArgs(args); ok && br == "feature/missing" {
+			return "", fmt.Errorf("fatal: Needed a single revision")
+		}
 		for _, arg := range args {
 			if arg == "--reverse" {
-				// Check if this is for the missing branch.
-				for _, a := range args {
-					if a == fmt.Sprintf("%s..feature/missing", "aaaa000000000000000000000000000000000001") ||
-						containsString(args, "feature/missing") {
-						return "", fmt.Errorf("unknown revision or path not in the working tree: feature/missing")
-					}
-				}
 				return commitSHA, nil
 			}
 		}
@@ -951,7 +951,9 @@ func TestRebuildExecutor_UsesUpstreamTrackingRefNotHead(t *testing.T) {
 		if len(call.Args) > 0 && call.Args[0] == "log" {
 			foundLog = true
 			joined := strings.Join(call.Args, " ")
-			for _, want := range []string{"--no-merges", "--right-only", "--cherry-pick", upstreamSHA + "...feature/foo"} {
+			// The range ends at the branch's snapshot SHA (here the mock's
+			// answer to the tip resolution), never at the branch name.
+			for _, want := range []string{"--no-merges", "--right-only", "--cherry-pick", upstreamSHA + "..." + localHeadSHA} {
 				if !strings.Contains(joined, want) {
 					t.Errorf("log call %v missing %q", call.Args, want)
 				}
@@ -1628,9 +1630,14 @@ func TestRebuildExecutor_ContinueMode_MergeStrategy(t *testing.T) {
 	})
 
 	resultSHA := "cccc000000000000000000000000000000000001"
+	// The merge is given the snapshot SHA of the branch tip (01-REQ-6.1).
+	conflictSHA := "eeee000000000000000000000000000000000001"
 
 	mergeCallCount := 0
 	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
+		if br, ok := snapshotArgs(args); ok && br == "feature/conflict" {
+			return conflictSHA, nil
+		}
 		for _, arg := range args {
 			if arg == "--diff-filter=U" {
 				return "base.txt", nil
@@ -1639,9 +1646,9 @@ func TestRebuildExecutor_ContinueMode_MergeStrategy(t *testing.T) {
 		return resultSHA, nil
 	}
 
-	mock.MergeNoFFFunc = func(_ context.Context, branch string) error {
+	mock.MergeNoFFFunc = func(_ context.Context, ref string) error {
 		mergeCallCount++
-		if branch == "feature/conflict" {
+		if ref == conflictSHA {
 			return &MergeNoFFConflictError{Files: []string{"base.txt"}}
 		}
 		return nil

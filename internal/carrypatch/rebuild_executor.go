@@ -53,8 +53,10 @@ func (e *rebuildConflictError) Error() string {
 //  3. Create a detached per-run worktree at the upstream base
 //     (<workspace_root>/<slug>/rebuild/<job id>). The trunk checkout is never
 //     moved or modified.
-//  4. Collect patches in position order and apply each one inside the
-//     worktree using the captured strategy (rebase or merge).
+//  4. Collect patches in position order, snapshot each attempted patch's
+//     tip as a SHA (refs/heads/<branch>^{commit}, recorded as source_sha)
+//     and apply each one inside the worktree using the captured strategy
+//     (rebase or merge). Only the SHAs are used from then on.
 //  5. On success, phase two (lock re-acquired): force-update the
 //     integration branch ref with update-ref, remove merged_upstream
 //     patches, compact positions and optionally push to origin. Then the
@@ -214,6 +216,27 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return patches[i].Position < patches[j].Position
 	})
 
+	// Snapshot the tip of every patch that will be attempted as a SHA
+	// (01-REQ-6.1). With the lock released, branch names can move; from here
+	// on only the SHAs are used. An unresolvable branch gets no snapshot and
+	// is recorded as skipped / branch_not_found when its turn comes.
+	snapshots := make(map[string]string, len(patches))
+	for _, patch := range patches {
+		if patch.Status == PatchStatusMergedUpstream || patch.Status == PatchStatusDisabled || patch.Status == PatchStatusDeleted {
+			continue
+		}
+		sha, snapErr := trunk.Run(ctx, "rev-parse", "--verify", "refs/heads/"+patch.BranchName+"^{commit}")
+		if snapErr != nil {
+			if cancelled(snapErr) {
+				return nil, true, &TransientError{Err: snapErr}
+			}
+			continue
+		}
+		if sha = strings.TrimSpace(sha); sha != "" {
+			snapshots[patch.ID] = sha
+		}
+	}
+
 	// 11. Determine fail mode.
 	failMode := payload.FailMode
 	if failMode == "" {
@@ -251,6 +274,18 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			continue
 		}
 
+		// A branch that did not resolve is skipped (16-REQ-1.6, 01-REQ-6.4).
+		sourceSHA, snapshotted := snapshots[patch.ID]
+		if !snapshotted {
+			pr.Status = "skipped"
+			pr.SkippedReason = "branch_not_found"
+			result.PatchResults = append(result.PatchResults, pr)
+			result.PatchesSkipped++
+			h.writeProgress(jobID, result.PatchResults)
+			continue
+		}
+		pr.SourceSHA = sourceSHA
+
 		// Capture the pre-patch HEAD for continue-mode rollback.
 		prePatchHead, headErr := wt.Run(ctx, "rev-parse", "HEAD")
 		if headErr != nil {
@@ -265,9 +300,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 		var applyErr error
 		if strategy == StrategyMerge {
-			applyErr = h.applyMergePatch(ctx, wt, patch.BranchName)
+			applyErr = h.applyMergePatch(ctx, wt, sourceSHA, patch.BranchName)
 		} else {
-			applyErr = h.applyRebasePatch(ctx, wt, patch.BranchName, upstreamHead)
+			applyErr = h.applyRebasePatch(ctx, wt, sourceSHA, upstreamHead)
 		}
 
 		if applyErr != nil {
@@ -680,17 +715,18 @@ func (h *RebuildHandler) writeProgress(jobID string, patchResults []PatchResult)
 // applyRebasePatch applies a patch using the rebase (cherry-pick) strategy.
 //
 // For each unique commit on the patch branch (determined via git log --reverse),
-// cherry-picks it onto the worktree's HEAD. If the branch does not
-// exist, returns errPatchBranchNotFound. If an unresolvable conflict occurs,
-// returns *rebuildConflictError.
-func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, branchName, upstreamHead string) error {
+// cherry-picks it onto the worktree's HEAD. sha is the snapshot of the
+// branch tip (01-REQ-6.1); the branch name is never used. If the commit
+// list is empty, returns errPatchBranchNotFound. If an unresolvable
+// conflict occurs, returns *rebuildConflictError.
+func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, sha, upstreamHead string) error {
 	// 16-REQ-1.3: determine the commits to replay: those on the patch branch
 	// that are not in upstream, skipping merge commits (as git rebase does)
 	// and commits whose patch-id already exists upstream (already
 	// cherry-picked or squash-merged content), which would otherwise stop
 	// the cherry-pick as "empty".
 	logOutput, err := git.Run(ctx, "log", "--reverse", "--format=%H", "--no-merges",
-		"--right-only", "--cherry-pick", upstreamHead+"..."+branchName)
+		"--right-only", "--cherry-pick", upstreamHead+"..."+sha)
 	if err != nil {
 		if isContextErr(err) {
 			return err
@@ -725,20 +761,13 @@ func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, br
 
 // applyMergePatch applies a patch using the merge (--no-ff) strategy.
 //
-// Merges the patch branch into the worktree's HEAD with --no-ff.
-// If the branch does not exist, returns errPatchBranchNotFound. If an
-// unresolvable conflict occurs, returns *rebuildConflictError.
-func (h *RebuildHandler) applyMergePatch(ctx context.Context, git GitRunner, branchName string) error {
-	// Check if the branch exists before attempting merge.
-	if _, err := git.Run(ctx, "rev-parse", "--verify", branchName); err != nil {
-		if isContextErr(err) {
-			return err
-		}
-		return errPatchBranchNotFound
-	}
-
+// Merges the snapshot SHA of the patch branch into the worktree's HEAD with
+// --no-ff (01-REQ-6.3). The commit message names the branch, which a bare
+// SHA merge would lose. If an unresolvable conflict occurs, returns
+// *rebuildConflictError.
+func (h *RebuildHandler) applyMergePatch(ctx context.Context, git GitRunner, sha, branchName string) error {
 	// 16-REQ-1.4: merge with --no-ff.
-	if err := git.MergeNoFF(ctx, branchName, ""); err != nil {
+	if err := git.MergeNoFF(ctx, sha, "Merge branch '"+branchName+"'"); err != nil {
 		var mergeErr *MergeNoFFConflictError
 		if errors.As(err, &mergeErr) {
 			// Attempt rerere resolution (16-REQ-1.5).
