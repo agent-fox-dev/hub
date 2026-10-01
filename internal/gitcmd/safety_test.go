@@ -81,10 +81,13 @@ func TestSafetyEnvVars_NewMethodsInheritExtraEnv(t *testing.T) {
 		{"RemoteAdd", func() { runner.RemoteAdd(ctx, "safety-remote", "https://example.com/r.git") }},
 		{"Log", func() { runner.Log(ctx, "--oneline", "-1") }},
 		{"Diff", func() { runner.Diff(ctx) }},
-		{"MergeNoFF", func() { runner.MergeNoFF(ctx, "HEAD") }},
+		{"MergeNoFF", func() { runner.MergeNoFF(ctx, "HEAD", "") }},
 		{"MergeAbort", func() { runner.MergeAbort(ctx) }},
 		{"RebaseContinue", func() { runner.RebaseContinue(ctx) }},
 		{"IsAncestor", func() { runner.IsAncestor(ctx, "HEAD", "HEAD") }},
+		{"WorktreeAdd", func() { runner.WorktreeAdd(ctx, filepath.Join(repoDir, "..", "safety-wt"), "HEAD") }},
+		{"WorktreeRemove", func() { runner.WorktreeRemove(ctx, filepath.Join(repoDir, "..", "safety-wt")) }},
+		{"WorktreePrune", func() { runner.WorktreePrune(ctx) }},
 	}
 
 	for _, m := range methods {

@@ -206,7 +206,6 @@ func TestRerereIntegration_PartialResolve_AbortsAndRecordsConflict(t *testing.T)
 
 	commit1 := "bbbb000000000000000000000000000000000001"
 	upstreamHead := "aaaa000000000000000000000000000000000001"
-	branchDeleteCalled := false
 
 	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
 		for _, arg := range args {
@@ -219,11 +218,6 @@ func TestRerereIntegration_PartialResolve_AbortsAndRecordsConflict(t *testing.T)
 			// 'git diff --name-only --diff-filter=U' returns unresolved files.
 			if arg == "--diff-filter=U" {
 				return "pkg/api.go", nil
-			}
-			// Detect temp branch deletion.
-			if arg == "-D" || arg == "-d" {
-				branchDeleteCalled = true
-				return "", nil
 			}
 		}
 		return upstreamHead, nil
@@ -281,9 +275,10 @@ func TestRerereIntegration_PartialResolve_AbortsAndRecordsConflict(t *testing.T)
 		t.Errorf("expected conflict_files to contain 'pkg/api.go', got %v", updated.ConflictFiles)
 	}
 
-	// Temporary branch should be deleted.
-	if !branchDeleteCalled {
-		t.Error("expected temporary branch to be deleted after conflict abort")
+	// The rebuild worktree should be discarded (no temporary branch exists).
+	if len(mock.WorktreeRemoveCalls) != 1 || mock.WorktreePruneCalls != 2 {
+		t.Errorf("expected the rebuild worktree to be removed and pruned after conflict abort, got remove=%d prune=%d",
+			len(mock.WorktreeRemoveCalls), mock.WorktreePruneCalls)
 	}
 
 	// Second patch should NOT have been attempted (fail-fast).

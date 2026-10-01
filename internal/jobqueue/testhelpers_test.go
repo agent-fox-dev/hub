@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,6 +161,71 @@ func waitForStatus(t *testing.T, db *sql.DB, jobID, targetStatus string, timeout
 	}
 	t.Fatalf("waitForStatus(%q, %q): timed out after %v; last status=%q",
 		jobID, targetStatus, timeout, lastStatus)
+}
+
+// startedWorkerGoroutines returns the number of live worker goroutines
+// ((*Queue).workerLoop) that Queue.Start launched from the calling goroutine,
+// i.e. the workers of the queue the current test started.
+//
+// Tests use it instead of comparing runtime.NumGoroutine before and after
+// Start: that count is process-wide, and goroutines left over from earlier
+// tests (the database/sql connection opener of a database closed in a
+// cleanup, a Wait helper, a worker still finishing after a grace-period
+// expiry) can exit in between, so the delta comes up short even though every
+// worker is running.
+//
+// Start creates its goroutines before returning, but one that has not been
+// scheduled yet still shows the compiler's go-statement wrapper instead of
+// workerLoop. The helper therefore waits, up to five seconds, until every
+// goroutine Start launched from the caller is in workerLoop. Workers exit
+// only after Shutdown, so the count is then exact.
+func startedWorkerGoroutines(t *testing.T) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		total, workers := countStartGoroutines(t)
+		if workers == total || time.Now().After(deadline) {
+			return workers
+		}
+		runtime.Gosched()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// countStartGoroutines returns how many live goroutines Queue.Start launched
+// from the calling goroutine (total) and how many of them are already running
+// (*Queue).workerLoop (workers), from a dump of all goroutine stacks.
+func countStartGoroutines(t *testing.T) (total, workers int) {
+	t.Helper()
+
+	buf := make([]byte, 64<<10)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	stacks := string(buf)
+
+	// The first goroutine in the dump is the caller: "goroutine <id> [running]:".
+	fields := strings.Fields(stacks)
+	if len(fields) < 2 || fields[0] != "goroutine" {
+		t.Fatalf("unexpected goroutine dump header: %.80q", stacks)
+	}
+	createdBy := ".(*Queue).Start in goroutine " + fields[1] + "\n"
+
+	for _, g := range strings.Split(stacks, "\n\n") {
+		if !strings.Contains(g+"\n", createdBy) {
+			continue
+		}
+		total++
+		if strings.Contains(g, ".(*Queue).workerLoop(") {
+			workers++
+		}
+	}
+	return total, workers
 }
 
 // findColumn searches for a column by name in the column list.

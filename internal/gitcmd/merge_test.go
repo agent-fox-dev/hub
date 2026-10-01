@@ -37,7 +37,7 @@ func TestMergeNoFF_Success(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	sha, err := runner.MergeNoFF(ctx, "feature")
+	sha, err := runner.MergeNoFF(ctx, "feature", "")
 	if err != nil {
 		t.Fatalf("MergeNoFF returned unexpected error: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestMergeNoFF_Conflict(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	sha, err := runner.MergeNoFF(ctx, "feature")
+	sha, err := runner.MergeNoFF(ctx, "feature", "")
 
 	// Must return empty SHA.
 	if sha != "" {
@@ -211,7 +211,7 @@ func TestMergeNoFF_ConflictMultipleFiles(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, mergeErr := runner.MergeNoFF(ctx, "feature")
+	_, mergeErr := runner.MergeNoFF(ctx, "feature", "")
 	if mergeErr == nil {
 		t.Fatal("MergeNoFF should return non-nil error on two-file conflict")
 	}
@@ -276,7 +276,7 @@ func TestMergeNoFF_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	sha, err := runner.MergeNoFF(ctx, "feature")
+	sha, err := runner.MergeNoFF(ctx, "feature", "")
 
 	// Must return empty SHA.
 	if sha != "" {
@@ -312,7 +312,7 @@ func TestMergeNoFF_EmptyBranch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	sha, err := runner.MergeNoFF(ctx, "")
+	sha, err := runner.MergeNoFF(ctx, "", "")
 
 	if sha != "" {
 		t.Errorf("MergeNoFF should return empty string for empty branch, got %q", sha)

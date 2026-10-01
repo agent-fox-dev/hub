@@ -50,21 +50,24 @@ func TestRecovery_ResetsRunningJobsOnStartup(t *testing.T) {
 	// Also seed a completed job to verify it's NOT affected.
 	seedJob(t, db, "j3", "merge", "dev", "n3", "completed")
 
+	// Record every status transition. Start launches its workers right
+	// after crash recovery, and they may claim a recovered job (and
+	// dead-letter it, as no handler is registered) before the queries below
+	// run, so a job's current status after Start is not deterministic.
+	// Recovery runs inside Start before any worker exists, so each job's
+	// first recorded transition is the one recovery made.
+	recordStatusTransitions(t, db)
+
 	if err := q.Start(); err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
 	defer q.Stop()
 
 	// Verify j1 was reset to queued.
-	var j1Status string
-	var j1AvailableAt string
-	if err := db.QueryRow(
-		"SELECT status, available_at FROM jobs WHERE id=?", "j1",
-	).Scan(&j1Status, &j1AvailableAt); err != nil {
-		t.Fatalf("query j1 failed: %v", err)
-	}
-	if j1Status != "queued" {
-		t.Errorf("expected j1 status='queued' after crash recovery, got %q", j1Status)
+	j1Old, j1Status, j1AvailableAt := firstStatusTransition(t, db, "j1")
+	if j1Old != "running" || j1Status != "queued" {
+		t.Errorf("expected j1 status 'running' -> 'queued' after crash recovery, got %q -> %q",
+			j1Old, j1Status)
 	}
 	j1Avail, parseErr := time.Parse(time.RFC3339, j1AvailableAt)
 	if parseErr != nil {
@@ -76,15 +79,10 @@ func TestRecovery_ResetsRunningJobsOnStartup(t *testing.T) {
 	}
 
 	// Verify j2 was reset to queued.
-	var j2Status string
-	var j2AvailableAt string
-	if err := db.QueryRow(
-		"SELECT status, available_at FROM jobs WHERE id=?", "j2",
-	).Scan(&j2Status, &j2AvailableAt); err != nil {
-		t.Fatalf("query j2 failed: %v", err)
-	}
-	if j2Status != "queued" {
-		t.Errorf("expected j2 status='queued' after crash recovery, got %q", j2Status)
+	j2Old, j2Status, j2AvailableAt := firstStatusTransition(t, db, "j2")
+	if j2Old != "running" || j2Status != "queued" {
+		t.Errorf("expected j2 status 'running' -> 'queued' after crash recovery, got %q -> %q",
+			j2Old, j2Status)
 	}
 	j2Avail, parseErr := time.Parse(time.RFC3339, j2AvailableAt)
 	if parseErr != nil {
@@ -103,6 +101,15 @@ func TestRecovery_ResetsRunningJobsOnStartup(t *testing.T) {
 	if j3Status != "completed" {
 		t.Errorf("expected j3 (completed) to be unchanged, got %q", j3Status)
 	}
+	var j3Transitions int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM status_transitions WHERE job_id=?", "j3",
+	).Scan(&j3Transitions); err != nil {
+		t.Fatalf("query j3 transitions failed: %v", err)
+	}
+	if j3Transitions != 0 {
+		t.Errorf("expected no status transitions for j3 (completed), got %d", j3Transitions)
+	}
 
 	// Verify WARN log lines were emitted for each reset job.
 	logOutput := logBuf.String()
@@ -115,6 +122,46 @@ func TestRecovery_ResetsRunningJobsOnStartup(t *testing.T) {
 	if !strings.Contains(logOutput, "j2") {
 		t.Errorf("expected WARN log to contain job_id 'j2', log output:\n%s", logOutput)
 	}
+}
+
+// recordStatusTransitions installs a trigger that appends every change of
+// jobs.status (with the row's available_at at that moment) to a
+// status_transitions table, in order.
+func recordStatusTransitions(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`CREATE TABLE status_transitions (
+			seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id       TEXT NOT NULL,
+			old_status   TEXT NOT NULL,
+			new_status   TEXT NOT NULL,
+			available_at TEXT NOT NULL
+		)`,
+		`CREATE TRIGGER record_status_transition
+		AFTER UPDATE OF status ON jobs
+		WHEN OLD.status IS NOT NEW.status
+		BEGIN
+			INSERT INTO status_transitions (job_id, old_status, new_status, available_at)
+			VALUES (NEW.id, OLD.status, NEW.status, NEW.available_at);
+		END`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("install status transition recorder: %v", err)
+		}
+	}
+}
+
+// firstStatusTransition returns the earliest status change recorded by
+// recordStatusTransitions for the job, failing the test if there is none.
+func firstStatusTransition(t *testing.T, db *sql.DB, jobID string) (oldStatus, newStatus, availableAt string) {
+	t.Helper()
+	if err := db.QueryRow(
+		`SELECT old_status, new_status, available_at FROM status_transitions
+		 WHERE job_id = ? ORDER BY seq LIMIT 1`, jobID,
+	).Scan(&oldStatus, &newStatus, &availableAt); err != nil {
+		t.Fatalf("query first status transition of %s failed: %v", jobID, err)
+	}
+	return oldStatus, newStatus, availableAt
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +177,9 @@ func TestRecovery_NoRunningJobsNoRecoveryActions(t *testing.T) {
 	seedJob(t, db, "j1", "merge", "main", "n1", "completed")
 	seedJob(t, db, "j2", "sync", "r42", "n2", "queued")
 
-	baseline := runtime.NumGoroutine()
+	// Count this queue's worker goroutines rather than the process-wide
+	// runtime.NumGoroutine (see startedWorkerGoroutines).
+	baseline := startedWorkerGoroutines(t)
 
 	err := q.Start()
 	if err != nil {
@@ -138,12 +187,10 @@ func TestRecovery_NoRunningJobsNoRecoveryActions(t *testing.T) {
 	}
 	defer q.Stop()
 
-	// Verify worker goroutines started. The process-wide count also moves
-	// with unrelated goroutines winding down, so wait for the delta rather
-	// than sampling once.
-	if delta, after := waitForGoroutineDelta(baseline, 2); delta < 2 {
-		t.Errorf("expected at least 2 new goroutines for WithWorkers(2), "+
-			"got delta=%d (before=%d, after=%d)", delta, baseline, after)
+	// Verify worker goroutines started.
+	if after := startedWorkerGoroutines(t); baseline != 0 || after != 2 {
+		t.Errorf("expected exactly 2 worker goroutines for WithWorkers(2), "+
+			"got before=%d, after=%d", baseline, after)
 	}
 
 	// Verify no WARN log lines about crash recovery were emitted.
@@ -232,21 +279,5 @@ func TestRecovery_IdempotencyDocumented(t *testing.T) {
 	if !strings.Contains(strings.ToLower(src), "idempotent") {
 		t.Error("expected source code to document handler idempotency requirement " +
 			"(word 'idempotent' not found in jobqueue.go)")
-	}
-}
-
-// waitForGoroutineDelta polls runtime.NumGoroutine until it exceeds
-// baseline by at least want, or two seconds pass. It returns the last delta
-// and count observed.
-func waitForGoroutineDelta(baseline, want int) (delta, after int) {
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		runtime.Gosched()
-		after = runtime.NumGoroutine()
-		delta = after - baseline
-		if delta >= want || time.Now().After(deadline) {
-			return delta, after
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }

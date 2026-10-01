@@ -135,6 +135,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Remove rebuild worktrees left behind by a crash. This runs before
+	// the queue starts, so no rebuild can be using one of those directories;
+	// it logs its errors and never prevents startup.
+	carrypatch.CleanupStaleRebuildWorktrees(ctx, cfg.Workspace.Path, slog.Default())
+
 	// Start the durable job queue workers. Workers dispatch merge and
 	// rebuild jobs using group_key serialization so at most one job per
 	// target runs at a time. All job types must be registered above.

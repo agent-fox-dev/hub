@@ -125,6 +125,20 @@ serialised per workspace. HTTP handlers that cannot acquire the lock
 immediately return `409` with `error_type: workspace_busy`; background jobs
 wait for it.
 
+A carry-patch rebuild applies patches in its own detached git worktree and
+does not hold the lock for the whole run. It holds the lock only for the
+upstream fetch and base resolution (the *fetch phase*) and for the final
+integration-ref update, patch bookkeeping and optional push to `origin` (the
+*final phase*). Sync, rollback, rerere forget, batch rebase and merge jobs
+are therefore rejected (or made to wait) only while a rebuild is in its fetch
+phase or final phase; during patch application they proceed normally.
+
+Archive and reclone delete the directory the rebuild worktree lives in, so
+they are guarded by a separate per-workspace rebuild-active flag instead: they
+answer `409` with `error_type: workspace_busy` for the whole rebuild, from
+before the fetch until the worktree has been removed, even while the lock
+itself is free.
+
 ### Anti-Enumeration Policy
 
 When a PAT lacks the required scope for an endpoint, or the requested
@@ -174,7 +188,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild | Workspace is not in `carry_patch` mode |
 | `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
 | `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
-| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget | Another operation currently holds the workspace lock; retry later |
+| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
 
 ---
 
@@ -442,7 +456,10 @@ tokens can archive any workspace.
   If that push fails (or no credentials can be resolved) the workspace is
   still archived, but the local clone directory is kept and a warning is
   logged, so no commits are lost; reactivation reuses the retained clone.
-- The archive acquires the workspace lock (see *Workspace Lock*).
+- The archive acquires the workspace lock (see *Workspace Lock*). It is also
+  rejected with `409` `workspace_busy` for the whole rebuild while a carry-patch
+  rebuild is running, because the archive deletes the directory the rebuild
+  worktree lives in.
 
 **Error Codes:**
 
@@ -451,7 +468,7 @@ tokens can archive any workspace.
 | 400 | Workspace is already archived |
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
-| 409 | Clone is in progress; archive is rejected until the clone completes or fails. Another operation holds the workspace lock (`error_type: workspace_busy`) |
+| 409 | Clone is in progress; archive is rejected until the clone completes or fails. Another operation holds the workspace lock, or a rebuild is running (`error_type: workspace_busy`; archive is rejected for the whole rebuild, not only its fetch and final phases) |
 
 ---
 
@@ -569,7 +586,7 @@ or unexpected failures.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:sync` scope |
 | 404 | Workspace not found or not owned by the caller |
-| 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`); upstream history has diverged (force-push detected) |
+| 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches); upstream history has diverged (force-push detected) |
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
@@ -585,8 +602,9 @@ Differences from the standard path:
 
 - The preconditions above (active, clone ready, sync mode not `disabled`, no
   sync in progress) still apply, and the workspace lock is held for the
-  duration (`409` `workspace_busy` while a rebuild, merge, or other sync
-  runs).
+  duration (`409` `workspace_busy` while a merge or other sync runs, or
+  while a rebuild is in its fetch phase or final phase; a rebuild applying
+  patches in its worktree does not block it).
 - `sync_status` is not moved to `syncing`/`error`; failures are reported by
   the HTTP status only (`502` when upstream credentials cannot be resolved or
   the upstream fetch fails; no workspace or patch state is modified).
@@ -681,7 +699,9 @@ lifecycle.
 workspace must be owned by the caller (admin tokens bypass); other
 workspaces answer 404. The archive-and-push step uses the workspace's stored
 credentials, and the whole operation holds the workspace lock (`409`
-`workspace_busy` while another operation runs).
+`workspace_busy` while another operation runs). Reclone is also rejected with
+`409` `workspace_busy` for the whole rebuild, because it deletes the directory
+the rebuild worktree lives in.
 
 **Path Parameters:**
 
@@ -1487,7 +1507,7 @@ preferred for housekeeping.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:write` scope |
 | 404 | Workspace not found or not owned by the caller; no entry with the given id; no recorded resolution for the given path |
-| 409 | Another operation holds the workspace lock (`error_type: workspace_busy`) |
+| 409 | Another operation holds the workspace lock (`error_type: workspace_busy`); a rebuild holds it only during its fetch phase and final phase, not while it applies patches |
 
 ---
 
@@ -1559,6 +1579,13 @@ Each entry in the `patch_results` array:
 | `skipped_reason` | string | Reason for skipping: `"merged_upstream"`, `"disabled"`, `"deleted"`, or `"branch_not_found"` (omitted when not skipped) |
 | `new_head_sha` | string or null | New HEAD SHA after successful application; null on conflict or skip |
 | `conflict_files` | string[] | List of conflicting file paths (omitted when not conflicted) |
+| `source_sha` | string | The commit the patch branch (`refs/heads/<branch_name>`) resolved to when patch application began; this is the tip the rebuild applied. Omitted for patches that were not attempted (skipped by status or `branch_not_found`) |
+
+In the rebuild job objects this field is addressed as
+`patch_results[].source_sha`; it also appears in the intermediate progress of a
+running job. If a patch branch (or the upstream base) moves while a rebuild is
+running, the run still applies the `source_sha` it started with and a
+follow-up rebuild (submitted by `system:stale-snapshot`) is queued afterwards.
 
 #### Rebuild Progress Tracking
 
@@ -1632,10 +1659,14 @@ and the executor applies `"fail_fast"` as the runtime default.
 
 The rebuild executor processes patches in position order:
 
-1. Fetch from the upstream remote.
-2. Create a temporary branch at the upstream HEAD.
-3. Enable git rerere for conflict resolution replay.
-4. For each patch in position order:
+1. Fetch from the upstream remote and resolve the upstream base (under the
+   workspace lock).
+2. Create a detached git worktree at the upstream base under
+   `<WORKSPACE_ROOT>/<slug>/rebuild/<job id>`; the workspace's trunk checkout
+   is never changed. No lock is held while patches are applied.
+3. Enable git rerere for conflict resolution replay and resolve each patch
+   branch to its tip SHA (`patch_results[].source_sha`).
+4. For each patch in position order, inside the worktree:
    - **Skip** patches with status `merged_upstream`, `disabled`, or `deleted`.
    - **Skip** patches whose branch does not exist in the repository.
    - **Apply** using the configured strategy (`rebase` = cherry-pick each
@@ -1645,11 +1676,15 @@ The rebuild executor processes patches in position order:
      - **fail_fast mode**: abort the rebuild immediately.
      - **continue mode**: mark the patch as `conflict`, reset to the
        pre-patch state, record the conflict, and continue with the next patch.
-5. Force-update the integration branch ref to the rebuilt HEAD.
+5. Re-acquire the workspace lock and force-update the integration branch ref
+   (`update-ref`) to the worktree's final HEAD.
 6. Soft-delete patches that were in `merged_upstream` status (sets status to
    `"deleted"` with a `deleted_at` timestamp rather than permanently removing
    the row).
-7. Compact remaining patch positions.
+7. Compact remaining patch positions, then remove the worktree. If a patch
+   tip or the upstream base moved during the run, one follow-up rebuild is
+   enqueued (`submitted_by: system:stale-snapshot`, audit event
+   `hub.rebuild.followup`).
 
 #### Auto-Trigger on Push
 
@@ -1768,7 +1803,7 @@ result.
 | 401 | Unauthenticated request |
 | 403 | Missing required scope `rebuilds:write` |
 | 404 | Job not found or does not belong to this workspace |
-| 409 | No previous integration head SHA available to roll back to (e.g. first-ever rebuild, or job has no result) |
+| 409 | No previous integration head SHA available to roll back to (e.g. first-ever rebuild, or job has no result); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches) |
 | 500 | Failed to initialize git runner or failed to reset integration branch |
 
 ### GET /api/v1/workspaces/:slug/rebuild-preview

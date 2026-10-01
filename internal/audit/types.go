@@ -5,6 +5,13 @@ package audit
 
 import "errors"
 
+// EventRebuildFollowup is the hub audit event emitted when a carry-patch
+// rebuild enqueues a follow-up rebuild because a patch tip or the upstream
+// base moved during the run. Metadata: stale_patches ([]string),
+// upstream_stale (bool) and follow_up_job_id. Hub events are stored and
+// queried by their event_type string, so no further registration exists.
+const EventRebuildFollowup = "hub.rebuild.followup"
+
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {
 	ID           string         `json:"id"`

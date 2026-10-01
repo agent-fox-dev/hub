@@ -1,0 +1,765 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "01",
+  "spec_name": "rebuild_worktree",
+  "schema_version": 2,
+  "introduction": "A carry-patch rebuild applies patch branches onto the upstream base inside a detached, per-run git worktree instead of the workspace's shared trunk checkout, and holds the per-workspace lock only for the steps that conflict with other operations. The rebuild algorithm and public API keep their current meaning, apart from the additive field patch_results[].source_sha and the new audit event hub.rebuild.followup.",
+  "glossary": {
+    "Exception A": "The case where the trunk's HEAD is the integration branch at the final ref update, so the trunk needs a hard reset to match the new tip.",
+    "Exception B": "The one-time removal of a legacy _rebuild_temp branch left by a pre-upgrade run, including moving the trunk's HEAD off it.",
+    "follow-up rebuild": "A rebuild job enqueued by a finished run, with submitted_by system:stale-snapshot, because a patch tip or the upstream base moved during the run.",
+    "phase one / phase two": "The two lock-holding sections of a rebuild. Phase one covers the upstream fetch, base resolution, legacy migration, stale cleanup and rerere config. Phase two covers the integration-ref update, patch bookkeeping and optional push to origin.",
+    "rebuild worktree": "A detached linked git worktree created for one rebuild run at <workspace_root>/<slug>/rebuild/<job id>. It shares the trunk's objects, refs, configuration and rr-cache but has its own HEAD, index and files.",
+    "rebuild-active guard": "A per-workspace in-memory flag in internal/wslock, set by BeginRebuild and read by RebuildActive, independent of the wslock mutex. Archive and reclone refuse to run while it is set.",
+    "rerere": "git's reuse-recorded-resolution feature; its cache rr-cache lives in the common git directory and MERGE_RR is per worktree.",
+    "snapshot SHA": "The commit SHA that a patch branch resolved to at refs/heads/<branch> when patch application began; it is the only reference to the branch used for the rest of the run.",
+    "trunk": "The non-bare clone of a workspace at <workspace_root>/<slug>/trunk, shared by the git smart HTTP server, sync, merge jobs, rollback, rerere forget and rebuilds.",
+    "wslock": "The in-process per-workspace lock in internal/wslock, taken blockingly with Lock by jobs and non-blockingly with TryLock by HTTP handlers."
+  },
+  "requirements": [
+    {
+      "id": "01-REQ-1",
+      "title": "Worktree lifecycle",
+      "rationale": "A per-run detached worktree lets patch application proceed without borrowing the trunk checkout and makes crash recovery a matter of deleting a directory.",
+      "criteria": [
+        {
+          "id": "01-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a rebuild reaches patch application",
+          "system": "rebuild executor",
+          "action": "create a detached worktree with the typed WorktreeAdd call, which runs `git worktree add --detach <path> <upstream base sha>` in the trunk, where <path> is the absolute path (made absolute with filepath.Abs) <workspace_root>/<slug>/rebuild/<job id>"
+        },
+        {
+          "id": "01-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "the job context carries no job ID or the configured WorkspaceRoot is empty",
+          "system": "rebuild executor",
+          "action": "use a random ID in place of the job ID when the job ID is absent, and derive the worktree path from the same parent directory as the trunk path when WorkspaceRoot is empty"
+        },
+        {
+          "id": "01-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "build a second GitRunner with h.NewGitRunner(worktreePath) after the worktree directory exists, run log, rev-parse, cherry-pick, merge, rerere, `diff --diff-filter=U`, `commit --no-edit`, `reset --hard` to the pre-patch HEAD and worktree HEAD reads through it, and use the trunk runner only for fetch-adjacent reads, config, worktree add/remove/prune, the _rebuild_temp migration and the final ref update"
+        },
+        {
+          "id": "01-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "for any exit path (success, conflict, transient error, early return, cancellation), remove the worktree with WorktreeRemove (`git worktree remove --force <path>`) followed by WorktreePrune (`git worktree prune`), so that `git worktree list` in the trunk shows only the trunk and the worktree directory no longer exists"
+        },
+        {
+          "id": "01-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "`git worktree remove` fails",
+          "system": "rebuild executor",
+          "action": "fall back to os.RemoveAll(path) followed by `git worktree prune`, log the failure at warning level, and leave the job outcome unchanged",
+          "contract": "The job result and status are identical to those of a run whose removal succeeded; a warning log entry naming the slug and path is written; the worktree directory is gone after the fallback"
+        },
+        {
+          "id": "01-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "run worktree removal and every other cleanup step with a context derived from context.WithoutCancel(ctx) and a timeout of at most two minutes, so cleanup still executes after the job context is cancelled"
+        },
+        {
+          "id": "01-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "git runner",
+          "action": "provide WorktreeAdd, WorktreeRemove and WorktreePrune on gitcmd.GitRunner, the carrypatch.GitRunner interface, GitRunnerAdapter and mockGitRunner as the only place worktree commands are spelled, and change MergeNoFF to MergeNoFF(ctx, ref, message string) error where an empty message keeps git's default merge message"
+        },
+        {
+          "id": "01-REQ-1.8",
+          "pattern": "unwanted",
+          "condition": "creating the worktree fails",
+          "system": "rebuild executor",
+          "action": "stop the run before applying any patch, leave no directory under rebuild/ for this run, release the guard and emit hub.rebuild.fail",
+          "contract": "HandleRebuildJob returns a non-nil error; no integration-ref update or patch bookkeeping has occurred; the trunk HEAD, index and files are unchanged"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-2",
+      "title": "The trunk is not touched",
+      "rationale": "The shared trunk checkout serves clones, sync and merge jobs, so a rebuild must neither move it nor leave state in it.",
+      "criteria": [
+        {
+          "id": "01-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "run no `checkout`, `reset`, `cherry-pick`, `merge` or `rebase` through the trunk runner during a rebuild other than those defined by Exception A and Exception B, never create the _rebuild_temp branch, and not contain the functions currentCheckout, restoreCheckout or preflightCleanup"
+        },
+        {
+          "id": "01-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "for any rebuild that ends in success, fail-fast conflict, continue-mode conflict or cancellation, leave the trunk's `git symbolic-ref HEAD`, `git rev-parse HEAD`, `git status --porcelain` output and the contents of a tracked sample file identical to their values before the run, except under Exception A and Exception B"
+        },
+        {
+          "id": "01-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "patch application finishes and phase two begins",
+          "system": "rebuild executor",
+          "action": "force-update the integration branch to the worktree's final HEAD SHA with `git update-ref refs/heads/<integration> <sha>` using the existing UpdateRef method, never using `branch -f` and never checking the integration branch out"
+        },
+        {
+          "id": "01-REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "phase two holds the workspace lock",
+          "system": "rebuild executor",
+          "action": "read the previous integration head with `rev-parse --verify refs/heads/<integration>` immediately before the ref update and record it as previous_integration_head_sha, leaving it empty when the branch does not exist"
+        },
+        {
+          "id": "01-REQ-2.5",
+          "pattern": "complex_event",
+          "condition": "the ref update has been made under the final lock",
+          "guard": "the trunk's HEAD is the symbolic ref of the integration branch (Exception A)",
+          "system": "rebuild executor",
+          "action": "run `reset --hard HEAD` in the trunk so the index and files match the new tip, and log this at info level; in every other case run no reset in the trunk"
+        },
+        {
+          "id": "01-REQ-2.6",
+          "pattern": "event_driven",
+          "condition": "phase one runs and a local refs/heads/_rebuild_temp exists (Exception B)",
+          "system": "rebuild executor",
+          "action": "delete that branch and log at info level that it was removed",
+          "contract": "After the run `git show-ref refs/heads/_rebuild_temp` finds nothing and a log entry with the slug records the removal"
+        },
+        {
+          "id": "01-REQ-2.7",
+          "pattern": "complex_event",
+          "condition": "the _rebuild_temp migration runs and the trunk's HEAD is on _rebuild_temp",
+          "guard": "any cherry-pick, merge or rebase may be in progress",
+          "system": "rebuild executor",
+          "action": "abort any in-progress cherry-pick, merge or rebase on a best-effort basis, then move HEAD with `checkout --force <branch>` where <branch> is workspaceBranch if it exists as a local branch, else the short name of refs/remotes/origin/HEAD if that exists locally, else run `checkout --detach --force` and log a warning, before deleting _rebuild_temp"
+        },
+        {
+          "id": "01-REQ-2.8",
+          "pattern": "unwanted",
+          "condition": "the `update-ref` of the integration branch fails",
+          "system": "rebuild executor",
+          "action": "stop phase two before any soft-deletion, compaction or push, release the lock, and emit hub.rebuild.fail",
+          "contract": "HandleRebuildJob returns a non-nil error; no patch rows are changed by this run; the lock is free afterwards"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-3",
+      "title": "Rerere across worktrees",
+      "rationale": "Conflict resolutions recorded by the hub's rebuilds must keep replaying and stay visible to the rerere endpoints even though patches are applied in a linked worktree.",
+      "criteria": [
+        {
+          "id": "01-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "set rerere.enabled=true and rerere.autoupdate=true in the repository-level config with the trunk runner before creating the worktree, and not enable extensions.worktreeConfig"
+        },
+        {
+          "id": "01-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "a rebuild meets a conflict whose resolution an earlier rebuild recorded in its worktree",
+          "system": "rebuild executor",
+          "action": "replay the recorded resolution from the shared rr-cache so the patch is applied without a reported conflict"
+        },
+        {
+          "id": "01-REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "rerere endpoints",
+          "action": "for any resolution recorded in a rebuild worktree, list it in GET /workspaces/:slug/rerere from <trunk>/.git/rr-cache and remove it with DELETE /workspaces/:slug/rerere/*, with the entry absent from a following GET"
+        },
+        {
+          "id": "01-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "a rebuild worktree is discarded while a conflict is in progress and MERGE_RR is populated",
+          "system": "rebuild executor",
+          "action": "leave the shared rr-cache and the endpoints' read of <trunk>/.git/MERGE_RR unaffected",
+          "contract": "GET /workspaces/:slug/rerere returns 200 with the entries recorded before the discard, and <trunk>/.git/MERGE_RR holds no entry from the discarded worktree"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-4",
+      "title": "Lock phases",
+      "rationale": "Only the fetch and the final ref and database update write shared state, so holding the workspace lock for patch application blocks sync, rollback and merge jobs for no benefit.",
+      "criteria": [
+        {
+          "id": "01-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a rebuild job starts",
+          "system": "rebuild executor",
+          "action": "resolve upstream credentials first, then take the blocking wslock.Lock(slug), and under that lock call BeginRebuild(slug)"
+        },
+        {
+          "id": "01-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "resolving upstream credentials fails",
+          "system": "rebuild executor",
+          "action": "return a retryable TransientError before taking the lock or setting the guard and emit hub.rebuild.fail",
+          "contract": "HandleRebuildJob returns an error of type TransientError; the lock is free and RebuildActive(slug) is false"
+        },
+        {
+          "id": "01-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "perform in phase one under the lock, in this order, the upstream fetch, trunk runner creation, resolveUpstreamBase, the _rebuild_temp migration, stale worktree cleanup and rerere config, and then release the lock"
+        },
+        {
+          "id": "01-REQ-4.4",
+          "pattern": "state_driven",
+          "condition": "the rebuild is creating the worktree, listing patches, snapshotting tips or applying patches",
+          "system": "rebuild executor",
+          "action": "hold no wslock lock, so that POST /sync, rollback, rerere forget, batch rebase and merge jobs for the same workspace acquire the lock and proceed"
+        },
+        {
+          "id": "01-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "re-acquire wslock.Lock(slug) for phase two, perform in it the previous-head read, the integration-ref update, soft-deletion of merged_upstream patches, position compaction and the optional PushIntegration to origin, and release the lock afterwards"
+        },
+        {
+          "id": "01-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "for any early return in phase one or phase two, release the workspace lock, and perform worktree creation, patch application and worktree removal outside any lock"
+        },
+        {
+          "id": "01-REQ-4.7",
+          "pattern": "event_driven",
+          "condition": "a rollback of the integration branch completes while patches are being applied",
+          "system": "rebuild executor",
+          "action": "overwrite the rolled-back value with its own update-ref in phase two and record in previous_integration_head_sha the value read at phase two, with rollback and the final update serialised by the lock",
+          "contract": "After the run the integration branch equals the rebuild's final HEAD SHA and previous_integration_head_sha equals the rolled-back SHA"
+        },
+        {
+          "id": "01-REQ-4.8",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "after phase two, remove the worktree, run the stale-input check, emit hub.rebuild.complete, end the guard and return, in that order"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-5",
+      "title": "Rebuild-active guard",
+      "rationale": "Archive and reclone delete the directory the worktree lives in, and a mutex that is not held during patch application cannot stop them.",
+      "criteria": [
+        {
+          "id": "01-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "wslock",
+          "action": "provide BeginRebuild(slug string) (end func(), ok bool) and RebuildActive(slug string) bool as a per-workspace flag independent of the mutex, and clear the flag on process exit because it is held only in memory"
+        },
+        {
+          "id": "01-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "BeginRebuild is called for a slug whose guard is already set",
+          "system": "wslock",
+          "action": "return ok=false without changing the existing guard, and make the rebuild return a retryable error",
+          "contract": "BeginRebuild returns (nil-safe end, false); the existing guard stays set; HandleRebuildJob returns a retryable error and the job is retried by the queue"
+        },
+        {
+          "id": "01-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "wslock",
+          "action": "make the end function returned by BeginRebuild idempotent, so a second call leaves a guard set later by another run untouched"
+        },
+        {
+          "id": "01-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "hold the guard from before stale worktree cleanup until after worktree removal on every exit path, calling end through defer"
+        },
+        {
+          "id": "01-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "an archive request reaches the clone_status == \"ready\" branch, TryLock succeeds and RebuildActive(slug) is true",
+          "system": "archive handler",
+          "action": "release the lock and refuse the request with the existing workspace_busy message",
+          "contract": "HTTP 409 with error_type workspace_busy; the workspace is not archived and the lock is free"
+        },
+        {
+          "id": "01-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "a reclone request obtains TryLock and RebuildActive(slug) is true",
+          "system": "reclone handler",
+          "action": "release the lock and refuse the request with the existing workspace_busy message",
+          "contract": "HTTP 409 with error_type workspace_busy; the clone directory is untouched and the lock is free"
+        },
+        {
+          "id": "01-REQ-5.7",
+          "pattern": "state_driven",
+          "condition": "no rebuild is active for the workspace and the guard has been ended",
+          "system": "archive and reclone handlers",
+          "action": "behave exactly as before this change, so archive and reclone succeed under the same conditions as without the guard"
+        },
+        {
+          "id": "01-REQ-5.8",
+          "pattern": "state_driven",
+          "condition": "the guard is set and the lock is free",
+          "system": "sync, rollback and rerere-forget handlers",
+          "action": "not consult the guard and accept their requests"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-6",
+      "title": "Snapshotting patch tips",
+      "rationale": "With the lock released during application, branch names can move, so applying fixed SHAs makes the run deterministic and tells the operator exactly what was applied.",
+      "criteria": [
+        {
+          "id": "01-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "the patch list is sorted and before the first patch is applied",
+          "system": "rebuild executor",
+          "action": "resolve every patch whose status is not merged_upstream, disabled or deleted with `rev-parse --verify refs/heads/<branch>^{commit}` in the trunk runner and use only the resulting SHA for `git log`, cherry-pick and merge from then on"
+        },
+        {
+          "id": "01-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "a patch uses the rebase strategy",
+          "system": "rebuild executor",
+          "action": "list its commits with `git log --reverse --no-merges --right-only --cherry-pick <base>...<snapshot sha>` in the worktree"
+        },
+        {
+          "id": "01-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "a patch uses the merge strategy",
+          "system": "rebuild executor",
+          "action": "call MergeNoFF(ctx, <snapshot sha>, \"Merge branch '<branch name>'\") in the worktree",
+          "contract": "The resulting merge commit message contains the branch name"
+        },
+        {
+          "id": "01-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "a patch branch's rev-parse fails or returns empty output, or the rebase strategy yields an empty commit list",
+          "system": "rebuild executor",
+          "action": "record the patch as skipped with reason branch_not_found and continue with the remaining patches",
+          "contract": "patch_results contains an entry with status skipped and reason branch_not_found for that patch; the run does not fail because of it"
+        },
+        {
+          "id": "01-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "a tag or remote-tracking ref has the patch's name but no refs/heads/<branch> exists",
+          "system": "rebuild executor",
+          "action": "treat the branch as not found",
+          "contract": "The patch is recorded as skipped with reason branch_not_found"
+        },
+        {
+          "id": "01-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "add PatchResult.SourceSHA with JSON name source_sha, omitted when empty, set for every snapshotted patch including those that then conflicted, and carry it in the job result, in the running job's progress and in the patch_results of rebuild API responses"
+        },
+        {
+          "id": "01-REQ-6.7",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "for any patch branch that moves after its snapshot, apply exactly the commits reachable from the snapshot SHA and report that SHA as source_sha"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-7",
+      "title": "Stale-input follow-up",
+      "rationale": "Releasing the lock during application lets a push or a sync land mid-run, and without a rebuild-side check the change would never be rebuilt because sync only enqueues when upstream_head_sha changes.",
+      "criteria": [
+        {
+          "id": "01-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a run ends in success or in a fail-fast conflict, after worktree removal and after the phase-two lock is released",
+          "system": "rebuild executor",
+          "action": "re-resolve refs/heads/<branch> for each patch with a snapshot SHA and status success or conflict, mark a patch stale if the result differs from its snapshot SHA, ignore patches skipped for merged_upstream, disabled or deleted, and re-run resolveUpstreamBase and mark upstream stale if it differs from the SHA the run used"
+        },
+        {
+          "id": "01-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "a run ends with a retryable error, cancellation or any failure other than a fail-fast conflict",
+          "system": "rebuild executor",
+          "action": "skip the stale-input check and enqueue no follow-up",
+          "contract": "No job with submitted_by system:stale-snapshot exists after the run and no hub.rebuild.followup event is emitted"
+        },
+        {
+          "id": "01-REQ-7.3",
+          "pattern": "complex_event",
+          "condition": "at least one patch is stale",
+          "guard": "the workspace variable AUTO_REBUILD_AFTER_PUSH is not \"false\"",
+          "system": "rebuild executor",
+          "action": "enqueue one follow-up rebuild, and enqueue none when AUTO_REBUILD_AFTER_PUSH is \"false\""
+        },
+        {
+          "id": "01-REQ-7.4",
+          "pattern": "complex_event",
+          "condition": "the upstream base is stale",
+          "guard": "the workspace variable AUTO_REBUILD_AFTER_SYNC is not \"false\"",
+          "system": "rebuild executor",
+          "action": "enqueue one follow-up rebuild, and enqueue none when AUTO_REBUILD_AFTER_SYNC is \"false\""
+        },
+        {
+          "id": "01-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "enqueue at most one follow-up per run, carrying the same strategy, fail mode and integration branch as the original, SubmittedBy \"system:stale-snapshot\", a fresh nonce, Type \"rebuild\", Key <slug> and the running job's GroupKey read with Queue.GetByID(jobID), falling back to FormatGroupKey(slug, payload.IntegrationBranch)",
+          "contract": "The new job is stored with status queued and does not start before the current job is finalised"
+        },
+        {
+          "id": "01-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "jobqueue",
+          "action": "add EnqueueParams.ExcludeJobID so that, when set, both the pre-insert active (type, key) duplicate query and the race-recovery query ignore the job with that ID, and leave the dedup behaviour unchanged when it is empty"
+        },
+        {
+          "id": "01-REQ-7.7",
+          "pattern": "event_driven",
+          "condition": "a follow-up rebuild is enqueued",
+          "system": "rebuild executor",
+          "action": "emit the audit event hub.rebuild.followup, registered as a new event type for audit queries, with metadata stale_patches (branch names), upstream_stale (bool) and follow_up_job_id"
+        },
+        {
+          "id": "01-REQ-7.8",
+          "pattern": "unwanted",
+          "condition": "the Queue is nil or the follow-up enqueue returns an error",
+          "system": "rebuild executor",
+          "action": "log a warning and leave the job outcome unchanged",
+          "contract": "HandleRebuildJob returns the same result and error as without the stale check, and a warning log entry is written"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-8",
+      "title": "Cancellation and crash recovery",
+      "rationale": "Cleanup that reuses a cancelled context silently does nothing, and a crash must not leave state in the trunk or block later rebuilds.",
+      "criteria": [
+        {
+          "id": "01-REQ-8.1",
+          "pattern": "unwanted",
+          "condition": "the job context is cancelled during patch application or a git call returns a context error",
+          "system": "rebuild executor",
+          "action": "discard the worktree with the non-cancelled cleanup context (the forced removal also discards any in-progress cherry-pick or merge), end the guard and return a retryable TransientError",
+          "contract": "HandleRebuildJob returns a TransientError; the worktree directory and registration are gone; RebuildActive(slug) is false; trunk HEAD, index and files are unchanged"
+        },
+        {
+          "id": "01-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a rebuild runs phase one under the guard and before creating its worktree",
+          "system": "rebuild executor",
+          "action": "remove every directory under <workspace_root>/<slug>/rebuild/ with os.RemoveAll and run `git worktree prune` in the trunk, replacing preflightCleanup, and log each removal at info level"
+        },
+        {
+          "id": "01-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "the hub starts, before mergeQueue.Start() in cmd/af-hub/main.go",
+          "system": "hub",
+          "action": "call carrypatch.CleanupStaleRebuildWorktrees(ctx, workspaceRoot, logger), which removes every <workspace_root>/*/rebuild directory, runs `git worktree prune` in the matching trunk and logs each removal at info level"
+        },
+        {
+          "id": "01-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "a workspace has a rebuild directory but its trunk directory is missing",
+          "system": "CleanupStaleRebuildWorktrees",
+          "action": "skip the prune for that workspace, log a warning and continue with the remaining workspaces",
+          "contract": "The function returns without panicking; other workspaces are still cleaned; the rebuild directory of the trunkless workspace is removed"
+        },
+        {
+          "id": "01-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "removing a directory or pruning fails during startup cleanup",
+          "system": "CleanupStaleRebuildWorktrees",
+          "action": "log the error and continue, never returning a failure that stops hub startup",
+          "contract": "Hub startup proceeds to mergeQueue.Start(); an error-level or warning-level log entry names the slug and path"
+        },
+        {
+          "id": "01-REQ-8.6",
+          "pattern": "event_driven",
+          "condition": "a previous run crashed leaving a registered-but-orphaned worktree directory and a plain stale directory under rebuild/",
+          "system": "rebuild executor",
+          "action": "remove both directories and their worktree registrations before creating the new worktree, so the next rebuild succeeds",
+          "contract": "After the run `git worktree list` in the trunk shows only the trunk and the rebuild/ directory contains no stale entries"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-9",
+      "title": "Coexistence with go-git, pushes and gc",
+      "rationale": "The hub uses go-git on the trunk while a linked worktree is registered, and the design is only valid if those paths keep working.",
+      "criteria": [
+        {
+          "id": "01-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "a git push through the hub completes while patches are being applied",
+          "system": "git server",
+          "action": "update refs and run the go-git hard reset of the trunk working tree through updateHeadSHA, whose TryLock succeeds, leaving the rebuild worktree's HEAD, index and files unchanged"
+        },
+        {
+          "id": "01-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "POST /sync completes while patches are being applied",
+          "system": "sync handler",
+          "action": "fetch upstream and update upstream_head_sha while the running rebuild keeps the base SHA it resolved in phase one",
+          "contract": "The sync responds with its normal success status instead of 409 workspace_busy"
+        },
+        {
+          "id": "01-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "hub go-git paths",
+          "action": "for any registered linked rebuild worktree under the trunk, succeed in git.PlainOpen with Worktree().Reset(&git.ResetOptions{Mode: git.HardReset}), defaultSyncUpdateLocalRefFn, upstream.Fetch and DefaultPushIntegrationFunc to a local bare remote, and leave the worktree usable afterwards"
+        },
+        {
+          "id": "01-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "never run `gc --prune=now` or `reflog expire`"
+        },
+        {
+          "id": "01-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "for any `git gc` run while the worktree is registered, keep every object reachable only from the worktree's HEAD"
+        },
+        {
+          "id": "01-REQ-9.6",
+          "pattern": "state_driven",
+          "condition": "a rebuild has not yet completed its phase-two ref update",
+          "system": "git server",
+          "action": "serve clones and fetches of the integration branch at its pre-rebuild tip"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-10",
+      "title": "Observability, documentation and decision record",
+      "rationale": "Operators need logs to follow worktree handling, and the docs and API contract must describe the narrowed workspace_busy behaviour and the new field.",
+      "criteria": [
+        {
+          "id": "01-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "log worktree creation and removal, per-run and startup stale worktree cleanup, and the _rebuild_temp migration at info level, each entry carrying the workspace slug and path, and log removal failures at warning level"
+        },
+        {
+          "id": "01-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "rebuild executor",
+          "action": "emit hub.rebuild.complete on success and hub.rebuild.fail on every error return, with the same event shape as before this change"
+        },
+        {
+          "id": "01-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "hub API",
+          "action": "keep endpoints, response shapes, job records and existing audit events unchanged apart from the additive patch_results[].source_sha field and the hub.rebuild.followup event, and narrow only the documented 409 workspace_busy behaviour"
+        },
+        {
+          "id": "01-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "update docs/api.md (Workspace Lock section, the workspace_busy row and the 409 rows for sync, rollback, rerere forget, archive and reclone) and docs/openapi.yaml to state that sync, rollback, rerere forget and batch rebase are rejected only during a rebuild's fetch phase and final phase while archive and reclone are rejected for the whole rebuild, and to list patch_results[].source_sha"
+        },
+        {
+          "id": "01-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "rewrite steps 3 to 6 of the Rebuild algorithm in docs/carry_patch_workflow.md for the worktree flow, state that a rebuild does not change the trunk's checkout, that clones served during a rebuild see the pre-rebuild integration branch, and that a stale patch tip or upstream triggers a follow-up rebuild, and update the lock note near line 1068"
+        },
+        {
+          "id": "01-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "remove or mark as legacy the two _rebuild_temp statements in docs/examples/AGENTS_carry_patch.md"
+        },
+        {
+          "id": "01-REQ-10.7",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "add docs/adr/02-run-rebuilds-with-the-git-cli.md recording the decision to use the git CLI rather than go-git, with a capability table for worktree add/remove/prune, cherry-pick, non-FF merge, rerere and gc/prune as reported by go-git v5.19.1's COMPATIBILITY.md, and the condition for revisiting it (go-git gaining linked-worktree, cherry-pick, --no-ff merge and rerere support)"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "01-PATH-1",
+      "title": "A rebuild succeeds without touching the trunk",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "submits a rebuild request for a workspace through the rebuild API"
+        },
+        {
+          "actor": "job queue",
+          "action": "claims the rebuild job and starts the rebuild executor"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "takes wslock, sets the rebuild-active guard, fetches upstream, resolves the base, runs migration and stale cleanup, and releases the lock"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "creates the detached worktree at <workspace_root>/<slug>/rebuild/<job id>, snapshots patch tips to SHAs and applies the patches in the worktree"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "re-acquires wslock, runs update-ref on the integration branch, soft-deletes merged patches, compacts positions and releases the lock"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "removes the worktree, ends the guard and emits hub.rebuild.complete with source_sha in patch_results; the trunk's HEAD, status and files are unchanged"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-2",
+      "title": "A push during patch application produces a follow-up rebuild",
+      "steps": [
+        {
+          "actor": "rebuild executor",
+          "action": "is applying snapshotted patches in its worktree with no lock held"
+        },
+        {
+          "actor": "developer",
+          "action": "pushes a new commit to a registered patch branch through the hub git server"
+        },
+        {
+          "actor": "git server",
+          "action": "updates the ref and hard-resets the trunk working tree because TryLock succeeds"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "finishes applying the snapshot SHAs, updates the integration ref and removes the worktree"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "re-resolves the patch branch, finds it differs from the snapshot SHA and enqueues a follow-up with ExcludeJobID set to its own ID"
+        },
+        {
+          "actor": "job queue",
+          "action": "stores the follow-up as queued with submitted_by system:stale-snapshot, and the hub emits hub.rebuild.followup"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-3",
+      "title": "A cancelled rebuild cleans up and is retried",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "cancels or shuts down the hub while a rebuild is applying patches"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "sees a context error from a git call and switches to the non-cancelled cleanup context"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "force-removes the worktree, prunes registrations and ends the guard"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "returns a retryable TransientError, and the trunk's HEAD, index and files are unchanged"
+        },
+        {
+          "actor": "job queue",
+          "action": "retries the job under its existing retry policy"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-4",
+      "title": "Archive and reclone are refused during a rebuild while sync proceeds",
+      "steps": [
+        {
+          "actor": "rebuild executor",
+          "action": "holds the rebuild-active guard while applying patches with the lock released"
+        },
+        {
+          "actor": "operator",
+          "action": "sends POST /sync for the workspace"
+        },
+        {
+          "actor": "sync handler",
+          "action": "obtains TryLock, fetches upstream, updates upstream_head_sha and responds with success"
+        },
+        {
+          "actor": "operator",
+          "action": "requests archive or reclone of the same workspace"
+        },
+        {
+          "actor": "archive or reclone handler",
+          "action": "obtains TryLock, sees RebuildActive is true, releases the lock and responds 409 workspace_busy"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "finishes, removes the worktree, ends the guard and detects the moved upstream base, enqueueing a follow-up unless AUTO_REBUILD_AFTER_SYNC is false"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-5",
+      "title": "Crash leftovers are removed at startup and before the next rebuild",
+      "steps": [
+        {
+          "actor": "hub",
+          "action": "crashes mid-rebuild leaving a registered worktree directory under <workspace_root>/<slug>/rebuild/"
+        },
+        {
+          "actor": "hub",
+          "action": "restarts and calls CleanupStaleRebuildWorktrees before mergeQueue.Start(), removing each rebuild directory and pruning in the matching trunk"
+        },
+        {
+          "actor": "operator",
+          "action": "submits a rebuild for the workspace"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "under the guard removes any remaining directories under rebuild/ and prunes registrations before creating its worktree"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "completes the rebuild and leaves `git worktree list` showing only the trunk"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-6",
+      "title": "A recorded rerere resolution replays in the next rebuild",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "resolves a conflict recorded by a rebuild in its worktree under the shared rr-cache"
+        },
+        {
+          "actor": "operator",
+          "action": "submits a second rebuild of the workspace"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "applies the same patch in a new worktree and replays the recorded resolution with no conflict reported"
+        },
+        {
+          "actor": "operator",
+          "action": "calls GET /workspaces/:slug/rerere and sees the entry, then DELETE /workspaces/:slug/rerere/* and sees it forgotten"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-7",
+      "title": "A fail-fast conflict leaves the trunk untouched and a legacy branch is migrated",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "upgrades the hub while the trunk has a leftover _rebuild_temp branch checked out, then submits a fail-fast rebuild"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "under the phase-one lock aborts any in-progress operation, moves the trunk to the workspace branch with checkout --force and deletes _rebuild_temp"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "applies patches in a worktree, hits a conflict on one patch and stops with a fail-fast conflict result"
+        },
+        {
+          "actor": "rebuild executor",
+          "action": "removes the worktree, runs the stale-input check and emits the conflict outcome, with the integration branch unchanged and the trunk's HEAD and files unchanged after the migration"
+        }
+      ]
+    }
+  ]
+}

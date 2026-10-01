@@ -106,6 +106,12 @@ type EnqueueParams struct {
 	Payload     json.RawMessage
 	SubmittedBy string
 	Group       string // Optional: when non-empty, used as group_key for group serialization.
+
+	// ExcludeJobID, when non-empty, makes the active (type, key) duplicate
+	// checks ignore the job with this ID. A running job uses it to enqueue a
+	// follow-up of its own type and key, which would otherwise be
+	// deduplicated against itself.
+	ExcludeJobID string
 }
 
 // ListOpts carries optional filter and pagination parameters for ListByType.
@@ -337,10 +343,12 @@ func (q *Queue) Enqueue(params EnqueueParams) (jobID string, duplicate bool, err
 	}
 
 	// Check for active (type, key) duplicate: queued or running.
+	// ExcludeJobID, when set, removes the caller's own job from the check
+	// (01-REQ-7.6); an empty value matches no job ID.
 	var activeID string
 	activeErr := q.db.QueryRow(
-		"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?)",
-		params.Type, params.Key, StatusQueued, StatusRunning,
+		"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?) AND id != ?",
+		params.Type, params.Key, StatusQueued, StatusRunning, params.ExcludeJobID,
 	).Scan(&activeID)
 	if activeErr == nil {
 		// Active job exists for this (type, key).
@@ -378,8 +386,8 @@ func (q *Queue) Enqueue(params EnqueueParams) (jobID string, duplicate bool, err
 		// our check and our INSERT.
 		var raceActiveID string
 		raceActiveErr := q.db.QueryRow(
-			"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?)",
-			params.Type, params.Key, StatusQueued, StatusRunning,
+			"SELECT id FROM jobs WHERE type = ? AND key = ? AND status IN (?, ?) AND id != ?",
+			params.Type, params.Key, StatusQueued, StatusRunning, params.ExcludeJobID,
 		).Scan(&raceActiveID)
 		if raceActiveErr == nil {
 			return raceActiveID, true, nil

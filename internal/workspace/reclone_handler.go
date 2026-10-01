@@ -63,6 +63,14 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 		defer unlock()
 
+		// A rebuild keeps a worktree under the workspace directory without
+		// holding the lock; refuse to delete it while one is active
+		// (01-REQ-5.6).
+		if wslock.RebuildActive(slug) {
+			return respondErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+
 		// ---- Archive flow: push local commits (13-REQ-7.1, 13-REQ-7.E1) ----
 		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 

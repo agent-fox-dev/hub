@@ -3,7 +3,6 @@ package jobqueue
 import (
 	"context"
 	"encoding/json"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -161,23 +160,20 @@ func TestWorker_PollInterval(t *testing.T) {
 func TestWorker_GoroutineCount(t *testing.T) {
 	q, _ := newTestQueueWithOpts(t, WithWorkers(3))
 
-	// Snapshot goroutine count before starting.
-	before := runtime.NumGoroutine()
+	// Count this queue's worker goroutines rather than the process-wide
+	// runtime.NumGoroutine (see startedWorkerGoroutines). Other goroutines
+	// Start may add (e.g. a promote/poll coordinator) are not counted.
+	before := startedWorkerGoroutines(t)
 
 	if err := q.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
 	defer q.Stop()
 
-	// See waitForGoroutineDelta: the process-wide count is noisy.
-	delta, after := waitForGoroutineDelta(before, 3)
-
-	// Expect at least 3 new goroutines (the workers). There may be
-	// additional goroutines (e.g., a promote/poll coordinator), so we
-	// check >= 3 rather than == 3.
-	if delta < 3 {
-		t.Errorf("expected at least 3 new goroutines for WithWorkers(3), "+
-			"got delta=%d (before=%d, after=%d)", delta, before, after)
+	after := startedWorkerGoroutines(t)
+	if before != 0 || after != 3 {
+		t.Errorf("expected exactly 3 worker goroutines for WithWorkers(3), "+
+			"got before=%d, after=%d", before, after)
 	}
 
 	// Verify the wakeup channel has buffer size 1.
