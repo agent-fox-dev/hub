@@ -241,117 +241,180 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		OriginFetched:     isOriginMode,
 	}
 
-	// 20-REQ-1.6: In hub mode the divergence policy is ignored;
-	// hold it for later tasks (patch refresh in origin mode only).
-	_ = patchDivergencePolicy
+	// ===========================================================
+	// 20-REQ-5.1: Patch refresh runs before the early return, so a
+	// patch-only change reaches merge detection and the rebuild enqueue.
+	// ===========================================================
 
-	// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
-	// with no patches_merged and no rebuild triggered.
-	if !upstreamAdvanced {
-		return &resp, nil
-	}
-
-	// Upstream has advanced — update the workspace record.
-	now := apikit.NowUTC()
-	_, err = cfg.DB.Exec(
-		`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
-		newUpstreamHead, now, now, slug,
-	)
-	if err != nil {
-		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
-	}
-
-	// 16-REQ-5.1: Check each active patch for upstream merge via IsAncestor.
+	// List patches for both the refresh and merge detection.
 	patches, listErr := cfg.PatchStore.ListPatches(ctx, slug)
 	if listErr != nil {
 		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
 	}
 
-	// Determine squash merge detection mode from workspace variable.
-	// Values: "ancestry_only", "content_based", "both" (default).
-	squashDetectionMode := "both"
-	if cfg.GetVariable != nil {
-		val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
-		if val == "ancestry_only" || val == "content_based" || val == "both" {
-			squashDetectionMode = val
+	// 20-REQ-3 / 20-REQ-4: Patch-branch refresh (origin mode only).
+	patchAdvanced := false
+	if isOriginMode {
+		outcomes, advanced, refreshErr := refreshPatchBranches(ctx, git, repoPath, patches, integrationBranch, patchDivergencePolicy)
+		patchAdvanced = advanced
+		_ = outcomes // outcomes are used by later tasks (response, persistence)
+
+		if refreshErr != nil {
+			// 20-REQ-4.3: A ref-write failure stops the refresh. Outcomes
+			// already produced are kept. The rebuild decision for branches
+			// already moved still runs below. upstream_head_sha and
+			// last_sync_at are NOT written.
+			// Enqueue rebuild for branches already moved, then return 500.
+			if patchAdvanced {
+				enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, true)
+			}
+			return nil, apikit.WriteAPIError(c, http.StatusInternalServerError,
+				fmt.Sprintf("failed to update patch branch %s", refreshErr.(*RefWriteError).Branch))
 		}
 	}
 
-	for _, patch := range patches {
-		// Only check active patches.
-		// 16-PROP-6: merged_upstream is monotonic — never revert.
-		if patch.Status != PatchStatusActive {
-			continue
+	// 20-REQ-7.3: In hub mode, clear origin columns of every patch row.
+	if !isOriginMode {
+		if clearErr := cfg.PatchStore.ClearOriginSyncState(ctx, slug); clearErr != nil {
+			// Log but don't fail the sync.
+			_ = clearErr
+		}
+	}
+
+	// 20-REQ-5.2: Merge detection runs when upstream advanced or any patch
+	// branch counted as advanced. In hub mode, run it exactly when upstream
+	// advanced (patchAdvanced is always false in hub mode).
+	shouldRunMergeDetection := upstreamAdvanced || patchAdvanced
+
+	if shouldRunMergeDetection {
+		// Re-list patches to get refreshed state (patches may have been
+		// updated by the refresh). For hub mode, the original list is fine.
+		if isOriginMode {
+			patches, listErr = cfg.PatchStore.ListPatches(ctx, slug)
+			if listErr != nil {
+				return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
+			}
 		}
 
-		merged := false
+		// Determine squash merge detection mode from workspace variable.
+		// Values: "ancestry_only", "content_based", "both" (default).
+		squashDetectionMode := "both"
+		if cfg.GetVariable != nil {
+			val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
+			if val == "ancestry_only" || val == "content_based" || val == "both" {
+				squashDetectionMode = val
+			}
+		}
 
-		// Step 1: ancestry check (unless mode is content_based only).
-		if squashDetectionMode != "content_based" {
-			// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
-			// new upstream HEAD.
-			ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
-			if ancestorErr != nil {
-				// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
-				// does not exist locally). Leave status unchanged.
+		for _, patch := range patches {
+			// Only check active patches.
+			// 16-PROP-6: merged_upstream is monotonic — never revert.
+			if patch.Status != PatchStatusActive {
 				continue
 			}
-			merged = ancestorResult
-		}
 
-		// Step 2: squash merge fallback (content-based + PR-number scanning).
-		if !merged && squashDetectionMode != "ancestry_only" {
-			merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
-		}
+			merged := false
 
-		if merged {
-			// Transition patch to merged_upstream.
-			_ = cfg.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusMergedUpstream, nil)
-			resp.PatchesMerged = append(resp.PatchesMerged, patch.BranchName)
-		}
-	}
+			// Step 1: ancestry check (unless mode is content_based only).
+			if squashDetectionMode != "content_based" {
+				// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
+				// new upstream HEAD.
+				ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
+				if ancestorErr != nil {
+					// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
+					// does not exist locally). Leave status unchanged.
+					continue
+				}
+				merged = ancestorResult
+			}
 
-	// ===========================================================
-	// 16-REQ-5.3 / 16-REQ-5.4: Auto-rebuild trigger logic
-	// ===========================================================
+			// Step 2: squash merge fallback (content-based + PR-number scanning).
+			if !merged && squashDetectionMode != "ancestry_only" {
+				merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
+			}
 
-	// Since we already returned early when upstream hasn't advanced,
-	// shouldRebuild is always true here (upstream advanced OR patches
-	// merged). Check the AUTO_REBUILD_AFTER_SYNC workspace variable.
-	autoRebuild := true // default when unset (16-REQ-5.3)
-	if cfg.GetVariable != nil {
-		val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
-		if val == "false" {
-			// 16-REQ-5.4: explicitly disabled.
-			autoRebuild = false
+			if merged {
+				// Transition patch to merged_upstream.
+				_ = cfg.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusMergedUpstream, nil)
+				resp.PatchesMerged = append(resp.PatchesMerged, patch.BranchName)
+			}
 		}
 	}
 
-	if autoRebuild {
-		// Capture strategy and fail mode at enqueue time (16-PROP-3).
-		payload := BuildRebuildPayload(slug, integrationBranch, auth.UserID, cfg.GetVariable, "", "")
-		payloadJSON, _ := json.Marshal(payload)
-		groupKey := slug + ":" + integrationBranch
-		nonce := uuid.New().String()
+	// 20-REQ-5.6: When neither upstream nor any patch changed, return
+	// empty patches_merged and rebuild_triggered false.
+	newlyMerged := len(resp.PatchesMerged)
+	shouldRebuild := upstreamAdvanced || patchAdvanced || newlyMerged > 0
 
-		jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
-			Type:        "rebuild",
-			Key:         slug,
-			Nonce:       nonce,
-			Payload:     payloadJSON,
-			SubmittedBy: auth.UserID,
-			Group:       groupKey,
-		})
+	// 20-REQ-5.5: Write last_sync_at and updated_at on every completed sync.
+	// upstream_head_sha is written only when upstream advanced.
+	now := apikit.NowUTC()
+	if upstreamAdvanced {
+		_, err = cfg.DB.Exec(
+			`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
+			newUpstreamHead, now, now, slug,
+		)
+	} else {
+		_, err = cfg.DB.Exec(
+			`UPDATE workspaces SET last_sync_at = ?, updated_at = ? WHERE slug = ?`,
+			now, now, slug,
+		)
+	}
+	if err != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
+	}
 
-		if enqErr == nil && !duplicate {
-			resp.RebuildTriggered = true
-			resp.RebuildJobID = &jobID
+	// ===========================================================
+	// 20-REQ-5.3 / 20-REQ-5.4: Auto-rebuild trigger logic
+	// ===========================================================
+
+	if shouldRebuild {
+		autoRebuild := true // default when unset (16-REQ-5.3)
+		if cfg.GetVariable != nil {
+			val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
+			if val == "false" {
+				// 16-REQ-5.4 / 20-REQ-5.4: explicitly disabled.
+				autoRebuild = false
+			}
 		}
-		// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
-		// running, silently ignore — rebuild_triggered stays false.
+
+		if autoRebuild {
+			jobID, triggered := enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, false)
+			if triggered {
+				resp.RebuildTriggered = true
+				resp.RebuildJobID = &jobID
+			}
+			// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
+			// running, silently ignore — rebuild_triggered stays false.
+		}
 	}
 
 	return &resp, nil
+}
+
+// enqueueRebuildIfNeeded enqueues a rebuild job for the workspace. It returns
+// the job ID and whether the job was actually enqueued (not deduplicated).
+// When ignoreResult is true, the return values are not meaningful (used on
+// the ref-write failure path where we fire-and-forget).
+func enqueueRebuildIfNeeded(cfg SyncAPIConfig, slug, integrationBranch, userID string, ignoreResult bool) (string, bool) {
+	payload := BuildRebuildPayload(slug, integrationBranch, userID, cfg.GetVariable, "", "")
+	payloadJSON, _ := json.Marshal(payload)
+	groupKey := slug + ":" + integrationBranch
+	nonce := uuid.New().String()
+
+	jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
+		Type:        "rebuild",
+		Key:         slug,
+		Nonce:       nonce,
+		Payload:     payloadJSON,
+		SubmittedBy: userID,
+		Group:       groupKey,
+	})
+
+	if enqErr == nil && !duplicate {
+		return jobID, true
+	}
+	return "", false
 }
 
 // handleCarryPatchSyncEndpoint adapts runCarryPatchSync to an echo.HandlerFunc
