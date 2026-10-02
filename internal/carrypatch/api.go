@@ -138,6 +138,11 @@ type SyncAPIConfig struct {
 	// ResolveOriginAuth resolves credentials for the origin remote.
 	// Used when PATCH_BRANCH_SOURCE=origin (20-REQ-2.1).
 	ResolveOriginAuth ResolveAuthFunc
+
+	// Audit is the optional audit event emitter. When non-nil, origin-mode
+	// syncs emit hub.patch.sync and hub.patch.replace events. When nil,
+	// audit emission is silently skipped (20-REQ-8.6).
+	Audit audit.Emitter
 }
 
 // CarryPatchSyncResponse extends the standard sync response with carry-patch fields.

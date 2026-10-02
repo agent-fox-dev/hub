@@ -357,6 +357,7 @@ func main() {
 			ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
 				return workspace.ResolveCloneAuth(store, slug)
 			},
+			Audit: auditEmitter,
 		},
 	))
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
@@ -297,6 +299,11 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			if patchAdvanced {
 				enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, true)
 			}
+
+			// 20-REQ-8.5: Emit audit events for outcomes already produced,
+			// even on the ref-write failure path.
+			emitSyncAuditEvents(ctx, cfg.Audit, auth, slug, outcomes)
+
 			return nil, apikit.WriteAPIError(c, http.StatusInternalServerError,
 				fmt.Sprintf("failed to update patch branch %s", refreshErr.(*RefWriteError).Branch))
 		}
@@ -416,6 +423,12 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
 			// running, silently ignore — rebuild_triggered stays false.
 		}
+	}
+
+	// 20-REQ-8.1: Emit audit events for origin-mode syncs that complete.
+	// 20-REQ-8.4: Hub mode emits no events.
+	if isOriginMode {
+		emitSyncAuditEvents(ctx, cfg.Audit, auth, slug, outcomes)
 	}
 
 	return &resp, nil
@@ -640,4 +653,125 @@ func outcomesToDiverged(outcomes []PatchRefreshOutcome) []string {
 		}
 	}
 	return diverged
+}
+
+// ===========================================================================
+// Audit emission helpers (20-REQ-8)
+// ===========================================================================
+
+// emitSyncAuditEvents emits hub.patch.sync and hub.patch.replace audit events
+// for the given outcomes. It is called in origin mode only, both on the
+// successful completion path and on the ref-write failure path (for outcomes
+// already produced).
+//
+// 20-REQ-8.6: A nil emitter skips emission.
+// 20-REQ-8.7: An Emit error is logged and does not affect the sync.
+func emitSyncAuditEvents(
+	ctx context.Context,
+	emitter audit.Emitter,
+	auth *apikit.AuthInfo,
+	slug string,
+	outcomes []PatchRefreshOutcome,
+) {
+	if emitter == nil {
+		return
+	}
+
+	// Classify outcomes into branch-name lists.
+	var created, fastForwarded, replaced, diverged, missingOnOrigin []string
+	for _, o := range outcomes {
+		switch o.Action {
+		case ActionCreated:
+			created = append(created, o.BranchName)
+		case ActionFastForwarded:
+			fastForwarded = append(fastForwarded, o.BranchName)
+		case ActionReplaced:
+			replaced = append(replaced, o.BranchName)
+		}
+		switch o.State {
+		case StateDiverged:
+			diverged = append(diverged, o.BranchName)
+		case StateMissingOnOrigin:
+			missingOnOrigin = append(missingOnOrigin, o.BranchName)
+		}
+	}
+
+	// Ensure nil slices become empty slices in metadata.
+	if created == nil {
+		created = []string{}
+	}
+	if fastForwarded == nil {
+		fastForwarded = []string{}
+	}
+	if replaced == nil {
+		replaced = []string{}
+	}
+	if diverged == nil {
+		diverged = []string{}
+	}
+	if missingOnOrigin == nil {
+		missingOnOrigin = []string{}
+	}
+
+	// 20-REQ-8.2: Emit one hub.patch.replace per replaced branch, and log
+	// each replacement at info level.
+	for _, o := range outcomes {
+		if o.Action != ActionReplaced {
+			continue
+		}
+
+		slog.Info("patch branch replaced by origin",
+			"workspace", slug,
+			"branch", o.BranchName,
+			"replaced_sha", o.ReplacedSHA,
+			"origin_sha", o.OriginSHA,
+		)
+
+		replaceEvent := audit.HubEvent{
+			EventType:    audit.EventPatchReplace,
+			ResourceType: "patch",
+			Workspace:    slug,
+			Metadata: map[string]any{
+				"branch_name":  o.BranchName,
+				"replaced_sha": o.ReplacedSHA,
+				"origin_sha":   o.OriginSHA,
+			},
+		}
+		if auth != nil {
+			replaceEvent.ActorID = auth.UserID
+			replaceEvent.ActorType = auth.CredentialType
+		}
+		if err := emitter.Emit(ctx, replaceEvent); err != nil {
+			slog.Error("audit: failed to emit hub.patch.replace",
+				"workspace", slug,
+				"branch", o.BranchName,
+				"error", err,
+			)
+		}
+	}
+
+	// 20-REQ-8.1: Emit one hub.patch.sync per completed sync.
+	syncEvent := audit.HubEvent{
+		EventType:    audit.EventPatchSync,
+		ResourceType: "patch",
+		Workspace:    slug,
+		Metadata: map[string]any{
+			"origin_fetched":    true,
+			"created":           created,
+			"fast_forwarded":    fastForwarded,
+			"replaced":          replaced,
+			"diverged":          diverged,
+			"missing_on_origin": missingOnOrigin,
+		},
+	}
+	if auth != nil {
+		syncEvent.ActorID = auth.UserID
+		syncEvent.ActorType = auth.CredentialType
+	}
+	if err := emitter.Emit(ctx, syncEvent); err != nil {
+		slog.Error("audit: failed to emit hub.patch.sync",
+			"workspace", slug,
+			"error", err,
+		)
+	}
 }
