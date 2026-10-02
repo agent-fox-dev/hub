@@ -146,6 +146,7 @@ type CarryPatchSyncResponse struct {
 	RebuildTriggered  bool     `json:"rebuild_triggered"`
 	RebuildJobID      *string  `json:"rebuild_job_id,omitempty"`
 	ForcePushDetected bool     `json:"force_push_detected"`
+	OriginFetched     bool     `json:"origin_fetched"`
 }
 
 // PatchStatusAPIConfig holds dependencies for patch-status endpoint.

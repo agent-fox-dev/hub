@@ -59,6 +59,7 @@ func (r *CarryPatchSyncResponse) asExtras() map[string]any {
 		"patches_merged":      r.PatchesMerged,
 		"rebuild_triggered":   r.RebuildTriggered,
 		"force_push_detected": r.ForcePushDetected,
+		"origin_fetched":      r.OriginFetched,
 	}
 	if r.RebuildJobID != nil {
 		extras["rebuild_job_id"] = *r.RebuildJobID
@@ -130,6 +131,44 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 	defer unlock()
 
+	// 20-REQ-1.1: Read PATCH_BRANCH_SOURCE and PATCH_DIVERGENCE_POLICY
+	// through GetVariable on every sync, after the lock is taken and
+	// before any fetch.
+	patchSource := "hub"
+	patchDivergencePolicy := "replace"
+	if cfg.GetVariable != nil {
+		val, _ := cfg.GetVariable("workspace", slug, "PATCH_BRANCH_SOURCE")
+		// 20-REQ-1.2 / 20-REQ-1.3: only the exact string "origin" selects origin.
+		if val == "origin" {
+			patchSource = "origin"
+		}
+		policyVal, _ := cfg.GetVariable("workspace", slug, "PATCH_DIVERGENCE_POLICY")
+		// 20-REQ-1.4 / 20-REQ-1.5: only the exact string "report" selects report.
+		if policyVal == "report" {
+			patchDivergencePolicy = "report"
+		}
+	}
+
+	isOriginMode := patchSource == "origin"
+
+	// 20-REQ-2.6: If origin mode and FetchOrigin is nil, abort.
+	if isOriginMode && cfg.FetchOrigin == nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "origin fetch is not configured")
+	}
+
+	// 20-REQ-2.2: Origin credential resolution happens before either fetch.
+	var originAuth transport.AuthMethod
+	if isOriginMode {
+		if cfg.ResolveOriginAuth != nil {
+			resolved, authErr := cfg.ResolveOriginAuth(slug)
+			if authErr != nil {
+				// 20-REQ-2.3: credential failure aborts before any fetch.
+				return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "failed to resolve origin credentials")
+			}
+			originAuth = resolved
+		}
+	}
+
 	// 16-REQ-5.1: Resolve upstream credentials via resolveUpstreamAuth.
 	var upstreamAuth transport.AuthMethod
 	if cfg.ResolveAuth != nil {
@@ -154,6 +193,15 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			// 16-REQ-5.E1 / 16-ERR-8: fetch failure aborts sync;
 			// upstream_tracking_ref and patch statuses are not modified.
 			return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "upstream fetch failed")
+		}
+	}
+
+	// 20-REQ-2.1 / 20-REQ-2.4: Fetch origin (origin mode only).
+	if isOriginMode {
+		if fetchErr := cfg.FetchOrigin(ctx, repoPath, originAuth); fetchErr != nil {
+			// 20-REQ-2.4: origin fetch failure leaves everything unchanged.
+			return nil, apikit.WriteAPIErrorWithType(c, http.StatusBadGateway,
+				"origin fetch failed", "origin_fetch_failed")
 		}
 	}
 
@@ -190,7 +238,12 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		PatchesMerged:     make([]string, 0),
 		RebuildTriggered:  false,
 		ForcePushDetected: forcePushDetected,
+		OriginFetched:     isOriginMode,
 	}
+
+	// 20-REQ-1.6: In hub mode the divergence policy is ignored;
+	// hold it for later tasks (patch refresh in origin mode only).
+	_ = patchDivergencePolicy
 
 	// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
 	// with no patches_merged and no rebuild triggered.
