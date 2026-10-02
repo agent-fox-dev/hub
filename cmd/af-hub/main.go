@@ -371,6 +371,7 @@ func main() {
 	gitserver.RegisterPostPushHook(carrypatch.NewPostPushRebuildHook(
 		mergeQueue,
 		store.GetVariableValue,
+		carrypatch.PostPushMirrorDeps{},
 	))
 
 	// Set the audit emitter for git server push events (18-REQ-5.2).
