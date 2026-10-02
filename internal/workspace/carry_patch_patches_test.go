@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -709,8 +710,8 @@ func TestCarryPatch_AddPatch_NonExistentBranchRejected(t *testing.T) {
 	auth := userAuth("user-1")
 
 	// Register a hook that always fails (simulates branch not found).
-	RegisterBranchCheckHook(func(_, _ string) error {
-		return fmt.Errorf("unknown revision")
+	RegisterBranchCheckHook(func(_ context.Context, _, _ string) (string, error) {
+		return "", NewBranchResolveError(BranchResolveKindNotFound, fmt.Errorf("unknown revision"))
 	})
 	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
 
@@ -727,8 +728,8 @@ func TestCarryPatch_AddPatch_NonExistentBranchRejected(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if !strings.Contains(errResp.Error.Message, "branch does not exist") {
-		t.Errorf("error message = %q; want message containing 'branch does not exist'",
+	if !strings.Contains(errResp.Error.Message, "branch does not exist in repository or on origin") {
+		t.Errorf("error message = %q; want message containing 'branch does not exist in repository or on origin'",
 			errResp.Error.Message)
 	}
 
@@ -750,8 +751,8 @@ func TestCarryPatch_AddPatch_SkipBranchCheck(t *testing.T) {
 	auth := userAuth("user-1")
 
 	// Register a hook that always fails (simulates branch not found).
-	RegisterBranchCheckHook(func(_, _ string) error {
-		return fmt.Errorf("unknown revision")
+	RegisterBranchCheckHook(func(_ context.Context, _, _ string) (string, error) {
+		return "", NewBranchResolveError(BranchResolveKindNotFound, fmt.Errorf("unknown revision"))
 	})
 	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
 
@@ -781,8 +782,8 @@ func TestCarryPatch_AddPatch_ExistingBranchAccepted(t *testing.T) {
 	auth := userAuth("user-1")
 
 	// Register a hook that always succeeds (simulates branch found).
-	RegisterBranchCheckHook(func(_, _ string) error {
-		return nil
+	RegisterBranchCheckHook(func(_ context.Context, _, _ string) (string, error) {
+		return ResolutionLocal, nil
 	})
 	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
 

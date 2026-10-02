@@ -740,8 +740,13 @@ paths:
         shifted down by one. Positions greater than `max + 1` are clamped to an
         append.
 
-        Branch existence in the workspace repository is validated at
-        registration time unless `skip_branch_check` is `true`.
+        Unless `skip_branch_check` is `true`, the server resolves the branch
+        in this order: (1) `local` — `refs/heads/<name>` exists in the trunk;
+        (2) `origin_tracking` — `refs/remotes/origin/<name>` exists and a
+        local branch is created at that commit; (3) `origin_fetch` — only
+        when `PATCH_BRANCH_SOURCE` is `origin`, the branch is fetched from
+        the fork and the local branch is created. Tags, bare SHAs and
+        remote-qualified names are not accepted.
 
         Ownership is not enforced.
       x-required-scopes: ["patches:write"]
@@ -792,8 +797,9 @@ paths:
           description: >-
             `branch_name` is absent or empty; `branch_name` equals the
             workspace `integration_branch`; the workspace is missing, inactive,
-            or in `standard` mode; `position` is below 1; or the branch does not
-            exist in the repository and `skip_branch_check` is false.
+            or in `standard` mode; `position` is below 1; or the branch does
+            not exist in the repository or on origin and `skip_branch_check`
+            is false. In a batch the message is prefixed `patch[i]: `.
           content:
             application/json:
               schema:
@@ -806,13 +812,24 @@ paths:
           description: >-
             The branch is already registered for this workspace (and
             `if_not_exists` is false), or the batch contains a duplicate
-            `branch_name`.
+            `branch_name`, or another operation holds the workspace lock
+            (`error_type: workspace_busy`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          description: >-
+            Origin fetch failed (`error_type: origin_fetch_failed`). Returned
+            when `PATCH_BRANCH_SOURCE` is `origin` and the fetch from the fork
+            fails due to a network or authentication error, or when origin
+            credentials cannot be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     get:
       tags: [Patches]
       operationId: listPatches
@@ -5568,7 +5585,10 @@ components:
         skip_branch_check:
           type: boolean
           default: false
-          description: Skip the check that the branch exists in the repository.
+          description: >-
+            When true, skip all branch resolution: no ref lookup, no fetch,
+            no local branch creation and no workspace lock is taken for this
+            element.
         if_not_exists:
           type: boolean
           default: false
