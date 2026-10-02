@@ -12,6 +12,17 @@ import "errors"
 // queried by their event_type string, so no further registration exists.
 const EventRebuildFollowup = "hub.rebuild.followup"
 
+// EventPatchSync is the hub audit event emitted when a carry-patch sync
+// completes in origin mode. Metadata: origin_fetched (bool), created,
+// fast_forwarded, replaced, diverged, missing_on_origin (each []string of
+// branch names). One event per sync.
+const EventPatchSync = "hub.patch.sync"
+
+// EventPatchReplace is the hub audit event emitted for each patch branch
+// replaced during an origin-mode sync. Metadata: branch_name, replaced_sha,
+// origin_sha. One event per replaced branch.
+const EventPatchReplace = "hub.patch.replace"
+
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {
 	ID           string         `json:"id"`

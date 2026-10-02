@@ -497,10 +497,14 @@ func newDeleteCmd() *cobra.Command {
 // It triggers an upstream sync operation for a workspace.
 // With --wait, if a rebuild is triggered, it polls the rebuild status until
 // a terminal state is reached.
-// Requirements: 13-REQ-2.3, 13-REQ-8
+// With --fail-on-diverged, the command exits 3 when patches_diverged is
+// non-empty. When combined with --wait, the diverged check runs after the
+// rebuild wait finishes, and a wait failure (exit 1) takes precedence.
+// Requirements: 13-REQ-2.3, 13-REQ-8, 20-REQ-6.4, 20-REQ-6.5, 20-REQ-6.6
 func newSyncCmd() *cobra.Command {
 	var (
 		resetToUpstream bool
+		failOnDiverged  bool
 		wf              waitFlags
 	)
 
@@ -529,7 +533,10 @@ func newSyncCmd() *cobra.Command {
 			}
 
 			if !wf.Wait {
-				return apikit.CLIPrintResult(cmd, result)
+				if err := apikit.CLIPrintResult(cmd, result); err != nil {
+					return err
+				}
+				return checkDiverged(cmd, result, failOnDiverged)
 			}
 
 			// Print the sync response first.
@@ -537,21 +544,62 @@ func newSyncCmd() *cobra.Command {
 
 			// If a rebuild was triggered, poll for its completion.
 			rebuildJobID := extractRebuildJobID(result)
-			if rebuildJobID == "" {
-				// No rebuild triggered — nothing to wait for.
-				return nil
+			if rebuildJobID != "" {
+				statusPath := apiPath("workspaces", slug, "rebuilds", rebuildJobID)
+				if waitErr := pollJobStatus(cmd, client, wf, statusPath); waitErr != nil {
+					// Wait failure (exit 1) takes precedence over diverged (exit 3).
+					return waitErr
+				}
 			}
 
-			statusPath := apiPath("workspaces", slug, "rebuilds", rebuildJobID)
-			return pollJobStatus(cmd, client, wf, statusPath)
+			// Diverged check runs after the rebuild wait finishes.
+			return checkDiverged(cmd, result, failOnDiverged)
 		},
 	}
 
 	cmd.Flags().BoolVar(&resetToUpstream, "reset-to-upstream", false,
 		"Force-reset the local integration branch to match upstream HEAD (recovery after force-push)")
+	cmd.Flags().BoolVar(&failOnDiverged, "fail-on-diverged", false,
+		"Exit with code 3 when patches_diverged is not empty")
 	addWaitFlags(cmd, &wf)
 
 	return cmd
+}
+
+// extractPatchesDiverged extracts the patches_diverged field from a sync
+// response. Returns nil if the field is absent or not an array of strings.
+func extractPatchesDiverged(result any) []string {
+	m, ok := result.(map[string]any)
+	if !ok {
+		return nil
+	}
+	arr, ok := m["patches_diverged"].([]any)
+	if !ok {
+		return nil
+	}
+	var branches []string
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			branches = append(branches, s)
+		}
+	}
+	return branches
+}
+
+// checkDiverged checks whether patches_diverged is non-empty and, if the
+// --fail-on-diverged flag is set, prints a message naming the branches and
+// returns an exit-3 error. Without the flag it always returns nil.
+func checkDiverged(cmd *cobra.Command, result any, failOnDiverged bool) error {
+	if !failOnDiverged {
+		return nil
+	}
+	branches := extractPatchesDiverged(result)
+	if len(branches) == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("diverged patch branches: %s", strings.Join(branches, ", "))
+	fmt.Fprintln(cmd.ErrOrStderr(), msg)
+	return apikit.CLIHandleError(cmd, apikit.NewCLIError(3, msg))
 }
 
 // newRecloneCmd returns the 'workspace reclone' subcommand.

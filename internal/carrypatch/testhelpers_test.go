@@ -109,19 +109,26 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 	}
 }
 
-// createPatchesTable creates the patches table for tests.
+// createPatchesTable creates the patches table for tests, matching the
+// production schema in workspace/schema.go including origin sync columns.
 func createPatchesTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS patches (
-			id              TEXT PRIMARY KEY,
-			workspace_slug  TEXT NOT NULL,
-			branch_name     TEXT NOT NULL,
-			position        INTEGER NOT NULL,
-			status          TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','conflict','disabled','merged_upstream','deleted')),
-			conflict_files  TEXT,
-			created_at      TEXT NOT NULL,
-			updated_at      TEXT NOT NULL,
+			id                TEXT PRIMARY KEY,
+			workspace_slug    TEXT NOT NULL,
+			branch_name       TEXT NOT NULL,
+			position          INTEGER NOT NULL,
+			status            TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','conflict','disabled','merged_upstream','deleted')),
+			conflict_files    TEXT,
+			upstream_pr_url   TEXT,
+			description       TEXT,
+			deleted_at        TEXT,
+			added_at          TEXT NOT NULL,
+			updated_at        TEXT NOT NULL,
+			origin_sync_state TEXT,
+			origin_sha        TEXT,
+			origin_synced_at  TEXT,
 			FOREIGN KEY (workspace_slug) REFERENCES workspaces(slug)
 		)`)
 	if err != nil {
@@ -148,7 +155,7 @@ func seedPatch(t *testing.T, db *sql.DB, id, workspaceSlug, branchName string, p
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, created_at, updated_at)
+		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id, workspaceSlug, branchName, position, status, now, now,
 	)
@@ -391,6 +398,13 @@ func (m *mockGitRunner) HardReset(ctx context.Context, ref string) error {
 // Mock PatchStore for unit tests
 // ===========================================================================
 
+// originSyncStateRecord records a SetOriginSyncState call.
+type originSyncStateRecord struct {
+	State    string
+	SHA      *string
+	SyncedAt string
+}
+
 // mockPatchStore is a recording mock for the PatchStore interface.
 type mockPatchStore struct {
 	mu                 sync.Mutex
@@ -401,12 +415,15 @@ type mockPatchStore struct {
 	RestoredPatches    []string
 	PurgedCount        int64
 	Compacted          bool
+	OriginSyncStates   map[string]originSyncStateRecord // id -> state
+	OriginSyncCleared  bool
 }
 
 func newMockPatchStore(patches []Patch) *mockPatchStore {
 	return &mockPatchStore{
-		Patches:        patches,
-		UpdatedPatches: make(map[string]Patch),
+		Patches:          patches,
+		UpdatedPatches:   make(map[string]Patch),
+		OriginSyncStates: make(map[string]originSyncStateRecord),
 	}
 }
 
@@ -460,6 +477,40 @@ func (m *mockPatchStore) CompactPositions(_ context.Context, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Compacted = true
+	return nil
+}
+
+func (m *mockPatchStore) SetOriginSyncState(_ context.Context, patchID, state string, originSHA *string, syncedAt string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.OriginSyncStates[patchID] = originSyncStateRecord{
+		State:    state,
+		SHA:      originSHA,
+		SyncedAt: syncedAt,
+	}
+	return nil
+}
+
+func (m *mockPatchStore) ClearOriginSyncState(_ context.Context, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.OriginSyncCleared = true
+	m.OriginSyncStates = make(map[string]originSyncStateRecord)
+	return nil
+}
+
+func (m *mockPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.OriginSyncStates, patchID)
+	return nil
+}
+
+func (m *mockPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// In the mock, we don't track patch statuses well enough to filter,
+	// so this is a no-op. Real tests use SQLPatchStore.
 	return nil
 }
 

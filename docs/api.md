@@ -188,6 +188,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild | Workspace is not in `carry_patch` mode |
 | `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
 | `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
+| `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync | The origin fetch failed during a carry-patch sync with `PATCH_BRANCH_SOURCE=origin`. Distinguished from the upstream fetch failure by this error type |
 | `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
 
 ---
@@ -511,12 +512,17 @@ fetched depends on `workspace_mode`:**
 | `standard` | `origin` | `git_url` | `GIT_PAT`, or `GIT_USERNAME` + `GIT_PASSWORD` workspace secrets (none for public repos) | The workspace branch (`branch`, or the repository's default branch when unset) is fast-forwarded to `refs/remotes/origin/<branch>`; `head_sha` and `upstream_head_sha` advance |
 | `carry_patch` | `upstream` (**not** `origin`) | `upstream_url` | `UPSTREAM_GIT_PAT`, or `UPSTREAM_GIT_USERNAME` + `UPSTREAM_GIT_PASSWORD`; falls back to the `origin` credentials when neither is set | All upstream branches are fetched into `refs/remotes/upstream/*` and the upstream default branch into `refs/remotes/upstream/HEAD`; `upstream_head_sha` advances, patches merged upstream are detected, and a rebuild of the integration branch is enqueued. `head_sha` and the integration branch are **not** touched by the sync itself -- the rebuild updates them |
 
-In a carry-patch workspace `origin` (the fork at `git_url`) is never fetched
-by sync: patch branches are read from the hub's own clone, so they must be
-pushed to the hub's git server (`/git/:org/:slug.git`), which also triggers
-an automatic rebuild when a registered patch branch is pushed. The rebuilt
-integration branch is only pushed back to `origin` when the workspace
-variable `REBUILD_PUSH_INTEGRATION_BRANCH` is `"true"`.
+By default, `origin` (the fork at `git_url`) is never fetched by sync: patch
+branches are read from the hub's own clone, so they must be pushed to the
+hub's git server (`/git/:org/:slug.git`), which also triggers an automatic
+rebuild when a registered patch branch is pushed. The rebuilt integration
+branch is only pushed back to `origin` when the workspace variable
+`REBUILD_PUSH_INTEGRATION_BRANCH` is `"true"`.
+
+When the workspace variable `PATCH_BRANCH_SOURCE` is set to `"origin"`, the
+sync also fetches the `origin` remote and brings every registered patch
+branch to the fork's tip. See
+[Carry-Patch Sync Extension](#carry-patch-sync-extension) for details.
 
 The rest of this section describes the **standard** sync path; see
 [Carry-Patch Sync Extension](#carry-patch-sync-extension) below for the
@@ -587,16 +593,17 @@ or unexpected failures.
 | 403 | PAT lacks `workspaces:sync` scope |
 | 404 | Workspace not found or not owned by the caller |
 | 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches); upstream history has diverged (force-push detected) |
-| 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed |
+| 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed; origin fetch failed (`error_type: origin_fetch_failed`); failed to resolve origin credentials |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
 #### Carry-Patch Sync Extension
 
 When the workspace is in `carry_patch` mode, the sync endpoint replaces the
 standard fetch-and-fast-forward with a fetch of the **`upstream` remote**
-(`upstream_url`) followed by upstream merge detection, squash merge
-detection, upstream force-push detection, and automatic rebuild triggering.
-The `origin` remote (`git_url`, your fork) is not fetched.
+(`upstream_url`) followed by an optional fetch of the **`origin` remote**
+(when `PATCH_BRANCH_SOURCE` is `"origin"`), upstream merge detection, squash
+merge detection, upstream force-push detection, patch branch refresh, and
+automatic rebuild triggering.
 
 Differences from the standard path:
 
@@ -607,15 +614,18 @@ Differences from the standard path:
   patches in its worktree does not block it).
 - `sync_status` is not moved to `syncing`/`error`; failures are reported by
   the HTTP status only (`502` when upstream credentials cannot be resolved or
-  the upstream fetch fails; no workspace or patch state is modified).
+  the upstream fetch fails, or when origin credentials cannot be resolved or
+  the origin fetch fails; no workspace or patch state is modified).
 - `head_sha` and the integration branch are not changed by the sync; they
   change when the enqueued rebuild completes (follow it via
   `GET /api/v1/workspaces/:slug/rebuilds/:id`).
 - `reset_to_upstream` is ignored, and an upstream force-push is not an error:
   it is reported via `force_push_detected` and the rebuild re-applies the
   patches onto the rewritten upstream.
+- `last_sync_at` is updated on every completed carry-patch sync, whether or
+  not anything advanced, in both `hub` and `origin` modes.
 
-The four carry-patch fields are added **on top of** the standard workspace
+The carry-patch fields are added **on top of** the standard workspace
 JSON, not in place of it (16-REQ-5.1). The workspace record is re-read after
 the carry-patch work completes, so `upstream_head_sha` and `last_sync_at`
 reflect it:
@@ -635,7 +645,18 @@ reflect it:
   "patches_merged": ["feature/already-merged"],
   "rebuild_triggered": true,
   "rebuild_job_id": "d3b07384-d113-4ec5-8a4e-a12345678901",
-  "force_push_detected": false
+  "force_push_detected": false,
+  "origin_fetched": true,
+  "patches_synced": [
+    {
+      "branch_name": "feature/auth-headers",
+      "action": "fast_forwarded",
+      "state": "in_sync",
+      "local_sha": "abc123...",
+      "origin_sha": "abc123..."
+    }
+  ],
+  "patches_diverged": []
 }
 ```
 
@@ -647,23 +668,40 @@ reflect it:
 | `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
 | `rebuild_job_id` | string | ID of the enqueued rebuild job. Omitted entirely when no rebuild was enqueued -- it is never `null`. |
 | `force_push_detected` | boolean | Whether the upstream HEAD is not a descendant of the previously stored upstream SHA, indicating a history rewrite. Informational only -- sync still proceeds. |
+| `origin_fetched` | boolean | Always present. `true` when the fork (`origin`) was fetched in this sync (`PATCH_BRANCH_SOURCE=origin`), `false` otherwise. |
+| `patches_synced` | array | Present only when `PATCH_BRANCH_SOURCE` is `"origin"` (empty `[]` when there are no candidates). Each element describes the per-branch outcome: `branch_name`, `action` (`none`, `created`, `fast_forwarded`, `replaced`), `state` (`in_sync`, `diverged`, `missing_on_origin`), `local_sha` (omitted when no local branch), `origin_sha` (omitted when fork has no such branch), and `replaced_sha` (present only for `replaced`). |
+| `patches_diverged` | array of strings | Present only when `PATCH_BRANCH_SOURCE` is `"origin"`. Branch names whose state is `diverged`. Always `[]` under the `replace` policy. |
 
 **Carry-Patch Sync Flow:**
 
-1. Resolve upstream credentials via `resolveUpstreamAuth`: `UPSTREAM_GIT_PAT`,
+1. Read `PATCH_BRANCH_SOURCE` and `PATCH_DIVERGENCE_POLICY` workspace
+   variables. If `PATCH_BRANCH_SOURCE` is `"origin"`, resolve origin
+   credentials (`GIT_PAT` / `GIT_USERNAME` + `GIT_PASSWORD`) before any
+   fetch. A failure answers `502` with the message `failed to resolve origin credentials`.
+2. Resolve upstream credentials via `resolveUpstreamAuth`: `UPSTREAM_GIT_PAT`,
    then `UPSTREAM_GIT_USERNAME` + `UPSTREAM_GIT_PASSWORD`, then the `origin`
    credentials (`GIT_PAT` / `GIT_USERNAME` + `GIT_PASSWORD`), then none.
-2. Fetch from the `upstream` remote (not `origin`): every upstream branch into
+3. Fetch from the `upstream` remote (not `origin`): every upstream branch into
    `refs/remotes/upstream/*` and the upstream default branch into
    `refs/remotes/upstream/HEAD`, which is the "upstream HEAD" used below and
    as the rebuild base.
-3. Compare the new upstream HEAD against the stored `upstream_head_sha`.
-4. If unchanged, return immediately with `patches_merged=[]`,
-   `rebuild_triggered=false`, and `force_push_detected=false`.
-5. If the stored SHA is non-empty, check ancestry between the stored SHA and
+4. If `PATCH_BRANCH_SOURCE` is `"origin"`, fetch from the `origin` remote
+   with pruning (stale tracking refs are removed). A failure answers `502`
+   with the message `origin fetch failed` and `error_type`
+   `origin_fetch_failed`. The upstream tracking refs already updated are not
+   rolled back.
+5. If `PATCH_BRANCH_SOURCE` is `"origin"`, refresh each candidate patch
+   branch (status `active`, `conflict` or `disabled`, excluding the
+   integration branch) against the fork's tip, applying the first matching
+   rule: fork missing, local missing (create), same commit, fast-forward, or
+   diverged (replace or report, per `PATCH_DIVERGENCE_POLICY`). Ref writes
+   use compare-and-swap (`git update-ref <ref> <new> <expected-old>`).
+   Replaced branches are backed up under `refs/hub/replaced/<branch>`.
+6. Compare the new upstream HEAD against the stored `upstream_head_sha`.
+7. If the stored SHA is non-empty, check ancestry between the stored SHA and
    the new upstream HEAD. If the stored SHA is not an ancestor of the new HEAD,
    set `force_push_detected=true` (informational; sync continues).
-6. For each active patch, detect upstream merge using a multi-strategy approach
+8. For each active patch, detect upstream merge using a multi-strategy approach
    controlled by the `SQUASH_MERGE_DETECTION` workspace variable:
    - **Ancestry check** (`git merge-base --is-ancestor`): detects standard merges
    - **Content-based detection** (`git cherry`): detects squash merges by comparing
@@ -674,11 +712,20 @@ reflect it:
    - The `SQUASH_MERGE_DETECTION` variable accepts: `"ancestry_only"`,
      `"content_based"`, or `"both"` (default). Either ancestry or content-based
      signal is sufficient to mark a patch as `merged_upstream`.
-7. Transition matched patches to `merged_upstream` status.
-8. If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` (default is true) and the
-   upstream ref advanced, enqueue a rebuild job. If a rebuild job is already
-   queued or running, silently ignore the duplicate
-   (`rebuild_triggered=false`).
+9. Transition matched patches to `merged_upstream` status.
+10. If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` (default is true) and the
+    upstream ref advanced, a patch branch was moved (created, fast-forwarded
+    or replaced for an `active` or `conflict` patch), or at least one patch
+    was newly marked `merged_upstream`, enqueue a rebuild job. If a rebuild
+    job is already queued or running, silently ignore the duplicate
+    (`rebuild_triggered=false`).
+11. Write `last_sync_at` and `updated_at` on every completed sync, whether
+    or not anything advanced. `upstream_head_sha` is written only when
+    upstream advanced.
+12. In `origin` mode, persist each candidate patch's `origin_sync_state`,
+    `origin_sha` and `origin_synced_at`. In `hub` mode, clear those columns
+    for every patch of the workspace.
+13. Emit audit events (see [Hub Audit Events](#hub-audit-events) below).
 
 **Standard Workspace Behavior:** When the workspace is in `standard` mode, the
 carry-patch extension does not run at all -- the request takes the standard
@@ -1106,7 +1153,10 @@ All patch endpoints that return patch data use the following JSON schema:
   "description": null,
   "deleted_at": null,
   "added_at": "2024-01-01T00:00:00Z",
-  "updated_at": "2024-01-01T00:00:00Z"
+  "updated_at": "2024-01-01T00:00:00Z",
+  "origin_sync_state": "in_sync",
+  "origin_sha": "abc123def456...",
+  "origin_synced_at": "2024-06-15T10:30:00Z"
 }
 ```
 
@@ -1123,6 +1173,9 @@ All patch endpoints that return patch data use the following JSON schema:
 | `deleted_at` | string (RFC 3339) or null | Timestamp of soft-deletion; null for non-deleted patches |
 | `added_at` | string (RFC 3339) | Timestamp of when the patch was added |
 | `updated_at` | string (RFC 3339) | Timestamp of when the patch was last modified |
+| `origin_sync_state` | string or null | Relationship between the local patch branch and the fork after the last sync: `"in_sync"`, `"diverged"`, or `"missing_on_origin"`. Null when the workspace uses `hub` mode or the patch has not been synced. Omitted when null. |
+| `origin_sha` | string or null | SHA of the fork tip for this patch branch at the last sync. Null when the fork has no such branch or the workspace uses `hub` mode. Omitted when null. |
+| `origin_synced_at` | string (RFC 3339) or null | Timestamp of the last origin sync for this patch. Null when the workspace uses `hub` mode. Omitted when null. |
 
 ---
 
@@ -1964,6 +2017,9 @@ Return a full status dashboard for the carry-patch stack.
 | `patches[].status` | string | Current patch status (`active`, `conflict`, `disabled`, `merged_upstream`) |
 | `patches[].last_rebuild_result` | string or null | Per-patch result from most recent rebuild (`success`, `conflict`, `skipped`); null if no rebuild has been attempted |
 | `patches[].conflict_files` | array of strings | File paths with unresolved conflicts (present only when `last_rebuild_result` is `conflict`) |
+| `patches[].origin_sync_state` | string or null | Relationship between the local patch branch and the fork after the last sync: `"in_sync"`, `"diverged"`, or `"missing_on_origin"`. Null when the workspace uses `hub` mode or the patch has not been synced. Omitted when null. |
+| `patches[].origin_sha` | string or null | SHA of the fork tip for this patch branch at the last sync. Null when the fork has no such branch or the workspace uses `hub` mode. Omitted when null. |
+| `patches[].origin_synced_at` | string (RFC 3339) or null | Timestamp of the last origin sync for this patch. Null when the workspace uses `hub` mode. Omitted when null. |
 | `summary` | object | Aggregate counts derived from the patches array |
 | `summary.total_patches` | integer | Total number of non-deleted patches (equals length of `patches` array) |
 | `summary.active` | integer | Count of patches with status `active` |
@@ -1971,6 +2027,8 @@ Return a full status dashboard for the carry-patch stack.
 | `summary.conflict` | integer | Count of patches with status `conflict` |
 | `summary.disabled` | integer | Count of patches with status `disabled` |
 | `summary.total_rerere_resolutions` | integer | Total count of recorded rerere resolutions for the workspace; 0 if rr-cache is inaccessible |
+| `summary.patches_diverged` | integer | Count of patches whose `origin_sync_state` is `"diverged"`. Always present; `0` in `hub` mode. |
+| `summary.patches_missing_on_origin` | integer | Count of patches whose `origin_sync_state` is `"missing_on_origin"`. Always present; `0` in `hub` mode. |
 
 **Consistency invariant:** `summary.total_patches` equals `len(patches)`, and
 `summary.active + summary.merged_upstream + summary.conflict + summary.disabled`
@@ -3142,10 +3200,32 @@ behavior. They can be set via the
 |----------|--------|---------|-------------|
 | `REBUILD_STRATEGY` | `"rebase"`, `"merge"` | `"rebase"` | Strategy used to apply patches during rebuild. Can be overridden per-rebuild via the `strategy` field in the POST /rebuild request body. |
 | `REBUILD_FAIL_MODE` | `"fail_fast"`, `"continue"` | `"fail_fast"` | Controls whether rebuild aborts on first conflict or skips conflicting patches and continues. Can be overridden per-rebuild via the `fail_mode` field in the POST /rebuild request body. |
-| `AUTO_REBUILD_AFTER_SYNC` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a carry-patch sync that detects upstream advancement automatically enqueues a rebuild job. |
+| `AUTO_REBUILD_AFTER_SYNC` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a carry-patch sync that detects upstream advancement or a patch branch change (created, fast-forwarded or replaced for an active or conflict patch) automatically enqueues a rebuild job. |
 | `AUTO_REBUILD_AFTER_PUSH` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a git push to a registered patch branch automatically enqueues a rebuild job. |
+| `PATCH_BRANCH_SOURCE` | `"hub"`, `"origin"` | `"hub"` | Selects the authority for patch branches. `"hub"` (default): patch branches are read from the hub's local clone. `"origin"`: the fork is fetched during sync and every registered patch branch is brought to the fork's tip. Read on every sync; a change takes effect on the next sync without a restart. |
+| `PATCH_DIVERGENCE_POLICY` | `"replace"`, `"report"` | `"replace"` | Controls what happens when the hub's copy and the fork's copy of a patch branch have diverged. `"replace"` (default): the hub's copy is replaced with the fork's tip (the old tip is saved under `refs/hub/replaced/<branch>`). `"report"`: the hub's copy is left unchanged and the divergence is reported. Ignored when `PATCH_BRANCH_SOURCE` is `"hub"`. |
 | `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
 | `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
+
+---
+
+## Hub Audit Events
+
+The hub emits structured audit events for significant operations. These events
+are stored in `hub_audit_events` and are queryable through the unified audit
+query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
+(the calling credential), a `resource_type`, and metadata.
+
+| Event Type | Resource Type | When Emitted | Metadata |
+|------------|---------------|--------------|----------|
+| `hub.rebuild.followup` | `rebuild` | A follow-up rebuild is enqueued because a patch tip or upstream base moved during a rebuild run | `submitted_by`, workspace slug |
+| `hub.patch.sync` | `patch` | A carry-patch sync completes in `origin` mode | `origin_fetched` (bool), `created` (branch names), `fast_forwarded` (branch names), `replaced` (branch names), `diverged` (branch names), `missing_on_origin` (branch names) |
+| `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch) | `branch_name`, `replaced_sha`, `origin_sha` |
+
+A nil audit emitter skips emission. An emit error is logged without affecting
+the sync. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events are
+emitted. On the ref-write failure path, events are still emitted for the
+outcomes already produced.
 
 ---
 

@@ -84,14 +84,17 @@ func (e *TransientError) Unwrap() error {
 
 // Patch represents a carry-patch record from the patches table.
 type Patch struct {
-	ID            string   `json:"id"`
-	WorkspaceID   string   `json:"workspace_id"`
-	BranchName    string   `json:"branch_name"`
-	Position      int      `json:"position"`
-	Status        string   `json:"status"`
-	ConflictFiles []string `json:"conflict_files,omitempty"`
-	UpstreamPRURL *string  `json:"upstream_pr_url,omitempty"`
-	DeletedAt     *string  `json:"deleted_at,omitempty"`
+	ID              string   `json:"id"`
+	WorkspaceID     string   `json:"workspace_id"`
+	BranchName      string   `json:"branch_name"`
+	Position        int      `json:"position"`
+	Status          string   `json:"status"`
+	ConflictFiles   []string `json:"conflict_files,omitempty"`
+	UpstreamPRURL   *string  `json:"upstream_pr_url,omitempty"`
+	DeletedAt       *string  `json:"deleted_at,omitempty"`
+	OriginSyncState *string  `json:"origin_sync_state,omitempty"`
+	OriginSHA       *string  `json:"origin_sha,omitempty"`
+	OriginSyncedAt  *string  `json:"origin_synced_at,omitempty"`
 }
 
 // RebuildPayload is the JSON payload stored in the job queue for rebuild jobs.
@@ -167,6 +170,16 @@ type PatchStore interface {
 	RestorePatch(ctx context.Context, patchID string) error
 	PurgeDeletedPatches(ctx context.Context, olderThan string) (int64, error)
 	CompactPositions(ctx context.Context, workspaceSlug string) error
+	// SetOriginSyncState writes the origin sync state for a single patch.
+	// originSHA is nil for missing_on_origin.
+	SetOriginSyncState(ctx context.Context, patchID, state string, originSHA *string, syncedAt string) error
+	// ClearOriginSyncState clears the origin sync state for all patches of a workspace.
+	ClearOriginSyncState(ctx context.Context, workspaceSlug string) error
+	// ClearOriginSyncStateForPatch clears the origin sync state for a single patch.
+	ClearOriginSyncStateForPatch(ctx context.Context, patchID string) error
+	// ClearOriginSyncStateForMergedDeleted clears the origin sync state for
+	// all patches of a workspace whose status is merged_upstream or deleted.
+	ClearOriginSyncStateForMergedDeleted(ctx context.Context, workspaceSlug string) error
 }
 
 // FetchFunc fetches from the upstream remote of the repository at repoPath

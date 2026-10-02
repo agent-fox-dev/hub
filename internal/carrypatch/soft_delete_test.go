@@ -438,7 +438,7 @@ func seedPatchDeleted(t *testing.T, db *sql.DB, id, workspaceSlug, branchName st
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, conflict_files, deleted_at, created_at, updated_at)
+		`INSERT INTO patches (id, workspace_slug, branch_name, position, status, conflict_files, deleted_at, added_at, updated_at)
 		 VALUES (?, ?, ?, ?, 'deleted', '[]', ?, ?, ?)`,
 		id, workspaceSlug, branchName, position, deletedAt, now, now,
 	)

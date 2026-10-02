@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
@@ -59,9 +61,19 @@ func (r *CarryPatchSyncResponse) asExtras() map[string]any {
 		"patches_merged":      r.PatchesMerged,
 		"rebuild_triggered":   r.RebuildTriggered,
 		"force_push_detected": r.ForcePushDetected,
+		"origin_fetched":      r.OriginFetched,
 	}
 	if r.RebuildJobID != nil {
 		extras["rebuild_job_id"] = *r.RebuildJobID
+	}
+	// 20-REQ-6: patches_synced and patches_diverged are present only in
+	// origin mode. A nil slice means hub mode (omit), a non-nil empty
+	// slice means origin mode with no candidates (serialize as []).
+	if r.PatchesSynced != nil {
+		extras["patches_synced"] = r.PatchesSynced
+	}
+	if r.PatchesDiverged != nil {
+		extras["patches_diverged"] = r.PatchesDiverged
 	}
 	return extras
 }
@@ -130,6 +142,44 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 	defer unlock()
 
+	// 20-REQ-1.1: Read PATCH_BRANCH_SOURCE and PATCH_DIVERGENCE_POLICY
+	// through GetVariable on every sync, after the lock is taken and
+	// before any fetch.
+	patchSource := "hub"
+	patchDivergencePolicy := "replace"
+	if cfg.GetVariable != nil {
+		val, _ := cfg.GetVariable("workspace", slug, "PATCH_BRANCH_SOURCE")
+		// 20-REQ-1.2 / 20-REQ-1.3: only the exact string "origin" selects origin.
+		if val == "origin" {
+			patchSource = "origin"
+		}
+		policyVal, _ := cfg.GetVariable("workspace", slug, "PATCH_DIVERGENCE_POLICY")
+		// 20-REQ-1.4 / 20-REQ-1.5: only the exact string "report" selects report.
+		if policyVal == "report" {
+			patchDivergencePolicy = "report"
+		}
+	}
+
+	isOriginMode := patchSource == "origin"
+
+	// 20-REQ-2.6: If origin mode and FetchOrigin is nil, abort.
+	if isOriginMode && cfg.FetchOrigin == nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "origin fetch is not configured")
+	}
+
+	// 20-REQ-2.2: Origin credential resolution happens before either fetch.
+	var originAuth transport.AuthMethod
+	if isOriginMode {
+		if cfg.ResolveOriginAuth != nil {
+			resolved, authErr := cfg.ResolveOriginAuth(slug)
+			if authErr != nil {
+				// 20-REQ-2.3: credential failure aborts before any fetch.
+				return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "failed to resolve origin credentials")
+			}
+			originAuth = resolved
+		}
+	}
+
 	// 16-REQ-5.1: Resolve upstream credentials via resolveUpstreamAuth.
 	var upstreamAuth transport.AuthMethod
 	if cfg.ResolveAuth != nil {
@@ -154,6 +204,15 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			// 16-REQ-5.E1 / 16-ERR-8: fetch failure aborts sync;
 			// upstream_tracking_ref and patch statuses are not modified.
 			return nil, apikit.WriteAPIError(c, http.StatusBadGateway, "upstream fetch failed")
+		}
+	}
+
+	// 20-REQ-2.1 / 20-REQ-2.4: Fetch origin (origin mode only).
+	if isOriginMode {
+		if fetchErr := cfg.FetchOrigin(ctx, repoPath, originAuth); fetchErr != nil {
+			// 20-REQ-2.4: origin fetch failure leaves everything unchanged.
+			return nil, apikit.WriteAPIErrorWithType(c, http.StatusBadGateway,
+				"origin fetch failed", "origin_fetch_failed")
 		}
 	}
 
@@ -190,115 +249,214 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		PatchesMerged:     make([]string, 0),
 		RebuildTriggered:  false,
 		ForcePushDetected: forcePushDetected,
+		OriginFetched:     isOriginMode,
+	}
+	// 20-REQ-6: In origin mode, patches_synced and patches_diverged are
+	// always present (as [] when empty). In hub mode they are nil/omitted.
+	if isOriginMode {
+		resp.PatchesSynced = make([]PatchSyncedElement, 0)
+		resp.PatchesDiverged = make([]string, 0)
 	}
 
-	// 16-REQ-5.E3: If upstream HEAD has not changed, complete the sync
-	// with no patches_merged and no rebuild triggered.
-	if !upstreamAdvanced {
-		return &resp, nil
-	}
+	// ===========================================================
+	// 20-REQ-5.1: Patch refresh runs before the early return, so a
+	// patch-only change reaches merge detection and the rebuild enqueue.
+	// ===========================================================
 
-	// Upstream has advanced — update the workspace record.
-	now := apikit.NowUTC()
-	_, err = cfg.DB.Exec(
-		`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
-		newUpstreamHead, now, now, slug,
-	)
-	if err != nil {
-		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
-	}
-
-	// 16-REQ-5.1: Check each active patch for upstream merge via IsAncestor.
+	// List patches for both the refresh and merge detection.
 	patches, listErr := cfg.PatchStore.ListPatches(ctx, slug)
 	if listErr != nil {
 		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
 	}
 
-	// Determine squash merge detection mode from workspace variable.
-	// Values: "ancestry_only", "content_based", "both" (default).
-	squashDetectionMode := "both"
-	if cfg.GetVariable != nil {
-		val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
-		if val == "ancestry_only" || val == "content_based" || val == "both" {
-			squashDetectionMode = val
+	// 20-REQ-3 / 20-REQ-4: Patch-branch refresh (origin mode only).
+	patchAdvanced := false
+	var outcomes []PatchRefreshOutcome
+	if isOriginMode {
+		var advanced bool
+		var refreshErr error
+		outcomes, advanced, refreshErr = refreshPatchBranches(ctx, git, repoPath, patches, integrationBranch, patchDivergencePolicy)
+		patchAdvanced = advanced
+
+		// 20-REQ-7.2: Persist per-branch outcomes produced so far, even on
+		// the ref-write failure path.
+		now := apikit.NowUTC()
+		persistPatchOutcomes(ctx, cfg.PatchStore, outcomes, now)
+
+		// 20-REQ-7.2: Clear origin columns of merged_upstream and deleted rows.
+		clearMergedDeletedOriginState(ctx, cfg.PatchStore, slug)
+
+		// 20-REQ-6: Build patches_synced and patches_diverged from outcomes.
+		resp.PatchesSynced = outcomesToSyncedElements(outcomes)
+		resp.PatchesDiverged = outcomesToDiverged(outcomes)
+
+		if refreshErr != nil {
+			// 20-REQ-4.3: A ref-write failure stops the refresh. Outcomes
+			// already produced are kept. The rebuild decision for branches
+			// already moved still runs below. upstream_head_sha and
+			// last_sync_at are NOT written.
+			// Enqueue rebuild for branches already moved, then return 500.
+			if patchAdvanced {
+				enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, true)
+			}
+
+			// 20-REQ-8.5: Emit audit events for outcomes already produced,
+			// even on the ref-write failure path.
+			emitSyncAuditEvents(ctx, cfg.Audit, auth, slug, outcomes)
+
+			return nil, apikit.WriteAPIError(c, http.StatusInternalServerError,
+				fmt.Sprintf("failed to update patch branch %s", refreshErr.(*RefWriteError).Branch))
 		}
 	}
 
-	for _, patch := range patches {
-		// Only check active patches.
-		// 16-PROP-6: merged_upstream is monotonic — never revert.
-		if patch.Status != PatchStatusActive {
-			continue
+	// 20-REQ-7.3: In hub mode, clear origin columns of every patch row.
+	if !isOriginMode {
+		if clearErr := cfg.PatchStore.ClearOriginSyncState(ctx, slug); clearErr != nil {
+			// Log but don't fail the sync.
+			_ = clearErr
+		}
+	}
+
+	// 20-REQ-5.2: Merge detection runs when upstream advanced or any patch
+	// branch counted as advanced. In hub mode, run it exactly when upstream
+	// advanced (patchAdvanced is always false in hub mode).
+	shouldRunMergeDetection := upstreamAdvanced || patchAdvanced
+
+	if shouldRunMergeDetection {
+		// Re-list patches to get refreshed state (patches may have been
+		// updated by the refresh). For hub mode, the original list is fine.
+		if isOriginMode {
+			patches, listErr = cfg.PatchStore.ListPatches(ctx, slug)
+			if listErr != nil {
+				return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to list patches")
+			}
 		}
 
-		merged := false
+		// Determine squash merge detection mode from workspace variable.
+		// Values: "ancestry_only", "content_based", "both" (default).
+		squashDetectionMode := "both"
+		if cfg.GetVariable != nil {
+			val, _ := cfg.GetVariable("workspace", slug, "SQUASH_MERGE_DETECTION")
+			if val == "ancestry_only" || val == "content_based" || val == "both" {
+				squashDetectionMode = val
+			}
+		}
 
-		// Step 1: ancestry check (unless mode is content_based only).
-		if squashDetectionMode != "content_based" {
-			// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
-			// new upstream HEAD.
-			ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
-			if ancestorErr != nil {
-				// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
-				// does not exist locally). Leave status unchanged.
+		for _, patch := range patches {
+			// Only check active patches.
+			// 16-PROP-6: merged_upstream is monotonic — never revert.
+			if patch.Status != PatchStatusActive {
 				continue
 			}
-			merged = ancestorResult
-		}
 
-		// Step 2: squash merge fallback (content-based + PR-number scanning).
-		if !merged && squashDetectionMode != "ancestry_only" {
-			merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
-		}
+			merged := false
 
-		if merged {
-			// Transition patch to merged_upstream.
-			_ = cfg.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusMergedUpstream, nil)
-			resp.PatchesMerged = append(resp.PatchesMerged, patch.BranchName)
-		}
-	}
+			// Step 1: ancestry check (unless mode is content_based only).
+			if squashDetectionMode != "content_based" {
+				// 16-REQ-5.2: Check if patch branch HEAD is an ancestor of the
+				// new upstream HEAD.
+				ancestorResult, ancestorErr := git.IsAncestor(ctx, patch.BranchName, newUpstreamHead)
+				if ancestorErr != nil {
+					// 16-REQ-5.E2: skip patch if IsAncestor errors (e.g., ref
+					// does not exist locally). Leave status unchanged.
+					continue
+				}
+				merged = ancestorResult
+			}
 
-	// ===========================================================
-	// 16-REQ-5.3 / 16-REQ-5.4: Auto-rebuild trigger logic
-	// ===========================================================
+			// Step 2: squash merge fallback (content-based + PR-number scanning).
+			if !merged && squashDetectionMode != "ancestry_only" {
+				merged = detectSquashMerge(ctx, git, patch, storedSHA, newUpstreamHead)
+			}
 
-	// Since we already returned early when upstream hasn't advanced,
-	// shouldRebuild is always true here (upstream advanced OR patches
-	// merged). Check the AUTO_REBUILD_AFTER_SYNC workspace variable.
-	autoRebuild := true // default when unset (16-REQ-5.3)
-	if cfg.GetVariable != nil {
-		val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
-		if val == "false" {
-			// 16-REQ-5.4: explicitly disabled.
-			autoRebuild = false
+			if merged {
+				// Transition patch to merged_upstream.
+				_ = cfg.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusMergedUpstream, nil)
+				resp.PatchesMerged = append(resp.PatchesMerged, patch.BranchName)
+			}
 		}
 	}
 
-	if autoRebuild {
-		// Capture strategy and fail mode at enqueue time (16-PROP-3).
-		payload := BuildRebuildPayload(slug, integrationBranch, auth.UserID, cfg.GetVariable, "", "")
-		payloadJSON, _ := json.Marshal(payload)
-		groupKey := slug + ":" + integrationBranch
-		nonce := uuid.New().String()
+	// 20-REQ-5.6: When neither upstream nor any patch changed, return
+	// empty patches_merged and rebuild_triggered false.
+	newlyMerged := len(resp.PatchesMerged)
+	shouldRebuild := upstreamAdvanced || patchAdvanced || newlyMerged > 0
 
-		jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
-			Type:        "rebuild",
-			Key:         slug,
-			Nonce:       nonce,
-			Payload:     payloadJSON,
-			SubmittedBy: auth.UserID,
-			Group:       groupKey,
-		})
+	// 20-REQ-5.5: Write last_sync_at and updated_at on every completed sync.
+	// upstream_head_sha is written only when upstream advanced.
+	now := apikit.NowUTC()
+	if upstreamAdvanced {
+		_, err = cfg.DB.Exec(
+			`UPDATE workspaces SET upstream_head_sha = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
+			newUpstreamHead, now, now, slug,
+		)
+	} else {
+		_, err = cfg.DB.Exec(
+			`UPDATE workspaces SET last_sync_at = ?, updated_at = ? WHERE slug = ?`,
+			now, now, slug,
+		)
+	}
+	if err != nil {
+		return nil, apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to update workspace")
+	}
 
-		if enqErr == nil && !duplicate {
-			resp.RebuildTriggered = true
-			resp.RebuildJobID = &jobID
+	// ===========================================================
+	// 20-REQ-5.3 / 20-REQ-5.4: Auto-rebuild trigger logic
+	// ===========================================================
+
+	if shouldRebuild {
+		autoRebuild := true // default when unset (16-REQ-5.3)
+		if cfg.GetVariable != nil {
+			val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
+			if val == "false" {
+				// 16-REQ-5.4 / 20-REQ-5.4: explicitly disabled.
+				autoRebuild = false
+			}
 		}
-		// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
-		// running, silently ignore — rebuild_triggered stays false.
+
+		if autoRebuild {
+			jobID, triggered := enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, false)
+			if triggered {
+				resp.RebuildTriggered = true
+				resp.RebuildJobID = &jobID
+			}
+			// 16-REQ-5.3 / 16-PROP-7: if duplicate key is already queued or
+			// running, silently ignore — rebuild_triggered stays false.
+		}
+	}
+
+	// 20-REQ-8.1: Emit audit events for origin-mode syncs that complete.
+	// 20-REQ-8.4: Hub mode emits no events.
+	if isOriginMode {
+		emitSyncAuditEvents(ctx, cfg.Audit, auth, slug, outcomes)
 	}
 
 	return &resp, nil
+}
+
+// enqueueRebuildIfNeeded enqueues a rebuild job for the workspace. It returns
+// the job ID and whether the job was actually enqueued (not deduplicated).
+// When ignoreResult is true, the return values are not meaningful (used on
+// the ref-write failure path where we fire-and-forget).
+func enqueueRebuildIfNeeded(cfg SyncAPIConfig, slug, integrationBranch, userID string, ignoreResult bool) (string, bool) {
+	payload := BuildRebuildPayload(slug, integrationBranch, userID, cfg.GetVariable, "", "")
+	payloadJSON, _ := json.Marshal(payload)
+	groupKey := slug + ":" + integrationBranch
+	nonce := uuid.New().String()
+
+	jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
+		Type:        "rebuild",
+		Key:         slug,
+		Nonce:       nonce,
+		Payload:     payloadJSON,
+		SubmittedBy: userID,
+		Group:       groupKey,
+	})
+
+	if enqErr == nil && !duplicate {
+		return jobID, true
+	}
+	return "", false
 }
 
 // handleCarryPatchSyncEndpoint adapts runCarryPatchSync to an echo.HandlerFunc
@@ -434,4 +592,186 @@ func detectSquashMergeByPRNumber(ctx context.Context, git GitRunner, prNumber, o
 		}
 	}
 	return false
+}
+
+// ===========================================================================
+// Origin sync state persistence helpers
+// ===========================================================================
+
+// persistPatchOutcomes writes the origin sync state for each outcome through
+// the PatchStore. For missing_on_origin, origin_sha is NULL.
+func persistPatchOutcomes(ctx context.Context, store PatchStore, outcomes []PatchRefreshOutcome, syncedAt string) {
+	for _, o := range outcomes {
+		var sha *string
+		if o.OriginSHA != "" {
+			s := o.OriginSHA
+			sha = &s
+		}
+		_ = store.SetOriginSyncState(ctx, o.PatchID, o.State, sha, syncedAt)
+	}
+}
+
+// clearMergedDeletedOriginState clears the origin sync columns of patches
+// whose status is merged_upstream or deleted. Since ListPatches excludes
+// deleted rows, this function uses a direct DB query through the PatchStore's
+// ClearOriginSyncStateForMergedDeleted method.
+func clearMergedDeletedOriginState(ctx context.Context, store PatchStore, slug string) {
+	_ = store.ClearOriginSyncStateForMergedDeleted(ctx, slug)
+}
+
+// outcomesToSyncedElements converts PatchRefreshOutcome slices to the
+// response elements.
+func outcomesToSyncedElements(outcomes []PatchRefreshOutcome) []PatchSyncedElement {
+	elems := make([]PatchSyncedElement, 0, len(outcomes))
+	for _, o := range outcomes {
+		elem := PatchSyncedElement{
+			BranchName: o.BranchName,
+			Action:     o.Action,
+			State:      o.State,
+		}
+		if o.LocalSHA != "" {
+			elem.LocalSHA = o.LocalSHA
+		}
+		if o.OriginSHA != "" {
+			elem.OriginSHA = o.OriginSHA
+		}
+		if o.ReplacedSHA != "" {
+			elem.ReplacedSHA = o.ReplacedSHA
+		}
+		elems = append(elems, elem)
+	}
+	return elems
+}
+
+// outcomesToDiverged returns the branch names of outcomes whose state is
+// diverged.
+func outcomesToDiverged(outcomes []PatchRefreshOutcome) []string {
+	diverged := make([]string, 0)
+	for _, o := range outcomes {
+		if o.State == StateDiverged {
+			diverged = append(diverged, o.BranchName)
+		}
+	}
+	return diverged
+}
+
+// ===========================================================================
+// Audit emission helpers (20-REQ-8)
+// ===========================================================================
+
+// emitSyncAuditEvents emits hub.patch.sync and hub.patch.replace audit events
+// for the given outcomes. It is called in origin mode only, both on the
+// successful completion path and on the ref-write failure path (for outcomes
+// already produced).
+//
+// 20-REQ-8.6: A nil emitter skips emission.
+// 20-REQ-8.7: An Emit error is logged and does not affect the sync.
+func emitSyncAuditEvents(
+	ctx context.Context,
+	emitter audit.Emitter,
+	auth *apikit.AuthInfo,
+	slug string,
+	outcomes []PatchRefreshOutcome,
+) {
+	if emitter == nil {
+		return
+	}
+
+	// Classify outcomes into branch-name lists.
+	var created, fastForwarded, replaced, diverged, missingOnOrigin []string
+	for _, o := range outcomes {
+		switch o.Action {
+		case ActionCreated:
+			created = append(created, o.BranchName)
+		case ActionFastForwarded:
+			fastForwarded = append(fastForwarded, o.BranchName)
+		case ActionReplaced:
+			replaced = append(replaced, o.BranchName)
+		}
+		switch o.State {
+		case StateDiverged:
+			diverged = append(diverged, o.BranchName)
+		case StateMissingOnOrigin:
+			missingOnOrigin = append(missingOnOrigin, o.BranchName)
+		}
+	}
+
+	// Ensure nil slices become empty slices in metadata.
+	if created == nil {
+		created = []string{}
+	}
+	if fastForwarded == nil {
+		fastForwarded = []string{}
+	}
+	if replaced == nil {
+		replaced = []string{}
+	}
+	if diverged == nil {
+		diverged = []string{}
+	}
+	if missingOnOrigin == nil {
+		missingOnOrigin = []string{}
+	}
+
+	// 20-REQ-8.2: Emit one hub.patch.replace per replaced branch, and log
+	// each replacement at info level.
+	for _, o := range outcomes {
+		if o.Action != ActionReplaced {
+			continue
+		}
+
+		slog.Info("patch branch replaced by origin",
+			"workspace", slug,
+			"branch", o.BranchName,
+			"replaced_sha", o.ReplacedSHA,
+			"origin_sha", o.OriginSHA,
+		)
+
+		replaceEvent := audit.HubEvent{
+			EventType:    audit.EventPatchReplace,
+			ResourceType: "patch",
+			Workspace:    slug,
+			Metadata: map[string]any{
+				"branch_name":  o.BranchName,
+				"replaced_sha": o.ReplacedSHA,
+				"origin_sha":   o.OriginSHA,
+			},
+		}
+		if auth != nil {
+			replaceEvent.ActorID = auth.UserID
+			replaceEvent.ActorType = auth.CredentialType
+		}
+		if err := emitter.Emit(ctx, replaceEvent); err != nil {
+			slog.Error("audit: failed to emit hub.patch.replace",
+				"workspace", slug,
+				"branch", o.BranchName,
+				"error", err,
+			)
+		}
+	}
+
+	// 20-REQ-8.1: Emit one hub.patch.sync per completed sync.
+	syncEvent := audit.HubEvent{
+		EventType:    audit.EventPatchSync,
+		ResourceType: "patch",
+		Workspace:    slug,
+		Metadata: map[string]any{
+			"origin_fetched":    true,
+			"created":           created,
+			"fast_forwarded":    fastForwarded,
+			"replaced":          replaced,
+			"diverged":          diverged,
+			"missing_on_origin": missingOnOrigin,
+		},
+	}
+	if auth != nil {
+		syncEvent.ActorID = auth.UserID
+		syncEvent.ActorType = auth.CredentialType
+	}
+	if err := emitter.Emit(ctx, syncEvent); err != nil {
+		slog.Error("audit: failed to emit hub.patch.sync",
+			"workspace", slug,
+			"error", err,
+		)
+	}
 }

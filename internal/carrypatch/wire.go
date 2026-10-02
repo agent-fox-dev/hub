@@ -165,7 +165,8 @@ func NewSQLPatchStore(db *sql.DB) *SQLPatchStore {
 // ListPatches returns all non-deleted patches for a workspace ordered by position.
 func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]Patch, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url
+		`SELECT id, workspace_slug, branch_name, position, status, conflict_files, upstream_pr_url,
+		        origin_sync_state, origin_sha, origin_synced_at
 		 FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
 	)
@@ -178,7 +179,8 @@ func (s *SQLPatchStore) ListPatches(_ context.Context, workspaceSlug string) ([]
 	for rows.Next() {
 		var p Patch
 		var conflictFilesJSON sql.NullString
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON, &p.UpstreamPRURL); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.BranchName, &p.Position, &p.Status, &conflictFilesJSON, &p.UpstreamPRURL,
+			&p.OriginSyncState, &p.OriginSHA, &p.OriginSyncedAt); err != nil {
 			return nil, err
 		}
 		if conflictFilesJSON.Valid && conflictFilesJSON.String != "" {
@@ -254,6 +256,44 @@ func (s *SQLPatchStore) PurgeDeletedPatches(_ context.Context, olderThan string)
 	return result.RowsAffected()
 }
 
+// SetOriginSyncState writes the origin sync state for a single patch (20-REQ-7.4).
+func (s *SQLPatchStore) SetOriginSyncState(_ context.Context, patchID, state string, originSHA *string, syncedAt string) error {
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ? WHERE id = ?`,
+		state, originSHA, syncedAt, patchID,
+	)
+	return err
+}
+
+// ClearOriginSyncState clears the origin sync state for all patches of a workspace (20-REQ-7.4).
+func (s *SQLPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug string) error {
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL WHERE workspace_slug = ?`,
+		workspaceSlug,
+	)
+	return err
+}
+
+// ClearOriginSyncStateForPatch clears the origin sync state for a single patch (20-REQ-7.4).
+func (s *SQLPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID string) error {
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL WHERE id = ?`,
+		patchID,
+	)
+	return err
+}
+
+// ClearOriginSyncStateForMergedDeleted clears the origin sync state for all
+// patches of a workspace whose status is merged_upstream or deleted (20-REQ-7.2).
+func (s *SQLPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, workspaceSlug string) error {
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL
+		 WHERE workspace_slug = ? AND status IN ('merged_upstream', 'deleted')`,
+		workspaceSlug,
+	)
+	return err
+}
+
 // CompactPositions re-numbers the non-deleted patches of a workspace to
 // contiguous 1-based positions in their current order. Soft-deleted patches
 // keep a unique negative position (-rowid) and are excluded.
@@ -327,6 +367,34 @@ func PurgeExpiredDeletedPatches(ctx context.Context, store PatchStore) (int64, e
 // setup (spec 15).
 func DefaultFetchFunc() FetchFunc {
 	return upstream.Fetch
+}
+
+// DefaultFetchOriginFunc returns a FetchFunc that fetches the 'origin' remote
+// of the trunk repository with refspec +refs/heads/*:refs/remotes/origin/*,
+// no tags, and pruning of tracking refs whose branch no longer exists on the
+// fork (20-REQ-2.1). An already-up-to-date result is success.
+func DefaultFetchOriginFunc() FetchFunc {
+	return func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
+		repo, err := git.PlainOpen(repoPath)
+		if err != nil {
+			return fmt.Errorf("origin: open repository at %s: %w", repoPath, err)
+		}
+		remote, err := repo.Remote("origin")
+		if err != nil {
+			return fmt.Errorf("origin: remote %q: %w", "origin", err)
+		}
+		err = remote.FetchContext(ctx, &git.FetchOptions{
+			RemoteName: "origin",
+			RefSpecs:   []config.RefSpec{config.RefSpec("+refs/heads/*:refs/remotes/origin/*")},
+			Auth:       auth,
+			Tags:       git.NoTags,
+			Prune:      true,
+		})
+		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return fmt.Errorf("origin: fetch %q: %w", "origin", err)
+		}
+		return nil
+	}
 }
 
 // DefaultPushIntegrationFunc returns a PushIntegrationFunc that force-pushes

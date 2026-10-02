@@ -654,7 +654,10 @@ paths:
         "502":
           description: >-
             Upstream fetch failed (network, authentication, or repository
-            error), or credential resolution failed.
+            error), or credential resolution failed. In origin mode, also
+            returned when the origin fetch fails (`error_type:
+            origin_fetch_failed`) or origin credentials cannot be resolved
+            (`failed to resolve origin credentials`).
           content:
             application/json:
               schema:
@@ -5398,11 +5401,11 @@ components:
       type: object
       description: |
         Returned by `POST /api/v1/workspaces/{slug}/sync` when the workspace is
-        in `carry_patch` mode: the full workspace object plus the four
-        carry-patch fields as additional top-level keys (16-REQ-5.1).
+        in `carry_patch` mode: the full workspace object plus the carry-patch
+        fields as additional top-level keys (16-REQ-5.1).
       allOf:
         - $ref: "#/components/schemas/Workspace"
-      required: [patches_merged, rebuild_triggered, force_push_detected]
+      required: [patches_merged, rebuild_triggered, force_push_detected, origin_fetched]
       properties:
         patches_merged:
           type: array
@@ -5426,6 +5429,51 @@ components:
             Whether the new upstream HEAD is not a descendant of the previously
             stored one, indicating a history rewrite. Informational only -- the
             sync still proceeds.
+        origin_fetched:
+          type: boolean
+          description: >-
+            Always present. `true` when the fork (`origin`) was fetched in this
+            sync (`PATCH_BRANCH_SOURCE=origin`), `false` otherwise.
+        patches_synced:
+          type: array
+          description: >-
+            Present only when `PATCH_BRANCH_SOURCE` is `origin` (empty `[]`
+            when there are no candidates). Each element describes the
+            per-branch outcome.
+          items:
+            $ref: "#/components/schemas/PatchSyncedElement"
+        patches_diverged:
+          type: array
+          description: >-
+            Present only when `PATCH_BRANCH_SOURCE` is `origin`. Branch names
+            whose state is `diverged`. Always `[]` under the `replace` policy.
+          items:
+            type: string
+
+    PatchSyncedElement:
+      type: object
+      description: Per-branch outcome of an origin-mode patch sync.
+      required: [branch_name, action, state]
+      properties:
+        branch_name:
+          type: string
+        action:
+          type: string
+          enum: [none, created, fast_forwarded, replaced]
+          description: What sync did to the local patch branch.
+        state:
+          type: string
+          enum: [in_sync, diverged, missing_on_origin]
+          description: Relationship between the local branch and the fork after the sync.
+        local_sha:
+          type: string
+          description: Local tip after the refresh. Omitted when there is no local branch.
+        origin_sha:
+          type: string
+          description: Fork tip SHA. Omitted when the fork has no such branch.
+        replaced_sha:
+          type: string
+          description: The hub-side tip that was discarded. Present only for `replaced`.
 
     # -- Patches ---------------------------------------------------------------
 
@@ -5479,6 +5527,24 @@ components:
         updated_at:
           type: string
           format: date-time
+        origin_sync_state:
+          type: [string, "null"]
+          enum: [in_sync, diverged, missing_on_origin, null]
+          description: >-
+            Relationship between the local patch branch and the fork after the
+            last sync. Null in hub mode or when the patch has not been synced.
+            Omitted when null.
+        origin_sha:
+          type: [string, "null"]
+          description: >-
+            SHA of the fork tip for this patch branch at the last sync. Null
+            when the fork has no such branch or in hub mode. Omitted when null.
+        origin_synced_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            Timestamp of the last origin sync for this patch. Null in hub mode.
+            Omitted when null.
 
     AddPatchRequest:
       type: object
@@ -5865,6 +5931,23 @@ components:
           description: Present only when `last_rebuild_result` is `conflict`.
           items:
             type: string
+        origin_sync_state:
+          type: [string, "null"]
+          enum: [in_sync, diverged, missing_on_origin, null]
+          description: >-
+            Relationship between the local patch branch and the fork after the
+            last sync. Null in hub mode. Omitted when null.
+        origin_sha:
+          type: [string, "null"]
+          description: >-
+            SHA of the fork tip at the last sync. Null when the fork has no
+            such branch or in hub mode. Omitted when null.
+        origin_synced_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            Timestamp of the last origin sync. Null in hub mode. Omitted when
+            null.
 
     PatchStatusSummary:
       type: object
@@ -5875,6 +5958,8 @@ components:
         - conflict
         - disabled
         - total_rerere_resolutions
+        - patches_diverged
+        - patches_missing_on_origin
       properties:
         total_patches:
           type: integer
@@ -5889,6 +5974,16 @@ components:
         total_rerere_resolutions:
           type: integer
           description: Reported as 0 when the rr-cache is inaccessible.
+        patches_diverged:
+          type: integer
+          description: >-
+            Count of patches whose origin_sync_state is diverged. Always
+            present; 0 in hub mode.
+        patches_missing_on_origin:
+          type: integer
+          description: >-
+            Count of patches whose origin_sync_state is missing_on_origin.
+            Always present; 0 in hub mode.
 
     # -- Merges ----------------------------------------------------------------
 

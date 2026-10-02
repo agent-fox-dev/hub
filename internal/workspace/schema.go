@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS patches (
 var patchFieldDDL = []string{
 	`ALTER TABLE patches ADD COLUMN conflict_files TEXT`,
 	`ALTER TABLE patches ADD COLUMN deleted_at TEXT`,
+	`ALTER TABLE patches ADD COLUMN origin_sync_state TEXT`,
+	`ALTER TABLE patches ADD COLUMN origin_sha TEXT`,
+	`ALTER TABLE patches ADD COLUMN origin_synced_at TEXT`,
 }
 
 // initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS

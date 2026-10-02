@@ -317,14 +317,17 @@ The remote that is fetched depends on the workspace mode:
 | Workspace mode | Syncs from | What happens |
 |---|---|---|
 | `standard` | `origin` -- the `--git-url` given at creation | Fetches `origin` and fast-forwards the workspace branch (`--branch`, or the repository's default branch) to it. A diverged branch (force-push on `origin`) fails with 409; recover with `--reset-to-upstream`. |
-| `carry_patch` | `upstream` -- the `--upstream-url` given at creation (**not** `origin`) | Fetches all `upstream` branches, records the upstream default branch as the new base, marks patches that were merged upstream as `merged_upstream`, and -- if upstream advanced -- enqueues a rebuild of the integration branch (upstream HEAD + active patches). The integration branch itself changes only when that rebuild completes. |
+| `carry_patch` | `upstream` -- the `--upstream-url` given at creation (**not** `origin`) | Fetches all `upstream` branches, records the upstream default branch as the new base, marks patches that were merged upstream as `merged_upstream`, and -- if upstream advanced or a patch branch changed -- enqueues a rebuild of the integration branch (upstream HEAD + active patches). The integration branch itself changes only when that rebuild completes. When `PATCH_BRANCH_SOURCE=origin`, the fork is also fetched and every registered patch branch is brought to the fork's tip. |
 
 Notes for carry-patch workspaces:
 
-- Your fork (`origin`) is never fetched by sync. Patch branches are read from
-  the hub's clone, so push them to the hub's git server
+- By default, your fork (`origin`) is not fetched by sync. Patch branches are
+  read from the hub's clone, so push them to the hub's git server
   (`git push <hub-remote> <branch>`, using the workspace `hub_url`); pushing a
   registered patch branch also triggers a rebuild.
+- When `PATCH_BRANCH_SOURCE=origin`, the fork is fetched during sync and
+  every registered patch branch is brought to the fork's tip. See the
+  `PATCH_BRANCH_SOURCE` and `PATCH_DIVERGENCE_POLICY` workspace variables.
 - Upstream credentials come from the `UPSTREAM_GIT_PAT` (or
   `UPSTREAM_GIT_USERNAME`/`UPSTREAM_GIT_PASSWORD`) workspace secrets, set with
   `afc secrets create --workspace <slug> ...` (see
@@ -355,6 +358,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 | `--wait` | no | boolean | `false` | Block until the auto-triggered rebuild (if any) reaches a terminal state |
 | `--timeout` | no | duration | `5m0s` | Maximum time to wait for rebuild completion (only effective with `--wait`) |
 | `--poll-interval` | no | duration | `5s` | Interval between rebuild status polls (only effective with `--wait`) |
+| `--fail-on-diverged` | no | boolean | `false` | Exit with code 3 when `patches_diverged` is non-empty (carry-patch workspaces with `PATCH_BRANCH_SOURCE=origin` and `PATCH_DIVERGENCE_POLICY=report`). With `--wait`, the check runs after the rebuild wait finishes; a wait failure (exit 1) takes precedence |
 
 **Behavior:**
 
@@ -369,13 +373,19 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
   (`sync_status`, `sync_mode`, `upstream_head_sha`, `last_sync_at`,
   `sync_error`).
 - For carry-patch workspaces, the response additionally carries
-  `patches_merged`, `rebuild_triggered`, `force_push_detected`, and --
-  only when a rebuild was enqueued -- `rebuild_job_id`.
+  `patches_merged`, `rebuild_triggered`, `force_push_detected`,
+  `origin_fetched`, and -- only when a rebuild was enqueued --
+  `rebuild_job_id`. When `PATCH_BRANCH_SOURCE=origin`, the response also
+  includes `patches_synced` and `patches_diverged`.
 - With `--wait`: if a rebuild was triggered (`rebuild_job_id` is present),
   polls `GET /api/v1/workspaces/<slug>/rebuilds/<id>` until the rebuild
   reaches a terminal state. Prints the final rebuild record and exits 0.
   If no rebuild was triggered, exits immediately after printing the sync
   response.
+- With `--fail-on-diverged`: after printing the response (and after the
+  rebuild wait if `--wait` is also set), if `patches_diverged` is non-empty,
+  prints a message naming the diverged branches to stderr and exits with
+  code 3. A wait failure (exit 1) takes precedence over exit 3.
 - Requires `workspaces:sync` permission scope for PATs.
 
 **Exit Codes:**
@@ -384,6 +394,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 |------|-----------|
 | 0 | Sync completed successfully (and rebuild completed when using `--wait`) |
 | 1 | Workspace not found, sync disabled, clone not ready, sync already in progress, API error, network error, or timeout (with `--wait`) |
+| 3 | `--fail-on-diverged` is set and `patches_diverged` is non-empty |
 
 ---
 
