@@ -17,7 +17,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
-	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -276,7 +276,7 @@ func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 // (owner or admin token; non-owners get 404). It writes the error response
 // and returns false when access is denied.
 func authorizeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug); code != 0 {
+	if _, code, msg := wsaccess.AuthorizeWorkspace(db, auth, slug); code != 0 {
 		_ = apikit.WriteAPIError(c, code, msg)
 		return false
 	}
