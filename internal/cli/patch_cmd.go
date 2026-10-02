@@ -48,8 +48,14 @@ func newPatchAddCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:           "add <workspace-slug>",
-		Short:         "Add a patch to a workspace",
+		Use:   "add <workspace-slug>",
+		Short: "Add a patch to a workspace",
+		Long: `Add a patch branch to a carry-patch workspace.
+
+The server resolves the branch in the workspace trunk before registering it.
+It checks the local ref first, then the clone's origin tracking ref, and
+finally (when PATCH_BRANCH_SOURCE is origin) fetches the branch from the fork.
+The resolution method is recorded in the hub.patch.create audit event.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -96,7 +102,7 @@ func newPatchAddCmd() *cobra.Command {
 	cmd.Flags().IntVar(&position, "position", 0, "Position in the patch list (optional)")
 	cmd.Flags().StringVar(&upstreamPR, "upstream-pr", "", "Upstream PR URL (optional)")
 	cmd.Flags().StringVar(&description, "description", "", "Patch description (optional)")
-	cmd.Flags().BoolVar(&skipBranchCheck, "skip-branch-check", false, "Skip branch existence validation (optional)")
+	cmd.Flags().BoolVar(&skipBranchCheck, "skip-branch-check", false, "Skip all branch resolution: no ref lookup, no fetch, no local branch creation and no workspace lock is taken (optional)")
 	cmd.Flags().BoolVar(&ifNotExists, "if-not-exists", false, "Return existing patch instead of error if branch already registered (optional)")
 
 	return cmd

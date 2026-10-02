@@ -1626,7 +1626,7 @@ afc patch add <workspace-slug> --branch <name> [flags]
 | `--position` | no | int | Position in the patch list (appended if omitted) |
 | `--upstream-pr` | no | string | URL of the corresponding upstream pull request |
 | `--description` | no | string | Patch description |
-| `--skip-branch-check` | no | boolean | Skip branch existence validation on the server |
+| `--skip-branch-check` | no | boolean | Skip all branch resolution: no ref lookup, no fetch, no local branch creation and no workspace lock is taken |
 | `--if-not-exists` | no | boolean | Return the existing patch instead of an error if the branch is already registered |
 
 **Behavior:**
@@ -1634,9 +1634,14 @@ afc patch add <workspace-slug> --branch <name> [flags]
 - Sends `POST /api/v1/workspaces/<slug>/patches` with `branch_name` and
   optional `position`, `upstream_pr_url`, `description`, `skip_branch_check`,
   and `if_not_exists` in the request body.
-- When `--skip-branch-check` is set, the server skips validation that the
-  branch exists in the repository. Useful for registering patches before the
-  branch has been pushed.
+- The server resolves the branch in the workspace trunk before registering it.
+  It checks the local ref first, then the clone's origin tracking ref, and
+  finally (when `PATCH_BRANCH_SOURCE` is `origin`) fetches the branch from the
+  fork. The resolution method is recorded in the `hub.patch.create` audit
+  event.
+- When `--skip-branch-check` is set, the server skips all branch resolution:
+  no ref lookup, no fetch, no local branch creation and no workspace lock is
+  taken. Useful for registering patches before the branch has been pushed.
 - When `--if-not-exists` is set and a patch with the same branch name already
   exists, the server returns the existing patch record instead of an error.
 - Prints the created (or existing) patch JSON to stdout, including `id`,

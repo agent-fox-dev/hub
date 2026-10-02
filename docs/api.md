@@ -1241,11 +1241,44 @@ no patches are inserted.
   position + 1).
 - When `position` is specified, existing patches at that position or higher are
   shifted down by one to make room.
-- By default, branch existence in the git repository is validated at
-  registration time. Set `skip_branch_check` to `true` to bypass this check.
 - The patch is assigned a UUID, status `"active"`, and RFC 3339 timestamps.
 - In batch mode, duplicate `branch_name` values within the batch are rejected
   with HTTP 409.
+
+**Branch Resolution:**
+
+Unless `skip_branch_check` is `true`, the server resolves the branch name
+using the following order. The first step that succeeds ends the resolution:
+
+1. **`local`** — `refs/heads/<name>` exists in the trunk and resolves to a
+   commit. No ref is written.
+2. **`origin_tracking`** — `refs/remotes/origin/<name>` exists in the trunk
+   and resolves to a commit. A local branch `refs/heads/<name>` is created at
+   that commit.
+3. **`origin_fetch`** — only when `PATCH_BRANCH_SOURCE` is `origin`. The
+   branch is fetched from the fork's `origin` remote, and if
+   `refs/remotes/origin/<name>` now resolves to a commit, the local branch is
+   created at that commit.
+
+Only fully qualified refs (`refs/heads/<name>`) are checked. Tags, bare SHAs
+and remote-qualified names (e.g. `origin/x`) are no longer accepted as branch
+names.
+
+When `skip_branch_check` is `true`, no ref lookup, no fetch, no credential
+resolution, no local branch creation and no workspace lock is performed for
+that element. In a batch, `skip_branch_check` applies per element.
+
+A batch resolves every element before inserting any row. The first failure
+rejects the whole request. Local branches already created for earlier elements
+stay in place (they are harmless refs found as `local` on the next attempt).
+
+**Audit Metadata:**
+
+The single-patch `hub.patch.create` audit event includes a `branch_resolution`
+metadata key with one of the values `local`, `origin_tracking`, `origin_fetch`
+or `skipped` (when `skip_branch_check` was `true`). The key is omitted when no
+branch-check hook is registered. Batch registration does not emit
+`hub.patch.create` events.
 
 **Error Codes:**
 
@@ -1256,11 +1289,14 @@ no patches are inserted.
 | 400 | Workspace is in `standard` mode (not `carry_patch`) |
 | 400 | Workspace does not exist or is not active |
 | 400 | `position` is less than 1 |
-| 400 | Branch does not exist in repository (when `skip_branch_check` is `false`) |
+| 400 | Branch does not exist in repository or on origin (when `skip_branch_check` is `false`). In a batch the message is prefixed `patch[i]: `. |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:write` scope |
 | 409 | `branch_name` already exists in the patch list for this workspace (unless `if_not_exists` is `true`) |
 | 409 | Duplicate `branch_name` within a batch request |
+| 409 | Another operation holds the workspace lock (`error_type: workspace_busy`). Returned when the resolver needs to write a ref but the trunk is locked by another operation. |
+| 502 | Origin fetch failed (`error_type: origin_fetch_failed`). Returned when `PATCH_BRANCH_SOURCE` is `origin` and the fetch from the fork fails due to a network or authentication error. |
+| 502 | Failed to resolve origin credentials. Returned when the credential resolver cannot produce credentials for the fork. |
 
 ---
 
@@ -3218,6 +3254,7 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 
 | Event Type | Resource Type | When Emitted | Metadata |
 |------------|---------------|--------------|----------|
+| `hub.patch.create` | `patch` | A single patch is registered via `POST /workspaces/:slug/patches` (not emitted for batch or `if_not_exists` hits) | `branch_name`, `position`, `branch_resolution` (`local`, `origin_tracking`, `origin_fetch` or `skipped`) |
 | `hub.rebuild.followup` | `rebuild` | A follow-up rebuild is enqueued because a patch tip or upstream base moved during a rebuild run | `submitted_by`, workspace slug |
 | `hub.patch.sync` | `patch` | A carry-patch sync completes in `origin` mode | `origin_fetched` (bool), `created` (branch names), `fast_forwarded` (branch names), `replaced` (branch names), `diverged` (branch names), `missing_on_origin` (branch names) |
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch) | `branch_name`, `replaced_sha`, `origin_sha` |

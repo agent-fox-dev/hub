@@ -2,10 +2,15 @@ package carrypatch
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/agent-fox-dev/hub/internal/cli"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
 )
 
@@ -396,5 +401,248 @@ func TestDocs_TS_20_55_CLIAndWorkflowDocs(t *testing.T) {
 	cfg := readDoc(t, "configuration.md")
 	if strings.Contains(cfg, "PATCH_BRANCH_SOURCE") {
 		t.Error("configuration.md should not mention PATCH_BRANCH_SOURCE")
+	}
+}
+
+// ===========================================================================
+// TS-21-38 (unit): docs/api.md describes the resolution order, new errors
+// and audit metadata.
+// Verifies: 21-REQ-10.1
+// ===========================================================================
+
+func TestDocs_TS_21_38_APIMdDescribesResolutionOrder(t *testing.T) {
+	api := readDoc(t, "api.md")
+
+	// Find the registration section.
+	sec := section(t, api, "### POST /api/v1/workspaces/:slug/patches\n", "### ")
+
+	// Resolution order: local, origin_tracking, origin_fetch.
+	requireContains(t, "api.md registration section", sec,
+		"local",
+		"origin_tracking",
+		"origin_fetch",
+	)
+
+	// New 400 message.
+	requireContains(t, "api.md registration section", sec,
+		"does not exist in repository or on origin",
+	)
+
+	// 409 workspace_busy and 502 origin_fetch_failed.
+	requireContains(t, "api.md registration section", sec,
+		"workspace_busy",
+		"origin_fetch_failed",
+	)
+
+	// skip_branch_check description.
+	requireContains(t, "api.md registration section", sec,
+		"skip_branch_check",
+	)
+
+	// branch_resolution audit metadata with skipped value.
+	requireContains(t, "api.md", api,
+		"branch_resolution",
+		"skipped",
+	)
+}
+
+// ===========================================================================
+// TS-21-39 (unit): docs/openapi.yaml documents the new description, 400, 409
+// and 502 responses.
+// Verifies: 21-REQ-10.2
+// ===========================================================================
+
+func TestDocs_TS_21_39_OpenAPIDescribesPatchResolution(t *testing.T) {
+	raw := readDoc(t, "openapi.yaml")
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &parsed); err != nil {
+		t.Fatalf("docs/openapi.yaml is not valid YAML: %v", err)
+	}
+
+	// Navigate to POST /api/v1/workspaces/{slug}/patches.
+	patchesPath, ok := navigateMap(parsed, "paths", "/api/v1/workspaces/{slug}/patches")
+	if !ok {
+		t.Fatal("openapi.yaml has no /api/v1/workspaces/{slug}/patches path")
+	}
+	postOp, ok := navigateMap(patchesPath, "post")
+	if !ok {
+		t.Fatal("openapi.yaml has no POST operation on /api/v1/workspaces/{slug}/patches")
+	}
+
+	// Description mentions the resolution order.
+	desc, _ := postOp["description"].(string)
+	for _, needle := range []string{"local", "origin_tracking", "origin_fetch"} {
+		if !strings.Contains(desc, needle) {
+			t.Errorf("POST description does not mention %q", needle)
+		}
+	}
+
+	// Responses.
+	responses, ok := navigateMap(postOp, "responses")
+	if !ok {
+		t.Fatal("POST operation has no responses")
+	}
+
+	// 400 description mentions the new message.
+	resp400, ok := navigateMap(responses, "400")
+	if !ok {
+		t.Fatal("POST operation has no 400 response")
+	}
+	desc400, _ := resp400["description"].(string)
+	if !strings.Contains(desc400, "or on origin") {
+		t.Error("400 description does not mention 'or on origin'")
+	}
+
+	// 409 response exists.
+	if _, ok := responses["409"]; !ok {
+		t.Error("POST operation has no 409 response")
+	}
+
+	// 502 response exists.
+	if _, ok := responses["502"]; !ok {
+		t.Error("POST operation has no 502 response")
+	}
+
+	// skip_branch_check property description says no lookup, fetch or local branch.
+	schemas, ok := navigateMap(parsed, "components", "schemas")
+	if !ok {
+		t.Fatal("openapi.yaml has no components/schemas")
+	}
+	addPatch, ok := navigateMap(schemas, "AddPatchRequest")
+	if !ok {
+		t.Fatal("openapi.yaml has no AddPatchRequest schema")
+	}
+	addPatchProps, ok := navigateMap(addPatch, "properties")
+	if !ok {
+		t.Fatal("AddPatchRequest has no properties")
+	}
+	skipProp, ok := navigateMap(addPatchProps, "skip_branch_check")
+	if !ok {
+		t.Fatal("AddPatchRequest has no skip_branch_check property")
+	}
+	skipDesc, _ := skipProp["description"].(string)
+	for _, needle := range []string{"lookup", "fetch", "local branch"} {
+		if !strings.Contains(strings.ToLower(skipDesc), needle) {
+			t.Errorf("skip_branch_check description does not mention %q: %s", needle, skipDesc)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-21-40 (unit): docs/cli.md and the afc patch add help text describe the
+// resolution behaviour.
+// Verifies: 21-REQ-10.3
+// ===========================================================================
+
+func TestDocs_TS_21_40_CLIMdAndHelpDescribeResolution(t *testing.T) {
+	cliDoc := readDoc(t, "cli.md")
+
+	// Find the patch add section.
+	patchAddSec := section(t, cliDoc, "### afc patch add", "### ")
+
+	// Mentions local, tracking and fork resolution.
+	requireContains(t, "cli.md patch add section", patchAddSec,
+		"local",
+		"tracking",
+		"PATCH_BRANCH_SOURCE",
+	)
+
+	// --skip-branch-check text says lookup, fetch and local branch creation are skipped.
+	skipIdx := strings.Index(patchAddSec, "skip-branch-check")
+	if skipIdx < 0 {
+		t.Fatal("cli.md patch add section does not mention skip-branch-check")
+	}
+	// Check the surrounding text (the flag row or description).
+	skipContext := patchAddSec[skipIdx:]
+	if end := strings.Index(skipContext, "\n\n"); end > 0 {
+		skipContext = skipContext[:end]
+	}
+	norm := strings.Join(strings.Fields(strings.ToLower(skipContext)), " ")
+	for _, needle := range []string{"lookup", "fetch", "local branch"} {
+		if !strings.Contains(norm, needle) {
+			t.Errorf("cli.md --skip-branch-check text does not mention %q", needle)
+		}
+	}
+
+	// Check the cobra command's Long help and --skip-branch-check flag usage.
+	addCmd := findSubcommand(t, cli.PatchCmd(), "add")
+	if addCmd.Long == "" {
+		t.Fatal("patch add command has no Long help text")
+	}
+	for _, needle := range []string{"origin", "PATCH_BRANCH_SOURCE"} {
+		if !strings.Contains(addCmd.Long, needle) {
+			t.Errorf("patch add Long help does not mention %q", needle)
+		}
+	}
+
+	skipFlag := addCmd.Flags().Lookup("skip-branch-check")
+	if skipFlag == nil {
+		t.Fatal("patch add command has no --skip-branch-check flag")
+	}
+	skipUsage := strings.ToLower(skipFlag.Usage)
+	for _, needle := range []string{"lookup", "fetch", "local branch"} {
+		if !strings.Contains(skipUsage, needle) {
+			t.Errorf("--skip-branch-check usage does not mention %q: %s", needle, skipFlag.Usage)
+		}
+	}
+}
+
+// findSubcommand finds a subcommand by name.
+func findSubcommand(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
+	t.Helper()
+	for _, c := range parent.Commands() {
+		if c.Name() == name {
+			return c
+		}
+	}
+	t.Fatalf("subcommand %q not found", name)
+	return nil
+}
+
+// ===========================================================================
+// TS-21-41 (integration): afc patch add sends the same body and has no new
+// flag.
+// Verifies: 21-REQ-10.4
+// ===========================================================================
+
+func TestDocs_TS_21_41_PatchAddNoNewFlag(t *testing.T) {
+	// The expected flag names for the patch add command, pre-change.
+	expectedFlags := []string{
+		"branch",
+		"description",
+		"if-not-exists",
+		"position",
+		"skip-branch-check",
+		"upstream-pr",
+	}
+
+	addCmd := findSubcommand(t, cli.PatchCmd(), "add")
+	var flagNames []string
+	addCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		flagNames = append(flagNames, f.Name)
+	})
+	sort.Strings(flagNames)
+
+	if len(flagNames) != len(expectedFlags) {
+		t.Fatalf("flag count = %d; want %d; flags = %v", len(flagNames), len(expectedFlags), flagNames)
+	}
+	for i, name := range flagNames {
+		if name != expectedFlags[i] {
+			t.Errorf("flag[%d] = %q; want %q", i, name, expectedFlags[i])
+		}
+	}
+}
+
+// ===========================================================================
+// TS-21-42 (unit): docs/carry_patch_workflow.md is unmodified by this change.
+// Verifies: 21-REQ-10.5
+// ===========================================================================
+
+func TestDocs_TS_21_42_CarryPatchWorkflowUnmodified(t *testing.T) {
+	// Use git diff to verify the file is unchanged.
+	out, err := exec.Command("git", "diff", "--quiet", "--", "docs/carry_patch_workflow.md").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docs/carry_patch_workflow.md has been modified: %s", string(out))
 	}
 }
