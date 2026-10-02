@@ -218,3 +218,183 @@ func TestDocs_TS_01_72_ADR02(t *testing.T) {
 	lower := strings.ToLower(d)
 	requireContains(t, "ADR 02 (revisit condition)", lower, "revisit", "linked-worktree", "--no-ff", "v6")
 }
+
+// ===========================================================================
+// TS-20-53: docs/api.md documents the new sync behaviour, variables, fields,
+// messages and events.
+// Requirement: 20-REQ-9.1
+// ===========================================================================
+
+func TestDocs_TS_20_53_APIMdDocumentsOriginSync(t *testing.T) {
+	api := readDoc(t, "api.md")
+
+	// Response fields
+	requireContains(t, "api.md", api,
+		"origin_fetched",
+		"patches_synced",
+		"patches_diverged",
+	)
+
+	// Variables
+	requireContains(t, "api.md", api,
+		"PATCH_BRANCH_SOURCE",
+		"PATCH_DIVERGENCE_POLICY",
+	)
+
+	// Patch response / patch-status fields
+	requireContains(t, "api.md", api,
+		"origin_sync_state",
+		"origin_sha",
+		"origin_synced_at",
+		"patches_missing_on_origin",
+	)
+
+	// Error messages
+	requireContains(t, "api.md", api,
+		"origin fetch failed",
+		"failed to resolve origin credentials",
+	)
+
+	// Audit events
+	requireContains(t, "api.md", api,
+		"hub.patch.sync",
+		"hub.patch.replace",
+	)
+
+	// AUTO_REBUILD_AFTER_SYNC text mentions patch changes
+	varsSection := section(t, api, "## Workspace Variables Reference", "## ")
+	for _, line := range strings.Split(varsSection, "\n") {
+		if strings.Contains(line, "AUTO_REBUILD_AFTER_SYNC") {
+			norm := strings.Join(strings.Fields(line), " ")
+			if !strings.Contains(norm, "patch") {
+				t.Error("AUTO_REBUILD_AFTER_SYNC row does not mention patch changes")
+			}
+			break
+		}
+	}
+}
+
+// ===========================================================================
+// TS-20-54: docs/openapi.yaml describes the sync response, patch and
+// patch-status changes and stays valid YAML.
+// Requirement: 20-REQ-9.2
+// ===========================================================================
+
+func TestDocs_TS_20_54_OpenAPIDescribesSyncAndPatchChanges(t *testing.T) {
+	raw := readDoc(t, "openapi.yaml")
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &parsed); err != nil {
+		t.Fatalf("docs/openapi.yaml is not valid YAML: %v", err)
+	}
+
+	// CarryPatchSyncResponse has origin_fetched in its required list
+	schemas, _ := navigateMap(parsed, "components", "schemas")
+	cpsr, _ := navigateMap(schemas, "CarryPatchSyncResponse")
+	reqList, ok := cpsr["required"].([]any)
+	if !ok {
+		t.Fatal("CarryPatchSyncResponse has no required list")
+	}
+	hasOriginFetched := false
+	for _, v := range reqList {
+		if v == "origin_fetched" {
+			hasOriginFetched = true
+		}
+	}
+	if !hasOriginFetched {
+		t.Error("CarryPatchSyncResponse.required does not include origin_fetched")
+	}
+
+	// CarryPatchSyncResponse has patches_synced and patches_diverged properties
+	cpsrProps, _ := navigateMap(cpsr, "properties")
+	if _, ok := cpsrProps["patches_synced"]; !ok {
+		t.Error("CarryPatchSyncResponse has no patches_synced property")
+	}
+	if _, ok := cpsrProps["patches_diverged"]; !ok {
+		t.Error("CarryPatchSyncResponse has no patches_diverged property")
+	}
+
+	// Sync operation has 502 response covering origin failures
+	syncPath, _ := navigateMap(parsed, "paths", "/api/v1/workspaces/{slug}/sync")
+	syncPost, _ := navigateMap(syncPath, "post")
+	syncResponses, _ := navigateMap(syncPost, "responses")
+	if _, ok := syncResponses["502"]; !ok {
+		t.Error("sync operation has no 502 response")
+	}
+	resp502, _ := navigateMap(syncResponses, "502")
+	desc502, _ := resp502["description"].(string)
+	if !strings.Contains(desc502, "origin") {
+		t.Error("sync 502 description does not mention origin")
+	}
+
+	// Patch schema has the three origin fields
+	patchSchema, _ := navigateMap(schemas, "Patch")
+	patchProps, _ := navigateMap(patchSchema, "properties")
+	for _, field := range []string{"origin_sync_state", "origin_sha", "origin_synced_at"} {
+		if _, ok := patchProps[field]; !ok {
+			t.Errorf("Patch schema has no %s property", field)
+		}
+	}
+
+	// PatchStatusEntry has the three origin fields
+	pse, _ := navigateMap(schemas, "PatchStatusEntry")
+	pseProps, _ := navigateMap(pse, "properties")
+	for _, field := range []string{"origin_sync_state", "origin_sha", "origin_synced_at"} {
+		if _, ok := pseProps[field]; !ok {
+			t.Errorf("PatchStatusEntry schema has no %s property", field)
+		}
+	}
+
+	// PatchStatusSummary has the two summary counts
+	pss, _ := navigateMap(schemas, "PatchStatusSummary")
+	pssProps, _ := navigateMap(pss, "properties")
+	for _, field := range []string{"patches_diverged", "patches_missing_on_origin"} {
+		if _, ok := pssProps[field]; !ok {
+			t.Errorf("PatchStatusSummary schema has no %s property", field)
+		}
+	}
+}
+
+// navigateMap walks a nested map[string]any by keys.
+func navigateMap(m map[string]any, keys ...string) (map[string]any, bool) {
+	cur := m
+	for _, k := range keys {
+		v, ok := cur[k]
+		if !ok {
+			return nil, false
+		}
+		next, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur = next
+	}
+	return cur, true
+}
+
+// ===========================================================================
+// TS-20-55: docs/cli.md and docs/carry_patch_workflow.md document the flag,
+// exit code and variables, and docs/configuration.md is unchanged.
+// Requirement: 20-REQ-9.3, 20-REQ-9.4
+// ===========================================================================
+
+func TestDocs_TS_20_55_CLIAndWorkflowDocs(t *testing.T) {
+	cli := readDoc(t, "cli.md")
+	requireContains(t, "cli.md", cli, "--fail-on-diverged")
+	// Exit code 3
+	if !strings.Contains(cli, "3") {
+		t.Error("cli.md does not mention exit code 3")
+	}
+
+	wf := readDoc(t, "carry_patch_workflow.md")
+	requireContains(t, "carry_patch_workflow.md", wf,
+		"PATCH_BRANCH_SOURCE",
+		"PATCH_DIVERGENCE_POLICY",
+		"fork_push_control",
+	)
+
+	cfg := readDoc(t, "configuration.md")
+	if strings.Contains(cfg, "PATCH_BRANCH_SOURCE") {
+		t.Error("configuration.md should not mention PATCH_BRANCH_SOURCE")
+	}
+}

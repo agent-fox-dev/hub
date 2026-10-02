@@ -734,10 +734,44 @@ Like `REBUILD_STRATEGY`, the fail mode is captured at enqueue time and can be
 overridden per-rebuild using the `--fail-mode` flag or the `fail_mode` field
 in the API request body.
 
+### PATCH_BRANCH_SOURCE
+
+Selects the authority for patch branches.
+
+| Value | Behavior |
+|-------|----------|
+| `hub` (default) | Patch branches are read from the hub's local clone. The fork (`origin`) is never fetched during sync. |
+| `origin` | The fork is fetched during sync and every registered patch branch is brought to the fork's tip, according to `PATCH_DIVERGENCE_POLICY`. |
+
+The match is exact and case-sensitive. An unset variable or any unrecognised
+value is treated as `hub`. The variable is read on every sync, so a change
+takes effect on the next sync without a restart.
+
+```
+afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway
+```
+
+### PATCH_DIVERGENCE_POLICY
+
+Controls what happens when the hub's copy and the fork's copy of a patch
+branch have diverged. Ignored when `PATCH_BRANCH_SOURCE` is `hub`.
+
+| Value | Behavior |
+|-------|----------|
+| `replace` (default) | The hub's copy is replaced with the fork's tip. The old tip is saved under `refs/hub/replaced/<branch>`. |
+| `report` | The hub's copy is left unchanged and the divergence is reported in the sync response (`patches_diverged`). |
+
+An unset variable or any unrecognised value is treated as `replace`.
+
+```
+afc vars create PATCH_DIVERGENCE_POLICY=report --workspace api-gateway
+```
+
 ### AUTO_REBUILD_AFTER_SYNC
 
 Controls whether a rebuild is automatically triggered when a sync detects
-that upstream has advanced.
+that upstream has advanced or a patch branch has changed (created,
+fast-forwarded or replaced for an active or conflict patch).
 
 | Value | Behavior |
 |-------|----------|
@@ -890,20 +924,49 @@ When a rebuild job runs, the hub executes the following steps:
 
 ### Sync algorithm
 
-The carry-patch sync differs from the standard workspace sync:
+The carry-patch sync differs from the standard workspace sync. There are two
+models, controlled by the `PATCH_BRANCH_SOURCE` workspace variable:
 
-1. **Resolve upstream credentials** and fetch from the `upstream` remote
-   (same refspecs and credentials as the rebuild).
+- **Hub model** (`PATCH_BRANCH_SOURCE=hub`, the default): patch branches are
+  read from the hub's local clone. The fork (`origin`) is never fetched.
+- **Origin model** (`PATCH_BRANCH_SOURCE=origin`): the fork is fetched during
+  sync and every registered patch branch is brought to the fork's tip. The
+  `PATCH_DIVERGENCE_POLICY` variable controls what happens when the hub's
+  copy and the fork's copy have diverged.
 
-2. **Detect upstream changes.** Compare the new upstream base
+> **Note:** Until `fork_push_control` ships, hub pushes to patch branches are
+> still accepted in `origin` mode. The next sync replaces them (with a backup
+> ref under `refs/hub/replaced/<branch>`) or reports them, according to the
+> divergence policy.
+
+The sync flow:
+
+1. **Read configuration.** Read `PATCH_BRANCH_SOURCE` and
+   `PATCH_DIVERGENCE_POLICY` workspace variables.
+
+2. **Resolve credentials.** If `PATCH_BRANCH_SOURCE` is `origin`, resolve
+   origin credentials before any fetch. Then resolve upstream credentials
+   and fetch from the `upstream` remote (same refspecs and credentials as
+   the rebuild).
+
+3. **Fetch origin (origin model only).** Fetch the `origin` remote with
+   pruning (stale tracking refs are removed).
+
+4. **Refresh patch branches (origin model only).** For each candidate patch
+   (status `active`, `conflict` or `disabled`, excluding the integration
+   branch), bring the local branch to the fork's tip using compare-and-swap
+   ref writes. Replaced branches are backed up under
+   `refs/hub/replaced/<branch>`.
+
+5. **Detect upstream changes.** Compare the new upstream base
    (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
-   with the stored `upstream_head_sha`. If unchanged, return immediately.
+   with the stored `upstream_head_sha`.
 
-3. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
+6. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
    the new upstream HEAD, set `force_push_detected` to true. This is
    informational and does not block the sync.
 
-4. **Detect merged patches.** For each `active` patch, apply the configured
+7. **Detect merged patches.** For each `active` patch, apply the configured
    detection strategy (see `SQUASH_MERGE_DETECTION`):
    - **Ancestry check:** `git merge-base --is-ancestor` to test whether the
      patch branch HEAD is an ancestor of the new upstream HEAD.
@@ -916,9 +979,13 @@ The carry-patch sync differs from the standard workspace sync:
    - If any signal detects the patch as merged, transition it to
      `merged_upstream`.
 
-5. **Auto-rebuild.** If `AUTO_REBUILD_AFTER_SYNC` is not `"false"`, enqueue
-   a rebuild job. If a rebuild job is already queued or running, the
-   duplicate is silently ignored.
+8. **Auto-rebuild.** If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` and
+   upstream advanced, a patch branch was moved, or at least one patch was
+   newly marked `merged_upstream`, enqueue a rebuild job. If a rebuild job
+   is already queued or running, the duplicate is silently ignored.
+
+9. **Write timestamps.** `last_sync_at` and `updated_at` are written on
+   every completed sync, whether or not anything advanced.
 
 ### Merge detection
 
