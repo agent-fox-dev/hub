@@ -145,14 +145,9 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	// 20-REQ-1.1: Read PATCH_BRANCH_SOURCE and PATCH_DIVERGENCE_POLICY
 	// through GetVariable on every sync, after the lock is taken and
 	// before any fetch.
-	patchSource := "hub"
+	patchSource := ParsePatchBranchSource(cfg.GetVariable, slug)
 	patchDivergencePolicy := "replace"
 	if cfg.GetVariable != nil {
-		val, _ := cfg.GetVariable("workspace", slug, "PATCH_BRANCH_SOURCE")
-		// 20-REQ-1.2 / 20-REQ-1.3: only the exact string "origin" selects origin.
-		if val == "origin" {
-			patchSource = "origin"
-		}
 		policyVal, _ := cfg.GetVariable("workspace", slug, "PATCH_DIVERGENCE_POLICY")
 		// 20-REQ-1.4 / 20-REQ-1.5: only the exact string "report" selects report.
 		if policyVal == "report" {
