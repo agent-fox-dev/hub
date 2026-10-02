@@ -142,11 +142,24 @@ type SyncAPIConfig struct {
 
 // CarryPatchSyncResponse extends the standard sync response with carry-patch fields.
 type CarryPatchSyncResponse struct {
-	PatchesMerged     []string `json:"patches_merged"`
-	RebuildTriggered  bool     `json:"rebuild_triggered"`
-	RebuildJobID      *string  `json:"rebuild_job_id,omitempty"`
-	ForcePushDetected bool     `json:"force_push_detected"`
-	OriginFetched     bool     `json:"origin_fetched"`
+	PatchesMerged     []string             `json:"patches_merged"`
+	RebuildTriggered  bool                 `json:"rebuild_triggered"`
+	RebuildJobID      *string              `json:"rebuild_job_id,omitempty"`
+	ForcePushDetected bool                 `json:"force_push_detected"`
+	OriginFetched     bool                 `json:"origin_fetched"`
+	PatchesSynced     []PatchSyncedElement `json:"patches_synced,omitempty"`
+	PatchesDiverged   []string             `json:"patches_diverged,omitempty"`
+}
+
+// PatchSyncedElement describes what happened to a single patch branch during
+// an origin-mode sync.
+type PatchSyncedElement struct {
+	BranchName  string `json:"branch_name"`
+	Action      string `json:"action"`
+	State       string `json:"state"`
+	LocalSHA    string `json:"local_sha,omitempty"`
+	OriginSHA   string `json:"origin_sha,omitempty"`
+	ReplacedSHA string `json:"replaced_sha,omitempty"`
 }
 
 // PatchStatusAPIConfig holds dependencies for patch-status endpoint.

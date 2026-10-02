@@ -506,6 +506,14 @@ func (m *mockPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID
 	return nil
 }
 
+func (m *mockPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// In the mock, we don't track patch statuses well enough to filter,
+	// so this is a no-op. Real tests use SQLPatchStore.
+	return nil
+}
+
 // ===========================================================================
 // HTTP Test Environment
 // ===========================================================================

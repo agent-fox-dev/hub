@@ -64,6 +64,15 @@ func (r *CarryPatchSyncResponse) asExtras() map[string]any {
 	if r.RebuildJobID != nil {
 		extras["rebuild_job_id"] = *r.RebuildJobID
 	}
+	// 20-REQ-6: patches_synced and patches_diverged are present only in
+	// origin mode. A nil slice means hub mode (omit), a non-nil empty
+	// slice means origin mode with no candidates (serialize as []).
+	if r.PatchesSynced != nil {
+		extras["patches_synced"] = r.PatchesSynced
+	}
+	if r.PatchesDiverged != nil {
+		extras["patches_diverged"] = r.PatchesDiverged
+	}
 	return extras
 }
 
@@ -240,6 +249,12 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		ForcePushDetected: forcePushDetected,
 		OriginFetched:     isOriginMode,
 	}
+	// 20-REQ-6: In origin mode, patches_synced and patches_diverged are
+	// always present (as [] when empty). In hub mode they are nil/omitted.
+	if isOriginMode {
+		resp.PatchesSynced = make([]PatchSyncedElement, 0)
+		resp.PatchesDiverged = make([]string, 0)
+	}
 
 	// ===========================================================
 	// 20-REQ-5.1: Patch refresh runs before the early return, so a
@@ -254,10 +269,24 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 
 	// 20-REQ-3 / 20-REQ-4: Patch-branch refresh (origin mode only).
 	patchAdvanced := false
+	var outcomes []PatchRefreshOutcome
 	if isOriginMode {
-		outcomes, advanced, refreshErr := refreshPatchBranches(ctx, git, repoPath, patches, integrationBranch, patchDivergencePolicy)
+		var advanced bool
+		var refreshErr error
+		outcomes, advanced, refreshErr = refreshPatchBranches(ctx, git, repoPath, patches, integrationBranch, patchDivergencePolicy)
 		patchAdvanced = advanced
-		_ = outcomes // outcomes are used by later tasks (response, persistence)
+
+		// 20-REQ-7.2: Persist per-branch outcomes produced so far, even on
+		// the ref-write failure path.
+		now := apikit.NowUTC()
+		persistPatchOutcomes(ctx, cfg.PatchStore, outcomes, now)
+
+		// 20-REQ-7.2: Clear origin columns of merged_upstream and deleted rows.
+		clearMergedDeletedOriginState(ctx, cfg.PatchStore, slug)
+
+		// 20-REQ-6: Build patches_synced and patches_diverged from outcomes.
+		resp.PatchesSynced = outcomesToSyncedElements(outcomes)
+		resp.PatchesDiverged = outcomesToDiverged(outcomes)
 
 		if refreshErr != nil {
 			// 20-REQ-4.3: A ref-write failure stops the refresh. Outcomes
@@ -550,4 +579,65 @@ func detectSquashMergeByPRNumber(ctx context.Context, git GitRunner, prNumber, o
 		}
 	}
 	return false
+}
+
+// ===========================================================================
+// Origin sync state persistence helpers
+// ===========================================================================
+
+// persistPatchOutcomes writes the origin sync state for each outcome through
+// the PatchStore. For missing_on_origin, origin_sha is NULL.
+func persistPatchOutcomes(ctx context.Context, store PatchStore, outcomes []PatchRefreshOutcome, syncedAt string) {
+	for _, o := range outcomes {
+		var sha *string
+		if o.OriginSHA != "" {
+			s := o.OriginSHA
+			sha = &s
+		}
+		_ = store.SetOriginSyncState(ctx, o.PatchID, o.State, sha, syncedAt)
+	}
+}
+
+// clearMergedDeletedOriginState clears the origin sync columns of patches
+// whose status is merged_upstream or deleted. Since ListPatches excludes
+// deleted rows, this function uses a direct DB query through the PatchStore's
+// ClearOriginSyncStateForMergedDeleted method.
+func clearMergedDeletedOriginState(ctx context.Context, store PatchStore, slug string) {
+	_ = store.ClearOriginSyncStateForMergedDeleted(ctx, slug)
+}
+
+// outcomesToSyncedElements converts PatchRefreshOutcome slices to the
+// response elements.
+func outcomesToSyncedElements(outcomes []PatchRefreshOutcome) []PatchSyncedElement {
+	elems := make([]PatchSyncedElement, 0, len(outcomes))
+	for _, o := range outcomes {
+		elem := PatchSyncedElement{
+			BranchName: o.BranchName,
+			Action:     o.Action,
+			State:      o.State,
+		}
+		if o.LocalSHA != "" {
+			elem.LocalSHA = o.LocalSHA
+		}
+		if o.OriginSHA != "" {
+			elem.OriginSHA = o.OriginSHA
+		}
+		if o.ReplacedSHA != "" {
+			elem.ReplacedSHA = o.ReplacedSHA
+		}
+		elems = append(elems, elem)
+	}
+	return elems
+}
+
+// outcomesToDiverged returns the branch names of outcomes whose state is
+// diverged.
+func outcomesToDiverged(outcomes []PatchRefreshOutcome) []string {
+	diverged := make([]string, 0)
+	for _, o := range outcomes {
+		if o.State == StateDiverged {
+			diverged = append(diverged, o.BranchName)
+		}
+	}
+	return diverged
 }

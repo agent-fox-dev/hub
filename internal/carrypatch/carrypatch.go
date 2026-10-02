@@ -177,6 +177,9 @@ type PatchStore interface {
 	ClearOriginSyncState(ctx context.Context, workspaceSlug string) error
 	// ClearOriginSyncStateForPatch clears the origin sync state for a single patch.
 	ClearOriginSyncStateForPatch(ctx context.Context, patchID string) error
+	// ClearOriginSyncStateForMergedDeleted clears the origin sync state for
+	// all patches of a workspace whose status is merged_upstream or deleted.
+	ClearOriginSyncStateForMergedDeleted(ctx context.Context, workspaceSlug string) error
 }
 
 // FetchFunc fetches from the upstream remote of the repository at repoPath

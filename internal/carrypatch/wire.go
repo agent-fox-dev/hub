@@ -283,6 +283,17 @@ func (s *SQLPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID 
 	return err
 }
 
+// ClearOriginSyncStateForMergedDeleted clears the origin sync state for all
+// patches of a workspace whose status is merged_upstream or deleted (20-REQ-7.2).
+func (s *SQLPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, workspaceSlug string) error {
+	_, err := s.DB.Exec(
+		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL
+		 WHERE workspace_slug = ? AND status IN ('merged_upstream', 'deleted')`,
+		workspaceSlug,
+	)
+	return err
+}
+
 // CompactPositions re-numbers the non-deleted patches of a workspace to
 // contiguous 1-based positions in their current order. Soft-deleted patches
 // keep a unique negative position (-rowid) and are excluded.
