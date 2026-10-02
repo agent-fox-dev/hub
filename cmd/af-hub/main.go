@@ -328,19 +328,20 @@ func main() {
 		PatchStore:    cpPatchStore,
 	})
 
-	// Register the branch-check hook so that POST /patches validates that the
-	// branch exists in the workspace git repository before inserting.
-	workspace.RegisterBranchCheckHook(func(ctx context.Context, slug, branchName string) (string, error) {
-		runner, err := cpGitRunnerFactory(filepath.Join(cfg.Workspace.Path, slug, "trunk"))
-		if err != nil {
-			return "", err
-		}
-		_, err = runner.Run(ctx, "rev-parse", "--verify", branchName)
-		if err != nil {
-			return "", workspace.NewBranchResolveError(workspace.BranchResolveKindNotFound, err)
-		}
-		return workspace.ResolutionLocal, nil
-	})
+	// Register the branch-check hook so that POST /patches validates and
+	// resolves the branch in the workspace git repository before inserting.
+	// The carrypatch resolver checks refs/heads/<name>, then
+	// refs/remotes/origin/<name>, and in origin mode fetches the branch
+	// from the fork (21-REQ-1, 21-REQ-9.3).
+	workspace.RegisterBranchCheckHook(carrypatch.NewBranchResolverHook(
+		cpGitRunnerFactory,
+		cfg.Workspace.Path,
+		store.GetVariableValue,
+		func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveCloneAuth(store, slug)
+		},
+		carrypatch.DefaultSingleBranchFetch(),
+	))
 
 	// Register the carry-patch sync hook so that POST /sync for carry_patch
 	// workspaces delegates to the carry-patch sync extension (16-REQ-5).
