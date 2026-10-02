@@ -807,6 +807,32 @@ push does not create a second one).
 
 The push hook runs asynchronously and does not affect the push response.
 
+### PUSH_PATCHES_TO_ORIGIN
+
+Enables forwarding or mirroring of hub pushes to registered patch branches.
+Only the exact string `"true"` enables it; any other value or an unset
+variable means disabled.
+
+| Value | Behavior |
+|-------|----------|
+| `true` | Enables forwarding (in `origin` mode) or mirroring (in `hub` mode) of pushes to registered patch branches to the fork. |
+| (unset or any other value) | Forwarding and mirroring are disabled (default). In `origin` mode, pushes to registered patch branches are rejected. |
+
+The behaviour depends on `PATCH_BRANCH_SOURCE`:
+
+- **Origin mode, disabled:** the push to a registered patch branch is rejected
+  with a message naming the fork.
+- **Origin mode, enabled:** the push is forwarded to the fork before the hub
+  writes its ref. If the forward fails, the hub ref is not written.
+- **Hub mode, enabled:** after the push is accepted, each updated registered
+  patch branch is force-pushed (mirrored) to the fork, best effort. A mirror
+  failure is logged and emitted as `hub.patch.mirror_failed` but does not fail
+  the push or the rebuild.
+
+```
+afc vars create PUSH_PATCHES_TO_ORIGIN=true --workspace api-gateway
+```
+
 ### SQUASH_MERGE_DETECTION
 
 Controls the merge detection strategy used during sync. By default, the hub
@@ -934,10 +960,14 @@ models, controlled by the `PATCH_BRANCH_SOURCE` workspace variable:
   `PATCH_DIVERGENCE_POLICY` variable controls what happens when the hub's
   copy and the fork's copy have diverged.
 
-> **Note:** Until `fork_push_control` ships, hub pushes to patch branches are
-> still accepted in `origin` mode. The next sync replaces them (with a backup
-> ref under `refs/hub/replaced/<branch>`) or reports them, according to the
-> divergence policy.
+> **Note (fork_push_control):** In `origin` mode, the hub's git server
+> enforces push control on registered patch branches. By default, a hub push
+> to a registered patch branch is rejected with a message naming the fork.
+> When `PUSH_PATCHES_TO_ORIGIN=true`, the push is forwarded to the fork
+> before the hub writes its ref; a forward failure rejects the update. In
+> `hub` mode with `PUSH_PATCHES_TO_ORIGIN=true`, accepted pushes are mirrored
+> (force-pushed) to the fork after the push, best effort. See the
+> `PUSH_PATCHES_TO_ORIGIN` variable in the Configuration section above.
 
 The sync flow:
 
