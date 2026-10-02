@@ -358,6 +358,34 @@ func DefaultFetchFunc() FetchFunc {
 	return upstream.Fetch
 }
 
+// DefaultFetchOriginFunc returns a FetchFunc that fetches the 'origin' remote
+// of the trunk repository with refspec +refs/heads/*:refs/remotes/origin/*,
+// no tags, and pruning of tracking refs whose branch no longer exists on the
+// fork (20-REQ-2.1). An already-up-to-date result is success.
+func DefaultFetchOriginFunc() FetchFunc {
+	return func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
+		repo, err := git.PlainOpen(repoPath)
+		if err != nil {
+			return fmt.Errorf("origin: open repository at %s: %w", repoPath, err)
+		}
+		remote, err := repo.Remote("origin")
+		if err != nil {
+			return fmt.Errorf("origin: remote %q: %w", "origin", err)
+		}
+		err = remote.FetchContext(ctx, &git.FetchOptions{
+			RemoteName: "origin",
+			RefSpecs:   []config.RefSpec{config.RefSpec("+refs/heads/*:refs/remotes/origin/*")},
+			Auth:       auth,
+			Tags:       git.NoTags,
+			Prune:      true,
+		})
+		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return fmt.Errorf("origin: fetch %q: %w", "origin", err)
+		}
+		return nil
+	}
+}
+
 // DefaultPushIntegrationFunc returns a PushIntegrationFunc that force-pushes
 // the integration branch to the origin remote via go-git, using the origin
 // credentials resolved by resolveOriginAuth.

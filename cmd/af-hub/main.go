@@ -353,6 +353,10 @@ func main() {
 			},
 			GetVariable: store.GetVariableValue,
 			PatchStore:  cpPatchStore,
+			FetchOrigin: carrypatch.DefaultFetchOriginFunc(),
+			ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
+				return workspace.ResolveCloneAuth(store, slug)
+			},
 		},
 	))
 

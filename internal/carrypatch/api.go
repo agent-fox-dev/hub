@@ -129,6 +129,15 @@ type SyncAPIConfig struct {
 	ResolveAuth   ResolveAuthFunc
 	GetVariable   GetVariableFunc
 	PatchStore    PatchStore
+
+	// FetchOrigin fetches the origin remote of the trunk repository.
+	// Used when PATCH_BRANCH_SOURCE=origin. Nil means origin fetch is
+	// not configured (20-REQ-2.6).
+	FetchOrigin FetchFunc
+
+	// ResolveOriginAuth resolves credentials for the origin remote.
+	// Used when PATCH_BRANCH_SOURCE=origin (20-REQ-2.1).
+	ResolveOriginAuth ResolveAuthFunc
 }
 
 // CarryPatchSyncResponse extends the standard sync response with carry-patch fields.
