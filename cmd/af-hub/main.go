@@ -365,12 +365,31 @@ func main() {
 		},
 	))
 
+	// Register the carry-patch pre-receive hook for push control (22-REQ-9.1).
+	// In origin mode it rejects or forwards hub pushes to registered patch
+	// branches; in hub mode it lets them through (mirroring is post-push).
+	cloneAuthResolver := func(slug string) (transport.AuthMethod, error) {
+		return workspace.ResolveCloneAuth(store, slug)
+	}
+	gitserver.RegisterPreReceiveHook(carrypatch.NewPreReceiveHook(carrypatch.PreReceiveHookDeps{
+		GetVariable:   store.GetVariableValue,
+		ResolveAuth:   cloneAuthResolver,
+		WorkspaceRoot: cfg.Workspace.Path,
+	}))
+
 	// Register the post-push hook for auto-rebuild on patch branch push (issue #14).
 	// When a push targets a branch registered as a patch in a carry_patch workspace,
 	// and AUTO_REBUILD_AFTER_PUSH is not "false", enqueue a rebuild job.
+	// In hub mode with PUSH_PATCHES_TO_ORIGIN=true, the hook also mirrors
+	// registered patch branches to the fork after the rebuild enqueue (22-REQ-6).
 	gitserver.RegisterPostPushHook(carrypatch.NewPostPushRebuildHook(
 		mergeQueue,
 		store.GetVariableValue,
+		carrypatch.PostPushMirrorDeps{
+			ResolveAuth:   cloneAuthResolver,
+			WorkspaceRoot: cfg.Workspace.Path,
+			Audit:         auditEmitter,
+		},
 	))
 
 	// Set the audit emitter for git server push events (18-REQ-5.2).

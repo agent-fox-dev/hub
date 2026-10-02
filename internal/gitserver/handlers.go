@@ -59,8 +59,8 @@ func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 	e.Pre(gitBodyPassthrough())
 
 	loader := NewWorkspaceLoader(db, workspaceRoot)
-	// Create the go-git server transport once at startup rather than
-	// per-request. The transport is stateless and thread-safe.
+	// Create the go-git server transport once at startup for info/refs and
+	// upload-pack. These are stateless and thread-safe.
 	srv := server.NewServer(loader)
 
 	g := e.Group("/git/:org/:slug.git",
@@ -71,7 +71,9 @@ func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 
 	g.GET("/info/refs", handleInfoRefs(db, srv))
 	g.POST("/git-upload-pack", handleUploadPack(db, srv))
-	g.POST("/git-receive-pack", handleReceivePack(db, srv, workspaceRoot))
+	// receive-pack uses a per-request loader so the storer can carry
+	// the request context and actor for the pre-receive hook.
+	g.POST("/git-receive-pack", handleReceivePack(db, loader, workspaceRoot))
 
 	return nil
 }
@@ -221,7 +223,10 @@ func handleUploadPack(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 // request from the HTTP body, executes the session, streams the report
 // status back to the client, and updates head_sha in the database after
 // a successful push.
-func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.HandlerFunc {
+//
+// A per-request loader is created so the storer carries the request context
+// and actor identity, which the pre-receive hook needs.
+func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := requireGitScope(c, "git-receive-pack"); err != nil {
 			return err
@@ -230,7 +235,13 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 		c.Response().Header().Set("Content-Type", "application/x-git-receive-pack-result")
 		c.Response().WriteHeader(http.StatusOK)
 
-		// Create receive-pack session from the pre-initialized transport.
+		// Create a per-request loader that binds the request context and
+		// actor into the storer for the pre-receive hook.
+		actor := apikit.GetAuthInfo(c)
+		reqLoader := baseLoader.forRequest(c.Request().Context(), actor)
+		srv := server.NewServer(reqLoader)
+
+		// Create receive-pack session from the per-request transport.
 		ep := endpointFromContext(c)
 		sess, err := srv.NewReceivePackSession(ep, nil)
 		if err != nil {
@@ -275,29 +286,52 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 
 		// Execute the receive-pack session.
 		rs, err := sess.ReceivePack(c.Request().Context(), req)
-		if err != nil {
+		if err != nil && rs == nil {
+			// A nil report status with an error means the session failed
+			// before producing any per-ref results (e.g. unpack error
+			// without report-status capability).
 			writeSessionError(c.Response(), err)
 			return nil
 		}
 
-		// Encode the report status to the response.
-		if err := rs.Encode(c.Response()); err != nil {
-			log.Printf("git receive-pack: failed to encode response: %v", err)
+		// Encode the report status to the response. When some refs were
+		// rejected by the pre-receive hook, ReceivePack returns a non-nil
+		// error alongside a valid report status. The report status carries
+		// per-ref ng messages that the git client shows as "remote rejected".
+		if rs != nil {
+			if encErr := rs.Encode(c.Response()); encErr != nil {
+				log.Printf("git receive-pack: failed to encode response: %v", encErr)
+			}
 		}
 
 		// Update head_sha after successful push (06-REQ-6.1).
 		// Errors are logged but do not fail the push response.
+		// 22-REQ-5.4: updateHeadSHA is called for every push, including
+		// rejected-only pushes. It reads the trunk HEAD and is harmless
+		// when nothing changed.
 		updateHeadSHA(db, slug, wsRoot)
 
-		// 18-REQ-5.1: Emit hub.git.push audit event after successful push.
-		emitGitPushAudit(c, slug, req.Commands)
+		// 22-REQ-5.1: Determine which ref updates were accepted.
+		// An update is accepted when its report-status entry is "ok",
+		// or, when no report status is available, unless the pre-receive
+		// hook rejected it.
+		var hookRejected map[plumbing.ReferenceName]bool
+		if reqLoader.lastStorer != nil {
+			hookRejected = reqLoader.lastStorer.RejectedRefs()
+		}
+		accepted := acceptedCommands(req.Commands, rs, hookRejected)
 
-		// Post-push hook: extract pushed branch names and invoke the
-		// registered hook for carry-patch auto-rebuild (issue #14).
-		if postPushHook != nil {
-			branches := extractPushedBranches(req.Commands)
-			if len(branches) > 0 {
-				go postPushHook(db, slug, branches)
+		// 22-REQ-5.2, 22-REQ-5.3: Only accepted commands drive audit
+		// and post-push hook. If no update was accepted, emit no event
+		// and run no hook.
+		if len(accepted) > 0 {
+			emitGitPushAudit(c, slug, accepted)
+
+			if postPushHook != nil {
+				branches := extractPushedBranches(accepted)
+				if len(branches) > 0 {
+					go postPushHook(db, slug, branches)
+				}
 			}
 		}
 

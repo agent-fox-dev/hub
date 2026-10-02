@@ -2388,6 +2388,47 @@ Admin tokens and API keys have implicit full access to all git operations.
 
 The `.git` suffix is required. Requests without it receive HTTP 404.
 
+### Pre-Receive Hook (Push Control)
+
+For carry-patch workspaces, the git server enforces a single-writer model for
+registered patch branches. A pre-receive hook runs after the pack is unpacked
+and before each ref is written. The behaviour depends on `PATCH_BRANCH_SOURCE`
+and `PUSH_PATCHES_TO_ORIGIN`:
+
+- **Reject mode** (`PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN` not
+  `"true"`): the update is rejected with the per-ref message
+  `branch is synced from origin; push to <git_url> instead` (or
+  `branch is synced from origin; delete it on the fork instead` for deletes).
+  `<git_url>` is the workspace's clone URL with any userinfo removed.
+- **Forward mode** (`PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN=true`):
+  the update is pushed to the fork's `origin` remote (non-force) before the
+  hub writes its ref. If the forward fails, the hub ref is not written and the
+  client sees `origin rejected push: <error>` or
+  `failed to resolve origin credentials` as a per-ref error. Deletes are
+  rejected as in reject mode.
+- **Mirror mode** (`PATCH_BRANCH_SOURCE=hub`, `PUSH_PATCHES_TO_ORIGIN=true`):
+  the push is accepted normally. After the push, each accepted registered
+  patch branch is force-pushed to the fork, best effort. A mirror failure
+  emits `hub.patch.mirror_failed` but does not fail the push or the rebuild.
+
+Push control applies only to ref updates where: the workspace mode is
+`carry_patch`, the ref is `refs/heads/<name>`, `<name>` matches a `patches`
+row whose status is not `deleted`, and `<name>` is not the integration branch.
+All other ref updates (unregistered branches, tags, standard workspaces) are
+unaffected.
+
+Rejections and forward failures appear as per-ref `ng` lines in the
+report-status, which `git push` shows as `remote rejected` with the message.
+Other refs in the same push are processed independently.
+
+### Accepted Refs Only
+
+Only ref updates that the hub actually accepted (report-status entry is `ok`)
+drive side effects. A rejected ref does not appear in the `hub.git.push` audit
+event's `refs_updated` list, does not trigger the post-push hook, and does not
+enqueue a rebuild. If no update was accepted, no audit event is emitted and no
+post-push hook runs.
+
 ### Post-Push Hooks
 
 After a successful push, the git server:
@@ -2395,9 +2436,14 @@ After a successful push, the git server:
 1. Updates `head_sha` in the database.
 2. Resets the working tree to match the new HEAD.
 3. If a post-push hook is registered (carry-patch auto-rebuild), checks whether
-   any pushed branch is a registered patch in a carry-patch workspace and, if
-   `AUTO_REBUILD_AFTER_PUSH` is not `"false"`, enqueues a rebuild job. The push
-   response is not affected -- the hook runs asynchronously.
+   any accepted pushed branch is a registered patch in a carry-patch workspace
+   and, if `AUTO_REBUILD_AFTER_PUSH` is not `"false"`, enqueues a rebuild job.
+   The push response is not affected -- the hook runs asynchronously.
+4. In hub mode with `PUSH_PATCHES_TO_ORIGIN=true`, each accepted registered
+   patch branch is force-pushed (mirrored) to the fork. The mirror runs after
+   the rebuild enqueue, whether or not a rebuild was enqueued. A mirror failure
+   emits `hub.patch.mirror_failed` and is logged but does not fail the push or
+   the rebuild.
 
 ---
 
@@ -2457,6 +2503,11 @@ Git push data transfer. After a successful push, updates `head_sha` in the
 database and resets the working tree to match the new HEAD. If the pushed
 branch matches a registered patch in a carry-patch workspace, a rebuild may be
 auto-triggered (see Post-Push Hooks above).
+
+For carry-patch workspaces, a pre-receive hook may reject or forward updates
+to registered patch branches depending on `PATCH_BRANCH_SOURCE` and
+`PUSH_PATCHES_TO_ORIGIN` (see Pre-Receive Hook above). Only accepted ref
+updates drive the `hub.git.push` audit event and the post-push hook.
 
 **Authentication:** HTTP Basic. PATs require `git:write` scope.
 
@@ -3240,6 +3291,7 @@ behavior. They can be set via the
 | `AUTO_REBUILD_AFTER_PUSH` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a git push to a registered patch branch automatically enqueues a rebuild job. |
 | `PATCH_BRANCH_SOURCE` | `"hub"`, `"origin"` | `"hub"` | Selects the authority for patch branches. `"hub"` (default): patch branches are read from the hub's local clone. `"origin"`: the fork is fetched during sync and every registered patch branch is brought to the fork's tip. Read on every sync; a change takes effect on the next sync without a restart. |
 | `PATCH_DIVERGENCE_POLICY` | `"replace"`, `"report"` | `"replace"` | Controls what happens when the hub's copy and the fork's copy of a patch branch have diverged. `"replace"` (default): the hub's copy is replaced with the fork's tip (the old tip is saved under `refs/hub/replaced/<branch>`). `"report"`: the hub's copy is left unchanged and the divergence is reported. Ignored when `PATCH_BRANCH_SOURCE` is `"hub"`. |
+| `PUSH_PATCHES_TO_ORIGIN` | `"true"` | (disabled) | Enables forwarding or mirroring of hub pushes to registered patch branches. Only the exact string `"true"` enables it. In `origin` mode (`PATCH_BRANCH_SOURCE=origin`): when enabled, a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when disabled, the push is rejected. In `hub` mode: when enabled, accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
 | `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
 | `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
 
@@ -3258,6 +3310,7 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.rebuild.followup` | `rebuild` | A follow-up rebuild is enqueued because a patch tip or upstream base moved during a rebuild run | `submitted_by`, workspace slug |
 | `hub.patch.sync` | `patch` | A carry-patch sync completes in `origin` mode | `origin_fetched` (bool), `created` (branch names), `fast_forwarded` (branch names), `replaced` (branch names), `diverged` (branch names), `missing_on_origin` (branch names) |
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch) | `branch_name`, `replaced_sha`, `origin_sha` |
+| `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
 
 A nil audit emitter skips emission. An emit error is logged without affecting
 the sync. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events are

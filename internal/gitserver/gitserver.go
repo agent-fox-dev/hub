@@ -4,13 +4,16 @@
 package gitserver
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/txsvc/apikit"
 )
 
 // WorkspaceLoader implements the go-git server.Loader interface,
@@ -22,12 +25,36 @@ import (
 type WorkspaceLoader struct {
 	db            *sql.DB
 	workspaceRoot string
+
+	// Per-request fields, set by the receive-pack handler before the
+	// go-git server calls Load. These are bound into the thinPackSafeStorer
+	// so the pre-receive hook has access to request context and actor.
+	reqCtx   context.Context
+	reqActor *apikit.AuthInfo
+
+	// lastStorer holds the most recent thinPackSafeStorer created by Load.
+	// Used by the receive-pack handler to retrieve hook-rejected refs after
+	// the session completes.
+	lastStorer *thinPackSafeStorer
 }
 
 // NewWorkspaceLoader creates a new WorkspaceLoader that resolves
 // workspace repositories under the given workspaceRoot directory.
 func NewWorkspaceLoader(db *sql.DB, workspaceRoot string) *WorkspaceLoader {
 	return &WorkspaceLoader{db: db, workspaceRoot: workspaceRoot}
+}
+
+// forRequest returns a shallow copy of the loader with per-request context
+// and actor bound. The returned loader is used for a single receive-pack
+// session so the storer it creates can consult the pre-receive hook with
+// the correct request context and actor identity.
+func (l *WorkspaceLoader) forRequest(ctx context.Context, actor *apikit.AuthInfo) *WorkspaceLoader {
+	return &WorkspaceLoader{
+		db:            l.db,
+		workspaceRoot: l.workspaceRoot,
+		reqCtx:        ctx,
+		reqActor:      actor,
+	}
 }
 
 // Load resolves a transport.Endpoint to a storer.Storer for the
@@ -71,12 +98,137 @@ func (l *WorkspaceLoader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	// so REF_DELTA objects in thin packs (sent by git push) fail with
 	// "reference delta not found". The wrapper forces the parser-with-
 	// storage path, which can resolve deltas against existing objects.
-	return &thinPackSafeStorer{repo.Storer}, nil
+	wrapper := &thinPackSafeStorer{
+		Storer: repo.Storer,
+		ctx:    l.reqCtx,
+		db:     l.db,
+		slug:   slug,
+		actor:  l.reqActor,
+	}
+	l.lastStorer = wrapper
+	return wrapper, nil
 }
 
 // thinPackSafeStorer wraps a storer.Storer without implementing
 // storer.PackfileWriter, forcing go-git to use the parser path
 // that can resolve thin pack deltas against the existing object store.
+//
+// When a pre-receive hook is registered, it intercepts SetReference and
+// RemoveReference to consult the hook before delegating to the underlying
+// storer. A hook error is returned without modifying the underlying storer,
+// and go-git records it as a per-ref status in the report.
 type thinPackSafeStorer struct {
 	storer.Storer
+
+	// Per-request fields for the pre-receive hook.
+	ctx   context.Context
+	db    *sql.DB
+	slug  string
+	actor *apikit.AuthInfo
+
+	// rejectedRefs tracks ref names rejected by the pre-receive hook.
+	// Used by the accepted-refs logic in a later task.
+	rejectedRefs map[plumbing.ReferenceName]bool
+}
+
+// SetReference intercepts reference writes to consult the pre-receive hook.
+// If the hook rejects the update, the error is returned and the underlying
+// storer is not modified. go-git's server records this error as the per-ref
+// status in the report.
+func (s *thinPackSafeStorer) SetReference(ref *plumbing.Reference) error {
+	hook := preReceiveHook
+	if hook != nil {
+		// Determine the old hash: look up the current value of the ref.
+		oldHash := plumbing.ZeroHash
+		if existing, err := s.Storer.Reference(ref.Name()); err == nil {
+			oldHash = existing.Hash()
+		}
+
+		ctx := s.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		upd := RefUpdate{
+			Name: ref.Name(),
+			Old:  oldHash,
+			New:  ref.Hash(),
+		}
+		if err := hook(ctx, s.db, s.slug, s.actor, upd); err != nil {
+			s.markRejected(ref.Name())
+			return err
+		}
+	}
+	return s.Storer.SetReference(ref)
+}
+
+// CheckAndSetReference intercepts compare-and-swap reference writes to
+// consult the pre-receive hook. Although go-git's server does not currently
+// call this method, we intercept it for completeness.
+func (s *thinPackSafeStorer) CheckAndSetReference(new, old *plumbing.Reference) error {
+	hook := preReceiveHook
+	if hook != nil {
+		oldHash := plumbing.ZeroHash
+		if old != nil {
+			oldHash = old.Hash()
+		}
+
+		ctx := s.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		upd := RefUpdate{
+			Name: new.Name(),
+			Old:  oldHash,
+			New:  new.Hash(),
+		}
+		if err := hook(ctx, s.db, s.slug, s.actor, upd); err != nil {
+			s.markRejected(new.Name())
+			return err
+		}
+	}
+	return s.Storer.CheckAndSetReference(new, old)
+}
+
+// RemoveReference intercepts reference removals to consult the pre-receive
+// hook. If the hook rejects the removal, the error is returned and the
+// underlying storer is not modified.
+func (s *thinPackSafeStorer) RemoveReference(name plumbing.ReferenceName) error {
+	hook := preReceiveHook
+	if hook != nil {
+		oldHash := plumbing.ZeroHash
+		if existing, err := s.Storer.Reference(name); err == nil {
+			oldHash = existing.Hash()
+		}
+
+		ctx := s.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		upd := RefUpdate{
+			Name: name,
+			Old:  oldHash,
+			New:  plumbing.ZeroHash,
+		}
+		if err := hook(ctx, s.db, s.slug, s.actor, upd); err != nil {
+			s.markRejected(name)
+			return err
+		}
+	}
+	return s.Storer.RemoveReference(name)
+}
+
+// markRejected records a ref name as rejected by the pre-receive hook.
+func (s *thinPackSafeStorer) markRejected(name plumbing.ReferenceName) {
+	if s.rejectedRefs == nil {
+		s.rejectedRefs = make(map[plumbing.ReferenceName]bool)
+	}
+	s.rejectedRefs[name] = true
+}
+
+// RejectedRefs returns the set of ref names rejected by the pre-receive hook.
+func (s *thinPackSafeStorer) RejectedRefs() map[plumbing.ReferenceName]bool {
+	return s.rejectedRefs
 }
