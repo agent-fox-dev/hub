@@ -340,7 +340,7 @@
       "done_when": [
         "`make test` and `make lint` pass with all five smoke tests green against real git repositories"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
