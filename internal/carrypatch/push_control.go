@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"path/filepath"
 	"strings"
+	"time"
 
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitserver"
@@ -16,8 +21,9 @@ import (
 
 // PreReceiveHookDeps holds the dependencies for the carry-patch pre-receive hook.
 type PreReceiveHookDeps struct {
-	GetVariable GetVariableFunc
-	ResolveAuth ResolveAuthFunc
+	GetVariable   GetVariableFunc
+	ResolveAuth   ResolveAuthFunc
+	WorkspaceRoot string
 }
 
 // NewPreReceiveHook returns a gitserver.PreReceiveHookFunc that enforces
@@ -37,8 +43,26 @@ func newPreReceiveHookWithLogger(deps PreReceiveHookDeps, logger *slog.Logger) g
 	return newPreReceiveHookInternal(deps, logger)
 }
 
+// PushContextFunc is a seam for testing: it wraps repo.PushContext.
+type PushContextFunc func(ctx context.Context, repo *git.Repository, opts *git.PushOptions) error
+
+// defaultPushContext calls repo.PushContext directly.
+func defaultPushContext(ctx context.Context, repo *git.Repository, opts *git.PushOptions) error {
+	return repo.PushContext(ctx, opts)
+}
+
+// newPreReceiveHookInternalWithPush is the shared implementation with a push seam.
+func newPreReceiveHookInternalWithPush(deps PreReceiveHookDeps, logger *slog.Logger, pushFn PushContextFunc) gitserver.PreReceiveHookFunc {
+	return newPreReceiveHookCore(deps, logger, pushFn)
+}
+
 // newPreReceiveHookInternal is the shared implementation.
 func newPreReceiveHookInternal(deps PreReceiveHookDeps, logger *slog.Logger) gitserver.PreReceiveHookFunc {
+	return newPreReceiveHookCore(deps, logger, defaultPushContext)
+}
+
+// newPreReceiveHookCore is the core implementation.
+func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn PushContextFunc) gitserver.PreReceiveHookFunc {
 	return func(ctx context.Context, db *sql.DB, slug string, actor *apikit.AuthInfo, upd gitserver.RefUpdate) error {
 		// Only refs/heads/<name> are candidates for push control.
 		refName := string(upd.Name)
@@ -116,12 +140,11 @@ func newPreReceiveHookInternal(deps PreReceiveHookDeps, logger *slog.Logger) git
 			return fmt.Errorf("%s", msg)
 		}
 
-		// Forward mode (22-REQ-4): forward the push to the fork.
-		// This is a placeholder for task 5; for now reject with a
-		// forward-mode message so tests can distinguish modes.
-		// Task 5 will implement the actual forwarding logic.
+		// Forward mode (22-REQ-4): forward the push to the fork
+		// before the hub writes its ref.
 
-		// Deletes in forward mode are rejected (22-REQ-4 last paragraph).
+		// 22-REQ-4.7: Deletes in forward mode are rejected without
+		// contacting origin.
 		if upd.New == plumbing.ZeroHash {
 			logger.Info("push control: rejecting delete of registered patch branch in forward mode",
 				"slug", slug,
@@ -131,8 +154,34 @@ func newPreReceiveHookInternal(deps PreReceiveHookDeps, logger *slog.Logger) git
 			return fmt.Errorf("branch is synced from origin; delete it on the fork instead")
 		}
 
-		// For now, forward mode is a placeholder that returns nil.
-		// Task 5 will implement the actual forwarding.
+		// 22-REQ-4.3: Resolve origin credentials.
+		if deps.ResolveAuth == nil {
+			// 22-REQ-4.4: No resolver configured.
+			return fmt.Errorf("failed to resolve origin credentials")
+		}
+		auth, authErr := deps.ResolveAuth(slug)
+		if authErr != nil {
+			// 22-REQ-4.4: Credential resolution failure rejects
+			// without contacting origin.
+			return fmt.Errorf("failed to resolve origin credentials")
+		}
+
+		// 22-REQ-4.1, 22-REQ-4.2: Forward the create or update to
+		// the fork via a temporary ref.
+		if fwdErr := forwardToOrigin(ctx, deps.WorkspaceRoot, slug, branchName, upd.New, auth, logger, pushFn); fwdErr != nil {
+			// 22-REQ-4.5, 22-REQ-8.2: Forward failure rejects the
+			// update. Never accept silently.
+			safeErr := stripUserinfo(fwdErr.Error())
+			logger.Warn("push control: forward to origin failed",
+				"slug", slug,
+				"branch", branchName,
+				"user", actorID,
+				"error", safeErr,
+			)
+			return fmt.Errorf("origin rejected push: %s", safeErr)
+		}
+
+		// Forward succeeded — let the hub write its ref.
 		return nil
 	}
 }
@@ -204,6 +253,65 @@ func stripUserinfo(rawURL string) string {
 	}
 	u.User = nil
 	return u.String()
+}
+
+// forwardTimeout is the maximum time allowed for a forward push to origin.
+const forwardTimeout = 120 * time.Second
+
+// forwardToOrigin pushes the commit identified by newHash to the fork's
+// refs/heads/<branchName> via the trunk's origin remote. It uses a temporary
+// ref refs/hub/forward/<branchName> to make the unreferenced commit
+// resolvable by go-git's push, and removes the temporary ref on both
+// success and failure.
+func forwardToOrigin(
+	ctx context.Context,
+	workspaceRoot, slug, branchName string,
+	newHash plumbing.Hash,
+	auth transport.AuthMethod,
+	logger *slog.Logger,
+	pushFn PushContextFunc,
+) error {
+	trunkPath := filepath.Join(workspaceRoot, slug, "trunk")
+	repo, err := git.PlainOpen(trunkPath)
+	if err != nil {
+		return fmt.Errorf("open trunk: %w", err)
+	}
+
+	// 22-REQ-4.2: Create a temporary ref so the commit is resolvable.
+	tempRefName := plumbing.ReferenceName("refs/hub/forward/" + branchName)
+	tempRef := plumbing.NewHashReference(tempRefName, newHash)
+	if err := repo.Storer.SetReference(tempRef); err != nil {
+		return fmt.Errorf("create temp ref: %w", err)
+	}
+	// Always clean up the temporary ref.
+	defer func() {
+		if rmErr := repo.Storer.RemoveReference(tempRefName); rmErr != nil {
+			logger.Warn("push control: failed to remove temp ref",
+				"ref", string(tempRefName),
+				"error", rmErr.Error(),
+			)
+		}
+	}()
+
+	// 22-REQ-4.3: Bound the forward by a 120 second timeout.
+	pushCtx, cancel := context.WithTimeout(ctx, forwardTimeout)
+	defer cancel()
+
+	// 22-REQ-4.1: Push with Force: false and no '+' in the refspec.
+	refspec := config.RefSpec(fmt.Sprintf("%s:refs/heads/%s", tempRefName, branchName))
+	opts := &git.PushOptions{
+		RemoteName: "origin",
+		RefSpecs:   []config.RefSpec{refspec},
+		Auth:       auth,
+		Force:      false,
+	}
+
+	pushErr := pushFn(pushCtx, repo, opts)
+	if pushErr != nil && pushErr != git.NoErrAlreadyUpToDate {
+		return pushErr
+	}
+
+	return nil
 }
 
 // zeroHashStr is the zero hash as a string for comparisons.
