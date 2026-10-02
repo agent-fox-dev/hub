@@ -330,13 +330,16 @@ func main() {
 
 	// Register the branch-check hook so that POST /patches validates that the
 	// branch exists in the workspace git repository before inserting.
-	workspace.RegisterBranchCheckHook(func(slug, branchName string) error {
+	workspace.RegisterBranchCheckHook(func(ctx context.Context, slug, branchName string) (string, error) {
 		runner, err := cpGitRunnerFactory(filepath.Join(cfg.Workspace.Path, slug, "trunk"))
 		if err != nil {
-			return err
+			return "", err
 		}
-		_, err = runner.Run(context.Background(), "rev-parse", "--verify", branchName)
-		return err
+		_, err = runner.Run(ctx, "rev-parse", "--verify", branchName)
+		if err != nil {
+			return "", workspace.NewBranchResolveError(workspace.BranchResolveKindNotFound, err)
+		}
+		return workspace.ResolutionLocal, nil
 	})
 
 	// Register the carry-patch sync hook so that POST /sync for carry_patch

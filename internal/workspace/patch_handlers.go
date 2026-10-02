@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -21,6 +22,43 @@ var validPatchStatuses = map[string]bool{
 	"conflict":        true,
 	"disabled":        true,
 	"deleted":         true,
+}
+
+// mapBranchResolveError maps a classified resolver error to the appropriate
+// HTTP response. The batchIndex is -1 for single-patch requests; for batch
+// requests it is the zero-based index of the failing element (only the 400
+// message gets the "patch[i]: " prefix).
+func mapBranchResolveError(c echo.Context, err error, slug, branch string, batchIndex int) error {
+	kind, classified := classifyBranchResolveError(err)
+	switch {
+	case classified && kind == BranchResolveKindNotFound:
+		msg := "branch does not exist in repository or on origin"
+		if batchIndex >= 0 {
+			msg = fmt.Sprintf("patch[%d]: %s", batchIndex, msg)
+		}
+		return respondError(c, http.StatusBadRequest, msg)
+
+	case classified && kind == BranchResolveKindOriginFetchFailed:
+		return respondErrorWithType(c, http.StatusBadGateway,
+			"origin fetch failed", "origin_fetch_failed")
+
+	case classified && kind == BranchResolveKindOriginCredentials:
+		return respondError(c, http.StatusBadGateway,
+			"failed to resolve origin credentials")
+
+	case classified && kind == BranchResolveKindWorkspaceBusy:
+		return respondErrorWithType(c, http.StatusConflict,
+			"another operation is running on this workspace; retry later", "workspace_busy")
+
+	default:
+		// Unclassified or unknown kind: internal error.
+		slog.Error("branch resolver: internal error",
+			"slug", slug,
+			"branch", branch,
+			"error", err.Error(),
+		)
+		return respondError(c, http.StatusInternalServerError, "internal server error")
+	}
 }
 
 // requirePatchReadScope checks that the caller has patches:read scope.
@@ -143,9 +181,16 @@ func handleAddPatchSingle(c echo.Context, db *sql.DB, slug string, ws *Workspace
 
 	// Validate branch existence in the git repo unless skip_branch_check is set.
 	skipCheck := req.SkipBranchCheck != nil && *req.SkipBranchCheck
-	if !skipCheck && branchCheckHook != nil {
-		if err := branchCheckHook(slug, req.BranchName); err != nil {
-			return respondError(c, http.StatusBadRequest, "branch does not exist in repository")
+	var branchResolution string
+	if branchCheckHook != nil {
+		if skipCheck {
+			branchResolution = ResolutionSkipped
+		} else {
+			method, err := branchCheckHook(c.Request().Context(), slug, req.BranchName)
+			if err != nil {
+				return mapBranchResolveError(c, err, slug, req.BranchName, -1)
+			}
+			branchResolution = method
 		}
 	}
 
@@ -191,16 +236,21 @@ func handleAddPatchSingle(c echo.Context, db *sql.DB, slug string, ws *Workspace
 	}
 
 	// 18-REQ-3.1: Emit hub.patch.create audit event.
+	auditMeta := map[string]any{
+		"branch_name": p.BranchName,
+		"position":    p.Position,
+	}
+	// 21-REQ-8: Add branch_resolution when a hook is registered.
+	if branchResolution != "" {
+		auditMeta["branch_resolution"] = branchResolution
+	}
 	emitHubAudit(c, audit.HubEvent{
 		EventType:    "hub.patch.create",
 		ResourceType: "patch",
 		ResourceID:   p.BranchName,
 		Action:       "create",
 		Workspace:    slug,
-		Metadata: map[string]any{
-			"branch_name": p.BranchName,
-			"position":    p.Position,
-		},
+		Metadata:     auditMeta,
 	})
 
 	return c.JSON(http.StatusCreated, patchResponse(p))
@@ -218,7 +268,7 @@ func handleAddPatchBatch(c echo.Context, db *sql.DB, slug string, ws *Workspace,
 		return respondError(c, http.StatusBadRequest, "batch request must contain at least one patch")
 	}
 
-	// Validate each patch in the batch.
+	// Validate each patch in the batch: name, position, integration branch.
 	for i, req := range reqs {
 		if req.BranchName == "" {
 			return respondError(c, http.StatusBadRequest, fmt.Sprintf("patch[%d]: branch_name is required", i))
@@ -232,11 +282,15 @@ func handleAddPatchBatch(c echo.Context, db *sql.DB, slug string, ws *Workspace,
 		if req.Position != nil && *req.Position < 1 {
 			return respondError(c, http.StatusBadRequest, fmt.Sprintf("patch[%d]: position must be >= 1", i))
 		}
-		// Validate branch existence unless skip_branch_check is set.
+	}
+
+	// 21-REQ-6.1: Resolve all elements in array order before any insert.
+	for i, req := range reqs {
 		skipCheck := req.SkipBranchCheck != nil && *req.SkipBranchCheck
 		if !skipCheck && branchCheckHook != nil {
-			if err := branchCheckHook(slug, req.BranchName); err != nil {
-				return respondError(c, http.StatusBadRequest, fmt.Sprintf("patch[%d]: branch does not exist in repository", i))
+			_, err := branchCheckHook(c.Request().Context(), slug, req.BranchName)
+			if err != nil {
+				return mapBranchResolveError(c, err, slug, req.BranchName, i)
 			}
 		}
 	}
