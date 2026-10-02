@@ -348,7 +348,7 @@
       "done_when": [
         "`make test` and `make lint` pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
