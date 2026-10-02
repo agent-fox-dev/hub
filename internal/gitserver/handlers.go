@@ -306,17 +306,32 @@ func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) e
 
 		// Update head_sha after successful push (06-REQ-6.1).
 		// Errors are logged but do not fail the push response.
+		// 22-REQ-5.4: updateHeadSHA is called for every push, including
+		// rejected-only pushes. It reads the trunk HEAD and is harmless
+		// when nothing changed.
 		updateHeadSHA(db, slug, wsRoot)
 
-		// 18-REQ-5.1: Emit hub.git.push audit event after successful push.
-		emitGitPushAudit(c, slug, req.Commands)
+		// 22-REQ-5.1: Determine which ref updates were accepted.
+		// An update is accepted when its report-status entry is "ok",
+		// or, when no report status is available, unless the pre-receive
+		// hook rejected it.
+		var hookRejected map[plumbing.ReferenceName]bool
+		if reqLoader.lastStorer != nil {
+			hookRejected = reqLoader.lastStorer.RejectedRefs()
+		}
+		accepted := acceptedCommands(req.Commands, rs, hookRejected)
 
-		// Post-push hook: extract pushed branch names and invoke the
-		// registered hook for carry-patch auto-rebuild (issue #14).
-		if postPushHook != nil {
-			branches := extractPushedBranches(req.Commands)
-			if len(branches) > 0 {
-				go postPushHook(db, slug, branches)
+		// 22-REQ-5.2, 22-REQ-5.3: Only accepted commands drive audit
+		// and post-push hook. If no update was accepted, emit no event
+		// and run no hook.
+		if len(accepted) > 0 {
+			emitGitPushAudit(c, slug, accepted)
+
+			if postPushHook != nil {
+				branches := extractPushedBranches(accepted)
+				if len(branches) > 0 {
+					go postPushHook(db, slug, branches)
+				}
 			}
 		}
 

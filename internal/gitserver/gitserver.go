@@ -31,6 +31,11 @@ type WorkspaceLoader struct {
 	// so the pre-receive hook has access to request context and actor.
 	reqCtx   context.Context
 	reqActor *apikit.AuthInfo
+
+	// lastStorer holds the most recent thinPackSafeStorer created by Load.
+	// Used by the receive-pack handler to retrieve hook-rejected refs after
+	// the session completes.
+	lastStorer *thinPackSafeStorer
 }
 
 // NewWorkspaceLoader creates a new WorkspaceLoader that resolves
@@ -100,6 +105,7 @@ func (l *WorkspaceLoader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 		slug:   slug,
 		actor:  l.reqActor,
 	}
+	l.lastStorer = wrapper
 	return wrapper, nil
 }
 
