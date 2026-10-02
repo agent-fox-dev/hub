@@ -59,8 +59,8 @@ func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 	e.Pre(gitBodyPassthrough())
 
 	loader := NewWorkspaceLoader(db, workspaceRoot)
-	// Create the go-git server transport once at startup rather than
-	// per-request. The transport is stateless and thread-safe.
+	// Create the go-git server transport once at startup for info/refs and
+	// upload-pack. These are stateless and thread-safe.
 	srv := server.NewServer(loader)
 
 	g := e.Group("/git/:org/:slug.git",
@@ -71,7 +71,9 @@ func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
 
 	g.GET("/info/refs", handleInfoRefs(db, srv))
 	g.POST("/git-upload-pack", handleUploadPack(db, srv))
-	g.POST("/git-receive-pack", handleReceivePack(db, srv, workspaceRoot))
+	// receive-pack uses a per-request loader so the storer can carry
+	// the request context and actor for the pre-receive hook.
+	g.POST("/git-receive-pack", handleReceivePack(db, loader, workspaceRoot))
 
 	return nil
 }
@@ -221,7 +223,10 @@ func handleUploadPack(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 // request from the HTTP body, executes the session, streams the report
 // status back to the client, and updates head_sha in the database after
 // a successful push.
-func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.HandlerFunc {
+//
+// A per-request loader is created so the storer carries the request context
+// and actor identity, which the pre-receive hook needs.
+func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := requireGitScope(c, "git-receive-pack"); err != nil {
 			return err
@@ -230,7 +235,13 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 		c.Response().Header().Set("Content-Type", "application/x-git-receive-pack-result")
 		c.Response().WriteHeader(http.StatusOK)
 
-		// Create receive-pack session from the pre-initialized transport.
+		// Create a per-request loader that binds the request context and
+		// actor into the storer for the pre-receive hook.
+		actor := apikit.GetAuthInfo(c)
+		reqLoader := baseLoader.forRequest(c.Request().Context(), actor)
+		srv := server.NewServer(reqLoader)
+
+		// Create receive-pack session from the per-request transport.
 		ep := endpointFromContext(c)
 		sess, err := srv.NewReceivePackSession(ep, nil)
 		if err != nil {
@@ -275,14 +286,22 @@ func handleReceivePack(db *sql.DB, srv transport.Transport, wsRoot string) echo.
 
 		// Execute the receive-pack session.
 		rs, err := sess.ReceivePack(c.Request().Context(), req)
-		if err != nil {
+		if err != nil && rs == nil {
+			// A nil report status with an error means the session failed
+			// before producing any per-ref results (e.g. unpack error
+			// without report-status capability).
 			writeSessionError(c.Response(), err)
 			return nil
 		}
 
-		// Encode the report status to the response.
-		if err := rs.Encode(c.Response()); err != nil {
-			log.Printf("git receive-pack: failed to encode response: %v", err)
+		// Encode the report status to the response. When some refs were
+		// rejected by the pre-receive hook, ReceivePack returns a non-nil
+		// error alongside a valid report status. The report status carries
+		// per-ref ng messages that the git client shows as "remote rejected".
+		if rs != nil {
+			if encErr := rs.Encode(c.Response()); encErr != nil {
+				log.Printf("git receive-pack: failed to encode response: %v", encErr)
+			}
 		}
 
 		// Update head_sha after successful push (06-REQ-6.1).

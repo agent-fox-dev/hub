@@ -61,7 +61,7 @@
         "internal/gitserver/prereceive_test.go",
         "internal/gitserver/testhelpers_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
