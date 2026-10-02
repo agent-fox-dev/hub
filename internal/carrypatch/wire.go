@@ -369,6 +369,46 @@ func DefaultFetchFunc() FetchFunc {
 	return upstream.Fetch
 }
 
+// DefaultSingleBranchFetch returns a SingleBranchFetchFunc that fetches a
+// single branch from the origin remote of the trunk repository with:
+//   - the single refspec +refs/heads/<name>:refs/remotes/origin/<name>
+//   - no tags
+//   - no pruning
+//   - credentials from the provided auth parameter
+//
+// An already-up-to-date result is success. If the fork does not have the
+// branch, the fetch returns ErrBranchNotOnOrigin (classified from
+// git.NoMatchingRefSpecError). Any other fetch failure is returned as-is.
+func DefaultSingleBranchFetch() SingleBranchFetchFunc {
+	return func(ctx context.Context, repoPath, branch string, auth transport.AuthMethod) error {
+		repo, err := git.PlainOpen(repoPath)
+		if err != nil {
+			return fmt.Errorf("origin: open repository at %s: %w", repoPath, err)
+		}
+		remote, err := repo.Remote("origin")
+		if err != nil {
+			return fmt.Errorf("origin: remote %q: %w", "origin", err)
+		}
+		refspec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch))
+		err = remote.FetchContext(ctx, &git.FetchOptions{
+			RemoteName: "origin",
+			RefSpecs:   []config.RefSpec{refspec},
+			Auth:       auth,
+			Tags:       git.NoTags,
+		})
+		if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return nil
+		}
+		// 21-REQ-3.6: Classify "branch not found on origin" from a typed
+		// go-git error, never from error text alone.
+		var noMatch git.NoMatchingRefSpecError
+		if errors.As(err, &noMatch) {
+			return ErrBranchNotOnOrigin
+		}
+		return err
+	}
+}
+
 // DefaultFetchOriginFunc returns a FetchFunc that fetches the 'origin' remote
 // of the trunk repository with refspec +refs/heads/*:refs/remotes/origin/*,
 // no tags, and pruning of tracking refs whose branch no longer exists on the

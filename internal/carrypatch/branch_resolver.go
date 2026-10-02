@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/hub/internal/wslock"
@@ -208,17 +209,62 @@ func createLocalBranch(ctx context.Context, runner GitRunner, slug, branch, sha,
 	return method, nil
 }
 
+// ErrBranchNotOnOrigin is a sentinel error returned by SingleBranchFetchFunc
+// when the fork does not have the requested branch. The fetch function must
+// return this (not a wrapped version) so the resolver can classify the failure
+// as "branch not found" rather than "origin fetch failed".
+var ErrBranchNotOnOrigin = errors.New("branch not found on origin")
+
 // resolveOriginFetch fetches a single branch from the fork and, if the
 // tracking ref now exists, creates the local branch. This is step 3 of the
 // resolution order, only called in origin mode.
 //
-// Task 4 fills in the full implementation. For now, this returns not_found
-// so that TS-21-4 passes (hub mode never reaches here).
+// The caller must hold the workspace lock before calling this function.
 func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, repoPath string, resolveAuth ResolveAuthFunc, fetch SingleBranchFetchFunc) (string, error) {
-	// Task 4 will implement the full origin fetch logic here.
-	// For now, return not_found.
-	return "", newResolveError(branchResolveKindNotFound,
-		fmt.Errorf("branch %q not found in workspace %s (origin fetch not yet implemented)", branch, slug))
+	// 21-REQ-3.5: Resolve origin credentials first.
+	auth, err := resolveAuth(slug)
+	if err != nil {
+		slog.Error("branch resolver: failed to resolve origin credentials",
+			"slug", slug,
+			"branch", branch,
+			"error", err.Error(),
+		)
+		return "", newResolveError(branchResolveKindOriginCredentials, err)
+	}
+
+	// 21-REQ-3.1: Fetch the single branch from the fork.
+	err = fetch(ctx, repoPath, branch, auth)
+	// 21-REQ-3.2: NoErrAlreadyUpToDate is success.
+	if errors.Is(err, git.NoErrAlreadyUpToDate) {
+		err = nil
+	}
+	if err != nil {
+		// 21-REQ-3.3 / 21-REQ-3.6: Classify "branch not found on origin"
+		// from the sentinel error, never from error text.
+		if errors.Is(err, ErrBranchNotOnOrigin) {
+			return "", newResolveError(branchResolveKindNotFound,
+				fmt.Errorf("branch %q not found on origin for workspace %s", branch, slug))
+		}
+		// 21-REQ-3.4: Any other fetch failure is an origin fetch failure.
+		slog.Error("branch resolver: origin fetch failed",
+			"slug", slug,
+			"branch", branch,
+			"error", err.Error(),
+		)
+		return "", newResolveError(branchResolveKindOriginFetchFailed, err)
+	}
+
+	// 21-REQ-3.2: Fetch succeeded (including NoErrAlreadyUpToDate).
+	// Re-check the tracking ref.
+	trackingSHA, err := revParseRef(ctx, runner, "refs/remotes/origin/"+branch)
+	if err != nil {
+		// Tracking ref still absent after a successful fetch → not found.
+		return "", newResolveError(branchResolveKindNotFound,
+			fmt.Errorf("branch %q not found after fetch for workspace %s", branch, slug))
+	}
+
+	// Create the local branch at the tracking tip.
+	return createLocalBranch(ctx, runner, slug, branch, trackingSHA, resolutionOriginFetch)
 }
 
 // isBranchResolveKind checks if an error is a branch resolve error with the
