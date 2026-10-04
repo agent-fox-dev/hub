@@ -136,6 +136,13 @@ type thinPackSafeStorer struct {
 // storer is not modified. go-git's server records this error as the per-ref
 // status in the report.
 func (s *thinPackSafeStorer) SetReference(ref *plumbing.Reference) error {
+	// 23-REQ-6.1: Reject refs under the protected backup-ref namespace
+	// before the pre-receive hook is consulted.
+	if isProtectedRef(ref.Name()) {
+		s.markRejected(ref.Name())
+		return errProtectedRef
+	}
+
 	hook := preReceiveHook
 	if hook != nil {
 		// Determine the old hash: look up the current value of the ref.
@@ -166,6 +173,13 @@ func (s *thinPackSafeStorer) SetReference(ref *plumbing.Reference) error {
 // consult the pre-receive hook. Although go-git's server does not currently
 // call this method, we intercept it for completeness.
 func (s *thinPackSafeStorer) CheckAndSetReference(new, old *plumbing.Reference) error {
+	// 23-REQ-6.1: Reject refs under the protected backup-ref namespace
+	// before the pre-receive hook is consulted.
+	if isProtectedRef(new.Name()) {
+		s.markRejected(new.Name())
+		return errProtectedRef
+	}
+
 	hook := preReceiveHook
 	if hook != nil {
 		oldHash := plumbing.ZeroHash
@@ -195,6 +209,13 @@ func (s *thinPackSafeStorer) CheckAndSetReference(new, old *plumbing.Reference) 
 // hook. If the hook rejects the removal, the error is returned and the
 // underlying storer is not modified.
 func (s *thinPackSafeStorer) RemoveReference(name plumbing.ReferenceName) error {
+	// 23-REQ-6.1: Reject refs under the protected backup-ref namespace
+	// before the pre-receive hook is consulted.
+	if isProtectedRef(name) {
+		s.markRejected(name)
+		return errProtectedRef
+	}
+
 	hook := preReceiveHook
 	if hook != nil {
 		oldHash := plumbing.ZeroHash

@@ -240,7 +240,7 @@
         "internal/gitserver/protected_refs.go",
         "internal/gitserver/protected_refs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
