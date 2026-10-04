@@ -148,6 +148,12 @@ func (s *RecoveryService) RemoveBackup(ctx context.Context, slug, branch string)
 		return fmt.Errorf("recovery: delete ref %s in %s: %w", ref, slug, err)
 	}
 
+	slog.Info("recovery: removed backup ref",
+		"slug", slug,
+		"branch", branch,
+		"ref", ref,
+	)
+
 	return nil
 }
 
