@@ -241,7 +241,7 @@
         "docs/examples/AGENTS_carry_patch.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

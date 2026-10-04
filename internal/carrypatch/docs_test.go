@@ -1878,3 +1878,144 @@ func findPurgeCallers(t *testing.T) []string {
 	}
 	return callers
 }
+
+// ===========================================================================
+// TS-24-49 (unit): "Understand Before You Code" has a step to read
+// PATCH_BRANCH_SOURCE first.
+// Verifies: 24-REQ-9.1
+// ===========================================================================
+
+func TestDocs_TS_24_49_UnderstandBeforeYouCodeReadsPatchBranchSource(t *testing.T) {
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+	s := section(t, agent, "## Understand Before You Code", "## ")
+
+	requireContains(t, "Understand Before You Code", s,
+		"PATCH_BRANCH_SOURCE",
+		"afc vars list --workspace <workspace-slug>",
+		"unset",
+	)
+
+	// The PATCH_BRANCH_SOURCE step must precede steps that touch branches.
+	norm := strings.Join(strings.Fields(s), " ")
+	pbsIdx := strings.Index(norm, "PATCH_BRANCH_SOURCE")
+	branchIdx := strings.Index(norm, "patch stack")
+	if pbsIdx < 0 {
+		t.Fatal("PATCH_BRANCH_SOURCE not found in Understand Before You Code")
+	}
+	if branchIdx >= 0 && pbsIdx > branchIdx {
+		t.Error("PATCH_BRANCH_SOURCE step should precede steps that touch branches")
+	}
+}
+
+// ===========================================================================
+// TS-24-50 (unit): Each listed agent example section gives hub and origin
+// instructions where they differ.
+// Verifies: 24-REQ-9.2
+// ===========================================================================
+
+func TestDocs_TS_24_50_AgentSectionsHubAndOriginInstructions(t *testing.T) {
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+
+	// These sections must mention both hub and origin mode.
+	headings := []struct {
+		start string
+		stop  string
+	}{
+		{"### Step 1: Decide Where Your Change Belongs", "### "},
+		{"### Step 4: Push", "### "},
+		{"### Step 5: Register the Patch", "### "},
+		{"### Step 6: Trigger a Rebuild", "### "},
+		{"## Upstream Sync", "## "},
+		{"## Conflict Resolution", "## "},
+		{"### Removing a Patch", "### "},
+		{"## Commands Reference", "## "},
+		{"## Quality Gates", "## "},
+	}
+
+	for _, h := range headings {
+		s := section(t, agent, h.start, h.stop)
+		norm := strings.Join(strings.Fields(strings.ToLower(s)), " ")
+		if !strings.Contains(norm, "origin") {
+			t.Errorf("section %q does not mention origin", h.start)
+		}
+		if !strings.Contains(norm, "hub") {
+			t.Errorf("section %q does not mention hub", h.start)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-51 (unit): In origin mode the example directs the agent to the fork
+// and to sync, never to a hub push.
+// Verifies: 24-REQ-9.3
+// ===========================================================================
+
+func TestDocs_TS_24_51_OriginModeDirectsToForkAndSync(t *testing.T) {
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+
+	// The origin mode instructions should be found across the document.
+	requireContains(t, "agent example", agent,
+		"clone the fork",
+		"afc workspace sync",
+		"refuses or replaces",
+	)
+
+	// The origin mode rebuild step should say to use sync, not rebuild submit.
+	rebuildSec := section(t, agent, "### Step 6: Trigger a Rebuild", "### ")
+	requireContains(t, "Trigger a Rebuild", rebuildSec,
+		"afc workspace sync",
+		"not `afc rebuild submit`",
+	)
+}
+
+// ===========================================================================
+// TS-24-52 (unit): In hub or unset mode the example keeps today's
+// instructions and explains the mirror.
+// Verifies: 24-REQ-9.4
+// ===========================================================================
+
+func TestDocs_TS_24_52_HubModeKeepsInstructionsAndExplainsMirror(t *testing.T) {
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+
+	// Hub mode instructions should still reference pushing to the hub and
+	// running afc rebuild submit.
+	requireContains(t, "agent example", agent,
+		"git push origin patch/",
+		"afc rebuild submit",
+		"PUSH_PATCHES_TO_ORIGIN=true",
+		"mirror",
+	)
+}
+
+// ===========================================================================
+// TS-24-53 (unit): The example's remove text, project context and commands
+// table are updated.
+// Verifies: 24-REQ-9.5, 24-REQ-9.6
+// ===========================================================================
+
+func TestDocs_TS_24_53_RemoveTextProjectContextAndCommandsTable(t *testing.T) {
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+
+	// Remove text says the branch is not deleted but the backup ref is.
+	removeSec := section(t, agent, "### Removing a Patch", "### ")
+	requireContains(t, "Removing a Patch", removeSec,
+		"not deleted",
+		"backup ref",
+	)
+
+	// The project context paragraph should be mode-neutral.
+	ctx := section(t, agent, "## Project Context", "## ")
+	norm := strings.Join(strings.Fields(strings.ToLower(ctx)), " ")
+	// It should not say patch branches live only on the hub.
+	if strings.Contains(norm, "clone from here, push here") {
+		t.Error("project context still says 'clone from here, push here'")
+	}
+
+	// Commands table contains the three new commands.
+	cmdSec := section(t, agent, "## Commands Reference", "## ")
+	requireContains(t, "Commands Reference", cmdSec,
+		"afc patch reset-to-origin",
+		"afc workspace sync --fail-on-diverged",
+		"afc vars list --workspace",
+	)
+}
