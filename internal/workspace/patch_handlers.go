@@ -538,7 +538,8 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 			return nil
 		}
 
-		// Look up patch before deletion for audit metadata (18-REQ-3.2).
+		// Look up patch before deletion for audit metadata (18-REQ-3.2)
+		// and for the branch name needed by backup-ref cleanup (23-REQ-7.1).
 		patchInfo, _ := getPatch(db, slug, patchID)
 
 		// 15-REQ-11.1, 15-REQ-11.2: Delete and compact.
@@ -562,6 +563,22 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 					"branch_name": patchInfo.BranchName,
 				},
 			})
+		}
+
+		// 23-REQ-7.1: Remove the backup ref for the deleted patch.
+		// Best effort: a failure never changes the response (the row is
+		// already gone). No workspace lock is taken (23-REQ-7.5).
+		if patchInfo != nil {
+			hook := getRecoveryHook()
+			if hook != nil {
+				if err := hook.RemoveBackup(c.Request().Context(), slug, patchInfo.BranchName); err != nil {
+					slog.Warn("failed to remove backup ref on patch delete",
+						"slug", slug,
+						"branch", patchInfo.BranchName,
+						"error", err,
+					)
+				}
+			}
 		}
 
 		return c.NoContent(http.StatusNoContent)
