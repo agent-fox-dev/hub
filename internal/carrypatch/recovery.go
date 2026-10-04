@@ -2,6 +2,7 @@ package carrypatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,7 +11,10 @@ import (
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/google/uuid"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
 // RecoveryErrorKind classifies errors returned by the recovery service.
@@ -64,6 +68,12 @@ type ResetResult struct {
 	RebuildJobID     string
 }
 
+// RebuildEnqueuer abstracts the job queue's Enqueue method so that
+// tests can inject a stub or a failing implementation.
+type RebuildEnqueuer interface {
+	Enqueue(params jobqueue.EnqueueParams) (jobID string, duplicate bool, err error)
+}
+
 // RecoveryService implements backup-ref reading, backup-ref removal and
 // reset-to-origin operations. It is constructed in main.go and adapted
 // to the workspace.RecoveryHook interface.
@@ -74,6 +84,8 @@ type RecoveryService struct {
 	ResolveAuth   ResolveAuthFunc
 	Fetch         SingleBranchFetchFunc
 	LockFunc      func(slug string) (unlock func(), ok bool)
+	PatchStore    PatchStore
+	Queue         RebuildEnqueuer
 }
 
 // trunkPath returns the path to the trunk directory for a workspace.
@@ -270,88 +282,160 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			"branch", patch.BranchName,
 			"origin_sha", forkTip,
 		)
-
-		return result, nil
-	}
-
-	// Rule: Same commit → none.
-	if localTip == forkTip {
+	} else if localTip == forkTip {
+		// Rule: Same commit → none.
 		result.Action = ActionNone
-		return result, nil
-	}
-
-	// Rule: Check if local tip is a strict ancestor of fork tip (fast-forward).
-	isAnc, ancErr := runner.IsAncestor(ctx, localTip, forkTip)
-	if ancErr != nil {
-		return result, &RecoveryError{
-			Kind:    RecoveryErrOther,
-			Message: fmt.Sprintf("failed to check ancestry for %s", patch.BranchName),
-			Cause:   ancErr,
+	} else {
+		// Rule: Check if local tip is a strict ancestor of fork tip (fast-forward).
+		isAnc, ancErr := runner.IsAncestor(ctx, localTip, forkTip)
+		if ancErr != nil {
+			return result, &RecoveryError{
+				Kind:    RecoveryErrOther,
+				Message: fmt.Sprintf("failed to check ancestry for %s", patch.BranchName),
+				Cause:   ancErr,
+			}
 		}
-	}
 
-	if isAnc {
-		// Fast-forward: move the branch, no backup.
-		if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-			return result, classifyCASError(err, patch.BranchName, runner, ctx, branchRef, localTip)
-		}
-		result.Action = ActionFastForwarded
+		if isAnc {
+			// Fast-forward: move the branch, no backup.
+			if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
+				return result, classifyCASError(err, patch.BranchName, runner, ctx, branchRef, localTip)
+			}
+			result.Action = ActionFastForwarded
 
-		if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
-			slog.Warn("recovery: hard reset failed after fast-forward",
+			if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
+				slog.Warn("recovery: hard reset failed after fast-forward",
+					"slug", slug,
+					"branch", patch.BranchName,
+					"error", err,
+				)
+			}
+
+			slog.Info("recovery: fast-forwarded patch branch",
 				"slug", slug,
 				"branch", patch.BranchName,
-				"error", err,
+				"local_sha", localTip,
+				"origin_sha", forkTip,
+			)
+		} else {
+			// Rule: Diverged or fork-behind → write backup, then move.
+			backupRef := "refs/hub/replaced/" + patch.BranchName
+
+			// 23-REQ-3.6: Write the backup ref (force-write, overwriting any earlier backup).
+			if err := runner.UpdateRef(ctx, backupRef, localTip); err != nil {
+				return result, &RecoveryError{
+					Kind:    RecoveryErrOther,
+					Message: fmt.Sprintf("failed to write backup ref for %s", patch.BranchName),
+					Cause:   err,
+				}
+			}
+
+			// Move the branch to the fork tip using CAS.
+			if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
+				// 23-REQ-3.8: Keep the backup already written.
+				return result, classifyCASError(err, patch.BranchName, runner, ctx, branchRef, localTip)
+			}
+
+			result.Action = ActionReplaced
+			result.ReplacedSHA = localTip
+
+			if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
+				slog.Warn("recovery: hard reset failed after replace",
+					"slug", slug,
+					"branch", patch.BranchName,
+					"error", err,
+				)
+			}
+
+			slog.Info("recovery: replaced patch branch",
+				"slug", slug,
+				"branch", patch.BranchName,
+				"replaced_sha", localTip,
+				"origin_sha", forkTip,
 			)
 		}
-
-		slog.Info("recovery: fast-forwarded patch branch",
-			"slug", slug,
-			"branch", patch.BranchName,
-			"local_sha", localTip,
-			"origin_sha", forkTip,
-		)
-
-		return result, nil
 	}
 
-	// Rule: Diverged or fork-behind → write backup, then move.
-	backupRef := "refs/hub/replaced/" + patch.BranchName
-
-	// 23-REQ-3.6: Write the backup ref (force-write, overwriting any earlier backup).
-	if err := runner.UpdateRef(ctx, backupRef, localTip); err != nil {
-		return result, &RecoveryError{
-			Kind:    RecoveryErrOther,
-			Message: fmt.Sprintf("failed to write backup ref for %s", patch.BranchName),
-			Cause:   err,
+	// ===========================================================
+	// 23-REQ-4.1: Persist origin sync state (origin mode only)
+	// ===========================================================
+	if s.PatchStore != nil {
+		patchSource := ParsePatchBranchSource(s.GetVariable, slug)
+		if patchSource == "origin" {
+			now := apikit.NowUTC()
+			originSHA := forkTip
+			if err := s.PatchStore.SetOriginSyncState(ctx, patch.ID, StateInSync, &originSHA, now); err != nil {
+				slog.Warn("recovery: failed to persist origin sync state",
+					"slug", slug,
+					"branch", patch.BranchName,
+					"error", err,
+				)
+			}
 		}
 	}
 
-	// Move the branch to the fork tip using CAS.
-	if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-		// 23-REQ-3.8: Keep the backup already written.
-		return result, classifyCASError(err, patch.BranchName, runner, ctx, branchRef, localTip)
+	// ===========================================================
+	// 23-REQ-4.3: Rebuild trigger
+	// ===========================================================
+	branchMoved := result.Action == ActionCreated || result.Action == ActionFastForwarded || result.Action == ActionReplaced
+	rebuildEligible := patch.Status == PatchStatusActive || patch.Status == PatchStatusConflict
+
+	if branchMoved && rebuildEligible && s.Queue != nil {
+		autoRebuild := true
+		if s.GetVariable != nil {
+			val, _ := s.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
+			if val == "false" {
+				autoRebuild = false
+			}
+		}
+
+		if autoRebuild {
+			userID := ""
+			if auth != nil {
+				userID = auth.UserID
+			}
+			jobID, triggered, enqErr := s.enqueueRebuild(slug, patch.IntegrationBranch, userID)
+			if enqErr != nil {
+				slog.Error("recovery: failed to enqueue rebuild",
+					"slug", slug,
+					"branch", patch.BranchName,
+					"error", enqErr,
+				)
+			} else if triggered {
+				result.RebuildTriggered = true
+				result.RebuildJobID = jobID
+			}
+		}
 	}
-
-	result.Action = ActionReplaced
-	result.ReplacedSHA = localTip
-
-	if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
-		slog.Warn("recovery: hard reset failed after replace",
-			"slug", slug,
-			"branch", patch.BranchName,
-			"error", err,
-		)
-	}
-
-	slog.Info("recovery: replaced patch branch",
-		"slug", slug,
-		"branch", patch.BranchName,
-		"replaced_sha", localTip,
-		"origin_sha", forkTip,
-	)
 
 	return result, nil
+}
+
+// enqueueRebuild enqueues a rebuild job with the same parameters as sync.
+func (s *RecoveryService) enqueueRebuild(slug, integrationBranch, userID string) (string, bool, error) {
+	payload := BuildRebuildPayload(slug, integrationBranch, userID, s.GetVariable, "", "")
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, fmt.Errorf("marshal rebuild payload: %w", err)
+	}
+	groupKey := slug + ":" + integrationBranch
+	nonce := uuid.New().String()
+
+	jobID, duplicate, enqErr := s.Queue.Enqueue(jobqueue.EnqueueParams{
+		Type:        "rebuild",
+		Key:         slug,
+		Nonce:       nonce,
+		Payload:     payloadJSON,
+		SubmittedBy: userID,
+		Group:       groupKey,
+	})
+	if enqErr != nil {
+		return "", false, enqErr
+	}
+	if duplicate {
+		return "", false, nil
+	}
+	return jobID, true, nil
 }
 
 // classifyCASError determines whether a CAS update-ref failure is a lost race

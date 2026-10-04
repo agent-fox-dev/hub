@@ -342,8 +342,10 @@ func main() {
 			ResolveAuth: func(slug string) (transport.AuthMethod, error) {
 				return workspace.ResolveCloneAuth(store, slug)
 			},
-			Fetch:    carrypatch.DefaultSingleBranchFetch(),
-			LockFunc: wslock.TryLock,
+			Fetch:      carrypatch.DefaultSingleBranchFetch(),
+			LockFunc:   wslock.TryLock,
+			PatchStore: cpPatchStore,
+			Queue:      mergeQueue,
 		},
 	})
 
