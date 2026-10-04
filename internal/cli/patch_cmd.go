@@ -28,6 +28,7 @@ func PatchCmd() *cobra.Command {
 		newPatchReorderCmd(),
 		newPatchUpdateCmd(),
 		newPatchRestoreCmd(),
+		newPatchResetToOriginCmd(),
 	)
 
 	return cmd
@@ -277,6 +278,44 @@ func newPatchRestoreCmd() *cobra.Command {
 			}
 
 			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "patches", args[1], "restore"), nil)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+}
+
+// newPatchResetToOriginCmd returns the 'patch reset-to-origin' subcommand.
+// It sends POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin with no
+// body to move a patch branch to the fork's current tip.
+//
+// Requirements: 23-REQ-5
+func newPatchResetToOriginCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-to-origin <workspace-slug> <patch-id>",
+		Short: "Reset a patch branch to the fork's current tip",
+		Long: `Reset a patch branch to the fork's current tip, regardless of
+PATCH_DIVERGENCE_POLICY.
+
+If the hub's branch tip is discarded (diverged or force-pushed on the fork),
+the old tip is saved under refs/hub/replaced/<branch>. The response includes
+replaced_sha when a backup exists.
+
+To recover the discarded tip:
+
+  git fetch <hub_url> refs/hub/replaced/<branch>`,
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost, apiPath("workspaces", args[0], "patches", args[1], "reset-to-origin"), nil)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
 			}

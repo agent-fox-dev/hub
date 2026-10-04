@@ -209,7 +209,7 @@
         "internal/cli/patch_cmd.go",
         "internal/cli/patch_cmd_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
