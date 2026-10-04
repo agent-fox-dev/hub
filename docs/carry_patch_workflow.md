@@ -61,8 +61,63 @@ repository:
 
 | Remote | Points to | Purpose |
 |--------|-----------|---------|
-| `origin` | Your fork (the `git_url` from workspace creation) | Where patch branches live; push target for local work |
+| `origin` | Your fork (the `git_url` from workspace creation) | Fork; push target for `REBUILD_PUSH_INTEGRATION_BRANCH` and, in `origin` mode, the authority for patch branches |
 | `upstream` | The upstream project (the `upstream_url` from workspace creation) | Source of truth for the base; fetched during sync and rebuild |
+
+In `hub` mode (the default), patch branches are written by pushes to the
+hub's own git server, not to `origin`. See
+[Where patch branches live](#where-patch-branches-live) below for details.
+
+### Where patch branches live
+
+A rebuild reads each patch branch only from `refs/heads/<branch>` in the
+workspace trunk (the hub's bare clone). The initial clone brings the fork's
+branches in only as `refs/remotes/origin/*`, so they are not visible to the
+rebuild until something copies them to `refs/heads/`.
+
+The workspace variable `PATCH_BRANCH_SOURCE` selects who writes those
+`refs/heads/` refs:
+
+- **`hub`** (default) — patch branches are written by pushes to the hub's
+  git server. Sync never fetches the fork.
+- **`origin`** — sync fetches the fork and brings every registered patch
+  branch to the fork's tip, according to `PATCH_DIVERGENCE_POLICY`.
+
+#### Comparison of authority models
+
+| Aspect | `hub` mode | `origin` mode |
+|--------|-----------|---------------|
+| Who writes the branch | A push to the hub's git server | Sync copies the fork's tip to `refs/heads/<branch>` |
+| What sync does with it | Nothing (fork is not fetched) | Fetches the fork, updates each registered branch to the fork's tip |
+| What registration does | Checks `refs/heads/<branch>` then `refs/remotes/origin/<branch>` | Same checks, then a single-branch fork fetch if needed |
+| What a push to the hub does | Accepted; optionally mirrored to the fork when `PUSH_PATCHES_TO_ORIGIN=true` | Rejected by default; forwarded to the fork when `PUSH_PATCHES_TO_ORIGIN=true` |
+| What happens on divergence | N/A (hub is the sole writer) | Controlled by `PATCH_DIVERGENCE_POLICY`: `replace` (default, old tip saved under `refs/hub/replaced/<branch>`) or `report` |
+| Where a person fixes a conflict | In the trunk or by pushing a fixed branch to the hub's git server | In a local clone of the fork; push to the fork, then `afc workspace sync` |
+| Which copy survives a lost hub data directory | Lost (re-push from a local clone) | The fork's copy; the next sync restores it |
+
+**Recommendation.** Teams that open upstream pull requests and review on the
+fork should use `origin` with `REBUILD_PUSH_INTEGRATION_BRANCH=true`, so
+people push only to GitHub and the hub is a rebuild engine. `hub` mode fits
+workspaces driven by agents that push to the hub and never open upstream
+pull requests.
+
+The integration branch is always built by the hub and only pushed to the
+fork (when `REBUILD_PUSH_INTEGRATION_BRANCH=true`). Sync never fetches the
+integration branch from `origin`; it is never fetched from `origin` by sync.
+
+**Switching modes.** The mode is read at the start of each operation (sync,
+registration, push), so changing `PATCH_BRANCH_SOURCE` takes effect on the
+next operation without a restart.
+
+- Switching to `origin` makes the next sync bring registered branches to the
+  fork's tips. If the hub's copy has diverged, the previous tip is kept
+  under `refs/hub/replaced/<branch>` (when the policy is `replace`).
+- Switching to `hub` stops fork fetches and clears persisted origin sync
+  state at the next sync.
+
+See the [Configuration](#configuration) section for full details on
+`PATCH_BRANCH_SOURCE`, `PATCH_DIVERGENCE_POLICY` and
+`PUSH_PATCHES_TO_ORIGIN`.
 
 ### Integration branch
 
@@ -959,15 +1014,6 @@ models, controlled by the `PATCH_BRANCH_SOURCE` workspace variable:
   sync and every registered patch branch is brought to the fork's tip. The
   `PATCH_DIVERGENCE_POLICY` variable controls what happens when the hub's
   copy and the fork's copy have diverged.
-
-> **Note (fork_push_control):** In `origin` mode, the hub's git server
-> enforces push control on registered patch branches. By default, a hub push
-> to a registered patch branch is rejected with a message naming the fork.
-> When `PUSH_PATCHES_TO_ORIGIN=true`, the push is forwarded to the fork
-> before the hub writes its ref; a forward failure rejects the update. In
-> `hub` mode with `PUSH_PATCHES_TO_ORIGIN=true`, accepted pushes are mirrored
-> (force-pushed) to the fork after the push, best effort. See the
-> `PUSH_PATCHES_TO_ORIGIN` variable in the Configuration section above.
 
 The sync flow:
 

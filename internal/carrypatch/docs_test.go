@@ -2,7 +2,6 @@ package carrypatch
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -395,7 +394,6 @@ func TestDocs_TS_20_55_CLIAndWorkflowDocs(t *testing.T) {
 	requireContains(t, "carry_patch_workflow.md", wf,
 		"PATCH_BRANCH_SOURCE",
 		"PATCH_DIVERGENCE_POLICY",
-		"fork_push_control",
 	)
 
 	cfg := readDoc(t, "configuration.md")
@@ -635,14 +633,164 @@ func TestDocs_TS_21_41_PatchAddNoNewFlag(t *testing.T) {
 }
 
 // ===========================================================================
-// TS-21-42 (unit): docs/carry_patch_workflow.md is unmodified by this change.
-// Verifies: 21-REQ-10.5
+// TS-21-42: removed. This test verified that spec 21 did not modify
+// carry_patch_workflow.md. Spec 24 intentionally rewrites the file, so the
+// git-diff guard is no longer applicable.
 // ===========================================================================
 
-func TestDocs_TS_21_42_CarryPatchWorkflowUnmodified(t *testing.T) {
-	// Use git diff to verify the file is unchanged.
-	out, err := exec.Command("git", "diff", "--quiet", "--", "docs/carry_patch_workflow.md").CombinedOutput()
-	if err != nil {
-		t.Fatalf("docs/carry_patch_workflow.md has been modified: %s", string(out))
+// ===========================================================================
+// TS-24-5 (unit): The Remotes table describes origin as the fork and push
+// target and drops the old purpose text.
+// Verifies: 24-REQ-2.1
+// ===========================================================================
+
+func TestDocs_TS_24_5_RemotesTableOriginRow(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The origin row should mention fork, REBUILD_PUSH_INTEGRATION_BRANCH and origin mode.
+	remotesSection := section(t, guide, "### Remotes", "### ")
+	// Find the origin row in the table.
+	var originRow string
+	for _, line := range strings.Split(remotesSection, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "`origin`") {
+			originRow = line
+			break
+		}
+	}
+	if originRow == "" {
+		t.Fatal("Remotes table has no origin row")
+	}
+	requireContains(t, "origin row", originRow, "fork", "REBUILD_PUSH_INTEGRATION_BRANCH")
+
+	// The guide must not contain the old purpose text.
+	if strings.Contains(guide, "Where patch branches live; push target for local work") {
+		t.Error("guide still contains the old origin purpose text")
+	}
+}
+
+// ===========================================================================
+// TS-24-6 (unit): The Remotes table or a note names the hub's git server as
+// the hub-mode patch branch location.
+// Verifies: 24-REQ-2.2
+// ===========================================================================
+
+func TestDocs_TS_24_6_RemotesHubGitServer(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	s := section(t, guide, "### Remotes", "### ")
+	requireContains(t, "Remotes section", s, "hub", "git server", "`hub` mode")
+}
+
+// ===========================================================================
+// TS-24-7 (unit): A "Where patch branches live" section follows
+// Concepts/Remotes and states the trunk read rule.
+// Verifies: 24-REQ-2.3
+// ===========================================================================
+
+func TestDocs_TS_24_7_WherePatchBranchesLiveSection(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The heading must appear after the Remotes heading.
+	remotesIdx := strings.Index(guide, "### Remotes")
+	wpblIdx := strings.Index(guide, "### Where patch branches live")
+	if wpblIdx < 0 {
+		t.Fatal("heading 'Where patch branches live' not found")
+	}
+	if wpblIdx <= remotesIdx {
+		t.Error("'Where patch branches live' does not appear after Remotes")
+	}
+
+	s := section(t, guide, "### Where patch branches live", "### ")
+	requireContains(t, "Where patch branches live", s,
+		"refs/heads/<branch>",
+		"refs/remotes/origin/*",
+	)
+}
+
+// ===========================================================================
+// TS-24-8 (unit): The section explains PATCH_BRANCH_SOURCE and has a
+// comparison table with all seven rows.
+// Verifies: 24-REQ-2.4
+// ===========================================================================
+
+func TestDocs_TS_24_8_PatchBranchSourceAndComparisonTable(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	s := section(t, guide, "### Where patch branches live", "### ")
+
+	requireContains(t, "Where patch branches live", s,
+		"PATCH_BRANCH_SOURCE",
+		"`hub`",
+		"`origin`",
+		"PUSH_PATCHES_TO_ORIGIN=true",
+	)
+
+	// Count table rows (lines starting with | that are not the header separator).
+	var tableRows int
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "|") && !strings.HasPrefix(trimmed, "|---") && !strings.HasPrefix(trimmed, "| ---") {
+			tableRows++
+		}
+	}
+	// Subtract 1 for the header row; need at least 7 data rows.
+	if tableRows-1 < 7 {
+		t.Errorf("comparison table has %d data rows; want at least 7", tableRows-1)
+	}
+}
+
+// ===========================================================================
+// TS-24-9 (unit): The section recommends origin mode for upstream-PR teams,
+// hub for agent workspaces, and states integration branch handling.
+// Verifies: 24-REQ-2.5
+// ===========================================================================
+
+func TestDocs_TS_24_9_RecommendationsAndIntegrationBranch(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	s := section(t, guide, "### Where patch branches live", "### ")
+
+	requireContains(t, "Where patch branches live", s,
+		"REBUILD_PUSH_INTEGRATION_BRANCH=true",
+		"agent",
+		"upstream pull request",
+		"never fetched",
+	)
+}
+
+// ===========================================================================
+// TS-24-10 (unit): The section states the mode is read per operation and has
+// a switching-modes note.
+// Verifies: 24-REQ-2.6
+// ===========================================================================
+
+func TestDocs_TS_24_10_ModeReadPerOperationAndSwitching(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	s := section(t, guide, "### Where patch branches live", "### ")
+
+	requireContains(t, "Where patch branches live", s,
+		"start of each",
+		"refs/hub/replaced/<branch>",
+		"clears",
+	)
+}
+
+// ===========================================================================
+// TS-24-11 (unit): The section points to the Configuration section for the
+// three variables.
+// Verifies: 24-REQ-2.7
+// ===========================================================================
+
+func TestDocs_TS_24_11_ConfigurationPointer(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	s := section(t, guide, "### Where patch branches live", "### ")
+
+	requireContains(t, "Where patch branches live", s,
+		"Configuration",
+		"PATCH_BRANCH_SOURCE",
+		"PATCH_DIVERGENCE_POLICY",
+		"PUSH_PATCHES_TO_ORIGIN",
+	)
+
+	// The Configuration section anchor must exist in the guide.
+	if !strings.Contains(guide, "## Configuration") {
+		t.Error("guide has no ## Configuration section")
 	}
 }
