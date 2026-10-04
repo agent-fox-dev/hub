@@ -28,6 +28,11 @@ const EventPatchSync = "hub.patch.sync"
 // origin_sha. One event per replaced branch.
 const EventPatchReplace = "hub.patch.replace"
 
+// EventPatchReset is the hub audit event emitted when a reset-to-origin
+// completes successfully. Metadata: branch_name, action, local_sha (omitted
+// when no local branch), origin_sha, replaced_sha (only for action replaced).
+const EventPatchReset = "hub.patch.reset"
+
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {
 	ID           string         `json:"id"`

@@ -75,6 +75,7 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.DELETE("/workspaces/:slug/patches/:id", handleRemovePatch(db))
 	api.POST("/workspaces/:slug/patches/reorder", handleReorderPatches(db))
 	api.POST("/workspaces/:slug/patches/:id/restore", handleRestorePatch(db))
+	api.POST("/workspaces/:slug/patches/:id/reset-to-origin", handleResetPatchToOrigin(db))
 
 	return nil
 }
