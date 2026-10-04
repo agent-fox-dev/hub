@@ -1109,6 +1109,8 @@ When a rebuild job runs, the hub executes the following steps:
    worktree). Then each patch that will be attempted is resolved to a
    commit SHA at `refs/heads/<branch>`; only that SHA is used for the rest
    of the run and it is reported as `source_sha` in the patch result.
+   The patch tips it snapshots are whatever the last sync (origin mode)
+   or push (hub mode) left in the trunk.
 
 5. **Process each patch in position order, inside the worktree:**
    - **Skipped patches:** `merged_upstream`, `disabled`, and `deleted`
@@ -1167,45 +1169,63 @@ When a rebuild job runs, the hub executes the following steps:
 
 ### Sync algorithm
 
-The carry-patch sync differs from the standard workspace sync. There are two
-models, controlled by the `PATCH_BRANCH_SOURCE` workspace variable:
+The carry-patch sync differs from the standard workspace sync. The
+`PATCH_BRANCH_SOURCE` workspace variable selects the model (see
+[Where patch branches live](#where-patch-branches-live)). The sync flow
+proceeds through these phases in order:
 
-- **Hub model** (`PATCH_BRANCH_SOURCE=hub`, the default): patch branches are
-  read from the hub's local clone. The fork (`origin`) is never fetched.
-- **Origin model** (`PATCH_BRANCH_SOURCE=origin`): the fork is fetched during
-  sync and every registered patch branch is brought to the fork's tip. The
-  `PATCH_DIVERGENCE_POLICY` variable controls what happens when the hub's
-  copy and the fork's copy have diverged.
+1. **Resolve credentials.** Read `PATCH_BRANCH_SOURCE` and
+   `PATCH_DIVERGENCE_POLICY` workspace variables. If `PATCH_BRANCH_SOURCE`
+   is `origin`, resolve origin credentials before any fetch (failure
+   answers `502 failed to resolve origin credentials` and aborts without
+   touching any state). Then resolve upstream credentials.
 
-The sync flow:
+2. **Fetch upstream.** Fetch `refs/heads/*` and `HEAD` of the `upstream`
+   remote into `refs/remotes/upstream/*` with the resolved credentials
+   (same refspecs and credentials as the rebuild). A fetch failure answers
+   `502 upstream fetch failed` and aborts; no refs or patch state are
+   modified.
 
-1. **Read configuration.** Read `PATCH_BRANCH_SOURCE` and
-   `PATCH_DIVERGENCE_POLICY` workspace variables.
+3. **Fetch origin (origin mode only).** Fetch the `origin` remote with
+   pruning (stale tracking refs are removed). If the origin fetch fails,
+   the sync answers `502 origin fetch failed` (error type
+   `origin_fetch_failed`) and all refs and patch state remain unchanged —
+   the upstream fetch that already succeeded is not rolled back, but no
+   patch refresh, merge detection or timestamp write occurs.
 
-2. **Resolve credentials.** If `PATCH_BRANCH_SOURCE` is `origin`, resolve
-   origin credentials before any fetch. Then resolve upstream credentials
-   and fetch from the `upstream` remote (same refspecs and credentials as
-   the rebuild).
-
-3. **Fetch origin (origin model only).** Fetch the `origin` remote with
-   pruning (stale tracking refs are removed).
-
-4. **Refresh patch branches (origin model only).** For each candidate patch
+4. **Refresh patch branches (origin mode only).** For each candidate patch
    (status `active`, `conflict` or `disabled`, excluding the integration
-   branch), bring the local branch to the fork's tip using compare-and-swap
-   ref writes. Replaced branches are backed up under
-   `refs/hub/replaced/<branch>`.
+   branch), compare the hub's `refs/heads/<branch>` with the fork's
+   `refs/remotes/origin/<branch>` and bring the local branch to the fork's
+   tip using compare-and-swap ref writes. Each branch produces one of
+   three outcomes:
+   - **`created`** — the branch did not exist on the hub and was created
+     from the fork's tip.
+   - **`fast_forwarded`** — the hub's copy was an ancestor of the fork's
+     tip and was advanced.
+   - **`replaced`** — the hub's copy diverged from the fork's tip and was
+     replaced (the old tip is saved under `refs/hub/replaced/<branch>`).
 
-5. **Detect upstream changes.** Compare the new upstream base
+   Each branch also records a sync state: `in_sync`, `diverged` or
+   `missing_on_origin`. When `PATCH_DIVERGENCE_POLICY` is `report`,
+   diverged branches are left unchanged instead of being replaced.
+
+   A ref-write failure stops the refresh. Outcomes already produced are
+   persisted, and a rebuild is enqueued for branches already moved, but
+   `last_sync_at` is not written.
+
+5. **Resolve the base.** Determine the new upstream base
    (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
-   with the stored `upstream_head_sha`.
+   and compare it with the stored `upstream_head_sha`.
 
 6. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
    the new upstream HEAD, set `force_push_detected` to true. This is
    informational and does not block the sync.
 
-7. **Detect merged patches.** For each `active` patch, apply the configured
-   detection strategy (see `SQUASH_MERGE_DETECTION`):
+7. **Detect merged patches.** Merge detection runs when upstream advanced
+   or when any patch branch was moved (also when only patch tips changed
+   and upstream did not advance). For each `active` patch, apply the
+   configured detection strategy (see `SQUASH_MERGE_DETECTION`):
    - **Ancestry check:** `git merge-base --is-ancestor` to test whether the
      patch branch HEAD is an ancestor of the new upstream HEAD.
    - **Content-based check:** `git cherry` to compare patch commits against
@@ -1215,15 +1235,17 @@ The sync flow:
      the PR number and scan recent upstream commit messages for the
      `(#NNN)` pattern used by GitHub's squash-merge.
    - If any signal detects the patch as merged, transition it to
-     `merged_upstream`.
+     `merged_upstream`. A newly merged patch triggers a rebuild.
 
 8. **Auto-rebuild.** If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` and
-   upstream advanced, a patch branch was moved, or at least one patch was
-   newly marked `merged_upstream`, enqueue a rebuild job. If a rebuild job
-   is already queued or running, the duplicate is silently ignored.
+   upstream advanced, an `active` or `conflict` patch branch was moved, or
+   at least one patch was newly marked `merged_upstream`, enqueue a rebuild
+   job. A moved `disabled` patch does not count as advanced. If a rebuild
+   job is already queued or running, the duplicate is silently ignored.
 
 9. **Write timestamps.** `last_sync_at` and `updated_at` are written on
-   every completed sync, whether or not anything advanced.
+   every completed sync, whether or not anything advanced. They are not
+   written when the sync ends on a ref-write failure (phase 4).
 
 ### Merge detection
 
@@ -1288,6 +1310,26 @@ The push hook:
 
 The hook runs asynchronously after the push completes. Errors in the hook
 are logged but do not affect the push response.
+
+**How a push to a registered patch branch is treated in each mode:**
+
+- **`origin` mode, `PUSH_PATCHES_TO_ORIGIN` disabled (default):** the push
+  is rejected with a message naming the fork URL (e.g. `branch is synced
+  from origin; push to <git_url> instead`). Deletes of a registered patch
+  branch are also rejected.
+- **`origin` mode, `PUSH_PATCHES_TO_ORIGIN=true`:** the push is forwarded
+  to the fork before the hub writes its ref. If the forward fails, the hub
+  ref is not written. Deletes are rejected without contacting the fork.
+- **`hub` mode (default):** the push is accepted normally. When
+  `PUSH_PATCHES_TO_ORIGIN=true`, each accepted update to a registered
+  patch branch is force-pushed (mirrored) to the fork, best effort. A
+  mirror failure is logged and emitted as `hub.patch.mirror_failed` but
+  does not fail the push or the rebuild. The mirror runs even when
+  `AUTO_REBUILD_AFTER_PUSH=false`.
+
+Only accepted ref updates drive `head_sha`, the `hub.git.push` event and
+the post-push hook (including the rebuild enqueue). Rejected or forwarded
+refs that fail do not trigger these side effects.
 
 ### Rerere integration
 

@@ -1279,6 +1279,170 @@ func TestDocs_TS_24_26_AFCCommandsExistInCLIMd(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// TS-24-27 (unit): The Sync algorithm section lists the eight phases in order.
+// Verifies: 24-REQ-5.1
+// ===========================================================================
+
+func TestDocs_TS_24_27_SyncAlgorithmPhasesInOrder(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	syncSec := section(t, guide, "### Sync algorithm", "### ")
+
+	// The eight phase keywords must appear in order.
+	keys := []string{
+		"Resolve credentials",
+		"Fetch upstream",
+		"Fetch origin (origin mode only)",
+		"Refresh patch branches",
+		"Detect force-push",
+		"Detect merged patches",
+		"Auto-rebuild",
+		"Write timestamps",
+	}
+
+	var indices []int
+	for _, k := range keys {
+		idx := strings.Index(syncSec, k)
+		if idx < 0 {
+			t.Errorf("Sync algorithm section missing phase %q", k)
+			continue
+		}
+		indices = append(indices, idx)
+	}
+	for i := 1; i < len(indices); i++ {
+		if indices[i] <= indices[i-1] {
+			t.Errorf("phase %q appears before or at the same position as %q", keys[i], keys[i-1])
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-28 (unit): The Sync algorithm says the origin fetch prunes and its
+// failure answers 502 origin fetch failed with state unchanged.
+// Verifies: 24-REQ-5.2
+// ===========================================================================
+
+func TestDocs_TS_24_28_SyncOriginFetchPrunesAnd502(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	syncSec := section(t, guide, "### Sync algorithm", "### ")
+
+	requireContains(t, "Sync algorithm", syncSec,
+		"prun",
+		"origin fetch failed",
+		"unchanged",
+	)
+}
+
+// ===========================================================================
+// TS-24-29 (unit): The patch refresh text lists outcomes, states and the
+// backup ref.
+// Verifies: 24-REQ-5.3
+// ===========================================================================
+
+func TestDocs_TS_24_29_PatchRefreshOutcomesStatesBackupRef(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	syncSec := section(t, guide, "### Sync algorithm", "### ")
+
+	requireContains(t, "Sync algorithm", syncSec,
+		"created",
+		"fast_forwarded",
+		"replaced",
+		"in_sync",
+		"diverged",
+		"missing_on_origin",
+		"refs/hub/replaced/<branch>",
+	)
+}
+
+// ===========================================================================
+// TS-24-30 (unit): Rebuild triggers and the AUTO_REBUILD_AFTER_SYNC entry
+// cover patch changes.
+// Verifies: 24-REQ-5.4
+// ===========================================================================
+
+func TestDocs_TS_24_30_RebuildTriggersAndAutoRebuildEntry(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// Check the rebuild decision text in the sync algorithm.
+	syncSec := section(t, guide, "### Sync algorithm", "### ")
+	requireContains(t, "Sync algorithm rebuild decision", syncSec,
+		"upstream advanced",
+		"conflict",
+		"merged_upstream",
+		"AUTO_REBUILD_AFTER_SYNC",
+	)
+
+	// Check the AUTO_REBUILD_AFTER_SYNC Configuration entry.
+	configEntry := section(t, guide, "### AUTO_REBUILD_AFTER_SYNC", "### ")
+	requireContains(t, "AUTO_REBUILD_AFTER_SYNC entry", configEntry,
+		"patch",
+	)
+}
+
+// ===========================================================================
+// TS-24-31 (unit): The guide has no "returns immediately" claim and exactly
+// one two-models description.
+// Verifies: 24-REQ-5.5
+// ===========================================================================
+
+func TestDocs_TS_24_31_NoReturnsImmediatelyAndOneModelsDescription(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// No sentence says sync returns immediately when upstream is unchanged.
+	norm := strings.ToLower(guide)
+	if strings.Contains(norm, "returns immediately") {
+		t.Error("guide contains 'returns immediately'")
+	}
+
+	// The spec-20 interim note should be gone.
+	if strings.Contains(guide, "fork_push_control") {
+		t.Error("guide still contains the interim fork_push_control note")
+	}
+
+	// The two models are described only in "Where patch branches live".
+	count := strings.Count(guide, "### Where patch branches live")
+	if count != 1 {
+		t.Errorf("expected exactly 1 '### Where patch branches live' heading, got %d", count)
+	}
+}
+
+// ===========================================================================
+// TS-24-32 (unit): "Auto-rebuild on push" keeps the hook description and
+// adds per-mode push treatment.
+// Verifies: 24-REQ-5.6
+// ===========================================================================
+
+func TestDocs_TS_24_32_AutoRebuildOnPushPerModeTreatment(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	pushSec := section(t, guide, "### Auto-rebuild on push", "### ")
+
+	requireContains(t, "Auto-rebuild on push", pushSec,
+		"AUTO_REBUILD_AFTER_PUSH",
+		"reject",
+		"forward",
+		"mirror",
+		"accepted",
+	)
+}
+
+// ===========================================================================
+// TS-24-33 (unit): The Rebuild algorithm section keeps its checks and gains
+// one sentence about snapshotted patch tips.
+// Verifies: 24-REQ-5.7
+// ===========================================================================
+
+func TestDocs_TS_24_33_RebuildAlgorithmSnapshotSentence(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	algo := section(t, guide, "### Rebuild algorithm", "### ")
+
+	requireContains(t, "Rebuild algorithm", algo,
+		"last sync",
+		"origin mode",
+		"push",
+		"hub mode",
+	)
+}
+
 // findPurgeCallers searches non-test .go files under internal/ for calls to
 // PurgeDeletedPatches or PurgeExpiredDeletedPatches. It returns the file
 // paths that contain such calls, excluding function definitions and test
