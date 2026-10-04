@@ -514,6 +514,17 @@ func (m *mockPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context,
 	return nil
 }
 
+func (m *mockPatchStore) ListExpiredDeletedPatches(_ context.Context, _ string) ([]ExpiredDeletedPatch, error) {
+	return nil, nil
+}
+
+func (m *mockPatchStore) DeletePatchByIDIfDeleted(_ context.Context, patchID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.DeletedPatches = append(m.DeletedPatches, patchID)
+	return nil
+}
+
 // ===========================================================================
 // HTTP Test Environment
 // ===========================================================================
