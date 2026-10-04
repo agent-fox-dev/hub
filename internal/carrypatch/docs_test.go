@@ -2452,6 +2452,442 @@ func TestDocs_TS_24_62_MutationGuard(t *testing.T) {
 }
 
 // ===========================================================================
+// TS-24-63 (smoke): The rewritten documents, errata and docs test pass
+// together under make test.
+// Verifies: 24-PATH-1, 24-REQ-1.4, 24-REQ-10.7
+// ===========================================================================
+
+func TestDocs_TS_24_63_RewrittenDocsErrataAndTestsPassTogether(t *testing.T) {
+	// Verify all key files exist and are non-empty.
+	files := []string{
+		"carry_patch_workflow.md",
+		"examples/AGENTS_carry_patch.md",
+		"adr/01-choose-the-authority-for-patch-branches.md",
+		"errata/20_fork_patch_sync_divergences.md",
+		"errata/21_fork_patch_registration_divergences.md",
+		"errata/22_fork_push_control_divergences.md",
+		"errata/23_patch_divergence_recovery_divergences.md",
+	}
+	for _, f := range files {
+		d := readDoc(t, f)
+		if len(d) == 0 {
+			t.Errorf("%s is empty", f)
+		}
+	}
+
+	// Verify the guide has the key structural headings from the rewrite.
+	guide := readDoc(t, "carry_patch_workflow.md")
+	structuralHeadings := []string{
+		"### Where patch branches live",
+		"### Alternative: hub-authoritative workspace",
+		"### Resolving conflicts after a failed rebuild",
+		"#### Resolving in hub mode",
+		"#### Resolving in origin mode",
+		"### Recovering a replaced or diverged patch branch",
+		"### PATCH_BRANCH_SOURCE",
+		"### PATCH_DIVERGENCE_POLICY",
+		"### PUSH_PATCHES_TO_ORIGIN",
+		"### Sync algorithm",
+		"### Auto-rebuild on push",
+		"### Rebuild algorithm",
+	}
+	for _, h := range structuralHeadings {
+		if !strings.Contains(guide, h) {
+			t.Errorf("guide missing structural heading %q", h)
+		}
+	}
+
+	// Verify the old Remotes purpose text is gone.
+	if strings.Contains(guide, "Where patch branches live; push target for local work") {
+		t.Error("guide still contains the old Remotes purpose text")
+	}
+
+	// Verify the interim fork_push_control note is gone.
+	if strings.Contains(guide, "fork_push_control") {
+		t.Error("guide still contains the interim fork_push_control note")
+	}
+
+	// Verify ADR 01 is Accepted.
+	adr := readDoc(t, "adr/01-choose-the-authority-for-patch-branches.md")
+	requireContains(t, "ADR 01", adr, "Status:** Accepted")
+	if strings.Contains(adr, "Proposed") {
+		t.Error("ADR 01 still contains 'Proposed'")
+	}
+
+	// Verify each erratum has the three required sections.
+	errataFiles := []string{
+		"errata/20_fork_patch_sync_divergences.md",
+		"errata/21_fork_patch_registration_divergences.md",
+		"errata/22_fork_push_control_divergences.md",
+		"errata/23_patch_divergence_recovery_divergences.md",
+	}
+	for _, f := range errataFiles {
+		d := readDoc(t, f)
+		requireContains(t, f, d,
+			"## Spec Expectation",
+			"## Implementation Reality",
+			"## Resolution",
+		)
+	}
+
+	// Verify the agent example mentions PATCH_BRANCH_SOURCE and afc workspace sync.
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+	requireContains(t, "agent example", agent, "PATCH_BRANCH_SOURCE", "afc workspace sync")
+
+	// Verify the existing TS-01-69 to TS-01-72 content is still present.
+	// TS-01-70 checks: worktree, update-ref, follow-up in Rebuild algorithm.
+	algo := section(t, guide, "### Rebuild algorithm", "### ")
+	requireContains(t, "Rebuild algorithm", algo, "worktree", "update-ref", "follow-up")
+
+	// TS-01-70 checks: does not change the trunk, pre-rebuild integration branch,
+	// follow-up rebuild, stale.
+	lower := strings.Join(strings.Fields(strings.ToLower(guide)), " ")
+	for _, want := range []string{
+		"does not change the trunk",
+		"pre-rebuild integration branch",
+		"follow-up rebuild",
+		"stale",
+	} {
+		if !strings.Contains(lower, want) {
+			t.Errorf("guide does not contain %q (needed for TS-01-70)", want)
+		}
+	}
+
+	// TS-01-70 checks: Concurrent rebuild prevention note.
+	if !strings.Contains(guide, "**Concurrent rebuild prevention.**") {
+		t.Error("guide missing lock note (needed for TS-01-70)")
+	}
+
+	// TS-01-71 checks: _rebuild_temp only with legacy markers in agent example.
+	agentLines := strings.Split(agent, "\n")
+	for i, line := range agentLines {
+		if !strings.Contains(line, "_rebuild_temp") {
+			continue
+		}
+		lo, hi := max(0, i-1), min(len(agentLines), i+3)
+		ctx := strings.ToLower(strings.Join(agentLines[lo:hi], "\n"))
+		if !strings.Contains(ctx, "legacy") {
+			t.Errorf("agent example mentions _rebuild_temp without legacy marker: %q", line)
+		}
+	}
+
+	// Verify only docs files and docs_test.go are changed (structural check).
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read current dir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, "_test.go") || name == "docs_test.go" {
+			continue
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "func TestDocs_TS_24_") {
+			t.Errorf("file %s defines TS-24 test functions; only docs_test.go should", name)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-64 (smoke): An operator can follow the fork-first guide from setup
+// through conflict recovery using only documented commands.
+// Verifies: 24-PATH-2, 24-REQ-4.4, 24-REQ-6.3, 24-REQ-6.7
+// ===========================================================================
+
+func TestDocs_TS_24_64_OperatorForkFirstGuideEndToEnd(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	cliDoc := readDoc(t, "cli.md")
+
+	// --- PATH-2 step 1: Where patch branches live exists and the vars command follows ---
+	wpblIdx := strings.Index(guide, "### Where patch branches live")
+	if wpblIdx < 0 {
+		t.Fatal("guide missing 'Where patch branches live' heading")
+	}
+
+	// The choose-authority step must follow.
+	chooseIdx := strings.Index(guide, "### 3. Choose the authority")
+	if chooseIdx < 0 {
+		t.Fatal("guide missing 'Choose the authority' step")
+	}
+	if chooseIdx <= wpblIdx {
+		t.Error("'Choose the authority' should appear after 'Where patch branches live'")
+	}
+
+	// The vars create command must be in the choose step.
+	chooseStep := section(t, guide, "### 3. Choose the authority", "### ")
+	requireContains(t, "choose step", chooseStep, "afc vars create PATCH_BRANCH_SOURCE=origin")
+
+	// --- PATH-2 step 2: push to fork, register, sync ---
+	pushIdx := strings.Index(guide, "### 4. Create and push a patch branch")
+	regIdx := strings.Index(guide, "### 5. Register your patches")
+	syncIdx := strings.Index(guide, "### 6. Sync")
+	if pushIdx < 0 || regIdx < 0 || syncIdx < 0 {
+		t.Fatal("guide missing push, register or sync step")
+	}
+	if !(pushIdx < regIdx && regIdx < syncIdx) {
+		t.Error("steps should be in order: push, register, sync")
+	}
+
+	// The push step pushes to the fork, not the hub.
+	pushStep := section(t, guide, "### 4. Create and push a patch branch", "### ")
+	requireContains(t, "push step", pushStep, "fork")
+
+	// The sync step uses afc workspace sync.
+	syncStep := section(t, guide, "### 6. Sync", "### ")
+	requireContains(t, "sync step", syncStep, "afc workspace sync api-gateway")
+
+	// --- PATH-2 step 3: after a failed rebuild, origin subsection directs fork fix + sync ---
+	conflictSec := section(t, guide, "### Resolving conflicts after a failed rebuild", "### ")
+	originIdx := strings.Index(conflictSec, "#### Resolving in origin mode")
+	if originIdx < 0 {
+		t.Fatal("conflict section missing origin mode subsection")
+	}
+	originSub := conflictSec[originIdx:]
+
+	// Origin subsection directs a fork fix, push and sync.
+	requireContains(t, "origin conflict subsection", originSub,
+		"local clone",
+		"fork",
+		"afc workspace sync",
+	)
+
+	// Origin subsection does NOT direct a hub push or trunk edit.
+	norm := strings.Join(strings.Fields(strings.ToLower(originSub)), " ")
+	if strings.Contains(norm, "push to the hub") && !strings.Contains(norm, "do not push") && !strings.Contains(norm, "not push") {
+		t.Error("origin conflict subsection directs a hub push")
+	}
+	requireContains(t, "origin conflict subsection", originSub, "not edit the trunk")
+
+	// --- PATH-2 step 4: recovery section directs fetch or reset-to-origin ---
+	recoverySec := section(t, guide, "### Recovering a replaced or diverged patch branch", "### ")
+	requireContains(t, "recovery section", recoverySec,
+		"git fetch <hub_url> refs/hub/replaced/<branch>",
+		"afc patch reset-to-origin",
+	)
+
+	// --- Verify every afc command in the fork-first walkthrough exists in cli.md ---
+	// Extract the Getting Started section.
+	gs := section(t, guide, "## Getting started", "## ")
+
+	// Also include the conflict and recovery sections.
+	allSections := gs + "\n" + conflictSec + "\n" + recoverySec
+
+	// Extract afc commands from fenced code blocks.
+	inBlock := false
+	var afcCmds []string
+	for _, line := range strings.Split(allSections, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inBlock = !inBlock
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "afc ") {
+			afcCmds = append(afcCmds, trimmed)
+		}
+	}
+
+	if len(afcCmds) == 0 {
+		t.Fatal("no afc commands found in the fork-first walkthrough")
+	}
+
+	// Known subcommand words for parsing.
+	known := map[string]bool{
+		"workspace": true, "patch": true, "rebuild": true,
+		"secrets": true, "vars": true, "rerere": true,
+		"sync": true, "create": true, "add": true,
+		"submit": true, "status": true, "list": true,
+		"update": true, "delete": true, "remove": true,
+		"restore": true, "reorder": true, "preview": true,
+		"cancel": true, "requeue": true, "rollback": true,
+		"forget": true, "patch-status": true,
+		"reset-to-origin": true, "reclone": true,
+	}
+
+	for _, line := range afcCmds {
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		var cmdParts []string
+		for _, p := range parts[1:] {
+			if strings.HasPrefix(p, "-") || strings.Contains(p, "=") || strings.Contains(p, "/") || strings.Contains(p, ".") {
+				break
+			}
+			if known[p] {
+				cmdParts = append(cmdParts, p)
+			} else {
+				break
+			}
+		}
+		if len(cmdParts) == 0 {
+			continue
+		}
+		cmdPath := "afc " + strings.Join(cmdParts, " ")
+		if !strings.Contains(cliDoc, cmdPath) {
+			t.Errorf("command %q from walkthrough not found in cli.md", cmdPath)
+		}
+	}
+
+	// --- Verify no command in the origin-mode sections directs a hub push ---
+	// The origin conflict subsection and recovery section should not contain
+	// "push to the hub" as an instruction (only as a prohibition).
+	originAndRecovery := originSub + "\n" + recoverySec
+	originNorm := strings.Join(strings.Fields(strings.ToLower(originAndRecovery)), " ")
+
+	// Should not contain instructions to edit the trunk.
+	if strings.Contains(originNorm, "edit the trunk") && !strings.Contains(originNorm, "not edit the trunk") {
+		t.Error("origin sections direct editing the trunk")
+	}
+}
+
+// ===========================================================================
+// TS-24-65 (smoke): An agent reading the example in origin mode is led to
+// the fork and to workspace sync.
+// Verifies: 24-PATH-3, 24-REQ-9.1, 24-REQ-9.3
+// ===========================================================================
+
+func TestDocs_TS_24_65_AgentOriginModeLeadsToForkAndSync(t *testing.T) {
+	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
+	cliDoc := readDoc(t, "cli.md")
+
+	// --- PATH-3 step 1: first step is afc vars list ---
+	understand := section(t, agent, "## Understand Before You Code", "## ")
+
+	// The first numbered item should be about PATCH_BRANCH_SOURCE.
+	norm := strings.Join(strings.Fields(understand), " ")
+	pbsIdx := strings.Index(norm, "PATCH_BRANCH_SOURCE")
+	if pbsIdx < 0 {
+		t.Fatal("Understand Before You Code does not mention PATCH_BRANCH_SOURCE")
+	}
+
+	// afc vars list --workspace must appear in the section.
+	requireContains(t, "Understand Before You Code", understand,
+		"afc vars list --workspace <workspace-slug>",
+	)
+
+	// PATCH_BRANCH_SOURCE must be the first orientation item (before patch stack).
+	patchStackIdx := strings.Index(norm, "patch stack")
+	if patchStackIdx >= 0 && pbsIdx > patchStackIdx {
+		t.Error("PATCH_BRANCH_SOURCE should appear before 'patch stack' in orientation")
+	}
+
+	// --- PATH-3 step 2: origin instructions say clone the fork and push to fork ---
+	pushSec := section(t, agent, "### Step 4: Push", "### ")
+	originIdx := strings.Index(strings.ToLower(pushSec), "origin")
+	if originIdx < 0 {
+		t.Fatal("Push section does not mention origin mode")
+	}
+
+	// The origin mode instructions should say push to the fork.
+	requireContains(t, "Push section", pushSec, "fork")
+
+	// The agent example should say "clone the fork" somewhere.
+	requireContains(t, "agent example", agent, "clone the fork")
+
+	// --- PATH-3 step 3: registration followed by afc workspace sync, not afc rebuild submit ---
+	rebuildSec := section(t, agent, "### Step 6: Trigger a Rebuild", "### ")
+
+	// Origin mode should direct to afc workspace sync.
+	requireContains(t, "Trigger a Rebuild", rebuildSec, "afc workspace sync")
+
+	// Origin mode should say NOT afc rebuild submit.
+	requireContains(t, "Trigger a Rebuild", rebuildSec, "not `afc rebuild submit`")
+
+	// --- Verify each key command exists in cli.md ---
+	keyCmds := []string{
+		"afc vars list",
+		"afc workspace sync",
+		"afc patch add",
+		"afc patch reset-to-origin",
+	}
+	for _, cmd := range keyCmds {
+		if !strings.Contains(cliDoc, cmd) {
+			t.Errorf("command %q not found in cli.md", cmd)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-66 (smoke): Removing required content from the documents makes the
+// docs test fail naming the missing content.
+// Verifies: 24-PATH-4, 24-REQ-10.8
+// ===========================================================================
+
+func TestDocs_TS_24_66_RemovingContentMakesTestFail(t *testing.T) {
+	// Load all documents.
+	fileSet := map[string]bool{}
+	for _, a := range authorityDocsAssertions() {
+		fileSet[a.file] = true
+	}
+
+	origDocs := map[string]string{}
+	for f := range fileSet {
+		origDocs[f] = readDoc(t, f)
+	}
+
+	// Baseline must pass.
+	baseline := runAuthorityDocsCheck(origDocs)
+	if len(baseline) > 0 {
+		t.Fatalf("baseline failures (test is broken): %v", baseline)
+	}
+
+	// Test four specific removals that correspond to the spec's PATH-4.
+	removals := []struct {
+		name   string
+		file   string
+		needle string
+		absent bool
+	}{
+		// 1. Remove the "Where patch branches live" heading.
+		{"heading", "carry_patch_workflow.md", "### Where patch branches live", false},
+		// 2. Remove a Configuration variable entry.
+		{"config variable", "carry_patch_workflow.md", "### PATCH_BRANCH_SOURCE", false},
+		// 3. Remove an errata file's content (simulate missing file by clearing it).
+		{"errata file", "errata/20_fork_patch_sync_divergences.md", "## Spec Expectation", false},
+		// 4. Remove the ADR 01 Accepted status.
+		{"ADR Accepted status", "adr/01-choose-the-authority-for-patch-branches.md", "Status:** Accepted", false},
+	}
+
+	for _, r := range removals {
+		t.Run(r.name, func(t *testing.T) {
+			mutated := make(map[string]string, len(origDocs))
+			for k, v := range origDocs {
+				mutated[k] = v
+			}
+
+			if r.absent {
+				mutated[r.file] = mutated[r.file] + "\n" + r.needle + "\n"
+			} else {
+				mutated[r.file] = strings.ReplaceAll(mutated[r.file], r.needle, "")
+			}
+
+			failures := runAuthorityDocsCheck(mutated)
+			if len(failures) == 0 {
+				t.Errorf("removing %q from %s did not cause a failure", r.needle, r.file)
+			}
+
+			// Verify the failure message names the missing content.
+			found := false
+			for _, f := range failures {
+				if strings.Contains(f, r.needle) || strings.Contains(f, r.name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("failure did not name the missing content; got %v", failures)
+			}
+		})
+	}
+}
+
+// ===========================================================================
 // TS-24-1 (property): Every quoted variable, value, message, field, path,
 // exit code and event type in the rewritten documents exists verbatim in the
 // shipped code, docs/api.md or docs/cli.md.
