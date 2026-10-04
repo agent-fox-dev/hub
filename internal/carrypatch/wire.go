@@ -294,6 +294,42 @@ func (s *SQLPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, 
 	return err
 }
 
+// ListExpiredDeletedPatches returns soft-deleted rows whose deleted_at is
+// older than the provided cutoff time (RFC3339 string), with id, workspace
+// slug and branch name.
+func (s *SQLPatchStore) ListExpiredDeletedPatches(_ context.Context, olderThan string) ([]ExpiredDeletedPatch, error) {
+	rows, err := s.DB.Query(
+		`SELECT id, workspace_slug, branch_name FROM patches
+		 WHERE status = 'deleted' AND deleted_at IS NOT NULL AND deleted_at < ?`,
+		olderThan,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ExpiredDeletedPatch
+	for rows.Next() {
+		var r ExpiredDeletedPatch
+		if err := rows.Scan(&r.ID, &r.Slug, &r.Branch); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// DeletePatchByIDIfDeleted permanently removes a patch row only if its
+// current status is 'deleted'. Returns nil when the row does not exist
+// or is not in deleted status.
+func (s *SQLPatchStore) DeletePatchByIDIfDeleted(_ context.Context, patchID string) error {
+	_, err := s.DB.Exec(
+		`DELETE FROM patches WHERE id = ? AND status = 'deleted'`,
+		patchID,
+	)
+	return err
+}
+
 // CompactPositions re-numbers the non-deleted patches of a workspace to
 // contiguous 1-based positions in their current order. Soft-deleted patches
 // keep a unique negative position (-rowid) and are excluded.

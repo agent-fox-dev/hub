@@ -1836,6 +1836,48 @@ afc patch restore <workspace-slug> <patch-id>
 
 ---
 
+### afc patch reset-to-origin
+
+Reset a patch branch to the fork's current tip, regardless of
+`PATCH_DIVERGENCE_POLICY`. If the hub's branch tip is discarded (diverged or
+force-pushed on the fork), the old tip is saved under
+`refs/hub/replaced/<branch>`. The response includes `replaced_sha` when a
+backup exists.
+
+To recover the discarded tip:
+
+```
+git fetch <hub_url> refs/hub/replaced/<branch>
+```
+
+**Usage:**
+
+```
+afc patch reset-to-origin <workspace-slug> <patch-id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workspace-slug>` | Workspace slug |
+| `<patch-id>` | Patch UUID |
+
+**Flags:** None.
+
+**Response:** The patch object as JSON, including `replaced_sha` when a backup
+exists, `rebuild_triggered` (boolean) and `rebuild_job_id` (string, when a
+rebuild was enqueued).
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|----------|
+| 0 | Patch branch reset successfully |
+| 1 | Patch not found, ineligible status, workspace not active, origin fetch failed, API error, network error, or timeout |
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage

@@ -1123,9 +1123,11 @@ upstream, it can be recovered without needing to re-create it from scratch.
 |--------|------|-------------|
 | `POST` | `/workspaces/:slug/patches` | Add one or more patches (single object or JSON array) |
 | `GET` | `/workspaces/:slug/patches` | List non-deleted patches in position order |
+| `GET` | `/workspaces/:slug/patches/:id` | Get a single patch (includes `replaced_sha` when a backup ref exists) |
 | `PATCH` | `/workspaces/:slug/patches/:id` | Update patch fields (status, position, description, upstream_pr_url) |
-| `DELETE` | `/workspaces/:slug/patches/:id` | Permanently remove a patch |
+| `DELETE` | `/workspaces/:slug/patches/:id` | Permanently remove a patch (also removes the backup ref) |
 | `POST` | `/workspaces/:slug/patches/:id/restore` | Restore a soft-deleted patch |
+| `POST` | `/workspaces/:slug/patches/:id/reset-to-origin` | Reset a patch branch to the fork's current tip |
 | `POST` | `/workspaces/:slug/patches/reorder` | Reorder all patches |
 
 ### Rebuild endpoints

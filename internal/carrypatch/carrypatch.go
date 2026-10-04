@@ -161,6 +161,14 @@ type GitRunner interface {
 	UpdateRef(ctx context.Context, ref, sha string) error
 }
 
+// ExpiredDeletedPatch holds the minimal data needed to purge a soft-deleted
+// patch and clean up its backup ref.
+type ExpiredDeletedPatch struct {
+	ID     string
+	Slug   string
+	Branch string
+}
+
 // PatchStore abstracts patch table operations for testing.
 type PatchStore interface {
 	ListPatches(ctx context.Context, workspaceSlug string) ([]Patch, error)
@@ -180,6 +188,13 @@ type PatchStore interface {
 	// ClearOriginSyncStateForMergedDeleted clears the origin sync state for
 	// all patches of a workspace whose status is merged_upstream or deleted.
 	ClearOriginSyncStateForMergedDeleted(ctx context.Context, workspaceSlug string) error
+	// ListExpiredDeletedPatches returns soft-deleted rows whose deleted_at is
+	// older than the cutoff, with id, workspace slug and branch name.
+	ListExpiredDeletedPatches(ctx context.Context, olderThan string) ([]ExpiredDeletedPatch, error)
+	// DeletePatchByIDIfDeleted permanently removes a patch row only if its
+	// current status is 'deleted'. Returns nil when the row does not exist
+	// or is not in deleted status.
+	DeletePatchByIDIfDeleted(ctx context.Context, patchID string) error
 }
 
 // FetchFunc fetches from the upstream remote of the repository at repoPath

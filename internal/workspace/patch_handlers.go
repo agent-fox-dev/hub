@@ -345,6 +345,55 @@ func handleAddPatchBatch(c echo.Context, db *sql.DB, slug string, ws *Workspace,
 	return c.JSON(http.StatusCreated, result)
 }
 
+// handleGetPatch handles GET /api/v1/workspaces/:slug/patches/:id (23-REQ-1).
+// Returns the patch object with replaced_sha when a backup ref exists.
+func handleGetPatch(db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth := requirePatchReadScope(c)
+		if auth == nil {
+			return nil
+		}
+
+		slug := c.Param("slug")
+		patchID := c.Param("id")
+
+		// Owner or admin only; 404 for non-owners.
+		ws := lookupPatchWorkspace(c, db, slug, auth)
+		if ws == nil {
+			return nil
+		}
+
+		// Look up the patch by ID — includes soft-deleted patches.
+		p, err := getPatch(db, slug, patchID)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if p == nil {
+			return respondError(c, http.StatusNotFound, "patch not found")
+		}
+
+		resp := patchResponse(p)
+
+		// Add replaced_sha when a recovery hook is registered and the
+		// backup ref exists. Errors are logged and never fail the request.
+		hook := getRecoveryHook()
+		if hook != nil {
+			sha, found, err := hook.ReadReplacedSHA(c.Request().Context(), slug, p.BranchName)
+			if err != nil {
+				slog.Warn("failed to read replaced SHA",
+					"slug", slug,
+					"branch", p.BranchName,
+					"error", err,
+				)
+			} else if found {
+				resp["replaced_sha"] = sha
+			}
+		}
+
+		return c.JSON(http.StatusOK, resp)
+	}
+}
+
 // handleListPatches handles GET /api/v1/workspaces/:slug/patches (15-REQ-9).
 func handleListPatches(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -489,7 +538,8 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 			return nil
 		}
 
-		// Look up patch before deletion for audit metadata (18-REQ-3.2).
+		// Look up patch before deletion for audit metadata (18-REQ-3.2)
+		// and for the branch name needed by backup-ref cleanup (23-REQ-7.1).
 		patchInfo, _ := getPatch(db, slug, patchID)
 
 		// 15-REQ-11.1, 15-REQ-11.2: Delete and compact.
@@ -513,6 +563,22 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 					"branch_name": patchInfo.BranchName,
 				},
 			})
+		}
+
+		// 23-REQ-7.1: Remove the backup ref for the deleted patch.
+		// Best effort: a failure never changes the response (the row is
+		// already gone). No workspace lock is taken (23-REQ-7.5).
+		if patchInfo != nil {
+			hook := getRecoveryHook()
+			if hook != nil {
+				if err := hook.RemoveBackup(c.Request().Context(), slug, patchInfo.BranchName); err != nil {
+					slog.Warn("failed to remove backup ref on patch delete",
+						"slug", slug,
+						"branch", patchInfo.BranchName,
+						"error", err,
+					)
+				}
+			}
 		}
 
 		return c.NoContent(http.StatusNoContent)
