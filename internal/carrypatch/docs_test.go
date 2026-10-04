@@ -2218,3 +2218,234 @@ func TestDocs_TS_24_60_ErrataEntriesMatchCode(t *testing.T) {
 		"scheduled",
 	)
 }
+
+// ===========================================================================
+// TS-24-61 (integration): The new docs test passes on the real documents and
+// covers every listed assertion.
+// Verifies: 24-REQ-10.7
+// ===========================================================================
+
+// authorityDocsAssertion describes one content assertion for the aggregate
+// authority-docs test. The mutation test (TS-24-62) iterates this table.
+type authorityDocsAssertion struct {
+	name     string // human-readable label
+	file     string // relative path under docs/
+	needle   string // string that must be present
+	absent   bool   // when true, needle must NOT be present
+	section  string // optional: restrict search to this section start marker
+	secStop  string // optional: section stop marker
+}
+
+// authorityDocsAssertions returns the full table of assertions for the
+// aggregate authority-docs test. Kept as a function so both TS-24-61 and
+// TS-24-62 share the same list.
+func authorityDocsAssertions() []authorityDocsAssertion {
+	return []authorityDocsAssertion{
+		// --- Where patch branches live heading and content ---
+		{"wpbl heading", "carry_patch_workflow.md", "### Where patch branches live", false, "", ""},
+		{"wpbl PATCH_BRANCH_SOURCE", "carry_patch_workflow.md", "PATCH_BRANCH_SOURCE", false, "### Where patch branches live", "### "},
+		{"wpbl PATCH_DIVERGENCE_POLICY", "carry_patch_workflow.md", "PATCH_DIVERGENCE_POLICY", false, "### Where patch branches live", "### "},
+		{"wpbl PUSH_PATCHES_TO_ORIGIN", "carry_patch_workflow.md", "PUSH_PATCHES_TO_ORIGIN", false, "### Where patch branches live", "### "},
+		{"wpbl hub value", "carry_patch_workflow.md", "`hub`", false, "### Where patch branches live", "### "},
+		{"wpbl origin value", "carry_patch_workflow.md", "`origin`", false, "### Where patch branches live", "### "},
+
+		// --- Configuration: one entry per variable ---
+		{"cfg PATCH_BRANCH_SOURCE heading", "carry_patch_workflow.md", "### PATCH_BRANCH_SOURCE", false, "## Configuration", "## "},
+		{"cfg PATCH_DIVERGENCE_POLICY heading", "carry_patch_workflow.md", "### PATCH_DIVERGENCE_POLICY", false, "## Configuration", "## "},
+		{"cfg PUSH_PATCHES_TO_ORIGIN heading", "carry_patch_workflow.md", "### PUSH_PATCHES_TO_ORIGIN", false, "## Configuration", "## "},
+
+		// --- Fork-first and alternative walkthrough headings ---
+		{"gs fork-authoritative", "carry_patch_workflow.md", "fork-authoritative", false, "## Getting started", "## "},
+		{"gs alternative heading", "carry_patch_workflow.md", "### Alternative: hub-authoritative workspace", false, "", ""},
+
+		// --- Both mode subsections in the conflict section ---
+		{"conflict hub mode", "carry_patch_workflow.md", "#### Resolving in hub mode", false, "### Resolving conflicts after a failed rebuild", "### "},
+		{"conflict origin mode", "carry_patch_workflow.md", "#### Resolving in origin mode", false, "### Resolving conflicts after a failed rebuild", "### "},
+
+		// --- Recovery section ---
+		{"recovery heading", "carry_patch_workflow.md", "### Recovering a replaced or diverged patch branch", false, "", ""},
+
+		// --- Remotes table lacks old string ---
+		{"remotes no old string", "carry_patch_workflow.md", "Where patch branches live; push target for local work", true, "", ""},
+
+		// --- Agent example ---
+		{"agent PATCH_BRANCH_SOURCE", "examples/AGENTS_carry_patch.md", "PATCH_BRANCH_SOURCE", false, "", ""},
+		{"agent afc workspace sync", "examples/AGENTS_carry_patch.md", "afc workspace sync", false, "", ""},
+
+		// --- ADR 01 ---
+		{"adr01 accepted", "adr/01-choose-the-authority-for-patch-branches.md", "Status:** Accepted", false, "", ""},
+		{"adr01 no proposed", "adr/01-choose-the-authority-for-patch-branches.md", "Proposed", true, "", ""},
+
+		// --- Errata files: three section headings each ---
+		{"errata 20 spec expectation", "errata/20_fork_patch_sync_divergences.md", "## Spec Expectation", false, "", ""},
+		{"errata 20 impl reality", "errata/20_fork_patch_sync_divergences.md", "## Implementation Reality", false, "", ""},
+		{"errata 20 resolution", "errata/20_fork_patch_sync_divergences.md", "## Resolution", false, "", ""},
+		{"errata 21 spec expectation", "errata/21_fork_patch_registration_divergences.md", "## Spec Expectation", false, "", ""},
+		{"errata 21 impl reality", "errata/21_fork_patch_registration_divergences.md", "## Implementation Reality", false, "", ""},
+		{"errata 21 resolution", "errata/21_fork_patch_registration_divergences.md", "## Resolution", false, "", ""},
+		{"errata 22 spec expectation", "errata/22_fork_push_control_divergences.md", "## Spec Expectation", false, "", ""},
+		{"errata 22 impl reality", "errata/22_fork_push_control_divergences.md", "## Implementation Reality", false, "", ""},
+		{"errata 22 resolution", "errata/22_fork_push_control_divergences.md", "## Resolution", false, "", ""},
+		{"errata 23 spec expectation", "errata/23_patch_divergence_recovery_divergences.md", "## Spec Expectation", false, "", ""},
+		{"errata 23 impl reality", "errata/23_patch_divergence_recovery_divergences.md", "## Implementation Reality", false, "", ""},
+		{"errata 23 resolution", "errata/23_patch_divergence_recovery_divergences.md", "## Resolution", false, "", ""},
+	}
+}
+
+// runAuthorityDocsCheck runs all assertions from the table against the given
+// document contents. It returns a list of failure messages (empty = all pass).
+func runAuthorityDocsCheck(docs map[string]string) []string {
+	var failures []string
+	for _, a := range authorityDocsAssertions() {
+		doc, ok := docs[a.file]
+		if !ok {
+			failures = append(failures, a.name+": file not found: "+a.file)
+			continue
+		}
+
+		target := doc
+		if a.section != "" {
+			idx := strings.Index(doc, a.section)
+			if idx < 0 {
+				failures = append(failures, a.name+": section start not found: "+a.section)
+				continue
+			}
+			rest := doc[idx+len(a.section):]
+			if a.secStop != "" {
+				if j := strings.Index(rest, "\n"+a.secStop); j >= 0 {
+					rest = rest[:j]
+				}
+			}
+			target = a.section + rest
+		}
+
+		// Normalise whitespace for the check.
+		norm := strings.Join(strings.Fields(target), " ")
+
+		if a.absent {
+			if strings.Contains(norm, a.needle) {
+				failures = append(failures, a.name+": should be absent but found: "+a.needle)
+			}
+		} else {
+			if !strings.Contains(norm, a.needle) {
+				failures = append(failures, a.name+": not found: "+a.needle)
+			}
+		}
+	}
+	return failures
+}
+
+// mutateDoc removes (or injects for absent assertions) the needle from the
+// document, scoped to the assertion's section when one is specified. For
+// section-scoped assertions the needle is removed from all occurrences
+// within that section only, leaving the rest of the document intact.
+func mutateDoc(doc string, a authorityDocsAssertion) string {
+	if a.absent {
+		// Inject the needle to make the absent check fail.
+		return doc + "\n" + a.needle + "\n"
+	}
+
+	if a.section == "" {
+		// Whole-file assertion: remove all occurrences.
+		return strings.ReplaceAll(doc, a.needle, "")
+	}
+
+	// Section-scoped: find the section boundaries and remove the needle
+	// only within them.
+	idx := strings.Index(doc, a.section)
+	if idx < 0 {
+		return doc // section not found; the check will fail on its own
+	}
+
+	secStart := idx
+	rest := doc[idx+len(a.section):]
+	secEnd := len(doc)
+	if a.secStop != "" {
+		if j := strings.Index(rest, "\n"+a.secStop); j >= 0 {
+			secEnd = idx + len(a.section) + j
+		}
+	}
+
+	secText := doc[secStart:secEnd]
+	mutated := strings.ReplaceAll(secText, a.needle, "")
+	return doc[:secStart] + mutated + doc[secEnd:]
+}
+
+func TestDocs_TS_24_61_AggregateAuthorityDocsTest(t *testing.T) {
+	// Load all documents referenced by the assertions.
+	files := map[string]bool{}
+	for _, a := range authorityDocsAssertions() {
+		files[a.file] = true
+	}
+
+	docs := map[string]string{}
+	for f := range files {
+		docs[f] = readDoc(t, f)
+	}
+
+	failures := runAuthorityDocsCheck(docs)
+	for _, msg := range failures {
+		t.Error(msg)
+	}
+}
+
+// ===========================================================================
+// TS-24-62 (property): Removing any asserted content makes the new docs test
+// fail while existing tests and the make targets pass.
+// Verifies: 24-REQ-10.8
+// ===========================================================================
+
+func TestDocs_TS_24_62_MutationGuard(t *testing.T) {
+	// Load all documents.
+	fileSet := map[string]bool{}
+	for _, a := range authorityDocsAssertions() {
+		fileSet[a.file] = true
+	}
+
+	origDocs := map[string]string{}
+	for f := range fileSet {
+		origDocs[f] = readDoc(t, f)
+	}
+
+	// Baseline must pass.
+	baseline := runAuthorityDocsCheck(origDocs)
+	if len(baseline) > 0 {
+		t.Fatalf("baseline failures (test is broken): %v", baseline)
+	}
+
+	for i, a := range authorityDocsAssertions() {
+		t.Run(a.name, func(t *testing.T) {
+			// Build a mutated copy of the docs.
+			mutated := make(map[string]string, len(origDocs))
+			for k, v := range origDocs {
+				mutated[k] = v
+			}
+
+			result := mutateDoc(mutated[a.file], a)
+			if result == mutated[a.file] && !a.absent {
+				t.Fatalf("assertion %d (%s): needle %q not found in %s for removal",
+					i, a.name, a.needle, a.file)
+			}
+			mutated[a.file] = result
+
+			failures := runAuthorityDocsCheck(mutated)
+			if len(failures) == 0 {
+				t.Errorf("assertion %d (%s): removing/injecting %q did not cause a failure",
+					i, a.name, a.needle)
+			}
+
+			// Verify the failure names the right assertion.
+			found := false
+			for _, f := range failures {
+				if strings.Contains(f, a.name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("assertion %d (%s): failure did not name the assertion; got %v",
+					i, a.name, failures)
+			}
+		})
+	}
+}
