@@ -279,7 +279,7 @@
         "docs/errata/23_patch_divergence_recovery_divergences.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,

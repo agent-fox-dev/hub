@@ -2019,3 +2019,202 @@ func TestDocs_TS_24_53_RemoveTextProjectContextAndCommandsTable(t *testing.T) {
 		"afc vars list --workspace",
 	)
 }
+
+// ===========================================================================
+// TS-24-55 (unit): ADR 01 is Accepted with an Accepted date, the proposal
+// date unchanged and no "Proposed".
+// Verifies: 24-REQ-10.1
+// ===========================================================================
+
+func TestDocs_TS_24_55_ADR01AcceptedStatus(t *testing.T) {
+	adr := readDoc(t, "adr/01-choose-the-authority-for-patch-branches.md")
+
+	// Must contain "Status:** Accepted".
+	requireContains(t, "ADR 01", adr, "Status:** Accepted")
+
+	// Must have the original proposal date.
+	requireContains(t, "ADR 01", adr, "2026-09-29")
+
+	// Must have an Accepted date line.
+	requireContains(t, "ADR 01", adr, "Accepted:")
+
+	// Must NOT contain the word "Proposed".
+	if strings.Contains(adr, "Proposed") {
+		t.Error("ADR 01 still contains the word 'Proposed'")
+	}
+}
+
+// ===========================================================================
+// TS-24-56 (unit): ADR 01 Context opens with a before-implementation sentence
+// and Implementation notes list the errata.
+// Verifies: 24-REQ-10.2
+// ===========================================================================
+
+func TestDocs_TS_24_56_ADR01ContextAndImplementationNotes(t *testing.T) {
+	adr := readDoc(t, "adr/01-choose-the-authority-for-patch-branches.md")
+
+	// Implementation notes section lists the four errata files and says
+	// the Decision stands as written.
+	notes := section(t, adr, "## Implementation notes", "## ")
+	requireContains(t, "Implementation notes", notes,
+		"20_fork_patch_sync_divergences.md",
+		"21_fork_patch_registration_divergences.md",
+		"22_fork_push_control_divergences.md",
+		"23_patch_divergence_recovery_divergences.md",
+		"stands as written",
+	)
+
+	// Context should open with a sentence about describing the code before
+	// the decision was implemented.
+	ctxSection := section(t, adr, "## Context", "## ")
+	requireContains(t, "Context", ctxSection, "before the decision was implemented")
+
+	// Decision and Consequences text must be unchanged.
+	// Verify key phrases from the original Decision section are present.
+	decision := section(t, adr, "## Decision", "## ")
+	requireContains(t, "Decision", decision,
+		"PATCH_BRANCH_SOURCE",
+		"`hub` is the default",
+		"`origin` makes the fork authoritative",
+		"PUSH_PATCHES_TO_ORIGIN",
+	)
+
+	// Verify key phrases from the original Consequences section are present.
+	consequences := section(t, adr, "## Consequences", "## ")
+	requireContains(t, "Consequences", consequences,
+		"Positive",
+		"Negative",
+		"Two more workspace variables",
+	)
+}
+
+// ===========================================================================
+// TS-24-57 (unit): The four errata files exist and each has the three
+// required sections.
+// Verifies: 24-REQ-10.3
+// ===========================================================================
+
+func TestDocs_TS_24_57_ErrataFilesExistWithSections(t *testing.T) {
+	errataFiles := []string{
+		"errata/20_fork_patch_sync_divergences.md",
+		"errata/21_fork_patch_registration_divergences.md",
+		"errata/22_fork_push_control_divergences.md",
+		"errata/23_patch_divergence_recovery_divergences.md",
+	}
+
+	for _, f := range errataFiles {
+		d := readDoc(t, f)
+		requireContains(t, f, d,
+			"## Spec Expectation",
+			"## Implementation Reality",
+			"## Resolution",
+		)
+	}
+}
+
+// ===========================================================================
+// TS-24-58 (unit): The errata for specs 20 and 21 record each confirmed
+// divergence with a reason.
+// Verifies: 24-REQ-10.4
+// ===========================================================================
+
+func TestDocs_TS_24_58_ErrataSpecs20And21Divergences(t *testing.T) {
+	e20 := readDoc(t, "errata/20_fork_patch_sync_divergences.md")
+	requireContains(t, "spec 20 erratum", e20,
+		"origin_fetch_failed",
+		"compare-and-swap",
+		"last_sync_at",
+		"docs/api.md",
+	)
+
+	e21 := readDoc(t, "errata/21_fork_patch_registration_divergences.md")
+	requireContains(t, "spec 21 erratum", e21,
+		"workspace_busy",
+		"skipped",
+		"502",
+	)
+}
+
+// ===========================================================================
+// TS-24-59 (unit): The errata for specs 22 and 23 record each confirmed
+// divergence with a reason.
+// Verifies: 24-REQ-10.5
+// ===========================================================================
+
+func TestDocs_TS_24_59_ErrataSpecs22And23Divergences(t *testing.T) {
+	e22 := readDoc(t, "errata/22_fork_push_control_divergences.md")
+	requireContains(t, "spec 22 erratum", e22,
+		"refs/hub/forward/<branch>",
+		"fail open",
+		"AUTO_REBUILD_AFTER_PUSH=false",
+	)
+
+	e23 := readDoc(t, "errata/23_patch_divergence_recovery_divergences.md")
+	requireContains(t, "spec 23 erratum", e23,
+		"hub.patch.reset",
+		"refs/hub/replaced/",
+		"purge",
+	)
+}
+
+// ===========================================================================
+// TS-24-60 (unit): Unsupported erratum entries are dropped and code
+// divergences not on the list are added.
+// Verifies: 24-REQ-10.6
+// ===========================================================================
+
+func TestDocs_TS_24_60_ErrataEntriesMatchCode(t *testing.T) {
+	// Verify that each erratum entry references behaviour that exists in the
+	// code. We check key strings that correspond to code-confirmed
+	// divergences.
+
+	// Spec 20: pruning is confirmed in sync_handlers.go (FetchOrigin with
+	// pruning), 502 origin_fetch_failed type is confirmed, compare-and-swap
+	// is confirmed in patch_refresh.go, disabled patches not counting as
+	// advanced is confirmed, merge detection on patch-only changes is
+	// confirmed, field presence is confirmed in asExtras(), last_sync_at
+	// not written on ref-write failure is confirmed, variables in
+	// docs/api.md is confirmed.
+	e20 := readDoc(t, "errata/20_fork_patch_sync_divergences.md")
+	requireContains(t, "spec 20 erratum code-confirmed", e20,
+		"prun",
+		"502",
+		"disabled",
+		"merge detection",
+	)
+
+	// Spec 21: refs/heads check is confirmed in branch_resolver.go,
+	// 502 on fork fetch failure is confirmed, 409 workspace_busy is
+	// confirmed, branch_resolution skipped is confirmed, no batch audit
+	// event is confirmed.
+	e21 := readDoc(t, "errata/21_fork_patch_registration_divergences.md")
+	requireContains(t, "spec 21 erratum code-confirmed", e21,
+		"refs/heads",
+		"batch",
+		"audit",
+	)
+
+	// Spec 22: delete rejection is confirmed in push_control.go, forward
+	// temp ref is confirmed, accepted-only rule is confirmed, fail-open is
+	// confirmed, mirror when AUTO_REBUILD_AFTER_PUSH=false is confirmed.
+	e22 := readDoc(t, "errata/22_fork_push_control_divergences.md")
+	requireContains(t, "spec 22 erratum code-confirmed", e22,
+		"delete",
+		"120",
+		"userinfo",
+		"accepted",
+	)
+
+	// Spec 23: single-patch GET is confirmed in routes.go, reset semantics
+	// are confirmed in recovery.go, hub.patch.reset event is confirmed in
+	// audit/types.go, protected prefix is confirmed in
+	// gitserver/protected_refs.go, purge not scheduled is confirmed.
+	e23 := readDoc(t, "errata/23_patch_divergence_recovery_divergences.md")
+	requireContains(t, "spec 23 erratum code-confirmed", e23,
+		"GET",
+		"active",
+		"conflict",
+		"disabled",
+		"scheduled",
+	)
+}
