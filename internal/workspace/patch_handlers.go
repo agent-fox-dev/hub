@@ -345,6 +345,55 @@ func handleAddPatchBatch(c echo.Context, db *sql.DB, slug string, ws *Workspace,
 	return c.JSON(http.StatusCreated, result)
 }
 
+// handleGetPatch handles GET /api/v1/workspaces/:slug/patches/:id (23-REQ-1).
+// Returns the patch object with replaced_sha when a backup ref exists.
+func handleGetPatch(db *sql.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth := requirePatchReadScope(c)
+		if auth == nil {
+			return nil
+		}
+
+		slug := c.Param("slug")
+		patchID := c.Param("id")
+
+		// Owner or admin only; 404 for non-owners.
+		ws := lookupPatchWorkspace(c, db, slug, auth)
+		if ws == nil {
+			return nil
+		}
+
+		// Look up the patch by ID — includes soft-deleted patches.
+		p, err := getPatch(db, slug, patchID)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if p == nil {
+			return respondError(c, http.StatusNotFound, "patch not found")
+		}
+
+		resp := patchResponse(p)
+
+		// Add replaced_sha when a recovery hook is registered and the
+		// backup ref exists. Errors are logged and never fail the request.
+		hook := getRecoveryHook()
+		if hook != nil {
+			sha, found, err := hook.ReadReplacedSHA(c.Request().Context(), slug, p.BranchName)
+			if err != nil {
+				slog.Warn("failed to read replaced SHA",
+					"slug", slug,
+					"branch", p.BranchName,
+					"error", err,
+				)
+			} else if found {
+				resp["replaced_sha"] = sha
+			}
+		}
+
+		return c.JSON(http.StatusOK, resp)
+	}
+}
+
 // handleListPatches handles GET /api/v1/workspaces/:slug/patches (15-REQ-9).
 func handleListPatches(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {

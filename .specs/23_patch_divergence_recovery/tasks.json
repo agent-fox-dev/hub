@@ -62,7 +62,7 @@
         "internal/workspace/recovery_hook_test.go",
         "internal/workspace/patch_get_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
